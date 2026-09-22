@@ -5,7 +5,10 @@
 //! and outcome-commit ambiguity. It never rebuilds or substitutes the durable
 //! request identity.
 
-use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
+use aos_sandbox::{
+    AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
+    ValidatedAuthorityEffectReceiptV1,
+};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -31,7 +34,14 @@ pub(crate) struct ControllerAuthorityEffectExchangeV1 {
 
 struct PendingAuthorityEffectV1 {
     effect: PreparedAuthorityEffectV1,
+    kind: AuthorityEffectExchangeKindV1,
     stage: AuthorityEffectStageV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorityEffectExchangeKindV1 {
+    Apply,
+    HostQuery,
 }
 
 enum AuthorityEffectStageV1 {
@@ -54,6 +64,11 @@ impl ControllerAuthorityEffectExchangeV1 {
         self.pending.is_some() || self.failed
     }
 
+    /// Reports that only a fresh authenticated session can make progress.
+    pub(crate) const fn requires_reconnect(&self) -> bool {
+        self.failed
+    }
+
     /// Resumes matching retained custody without issuing a previously absent Apply.
     pub(crate) fn resume(
         &mut self,
@@ -64,12 +79,15 @@ impl ControllerAuthorityEffectExchangeV1 {
             return Some(Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned())));
         }
         let pending = self.pending.as_ref()?;
-        if pending.effect != *effect {
+        if pending.effect != *effect || pending.kind != AuthorityEffectExchangeKindV1::Apply {
             return Some(Err(EffectFailure::Permanent(
                 "authority effect differs from retained recovery custody".to_owned(),
             )));
         }
-        Some(self.drive(session))
+        Some(
+            self.drive(session)
+                .and_then(|outcome| validate_apply_terminal(effect, &outcome)),
+        )
     }
 
     /// Drives or resumes one exact durable Apply through terminal authentication.
@@ -84,11 +102,9 @@ impl ControllerAuthorityEffectExchangeV1 {
         if self.failed {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.effect != *effect)
-        {
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.effect != *effect || pending.kind != AuthorityEffectExchangeKindV1::Apply
+        }) {
             return Err(EffectFailure::Permanent(
                 "authority effect differs from retained recovery custody".to_owned(),
             ));
@@ -104,28 +120,76 @@ impl ControllerAuthorityEffectExchangeV1 {
             let stage = preparation_stage(preparation);
             self.pending = Some(PendingAuthorityEffectV1 {
                 effect: effect.clone(),
+                kind: AuthorityEffectExchangeKindV1::Apply,
                 stage,
             });
         }
 
-        self.drive(session)
+        let outcome = self.drive(session)?;
+        validate_apply_terminal(effect, &outcome)
+    }
+
+    /// Queries Host for the durable status of one exact prior-process Apply.
+    pub(crate) fn query_host(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
+        effect.broker_request().map_err(|_| {
+            EffectFailure::Permanent("durable Host authority effect is malformed".to_owned())
+        })?;
+        if self.failed {
+            return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
+        }
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.effect != *effect || pending.kind != AuthorityEffectExchangeKindV1::HostQuery
+        }) {
+            return Err(EffectFailure::Permanent(
+                "Host effect query differs from retained recovery custody".to_owned(),
+            ));
+        }
+        if self.pending.is_none() {
+            let preparation = session
+                .prepare_authenticated_host_effect_query(effect)
+                .map_err(|_| {
+                    EffectFailure::Retryable(
+                        "Host effect query could not enter protected session custody".to_owned(),
+                    )
+                })?;
+            self.pending = Some(PendingAuthorityEffectV1 {
+                effect: effect.clone(),
+                kind: AuthorityEffectExchangeKindV1::HostQuery,
+                stage: preparation_stage(preparation),
+            });
+        }
+
+        let outcome = self.drive(session)?;
+        let observation = validate_host_query_terminal(effect, &outcome)?;
+        if observation == AuthorityEffectObservationV1::Pending {
+            // Host queries reuse the original Apply ID. A second query must use
+            // a new authenticated session after this terminal query outcome.
+            self.failed = true;
+        }
+        Ok(observation)
     }
 
     fn drive(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
-    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
         let mut attempted_recovery = false;
         loop {
             let pending = self.pending.take().ok_or_else(|| {
                 EffectFailure::Retryable("authority effect custody is absent".to_owned())
             })?;
             let effect = pending.effect;
+            let kind = pending.kind;
             let stage = match pending.stage {
                 AuthorityEffectStageV1::Initialization { recovery, request } => {
                     if attempted_recovery {
                         return self.retain(
                             effect,
+                            kind,
                             AuthorityEffectStageV1::Initialization { recovery, request },
                         );
                     }
@@ -136,6 +200,7 @@ impl ControllerAuthorityEffectExchangeV1 {
                     if attempted_recovery {
                         return self.retain(
                             effect,
+                            kind,
                             AuthorityEffectStageV1::Successor { recovery, request },
                         );
                     }
@@ -150,7 +215,11 @@ impl ControllerAuthorityEffectExchangeV1 {
                         }
                         Ok(DormantBrokerRequestSendProgressV1::Pending(prepared)) => {
                             if wait(session, true, deadline).is_err() {
-                                return self.retain(effect, AuthorityEffectStageV1::Send(prepared));
+                                return self.retain(
+                                    effect,
+                                    kind,
+                                    AuthorityEffectStageV1::Send(prepared),
+                                );
                             }
                             AuthorityEffectStageV1::Send(prepared)
                         }
@@ -162,14 +231,17 @@ impl ControllerAuthorityEffectExchangeV1 {
                     match session.receive_authenticated_response(outstanding) {
                         Ok(DormantBrokerResponseProgressV1::Pending(outstanding)) => {
                             if wait(session, false, deadline).is_err() {
-                                return self
-                                    .retain(effect, AuthorityEffectStageV1::Receive(outstanding));
+                                return self.retain(
+                                    effect,
+                                    kind,
+                                    AuthorityEffectStageV1::Receive(outstanding),
+                                );
                             }
                             AuthorityEffectStageV1::Receive(outstanding)
                         }
                         Ok(DormantBrokerResponseProgressV1::Committed(
                             ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
-                        )) => return self.complete(session, &effect, committed),
+                        )) => return self.complete(session, committed),
                         Ok(DormantBrokerResponseProgressV1::Committed(
                             ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
                                 recovery, ..
@@ -180,12 +252,12 @@ impl ControllerAuthorityEffectExchangeV1 {
                 }
                 AuthorityEffectStageV1::Commit(recovery) => {
                     if attempted_recovery {
-                        return self.retain(effect, AuthorityEffectStageV1::Commit(recovery));
+                        return self.retain(effect, kind, AuthorityEffectStageV1::Commit(recovery));
                     }
                     attempted_recovery = true;
                     match session.recover_broker_outcome_commit(recovery) {
                         ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
-                            return self.complete(session, &effect, committed);
+                            return self.complete(session, committed);
                         }
                         ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
                             recovery, ..
@@ -193,16 +265,25 @@ impl ControllerAuthorityEffectExchangeV1 {
                     }
                 }
             };
-            self.pending = Some(PendingAuthorityEffectV1 { effect, stage });
+            self.pending = Some(PendingAuthorityEffectV1 {
+                effect,
+                kind,
+                stage,
+            });
         }
     }
 
     fn retain<T>(
         &mut self,
         effect: PreparedAuthorityEffectV1,
+        kind: AuthorityEffectExchangeKindV1,
         stage: AuthorityEffectStageV1,
     ) -> Result<T, EffectFailure> {
-        self.pending = Some(PendingAuthorityEffectV1 { effect, stage });
+        self.pending = Some(PendingAuthorityEffectV1 {
+            effect,
+            kind,
+            stage,
+        });
         Err(EffectFailure::Retryable(RETAINED_RECOVERY.to_owned()))
     }
 
@@ -214,9 +295,8 @@ impl ControllerAuthorityEffectExchangeV1 {
     fn complete(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
-        effect: &PreparedAuthorityEffectV1,
         committed: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
         let (outcome, currentness) = committed.into_outcome_and_currentness();
         let Ok(mut current) = session.revalidate_broker_outcome(currentness) else {
             return self.fail();
@@ -225,7 +305,7 @@ impl ControllerAuthorityEffectExchangeV1 {
             return self.fail();
         }
 
-        validate_terminal(effect, &outcome)
+        Ok(outcome)
     }
 }
 
@@ -245,7 +325,7 @@ fn preparation_stage(preparation: DormantBrokerRequestPreparationV1) -> Authorit
     }
 }
 
-fn validate_terminal(
+fn validate_apply_terminal(
     effect: &PreparedAuthorityEffectV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
@@ -263,6 +343,30 @@ fn validate_terminal(
     effect.validate_authenticated_outcome(outcome).map_err(|_| {
         EffectFailure::Permanent("broker returned a contradictory authority receipt".to_owned())
     })
+}
+
+fn validate_host_query_terminal(
+    effect: &PreparedAuthorityEffectV1,
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<AuthorityEffectObservationV1, EffectFailure> {
+    if let AuthenticatedBrokerMethodResultV1::Error(error) = outcome.result() {
+        let diagnostic = if error.safe_message().is_empty() {
+            "Host rejected the durable authority-effect query".to_owned()
+        } else {
+            format!(
+                "Host rejected the durable authority-effect query: {}",
+                error.safe_message()
+            )
+        };
+        return Err(EffectFailure::Permanent(diagnostic));
+    }
+    effect
+        .validate_authenticated_host_observation(outcome)
+        .map_err(|_| {
+            EffectFailure::Permanent(
+                "Host returned a contradictory authority-effect observation".to_owned(),
+            )
+        })
 }
 
 fn wait(

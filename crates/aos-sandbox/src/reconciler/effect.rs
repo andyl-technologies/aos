@@ -7,7 +7,8 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest, ApplyStorageRequest, Audience,
-    BrokerMethod, BrokerRequestEnvelope, RequestHeader,
+    BrokerMethod, BrokerRequestEnvelope, QueryRuntimeEffectRequest, QueryRuntimeEffectResponse,
+    RequestHeader, RuntimeEffectStatus,
 };
 use aos_sandbox_core::{
     BrokerAudience, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample,
@@ -534,6 +535,79 @@ impl PreparedAuthorityEffectV1 {
             binding_digest: self.binding_digest,
             attempt_digest: attempt_token_digest(&self.attempt),
         })
+    }
+
+    /// Validates one authenticated Host query for this exact durable Apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidExecutorOutput`] when the query does
+    /// not embed this exact Apply, when the broker reports an invalid terminal
+    /// body, or when a completed receipt does not match the original request.
+    pub fn validate_authenticated_host_observation(
+        &self,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<AuthorityEffectObservationV1, ReconcilerError> {
+        let original = self.broker_request()?;
+        if original.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || outcome.method() != BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect query selected the wrong method",
+            ));
+        }
+        let query = QueryRuntimeEffectRequest::decode_from_slice(outcome.request().exact_body())
+            .map_err(|_| {
+                ReconcilerError::InvalidExecutorOutput("authority effect query is malformed")
+            })?;
+        let header = query
+            .header
+            .as_option()
+            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                "authority effect query header is missing",
+            ))?;
+        if !query.__buffa_unknown_fields.is_empty()
+            || query.encode_to_vec() != outcome.request().exact_body()
+            || header.request_id.as_slice() != original.request_id()
+            || query.original_apply_request.as_slice() != self.attempt.body()
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect query does not name the durable Apply",
+            ));
+        }
+
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect query returned a terminal broker error",
+            ));
+        };
+        let response = QueryRuntimeEffectResponse::decode_from_slice(exact_body).map_err(|_| {
+            ReconcilerError::InvalidExecutorOutput("authority effect query response is malformed")
+        })?;
+        if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != *exact_body {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect query response is not canonical",
+            ));
+        }
+
+        match response.status.as_known() {
+            Some(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_ABSENT)
+                if response.receipt.is_empty() =>
+            {
+                Ok(AuthorityEffectObservationV1::Absent)
+            }
+            Some(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_PENDING)
+                if response.receipt.is_empty() =>
+            {
+                Ok(AuthorityEffectObservationV1::Pending)
+            }
+            Some(RuntimeEffectStatus::RUNTIME_EFFECT_STATUS_COMPLETE) => self
+                .validate_host_receipt(response.receipt)
+                .map(AuthorityEffectObservationV1::Applied),
+            _ => Err(ReconcilerError::InvalidExecutorOutput(
+                "authority effect query response has an invalid status",
+            )),
+        }
     }
 
     /// Recovers the exact durable request for authenticated session admission.

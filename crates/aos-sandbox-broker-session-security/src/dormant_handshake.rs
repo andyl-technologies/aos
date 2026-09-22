@@ -12,6 +12,7 @@ use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry, BrokerDescriptorEntry,
     BrokerDescriptorRole, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
     BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
+    QueryRuntimeEffectRequest, RequestHeader,
 };
 use aos_sandbox::PreparedAuthorityEffectV1;
 use aos_sandbox_broker_session_protocol::{
@@ -4766,6 +4767,102 @@ impl DormantAuthenticatedBrokerSessionV1 {
             ));
         }
 
+        let prepared = DormantPreparedBrokerRequestV1(authenticated.clone());
+        if initialize {
+            return Ok(
+                match self.0.initialize_authenticated_request(&authenticated)? {
+                    ProtectedBrokerSessionInitializationResultV1::Initialized => {
+                        DormantBrokerRequestPreparationV1::Prepared(prepared)
+                    }
+                    ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
+                        error,
+                        recovery,
+                    } => DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                        error,
+                        recovery,
+                        request: DormantUnconfirmedBrokerRequestV1(authenticated),
+                    },
+                },
+            );
+        }
+        Ok(match self.0.append_authenticated_request(&authenticated)? {
+            ProtectedBrokerRequestCommitResultV1::Committed => {
+                DormantBrokerRequestPreparationV1::Prepared(prepared)
+            }
+            ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
+                DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                    error,
+                    recovery,
+                    request: DormantUnconfirmedBrokerRequestV1(authenticated),
+                }
+            }
+        })
+    }
+
+    /// Signs and reserves a fresh Host query for one exact durable Apply.
+    ///
+    /// The query runs on the current authenticated session, retains the
+    /// original Apply request ID and body required by Host 1.0, and uses a new
+    /// bounded deadline. Its authorization artifacts are copied from the exact
+    /// durable Apply rather than reconstructed by the controller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-Host Apply, malformed durable authority,
+    /// missing artifacts, invalid session coordinates, or protected journal
+    /// admission failure.
+    pub fn prepare_authenticated_host_effect_query(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let original = effect.broker_request().map_err(|_| {
+            BrokerSessionSecurityError::manifest("durable Host authority effect request")
+        })?;
+        if original.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable Host authority effect method",
+            ));
+        }
+        let original_request_id = original.request_id();
+        let original_envelope = original.into_envelope();
+        let authorization = original_envelope
+            .authorization
+            .as_option()
+            .cloned()
+            .ok_or_else(|| {
+                BrokerSessionSecurityError::manifest("durable Host authority effect authorization")
+            })?;
+        let (deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_limits()?;
+        let body = QueryRuntimeEffectRequest {
+            header: Some(RequestHeader {
+                protocol_major: u32::from(protocol_version.major()),
+                protocol_minor: u32::from(protocol_version.minor()),
+                request_id: original_request_id.to_vec(),
+                audience: audience.into(),
+                deadline_boottime_nanoseconds: deadline,
+                maximum_response_bytes,
+                ..Default::default()
+            })
+            .into(),
+            original_apply_request: effect.attempt().body().to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let envelope = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT.into(),
+            body,
+            authorization: Some(authorization).into(),
+            ..Default::default()
+        };
+        let (authenticated, initialize) = self.0.prepare_client_request(
+            envelope,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
+            0,
+            original_request_id,
+            deadline,
+            maximum_response_bytes,
+        )?;
         let prepared = DormantPreparedBrokerRequestV1(authenticated.clone());
         if initialize {
             return Ok(

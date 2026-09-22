@@ -11,7 +11,10 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
-use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
+use aos_sandbox::{
+    AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
+    ValidatedAuthorityEffectReceiptV1,
+};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
@@ -89,6 +92,24 @@ impl ControllerHostPublication {
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
         self.authority_effects.resume(&mut self.session, effect)
+    }
+
+    /// Queries Host for one exact prior-process authority effect.
+    pub(crate) fn query_authority_effect(
+        &mut self,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
+        if self.pending.is_some() || self.poisoned {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained catalog publication work".to_owned(),
+            ));
+        }
+        self.authority_effects.query_host(&mut self.session, effect)
+    }
+
+    /// Reports that the current authenticated session must be replaced.
+    pub(crate) const fn requires_reconnect(&self) -> bool {
+        self.poisoned || self.authority_effects.requires_reconnect()
     }
 
     /// Completes a publication without replacing any retained request identity.

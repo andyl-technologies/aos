@@ -827,6 +827,13 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    if sessions
+        .host
+        .as_ref()
+        .is_some_and(ControllerHostPublication::requires_reconnect)
+    {
+        sessions.host = None;
+    }
     if sessions.host.is_none() {
         sessions.host = Some(ControllerHostPublication::new(connect_controller_session(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
@@ -1431,6 +1438,28 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 EffectFailure::Permanent("durable authority effect is malformed".to_owned())
             })?
             .method();
+        if self.prepared_in_this_process(prepared) {
+            let retained = {
+                let mut sessions = self.sessions.lock().map_err(|_| {
+                    EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+                })?;
+                resume_controller_authority_effect(&mut sessions, method, prepared)?
+            };
+            return match retained {
+                Some(receipt) => Ok(AuthorityEffectObservationV1::Applied(receipt)),
+                None => Ok(AuthorityEffectObservationV1::Absent),
+            };
+        }
+        if method == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+            })?;
+            return sessions
+                .host
+                .as_mut()
+                .ok_or_else(missing_broker_session)?
+                .query_authority_effect(prepared);
+        }
         let retained = {
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
@@ -1439,9 +1468,6 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         };
         if let Some(receipt) = retained {
             return Ok(AuthorityEffectObservationV1::Applied(receipt));
-        }
-        if self.prepared_in_this_process(prepared) {
-            return Ok(AuthorityEffectObservationV1::Absent);
         }
         Err(EffectFailure::Retryable(
             "durable authority effect requires authenticated restart observation".to_owned(),
