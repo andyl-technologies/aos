@@ -2302,6 +2302,115 @@ fn broker_inventory_domain(method: BrokerMethod) -> Option<LifecycleEffectDomain
 }
 
 impl LifecycleEffectRequestV1 {
+    /// Carries the complete immutable effect fields across the Storage boundary.
+    pub(super) fn atomic_snapshot_wire_bytes(self) -> [u8; 214] {
+        let mut bytes = [0; 214];
+        let mut offset = 0;
+        for field in [
+            self.operation.as_bytes().as_slice(),
+            &self.operation_revision.get().to_be_bytes(),
+            &[self.domain as u8],
+            &self.ordinal.to_be_bytes(),
+            &self.step.to_be_bytes(),
+            &[self.direction as u8],
+            &self.attempt.to_be_bytes(),
+            self.admission.as_bytes(),
+            self.logical.digest().as_bytes(),
+            &self.target,
+            self.prerequisite.as_bytes(),
+            self.plan.as_bytes(),
+            self.payload.as_bytes(),
+        ] {
+            bytes[offset..offset + field.len()].copy_from_slice(field);
+            offset += field.len();
+        }
+        bytes
+    }
+
+    /// Recomputes dispatch identity before restoring an untrusted wire effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1::InvalidInput`] for a non-Storage
+    /// snapshot effect or a mismatched dispatch commitment.
+    pub(super) fn from_atomic_snapshot_wire_bytes(
+        bytes: &[u8; 214],
+    ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        let mut offset = 0;
+        let operation =
+            OperationId::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let operation_revision = aos_sandbox_core::Revision::new(u64::from_be_bytes(
+            take_atomic_snapshot_wire_field(bytes, &mut offset)?,
+        ));
+        let domain = take_atomic_snapshot_wire_field::<1>(bytes, &mut offset)?[0];
+        let ordinal = u32::from_be_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let step = u32::from_be_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let direction = take_atomic_snapshot_wire_field::<1>(bytes, &mut offset)?[0];
+        let attempt = u32::from_be_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let admission =
+            ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let logical = super::LifecycleStepRequestDigestV1::from_stored(ObjectDigest::from_bytes(
+            take_atomic_snapshot_wire_field(bytes, &mut offset)?,
+        ))
+        .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+        let target = take_atomic_snapshot_wire_field(bytes, &mut offset)?;
+        let prerequisite =
+            ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let plan = ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        let payload =
+            ObjectDigest::from_bytes(take_atomic_snapshot_wire_field(bytes, &mut offset)?);
+        if domain != LifecycleEffectDomainV1::Storage as u8
+            || ordinal != 4
+            || direction != LifecycleEffectDirectionV1::Forward as u8
+            || operation.as_bytes() == &[0; 16]
+            || operation_revision.get() == 0
+            || attempt == 0
+            || target == [0; 16]
+            || admission.as_bytes() == &[0; 32]
+            || prerequisite.as_bytes() == &[0; 32]
+            || plan.as_bytes() == &[0; 32]
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let body = lifecycle_effect_body_v2(
+            operation,
+            LifecycleEffectDomainV1::Storage,
+            ordinal,
+            step,
+            LifecycleEffectDirectionV1::Forward,
+            target,
+            prerequisite,
+            plan,
+        );
+        let expected_payload = ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(b"aos.sandbox.lifecycle.phase6-dispatch.v1\0")
+                .chain_update(body)
+                .chain_update(attempt.to_be_bytes())
+                .chain_update(admission.as_bytes())
+                .finalize()
+                .into(),
+        );
+        if payload != expected_payload {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        Ok(Self {
+            operation,
+            operation_revision,
+            domain: LifecycleEffectDomainV1::Storage,
+            ordinal,
+            step,
+            direction: LifecycleEffectDirectionV1::Forward,
+            attempt,
+            admission,
+            logical,
+            target,
+            prerequisite,
+            plan,
+            payload,
+        })
+    }
+
     pub(super) fn new(
         current: &CurrentLifecycleOperationV1<'_>,
         domain: LifecycleEffectDomainV1,
@@ -2455,6 +2564,22 @@ impl LifecycleEffectRequestV1 {
     pub const fn payload(self) -> ObjectDigest {
         self.payload
     }
+}
+
+fn take_atomic_snapshot_wire_field<const N: usize>(
+    bytes: &[u8],
+    offset: &mut usize,
+) -> Result<[u8; N], LifecyclePhase6ErrorV1> {
+    let end = offset
+        .checked_add(N)
+        .ok_or(LifecyclePhase6ErrorV1::Capacity)?;
+    let field = bytes
+        .get(*offset..end)
+        .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
+    *offset = end;
+    field
+        .try_into()
+        .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
 }
 
 fn active_step_attempt(

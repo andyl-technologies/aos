@@ -12,6 +12,9 @@ use super::{
     LifecycleStepV1, LifecycleStorageInventoryKindV1, lifecycle_phase6_planned_step_v1,
 };
 
+#[path = "snapshot_barrier/atomic_snapshot_wire.rs"]
+mod atomic_snapshot_wire;
+
 /// Identifies one exact owned dataset in a coordinated atomic snapshot.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct LifecycleAtomicDatasetSnapshotMemberV1 {
@@ -393,8 +396,9 @@ impl LifecycleSnapshotBarrierV1 {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         let commitment = atomic_dataset_snapshot_plan_commitment(
-            self,
+            self.operation,
             snapshot,
+            self.transaction.transaction(),
             effect,
             storage.generation(),
             storage.source(),
@@ -847,8 +851,9 @@ fn same_transaction(
 }
 
 fn atomic_dataset_snapshot_plan_commitment(
-    barrier: &LifecycleSnapshotBarrierV1,
+    operation: OperationId,
     snapshot: SnapshotId,
+    transaction: super::LifecycleTransactionIdV1,
     effect: super::LifecycleEffectRequestV1,
     inventory_generation: u64,
     inventory_source: ObjectDigest,
@@ -858,9 +863,9 @@ fn atomic_dataset_snapshot_plan_commitment(
 ) -> ObjectDigest {
     let mut hasher = Sha256::new()
         .chain_update(b"aos.sandbox.lifecycle.atomic-dataset-snapshot-plan.v1\0")
-        .chain_update(barrier.operation.as_bytes())
+        .chain_update(operation.as_bytes())
         .chain_update(snapshot.as_bytes())
-        .chain_update(barrier.transaction.transaction().get().as_bytes())
+        .chain_update(transaction.get().as_bytes())
         .chain_update(effect.operation_revision().get().to_be_bytes())
         .chain_update([effect.domain() as u8])
         .chain_update(effect.ordinal().to_be_bytes())

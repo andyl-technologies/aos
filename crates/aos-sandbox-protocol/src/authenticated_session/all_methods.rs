@@ -367,7 +367,8 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
             AuthenticatedBrokerMethodSemanticsV1::MountInventorySourceAcquisitions
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     Some(AuthenticatedBrokerMethodAdapterV1 { profile, semantics })
 }
@@ -1220,7 +1221,8 @@ fn validate_request_semantics(
             decode_mount_source_acquisition_inventory_request(body, peer, policy, now)?,
             None,
         ),
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     };
@@ -1462,7 +1464,8 @@ fn validate_success_semantics(
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
             decode_mount_source_acquisition_inventory_response_with_maximum(body, maximum)?;
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     }

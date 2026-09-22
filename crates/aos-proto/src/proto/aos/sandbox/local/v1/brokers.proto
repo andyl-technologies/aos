@@ -87,6 +87,7 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_ACQUIRE_SOURCE = 22;
   BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION = 23;
   BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS = 24;
+  BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.
@@ -389,6 +390,21 @@ message ApplyStorageRequest {
   bytes sandbox_spec = 9;
 }
 
+// One closed, all-or-nothing lifecycle dataset snapshot group. The canonical
+// plan contains the complete typed dependency closure and exact protected
+// Storage inventory predecessor; it is not a list of independently retryable
+// ApplyStorage requests.
+message ApplyAtomicStorageSnapshotRequest {
+  RequestHeader header = 1;
+  bytes canonical_plan = 2; // Versioned lifecycle plan, at most 600,000 bytes.
+}
+
+message AtomicStorageSnapshotResponse {
+  bytes program_digest = 1; // Exact durable grouped program, 32 bytes.
+  bytes observation_digest = 2; // Committed group observation, 32 bytes when present.
+  bool observation_required = 3; // Ambiguous after mutation; never redispatch.
+}
+
 // Resolves one future operation from protected physical state.
 // This independently authorized request cannot execute the operation. UID,
 // GID, cgroup, ZFS names, GUIDs, roots, and policy domains are deliberately
@@ -500,6 +516,8 @@ service StorageBroker {
   rpc PrepareCatalog(PrepareStorageCatalogRequest) returns (PrepareStorageCatalogResponse);
   rpc RepairWorkspacePin(RepairStorageWorkspacePinRequest) returns (StorageResult);
   rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
+  rpc ApplyAtomicSnapshot(ApplyAtomicStorageSnapshotRequest)
+      returns (AtomicStorageSnapshotResponse);
   rpc InventoryStorageResources(InventoryStorageRequest)
       returns (InventoryStorageResourcesResponse);
 }

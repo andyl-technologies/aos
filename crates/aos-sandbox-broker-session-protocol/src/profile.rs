@@ -357,7 +357,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             BrokerSessionProtocolV1::Network
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        // The additive wire declaration is not advertised until the complete
+        // authenticated dispatch and recovery path is installed.
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
     let audience = if matches!(method, BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE) {

@@ -66,9 +66,9 @@ fn complete_schema_fingerprint(source: &str) -> u64 {
 fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     let source = include_str!("src/proto/aos/sandbox/local/v1/brokers.proto");
     // This covers the complete comment-free V1 schema rather than a sample of
-    // declarations: all 22 method tags, every enum value, message field/type/
+    // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xd281_6fe3_3423_9abc;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x4e8d_f4da_a58d_e9d0;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -144,6 +144,33 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
         "service HostBroker {",
         &[
             "rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum BrokerMethod {",
+        &["BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ApplyAtomicStorageSnapshotRequest {",
+        &["RequestHeader header = 1;", "bytes canonical_plan = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message AtomicStorageSnapshotResponse {",
+        &[
+            "bytes program_digest = 1;",
+            "bytes observation_digest = 2;",
+            "bool observation_required = 3;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "service StorageBroker {",
+        &[
+            "rpc ApplyAtomicSnapshot(ApplyAtomicStorageSnapshotRequest)",
+            "returns (AtomicStorageSnapshotResponse);",
         ],
     )?;
     println!("cargo:rerun-if-changed=src/proto/aos/sandbox/local/v1/compatibility-v1.txt");

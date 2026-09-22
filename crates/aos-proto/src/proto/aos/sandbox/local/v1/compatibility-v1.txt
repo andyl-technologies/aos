@@ -26,3 +26,13 @@ message QueryRuntimeEffectResponse {
 RuntimeEffectStatus status = 1;
 bytes receipt = 2;
 rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
+BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
+message ApplyAtomicStorageSnapshotRequest {
+RequestHeader header = 1;
+bytes canonical_plan = 2;
+message AtomicStorageSnapshotResponse {
+bytes program_digest = 1;
+bytes observation_digest = 2;
+bool observation_required = 3;
+rpc ApplyAtomicSnapshot(ApplyAtomicStorageSnapshotRequest)
+returns (AtomicStorageSnapshotResponse);
