@@ -91,11 +91,15 @@
     echo '+cpu +memory +pids' > ${cgroupRoot}/cgroup.subtree_control
     for lane in \
       equivalence-checkpoint-source \
+      equivalence-replay-genesis \
+      equivalence-replay-oracle-reference equivalence-replay-oracle-template \
       equivalence-thin-reference \
       equivalence-execution-source equivalence-execution-target \
       equivalence-exact-reference \
       equivalence-exact-template-source equivalence-exact-template-target \
       single-checkpoint-source single-thin-reference \
+      single-replay-genesis \
+      single-replay-oracle-reference single-replay-oracle-template \
       single-execution-source single-execution-target \
       single-exact-reference \
       single-exact-template-source single-exact-template-target \
@@ -113,11 +117,15 @@
     mkdir -m 700 /tmp/attempts/run /tmp/run-state /tmp/artifacts /tmp/checkpoints
     for lane in \
       equivalence-checkpoint-source \
+      equivalence-replay-genesis \
+      equivalence-replay-oracle-reference equivalence-replay-oracle-template \
       equivalence-thin-reference \
       equivalence-execution-source equivalence-execution-target \
       equivalence-exact-reference \
       equivalence-exact-template-source equivalence-exact-template-target \
       single-checkpoint-source single-thin-reference \
+      single-replay-genesis \
+      single-replay-oracle-reference single-replay-oracle-template \
       single-execution-source single-execution-target \
       single-exact-reference \
       single-exact-template-source single-exact-template-target \
