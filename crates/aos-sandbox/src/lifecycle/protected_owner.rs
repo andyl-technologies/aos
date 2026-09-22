@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, Revision, SandboxId};
+use aos_sandbox_core::{
+    ObjectDigest, OperationId, PrincipalId, ProjectId, ResourceId, Revision, SandboxId,
+};
 #[cfg(target_os = "linux")]
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
@@ -28,11 +30,12 @@ use super::{
     CurrentLifecycleRuntimeLivenessV1, CurrentLifecycleSuspendObservationV1,
     CurrentLifecycleTargetAssignmentV1, LifecycleAttemptStateV1, LifecycleAuxiliaryPayloadV1,
     LifecycleAuxiliaryRecordV1, LifecycleBootDomainInventoryV1, LifecycleBootDomainV1,
-    LifecycleBootInventoryDomainsV1, LifecycleBootInventoryV1, LifecycleCoordinationTransactionV1,
-    LifecycleDatasetTransactionDigestV1, LifecycleDeferredEffectCursorV1,
-    LifecycleDependencyEdgeV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
-    LifecycleInventoryDigestV1, LifecycleJournalVerifierV1, LifecycleOperationV1,
-    LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
+    LifecycleBootInventoryDomainsV1, LifecycleBootInventoryV1, LifecycleCancelIdempotencyDigestV1,
+    LifecycleCancelOutcomeV1, LifecycleCancelRequestV1, LifecycleCancellationRecordV1,
+    LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1,
+    LifecycleDeferredEffectCursorV1, LifecycleDependencyEdgeV1, LifecycleEffectDomainV1,
+    LifecycleEffectObservationV1, LifecycleInventoryDigestV1, LifecycleJournalVerifierV1,
+    LifecycleOperationV1, LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
     LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, LifecycleResourceV1,
     LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1, LifecycleRetentionPurposeV1,
     LifecycleSnapshotManifestDigestV1, LifecycleStepResultDigestV1,
@@ -40,7 +43,8 @@ use super::{
     LifecycleThawCompensationDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1,
     LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1, ResourceExpectedStateV1,
     bind_lifecycle_atomic_join_v1, decode_lifecycle_auxiliary_record_v1,
-    decode_operation_record_v1, encode_lifecycle_auxiliary_record_v1, encode_operation_record_v1,
+    decode_operation_record_v1, encode_lifecycle_auxiliary_payload_v1,
+    encode_lifecycle_auxiliary_record_v1, encode_operation_record_v1,
 };
 
 /// Holds one exact lifecycle progress transaction before protected mutation.
@@ -92,6 +96,41 @@ pub enum LifecycleOperationAdmissionV1 {
     },
     /// The same caller/project/method/key/request is already durable.
     Replay(LifecycleProtectedJournalKeyV1),
+}
+
+/// Carries one stable protected cancellation resolution and its receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LifecycleProtectedCancellationResolutionV1 {
+    outcome: LifecycleCancelOutcomeV1,
+    receipt: ObjectDigest,
+}
+
+impl LifecycleProtectedCancellationResolutionV1 {
+    /// Borrows the stable cancel-versus-commit result.
+    #[must_use]
+    pub const fn outcome(&self) -> &LifecycleCancelOutcomeV1 {
+        &self.outcome
+    }
+
+    /// Returns the canonical cancellation-resolution receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> ObjectDigest {
+        self.receipt
+    }
+}
+
+/// Reports replay or first protected admission of one cancellation request.
+#[must_use = "cancellation durability or exact replay must be consumed"]
+pub enum LifecycleProtectedCancellationAdmissionV1 {
+    /// The same cancellation idempotency binding is already durable.
+    Existing(LifecycleProtectedCancellationResolutionV1),
+    /// The resolution was submitted as one protected atomic transaction.
+    Admitted {
+        /// Carries the stable cancel-versus-commit result.
+        resolution: LifecycleProtectedCancellationResolutionV1,
+        /// Retains exact durable success or outcome-unknown recovery custody.
+        commit: LifecycleProgressCommitOutcomeV1,
+    },
 }
 
 /// Reports a protected normal-source auxiliary publication.
@@ -194,6 +233,41 @@ const fn operation_record_kind(phase: super::LifecyclePhaseV1) -> LifecycleProte
         | super::LifecyclePhaseV1::RetryWaiting
         | super::LifecyclePhaseV1::Residual => LifecycleProtectedRecordKindV1::Effect,
     }
+}
+
+fn cancellation_resource_id(domain: &[u8], parts: &[&[u8]]) -> Option<ResourceId> {
+    let mut hasher = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.protected-cancellation-id.v1\0")
+        .chain_update((domain.len() as u64).to_be_bytes())
+        .chain_update(domain);
+    for part in parts {
+        hasher = hasher
+            .chain_update((part.len() as u64).to_be_bytes())
+            .chain_update(part);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    let identity: [u8; 16] = digest[..16].try_into().ok()?;
+    (identity != [0; 16]).then_some(ResourceId::from_bytes(identity))
+}
+
+fn cancellation_resolution(
+    record: &LifecycleCancellationRecordV1,
+) -> Result<LifecycleProtectedCancellationResolutionV1, LifecycleProtectedJournalErrorV1> {
+    let payload = LifecycleAuxiliaryPayloadV1::Cancellation(record.clone());
+    let encoded = encode_lifecycle_auxiliary_payload_v1(&payload)
+        .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let receipt = ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.protected-cancellation-receipt.v1\0")
+            .chain_update((encoded.len() as u64).to_be_bytes())
+            .chain_update(encoded)
+            .finalize()
+            .into(),
+    );
+    Ok(LifecycleProtectedCancellationResolutionV1 {
+        outcome: record.outcome().clone(),
+        receipt,
+    })
 }
 
 /// Owns a cold-replayed, dormant lifecycle adapter and its custody verifier.
@@ -312,6 +386,272 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         let outcome = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared })?;
 
         Ok(LifecycleOperationAdmissionV1::Admitted { key, outcome })
+    }
+
+    /// Reads one stable protected cancellation idempotency resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when protected replay is unhealthy, a matching key was
+    /// rebound to another target, or duplicate records disagree.
+    pub fn cancellation_resolution(
+        &self,
+        caller: PrincipalId,
+        project: ProjectId,
+        target_operation: OperationId,
+        idempotency: LifecycleCancelIdempotencyDigestV1,
+    ) -> Result<Option<LifecycleProtectedCancellationResolutionV1>, LifecycleProtectedJournalErrorV1>
+    {
+        if caller.as_bytes() == &[0; 16]
+            || project.as_bytes() == &[0; 16]
+            || target_operation.as_bytes() == &[0; 16]
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let projection = self.journal.replay()?;
+        let mut selected = None;
+        for envelope in projection
+            .records()
+            .iter()
+            .filter(|envelope| envelope.key().kind() == LifecycleProtectedRecordKindV1::Auxiliary)
+        {
+            let reducer = decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
+                envelope.key(),
+                envelope.payload(),
+                &self.verifier,
+            )?;
+            let record =
+                decode_lifecycle_auxiliary_record_v1(reducer.body(), self.verifier.replay())
+                    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+            let LifecycleAuxiliaryPayloadV1::Cancellation(cancellation) = record.payload() else {
+                continue;
+            };
+            let request = cancellation.request();
+            if request.caller() != caller
+                || request.project() != project
+                || request.idempotency() != idempotency
+            {
+                continue;
+            }
+            if request.operation_id() != target_operation {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            let resolution = cancellation_resolution(cancellation)?;
+            if selected
+                .as_ref()
+                .is_some_and(|existing| existing != &resolution)
+            {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            selected = Some(resolution);
+        }
+        Ok(selected)
+    }
+
+    /// Atomically resolves and persists one exact cancel-versus-commit race.
+    ///
+    /// A first cancellation binds the current lifecycle revision and record
+    /// digest, appends the stable idempotency resolution, and, when cancellation
+    /// wins, advances the operation in the same protected transaction. Exact
+    /// replay returns the original resolution without another append.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown target, cross-project target, active
+    /// ambiguous effect, conflicting idempotency binding, stale protected
+    /// state, identifier collision, or failed durable commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_cancellation(
+        &mut self,
+        cancellation_operation: OperationId,
+        caller: PrincipalId,
+        project: ProjectId,
+        target_operation: OperationId,
+        idempotency: LifecycleCancelIdempotencyDigestV1,
+        requested_at: LifecycleTimeV1,
+    ) -> Result<LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedJournalErrorV1> {
+        if cancellation_operation.as_bytes() == &[0; 16]
+            || cancellation_operation == target_operation
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        if let Some(existing) =
+            self.cancellation_resolution(caller, project, target_operation, idempotency)?
+        {
+            return Ok(LifecycleProtectedCancellationAdmissionV1::Existing(
+                existing,
+            ));
+        }
+
+        let (current_key, current) = self
+            .current_operation_by_id(target_operation)?
+            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if current.operation().project() != project {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let current_operation = current.operation().clone();
+        let current_record = current.record();
+        let request = LifecycleCancelRequestV1::new(
+            caller,
+            project,
+            target_operation,
+            current_operation.record_revision(),
+            current_record,
+            idempotency,
+            requested_at,
+        )
+        .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let outcome =
+            super::cancel::resolve_cancel_operation_v1(request, &current_operation, current_record);
+        if outcome == LifecycleCancelOutcomeV1::Conflict {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let operation = match &outcome {
+            LifecycleCancelOutcomeV1::CanceledBeforeCommit(successor) => successor.clone(),
+            LifecycleCancelOutcomeV1::AlreadyCommitted(_)
+            | LifecycleCancelOutcomeV1::AlreadyTerminal(_) => current_operation,
+            LifecycleCancelOutcomeV1::Conflict => {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+        };
+        let cancellation = LifecycleCancellationRecordV1::new(request, operation.clone(), outcome)
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let resolution = cancellation_resolution(&cancellation)?;
+
+        let operation_lineage = cancellation_resource_id(
+            b"operation",
+            &[project.as_bytes(), target_operation.as_bytes()],
+        )
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let cancellation_lineage = cancellation_resource_id(
+            b"cancellation",
+            &[
+                caller.as_bytes(),
+                project.as_bytes(),
+                idempotency.digest().as_bytes(),
+            ],
+        )
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let atomic_join = cancellation_resource_id(
+            b"atomic-join",
+            &[
+                cancellation_operation.as_bytes(),
+                target_operation.as_bytes(),
+                resolution.receipt().as_bytes(),
+            ],
+        )
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if operation_lineage == cancellation_lineage
+            || operation_lineage == atomic_join
+            || cancellation_lineage == atomic_join
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+
+        let projection = self.journal.replay()?;
+        let operation_record = LifecycleRecordDigestV1::commit(
+            &encode_operation_record_v1(&operation)
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
+        );
+        let operation_auxiliary_key = super::lifecycle_protected_key_v1(
+            LifecycleProtectedRecordKindV1::Auxiliary,
+            project,
+            operation_lineage,
+            target_operation,
+        )?;
+        let cancellation_key = super::lifecycle_protected_key_v1(
+            LifecycleProtectedRecordKindV1::Auxiliary,
+            project,
+            cancellation_lineage,
+            target_operation,
+        )?;
+        if self
+            .current_auxiliary_record(&projection, &cancellation_key)?
+            .is_some()
+        {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let operation_member = self.auxiliary_proposal(
+            &projection,
+            &operation_auxiliary_key,
+            &operation,
+            operation_record,
+            atomic_join,
+            LifecycleAuxiliaryPayloadV1::Operation(operation.clone()),
+        )?;
+        let cancellation_member = self.auxiliary_proposal(
+            &projection,
+            &cancellation_key,
+            &operation,
+            operation_record,
+            atomic_join,
+            LifecycleAuxiliaryPayloadV1::Cancellation(cancellation),
+        )?;
+        let records = bind_lifecycle_atomic_join_v1(vec![operation_member, cancellation_member])
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+
+        let mut envelopes = Vec::with_capacity(3);
+        if matches!(
+            resolution.outcome(),
+            LifecycleCancelOutcomeV1::CanceledBeforeCommit(_)
+        ) {
+            let destination = super::lifecycle_protected_key_v1(
+                operation_record_kind(operation.phase()),
+                project,
+                ResourceId::from_bytes(super::protected_journal::lifecycle_journal_subject(
+                    operation.intent(),
+                )),
+                target_operation,
+            )?;
+            let previous = projection
+                .records()
+                .iter()
+                .find(|record| record.key() == &destination);
+            let revision = previous.map_or(1, |record| {
+                record.revision().checked_add(1).unwrap_or(u64::MAX)
+            });
+            if revision == u64::MAX || current_key.identity()[..32] != destination.identity()[..32]
+            {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            envelopes.push(lifecycle_reducer_envelope_v1(
+                destination,
+                revision,
+                previous.map(|record| record.digest()),
+                LifecycleReducerRecordV1::Operation(&operation),
+                &self.verifier,
+            )?);
+        }
+        for record in &records {
+            let key = if record.kind() == super::LifecycleAuxiliaryKindV1::Operation {
+                operation_auxiliary_key.clone()
+            } else {
+                cancellation_key.clone()
+            };
+            let previous = projection
+                .records()
+                .iter()
+                .find(|entry| entry.key() == &key);
+            let revision = previous.map_or(1, |entry| {
+                entry.revision().checked_add(1).unwrap_or(u64::MAX)
+            });
+            if revision == u64::MAX {
+                return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            envelopes.push(lifecycle_reducer_envelope_v1(
+                key,
+                revision,
+                previous.map(|entry| entry.digest()),
+                LifecycleReducerRecordV1::Auxiliary(record),
+                &self.verifier,
+            )?);
+        }
+        let prepared = self
+            .journal
+            .plan(cancellation_operation.into_bytes(), envelopes)?;
+        let commit = self.commit_effect_progress(PreparedLifecycleProgressV1 { prepared })?;
+        Ok(LifecycleProtectedCancellationAdmissionV1::Admitted { resolution, commit })
     }
 
     /// Mints a one-shot challenge for the absent initial boot-inventory root.

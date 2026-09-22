@@ -161,10 +161,11 @@ pub use protected_journal::{
     LifecycleProtectedJournalKeyV1,
 };
 pub use protected_owner::{
-    LifecycleCurrentAuxiliaryPublicationV1, LifecycleProgressCommitOutcomeV1,
-    LifecycleOperationAdmissionV1, LifecycleProgressOutcomeUnknownV1,
-    LifecycleProgressRecoveryV1,
-    LifecycleProtectedJournalOwnerV1, PreparedLifecycleProgressV1,
+    LifecycleCurrentAuxiliaryPublicationV1, LifecycleOperationAdmissionV1,
+    LifecycleProgressCommitOutcomeV1, LifecycleProgressOutcomeUnknownV1,
+    LifecycleProgressRecoveryV1, LifecycleProtectedCancellationAdmissionV1,
+    LifecycleProtectedCancellationResolutionV1, LifecycleProtectedJournalOwnerV1,
+    PreparedLifecycleProgressV1,
 };
 pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};
 pub use semantic::{
