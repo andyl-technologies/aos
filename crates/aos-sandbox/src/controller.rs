@@ -34,7 +34,8 @@ use crate::cli_model::authorization_adapter::{
 #[cfg(target_os = "linux")]
 use crate::cli_model::{
     AuditAuthorizationV1, AuthorizedResolvedMutationV1, DormantClientStatePlanV1,
-    DormantSandboxOutputV1, DormantSandboxRequestV1, RequestProvenanceV1, ResolvedPublicMutationV1,
+    DormantSandboxOutputV1, DormantSandboxRequestV1, PublicApiAuditMethodV1, RequestProvenanceV1,
+    ResolvedPublicMutationV1,
 };
 use crate::publisher_authority::{
     PublisherAuthorityError, PublisherAuthorityLimits, PublisherCapabilityRegistry,
@@ -5086,6 +5087,45 @@ where
         }
 
         self.public_operation(operation_id)
+    }
+
+    /// Reauthorizes one exact public read over a live registered peer.
+    ///
+    /// The method, capability vocabulary, selector, and exact protobuf body
+    /// must come from the generated service handler after decoding its closed
+    /// request type. Authorization failure is concealed as `None`; it never
+    /// creates read authority from the lookup header or caller identity fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerServiceError::PublicAuthorizationUnavailable`] when
+    /// the fixed protected clock cannot be opened.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn authorize_public_read(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: aos_sandbox_core::ResourceKind,
+        operation: aos_sandbox_core::Operation,
+        selector: aos_sandbox_core::Selector,
+        protobuf_body: &[u8],
+    ) -> Result<Option<AuditAuthorizationV1>, ControllerServiceError> {
+        let authorization = self
+            .dormant_cli_authorization()
+            .map_err(|_| ControllerServiceError::PublicAuthorizationUnavailable)?
+            .authorize_public_read(
+                peer,
+                capability_id,
+                method,
+                resource_kind,
+                operation,
+                selector,
+                protobuf_body,
+            );
+
+        Ok(authorization.ok())
     }
 
     /// Returns one validated durable operation that still requires active work.

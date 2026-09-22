@@ -100,6 +100,28 @@ impl From<OperationWireV1> for Operation {
     }
 }
 
+impl From<Operation> for OperationWireV1 {
+    fn from(value: Operation) -> Self {
+        match value {
+            Operation::Discover => Self::Discover,
+            Operation::MetadataRead => Self::MetadataRead,
+            Operation::ContentRead => Self::ContentRead,
+            Operation::Execute => Self::Execute,
+            Operation::Create => Self::Create,
+            Operation::ContentWrite => Self::ContentWrite,
+            Operation::Remove => Self::Remove,
+            Operation::Rename => Self::Rename,
+            Operation::Link => Self::Link,
+            Operation::MetadataWrite => Self::MetadataWrite,
+            Operation::Attach => Self::Attach,
+            Operation::LifecycleControl => Self::LifecycleControl,
+            Operation::Delegate => Self::Delegate,
+            Operation::Publish => Self::Publish,
+            Operation::LiveKernelCoupledRead => Self::LiveKernelCoupledRead,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CanonicalCliAuthorizationRequestWireV1 {
@@ -121,12 +143,63 @@ struct CanonicalPublicRpcBindingWireV1 {
     body_sha256: [u8; 32],
 }
 
-/// Selects one public audit RPC whose exact body can be authorized.
+/// Selects one public read RPC whose exact body can be authorized.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) enum PublicApiAuditMethodV1 {
+pub enum PublicApiAuditMethodV1 {
+    /// Plans sandbox creation without admitting a mutation.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/PlanCreate")]
+    PlanCreate,
+    /// Reads one sandbox resource.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/GetSandbox")]
+    GetSandbox,
+    /// Lists sandboxes in one project.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/ListSandboxes")]
+    ListSandboxes,
+    /// Lists the immediate children of one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/ListChildren")]
+    ListChildren,
+    /// Lists the bounded ancestors of one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/ListAncestors")]
+    ListAncestors,
+    /// Lists a bounded sandbox subtree.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/ListDescendants")]
+    ListDescendants,
+    /// Plans one sandbox policy replacement.
+    #[serde(rename = "/aos.sandbox.v1.SandboxService/PlanPolicy")]
+    PlanPolicy,
+    /// Reads one execution resource.
+    #[serde(rename = "/aos.sandbox.v1.ExecutionService/GetExecution")]
+    GetExecution,
+    /// Lists executions for one sandbox.
+    #[serde(rename = "/aos.sandbox.v1.ExecutionService/ListExecutions")]
+    ListExecutions,
+    /// Reads one filesystem-view resource.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/GetView")]
+    GetView,
+    /// Reads one filesystem-view attachment.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/GetAttachment")]
+    GetAttachment,
+    /// Lists filesystem views in one project.
+    #[serde(rename = "/aos.sandbox.v1.FilesystemViewService/ListViews")]
+    ListViews,
+    /// Reads one snapshot resource.
+    #[serde(rename = "/aos.sandbox.v1.SnapshotService/GetSnapshot")]
+    GetSnapshot,
+    /// Lists snapshots in an authorized scope.
+    #[serde(rename = "/aos.sandbox.v1.SnapshotService/ListSnapshots")]
+    ListSnapshots,
+    /// Inspects one capability through its protected handle.
+    #[serde(rename = "/aos.sandbox.v1.CapabilityService/Inspect")]
+    InspectCapability,
+    /// Reads cache status for one authorized scope.
+    #[serde(rename = "/aos.sandbox.v1.CacheService/GetStatus")]
+    GetCacheStatus,
     /// Reads one durable operation resource.
     #[serde(rename = "/aos.sandbox.v1.OperationService/GetOperation")]
     GetOperation,
+    /// Streams authorized project events.
+    #[serde(rename = "/aos.sandbox.v1.OperationService/Watch")]
+    Watch,
 }
 
 /// Constructs a canonical authorization envelope bound to one exact public RPC.
@@ -138,6 +211,7 @@ pub(crate) enum PublicApiAuditMethodV1 {
 pub(crate) fn canonical_public_audit_request_v2(
     method: PublicApiAuditMethodV1,
     resource_kind: ResourceKind,
+    operation: Operation,
     selector: Selector,
     protobuf_body: &[u8],
 ) -> Result<Vec<u8>, CliAuthorizationAdapterError> {
@@ -146,7 +220,7 @@ pub(crate) fn canonical_public_audit_request_v2(
         version: CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2,
         surface: CliAuthorizedSurfaceWireV1::AuditRead,
         resource_kind,
-        operation: OperationWireV1::MetadataRead,
+        operation: operation.into(),
         selector,
         mutation_identity_fence: None,
         public_rpc: Some(CanonicalPublicRpcBindingWireV1 {
@@ -192,7 +266,6 @@ impl DecodedAuthenticatedCliRequestV1 {
             CANONICAL_AUTHORIZATION_REQUEST_VERSION_V2 => {
                 wire.public_rpc.is_some()
                     && wire.surface == CliAuthorizedSurfaceWireV1::AuditRead
-                    && wire.operation == OperationWireV1::MetadataRead
                     && wire.mutation_identity_fence.is_none()
             }
             _ => false,
@@ -581,6 +654,7 @@ mod project_binding_tests {
         let first = canonical_public_audit_request_v2(
             PublicApiAuditMethodV1::GetOperation,
             ResourceKind::Sandbox,
+            Operation::MetadataRead,
             selector.clone(),
             &[0x0a, 0x10, 0x42],
         )
@@ -588,6 +662,7 @@ mod project_binding_tests {
         let second = canonical_public_audit_request_v2(
             PublicApiAuditMethodV1::GetOperation,
             ResourceKind::Sandbox,
+            Operation::MetadataRead,
             selector,
             &[0x0a, 0x10, 0x43],
         )

@@ -8,6 +8,8 @@
 
 #[cfg(target_os = "linux")]
 pub(crate) mod authorization_adapter;
+#[cfg(target_os = "linux")]
+pub use authorization_adapter::PublicApiAuditMethodV1;
 pub mod continuation;
 pub mod execution;
 pub mod grammar;

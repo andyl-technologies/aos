@@ -7,7 +7,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::requests::ResolvedPublicMutationV1;
 use crate::controller_query::model::{
-    AuthorizationRevisionDigestV1, ObservationSchemaDigestV1, QueryPrincipalDigestV1,
+    AuthorizationRevisionDigestV1, NormalizedQueryDigestV1, ObservationSchemaDigestV1,
+    QueryBindingV1, QueryFilterDigestV1, QueryPrincipalDigestV1, QuerySortDigestV1,
+    QueryVisibilityDigestV1,
 };
 
 /// Maximum canonical request bytes admitted to authenticated provenance.
@@ -190,6 +192,33 @@ impl AuditAuthorizationV1 {
     #[must_use]
     pub(crate) const fn provenance(self) -> RequestProvenanceV1 {
         self.0
+    }
+
+    /// Binds response continuation state to this authenticated authorization decision.
+    ///
+    /// The caller supplies purpose-separated commitments to the normalized query,
+    /// filters, ordering, and disclosure surface. Principal, authorization
+    /// revision, and observation schema always come from the protected decision
+    /// and cannot be substituted by request metadata.
+    #[must_use]
+    pub fn query_binding(
+        self,
+        query: NormalizedQueryDigestV1,
+        filters: QueryFilterDigestV1,
+        sort: QuerySortDigestV1,
+        visibility: QueryVisibilityDigestV1,
+    ) -> QueryBindingV1 {
+        let (principal, authorization, schema, _, _) = self.0.commitments();
+
+        QueryBindingV1::new(
+            query,
+            filters,
+            sort,
+            principal,
+            visibility,
+            authorization,
+            schema,
+        )
     }
 }
 

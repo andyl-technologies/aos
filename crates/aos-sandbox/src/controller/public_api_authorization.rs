@@ -47,7 +47,41 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         let authorization_request = canonical_public_audit_request_v2(
             PublicApiAuditMethodV1::GetOperation,
             scope.resource_kind(),
+            aos_sandbox_core::Operation::MetadataRead,
             scope.selector().clone(),
+            protobuf_body,
+        )?;
+        self.authenticate_public_request(peer, capability_id, &authorization_request)?
+            .authorize_audit()
+    }
+
+    /// Reauthorizes one exact public read against current protected state.
+    ///
+    /// The service selects the closed method, resource kind, operation, and
+    /// selector from its decoded request. The exact received protobuf bytes are
+    /// committed beside those semantics, so lookup metadata cannot authorize a
+    /// different procedure or body.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed request bytes, stale transport evidence, or any
+    /// current capability, policy, expiry, revocation, project, or grant failure.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn authorize_public_read(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: aos_sandbox_core::ResourceKind,
+        operation: aos_sandbox_core::Operation,
+        selector: aos_sandbox_core::Selector,
+        protobuf_body: &[u8],
+    ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
+        let authorization_request = canonical_public_audit_request_v2(
+            method,
+            resource_kind,
+            operation,
+            selector,
             protobuf_body,
         )?;
         self.authenticate_public_request(peer, capability_id, &authorization_request)?

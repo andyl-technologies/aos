@@ -39,7 +39,8 @@ use aos_proto::aos::sandbox::v1::{
     GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationService,
     OperationServiceExt, Timestamp, WatchRequest,
 };
-use aos_sandbox_core::{CapabilityId, ObjectDigest, OperationId};
+use aos_sandbox_core::{CapabilityId, ObjectDigest, Operation as CapabilityOperation, OperationId};
+use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use connectrpc::{
@@ -53,6 +54,7 @@ use rustix::net::{
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
+use aos_sandbox::cli_model::{AuditAuthorizationV1, PublicApiAuditMethodV1};
 use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
@@ -106,6 +108,18 @@ enum ControllerCommand {
         protobuf_body: Vec<u8>,
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<Option<Operation>>>,
+    },
+    AuthorizePublicRead {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: ResourceKind,
+        operation: CapabilityOperation,
+        selector: Selector,
+        protobuf_body: Vec<u8>,
+        expires_at: Instant,
+        reply:
+            tokio::sync::oneshot::Sender<ControllerCommandResponse<Option<AuditAuthorizationV1>>>,
     },
 }
 
@@ -433,6 +447,41 @@ fn handle_controller_command(
             ) {
                 Ok(operation) => {
                     let _ = reply.send(Ok(operation));
+                    Ok(())
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    Err(message)
+                }
+            }
+        }
+        ControllerCommand::AuthorizePublicRead {
+            peer,
+            capability_id,
+            method,
+            resource_kind,
+            operation,
+            selector,
+            protobuf_body,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            match controller.authorize_public_read(
+                &peer,
+                capability_id,
+                method,
+                resource_kind,
+                operation,
+                selector,
+                &protobuf_body,
+            ) {
+                Ok(authorization) => {
+                    let _ = reply.send(Ok(authorization));
                     Ok(())
                 }
                 Err(error) => {
@@ -1190,6 +1239,77 @@ impl DiscoveryService for CapabilityService {
 }
 
 impl CapabilityService {
+    #[allow(clippy::too_many_arguments)]
+    async fn authorize_public_read(
+        &self,
+        context: &RequestContext,
+        method: PublicApiAuditMethodV1,
+        resource_kind: ResourceKind,
+        operation: CapabilityOperation,
+        selector: Selector,
+        protobuf_body: &[u8],
+    ) -> Result<AuditAuthorizationV1, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public read authorization is unavailable on the diagnostic endpoint",
+            ));
+        }
+        let peer = context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "public read requires registered TLS peer evidence",
+                )
+            })?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::AuthorizePublicRead {
+                peer: peer.clone(),
+                capability_id: public_capability_id(context)?,
+                method,
+                resource_kind,
+                operation,
+                selector,
+                protobuf_body: protobuf_body.to_vec(),
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller public-read authorization timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+
+        match result {
+            Ok(Some(authorization)) => Ok(authorization),
+            Ok(None) => Err(ConnectError::new(
+                ErrorCode::NotFound,
+                "authorized resource was not found",
+            )),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "controller public-read authorization expired",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "controller authorization state is unavailable",
+            )),
+        }
+    }
+
     fn node_capabilities(
         &self,
         request: &GetNodeCapabilitiesRequestView<'_>,
@@ -1308,6 +1428,18 @@ impl CapabilityService {
             operation: Some(operation).into(),
             ..Default::default()
         })
+    }
+}
+
+fn controller_command_send_error<T>(error: mpsc::TrySendError<T>) -> ConnectError {
+    match error {
+        mpsc::TrySendError::Full(_) => ConnectError::new(
+            ErrorCode::ResourceExhausted,
+            "controller command capacity is exhausted",
+        ),
+        mpsc::TrySendError::Disconnected(_) => {
+            ConnectError::new(ErrorCode::Unavailable, "controller worker is unavailable")
+        }
     }
 }
 
@@ -1657,6 +1789,9 @@ mod tests {
                 } => (operation_id, expires_at, reply),
                 ControllerCommand::GetAuthorizedOperation { .. } => {
                     panic!("root diagnostics must not enter public authorization")
+                }
+                ControllerCommand::AuthorizePublicRead { .. } => {
+                    panic!("root diagnostics must not enter public read authorization")
                 }
             };
             assert_eq!(operation_id.as_bytes(), &[0x42; 16]);
