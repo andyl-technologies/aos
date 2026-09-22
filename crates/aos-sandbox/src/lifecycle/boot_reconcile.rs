@@ -1195,21 +1195,25 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             .collect::<Vec<_>>();
         observed_transitions.sort_unstable();
 
-        let mut observed_handles = current
+        let mut observed_snapshots = current
             .entries
             .iter()
             .filter(|entry| {
                 entry.kind == LifecycleStorageInventoryKindV1::Snapshot
                     && entry.resource == snapshot
                     && entry.effect_request == plan.effect_commitment()
-                    && entry.lifecycle_operation == Some(plan.operation())
             })
-            .map(|entry| entry.effect_subject)
+            .map(|entry| (entry.lifecycle_operation, entry.effect_subject))
             .collect::<Vec<_>>();
-        observed_handles.sort_unstable();
+        observed_snapshots.sort_unstable();
+        let expected_snapshots = expected_handles
+            .iter()
+            .map(|handle| (Some(plan.operation()), *handle))
+            .collect::<Vec<_>>();
 
         // Equal bounded sets exclude both missing members and surplus catalog rows.
-        if observed_transitions != expected_transitions || observed_handles != expected_handles {
+        if observed_transitions != expected_transitions || observed_snapshots != expected_snapshots
+        {
             return Err(LifecyclePhase6ErrorV1::InvalidTransition);
         }
         Ok(Self {

@@ -858,6 +858,11 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         fence: LiveRuntimeFenceV1,
         authority: &PreparedAuthorityEffectV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        if self.0.pending.is_some() {
+            return Err(EffectFailure::Retryable(
+                "Storage inventory recovery must settle before group dispatch".to_owned(),
+            ));
+        }
         if plan.inventory() != previous.inventory.commitment() {
             return Err(EffectFailure::Permanent(
                 "Storage group plan differs from its retained predecessor inventory".to_owned(),
