@@ -207,7 +207,7 @@ in
           "rules_cc++cc_configure_extension+local_config_cc_toolchains"
         ]
         ++ lib.optionals isArmCross ["+local_repository+aos_arm64_toolchain"];
-      # Native and ARM64 analysis produce the same source-only snapshot;
+      # Native and ARM64 analysis produce the same pinned dependency snapshot;
       # local toolchain repositories are regenerated for the selected target.
       depsHash = "sha256-7vU7V20b8HnQHqpzW+2SuwkZihPmZMoUIpbfWZt+8TQ=";
       bazelTarget = "//src/workerd/server:workerd";
@@ -283,6 +283,7 @@ in
           then ''
             mkdir -p "$out/bin" "$out/lib" "$out/share/licenses/workerd"
             cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
+            chmod u+w "$out/bin/workerd"
             cp LICENSE "$out/share/licenses/workerd/LICENSE"
             for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
               cp -L "${targetGcc}/${stdenv.hostPlatform.config}/lib64/$library" "$out/lib/$library"
