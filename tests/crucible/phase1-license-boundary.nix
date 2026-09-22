@@ -225,6 +225,10 @@ in
                 gnutls = null;
                 fuse3 = null;
                 gcc-libs = "/aos-gcc-libs";
+                libisoburn = null;
+                mtools = null;
+                socat = null;
+                zstd = null;
                 samba-smbd = {
                   outPath = "/aos-samba-smbd";
                   version = "'"$samba_smbd_version"'";
