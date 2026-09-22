@@ -641,6 +641,48 @@ pub trait SingleNodeEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure>;
 
+    /// Observes one controller-orchestration effect with journal custody.
+    ///
+    /// The default preserves ordinary executor behavior. Production
+    /// orchestration may override this hook to reconcile controller-owned
+    /// projections and separately protected source-domain state. It must not
+    /// change this operation's operation or effect-ledger records.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retryable failure while exact orchestration remains pending,
+    /// or a permanent failure for contradictory protected state.
+    fn observe_controller(
+        &mut self,
+        operation_id: OperationId,
+        step: u32,
+        plan: &EffectPlan,
+        _journal: &mut Journal,
+    ) -> Result<EffectObservation, EffectFailure> {
+        self.observe(operation_id, step, plan)
+    }
+
+    /// Applies one controller-orchestration effect with journal custody.
+    ///
+    /// The default preserves ordinary executor behavior. An override may
+    /// commit method-specific controller records, but completion evidence must
+    /// still cover every external effect and authenticated readback required
+    /// by the public mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retryable failure for recoverable pending work, or a permanent
+    /// failure when protected state rejects the exact admitted request.
+    fn apply_controller(
+        &mut self,
+        operation_id: OperationId,
+        step: u32,
+        plan: &EffectPlan,
+        _journal: &mut Journal,
+    ) -> Result<EffectReceipt, EffectFailure> {
+        self.apply(operation_id, step, plan)
+    }
+
     /// Observes one exact durably recorded authority-bound broker attempt.
     ///
     /// # Errors
@@ -2378,7 +2420,18 @@ where
                     wall_seconds,
                 );
             }
-            let observed = match self.executor.observe(operation_id, step, &plan) {
+            let controller_effect = plan.public_mutation_method().is_some();
+            let observed = if controller_effect {
+                self.executor
+                    .observe_controller(operation_id, step, &plan, &mut self.journal)
+            } else {
+                self.executor.observe(operation_id, step, &plan)
+            };
+            if controller_effect {
+                self.ledger_validated = false;
+                self.ensure_ledger_validated()?;
+            }
+            let observed = match observed {
                 Ok(value) => value,
                 Err(failure) => {
                     return self.handle_failure(
@@ -2395,21 +2448,37 @@ where
             };
             match observed {
                 EffectObservation::Applied(receipt) => receipt,
-                EffectObservation::Absent => match self.executor.apply(operation_id, step, &plan) {
-                    Ok(receipt) => receipt,
-                    Err(failure) => {
-                        return self.handle_failure(
+                EffectObservation::Absent => {
+                    let applied = if controller_effect {
+                        self.executor.apply_controller(
                             operation_id,
                             step,
-                            effect_count,
-                            attempt,
-                            plan,
-                            None,
-                            failure,
-                            wall_seconds,
-                        );
+                            &plan,
+                            &mut self.journal,
+                        )
+                    } else {
+                        self.executor.apply(operation_id, step, &plan)
+                    };
+                    if controller_effect {
+                        self.ledger_validated = false;
+                        self.ensure_ledger_validated()?;
                     }
-                },
+                    match applied {
+                        Ok(receipt) => receipt,
+                        Err(failure) => {
+                            return self.handle_failure(
+                                operation_id,
+                                step,
+                                effect_count,
+                                attempt,
+                                plan,
+                                None,
+                                failure,
+                                wall_seconds,
+                            );
+                        }
+                    }
+                }
             }
         };
         let applied = EffectLedgerRecord {

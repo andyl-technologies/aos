@@ -1439,9 +1439,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectObservation, EffectFailure> {
         if plan.public_mutation_method().is_some() {
-            let _context = self.public_mutation_context(plan)?;
-            return Err(EffectFailure::Retryable(
-                CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+            return Err(EffectFailure::Permanent(
+                "controller mutation bypassed its journal-custody hook".to_owned(),
             ));
         }
         Err(EffectFailure::Retryable(UNAVAILABLE_REASON.to_owned()))
@@ -1454,12 +1453,35 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
     ) -> Result<EffectReceipt, EffectFailure> {
         if plan.public_mutation_method().is_some() {
-            let _context = self.public_mutation_context(plan)?;
-            return Err(EffectFailure::Retryable(
-                CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+            return Err(EffectFailure::Permanent(
+                "controller mutation bypassed its journal-custody hook".to_owned(),
             ));
         }
         Err(EffectFailure::Retryable(UNAVAILABLE_REASON.to_owned()))
+    }
+
+    fn observe_controller(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        plan: &EffectPlan,
+        _journal: &mut Journal,
+    ) -> Result<EffectObservation, EffectFailure> {
+        let _context = self.public_mutation_context(plan)?;
+        Ok(EffectObservation::Absent)
+    }
+
+    fn apply_controller(
+        &mut self,
+        _operation_id: OperationId,
+        _step: u32,
+        plan: &EffectPlan,
+        _journal: &mut Journal,
+    ) -> Result<EffectReceipt, EffectFailure> {
+        let _context = self.public_mutation_context(plan)?;
+        Err(EffectFailure::Retryable(
+            CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+        ))
     }
 
     fn observe_authority(
