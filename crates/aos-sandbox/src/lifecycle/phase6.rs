@@ -30,8 +30,9 @@ use super::{
     LifecycleAttemptStateV1, LifecycleBootInventoryV1, LifecycleEffectDirectionV1,
     LifecycleMethodV1, LifecycleOperationV1, LifecyclePhaseV1, LifecycleProtectedCoordinationV1,
     LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleResourceV1,
-    LifecycleStepBodyDigestV1, LifecycleStepStateV1, LifecycleSuspendObservationV1,
-    LifecycleTerminalResultV1,
+    LifecycleStepBodyDigestV1, LifecycleStepClassV1, LifecycleStepDomainV1,
+    LifecycleStepRequestDigestV1, LifecycleStepStateV1, LifecycleStepV1,
+    LifecycleSuspendObservationV1, LifecycleTerminalResultV1,
 };
 
 /// Reports a malformed or stale method-specific lifecycle transition.
@@ -871,6 +872,191 @@ pub enum LifecycleEffectDomainV1 {
     Transfer = 6,
     /// Targets the protected controller transaction itself.
     Controller = 7,
+}
+
+/// Describes one immutable Phase 6 effect before its attempt is reserved.
+///
+/// The description contains no dispatch authority. It is only the canonical
+/// input needed to commit one forward or compensation body into a lifecycle
+/// operation's immutable plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LifecyclePhase6EffectPlanV1 {
+    domain: LifecycleEffectDomainV1,
+    ordinal: u32,
+    target: [u8; 16],
+    prerequisite: ObjectDigest,
+    plan: ObjectDigest,
+}
+
+impl LifecyclePhase6EffectPlanV1 {
+    /// Constructs one canonical lower-domain effect description.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1::InvalidInput`] for a zero ordinal,
+    /// target, prerequisite, or method-plan commitment.
+    pub fn new(
+        domain: LifecycleEffectDomainV1,
+        ordinal: u32,
+        target: [u8; 16],
+        prerequisite: ObjectDigest,
+        plan: ObjectDigest,
+    ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        if ordinal == 0
+            || target == [0; 16]
+            || prerequisite.as_bytes() == &[0; 32]
+            || plan.as_bytes() == &[0; 32]
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        Ok(Self {
+            domain,
+            ordinal,
+            target,
+            prerequisite,
+            plan,
+        })
+    }
+
+    /// Returns the protected lower-domain owner selected by this effect.
+    #[must_use]
+    pub const fn domain(self) -> LifecycleEffectDomainV1 {
+        self.domain
+    }
+
+    /// Returns the method-specific nonzero action ordinal.
+    #[must_use]
+    pub const fn ordinal(self) -> u32 {
+        self.ordinal
+    }
+
+    /// Returns the exact logical target identity.
+    #[must_use]
+    pub const fn target(self) -> [u8; 16] {
+        self.target
+    }
+
+    /// Returns the current-state commitment required at dispatch.
+    #[must_use]
+    pub const fn prerequisite(self) -> ObjectDigest {
+        self.prerequisite
+    }
+
+    /// Returns the complete method-specific action commitment.
+    #[must_use]
+    pub const fn plan(self) -> ObjectDigest {
+        self.plan
+    }
+}
+
+/// Constructs one fully bound lifecycle step from canonical Phase 6 effects.
+///
+/// This function is the sole plan-time inverse of
+/// [`CurrentLifecycleOperationV1::recover_reserved_effect`]. It commits the
+/// stable body used by every later attempt while deliberately excluding the
+/// operation revision, which changes as progress is persisted.
+///
+/// # Errors
+///
+/// Returns [`LifecyclePhase6ErrorV1`] when an effect description is invalid,
+/// compensation does not exactly match a reversible step, or the resulting
+/// lifecycle step violates the closed model.
+pub fn lifecycle_phase6_planned_step_v1(
+    operation: OperationId,
+    index: u32,
+    class: LifecycleStepClassV1,
+    forward: LifecyclePhase6EffectPlanV1,
+    compensation: Option<LifecyclePhase6EffectPlanV1>,
+) -> Result<LifecycleStepV1, LifecyclePhase6ErrorV1> {
+    let compensation_shape_is_valid = match class {
+        LifecycleStepClassV1::PreCommitReversible => compensation.is_some(),
+        LifecycleStepClassV1::PostCommitForward => compensation.is_none(),
+    };
+    if operation.as_bytes() == &[0; 16]
+        || !compensation_shape_is_valid
+        || compensation.is_some_and(|effect| effect.domain() != forward.domain())
+    {
+        return Err(LifecyclePhase6ErrorV1::InvalidInput);
+    }
+
+    let domain = lifecycle_step_domain(forward.domain());
+    let (request, body, plan) = planned_effect_commitments(
+        operation,
+        index,
+        LifecycleEffectDirectionV1::Forward,
+        forward,
+    )?;
+    let (compensation_request, compensation_body, compensation_plan) = compensation
+        .map(|effect| {
+            planned_effect_commitments(
+                operation,
+                index,
+                LifecycleEffectDirectionV1::Compensation,
+                effect,
+            )
+        })
+        .transpose()?
+        .map_or((None, None, None), |(request, body, plan)| {
+            (Some(request), Some(body), Some(plan))
+        });
+
+    LifecycleStepV1::planned(
+        index,
+        class,
+        domain,
+        request,
+        body,
+        plan,
+        compensation_request,
+        compensation_body,
+        compensation_plan,
+    )
+    .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
+}
+
+fn planned_effect_commitments(
+    operation: OperationId,
+    index: u32,
+    direction: LifecycleEffectDirectionV1,
+    effect: LifecyclePhase6EffectPlanV1,
+) -> Result<
+    (
+        LifecycleStepRequestDigestV1,
+        LifecycleStepBodyDigestV1,
+        super::LifecycleStepPlanDigestV1,
+    ),
+    LifecyclePhase6ErrorV1,
+> {
+    let body = lifecycle_effect_body_v2(
+        operation,
+        effect.domain(),
+        effect.ordinal(),
+        index,
+        direction,
+        effect.target(),
+        effect.prerequisite(),
+        effect.plan(),
+    );
+
+    Ok((
+        LifecycleStepRequestDigestV1::commit(&body),
+        LifecycleStepBodyDigestV1::commit(&body),
+        lifecycle_phase6_plan_commitment_v1(effect.plan()),
+    ))
+}
+
+const fn lifecycle_step_domain(domain: LifecycleEffectDomainV1) -> LifecycleStepDomainV1 {
+    match domain {
+        LifecycleEffectDomainV1::Runtime => LifecycleStepDomainV1::Host,
+        LifecycleEffectDomainV1::Mount => LifecycleStepDomainV1::Mount,
+        LifecycleEffectDomainV1::Storage => LifecycleStepDomainV1::Storage,
+        LifecycleEffectDomainV1::Network => LifecycleStepDomainV1::Network,
+        LifecycleEffectDomainV1::Cache | LifecycleEffectDomainV1::Transfer => {
+            LifecycleStepDomainV1::Content
+        }
+        LifecycleEffectDomainV1::Controller => LifecycleStepDomainV1::Controller,
+    }
 }
 
 /// Carries one non-executable, exact lower-domain effect handoff.
