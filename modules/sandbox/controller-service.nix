@@ -46,6 +46,9 @@
   nodeCredentials =
     lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
+  brokerPlanCredentials =
+    lib.optional (cfg.credentials.brokerPlanSigningKey != null)
+    "broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}";
   publicCredentialNames = {
     publicApiServerCert = "public-api-server-cert";
     publicApiServerKey = "public-api-server-key";
@@ -75,6 +78,11 @@ in {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
           description = "External system credential containing the raw nonzero 16-byte node identity.";
+        };
+        brokerPlanSigningKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional external 32-byte controller broker-plan signing seed for prepared authority publications.";
         };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
@@ -146,7 +154,7 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        LoadCredential = nodeCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
+        LoadCredential = nodeCredentials ++ brokerPlanCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

@@ -62,6 +62,7 @@ use rustix::net::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
 use aos_sandbox::cli_model::{
     AuditAuthorizationV1, DormantSandboxRequestKindV1, PublicApiAuditMethodV1,
@@ -1387,6 +1388,7 @@ fn parse_identity(
 
 struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
+    broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1>,
     transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
@@ -1419,6 +1421,8 @@ impl ProductionEffectExecutor {
         controller_uid: u32,
         node: NodeId,
     ) -> Result<Self, ControllerRuntimeError> {
+        let broker_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+            .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
         let (mut source_domains, _) =
             ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
@@ -1426,6 +1430,7 @@ impl ProductionEffectExecutor {
 
         Ok(Self {
             sessions,
+            broker_plan_signer,
             source_domains,
             cache_inventory: None,
             transfer_inventory: None,
@@ -4338,6 +4343,9 @@ pub enum ControllerRuntimeError {
     /// The protected node identity credential could not be read.
     #[error("protected controller node identity could not be read: {0}")]
     CredentialRead(std::io::Error),
+    /// The optional protected broker-plan signing credential is unsafe or malformed.
+    #[error("protected controller broker-plan signing credential is invalid")]
+    InvalidBrokerPlanCredential,
     /// Controller journal identity or assignment validation failed.
     #[error(transparent)]
     ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),

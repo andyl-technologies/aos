@@ -43,6 +43,7 @@
 #![cfg(target_os = "linux")]
 
 mod controller_authority_effect;
+mod controller_plan_signer;
 mod controller_publication;
 pub mod controller_service;
 mod dormant_handshake;
