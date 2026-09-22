@@ -57,4 +57,7 @@ in
     build = "5";
     srcHash = "sha256-eq6rSmhHHmMNker1VA0GfI/9XwIwMb4IK4iXY8H5Tzo=";
     prevJdk = openjdk-14;
+    # The single sjavac service can exit while highly parallel module builds
+    # are still connected. Direct javac retains make-level parallelism.
+    extraConfigureFlags = ["--disable-javac-server"];
   }
