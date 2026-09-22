@@ -65,6 +65,49 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
     )
 }
 
+/// Authorizes operator recovery after protected state resolves its target kind.
+///
+/// The request never supplies a resource kind. The specialized compiler must
+/// first prove whether the named identity is a sandbox or operation, then pass
+/// that exact kind here with the resource selector derived from the identity.
+///
+/// # Errors
+///
+/// Rejects stale transport evidence or any current capability, policy, expiry,
+/// revocation, project, selector, method, or body mismatch.
+#[cfg(target_os = "linux")]
+pub(crate) fn authorize_public_operator_recovery_v1(
+    journal: &mut crate::Journal,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    resource_kind: aos_sandbox_core::ResourceKind,
+    selector: aos_sandbox_core::Selector,
+    protobuf_body: &[u8],
+) -> Result<PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+    if !matches!(
+        resource_kind,
+        aos_sandbox_core::ResourceKind::Sandbox | aos_sandbox_core::ResourceKind::Operation
+    ) {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+
+    let protected_clock = ControllerProtectedClockV1::open_fixed()
+        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    let mut owner = DormantCliAuthorizationOwnerV1 {
+        journal,
+        protected_clock,
+    };
+    owner.authorize_public_mutation(
+        peer,
+        capability_id,
+        PublicApiAuditMethodV1::OperatorRecover,
+        resource_kind,
+        aos_sandbox_core::Operation::LifecycleControl,
+        selector,
+        protobuf_body,
+    )
+}
+
 impl DormantCliAuthorizationOwnerV1<'_> {
     /// Reauthorizes an exact public operation read against its admitted scope.
     ///

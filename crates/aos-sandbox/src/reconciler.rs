@@ -202,6 +202,54 @@ impl OperationPlan {
         })
     }
 
+    /// Adds protected controller-local records to a still-active operation.
+    ///
+    /// These records are committed atomically with the operation and its
+    /// effects, but do not make the operation complete. This is intentionally
+    /// restricted to operator-recovery state: recovery admission must retain
+    /// its checked current head before its effect becomes eligible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError::InvalidPlan`] when the plan has no effect,
+    /// a record is outside the operator-recovery namespace, records collide,
+    /// or the atomic transaction bound would be exceeded.
+    pub(crate) fn with_operator_recovery_records(
+        mut self,
+        local_records: Vec<JournalRecord>,
+    ) -> Result<Self, ReconcilerError> {
+        let atomic_records = self.effects.len().checked_add(local_records.len()).ok_or(
+            ReconcilerError::InvalidPlan("operator-recovery records exceed admission bounds"),
+        )?;
+        if self.effects.is_empty()
+            || !self.local_records.is_empty()
+            || local_records.is_empty()
+            || atomic_records > MAXIMUM_EFFECTS
+            || local_records.iter().any(|record| {
+                record.namespace() != RecordNamespace::OperatorRecovery
+                    || record.key().is_empty()
+                    || record.value().is_none()
+            })
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "invalid operator-recovery admission records",
+            ));
+        }
+        for (index, record) in local_records.iter().enumerate() {
+            if local_records[..index]
+                .iter()
+                .any(|prior| prior.key() == record.key())
+            {
+                return Err(ReconcilerError::InvalidPlan(
+                    "operator-recovery admission contains duplicate records",
+                ));
+            }
+        }
+
+        self.local_records = local_records;
+        Ok(self)
+    }
+
     /// Constructs an operation held behind an atomically admitted ownership gate.
     ///
     /// The claim and validated publication draft remain non-authorizing durable
@@ -1061,10 +1109,10 @@ where
                     .map(PublicOperationAuthorizationV1::decode)
                     .transpose()?;
                 let planned_public_operation = plan.public_operation.as_ref().map(|public| {
-                    if plan.local_records.is_empty() {
-                        public.durable()
-                    } else {
+                    if plan.effects.is_empty() {
                         public.durable_completed()
+                    } else {
+                        public.durable()
                     }
                 });
                 if recorded.runtime_intent_digest
@@ -1085,7 +1133,9 @@ where
                     && recorded.state == OperationState::Succeeded
                     && !recorded.ownership_gated
                     && recorded.runtime_intent_digest.is_none();
-                if recorded_local_completion != !plan.local_records.is_empty() {
+                let planned_local_completion =
+                    plan.effects.is_empty() && !plan.local_records.is_empty();
+                if recorded_local_completion != planned_local_completion {
                     return Err(ReconcilerError::IdempotencyConflict);
                 }
                 if recorded_local_completion
@@ -1138,7 +1188,7 @@ where
             RecordNamespace::Operation,
             plan.operation_id.into_bytes().to_vec(),
             encode_operation_record(OperationRecord {
-                state: if !plan.local_records.is_empty() {
+                state: if plan.effects.is_empty() && !plan.local_records.is_empty() {
                     OperationState::Succeeded
                 } else if plan.ownership_gate.is_some() {
                     OperationState::OwnershipPending
@@ -1152,10 +1202,10 @@ where
                     .as_ref()
                     .map(RuntimeAuthorityIntentV1::digest),
                 public_operation: plan.public_operation.as_ref().map(|public| {
-                    if plan.local_records.is_empty() {
-                        public.durable()
-                    } else {
+                    if plan.effects.is_empty() {
                         public.durable_completed()
+                    } else {
+                        public.durable()
                     }
                 }),
             }),
@@ -1297,61 +1347,7 @@ where
         operation_id: OperationId,
     ) -> Result<Option<aos_proto::aos::sandbox::v1::Operation>, ReconcilerError> {
         self.ensure_ledger_validated_read_only()?;
-        let Some(operation_bytes) = self
-            .journal
-            .get(RecordNamespace::Operation, operation_id.as_bytes())
-        else {
-            return Ok(None);
-        };
-        let operation = decode_operation(operation_bytes)?;
-        let Some(public) = operation.public_operation else {
-            return Ok(None);
-        };
-
-        let mut applied_effects = 0_u32;
-        let mut applying_effects = 0_u32;
-        let mut blocked_effects = 0_u32;
-        let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
-        for step in 0..operation.effect_count {
-            let bytes = self
-                .journal
-                .get(RecordNamespace::Effect, &effect_key(operation_id, step))
-                .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
-            let effect = decode_effect(bytes)?;
-            match effect.state {
-                EffectState::Applied { .. } => increment_effect_count(&mut applied_effects)?,
-                EffectState::Applying { .. } => increment_effect_count(&mut applying_effects)?,
-                EffectState::PermanentlyBlocked { .. } => {
-                    increment_effect_count(&mut blocked_effects)?;
-                }
-                EffectState::Planned => {}
-            }
-            effect_records.push(bytes);
-        }
-        let state_matches_effects = match operation.state {
-            OperationState::OwnershipPending | OperationState::Accepted => {
-                applied_effects == 0 && applying_effects == 0 && blocked_effects == 0
-            }
-            OperationState::Applying => {
-                applying_effects + applied_effects != 0 && blocked_effects == 0
-            }
-            OperationState::Succeeded => applied_effects == operation.effect_count,
-            OperationState::PermanentlyBlocked => blocked_effects != 0,
-        };
-        if !state_matches_effects {
-            return Err(ReconcilerError::CorruptLedger(
-                "public operation state contradicts its effects",
-            ));
-        }
-
-        Ok(Some(public.project(
-            operation_id,
-            operation.state,
-            operation.effect_count,
-            applied_effects,
-            operation_bytes,
-            &effect_records,
-        )))
+        recovered_public_operation_resource_v1(&self.journal, operation_id)
     }
 
     /// Loads the immutable current-authorization scope for a public operation.
@@ -2588,6 +2584,87 @@ pub(crate) fn recovered_public_operation_admission_v1(
         ))?;
 
     Ok(Some(public.into_admission(authorization)))
+}
+
+pub(crate) fn recovered_public_operation_authorization_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<PublicOperationAuthorizationV1>, ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+    else {
+        return Ok(None);
+    };
+    if decode_operation(operation_bytes)?
+        .public_operation
+        .is_none()
+    {
+        return Ok(None);
+    }
+    journal
+        .get(
+            RecordNamespace::PublicOperationAuthorization,
+            operation_id.as_bytes(),
+        )
+        .map(PublicOperationAuthorizationV1::decode)
+        .transpose()
+}
+
+pub(crate) fn recovered_public_operation_resource_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<aos_proto::aos::sandbox::v1::Operation>, ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+    else {
+        return Ok(None);
+    };
+    let operation = decode_operation(operation_bytes)?;
+    let Some(public) = operation.public_operation else {
+        return Ok(None);
+    };
+
+    let mut applied_effects = 0_u32;
+    let mut applying_effects = 0_u32;
+    let mut blocked_effects = 0_u32;
+    let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
+    for step in 0..operation.effect_count {
+        let bytes = journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, step))
+            .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
+        let effect = decode_effect(bytes)?;
+        match effect.state {
+            EffectState::Applied { .. } => increment_effect_count(&mut applied_effects)?,
+            EffectState::Applying { .. } => increment_effect_count(&mut applying_effects)?,
+            EffectState::PermanentlyBlocked { .. } => {
+                increment_effect_count(&mut blocked_effects)?;
+            }
+            EffectState::Planned => {}
+        }
+        effect_records.push(bytes);
+    }
+    let state_matches_effects = match operation.state {
+        OperationState::OwnershipPending | OperationState::Accepted => {
+            applied_effects == 0 && applying_effects == 0 && blocked_effects == 0
+        }
+        OperationState::Applying => applying_effects + applied_effects != 0 && blocked_effects == 0,
+        OperationState::Succeeded => applied_effects == operation.effect_count,
+        OperationState::PermanentlyBlocked => blocked_effects != 0,
+    };
+    if !state_matches_effects {
+        return Err(ReconcilerError::CorruptLedger(
+            "public operation state contradicts its effects",
+        ));
+    }
+
+    Ok(Some(public.project(
+        operation_id,
+        operation.state,
+        operation.effect_count,
+        applied_effects,
+        operation_bytes,
+        &effect_records,
+    )))
 }
 
 fn transition_operation(

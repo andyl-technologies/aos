@@ -208,13 +208,33 @@ impl EffectPlan {
                 "invalid controller effect request length",
             ));
         }
-        let resolved =
-            crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&request)
+        if method == crate::controller_query::PublicOperationMethodV1::OperatorRecover {
+            let envelope = crate::cli_model::PublicMutationRequestV1::decode(&request)
                 .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
-        if resolved.operation_method() != method {
-            return Err(ReconcilerError::InvalidPlan(
-                "controller effect method does not match its request",
-            ));
+            let kind = envelope
+                .decode_validated_kind()
+                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
+            if envelope.method() != crate::cli_model::PublicApiAuditMethodV1::OperatorRecover
+                || !matches!(
+                    kind,
+                    crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(_)
+                )
+            {
+                return Err(ReconcilerError::InvalidPlan(
+                    "controller effect method does not match its request",
+                ));
+            }
+        } else {
+            let resolved =
+                crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&request)
+                    .map_err(|_| {
+                        ReconcilerError::InvalidPlan("invalid controller effect request")
+                    })?;
+            if resolved.operation_method() != method {
+                return Err(ReconcilerError::InvalidPlan(
+                    "controller effect method does not match its request",
+                ));
+            }
         }
 
         Ok(Self {
@@ -1342,14 +1362,9 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                 "controller effect has invalid domain or authority",
             ));
         }
-        let resolved =
-            crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&request)
-                .map_err(|_| ReconcilerError::CorruptLedger("invalid controller effect request"))?;
-        if resolved.operation_method() != method {
-            return Err(ReconcilerError::CorruptLedger(
-                "controller effect method/request mismatch",
-            ));
-        }
+        EffectPlan::public_mutation(method, request.clone()).map_err(|_| {
+            ReconcilerError::CorruptLedger("controller effect method/request mismatch")
+        })?;
     }
     let state = decode_state(state_code, attempt, receipt, diagnostic)?;
     let dispatch_shape_valid = if authority.is_some() {
@@ -1417,14 +1432,7 @@ fn validate_lengths(
                 "controller effect has an invalid dispatch identity",
             ));
         }
-        let resolved =
-            crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(&plan.request)
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
-        if resolved.operation_method() != method {
-            return Err(ReconcilerError::InvalidPlan(
-                "controller effect method does not match its request",
-            ));
-        }
+        EffectPlan::public_mutation(method, plan.request.clone())?;
     } else if plan.domain == EffectDomain::Controller {
         return Err(ReconcilerError::InvalidPlan(
             "controller effect has no dispatch method",

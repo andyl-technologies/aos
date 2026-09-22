@@ -33,6 +33,8 @@ use crate::{
     OperationPlan, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
 };
 
+#[cfg(target_os = "linux")]
+mod operator_recovery;
 mod policy_plan;
 mod public_mutation;
 
@@ -131,6 +133,24 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
                 request_digest,
             ),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn compile_public_operator_recovery(
+        &mut self,
+        journal: &mut Journal,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        canonical_request: &[u8],
+        request_digest: [u8; 32],
+    ) -> Result<OperationPlan, OperationCompilationError> {
+        operator_recovery::compile_public_operator_recovery(
+            journal,
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )
     }
 
     #[cfg(target_os = "linux")]

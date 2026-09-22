@@ -1139,7 +1139,7 @@ fn projection(
         .map_err(|_| OperationCompilationError::Rejected)
 }
 
-fn mutation_intent(
+pub(super) fn mutation_intent(
     operation: OperationId,
     method: PublicOperationMethodV1,
     canonical_request: &[u8],

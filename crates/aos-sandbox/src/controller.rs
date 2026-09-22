@@ -59,7 +59,9 @@ mod destination_slot;
 #[cfg(target_os = "linux")]
 mod public_api_authorization;
 #[cfg(target_os = "linux")]
-pub(crate) use public_api_authorization::authorize_resolved_public_mutation_v1;
+pub(crate) use public_api_authorization::{
+    authorize_public_operator_recovery_v1, authorize_resolved_public_mutation_v1,
+};
 
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-request.v1\0";
 #[cfg(target_os = "linux")]
@@ -631,6 +633,30 @@ where
 /// protected current-head, idempotency, and canonical transition records.
 pub(crate) struct DormantOperatorRecoveryOwnerV1<'controller> {
     journal: &'controller mut crate::Journal,
+}
+
+/// Carries one checked operator-recovery current head for atomic admission.
+pub(crate) struct PreparedOperatorRecoveryCurrentV1 {
+    record: JournalRecord,
+    already_current: bool,
+}
+
+impl PreparedOperatorRecoveryCurrentV1 {
+    /// Checks the request fence and action against these exact prepared bytes.
+    pub(crate) fn validates_request(&self, request: &OperatorRecoveryRequestV1) -> bool {
+        self.record
+            .value()
+            .is_some_and(|current| validate_recovery_current(request, current).is_ok())
+    }
+
+    /// Consumes the preparation into its atomic journal record.
+    pub(crate) fn into_record(self) -> JournalRecord {
+        self.record
+    }
+
+    fn is_already_current(&self) -> bool {
+        self.already_current
+    }
 }
 
 /// Maximum dispatch attempts retained for one operator-recovery effect.
@@ -1349,19 +1375,7 @@ impl DormantOperatorRecoveryOwnerV1<'_> {
                 &recovery_current_key(resource_id),
             )
             .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
-        let digest: [u8; 32] = Sha256::new()
-            .chain_update(b"aos.sandbox.operator-recovery-current-evidence.v1\0")
-            .chain_update(resource_id)
-            .chain_update((current.len() as u64).to_be_bytes())
-            .chain_update(current)
-            .finalize()
-            .into();
-        Ok(aos_proto::aos::sandbox::v1::ObjectDescriptor {
-            media_type: "application/vnd.aos.sandbox.operator-recovery-evidence.v1".into(),
-            sha256: digest.to_vec(),
-            encoded_size: (16 + current.len()) as u64,
-            ..Default::default()
-        })
+        Ok(recovery_current_evidence(resource_id, current))
     }
 
     /// Reserves a transition after checking protected journal provenance.
@@ -1763,30 +1777,22 @@ impl DormantOperatorRecoveryOwnerV1<'_> {
         &mut self,
         resource: &CheckedSandboxResourceV1,
     ) -> Result<(), InvalidObservationClientAdapter> {
-        let allowed = (u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked))
-            | u8::from(resource.has_true_condition(PublicConditionCodeV1::Degraded))
-            | u8::from(resource.has_true_condition(PublicConditionCodeV1::ResidualState))
-            | u8::from(resource.has_true_condition(PublicConditionCodeV1::OwnershipPending)))
-            * 4
-            | (u8::from(resource.has_true_condition(PublicConditionCodeV1::Fenced))
-                | u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked)))
-                * 8;
-        synchronize_recovery_current(
+        let prepared = prepare_operator_recovery_sandbox_current_v1(self.journal, resource)?;
+        if prepared.is_already_current() {
+            return Ok(());
+        }
+        commit_recovery_records(
             self.journal,
-            resource.sandbox_id(),
-            &resource.as_proto().resource_version,
-            1,
-            allowed,
-            resource.desired_generation(),
-            resource.observation_sequence(),
-            latest_recovery_transition(
-                resource.conditions(),
-                resource
-                    .as_proto()
-                    .updated_at
-                    .as_option()
-                    .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds)),
-            )?,
+            ObjectDigest::from_bytes(
+                Sha256::digest(
+                    prepared
+                        .record
+                        .value()
+                        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+                )
+                .into(),
+            ),
+            vec![prepared.into_record()],
         )
     }
 
@@ -1795,37 +1801,93 @@ impl DormantOperatorRecoveryOwnerV1<'_> {
         &mut self,
         resource: &CheckedOperationResourceV1,
     ) -> Result<(), InvalidObservationClientAdapter> {
-        let retry = resource.phase() == CheckedOperationPhaseV1::FailedBeforeCommit
-            && resource.retry() != CheckedRetryClassV1::Never;
-        let abandon = matches!(
-            resource.phase(),
-            CheckedOperationPhaseV1::PermanentlyBlocked
-                | CheckedOperationPhaseV1::CommittedWithResidualCleanup
-        );
-        synchronize_recovery_current(
+        let prepared = prepare_operator_recovery_operation_current_v1(self.journal, resource)?;
+        if prepared.is_already_current() {
+            return Ok(());
+        }
+        commit_recovery_records(
             self.journal,
-            resource.operation_id(),
-            resource.resource_version().as_bytes(),
-            2,
-            u8::from(retry) | u8::from(abandon) * 2,
-            resource.as_proto().accepted_generation,
-            resource
-                .conditions()
-                .iter()
-                .map(|condition| condition.as_proto().observation_sequence)
-                .max()
-                .filter(|sequence| *sequence != 0)
-                .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
-            latest_recovery_transition(
-                resource.conditions(),
-                resource
-                    .as_proto()
-                    .accepted_at
-                    .as_option()
-                    .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds)),
-            )?,
+            ObjectDigest::from_bytes(
+                Sha256::digest(
+                    prepared
+                        .record
+                        .value()
+                        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+                )
+                .into(),
+            ),
+            vec![prepared.into_record()],
         )
     }
+}
+
+/// Prepares a sandbox recovery head without committing it independently.
+pub(crate) fn prepare_operator_recovery_sandbox_current_v1(
+    journal: &crate::Journal,
+    resource: &CheckedSandboxResourceV1,
+) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
+    let allowed = (u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked))
+        | u8::from(resource.has_true_condition(PublicConditionCodeV1::Degraded))
+        | u8::from(resource.has_true_condition(PublicConditionCodeV1::ResidualState))
+        | u8::from(resource.has_true_condition(PublicConditionCodeV1::OwnershipPending)))
+        * 4
+        | (u8::from(resource.has_true_condition(PublicConditionCodeV1::Fenced))
+            | u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked)))
+            * 8;
+    prepare_recovery_current(
+        journal,
+        resource.sandbox_id(),
+        &resource.as_proto().resource_version,
+        1,
+        allowed,
+        resource.desired_generation(),
+        resource.observation_sequence(),
+        latest_recovery_transition(
+            resource.conditions(),
+            resource
+                .as_proto()
+                .updated_at
+                .as_option()
+                .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds)),
+        )?,
+    )
+}
+
+/// Prepares an operation recovery head without committing it independently.
+pub(crate) fn prepare_operator_recovery_operation_current_v1(
+    journal: &crate::Journal,
+    resource: &CheckedOperationResourceV1,
+) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
+    let retry = resource.phase() == CheckedOperationPhaseV1::FailedBeforeCommit
+        && resource.retry() != CheckedRetryClassV1::Never;
+    let abandon = matches!(
+        resource.phase(),
+        CheckedOperationPhaseV1::PermanentlyBlocked
+            | CheckedOperationPhaseV1::CommittedWithResidualCleanup
+    );
+    prepare_recovery_current(
+        journal,
+        resource.operation_id(),
+        resource.resource_version().as_bytes(),
+        2,
+        u8::from(retry) | u8::from(abandon) * 2,
+        resource.as_proto().accepted_generation,
+        resource
+            .conditions()
+            .iter()
+            .map(|condition| condition.as_proto().observation_sequence)
+            .max()
+            .filter(|sequence| *sequence != 0)
+            .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+        latest_recovery_transition(
+            resource.conditions(),
+            resource
+                .as_proto()
+                .accepted_at
+                .as_option()
+                .map(|timestamp| (timestamp.seconds, timestamp.nanoseconds)),
+        )?,
+    )
 }
 
 fn recovery_current_key(resource_id: [u8; 16]) -> Vec<u8> {
@@ -2286,8 +2348,8 @@ fn decode_recovery_current(
     })
 }
 
-fn synchronize_recovery_current(
-    journal: &mut crate::Journal,
+fn prepare_recovery_current(
+    journal: &crate::Journal,
     resource_id: [u8; 16],
     version: &[u8],
     kind: u8,
@@ -2295,7 +2357,7 @@ fn synchronize_recovery_current(
     desired_generation: u64,
     observation_sequence: u64,
     transition: (i64, u32),
-) -> Result<(), InvalidObservationClientAdapter> {
+) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
     journal
         .ensure_protected_authority()
         .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
@@ -2308,29 +2370,44 @@ fn synchronize_recovery_current(
         transition,
     )?;
     let current_key = recovery_current_key(resource_id);
+    let mut already_current = false;
     if let Some(existing) = journal.get(RecordNamespace::OperatorRecovery, &current_key) {
         if existing == value.as_slice() {
-            return Ok(());
-        }
-        let existing = decode_recovery_current(existing)?;
-        if existing.kind != kind
-            || observation_sequence <= existing.observation_sequence
-            || desired_generation < existing.desired_generation
-            || transition < existing.transition
-        {
-            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+            already_current = true;
+        } else {
+            let existing = decode_recovery_current(existing)?;
+            if existing.kind != kind
+                || observation_sequence <= existing.observation_sequence
+                || desired_generation < existing.desired_generation
+                || transition < existing.transition
+            {
+                return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+            }
         }
     }
-    let digest = ObjectDigest::from_bytes(Sha256::digest(&value).into());
-    commit_recovery_records(
-        journal,
-        digest,
-        vec![JournalRecord::put(
-            RecordNamespace::OperatorRecovery,
-            current_key,
-            value,
-        )],
-    )
+    Ok(PreparedOperatorRecoveryCurrentV1 {
+        record: JournalRecord::put(RecordNamespace::OperatorRecovery, current_key, value),
+        already_current,
+    })
+}
+
+fn recovery_current_evidence(
+    resource_id: [u8; 16],
+    current: &[u8],
+) -> aos_proto::aos::sandbox::v1::ObjectDescriptor {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.operator-recovery-current-evidence.v1\0")
+        .chain_update(resource_id)
+        .chain_update((current.len() as u64).to_be_bytes())
+        .chain_update(current)
+        .finalize()
+        .into();
+    aos_proto::aos::sandbox::v1::ObjectDescriptor {
+        media_type: "application/vnd.aos.sandbox.operator-recovery-evidence.v1".into(),
+        sha256: digest.to_vec(),
+        encoded_size: (16 + current.len()) as u64,
+        ..Default::default()
+    }
 }
 
 fn validate_recovery_current(
