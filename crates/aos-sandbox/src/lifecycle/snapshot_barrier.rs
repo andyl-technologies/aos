@@ -7,8 +7,9 @@ use super::{
     CurrentLifecycleCoordinationV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     CurrentLifecycleRetentionLedgerV1, LifecycleControllerDependencySnapshotV1,
     LifecycleCoordinationPhaseV1, LifecycleCoordinationTransactionV1, LifecycleEffectDomainV1,
-    LifecycleEffectObservationV1, LifecycleMethodV1, LifecyclePhase6ErrorV1, LifecycleResourceV1,
-    LifecycleStorageInventoryKindV1,
+    LifecycleEffectObservationV1, LifecycleMethodV1, LifecyclePhase6EffectPlanV1,
+    LifecyclePhase6ErrorV1, LifecyclePhaseV1, LifecycleResourceV1, LifecycleStepClassV1,
+    LifecycleStepV1, LifecycleStorageInventoryKindV1, lifecycle_phase6_planned_step_v1,
 };
 
 /// Identifies one exact owned dataset in a coordinated atomic snapshot.
@@ -169,6 +170,82 @@ pub struct LifecycleSnapshotBarrierV1 {
 }
 
 impl LifecycleSnapshotBarrierV1 {
+    /// Compiles the six immutable actions for a standalone snapshot barrier.
+    ///
+    /// Closure locking through retention commit remains reversible and precedes
+    /// semantic commit. Thaw is the sole post-commit action. Compensation uses
+    /// the same protected owner in reverse direction, except that a completed
+    /// freeze is explicitly paired with the thaw action commitment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the accepted unbound Snapshot
+    /// operation, dependency closure, and protected coordination transaction
+    /// agree exactly, or when a canonical step cannot be constructed.
+    pub fn planned_snapshot_steps(
+        current: &CurrentLifecycleOperationV1<'_>,
+        closure: &LifecycleControllerDependencySnapshotV1,
+        protected_transaction: &CurrentLifecycleCoordinationV1<'_>,
+    ) -> Result<Vec<LifecycleStepV1>, LifecyclePhase6ErrorV1> {
+        current.require_method(&[LifecycleMethodV1::Snapshot])?;
+        let (sandbox, snapshot, intent_fence) = match current.operation().intent() {
+            super::LifecycleIntentV1::Snapshot {
+                sandbox,
+                snapshot,
+                fence,
+                ..
+            } => (*sandbox, *snapshot, *fence),
+            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
+        };
+        let transaction = protected_transaction.coordination().transaction();
+        if current.operation().phase() != LifecyclePhaseV1::Accepted
+            || !current.operation().plan_is_unbound()
+            || protected_transaction.projection_root() != current.projection_root()
+            || transaction.sandbox() != sandbox
+            || transaction.dependency_snapshot() != closure.digest()
+            || transaction.live_fence() != intent_fence
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        let actions = [
+            LifecycleSnapshotBarrierActionV1::LockClosure,
+            LifecycleSnapshotBarrierActionV1::QuiesceWriters,
+            LifecycleSnapshotBarrierActionV1::FreezeRuntimes,
+            LifecycleSnapshotBarrierActionV1::SnapshotDatasets,
+            LifecycleSnapshotBarrierActionV1::CommitRetention,
+            LifecycleSnapshotBarrierActionV1::ThawRuntimes,
+        ];
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| {
+                let class = if action == LifecycleSnapshotBarrierActionV1::ThawRuntimes {
+                    LifecycleStepClassV1::PostCommitForward
+                } else {
+                    LifecycleStepClassV1::PreCommitReversible
+                };
+                let compensation = match action {
+                    LifecycleSnapshotBarrierActionV1::FreezeRuntimes => {
+                        Some(LifecycleSnapshotBarrierActionV1::CompensateThaw)
+                    }
+                    LifecycleSnapshotBarrierActionV1::ThawRuntimes => None,
+                    _ => Some(action),
+                };
+                planned_barrier_step(
+                    current.operation().operation_id(),
+                    u32::try_from(index).map_err(|_| LifecyclePhase6ErrorV1::Capacity)?,
+                    class,
+                    sandbox,
+                    snapshot,
+                    transaction,
+                    action,
+                    compensation,
+                )
+            })
+            .collect()
+    }
+
     /// Starts a barrier from current Snapshot or Hibernate intent.
     ///
     /// # Errors
@@ -603,13 +680,25 @@ impl LifecycleSnapshotBarrierV1 {
                     .persisted_effect_cursor()?
                     .ok_or(LifecyclePhase6ErrorV1::InvalidTransition)?;
                 if cursor.direction() == super::LifecycleEffectDirectionV1::Compensation {
-                    if self.hibernate && index == 2 {
+                    if self.hibernate && index < base {
                         return Ok(LifecycleSnapshotBarrierActionV1::LockClosure);
                     }
-                    if index != base + 2 {
-                        return Err(LifecyclePhase6ErrorV1::InvalidTransition);
-                    }
-                    self.action = LifecycleSnapshotBarrierActionV1::CompensateThaw;
+                    let relative = index
+                        .checked_sub(base)
+                        .filter(|relative| *relative < if self.hibernate { 5 } else { 6 })
+                        .ok_or(LifecyclePhase6ErrorV1::InvalidTransition)?;
+                    self.action = if relative == 2 {
+                        LifecycleSnapshotBarrierActionV1::CompensateThaw
+                    } else {
+                        [
+                            LifecycleSnapshotBarrierActionV1::LockClosure,
+                            LifecycleSnapshotBarrierActionV1::QuiesceWriters,
+                            LifecycleSnapshotBarrierActionV1::FreezeRuntimes,
+                            LifecycleSnapshotBarrierActionV1::SnapshotDatasets,
+                            LifecycleSnapshotBarrierActionV1::CommitRetention,
+                            LifecycleSnapshotBarrierActionV1::ThawRuntimes,
+                        ][relative]
+                    };
                     let _current_effect = self.next_effect(current)?;
                     return Ok(self.action);
                 }
@@ -699,12 +788,20 @@ impl LifecycleSnapshotBarrierV1 {
             if current.operation().steps()[base + relative].plan() != expected {
                 return Err(LifecyclePhase6ErrorV1::InvalidInput);
             }
-        }
-        self.action = LifecycleSnapshotBarrierActionV1::CompensateThaw;
-        let compensation =
-            super::LifecycleStepPlanDigestV1::commit(barrier_payload(self).as_bytes());
-        if current.operation().steps()[base + 2].compensation_plan() != Some(compensation) {
-            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+            if relative < 5 {
+                self.action = if relative == 2 {
+                    LifecycleSnapshotBarrierActionV1::CompensateThaw
+                } else {
+                    action
+                };
+                let compensation =
+                    super::LifecycleStepPlanDigestV1::commit(barrier_payload(self).as_bytes());
+                if current.operation().steps()[base + relative].compensation_plan()
+                    != Some(compensation)
+                {
+                    return Err(LifecyclePhase6ErrorV1::InvalidInput);
+                }
+            }
         }
         Ok(())
     }
@@ -772,14 +869,21 @@ fn atomic_dataset_snapshot_plan_commitment(
 }
 
 fn barrier_payload(barrier: &LifecycleSnapshotBarrierV1) -> ObjectDigest {
-    let transaction = &barrier.transaction;
+    barrier_payload_parts(&barrier.transaction, barrier.snapshot, barrier.action)
+}
+
+fn barrier_payload_parts(
+    transaction: &LifecycleCoordinationTransactionV1,
+    snapshot: SnapshotId,
+    action: LifecycleSnapshotBarrierActionV1,
+) -> ObjectDigest {
     let mut hasher = Sha256::new()
         .chain_update(b"aos.sandbox.lifecycle.snapshot-barrier-effect.v1\0")
         .chain_update(transaction.transaction().get().as_bytes())
-        .chain_update(barrier.snapshot.as_bytes())
+        .chain_update(snapshot.as_bytes())
         .chain_update(transaction.dependency_snapshot().as_bytes())
         .chain_update(transaction.manifest().digest().as_bytes())
-        .chain_update([barrier.action as u8])
+        .chain_update([action as u8])
         .chain_update(transaction.retention_ledger().digest().as_bytes())
         .chain_update((transaction.postorder().len() as u32).to_be_bytes());
     for resource in transaction.postorder() {
@@ -788,4 +892,59 @@ fn barrier_payload(barrier: &LifecycleSnapshotBarrierV1) -> ObjectDigest {
             .chain_update(resource.as_bytes());
     }
     ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn planned_barrier_step(
+    operation: OperationId,
+    index: u32,
+    class: LifecycleStepClassV1,
+    sandbox: SandboxId,
+    snapshot: SnapshotId,
+    transaction: &LifecycleCoordinationTransactionV1,
+    action: LifecycleSnapshotBarrierActionV1,
+    compensation: Option<LifecycleSnapshotBarrierActionV1>,
+) -> Result<LifecycleStepV1, LifecyclePhase6ErrorV1> {
+    let effect = |action| {
+        let (domain, ordinal) = match action {
+            LifecycleSnapshotBarrierActionV1::LockClosure => {
+                (LifecycleEffectDomainV1::Controller, 1)
+            }
+            LifecycleSnapshotBarrierActionV1::QuiesceWriters => {
+                (LifecycleEffectDomainV1::Controller, 2)
+            }
+            LifecycleSnapshotBarrierActionV1::FreezeRuntimes => {
+                (LifecycleEffectDomainV1::Runtime, 3)
+            }
+            LifecycleSnapshotBarrierActionV1::SnapshotDatasets => {
+                (LifecycleEffectDomainV1::Storage, 4)
+            }
+            LifecycleSnapshotBarrierActionV1::CommitRetention => {
+                (LifecycleEffectDomainV1::Controller, 5)
+            }
+            LifecycleSnapshotBarrierActionV1::ThawRuntimes
+            | LifecycleSnapshotBarrierActionV1::CompensateThaw => {
+                (LifecycleEffectDomainV1::Runtime, 6)
+            }
+            LifecycleSnapshotBarrierActionV1::Complete => {
+                return Err(LifecyclePhase6ErrorV1::InvalidInput);
+            }
+        };
+        let prerequisite = if action == LifecycleSnapshotBarrierActionV1::CommitRetention {
+            transaction.retention_ledger().digest()
+        } else {
+            transaction.dependency_snapshot()
+        };
+        LifecyclePhase6EffectPlanV1::new(
+            domain,
+            ordinal,
+            *sandbox.as_bytes(),
+            prerequisite,
+            barrier_payload_parts(transaction, snapshot, action),
+        )
+    };
+    let forward = effect(action)?;
+    let compensation = compensation.map(effect).transpose()?;
+
+    lifecycle_phase6_planned_step_v1(operation, index, class, forward, compensation)
 }
