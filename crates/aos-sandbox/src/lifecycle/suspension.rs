@@ -4,11 +4,12 @@ use aos_sandbox_core::{ObjectDigest, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    CurrentLifecycleEffectV1, CurrentLifecycleOperationV1, CurrentLifecycleRuntimeLivenessV1,
-    CurrentLifecycleSuspendObservationV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
-    LifecycleIntentV1, LifecycleMethodV1, LifecyclePhase6EffectPlanV1, LifecyclePhase6ErrorV1,
-    LifecyclePhaseV1, LifecycleSnapshotBarrierV1, LifecycleStepClassV1, LifecycleStepV1,
-    LiveRuntimeFenceV1, lifecycle_phase6_planned_step_v1,
+    CurrentLifecycleCoordinationV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
+    CurrentLifecycleRuntimeLivenessV1, CurrentLifecycleSuspendObservationV1,
+    LifecycleEffectDomainV1, LifecycleEffectObservationV1, LifecycleIntentV1, LifecycleMethodV1,
+    LifecyclePhase6EffectPlanV1, LifecyclePhase6ErrorV1, LifecyclePhaseV1,
+    LifecycleSnapshotBarrierActionV1, LifecycleSnapshotBarrierV1, LifecycleStepClassV1,
+    LifecycleStepV1, LiveRuntimeFenceV1, lifecycle_phase6_planned_step_v1,
 };
 
 /// Selects the exact suspend or resume protocol.
@@ -111,6 +112,7 @@ impl LifecycleSuspensionPlanV1 {
                     class,
                     LifecycleSuspensionModeV1::MemorySuspend,
                     action,
+                    Some(action),
                     sandbox,
                     fence,
                     None,
@@ -119,6 +121,119 @@ impl LifecycleSuspensionPlanV1 {
                 )
             })
             .collect()
+    }
+
+    /// Compiles the immutable eleven-step hibernation plan.
+    ///
+    /// Admission closure, outer quiesce/freeze, and the five-action snapshot
+    /// barrier form the reversible pre-commit prefix. Runtime stop, ephemeral
+    /// detach, and reservation release execute only after snapshot retention is
+    /// semantically committed. The outer and barrier freezes retain distinct
+    /// thaw compensation commitments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the accepted unbound Hibernate
+    /// operation and protected coordination transaction agree exactly, or when
+    /// a canonical step cannot be constructed.
+    pub fn planned_hibernate_steps(
+        current: &CurrentLifecycleOperationV1<'_>,
+        protected_transaction: &CurrentLifecycleCoordinationV1<'_>,
+    ) -> Result<Vec<LifecycleStepV1>, LifecyclePhase6ErrorV1> {
+        current.require_method(&[LifecycleMethodV1::Hibernate])?;
+        let (sandbox, snapshot, fence) = match current.operation().intent() {
+            LifecycleIntentV1::Hibernate {
+                sandbox,
+                snapshot,
+                fence,
+                ..
+            } => (*sandbox, *snapshot, *fence),
+            _ => return Err(LifecyclePhase6ErrorV1::InvalidInput),
+        };
+        require_unbound_admission(current)?;
+        let transaction = protected_transaction.coordination().transaction();
+        if protected_transaction.projection_root() != current.projection_root()
+            || transaction.sandbox() != sandbox
+            || transaction.live_fence() != fence
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        let operation = current.operation().operation_id();
+        let barrier_identity = super::snapshot_barrier::barrier_plan_identity(transaction);
+        let mut steps = Vec::with_capacity(11);
+        let outer_actions = [
+            LifecycleSuspensionActionV1::CloseAdmission,
+            LifecycleSuspensionActionV1::Quiesce,
+            LifecycleSuspensionActionV1::FreezeRuntime,
+        ];
+        for (index, action) in outer_actions.into_iter().enumerate() {
+            let compensation = if action == LifecycleSuspensionActionV1::FreezeRuntime {
+                LifecycleSuspensionActionV1::CompensateOuterThaw
+            } else {
+                action
+            };
+            steps.push(planned_suspension_step(
+                operation,
+                u32::try_from(index).map_err(|_| LifecyclePhase6ErrorV1::Capacity)?,
+                LifecycleStepClassV1::PreCommitReversible,
+                LifecycleSuspensionModeV1::Hibernate,
+                action,
+                Some(compensation),
+                sandbox,
+                fence,
+                None,
+                None,
+                Some(barrier_identity),
+            )?);
+        }
+
+        let barrier_actions = [
+            LifecycleSnapshotBarrierActionV1::LockClosure,
+            LifecycleSnapshotBarrierActionV1::QuiesceWriters,
+            LifecycleSnapshotBarrierActionV1::FreezeRuntimes,
+            LifecycleSnapshotBarrierActionV1::SnapshotDatasets,
+            LifecycleSnapshotBarrierActionV1::CommitRetention,
+        ];
+        for (relative, action) in barrier_actions.into_iter().enumerate() {
+            let compensation = if action == LifecycleSnapshotBarrierActionV1::FreezeRuntimes {
+                LifecycleSnapshotBarrierActionV1::CompensateThaw
+            } else {
+                action
+            };
+            steps.push(super::snapshot_barrier::planned_barrier_step(
+                operation,
+                u32::try_from(relative + 3).map_err(|_| LifecyclePhase6ErrorV1::Capacity)?,
+                LifecycleStepClassV1::PreCommitReversible,
+                sandbox,
+                snapshot,
+                transaction,
+                action,
+                Some(compensation),
+            )?);
+        }
+
+        let postcommit_actions = [
+            LifecycleSuspensionActionV1::StopRuntime,
+            LifecycleSuspensionActionV1::DetachEphemeral,
+            LifecycleSuspensionActionV1::ReleaseReservations,
+        ];
+        for (relative, action) in postcommit_actions.into_iter().enumerate() {
+            steps.push(planned_suspension_step(
+                operation,
+                u32::try_from(relative + 8).map_err(|_| LifecyclePhase6ErrorV1::Capacity)?,
+                LifecycleStepClassV1::PostCommitForward,
+                LifecycleSuspensionModeV1::Hibernate,
+                action,
+                None,
+                sandbox,
+                fence,
+                None,
+                None,
+                Some(barrier_identity),
+            )?);
+        }
+        Ok(steps)
     }
 
     /// Compiles the immutable one-step same-incarnation resume plan.
@@ -163,6 +278,7 @@ impl LifecycleSuspensionPlanV1 {
             LifecycleStepClassV1::PostCommitForward,
             LifecycleSuspensionModeV1::MemoryResume,
             LifecycleSuspensionActionV1::ResumeRuntime,
+            None,
             sandbox,
             fence,
             Some(liveness.host_boot()),
@@ -571,7 +687,10 @@ fn suspension_digest(value: &LifecycleSuspensionPlanV1) -> ObjectDigest {
         value.fence,
         value.host_boot,
         value.runtime_inventory,
-        value.hibernation_barrier.as_ref(),
+        value
+            .hibernation_barrier
+            .as_ref()
+            .map(LifecycleSnapshotBarrierV1::plan_identity),
     )
 }
 
@@ -582,12 +701,9 @@ fn suspension_digest_parts(
     fence: LiveRuntimeFenceV1,
     host_boot: Option<[u8; 16]>,
     runtime_inventory: Option<ObjectDigest>,
-    hibernation_barrier: Option<&LifecycleSnapshotBarrierV1>,
+    hibernation_barrier: Option<ObjectDigest>,
 ) -> ObjectDigest {
-    let barrier = hibernation_barrier.map_or_else(
-        || ObjectDigest::from_bytes([0; 32]),
-        |barrier| barrier.plan_identity(),
-    );
+    let barrier = hibernation_barrier.unwrap_or_else(|| ObjectDigest::from_bytes([0; 32]));
     ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(b"aos.sandbox.lifecycle.suspension-plan.v1\0")
@@ -615,26 +731,14 @@ fn planned_suspension_step(
     class: LifecycleStepClassV1,
     mode: LifecycleSuspensionModeV1,
     action: LifecycleSuspensionActionV1,
+    compensation_action: Option<LifecycleSuspensionActionV1>,
     sandbox: SandboxId,
     fence: LiveRuntimeFenceV1,
     host_boot: Option<[u8; 16]>,
     runtime_inventory: Option<ObjectDigest>,
-    hibernation_barrier: Option<&LifecycleSnapshotBarrierV1>,
+    hibernation_barrier: Option<ObjectDigest>,
 ) -> Result<LifecycleStepV1, LifecyclePhase6ErrorV1> {
-    let domain = match action {
-        LifecycleSuspensionActionV1::CloseAdmission
-        | LifecycleSuspensionActionV1::Quiesce
-        | LifecycleSuspensionActionV1::RecordSuspension => LifecycleEffectDomainV1::Controller,
-        LifecycleSuspensionActionV1::FreezeRuntime
-        | LifecycleSuspensionActionV1::StopRuntime
-        | LifecycleSuspensionActionV1::ResumeRuntime
-        | LifecycleSuspensionActionV1::CompensateOuterThaw => LifecycleEffectDomainV1::Runtime,
-        LifecycleSuspensionActionV1::DetachEphemeral => LifecycleEffectDomainV1::Mount,
-        LifecycleSuspensionActionV1::ReleaseReservations => LifecycleEffectDomainV1::Network,
-        LifecycleSuspensionActionV1::Snapshot | LifecycleSuspensionActionV1::Complete => {
-            return Err(LifecyclePhase6ErrorV1::InvalidInput);
-        }
-    };
+    let domain = suspension_effect_domain(action)?;
     let prerequisite = runtime_inventory.unwrap_or_else(|| suspension_fence_digest(fence));
     let plan = suspension_digest_parts(
         mode,
@@ -652,19 +756,46 @@ fn planned_suspension_step(
         prerequisite,
         plan,
     )?;
-    let compensation = if class == LifecycleStepClassV1::PreCommitReversible {
-        Some(LifecyclePhase6EffectPlanV1::new(
-            domain,
-            action as u32,
-            *sandbox.as_bytes(),
-            prerequisite,
-            plan,
-        )?)
-    } else {
-        None
-    };
+    let compensation = compensation_action
+        .map(|compensation_action| {
+            LifecyclePhase6EffectPlanV1::new(
+                suspension_effect_domain(compensation_action)?,
+                compensation_action as u32,
+                *sandbox.as_bytes(),
+                prerequisite,
+                suspension_digest_parts(
+                    mode,
+                    compensation_action,
+                    sandbox,
+                    fence,
+                    host_boot,
+                    runtime_inventory,
+                    hibernation_barrier,
+                ),
+            )
+        })
+        .transpose()?;
 
     lifecycle_phase6_planned_step_v1(operation, index, class, forward, compensation)
+}
+
+fn suspension_effect_domain(
+    action: LifecycleSuspensionActionV1,
+) -> Result<LifecycleEffectDomainV1, LifecyclePhase6ErrorV1> {
+    match action {
+        LifecycleSuspensionActionV1::CloseAdmission
+        | LifecycleSuspensionActionV1::Quiesce
+        | LifecycleSuspensionActionV1::RecordSuspension => Ok(LifecycleEffectDomainV1::Controller),
+        LifecycleSuspensionActionV1::FreezeRuntime
+        | LifecycleSuspensionActionV1::StopRuntime
+        | LifecycleSuspensionActionV1::ResumeRuntime
+        | LifecycleSuspensionActionV1::CompensateOuterThaw => Ok(LifecycleEffectDomainV1::Runtime),
+        LifecycleSuspensionActionV1::DetachEphemeral => Ok(LifecycleEffectDomainV1::Mount),
+        LifecycleSuspensionActionV1::ReleaseReservations => Ok(LifecycleEffectDomainV1::Network),
+        LifecycleSuspensionActionV1::Snapshot | LifecycleSuspensionActionV1::Complete => {
+            Err(LifecyclePhase6ErrorV1::InvalidInput)
+        }
+    }
 }
 
 fn require_unbound_admission(

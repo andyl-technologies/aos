@@ -1823,7 +1823,7 @@ impl ProductionEffectExecutor {
     }
 
     fn bind_lifecycle_plan(&mut self, operation_id: OperationId) -> Result<(), EffectFailure> {
-        let snapshot = {
+        let coordinated_snapshot = {
             let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
                 &mut self.source_domains,
             )
@@ -1839,9 +1839,10 @@ impl ProductionEffectExecutor {
             matches!(
                 current.operation().intent(),
                 aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. }
+                    | aos_sandbox::lifecycle::LifecycleIntentV1::Hibernate { .. }
             ) && current.operation().plan_is_unbound()
         };
-        if snapshot {
+        if coordinated_snapshot {
             self.ensure_snapshot_retention_ledger(operation_id)?;
             self.ensure_snapshot_coordination(operation_id)?;
         }
@@ -1868,7 +1869,8 @@ impl ProductionEffectExecutor {
                     LifecycleSuspensionPlanV1::planned_memory_suspend_steps(&current)
                         .map_err(|error| EffectFailure::Permanent(error.to_string()))?
                 }
-                aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. } => {
+                aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. }
+                | aos_sandbox::lifecycle::LifecycleIntentV1::Hibernate { .. } => {
                     let project = current.operation().project();
                     let coordination_lineage =
                         lifecycle_plan_resource_id(operation_id, b"coordination-lineage");
@@ -1888,8 +1890,16 @@ impl ProductionEffectExecutor {
                                     .to_owned(),
                             )
                         })?;
-                    LifecycleSnapshotBarrierV1::planned_snapshot_steps(&current, &coordination)
-                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    if matches!(
+                        current.operation().intent(),
+                        aos_sandbox::lifecycle::LifecycleIntentV1::Snapshot { .. }
+                    ) {
+                        LifecycleSnapshotBarrierV1::planned_snapshot_steps(&current, &coordination)
+                            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    } else {
+                        LifecycleSuspensionPlanV1::planned_hibernate_steps(&current, &coordination)
+                            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                    }
                 }
                 _ => return Ok(()),
             };

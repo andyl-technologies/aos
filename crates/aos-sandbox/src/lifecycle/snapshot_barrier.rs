@@ -407,18 +407,7 @@ impl LifecycleSnapshotBarrierV1 {
     }
 
     pub(super) fn plan_identity(&self) -> ObjectDigest {
-        let transaction = &self.transaction;
-        ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(b"aos.sandbox.lifecycle.snapshot-barrier-plan.v1\0")
-                .chain_update(transaction.transaction().get().as_bytes())
-                .chain_update(transaction.dependency_snapshot().as_bytes())
-                .chain_update(transaction.manifest().digest().as_bytes())
-                .chain_update(transaction.retention_ledger().digest().as_bytes())
-                .chain_update(transaction.thaw_compensation().digest().as_bytes())
-                .finalize()
-                .into(),
-        )
+        barrier_plan_identity(&self.transaction)
     }
 
     pub(super) fn is_bound_to(&self, sandbox: SandboxId) -> bool {
@@ -805,6 +794,22 @@ impl LifecycleSnapshotBarrierV1 {
     }
 }
 
+pub(super) fn barrier_plan_identity(
+    transaction: &LifecycleCoordinationTransactionV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.snapshot-barrier-plan.v1\0")
+            .chain_update(transaction.transaction().get().as_bytes())
+            .chain_update(transaction.dependency_snapshot().as_bytes())
+            .chain_update(transaction.manifest().digest().as_bytes())
+            .chain_update(transaction.retention_ledger().digest().as_bytes())
+            .chain_update(transaction.thaw_compensation().digest().as_bytes())
+            .finalize()
+            .into(),
+    )
+}
+
 fn same_transaction(
     current: &LifecycleCoordinationTransactionV1,
     successor: &LifecycleCoordinationTransactionV1,
@@ -893,7 +898,7 @@ fn barrier_payload_parts(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn planned_barrier_step(
+pub(super) fn planned_barrier_step(
     operation: OperationId,
     index: u32,
     class: LifecycleStepClassV1,
