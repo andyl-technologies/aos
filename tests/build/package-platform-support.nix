@@ -18,6 +18,11 @@
     packages = pkgs;
     names = packageNames;
   };
+  releaseDerivationRoots = support.releaseDerivationRoots {
+    system = pkgs.stdenv.hostPlatform.system;
+    packages = pkgs;
+    names = packageNames;
+  };
   linuxPackages = publicationMatrix.${pkgs.stdenv.hostPlatform.system};
   eligibleOnAnyPlatform = support.publicationEligibleNamesAny packageNames;
   eligibleDecision = support.publicationDecision pkgs.stdenv.hostPlatform.system "aos";
@@ -162,6 +167,26 @@
   directoryModuleArtifact = directoryModulePayload.module;
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString sourceTree);
+  pathSet = paths:
+    builtins.attrNames (builtins.listToAttrs (map (path: {
+        name = path;
+        value = true;
+      })
+      paths));
+  plannedDerivationPaths = pathSet (builtins.concatMap (
+      package:
+        [package.derivation]
+        ++ builtins.filter (path: path != null) (map (output: output.derivation or null) package.outputs)
+        ++ (
+          if package ? contract && package.contract != null
+          then [package.contract.document.derivation]
+          else []
+        )
+    )
+    releaseDerivations.packages);
+  rootDerivationPaths = pathSet (
+    map (root: builtins.unsafeDiscardStringContext root.drvPath) releaseDerivationRoots
+  );
   releasePackageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
   releaseSourcesComplete =
@@ -258,6 +283,7 @@ in
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
+  assert rootDerivationPaths == plannedDerivationPaths;
   assert releaseInventory.platforms == support.platforms;
   assert builtins.all (
     package:

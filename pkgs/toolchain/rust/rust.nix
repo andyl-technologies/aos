@@ -29,14 +29,21 @@
 in
   if stdenv.isCross
   then let
-    buildTool = import ./_rust-darwin-build-tool.nix {
-      inherit buildPackages src version;
-      crossCc = stdenv.cc;
-      hostPlatform = stdenv.hostPlatform;
-      inherit changeId configFileName;
-      nativeRust = buildPackages.rust;
-      nativeLlvm = buildPackages.llvm;
-    };
+    # A native compiler already carries the standard library when the target
+    # triple is identical. Rust bootstrap cannot rebuild it as a separate
+    # cross artifact because both roles share one target configuration table.
+    buildTool =
+      if stdenv.buildPlatform.config == stdenv.hostPlatform.config
+      then buildPackages.rust
+      else
+        import ./_rust-darwin-build-tool.nix {
+          inherit buildPackages src version;
+          crossCc = stdenv.cc;
+          hostPlatform = stdenv.hostPlatform;
+          inherit changeId configFileName;
+          nativeRust = buildPackages.rust;
+          nativeLlvm = buildPackages.llvm;
+        };
   in
     if stdenv.hostPlatform.isDarwin
     then

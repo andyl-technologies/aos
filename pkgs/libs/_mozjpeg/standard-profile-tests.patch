@@ -1,0 +1,20 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1571,7 +1571,7 @@
+         ${testout}_420_islow_ari.jpg ${TESTIMAGES}/testorig.ppm
+         ${MD5_JPEG_420_ISLOW_ARI})
+ 
+-      add_bittest(${jpegtran} 420-islow-ari "-arithmetic"
++      add_bittest(${jpegtran} 420-islow-ari "-revert;-arithmetic"
+         ${testout}_420_islow_ari2.jpg ${TESTIMAGES}/testimgint.jpg
+         ${MD5_JPEG_420_ISLOW_ARI})
+ 
+@@ -1588,7 +1588,7 @@
+         ${testout}_420m_ifast_ari.ppm ${TESTIMAGES}/testimgari.jpg
+         ${MD5_PPM_420M_IFAST_ARI})
+ 
+-      add_bittest(${jpegtran} 420-islow ""
++      add_bittest(${jpegtran} 420-islow "-revert"
+         ${testout}_420_islow.jpg ${TESTIMAGES}/testimgari.jpg
+         ${MD5_JPEG_420_ISLOW})
+     endif()

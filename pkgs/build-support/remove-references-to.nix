@@ -70,71 +70,71 @@
     target = [];
     role = "public-package";
   };
-  qualification.packageProbe = lib.qualification.commandProbe {
-    "primary" = {
-      "artifacts" = [
-        {
-          "path" = "reference.txt";
-          "text" = "dependency=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-target\n";
-        }
+  qualification.packageProbe = let
+    qualification = lib.qualification;
+    text = qualification.text;
+    inputHash = "0123456789abcdfghijklmnpqrsvwxyz";
+    replacementHash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    # Keep the fixture's synthetic store path out of the package contract.
+    storePath = hash:
+      qualification.template [
+        (qualification.literal "/nix")
+        (qualification.literal "/store/${hash}-target")
       ];
-      "expected" = "The selected store hash is replaced with the fixed non-reference marker.";
-      "files" = {
-        "reference.txt" = "dependency=/nix/store/0123456789abcdfghijklmnpqrsvwxyz-target\n";
+  in
+    qualification.packageProbe {
+      primary = qualification.operation {
+        artifacts = [
+          (qualification.sha256Artifact {
+            path = "reference.txt";
+            digest = "sha256:${builtins.hashString "sha256" "dependency=${builtins.storeDir}/${replacementHash}-target\n"}";
+          })
+        ];
+        expected = "The selected store hash is replaced with the fixed non-reference marker.";
+        files."reference.txt" = qualification.template [
+          (qualification.literal "dependency=")
+          (qualification.literal "/nix")
+          (qualification.literal "/store/${inputHash}-target\n")
+        ];
+        input = "A text file containing the hash portion of a syntactically valid Nix store path.";
+        operation = "Scrub that store reference in place.";
+        steps = [
+          (qualification.step {
+            argv = [
+              (qualification.template [(qualification.artifactPath {path = "bin/remove-references-to";})])
+              (text "-t")
+              (storePath inputHash)
+              (text "reference.txt")
+            ];
+            exit_code = 0;
+            stderr = text "";
+            stdout = text "";
+          })
+        ];
       };
-      "input" = "A text file containing the hash portion of a syntactically valid Nix store path.";
-      "operation" = "Scrub that store reference in place.";
-      "steps" = [
-        {
-          "argv" = [
-            "@out@/bin/remove-references-to"
-            "-t"
-            "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-target"
-            "reference.txt"
-          ];
-          "exit_code" = 0;
-          "stderr" = {
-            "exact" = "";
-          };
-          "stdout" = {
-            "exact" = "";
-          };
-        }
-      ];
-    };
-    "badInput" = {
-      "artifacts" = [
-        {
-          "path" = "reference.txt";
-          "text" = "answer=42\n";
-        }
-      ];
-      "expected" = "The tool rejects the target before changing the input file.";
-      "files" = {
-        "reference.txt" = "answer=42\n";
+      badInput = qualification.operation {
+        artifacts = [(qualification.textArtifact {path = "reference.txt"; text = "answer=42\n";})];
+        expected = "The tool rejects the target before changing the input file.";
+        files."reference.txt" = text "answer=42\n";
+        input = "A target argument outside the Nix store path grammar.";
+        operation = "Attempt to select the malformed target for reference removal.";
+        steps = [
+          (qualification.step {
+            argv = [
+              (qualification.template [(qualification.artifactPath {path = "bin/remove-references-to";})])
+              (text "-t")
+              (text "not-a-store-path")
+              (text "reference.txt")
+            ];
+            exit_code = 1;
+            observes_rejection = true;
+            stderr = text "remove-references-to: -t argument must be a Nix store path, got: not-a-store-path\n";
+            stdout = text "";
+          })
+        ];
       };
-      "input" = "A target argument outside the Nix store path grammar.";
-      "operation" = "Attempt to select the malformed target for reference removal.";
-      "steps" = [
-        {
-          "argv" = [
-            "@out@/bin/remove-references-to"
-            "-t"
-            "not-a-store-path"
-            "reference.txt"
-          ];
-          "exit_code" = 1;
-          "observes_rejection" = true;
-          "stderr" = {
-            "exact" = "remove-references-to: -t argument must be a Nix store path, got: not-a-store-path\n";
-          };
-          "stdout" = {
-            "exact" = "";
-          };
-        }
-      ];
     };
-  };
   passthru.evidenceSources = [./remove-references-to.nix];
 
   meta = {

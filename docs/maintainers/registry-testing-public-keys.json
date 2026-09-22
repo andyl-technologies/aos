@@ -37,6 +37,26 @@
       "successor_key_id": null
     },
     {
+      "key_id": "andyl-testing-tuf-stable-v1",
+      "role": "tuf-stable",
+      "public_key_base64": "UaXGsdc+AQj53P9ISSnUVKXqQIGNBqJzl3XesdGx2ZI=",
+      "public_key_sha256": "d78262e617638d91a6fd270d6c77c0b1010a15b62162d6ed31b09139ec14b781",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-testing-tuf-candidate-v1",
+      "role": "tuf-candidate",
+      "public_key_base64": "MHhxgvDO5Zlq12v5WOdcrHTMU+mlPJa9eo49+m0sXiY=",
+      "public_key_sha256": "907c3bf17065e694cfdb6c81d29717ca34f30a742047f24fa3a1b17957e345e2",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
       "key_id": "andyl-testing-tuf-edge-v1",
       "role": "tuf-edge",
       "public_key_base64": "4ZtOjBnDSFIphSkbFfOnVXVX9N1Lrt5gLViytsdOT+Y=",

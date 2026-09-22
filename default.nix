@@ -1660,6 +1660,13 @@ in {
       names = pkgs.allPackageNames;
     }
   );
+  releasePackageDerivationRoots = requireReleasePlatforms (
+    pkgs.platformSupport.releaseDerivationRoots {
+      system = hostPlatform.system;
+      packages = pkgs;
+      names = pkgs.allPackageNames;
+    }
+  );
 
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.

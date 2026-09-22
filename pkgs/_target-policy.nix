@@ -236,6 +236,28 @@ in rec {
     ) eligibleNames;
   };
 
+  # JSON evaluation discards string context from the release inventory. Expose
+  # every derivation that can appear in the plan so the release builder can
+  # register those exact roots before realizing their recorded output paths.
+  releaseDerivationRoots = {
+    system,
+    packages,
+    names,
+  }: let
+    selectedPackages = map (
+      name: packages.${name}
+    ) (publicationEligibleNames system names);
+    contractDocuments = builtins.filter (
+      document: document != null
+    ) (map (
+      package:
+        if package ? contract && package.contract != null
+        then package.contract.document
+        else null
+    ) selectedPackages);
+  in
+    selectedPackages ++ contractDocuments;
+
 
   publicationMatrix = names:
     builtins.listToAttrs (
