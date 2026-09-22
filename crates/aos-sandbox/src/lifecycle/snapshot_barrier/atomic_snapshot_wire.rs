@@ -9,6 +9,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId, Snapsho
 use super::{
     LifecycleAtomicDatasetSnapshotMemberV1, LifecycleAtomicDatasetSnapshotPlanV1,
     LifecyclePhase6ErrorV1, LifecycleResourceV1, atomic_dataset_snapshot_plan_commitment,
+    distinct_snapshot_storage_handles,
 };
 
 const MAGIC: &[u8; 8] = b"AOSASP01";
@@ -122,6 +123,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
             || inventory.as_bytes() == &[0; 32]
             || !closed_resources.windows(2).all(|pair| pair[0] < pair[1])
             || !members.windows(2).all(|pair| pair[0] < pair[1])
+            || !distinct_snapshot_storage_handles(&members)
             || members.iter().any(|member| {
                 !closed_resources.contains(&member.resource)
                     || !matches!(member.resource, LifecycleResourceV1::Sandbox(_))

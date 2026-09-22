@@ -1154,18 +1154,11 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
         let snapshot = LifecycleResourceV1::Snapshot(plan.snapshot());
-        let matching = current
-            .transitions
+        let mut expected_transitions = plan
+            .members()
             .iter()
-            .filter(|transition| {
-                transition.kind == LifecycleStorageTransitionKindV1::Snapshot
-                    && transition.resource == snapshot
-                    && transition.effect_request == plan.effect_commitment()
-            })
-            .collect::<Vec<_>>();
-        if matching.len() != plan.members().len()
-            || plan.members().iter().any(|member| {
-                let expected_identity = ObjectDigest::from_bytes(
+            .map(|member| {
+                let identity = ObjectDigest::from_bytes(
                     Sha256::new()
                         .chain_update(b"aos.sandbox.storage.atomic-snapshot-transition.v1\0")
                         .chain_update(program.as_bytes())
@@ -1175,18 +1168,48 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
                         .finalize()
                         .into(),
                 );
-                !matching.iter().any(|transition| {
-                    transition.effect_subject == member.storage_handle()
-                        && transition.identity == expected_identity
-                }) || !current.entries.iter().any(|entry| {
-                    entry.kind == LifecycleStorageInventoryKindV1::Snapshot
-                        && entry.resource == snapshot
-                        && entry.effect_request == plan.effect_commitment()
-                        && entry.lifecycle_operation == Some(plan.operation())
-                        && entry.effect_subject == member.storage_handle()
-                })
+                (member.storage_handle(), identity)
             })
-        {
+            .collect::<Vec<_>>();
+        expected_transitions.sort_unstable();
+
+        let mut expected_handles = plan
+            .members()
+            .iter()
+            .map(|member| member.storage_handle())
+            .collect::<Vec<_>>();
+        expected_handles.sort_unstable();
+        if !expected_handles.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+
+        let mut observed_transitions = current
+            .transitions
+            .iter()
+            .filter(|transition| {
+                transition.kind == LifecycleStorageTransitionKindV1::Snapshot
+                    && transition.resource == snapshot
+                    && transition.effect_request == plan.effect_commitment()
+            })
+            .map(|transition| (transition.effect_subject, transition.identity))
+            .collect::<Vec<_>>();
+        observed_transitions.sort_unstable();
+
+        let mut observed_handles = current
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == LifecycleStorageInventoryKindV1::Snapshot
+                    && entry.resource == snapshot
+                    && entry.effect_request == plan.effect_commitment()
+                    && entry.lifecycle_operation == Some(plan.operation())
+            })
+            .map(|entry| entry.effect_subject)
+            .collect::<Vec<_>>();
+        observed_handles.sort_unstable();
+
+        // Equal bounded sets exclude both missing members and surplus catalog rows.
+        if observed_transitions != expected_transitions || observed_handles != expected_handles {
             return Err(LifecyclePhase6ErrorV1::InvalidTransition);
         }
         Ok(Self {

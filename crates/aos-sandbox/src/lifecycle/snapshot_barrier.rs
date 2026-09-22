@@ -1,5 +1,7 @@
 //! LIFE-01 dependency-closure freeze and atomic snapshot orchestration.
 
+use std::collections::BTreeSet;
+
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId, SnapshotId};
 use sha2::{Digest as _, Sha256};
 
@@ -393,6 +395,7 @@ impl LifecycleSnapshotBarrierV1 {
         if members.is_empty()
             || members.len() > super::MAXIMUM_LIFECYCLE_EXPECTATIONS
             || !members.windows(2).all(|pair| pair[0] < pair[1])
+            || !distinct_snapshot_storage_handles(&members)
             || members.iter().any(|member| {
                 member.storage_handle.as_bytes() == &[0; 32]
                     || member.physical_identity.as_bytes() == &[0; 32]
@@ -825,6 +828,13 @@ impl LifecycleSnapshotBarrierV1 {
         }
         Ok(())
     }
+}
+
+fn distinct_snapshot_storage_handles(members: &[LifecycleAtomicDatasetSnapshotMemberV1]) -> bool {
+    let mut handles = BTreeSet::new();
+    members
+        .iter()
+        .all(|member| handles.insert(member.storage_handle))
 }
 
 pub(super) fn barrier_plan_identity(
