@@ -45,8 +45,8 @@ use aos_proto::aos::sandbox::v1::{
     SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
-    CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId, ProjectId,
-    RawClockProvenance, RawPairedClockSample, SandboxId,
+    CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
+    RawClockProvenance, RawPairedClockSample,
 };
 use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
@@ -71,8 +71,7 @@ use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::controller_service::public_projection::{
-    AuthorizedPublicProjectionReadV1, PublicProjectionKindV1, PublicProjectionQueryV1,
-    PublicProjectionRecordV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
 };
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
@@ -82,7 +81,7 @@ use aos_sandbox::lifecycle::{
     LifecycleCancelIdempotencyDigestV1, LifecycleProgressCommitOutcomeV1,
     LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
     LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
-    LifecycleTimeV1, lifecycle_runtime_admission_fence_from_journal_v1,
+    LifecycleTimeV1, lifecycle_public_mutation_admission_v1,
 };
 use aos_sandbox::mount_preparation::MountCatalogPreparationError;
 use aos_sandbox::production_operation_compiler::ProductionOperationCompilerV1;
@@ -1612,106 +1611,53 @@ impl ProductionEffectExecutor {
             })
     }
 
-    fn validate_runtime_admission_fence(
+    fn validate_lifecycle_admission(
         &self,
+        operation: OperationId,
         context: &PublicMutationEffectV1,
         request: &DormantSandboxRequestKindV1,
         journal: &mut Journal,
     ) -> Result<(), EffectFailure> {
-        let Some(sandbox) = runtime_bound_sandbox(request, context.project(), journal)? else {
+        if !is_lifecycle_mutation(request) {
             return Ok(());
-        };
+        }
 
-        lifecycle_runtime_admission_fence_from_journal_v1(
+        lifecycle_public_mutation_admission_v1(
             journal,
+            operation,
             context.project(),
-            sandbox,
             self.node,
+            request,
         )
         .map(|_| ())
         .map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
 }
 
-fn runtime_bound_sandbox(
-    request: &DormantSandboxRequestKindV1,
-    project: ProjectId,
-    journal: &Journal,
-) -> Result<Option<SandboxId>, EffectFailure> {
+const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
     use DormantSandboxRequestKindV1 as Request;
 
-    let direct = match request {
-        Request::Stop(request) | Request::Suspend(request) | Request::Resume(request) => {
-            Some(request.sandbox_id.as_slice())
-        }
-        Request::Exec(request) => Some(request.sandbox_id.as_slice()),
-        Request::ViewAttach(request) => Some(request.sandbox_id.as_slice()),
-        Request::Snapshot(request) => Some(request.sandbox_id.as_slice()),
-        _ => None,
-    };
-    if let Some(sandbox) = direct {
-        return exact_sandbox_id(sandbox).map(Some);
-    }
-
-    let related = match request {
-        Request::ExecutionControl(request) => Some((
-            PublicProjectionKindV1::Execution,
-            request.execution_id.as_slice(),
-        )),
-        Request::CancelExec(request) => Some((
-            PublicProjectionKindV1::Execution,
-            request.execution_id.as_slice(),
-        )),
-        Request::ViewReplace(request) => Some((
-            PublicProjectionKindV1::Attachment,
-            request.attachment_id.as_slice(),
-        )),
-        Request::ViewDetach(request) => Some((
-            PublicProjectionKindV1::Attachment,
-            request.attachment_id.as_slice(),
-        )),
-        _ => None,
-    };
-    let Some((kind, identity)) = related else {
-        return Ok(None);
-    };
-    let identity: [u8; 16] = identity.try_into().map_err(|_| {
-        EffectFailure::Permanent("runtime-bound resource identity is invalid".to_owned())
-    })?;
-    let projection = PublicProjectionStoreV1::new(journal)
-        .get(kind, identity)
-        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
-        .ok_or_else(|| {
-            EffectFailure::Permanent("runtime-bound public resource is unavailable".to_owned())
-        })?;
-    if projection.project() != project {
-        return Err(EffectFailure::Permanent(
-            "runtime-bound public resource belongs to another project".to_owned(),
-        ));
-    }
-    match projection.resource() {
-        PublicProjectionResourceV1::Execution(execution) => {
-            exact_sandbox_id(&execution.sandbox_id).map(Some)
-        }
-        PublicProjectionResourceV1::Attachment(attachment) => {
-            exact_sandbox_id(&attachment.sandbox_id).map(Some)
-        }
-        _ => Err(EffectFailure::Permanent(
-            "runtime-bound public resource has the wrong schema".to_owned(),
-        )),
-    }
-}
-
-fn exact_sandbox_id(bytes: &[u8]) -> Result<SandboxId, EffectFailure> {
-    let identity: [u8; 16] = bytes.try_into().map_err(|_| {
-        EffectFailure::Permanent("runtime-bound sandbox identity is invalid".to_owned())
-    })?;
-    if identity == [0; 16] {
-        return Err(EffectFailure::Permanent(
-            "runtime-bound sandbox identity is invalid".to_owned(),
-        ));
-    }
-    Ok(SandboxId::from_bytes(identity))
+    matches!(
+        request,
+        Request::Create(_)
+            | Request::UpdatePolicy(_)
+            | Request::Start(_)
+            | Request::Stop(_)
+            | Request::Suspend(_)
+            | Request::Resume(_)
+            | Request::Delete(_)
+            | Request::Exec(_)
+            | Request::CancelExec(_)
+            | Request::ViewCreate(_)
+            | Request::ViewAttach(_)
+            | Request::ViewReplace(_)
+            | Request::ViewDetach(_)
+            | Request::ViewRelease(_)
+            | Request::Snapshot(_)
+            | Request::Restore(_)
+            | Request::Fork(_)
+            | Request::DeleteSnapshot(_)
+    )
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
@@ -1872,7 +1818,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         let request = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-        self.validate_runtime_admission_fence(&context, &request, journal)?;
+        self.validate_lifecycle_admission(operation_id, &context, &request, journal)?;
         Err(EffectFailure::Retryable(
             CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
         ))
