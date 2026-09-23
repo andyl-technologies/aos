@@ -1467,7 +1467,6 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
     pub fn into_cache_owner_pin_admission(
         self,
         action: super::CacheOwnerPinActionV1,
-        id: super::CacheOwnerPinIdV1,
         partition: PhysicalPartitionId,
         descriptor: ObjectDescriptor,
         owner: &super::DormantCacheOwnerV1,
@@ -1478,7 +1477,6 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
         };
         let exact_pin = self.current_pin_effect.as_ref().is_some_and(|effect| {
             effect.action == expected_action
-                && effect.pin.id.as_bytes() == id.as_bytes()
                 && effect.pin.partition == partition
                 && effect.pin.object == descriptor
         });
@@ -1490,6 +1488,12 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
         {
             return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
         }
+        let pin = self
+            .current_pin_effect
+            .as_ref()
+            .ok_or(CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+        let id = super::CacheOwnerPinIdV1::for_cache_pin(partition, pin.pin.id)
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
         Ok(super::CacheOwnerPinAdmissionV1::from_verified(
             self.transaction_digest(),
             action,

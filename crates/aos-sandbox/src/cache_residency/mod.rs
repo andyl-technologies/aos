@@ -70,7 +70,8 @@ pub use effect_owner::{
     CacheOrphanResolutionPendingV1, CacheOwnerAdmissionV1, CacheOwnerCurrentnessV1,
     CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerLimitsV1,
     CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
-    CacheOwnerRecoveryFailureV1, DormantCacheOwnerV1, EvictedCacheObjectV1,
+    CacheOwnerPinPresenceV1, CacheOwnerPinSnapshotV1, CacheOwnerRecoveryFailureV1,
+    DormantCacheOwnerV1, EvictedCacheObjectV1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use effect_owner::{
@@ -119,6 +120,8 @@ pub use read_authority::{
     ReadAuthorityError, ReadBackingObservationV1, confirm_descriptor_handoff,
     prepare_descriptor_handoff,
 };
+#[cfg(target_os = "linux")]
+pub use recovery::CacheLogicalOwnerPinDiscrepancyV1;
 pub use recovery::{
     CacheAtomicObjectPayloadV1, CacheGlobalRecoveryStateV1, CacheLookupStateV1, CachePoisonLatchV1,
     CacheReadHandoffStateV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1, CacheRecoveryWorkV1,

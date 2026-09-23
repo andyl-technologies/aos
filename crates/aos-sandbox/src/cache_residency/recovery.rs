@@ -61,10 +61,15 @@ mod codec;
 mod global;
 mod logical_pin_acquisition;
 mod logical_pin_release;
+#[cfg(target_os = "linux")]
+mod owner_reconcile;
 mod reducer;
 mod replay;
 mod state;
 mod transition;
+
+#[cfg(target_os = "linux")]
+pub use owner_reconcile::CacheLogicalOwnerPinDiscrepancyV1;
 
 use accounting_projection::*;
 use canonical::*;
@@ -916,6 +921,13 @@ pub enum CacheRecoveryWorkV1 {
         /// Exact latest durable record.
         record_digest: ObjectDigest,
     },
+    /// Compare every retained logical pin and release tombstone with the owner manifest.
+    ReconcileLogicalOwnerPins {
+        /// Physical partition whose complete reconstructed pin set must be scanned.
+        partition: PhysicalPartitionId,
+        /// Exact retained history head covered by this recovery inventory.
+        history_head: ObjectDigest,
+    },
     /// Resolve or abort a prepared descriptor handoff before its deadline.
     ObservePendingHandoff {
         /// Immutable handoff operation identity.
@@ -1279,6 +1291,26 @@ impl CacheRecoveryInventoryV1 {
                 }
                 work.push(item);
             }
+        }
+        let has_logical_owner_obligations = latest.values().any(|payload| {
+            payload
+                .pins
+                .iter()
+                .any(|pin| pin.kind == CachePinKindV1::LogicalLease)
+                || payload
+                    .released_pins
+                    .iter()
+                    .any(|released| released.pin.kind == CachePinKindV1::LogicalLease)
+        });
+        if has_logical_owner_obligations {
+            push_recovery_work(
+                &mut work,
+                limits.maximum_work_items,
+                CacheRecoveryWorkV1::ReconcileLogicalOwnerPins {
+                    partition,
+                    history_head: expected_predecessor,
+                },
+            )?;
         }
         for handoff in &global.handoffs {
             let item = if handoff_is_terminal(handoff) {

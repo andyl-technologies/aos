@@ -1,5 +1,6 @@
 //! Current protected-state fencing for physical Cache pin effects.
 
+use crate::cache_residency::pin::valid_logical_renewal;
 use crate::cache_residency::{CachePinV1, CacheRecordKindV1, decode_atomic_object_record};
 use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
 
@@ -111,7 +112,11 @@ pub(super) fn current_physical_pin_effect(
                 .find(|latest| latest.record.subject == payload.record.subject)
         });
     let still_retained = current.is_some_and(|latest| match action {
-        CurrentPhysicalPinActionV1::Acquire => latest.pins.iter().any(|active| active == &pin),
+        // Renewal changes the lease authority, not the physical obligation.
+        CurrentPhysicalPinActionV1::Acquire => latest
+            .pins
+            .iter()
+            .any(|active| active == &pin || valid_logical_renewal(&pin, active)),
         CurrentPhysicalPinActionV1::Release => latest.released_pins.iter().any(|released| {
             released.pin == pin && released.drain.digest() == payload.record.authority
         }),

@@ -24,8 +24,8 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AuthorizedLookupKey, CacheAuthorityOwner, CacheReservationV1, CurrentReadAuthorityV1,
-    ImmutableAdmissionPlanV1, PhysicalPartitionId, SealProfileV1,
+    AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
+    CurrentReadAuthorityV1, ImmutableAdmissionPlanV1, PhysicalPartitionId, SealProfileV1,
     ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
 };
 
@@ -75,6 +75,26 @@ impl CacheOwnerLimitsV1 {
 pub struct CacheOwnerPinIdV1([u8; 16]);
 
 impl CacheOwnerPinIdV1 {
+    /// Derives an owner-global identity for a partition-local protected pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheOwnerErrorV1::InvalidPin`] if the truncated commitment is
+    /// the reserved zero identity.
+    pub fn for_cache_pin(
+        partition: PhysicalPartitionId,
+        pin: CachePinId,
+    ) -> Result<Self, CacheOwnerErrorV1> {
+        let digest = Sha256::new()
+            .chain_update(b"aos.sandbox.cache.owner-pin-id.v1\0")
+            .chain_update(partition.digest().as_bytes())
+            .chain_update(pin.as_bytes())
+            .finalize();
+        let mut id = [0; 16];
+        id.copy_from_slice(&digest[..16]);
+        Self::from_bytes(id)
+    }
+
     /// Constructs a nonzero owner-local pin identity.
     ///
     /// # Errors
@@ -388,6 +408,62 @@ pub enum CacheOwnerPinActionV1 {
     Release,
 }
 
+/// Reports whether one exact owner-local pin is present in the current manifest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheOwnerPinPresenceV1 {
+    /// The exact partition and object retain this pin.
+    Present,
+    /// No durable owner entry retains this pin identity.
+    Absent,
+}
+
+/// Borrows one validated, owner-locked durable manifest for batch pin observation.
+pub struct CacheOwnerPinSnapshotV1<'owner> {
+    owner: &'owner DormantCacheOwnerV1,
+}
+
+impl CacheOwnerPinSnapshotV1<'_> {
+    /// Observes one exact pin without reopening the already-validated manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a conflicting identity or inconsistent pin index.
+    pub fn observe_pin(
+        &self,
+        id: CacheOwnerPinIdV1,
+        partition: PhysicalPartitionId,
+        descriptor: &ObjectDescriptor,
+    ) -> Result<CacheOwnerPinPresenceV1, CacheOwnerErrorV1> {
+        let key = ObjectKey {
+            partition: partition.digest(),
+            descriptor: descriptor.clone(),
+        };
+        match self.owner.pin_index.get(&id) {
+            Some(existing) if existing == &key => {
+                let entry = self
+                    .owner
+                    .disk
+                    .get(existing)
+                    .ok_or(CacheOwnerErrorV1::RecoveryMismatch)?;
+                if !entry.pins.contains(&id) {
+                    return Err(CacheOwnerErrorV1::RecoveryMismatch);
+                }
+                Ok(CacheOwnerPinPresenceV1::Present)
+            }
+            Some(_) => Err(CacheOwnerErrorV1::InvalidPin),
+            None if self
+                .owner
+                .disk
+                .get(&key)
+                .is_some_and(|entry| entry.pins.contains(&id)) =>
+            {
+                Err(CacheOwnerErrorV1::RecoveryMismatch)
+            }
+            None => Ok(CacheOwnerPinPresenceV1::Absent),
+        }
+    }
+}
+
 impl CacheOwnerPinAdmissionV1 {
     pub(crate) fn from_verified(
         transaction: ObjectDigest,
@@ -603,6 +679,35 @@ impl DormantCacheOwnerV1 {
         expected: CacheOwnerCurrentnessV1,
     ) -> Result<(), CacheOwnerErrorV1> {
         self.validate_durable_head(expected)
+    }
+
+    /// Observes one exact physical pin against the current durable manifest.
+    ///
+    /// A missing pin is distinct from an identity bound to another object;
+    /// the latter is a conflict, never a successful no-effect release.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner is fenced, the manifest changed, or
+    /// retained pin indexing disagrees with the exact object and partition.
+    pub fn observe_pin(
+        &self,
+        id: CacheOwnerPinIdV1,
+        partition: PhysicalPartitionId,
+        descriptor: &ObjectDescriptor,
+    ) -> Result<CacheOwnerPinPresenceV1, CacheOwnerErrorV1> {
+        self.pin_snapshot()?.observe_pin(id, partition, descriptor)
+    }
+
+    /// Validates and borrows one owner-locked manifest for bounded pin scans.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner is fenced or its durable head changed.
+    pub fn pin_snapshot(&self) -> Result<CacheOwnerPinSnapshotV1<'_>, CacheOwnerErrorV1> {
+        self.ensure_unfenced()?;
+        self.validate_durable_head(self.currentness())?;
+        Ok(CacheOwnerPinSnapshotV1 { owner: self })
     }
 
     fn validate_durable_head(

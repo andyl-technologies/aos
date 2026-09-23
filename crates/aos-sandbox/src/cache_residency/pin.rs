@@ -219,6 +219,42 @@ impl CachePinV1 {
         self.id
     }
 
+    /// Returns the physical cache partition retaining this obligation.
+    #[must_use]
+    pub const fn partition(&self) -> PhysicalPartitionId {
+        self.partition
+    }
+
+    /// Borrows the exact immutable object retained by this obligation.
+    #[must_use]
+    pub const fn object(&self) -> &ObjectDescriptor {
+        &self.object
+    }
+
+    /// Returns the consumer project.
+    #[must_use]
+    pub const fn project(&self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the consumer view.
+    #[must_use]
+    pub const fn view(&self) -> ViewId {
+        self.view
+    }
+
+    /// Returns the consuming attachment, when the pin is attachment-scoped.
+    #[must_use]
+    pub const fn attachment(&self) -> Option<AttachmentId> {
+        self.attachment
+    }
+
+    /// Returns the obligation class.
+    #[must_use]
+    pub const fn kind(&self) -> CachePinKindV1 {
+        self.kind
+    }
+
     /// Returns the exact acquisition evidence required by a later release.
     #[must_use]
     pub const fn evidence(&self) -> ObjectDigest {
