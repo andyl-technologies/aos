@@ -1,8 +1,8 @@
-//! Offline sandbox-root builder seam for the dormant guest agent.
+//! Offline sandbox-root builder seams for dormant and concrete guest agents.
 //!
-//! The builder materializes a fixed executable and its protected credential
-//! record into a caller-provided staging root. Nothing invokes it from current
-//! packaging or activation code.
+//! Each builder materializes exact package-pinned executables and a protected
+//! agent credential into a caller-provided staging root. Neither installs
+//! OpenSSH route trust material or activates the guest transport.
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
@@ -14,6 +14,74 @@ use sha2::{Digest as _, Sha256};
 
 const EXECUTABLE_RELATIVE_PATH: &str = "usr/libexec/aos-sandbox-agent";
 const CREDENTIAL_RELATIVE_PATH: &str = "run/credentials/aos-sandbox-agent/guest-executable-v1";
+const CONCRETE_AGENT_PATH: &str = "usr/libexec/aos-sandbox-guest-agent";
+const CONCRETE_HELPER_PATH: &str = "usr/libexec/aos-sandbox-guest-exec";
+const CONCRETE_GATE_PATH: &str = "usr/libexec/aos-sandbox-exec-gate";
+const SSHD_SESSION_PATH: &str = "usr/libexec/sshd-session";
+
+/// Pins one executable source to its expected package content digest.
+pub struct GuestExecutableInputV1 {
+    /// Absolute path to an AOS-built executable.
+    pub source: PathBuf,
+    /// SHA-256 of its complete executable bytes.
+    pub digest: ObjectDigest,
+}
+
+/// Names all binaries required by the concrete guest process and attach owner.
+pub struct ConcreteGuestRootBuildPlanV1 {
+    /// Offline staging root, not an active guest filesystem.
+    pub staging_root: PathBuf,
+    /// Protected agent executable installed at its fixed libexec path.
+    pub agent: GuestExecutableInputV1,
+    /// Admission-only child launcher installed beside the agent.
+    pub helper: GuestExecutableInputV1,
+    /// Forced-command gate executable installed at its fixed path.
+    pub gate: GuestExecutableInputV1,
+    /// AOS OpenSSH session helper used for peer ancestry verification.
+    pub sshd_session: GuestExecutableInputV1,
+    /// Protected package binding carried by agent provisioning.
+    pub credential_binding: ObjectDigest,
+}
+
+/// Materializes exact package-pinned guest binaries into an offline root.
+///
+/// This does not install route-specific OpenSSH keys or configuration. The
+/// attach gate remains unavailable until a separate authenticated installer
+/// supplies those files and a physical readback verifies them.
+///
+/// # Errors
+///
+/// Returns an error for invalid source commitments, substituted executable
+/// bytes, or occupied destination paths.
+pub fn build_concrete_guest_root_v1(
+    plan: &ConcreteGuestRootBuildPlanV1,
+) -> Result<(), DormantGuestRootBuildErrorV1> {
+    if !plan.staging_root.is_absolute() || plan.credential_binding.as_bytes() == &[0; 32] {
+        return Err(DormantGuestRootBuildErrorV1::InvalidPlan);
+    }
+
+    for (input, relative_path) in [
+        (&plan.agent, CONCRETE_AGENT_PATH),
+        (&plan.helper, CONCRETE_HELPER_PATH),
+        (&plan.gate, CONCRETE_GATE_PATH),
+        (&plan.sshd_session, SSHD_SESSION_PATH),
+    ] {
+        if !input.source.is_absolute() || input.digest.as_bytes() == &[0; 32] {
+            return Err(DormantGuestRootBuildErrorV1::InvalidPlan);
+        }
+        let bytes = read_bounded(&input.source)?;
+        if content_digest(&bytes) != input.digest {
+            return Err(DormantGuestRootBuildErrorV1::ExecutableMismatch);
+        }
+        write_new_file(&plan.staging_root.join(relative_path), 0o500, &bytes)?;
+    }
+
+    write_credential(
+        &plan.staging_root,
+        plan.agent.digest,
+        plan.credential_binding,
+    )
+}
 
 /// Describes exact offline inputs for one dormant guest root.
 pub struct DormantGuestRootBuildPlanV1 {
@@ -69,14 +137,26 @@ pub fn build_dormant_guest_root_v1(
     let executable_target = plan.staging_root.join(EXECUTABLE_RELATIVE_PATH);
     write_new_file(&executable_target, 0o500, &executable_bytes)?;
 
+    write_credential(
+        &plan.staging_root,
+        plan.executable_digest,
+        plan.credential_binding,
+    )
+}
+
+fn write_credential(
+    staging_root: &Path,
+    executable_digest: ObjectDigest,
+    credential_binding: ObjectDigest,
+) -> Result<(), DormantGuestRootBuildErrorV1> {
     let mut credential = Vec::with_capacity(104);
     credential.extend_from_slice(b"AOSGEX01");
-    credential.extend_from_slice(plan.executable_digest.as_bytes());
-    credential.extend_from_slice(plan.credential_binding.as_bytes());
+    credential.extend_from_slice(executable_digest.as_bytes());
+    credential.extend_from_slice(credential_binding.as_bytes());
     let checksum = content_digest(&credential);
     credential.extend_from_slice(checksum.as_bytes());
     write_new_file(
-        &plan.staging_root.join(CREDENTIAL_RELATIVE_PATH),
+        &staging_root.join(CREDENTIAL_RELATIVE_PATH),
         0o400,
         &credential,
     )

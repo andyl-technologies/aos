@@ -1,4 +1,4 @@
-##! aos-sandbox-agent — dormant independently packaged guest executable
+##! aos-sandbox-agent — independently packaged protected guest executables
 {
   lib,
   mkCargoPackage,
@@ -40,7 +40,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-agent --bin aos-sandbox-agent"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec -p aos-sandbox-agent --bin aos-sandbox-exec-gate"
     ];
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
@@ -50,13 +50,15 @@ in
     pname = "aos-sandbox-agent";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-agent --bin aos-sandbox-agent";
+    cargoFlags = "-p aos-sandbox-guest --bin aos-sandbox-guest-agent --bin aos-sandbox-guest-exec -p aos-sandbox-agent --bin aos-sandbox-exec-gate";
     doCheck = false;
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
 
     postInstall = ''
-      test -x "$out/bin/aos-sandbox-agent"
+      test -x "$out/bin/aos-sandbox-guest-agent"
+      test -x "$out/bin/aos-sandbox-guest-exec"
+      test -x "$out/bin/aos-sandbox-exec-gate"
     '';
 
     passthru = {
@@ -65,7 +67,7 @@ in
     };
 
     meta = {
-      description = "Dormant independently packaged AOS sandbox guest agent";
+      description = "Protected AOS sandbox guest agent, execution helper, and attach gate";
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
       platforms = ["x86_64-linux" "aarch64-linux"];
