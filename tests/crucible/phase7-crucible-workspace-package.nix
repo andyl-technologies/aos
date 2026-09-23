@@ -12,7 +12,7 @@
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
   phaseTemplates = import ../../stdenv/phases.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-wdfH6cGtVp6EUr8KEZp9DGir7+WQ7AlCPWuT+tOhWBo=";
+  expectedCargoDepsHash = "sha256-KZOyMSlKc2Qr4LjVk6+iyd0jnCpsGvvAeqzbcFDtopQ=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
@@ -82,7 +82,11 @@
       }
       {
         label = "workspace membership comes from Cargo metadata";
-        needle = "workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
+        needle = "workspaceMembers = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
+      }
+      {
+        label = "workspace package names resolve from each member manifest";
+        needle = "workspacePackages = map workspacePackageName workspaceMembers;";
       }
       {
         label = "workspace cargo flags";
@@ -118,7 +122,7 @@
       }
       {
         label = "doctests run hermetically";
-        needle = "cargo test \\\n        --doc";
+        needle = "cargo test \\\n            --doc";
       }
       {
         label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";
