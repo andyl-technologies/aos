@@ -1961,6 +1961,7 @@
     ],
     # Whether to populate repository_cache via empty workspace sync
     populateBCR ? true,
+    captureModuleLock ? false,
   }: let
     toolsPath = builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/bin") tools
@@ -1979,6 +1980,9 @@
         )
         scrubMap
       )
+    );
+    scrubMatchArgs = builtins.concatStringsSep " " (
+      map (path: "-e '${path}'") (builtins.attrNames scrubMap)
     );
     padPlaceholder = path: placeholder: let
       padding = builtins.stringLength path - builtins.stringLength placeholder;
@@ -2110,6 +2114,18 @@
             ${fetchFlagsStr} \
             ${bazelTarget}
 
+          # Preserve registry digests resolved by Bzlmod. Offline analysis
+          # needs them to find registry files in the content-addressed cache.
+          ${
+            if captureModuleLock
+            then ''
+              if [ -f MODULE.bazel.lock ]; then
+                cp MODULE.bazel.lock "$bazelOut/external/aos-module-lock.json"
+              fi
+            ''
+            else ""
+          }
+
           # --- Standard cleanup ---
 
           # Remove built-in workspaces (Bazel recreates them)
@@ -2147,11 +2163,15 @@
               # --- Store path scrubbing ---
               # Binary substitutions must preserve offsets; text substitutions
               # stay compact. Rewrite through scratch files so read-only caches
-              # retain their original modes.
+              # retain their original modes. Only files containing a mapped
+              # path need rewriting; large source archives otherwise trigger
+              # several subprocesses for every unaffected source file.
               find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -aFlZ ${scrubMatchArgs} \
                 | xargs -0 -r grep -IlZ . \
                 | xargs -0 -r sh ${scrubTextFiles}
               find "$bazelOut/external" -type f -print0 \
+                | xargs -0 -r grep -aFlZ ${scrubMatchArgs} \
                 | xargs -0 -r grep -ILZ . \
                 | xargs -0 -r sh ${scrubBinaryFiles}
             ''
@@ -2165,8 +2185,8 @@
           cp -a "$bazelOut/external" "$out"
 
           # Normalize permissions for reproducibility
-          find "$out" -type f -exec chmod 644 {} \;
-          find "$out" -type d -exec chmod 755 {} \;
+          find "$out" -type f -exec chmod 644 {} +
+          find "$out" -type d -exec chmod 755 {} +
         ''
       ];
 
@@ -2179,7 +2199,7 @@
       hashMode = "recursive";
       sourceInputs = [builtins.toString src];
       builderParameters = {
-        inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR system;
+        inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR captureModuleLock system;
         environment = builtins.mapAttrs (_: value: builtins.toString value) env;
         scrub = scrubMap;
         tools = builtins.map builtins.toString tools;

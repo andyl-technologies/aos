@@ -11,6 +11,11 @@ Its signing material remains separate from `andyl/main`.
 reading operator-held key files. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
 
+The testing TUF root keeps a separate key for each of the root, targets,
+stable, candidate, edge, snapshot, and timestamp roles. Each role uses a
+one-of-one threshold in this experimental registry. The stronger multi-key
+thresholds remain mandatory for `andyl/main`.
+
 The [public key inventory](registry-testing-public-keys.json) records separate
 testing and production Hub receipt authorities. A prepared key is not an
 activated release authority: signed trust metadata and the applicable release

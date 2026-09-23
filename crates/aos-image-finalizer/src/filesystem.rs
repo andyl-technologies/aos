@@ -31,9 +31,11 @@ pub async fn extract_erofs(
         bail!("EROFS extraction destination already exists");
     }
     let extract = format!("--extract={}", path_text(destination)?);
+    // Large root images exceed the bounded diagnostic capture at default verbosity.
     let _ = fsck_erofs
         .run(
             [
+                "-d0",
                 extract.as_str(),
                 "--xattrs",
                 "--preserve",
@@ -68,9 +70,11 @@ pub async fn rebuild_erofs(
     }
     let compression = format!("zstd,level={}", layout.erofs_compression_level);
     let output_text = path_text(output)?;
+    // Large root trees otherwise overflow the bounded stdout capture.
     let _ = mkfs_erofs
         .run(
             [
+                "--quiet",
                 "--all-root",
                 "-T0",
                 "-U",
@@ -89,7 +93,9 @@ pub async fn rebuild_erofs(
         )
         .await?;
     require_bounded_file(output, maximum_bytes, "rebuilt EROFS")?;
-    let _ = fsck_erofs.run([output_text], MAX_TOOL_STDOUT_BYTES).await?;
+    let _ = fsck_erofs
+        .run(["-d0", output_text], MAX_TOOL_STDOUT_BYTES)
+        .await?;
     Ok(())
 }
 
