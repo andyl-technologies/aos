@@ -957,6 +957,7 @@ fn validate_projected_interfaces(projection: &PackageAbilityProjection) -> Resul
         bail!("retained interface documents are not in canonical descriptor order");
     }
     let mut retained = BTreeMap::new();
+    let mut identities_by_name = BTreeMap::<InterfaceName, BTreeSet<InterfaceKey>>::new();
     for entry in &projection.interface_documents {
         let identity = entry
             .document
@@ -965,19 +966,50 @@ fn validate_projected_interfaces(projection: &PackageAbilityProjection) -> Resul
         if identity.descriptor != entry.descriptor {
             bail!("retained interface descriptor differs from its document");
         }
-        if retained.insert(identity.clone(), ()).is_some() {
+        if retained.insert(identity.clone(), &entry.document).is_some() {
             bail!("ability projection repeats a retained interface document");
         }
+        identities_by_name
+            .entry(identity.name.clone())
+            .or_default()
+            .insert(identity);
     }
 
-    let declared = projection
+    let mut reachable = projection
         .interfaces
         .values()
         .cloned()
         .collect::<BTreeSet<_>>();
-    let retained = retained.into_keys().collect::<BTreeSet<_>>();
-    if declared != retained {
-        bail!("package interface declarations differ from retained interface documents");
+    let mut pending = reachable.iter().cloned().collect::<Vec<_>>();
+
+    while let Some(identity) = pending.pop() {
+        let document = retained
+            .get(&identity)
+            .context("package interface declaration lacks its retained document")?;
+
+        for method in document.interface.methods.values() {
+            let targets = identities_by_name
+                .get(&method.target_resource)
+                .context("ability method target resource lacks a retained interface document")?;
+            if targets.len() != 1 {
+                bail!(
+                    "ability method target resource has conflicting retained interface documents"
+                );
+            }
+            let target = targets
+                .iter()
+                .next()
+                .context("empty target interface set")?;
+            if reachable.insert(target.clone()) {
+                pending.push(target.clone());
+            }
+        }
+    }
+
+    if reachable != retained.keys().cloned().collect() {
+        bail!(
+            "retained interface documents differ from the package's interface dependency closure"
+        );
     }
     Ok(())
 }

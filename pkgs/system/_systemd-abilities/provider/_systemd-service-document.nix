@@ -1048,29 +1048,29 @@
       builtins.sort
       (left: right: left.systemd_unit.unit_name < right.systemd_unit.unit_name)
       (lib.optional (selection.kind != "instance") primary ++ socketUnits ++ directoryUnits);
-    links =
-      builtins.sort
-      (left: right: builtins.toJSON left < builtins.toJSON right)
-      (installationLinks serviceIdentity value
-        ++ builtins.concatMap (socket: let
-          socketIdentity = {
+    socketInstallationLinks = builtins.concatMap (socket: let
+      socketIdentity = {
+        kind = "unit";
+        unit_name = socket.systemd_unit.unit_name;
+      };
+    in
+      if value.enabled && (socket.enabled or true)
+      then [
+        {
+          parent = {
             kind = "unit";
-            unit_name = socket.systemd_unit.unit_name;
+            unit_name = "sockets.target";
           };
-        in
-          if value.enabled && (socket.enabled or true)
-          then [
-            {
-              parent = {
-                kind = "unit";
-                unit_name = "sockets.target";
-              };
-              child = socketIdentity;
-              relationship = "wants";
-            }
-          ]
-          else [])
-        socketUnits);
+          child = socketIdentity;
+          relationship = "wants";
+        }
+      ]
+      else [])
+    socketUnits;
+    # The implicit boot target may also be requested by a service feature.
+    links = lib.unique (builtins.sort
+      (left: right: builtins.toJSON left < builtins.toJSON right)
+      (installationLinks serviceIdentity value ++ socketInstallationLinks));
     aliases =
       if managerIdentity == null
       then []

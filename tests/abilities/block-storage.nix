@@ -17,6 +17,10 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   storageInterfaces = lib.abilities.interfaces.blockStorage.interfaces;
   storageTypes = lib.abilities.interfaces.blockStorage.types;
+  metadataProjection = pkgs.aos-metadata-provider.contract.value;
+  metadataRetainedInterfaces = builtins.map (entry:
+    entry.document.interface.name)
+  metadataProjection.interface_documents;
   controllerKey = implementation: providerInstance: key:
     lib.abilities.compositionRequestKey {
       inherit implementation providerInstance key;
@@ -790,5 +794,11 @@ in
   == "bin/aos-metadata-acquisition-provider";
   assert abilities.implementations."aos-metadata-provider:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
   == "bin/aos-metadata-policy-provider";
+  assert builtins.elem "aos.storage.provisioning" metadataRetainedInterfaces;
+  assert builtins.all (entry:
+    builtins.all (method:
+      builtins.elem method.target_resource metadataRetainedInterfaces)
+    (builtins.attrValues entry.document.interface.methods))
+  metadataProjection.interface_documents;
   assert abilities.implementations."aos:storage-provisioning-configuration-evaluator".handlerDescriptor.entryPoint
   == "libexec/aos-provisioning-configuration-evaluator"; true

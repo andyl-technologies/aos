@@ -397,6 +397,39 @@
     dependencyRenderer.realizationFor
     serviceManagement.interfaces.lifecycle.identity
     (resourceWithDependencies [dependencyReference]);
+  defaultTargetReference = {
+    _type = "aos-request-output-reference";
+    request = "system:default-target";
+    output = "resource";
+  };
+  defaultTargetIdentity = {
+    kind = "unit";
+    unit_name = "multi-user.target";
+  };
+  duplicateActivationRenderer = import ../../pkgs/system/_systemd-abilities/provider/_systemd-service-document.nix {
+    inherit lib;
+    serviceFacets = [];
+    unitNameForReference = reference:
+      if reference == defaultTargetReference
+      then defaultTargetIdentity
+      else null;
+    resolvePlanningOutput = value: value;
+  };
+  duplicateActivation =
+    duplicateActivationRenderer.realizationFor
+    serviceManagement.interfaces.lifecycle.identity
+    (resource
+      // {
+        value =
+          resource.value
+          // {
+            dependencies =
+              (resource.value.dependencies or {})
+              // {
+                wanted_by = [defaultTargetReference];
+              };
+          };
+      });
   effectsRequest = evaluation.config.aos.abilities.compositionRequests.${serviceEffectsRequest};
   conditionImplementation = evaluation.config.aos.abilities.implementations."systemd:service-conditions";
   rejectedProviderSelection = selectedProvider:
@@ -542,6 +575,7 @@ in
   != (builtins.head (directives "User" matchedDirectoryService)).value;
   assert !unrepresentedDependency.success;
   assert neutralPrerequisite.schema == "aos.systemd.service-realization/v1";
+  assert duplicateActivation.links == resource.realization.links;
   assert effectsRequest.parameters.kind == "service";
   assert effectsRequest.parameters.desired.service == "main";
   assert conditionImplementation.guarantees
