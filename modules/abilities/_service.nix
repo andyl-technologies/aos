@@ -68,13 +68,13 @@
             description = "Runtime identity of this service.";
           };
           options.enable = lib.mkOption {
-            type = lib.types.bool;
+            type = lib.abilities.types.boolean;
             default = false;
             extensible = true;
             description = "Enable this service instance.";
           };
           options.autoStart = lib.mkOption {
-            type = lib.types.bool;
+            type = lib.abilities.types.boolean;
             default = true;
             description = "Ask the selected manager to start this service automatically.";
           };
