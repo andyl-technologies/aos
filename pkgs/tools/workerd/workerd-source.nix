@@ -75,6 +75,7 @@
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  isSameArchitectureLinuxCross = isLinuxCross && stdenv.hostPlatform.config == stdenv.buildPlatform.config;
 
   # Everything Bazel executes stays on the Linux build platform. Target package
   # sets are reserved for link inputs and the final workerd binary; using a
@@ -115,6 +116,7 @@
     if isCross
     then buildPackages.gcc
     else gcc;
+  buildGccLibs = buildPackages.gcc-libs;
   buildSed =
     if isCross
     then buildPackages.sed
@@ -159,6 +161,10 @@
     if isLinuxCross
     then stdenv.cc.cc
     else gcc;
+  targetGccRuntimeLibDirectory =
+    if isSameArchitectureLinuxCross
+    then "${targetGcc}/lib64"
+    else "${targetGcc}/${targetTriple}/lib64";
   darwinTargetTriple = targetTriple;
   linuxBazelCpu =
     if stdenv.hostPlatform.isAarch64
@@ -575,7 +581,6 @@
     # wrapper also pins the AOS glibc dynamic linker + rpath and the libc++ rpath
     # on every link. ${bootstrapTools} (stdenv.cc) is no longer on the link path.
     LINK_COMMON="-L$REAL_LIBC/lib --gcc-install-dir=$GCC_DIR -B$REAL_LIBC/lib -B$GCC_DIR -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind -L${buildLlvm}/lib/x86_64-unknown-linux-gnu -Wl,-dynamic-linker=$DL -Wl,-rpath,$REAL_LIBC/lib"
-
     {
       printf '%s\n' '#!${buildBash}/bin/bash'
       printf '%s\n' 'case " $* " in'
@@ -906,7 +911,7 @@
           printf '%s\n' '#!${buildBash}/bin/bash'
           printf '%s\n' 'set -eu'
           printf '%s\n' 'target_gcc_dir=$(dirname "$(${stdenv.cc}/bin/cc -print-libgcc-file-name)")'
-          printf '%s\n' 'target_cxx_lib_dir="${targetGcc}/${targetTriple}/lib64"'
+          printf '%s\n' 'target_cxx_lib_dir="${targetGccRuntimeLibDirectory}"'
           printf '%s\n' 'target_libc="${glibc}"'
           printf '%s\n' 'target_libc_dev="${glibc.dev}"'
           printf '%s\n' 'target_dynamic_linker="${glibc}/lib/${stdenv.hostPlatform.dynamicLinker}"'
@@ -1025,6 +1030,16 @@
                 "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}",
                 "${targetGcc}/${targetTriple}/include/c++/${targetGcc.version}/${targetTriple}",
                 "${buildLlvm}/lib/clang/${llvmMajor}/include",
+                ${lib.optionalString isSameArchitectureLinuxCross ''
+          # Release-matrix x86 cells use a cross stdenv with a native
+          # target. Their dependency scans also see the AOS build-side
+          # libc and C++ header roots used by execution actions.
+          "${buildGlibc.dev}/include",
+          "${buildLlvm}/include/c++/v1",
+          "${buildLlvm}/include/${stdenv.buildPlatform.config}/c++/v1",
+          "${targetGcc}/include/c++/${targetGcc.version}",
+          "${targetGcc}/include/c++/${targetGcc.version}/${targetTriple}",
+        ''}
             ],
             # AOS GNU binutils are native-x86 tools. LLVM's native utilities
             # understand AArch64 objects without executing target code.
@@ -1335,6 +1350,14 @@ in
               export PATH="$PWD/aos-toolchain:$PATH"
               echo "build --action_env=PATH=$PWD/aos-toolchain:${toolsBinPath}" >> .bazelrc
               echo "build --host_action_env=PATH=$PWD/aos-toolchain:${toolsBinPath}" >> .bazelrc
+              ${lib.optionalString isSameArchitectureLinuxCross ''
+          # Bazel's final action environment is assembled after this hook.
+          # Bazel also runs generated tools with a cleared environment, so
+          # their link commands must retain the matching AOS GCC runtime.
+          BT_LIB="$BT_LIB:${buildGccLibs}/lib"
+          echo "build --host_linkopt=-Wl,-rpath,${buildGccLibs}/lib" >> .bazelrc
+          echo "build --linkopt=-Wl,-rpath,${buildGccLibs}/lib" >> .bazelrc
+        ''}
 
               # `local_config_cc` is a repository rule: it detects the toolchain's
               # built-in include dirs by running `$CC -E -v` *at loading time*, using
@@ -1672,8 +1695,8 @@ in
     installPhase = ''
       mkdir -p $out/bin
 
-      WORKERD_BIN=$(find -L $TMPDIR/output -path '*/bin/src/workerd/server/workerd' -type f 2>/dev/null | head -1)
-      if [ -z "$WORKERD_BIN" ] || [ ! -f "$WORKERD_BIN" ]; then
+      WORKERD_BIN=bazel-bin/src/workerd/server/workerd
+      if [ ! -f "$WORKERD_BIN" ]; then
         echo "ERROR: bazel did not produce workerd binary" >&2
         find $TMPDIR/output -name 'workerd' -type f 2>&1 | head || true
         exit 1
@@ -1688,8 +1711,8 @@ in
         # closure does not.
         mkdir -p "$out/lib"
         for library in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
-          test -e "${targetGcc}/${targetTriple}/lib64/$library"
-          cp -L "${targetGcc}/${targetTriple}/lib64/$library" "$out/lib/$library"
+          test -e "${targetGccRuntimeLibDirectory}/$library"
+          cp -L "${targetGccRuntimeLibDirectory}/$library" "$out/lib/$library"
         done
       ''}
     '';
