@@ -713,9 +713,10 @@ pub struct QuantumOutcome {
 /// Per-node retired-instruction stamp attached to an event-log time.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogIcountStamp {
-    /// Node whose retired-instruction counter was sampled, when node-local.
+    /// Node to which the retired-instruction counter applies, when node-local.
     pub node: Option<NodeId>,
-    /// Retired-instruction count at the event boundary.
+    /// Retired-instruction count when known; backend inputs carry the exact
+    /// physical delivery counter even if the node is later rebased.
     pub icount: Icount,
 }
 
@@ -724,7 +725,8 @@ pub struct EventLogIcountStamp {
 pub struct EventLogTime {
     /// Scheduler virtual time at which the entry occurred.
     pub virtual_time: VirtualTime,
-    /// Retired-instruction coordinate at the same boundary.
+    /// Node-local retired count or a scheduler boundary surrogate. Resolved
+    /// backend inputs carry their physical delivery counter here.
     pub icount: EventLogIcountStamp,
 }
 
@@ -1355,7 +1357,7 @@ impl SchedulerEventLogEntry {
         }
         self.content_hash
             == ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.entry.v1",
+                "crucible.scheduler.event-log.entry.v2",
                 &scheduler_event_log_entry_material(
                     self.sequence,
                     &self.at,
