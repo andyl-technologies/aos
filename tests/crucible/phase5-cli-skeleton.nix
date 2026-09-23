@@ -90,7 +90,7 @@
       }
       {
         label = "closed triage subcommand";
-        needle = "Triage(TriageArgs)";
+        needle = "Triage(CampaignTriageRouteArgs)";
       }
       {
         label = "closed debug subcommand";
