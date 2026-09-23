@@ -181,6 +181,7 @@
     };
   };
   portableRecordEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       {
         options.testRecord = lib.mkOption {
@@ -195,6 +196,7 @@
   };
   invalidPortableRecord = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.testRecord = lib.mkOption {
@@ -227,6 +229,7 @@
     };
   };
   optionalRecordEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       {
         options.test = lib.mkOption {type = optionalRecordType;};
@@ -236,6 +239,7 @@
   };
   invalidOptionalRecord = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.test = lib.mkOption {type = optionalRecordType;};
@@ -267,6 +271,7 @@
     variants.enabled = taggedVariant;
   };
   taggedUnionEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       {
         options.test = lib.mkOption {type = authoredTaggedUnion;};
@@ -279,6 +284,7 @@
   };
   invalidTaggedUnion = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.test = lib.mkOption {type = authoredTaggedUnion;};
@@ -298,6 +304,7 @@
   });
   invalidDecodedRecord = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.test = lib.mkOption {type = decodedRecordType;};
@@ -328,6 +335,7 @@
   };
   invalidResourceReference = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.test = lib.mkOption {type = lib.abilities.types.resourceReference;};
@@ -398,6 +406,7 @@
       };
     };
   crossTargetEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       {
@@ -454,6 +463,7 @@
     implementationName = "authoring:${implementation}";
   in
     (lib.evalModules {
+      inherit lib;
       modules = [
         ../../modules/abilities/default.nix
         {
@@ -560,6 +570,7 @@
 
   missingCrossTarget = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         ../../modules/abilities/default.nix
         {
@@ -604,6 +615,7 @@
     };
   };
   validExecutableRequest = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       (executableModule {
@@ -614,6 +626,7 @@
   };
 
   canonicalAbilityEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       {
@@ -628,6 +641,7 @@
     ];
   };
   nonPackageProvenanceEvaluation = lib.evalModules {
+    inherit lib;
     modules = [../../modules/abilities/default.nix];
     operatorModules = [
       {
@@ -650,6 +664,7 @@
   };
   invalidCanonicalAbility = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [
         ../../modules/abilities/default.nix
         {
@@ -723,6 +738,7 @@
   };
   evaluateImplementation = implementation:
     (lib.evalModules {
+      inherit lib;
       modules = [../../modules/abilities/default.nix];
       packageModules = [
         {
@@ -761,6 +777,7 @@
       guarantees = ["authoring"];
     };
   guaranteeReferenceEvaluation = lib.evalModules {
+    inherit lib;
     modules = [../../modules/abilities/default.nix];
     packageModules = [
       {
@@ -780,6 +797,7 @@
     })
     .value;
   missingGuaranteeReferenceEvaluation = lib.evalModules {
+    inherit lib;
     modules = [../../modules/abilities/default.nix];
     packageModules = [
       {
@@ -794,6 +812,7 @@
     true);
   conflictingGuaranteeCatalog = builtins.tryEval (builtins.deepSeq (
       (lib.evalModules {
+        inherit lib;
         modules = [
           ../../modules/abilities/default.nix
           {config.aos.abilities.guarantees.authoring = authoredGuarantee;}
@@ -816,6 +835,7 @@
     lib.abilities.interfaceDocumentFromDeclaration implementationInterface
   );
   sharedImplementationEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       {config.aos.abilities.interfaces.shared = implementationInterface;}
@@ -835,6 +855,7 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceGuarantees = serviceManagement.guaranteeAliases;
   coreGuaranteeProviderEvaluation = lib.evalModules {
+    inherit lib;
     modules = [../../modules/abilities/default.nix];
     packageModules = [
       {
@@ -863,6 +884,7 @@
   coreGuaranteeProviderProjection =
     projectAbilityConfig "core-guarantee-provider" coreGuaranteeProviderEvaluation;
   sharedImplementationFixedPoint = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       {
@@ -903,6 +925,7 @@
     };
   };
   combinedPackageEvaluation = lib.evalModules {
+    inherit lib;
     modules = [../../modules/abilities/default.nix];
     packageModules = [
       (packageModuleFor "alpha")
@@ -1003,6 +1026,7 @@
     };
   };
   packageSelectionEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       {
@@ -1039,6 +1063,7 @@
   };
   malformedQualifiedReference = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
+      inherit lib;
       modules = [../../modules/abilities/default.nix];
       packageModules = [
         {
@@ -1106,6 +1131,7 @@
     };
   };
   artifactSelectionEvaluation = lib.evalModules {
+    inherit lib;
     modules = [];
     packageModules = [
       (artifactPackageModuleFor "alpha" "/nix/store/11111111111111111111111111111111-alpha-module")
@@ -1119,6 +1145,7 @@
     outPath = "/nix/store/00000000000000000000000000000000-alpha";
   };
   nativePackageEvaluation = lib.evalModules {
+    inherit lib;
     pkgs.alpha = nativeAlphaPackage;
     modules = [];
     packageModules = [
@@ -1136,6 +1163,7 @@
     ];
   };
   unrelatedArtifactSelection = builtins.tryEval (builtins.deepSeq ((lib.evalModules {
+      inherit lib;
       modules = [];
       packageModules = [
         {
@@ -1459,6 +1487,7 @@
   };
   evaluateSelectedManager = value:
     (lib.evalModules {
+      inherit lib;
       modules = [
         selectedManagerModule
         {config.aos.manager.selected = value;}
@@ -1531,6 +1560,7 @@
   };
   evaluateSystemdUsers = abilitySelection:
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.aos.users = {
@@ -1557,6 +1587,7 @@
   unselectedSystemdUsers = evaluateSystemdUsers null;
   evaluateNss = abilitySelection:
     (lib.evalModules {
+      inherit lib;
       modules = [
         {
           options.environment.etc = lib.mkOption {
@@ -1594,6 +1625,7 @@
   rejectsAbilityModule = module:
     !(builtins.tryEval (builtins.deepSeq
       (lib.evalModules {
+        inherit lib;
         modules = [../../modules/abilities/default.nix module];
       })
       .config
@@ -1610,6 +1642,7 @@
     key = "instance";
   };
   revisionIdentityEvaluation = lib.evalModules {
+    inherit lib;
     modules = [
       ../../modules/abilities/default.nix
       {
@@ -1657,7 +1690,7 @@
 in
   assert corpus.schema == "aos.ability.authoring-conformance/v1";
   assert unique caseIds;
-  assert builtins.attrNames (../../modules/abilities/default.nix {config = null;}).options == ["aos"];
+  assert canonicalAbilityEvaluation.options.aos.abilities ? requirementTemplates;
   assert canonicalAbilityEvaluation.config.aos.abilities.requirementTemplates."aos:database"
   == {
     abi = 1;
