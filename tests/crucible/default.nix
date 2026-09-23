@@ -3126,6 +3126,7 @@ in rec {
           phase5.gates.campaignStoreEquivalence
           phase5.gates.exactClosureStreaming
           phase5.gates.campaignExactMaintenanceTransfer
+          phase5.gates.campaignPolicyTimeoutVm
           phase7.gates.hotForkIsolation
           phase7.gates.hotForkScaling
           phase7.gates.hostCloneCost
@@ -3283,6 +3284,19 @@ in rec {
               "recipient_nested_qemu_stopped=true"
               "incompatible_provenance_rejected_before_guest=true"
               "source_checkpoint_preserved=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-policy-timeout-real-qemu";
+            result = phase5.gates.campaignPolicyTimeoutVm;
+            requiredLines = [
+              "gate=gate:campaign-policy-timeout-real-qemu"
+              "tier=real-packaged-qemu"
+              "modeled_campaign_virtual_time_timeout=true"
+              "typed_policy_timeout_authenticated=true"
+              "retained_causal_marker_authenticated=true"
+              "retained_timeout_finding=true"
+              "evidence_retained=true"
             ];
           }
           {
