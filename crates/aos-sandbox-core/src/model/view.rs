@@ -11,6 +11,8 @@ use crate::{
     CacheDomainId, ExportId, FeatureRef, ObjectDescriptor, RelativePath, Revision, SandboxId,
 };
 
+use super::strictly_increasing;
+
 /// Maximum UTF-8 bytes in one project-environment variable name.
 pub(crate) const MAX_ENVIRONMENT_NAME_BYTES: usize = 4_096;
 /// Maximum UTF-8 bytes in one project-environment variable value.
@@ -442,10 +444,6 @@ fn validate_features(features: &[FeatureRef]) -> Result<(), InvalidViewModel> {
     } else {
         Err(InvalidViewModel::SetNotCanonical)
     }
-}
-
-fn strictly_increasing<T: Ord>(values: &[T]) -> bool {
-    values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 fn validate_destinations(actions: &[PresentationAction]) -> Result<(), InvalidViewModel> {

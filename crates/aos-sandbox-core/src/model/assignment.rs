@@ -9,7 +9,7 @@ use crate::{
     ObjectDescriptor, ObjectDigest, ProjectId, ResourceVector, SandboxId,
 };
 
-use super::SandboxAncestry;
+use super::{SandboxAncestry, strictly_increasing};
 
 /// Maximum immutable source commitments in one assignment generation.
 pub const MAX_ASSIGNMENT_SOURCE_COMMITMENTS: usize = 1_024;
@@ -255,8 +255,4 @@ fn validate_descriptor(
     }
     crate::validate_descriptor_role(role, descriptor)?;
     Ok(())
-}
-
-fn strictly_increasing<T: Ord>(values: &[T]) -> bool {
-    values.windows(2).all(|pair| pair[0] < pair[1])
 }

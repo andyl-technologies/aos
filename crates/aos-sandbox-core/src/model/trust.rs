@@ -223,7 +223,7 @@ impl TrustPolicy {
         if !allowed_keys.windows(2).all(|pair| {
             (pair[0].stable_key_id(), pair[0].generation())
                 < (pair[1].stable_key_id(), pair[1].generation())
-        }) || !required_features.windows(2).all(|pair| pair[0] < pair[1])
+        }) || !super::strictly_increasing(&required_features)
         {
             return Err(InvalidTrustModel::KeysNotCanonical);
         }

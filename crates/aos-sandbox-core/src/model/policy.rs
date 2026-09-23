@@ -11,7 +11,7 @@ use crate::{
     AttachmentSlotId, FeatureRef, Grant, ObjectDescriptor, RelativePath, ResourceId, Selector,
 };
 
-use super::{CacheDomain, ResourceProfile, ViewMutation};
+use super::{CacheDomain, ResourceProfile, ViewMutation, strictly_increasing};
 
 /// Reports an invalid normalized policy or optimization value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -459,10 +459,6 @@ fn validate_delegable_grants(
         }
     }
     Ok(())
-}
-
-fn strictly_increasing<T: Ord>(values: &[T]) -> bool {
-    values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 #[cfg(test)]

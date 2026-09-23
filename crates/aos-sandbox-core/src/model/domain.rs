@@ -13,7 +13,7 @@ use crate::{
     SandboxId, ViewId, validate_descriptor_role,
 };
 
-use super::ViewMutation;
+use super::{ViewMutation, strictly_increasing};
 
 /// Maximum logical sandbox-parent edges in one ancestry chain.
 pub const MAX_ANCESTRY_DEPTH: usize = 4_096;
@@ -680,10 +680,6 @@ impl AttachmentIntent {
     pub const fn lease(&self) -> AttachmentLease {
         self.lease
     }
-}
-
-fn strictly_increasing<T: Ord>(values: &[T]) -> bool {
-    values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 #[cfg(test)]

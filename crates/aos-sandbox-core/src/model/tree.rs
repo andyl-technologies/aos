@@ -777,7 +777,7 @@ impl Delta {
 }
 
 fn validate_set<T: Ord>(values: &[T]) -> Result<(), InvalidTreeModel> {
-    if values.windows(2).all(|pair| pair[0] < pair[1]) {
+    if super::strictly_increasing(values) {
         Ok(())
     } else {
         Err(InvalidTreeModel::SetNotCanonical)

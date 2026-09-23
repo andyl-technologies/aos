@@ -14,6 +14,11 @@ pub mod tree;
 pub mod trust;
 pub mod view;
 
+// Models share the set-ordering rule while retaining their own error types and bounds.
+fn strictly_increasing<T: Ord>(values: &[T]) -> bool {
+    values.windows(2).all(|pair| pair[0] < pair[1])
+}
+
 pub use assignment::{
     AssignmentManifestV1, InvalidAssignmentManifest, MAX_ASSIGNMENT_REQUIRED_FEATURES,
     MAX_ASSIGNMENT_SOURCE_COMMITMENTS,

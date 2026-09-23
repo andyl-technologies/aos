@@ -15,7 +15,7 @@ use crate::{
     ObjectDescriptor, ObjectDigest, ResourceId, RestoreScopeId, SandboxId, SecretId, ServiceId,
 };
 
-use super::ViewMutation;
+use super::{ViewMutation, strictly_increasing};
 
 const MAX_OPAQUE_VERSION_BYTES: usize = 255;
 const MAX_ANCESTRY_DEPTH: usize = 4_096;
@@ -633,7 +633,7 @@ fn validate_ancestry(
 }
 
 fn validate_strict_set<T: Ord>(values: &[T]) -> Result<(), InvalidSnapshotModel> {
-    if values.windows(2).all(|pair| pair[0] < pair[1]) {
+    if strictly_increasing(values) {
         Ok(())
     } else {
         Err(InvalidSnapshotModel::CollectionNotCanonical)
