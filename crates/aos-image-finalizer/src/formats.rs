@@ -12,6 +12,8 @@ use crate::input::digest_regular_file;
 use crate::tools::PinnedTool;
 
 const MAX_QEMU_OUTPUT_BYTES: u64 = 1024 * 1024;
+const MAX_VMDK_DESCRIPTOR_BYTES: u64 = 1024 * 1024;
+const VMDK_SECTOR_BYTES: u64 = 512;
 const VHD_FOOTER_BYTES: u64 = 512;
 
 /// Download encodings proven to reconstruct one exact logical disk.
@@ -243,16 +245,49 @@ async fn verify_qemu_round_trip(
 
 fn normalize_vmdk_cid(path: &Path, logical_digest: Sha256Digest) -> Result<()> {
     let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
-    let maximum = file.metadata()?.len().min(1024 * 1024);
-    let mut prefix = vec![0_u8; usize::try_from(maximum)?];
-    file.read_exact(&mut prefix)?;
+    let mut header = [0_u8; 512];
+    file.read_exact(&mut header)?;
+    if &header[..4] != b"KDMV" {
+        bail!("stream-optimized VMDK has an invalid sparse header");
+    }
+
+    let descriptor_offset = u64::from_le_bytes(header[28..36].try_into()?);
+    let descriptor_sectors = u64::from_le_bytes(header[36..44].try_into()?);
+    let descriptor_start = descriptor_offset
+        .checked_mul(VMDK_SECTOR_BYTES)
+        .context("VMDK descriptor offset overflow")?;
+    let descriptor_length = descriptor_sectors
+        .checked_mul(VMDK_SECTOR_BYTES)
+        .context("VMDK descriptor length overflow")?;
+    let descriptor_end = descriptor_start
+        .checked_add(descriptor_length)
+        .context("VMDK descriptor end overflow")?;
+    if descriptor_offset == 0
+        || descriptor_length == 0
+        || descriptor_length > MAX_VMDK_DESCRIPTOR_BYTES
+        || descriptor_end > file.metadata()?.len()
+    {
+        bail!("stream-optimized VMDK has an invalid descriptor extent");
+    }
+
+    let mut descriptor = vec![0_u8; usize::try_from(descriptor_length)?];
+    file.seek(SeekFrom::Start(descriptor_start))?;
+    file.read_exact(&mut descriptor)?;
+    let text_end = descriptor
+        .iter()
+        .position(|byte| *byte == 0)
+        .context("stream-optimized VMDK descriptor has no padding")?;
+    if descriptor[text_end..].iter().any(|byte| *byte != 0) {
+        bail!("stream-optimized VMDK descriptor has nonzero padding");
+    }
+
     // parentCID contains the same suffix; only a whole descriptor line names this disk.
     let marker = b"CID=";
-    let positions = prefix
+    let positions = descriptor[..text_end]
         .windows(marker.len())
         .enumerate()
         .filter(|(offset, window)| {
-            *window == marker && (*offset == 0 || prefix[*offset - 1] == b'\n')
+            *window == marker && (*offset == 0 || descriptor[*offset - 1] == b'\n')
         })
         .map(|(offset, _)| offset)
         .collect::<Vec<_>>();
@@ -260,20 +295,33 @@ fn normalize_vmdk_cid(path: &Path, logical_digest: Sha256Digest) -> Result<()> {
         bail!("stream-optimized VMDK lacks one unambiguous CID field");
     }
     let value_start = positions[0] + marker.len();
-    let value_end = value_start
-        .checked_add(8)
-        .context("VMDK CID offset overflow")?;
-    if value_end >= prefix.len()
-        || !prefix[value_start..value_end]
+    let value_end = descriptor[value_start..text_end]
+        .iter()
+        .position(|byte| matches!(byte, b'\r' | b'\n'))
+        .map(|length| value_start + length)
+        .context("stream-optimized VMDK CID has no line ending")?;
+    let value_length = value_end - value_start;
+    if !(1..=8).contains(&value_length)
+        || !descriptor[value_start..value_end]
             .iter()
             .all(u8::is_ascii_hexdigit)
-        || !matches!(prefix[value_end], b'\r' | b'\n')
+        || (descriptor[value_end] == b'\r' && descriptor.get(value_end + 1) != Some(&b'\n'))
     {
         bail!("stream-optimized VMDK has a malformed CID field");
     }
-    prefix[value_start..value_end].copy_from_slice(&logical_digest.hex().as_bytes()[..8]);
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(&prefix)?;
+
+    // qemu-img emits a variable-width hexadecimal CID. Extend only its padded
+    // descriptor so identical logical disks receive the same eight-digit CID.
+    let growth = 8 - value_length;
+    if text_end + growth >= descriptor.len() {
+        bail!("stream-optimized VMDK descriptor has no room for a canonical CID");
+    }
+    descriptor.copy_within(value_end..text_end, value_end + growth);
+    descriptor[text_end + growth] = 0;
+    descriptor[value_start..value_start + 8].copy_from_slice(&logical_digest.hex().as_bytes()[..8]);
+
+    file.seek(SeekFrom::Start(descriptor_start))?;
+    file.write_all(&descriptor)?;
     file.sync_all()?;
     Ok(())
 }
@@ -337,19 +385,31 @@ fn path_text(path: &Path) -> Result<&str> {
 mod tests {
     use super::*;
 
+    fn vmdk_with_descriptor(text: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0_u8; 1024];
+        bytes[..4].copy_from_slice(b"KDMV");
+        bytes[28..36].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[36..44].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[512..512 + text.len()].copy_from_slice(text);
+        bytes
+    }
+
     #[test]
     fn normalizes_vmdk_cid_without_changing_parent_cid() -> Result<()> {
         let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("disk.vmdk");
-        fs::write(
-            &path,
-            b"KDMV\0# Disk DescriptorFile\nversion=1\nCID=12345678\nparentCID=ffffffff\n",
-        )?;
-
         let digest = Sha256Digest::of_bytes("disk");
-        normalize_vmdk_cid(&path, digest)?;
+        let mut results = Vec::new();
+        for (index, cid) in ["1234567", "12345678"].iter().enumerate() {
+            let path = temporary.path().join(format!("disk-{index}.vmdk"));
+            let descriptor =
+                format!("# Disk DescriptorFile\nversion=1\nCID={cid}\nparentCID=ffffffff\n");
+            fs::write(&path, vmdk_with_descriptor(descriptor.as_bytes()))?;
+            normalize_vmdk_cid(&path, digest)?;
+            results.push(fs::read(path)?);
+        }
 
-        let normalized = fs::read(path)?;
+        assert_eq!(results[0], results[1]);
+        let normalized = &results[0];
         let expected_cid = format!("CID={}\n", &digest.hex()[..8]);
         assert!(
             normalized
@@ -368,7 +428,10 @@ mod tests {
     fn rejects_duplicate_vmdk_cid_fields() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("disk.vmdk");
-        fs::write(&path, b"CID=12345678\nCID=87654321\nparentCID=ffffffff\n")?;
+        fs::write(
+            &path,
+            vmdk_with_descriptor(b"CID=12345678\nCID=87654321\nparentCID=ffffffff\n"),
+        )?;
 
         let result = normalize_vmdk_cid(&path, Sha256Digest::of_bytes("disk"));
 
