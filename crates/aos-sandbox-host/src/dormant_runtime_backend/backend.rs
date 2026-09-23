@@ -17,7 +17,7 @@ use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
     AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentOperationIdV1,
     AgentOperationRequestV1, AgentOperationSequenceV1, AgentRuntimeBindingV1,
-    AgentSessionBindingV1,
+    AgentSessionBindingV1, decode_signed_agent_outcome_packet_v1,
 };
 use aos_sandbox_core::runtime_backend::{
     BackendCapabilitiesV1, BackendEffectOutcome, BackendEvidenceVerifierV1, BackendExecutionHandle,
@@ -1304,6 +1304,25 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         self.submit_runtime_observation(observation)
     }
 
+    /// Decodes and authenticates one signed execution-outcome wire packet.
+    ///
+    /// The packet signature remains untrusted until the outstanding protected
+    /// peer and request binding are checked by [`Self::accept_agent_execution_outcome`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeBackendError::IntegrityFailure`] for invalid framing,
+    /// or the verification and currentness errors of the underlying handoff.
+    pub fn accept_agent_execution_outcome_packet(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<BackendExecutionRequestV1, RuntimeBackendError> {
+        let (outcome, signature) = decode_signed_agent_outcome_packet_v1(packet)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?
+            .into_parts();
+        self.accept_agent_execution_outcome(SignedAgentOutcomeV1::new(outcome, signature))
+    }
+
     /// Authenticates the exact outstanding agent response and releases its backend request.
     ///
     /// The returned request is accepted by [`RuntimeBackend::exec`] once. No
@@ -1423,6 +1442,26 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             .insert(request_binding, recovery);
         self.execution_observations.push_back(observation);
         Ok(outstanding.backend_request)
+    }
+
+    /// Decodes and authenticates one signed control-outcome wire packet.
+    ///
+    /// The packet signature remains untrusted until the outstanding protected
+    /// peer and request binding are checked by
+    /// [`Self::accept_agent_execution_control_outcome`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeBackendError::IntegrityFailure`] for invalid framing,
+    /// or the verification and currentness errors of the underlying handoff.
+    pub fn accept_agent_execution_control_outcome_packet(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<(), RuntimeBackendError> {
+        let (outcome, signature) = decode_signed_agent_outcome_packet_v1(packet)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?
+            .into_parts();
+        self.accept_agent_execution_control_outcome(SignedAgentOutcomeV1::new(outcome, signature))
     }
 
     /// Authenticates a control reply and queues its exact execution observation.
