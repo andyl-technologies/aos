@@ -10,6 +10,7 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryMountSourceAcquisitionsRequest, InventoryMountsRequest, InventoryNetworksRequest,
     InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
 };
+use aos_sandbox::attachment_source::DurableCurrentAttachmentSourceDispatchV1;
 use aos_sandbox::lifecycle::{
     CurrentLifecycleBootInventoryV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     LifecycleAtomicDatasetSnapshotPlanV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
@@ -295,7 +296,7 @@ domain_inventory_owner!(
 
 impl DormantMountLifecycleInventoryOwnerV1 {
     /// Supplies fresh session coordinates before the protected Host scope query.
-    pub(crate) fn mount_catalog_request_coordinates(
+    pub(crate) fn mount_request_coordinates(
         &mut self,
     ) -> Result<DormantBrokerRequestCoordinatesV1, LifecyclePhase6ErrorV1> {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
@@ -303,7 +304,7 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         }
         self.0
             .session
-            .mount_catalog_request_coordinates()
+            .mount_request_coordinates()
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)
     }
 
@@ -371,6 +372,16 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         attempt: &DurableCurrentMountAttemptV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
         let (outcome, currentness) = self.0.mount_apply_complete(attempt)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
+    /// Sends or drains one exact protected Mount source Acquire on retained AOSAGE.
+    pub(crate) fn authenticated_mount_source_acquire(
+        &mut self,
+        attempt: &DurableCurrentAttachmentSourceDispatchV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.source_acquire_complete(attempt)?;
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
@@ -758,6 +769,22 @@ impl DormantLifecycleInventorySessionV1 {
         self.exact_request_complete(BrokerMethod::BROKER_METHOD_MOUNT_APPLY, |session| {
             session.prepare_authenticated_mount_apply(attempt)
         })
+    }
+
+    fn source_acquire_complete(
+        &mut self,
+        attempt: &DurableCurrentAttachmentSourceDispatchV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        self.exact_request_complete(
+            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+            |session| session.prepare_authenticated_mount_source_acquire(attempt),
+        )
     }
 
     fn exact_request_complete(

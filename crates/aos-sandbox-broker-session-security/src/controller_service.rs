@@ -1879,6 +1879,10 @@ struct ProductionEffectExecutor {
         Option<aos_sandbox::attachment_mount::PreparedCurrentAttachmentMountCatalogQueryV1>,
     pending_attachment_mount_attempt:
         Option<aos_sandbox::attachment_mount::DurableCurrentAttachmentMountAttemptV1>,
+    pending_attachment_source_attempt:
+        Option<aos_sandbox::attachment_source::DurableCurrentAttachmentSourceDispatchV1>,
+    pending_attachment_source_consume:
+        Option<aos_sandbox::attachment_mount::CompletedCurrentAttachmentMountAttemptV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
@@ -1934,6 +1938,8 @@ impl ProductionEffectExecutor {
             pending_attachment_slot_attempt: None,
             pending_attachment_catalog_query: None,
             pending_attachment_mount_attempt: None,
+            pending_attachment_source_attempt: None,
+            pending_attachment_source_consume: None,
             source_domains,
             cache_inventory: None,
             cache_physical: None,

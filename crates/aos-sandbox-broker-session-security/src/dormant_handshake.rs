@@ -9,12 +9,13 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyDestinationSlotRequest, ApplyMountRequest, Audience, BrokerDescriptorDisposition,
-    BrokerDescriptorDispositionEntry, BrokerDescriptorEntry, BrokerDescriptorRole, BrokerError,
-    BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
-    HostCatalogPublicationStatus, PublishHostCatalogResponse, QueryRuntimeEffectRequest,
-    RequestHeader,
+    AcquireMountSourceRequest, ApplyDestinationSlotRequest, ApplyMountRequest, Audience,
+    BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry, BrokerDescriptorEntry,
+    BrokerDescriptorRole, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
+    BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
+    QueryRuntimeEffectRequest, RequestHeader,
 };
+use aos_sandbox::attachment_source::DurableCurrentAttachmentSourceDispatchV1;
 use aos_sandbox::mount_attempt::DurableCurrentMountAttemptV1;
 use aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1;
 use aos_sandbox::{
@@ -5044,7 +5045,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.reserve_exact_authenticated_request(authenticated, initialize)
     }
 
-    pub(crate) fn mount_catalog_request_coordinates(
+    pub(crate) fn mount_request_coordinates(
         &mut self,
     ) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
@@ -5054,7 +5055,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             || maximum_response_bytes < 16 * 1024
         {
             return Err(BrokerSessionSecurityError::manifest(
-                "Mount catalog session coordinates",
+                "Mount session coordinates",
             ));
         }
         Ok(DormantBrokerRequestCoordinatesV1 {
@@ -5173,6 +5174,70 @@ impl DormantAuthenticatedBrokerSessionV1 {
         {
             return Err(BrokerSessionSecurityError::manifest(
                 "authenticated Mount Apply attempt binding",
+            ));
+        }
+        self.reserve_exact_authenticated_request(authenticated, initialize)
+    }
+
+    /// Reserves one exact durably custodied Mount source Acquire packet.
+    pub(crate) fn prepare_authenticated_mount_source_acquire(
+        &mut self,
+        attempt: &DurableCurrentAttachmentSourceDispatchV1,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let dispatch = attempt.dispatch_attempt();
+        let envelope = BrokerRequestEnvelope::decode_from_slice(dispatch.packet())
+            .map_err(|_| BrokerSessionSecurityError::manifest("durable Mount Acquire packet"))?;
+        let request = AcquireMountSourceRequest::decode_from_slice(dispatch.body())
+            .map_err(|_| BrokerSessionSecurityError::manifest("durable Mount Acquire body"))?;
+        let header = request
+            .header
+            .as_option()
+            .ok_or_else(|| BrokerSessionSecurityError::manifest("durable Mount Acquire header"))?;
+        let request_id: [u8; 16] = header.request_id.as_slice().try_into().map_err(|_| {
+            BrokerSessionSecurityError::manifest("durable Mount Acquire request ID")
+        })?;
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE;
+        if !envelope.__buffa_unknown_fields.is_empty()
+            || envelope.encode_to_vec() != dispatch.packet()
+            || envelope.method.as_known() != Some(method)
+            || envelope.body != dispatch.body()
+            || envelope.authorization.as_option().is_none()
+            || !envelope.descriptors.is_empty()
+            || !envelope.signed_session_request.is_empty()
+            || envelope.semantic_bindings.as_option().is_some()
+            || request_id != *attempt.source_attempt().operation_id().as_bytes()
+            || header.deadline_boottime_nanoseconds != dispatch.deadline_boottime_nanoseconds()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable Mount Acquire request binding",
+            ));
+        }
+        let (maximum_deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_limits()?;
+        if header.deadline_boottime_nanoseconds > maximum_deadline
+            || header.maximum_response_bytes > maximum_response_bytes
+            || header.protocol_major != u32::from(protocol_version.major())
+            || header.protocol_minor != u32::from(protocol_version.minor())
+            || header.audience.as_known() != Some(audience)
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable Mount Acquire session coordinates",
+            ));
+        }
+        let (authenticated, initialize) = self.0.prepare_client_request(
+            envelope,
+            method,
+            0,
+            request_id,
+            header.deadline_boottime_nanoseconds,
+            header.maximum_response_bytes,
+        )?;
+        if authenticated.canonical_packet() != dispatch.packet()
+            || authenticated.exact_body() != dispatch.body()
+            || authenticated.authorization().is_none()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "authenticated Mount Acquire attempt binding",
             ));
         }
         self.reserve_exact_authenticated_request(authenticated, initialize)
