@@ -18,6 +18,7 @@ use aos_sandbox_core::{
     RawPairedClockSample, SandboxId,
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
+use aos_sandbox_protocol::semantics::CanonicalHostExecutionSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -198,6 +199,69 @@ impl HostAuthorityV1 {
             current_clock,
             prior_fence,
         )
+    }
+
+    /// Verifies a protected-runtime execution grant against the shared fence.
+    ///
+    /// The returned admission is still pending. The Host broker must atomically
+    /// retain its sealed fence and effect in HostState before the runtime owner
+    /// may commit an execution effect.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_execution(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        semantics: CanonicalHostExecutionSemanticsV1,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.authority.admit_host_execution(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment,
+                request_id,
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
+    /// Advances the stable Host base-plan fence with a verified exact grant's lease.
+    pub(crate) fn advance_base_execution_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        prior_base: &[u8],
+        admitted: &VerifiedHostAdmissionV1,
+    ) -> Result<Vec<u8>, HostAdmissionError> {
+        let base = self.open_fence(sandbox_id, prior_base)?;
+        if base.assignment() != admitted.fence.assignment()
+            || base.node() != admitted.fence.node()
+            || base.ownership_authority() != admitted.fence.ownership_authority()
+        {
+            return Err(HostAdmissionError::FenceRejected);
+        }
+        let advanced = BrokerAuthorizationFenceV1::new(
+            base.assignment(),
+            base.node(),
+            base.plan_digest(),
+            base.plan_expires_seconds(),
+            base.ownership_authority().clone(),
+            admitted.fence.local_lease_record().clone(),
+        )
+        .map_err(|_| HostAdmissionError::FenceRejected)?;
+        self.seal_fence(sandbox_id, &advanced)
     }
 
     pub(crate) fn open_effect(

@@ -37,6 +37,8 @@ pub enum ProductionHostBrokerDispatchFailureV1 {
     RequestShape(DormantReceivedBrokerDescriptorRequestV1),
     /// An ordinary Host operation failed before or after effect dispatch.
     Ordinary(DormantBrokerExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>),
+    /// A Host execution intent failed with its protected replay custody.
+    Execution(DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>),
     /// A descriptor-producing scope operation failed with its custody retained.
     Descriptor(
         DormantBrokerDescriptorExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>,
@@ -292,6 +294,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Err(ProductionHostBrokerDispatchFailureV1::Ordinary(failure)) => {
                 self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds)
             }
+            Err(ProductionHostBrokerDispatchFailureV1::Execution(failure)) => {
+                self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds)
+            }
             Err(ProductionHostBrokerDispatchFailureV1::Descriptor(failure)) => match failure {
                 DormantBrokerDescriptorExecutionFailureV1::BeforeEffect { error, request } => self
                     .finish_ordinary_dispatch(
@@ -447,6 +452,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => self
+                .execute_host_execution_and_commit(request, host)
+                .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
+                .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME => self
                 .execute_host_observation_and_commit(

@@ -134,6 +134,44 @@ impl BrokerAuthority {
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        self.admit_with_plan_rotation(artifacts, request, current_clock, prior_fence, false)
+    }
+
+    /// Admits an exact Host execution grant while retaining the prior lease.
+    ///
+    /// The caller must keep the prior base-plan fence as its shared lease head;
+    /// the returned exact-grant plan is only an effect-specific authorization.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-execution verb, invalid signature, assignment, lease,
+    /// semantic grant, or stale prior fence.
+    pub fn admit_host_execution(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host
+            || !matches!(
+                request.verb,
+                BrokerVerb::HostApplyExecution | BrokerVerb::HostQueryExecution
+            )
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
+    fn admit_with_plan_rotation(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+        allow_exact_plan_rotation: bool,
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
         if !supports_signed_admission(request.protocol, request.protocol_version)
             || request.audience.protocol() != request.protocol
             || request.audience != self.domain.audience()
@@ -212,6 +250,7 @@ impl BrokerAuthority {
             &verified_plan,
             request.assignment,
             self.node,
+            allow_exact_plan_rotation,
         )?;
         let pending_lease = prepare_local_lease_record(prior_local, &verified_lease, current_clock)
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
@@ -582,6 +621,7 @@ fn validate_prior_fence<'a>(
     plan: &aos_sandbox_core::VerifiedBrokerPlan,
     assignment: BrokerAssignment,
     node: NodeId,
+    allow_exact_plan_rotation: bool,
 ) -> Result<Option<&'a aos_sandbox_core::LocalLeaseRecord>, BrokerAdmissionError> {
     let Some(prior) = prior else {
         return Ok(None);
@@ -598,7 +638,7 @@ fn validate_prior_fence<'a>(
         || (assignment.epoch() == current.epoch()
             && assignment.desired_generation() == current.desired_generation()
             && (assignment.digest() != current.digest()
-                || plan.plan_digest() != prior.plan_digest()))
+                || (!allow_exact_plan_rotation && plan.plan_digest() != prior.plan_digest())))
     {
         return Err(BrokerAdmissionError::FenceRejected);
     }

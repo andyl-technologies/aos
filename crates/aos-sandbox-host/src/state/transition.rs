@@ -45,6 +45,8 @@ pub(crate) enum HostAction {
     Freeze,
     Thaw,
     Kill,
+    ApplyExecution,
+    QueryExecution,
 }
 
 impl HostAction {
@@ -55,6 +57,8 @@ impl HostAction {
             3 => Some(Self::Freeze),
             4 => Some(Self::Thaw),
             5 => Some(Self::Kill),
+            6 => Some(Self::ApplyExecution),
+            7 => Some(Self::QueryExecution),
             _ => None,
         }
     }
@@ -66,6 +70,8 @@ impl HostAction {
             Self::Freeze => 3,
             Self::Thaw => 4,
             Self::Kill => 5,
+            Self::ApplyExecution => 6,
+            Self::QueryExecution => 7,
         }
     }
 }
@@ -81,6 +87,19 @@ pub(crate) enum DurableExecution {
     DirectLifecycle,
     GuardianLaunch(Box<GuardianLaunchRecord>),
     CompositeStop(CompositeStopRecord),
+    HostExecutionHandoff(HostExecutionHandoffRecord),
+}
+
+/// Retains the protected runtime and stable operation bound to a Host grant.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HostExecutionHandoffRecord {
+    pub(crate) runtime_witness_request_id: [u8; 16],
+    pub(crate) runtime_handle: [u8; 32],
+    pub(crate) operation_id: [u8; 16],
+    pub(crate) execution_id: [u8; 16],
+    pub(crate) source_commitment: [u8; 32],
+    pub(crate) semantic_commitment: [u8; 32],
 }
 
 impl DurableExecution {
@@ -88,7 +107,10 @@ impl DurableExecution {
     pub(crate) const fn direct_lifecycle(action: HostAction) -> Option<Self> {
         match action {
             HostAction::Freeze | HostAction::Thaw | HostAction::Kill => Some(Self::DirectLifecycle),
-            HostAction::Launch | HostAction::Stop => None,
+            HostAction::Launch
+            | HostAction::Stop
+            | HostAction::ApplyExecution
+            | HostAction::QueryExecution => None,
         }
     }
 
@@ -103,6 +125,17 @@ impl DurableExecution {
             }
             Self::CompositeStop(record) => {
                 context.action == HostAction::Stop && record.validate(context.receipt_present)
+            }
+            Self::HostExecutionHandoff(record) => {
+                matches!(
+                    context.action,
+                    HostAction::ApplyExecution | HostAction::QueryExecution
+                ) && record.runtime_witness_request_id != [0; 16]
+                    && record.runtime_handle != [0; 32]
+                    && record.operation_id != [0; 16]
+                    && record.execution_id != [0; 16]
+                    && record.source_commitment != [0; 32]
+                    && record.semantic_commitment != [0; 32]
             }
         }
     }
@@ -143,14 +176,14 @@ impl DurableExecution {
     pub(crate) fn guardian_binding(&self) -> Option<[u8; 32]> {
         match self {
             Self::GuardianLaunch(record) => Some(record.evidence.binding),
-            Self::DirectLifecycle | Self::CompositeStop(_) => None,
+            Self::DirectLifecycle | Self::CompositeStop(_) | Self::HostExecutionHandoff(_) => None,
         }
     }
 
     pub(crate) fn stop_source(&self) -> Option<StopSourceReference> {
         match self {
             Self::CompositeStop(record) => record.target.source(),
-            Self::DirectLifecycle | Self::GuardianLaunch(_) => None,
+            Self::DirectLifecycle | Self::GuardianLaunch(_) | Self::HostExecutionHandoff(_) => None,
         }
     }
 

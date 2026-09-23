@@ -60,6 +60,7 @@ mod entropy;
 mod error;
 mod handoff;
 mod handshake;
+mod host_execution_handoff;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod manifest;
@@ -148,6 +149,7 @@ pub use handoff::{
     ProtectedMountEffectHandoffV1, ProtectedNetworkEffectHandoffV1,
     ProtectedStorageEffectHandoffV1,
 };
+pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
     DormantLifecycleDomainEffectRecoveryV1,

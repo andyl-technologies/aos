@@ -1727,6 +1727,23 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         self.execution.load_effect(operation).map_err(Into::into)
     }
 
+    /// Returns the next effect sequence from the protected runtime history.
+    ///
+    /// A pending or nonterminal predecessor prevents allocation. This value
+    /// alone is never a dispatch permit; the effect store rechecks it at CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale currentness, corrupt history, or exhaustion.
+    pub fn next_effect_sequence(
+        &self,
+    ) -> Result<BackendOperationSequenceV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .next_effect_sequence(self.currentness.runtime().handle())
+            .map_err(Into::into)
+    }
+
     /// Loads durable recovery evidence before any live inventory is supplied.
     ///
     /// # Errors

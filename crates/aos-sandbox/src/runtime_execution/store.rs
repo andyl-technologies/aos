@@ -1129,6 +1129,35 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
     ) -> Result<(Vec<u8>, Vec<u8>), EffectCommitError> {
         let runtime_handle = admission.currentness().runtime().handle();
         let key = sequence_key(runtime_handle);
+        let expected_sequence = self.expected_effect_sequence(runtime_handle)?;
+        if issue.sequence().get() != expected_sequence {
+            return Err(EffectCommitError::SequenceConflict);
+        }
+        let mut value = Vec::with_capacity(56);
+        value.extend_from_slice(&issue.sequence().get().to_be_bytes());
+        value.extend_from_slice(issue.idempotency().operation().as_bytes());
+        value.extend_from_slice(effect_issue_anchor(admission, issue).as_bytes());
+        Ok((key, value))
+    }
+
+    /// Reads the next effect sequence from authenticated protected history.
+    pub(crate) fn next_effect_sequence(
+        &self,
+        runtime_handle: ObjectDigest,
+    ) -> Result<
+        aos_sandbox_core::runtime_backend::BackendOperationSequenceV1,
+        JournalRuntimeExecutionError,
+    > {
+        let value = self.expected_effect_sequence(runtime_handle)?;
+        aos_sandbox_core::runtime_backend::BackendOperationSequenceV1::new(value)
+            .map_err(JournalRuntimeExecutionError::from)
+    }
+
+    fn expected_effect_sequence(
+        &self,
+        runtime_handle: ObjectDigest,
+    ) -> Result<u64, EffectCommitError> {
+        let key = sequence_key(runtime_handle);
         let previous = self.authority.get(&key).map_err(map_effect_journal_error)?;
         let expected_sequence = match previous {
             None => 1,
@@ -1170,14 +1199,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             }
             Some(_) => return Err(EffectCommitError::CorruptRecord),
         };
-        if issue.sequence().get() != expected_sequence {
-            return Err(EffectCommitError::SequenceConflict);
-        }
-        let mut value = Vec::with_capacity(56);
-        value.extend_from_slice(&issue.sequence().get().to_be_bytes());
-        value.extend_from_slice(issue.idempotency().operation().as_bytes());
-        value.extend_from_slice(effect_issue_anchor(admission, issue).as_bytes());
-        Ok((key, value))
+        Ok(expected_sequence)
     }
 }
 

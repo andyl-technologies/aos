@@ -9,22 +9,29 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 use aos_proto::aos::sandbox::local::v1::{
-    AssignmentFence, InventoryRuntimeResponse, QueryRuntimeEffectResponse, RuntimeAction,
-    RuntimeEffectStatus, RuntimeObservation, RuntimeState,
+    AssignmentFence, BrokerMethod, InventoryRuntimeResponse, QueryRuntimeEffectResponse,
+    RuntimeAction, RuntimeEffectStatus, RuntimeObservation, RuntimeState,
 };
+use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
     ProtectedBrokerPublicCredentialRole,
 };
-use aos_sandbox_core::{ProtocolVersion, RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_core::{
+    BrokerAssignment, ObjectDigest, ProtocolVersion, RawClockProvenance, RawPairedClockSample,
+};
 use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_protocol::semantics::{
+    canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
+};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     HistoricalRuntimeRequestCandidateV1, PeerCredentials, PeerPolicy,
+    ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
     ValidatedQueryRuntimeEffectRequestV1, ValidatedRuntimeRequest,
     classify_historical_runtime_request_v1, decode_grandfathered_runtime_request_replay_v1,
-    decode_runtime_request,
+    decode_host_execution_apply_v1, decode_host_execution_query_v1, decode_runtime_request,
 };
 use aos_systemd::{
     GuardianCredentialDescriptors, GuardianCredentialRole, GuardianUnitSpec,
@@ -41,8 +48,8 @@ use crate::plan::{
 };
 use crate::recovery::{HostRuntimeRecoveryReport, reconcile};
 use crate::state::transition::{
-    AuthorityFreshness, DurableExecution, ExecutionContext, PresentUnitState, UnitObservation,
-    protected_input_snapshots,
+    AuthorityFreshness, DurableExecution, ExecutionContext, HostExecutionHandoffRecord,
+    PresentUnitState, UnitObservation, protected_input_snapshots,
 };
 use crate::state::{
     Admission, CompletedGuardianLineage, GuardianLineage, HostAction, HostState, HostStateStore,
@@ -81,6 +88,60 @@ pub struct HostBroker<C, S, W> {
     pub(crate) runtime_pins: BTreeMap<HostRuntimeIdentity, RetainedRuntimePins>,
     #[cfg(test)]
     fail_runtime_retention: bool,
+}
+
+/// Proves a Host execution grant was durably reserved in the shared lease fence.
+///
+/// This token is minted only after signed-plan, lease, current assignment, and
+/// exact request semantics have passed the existing Host authority admission.
+pub struct HostExecutionGrantReservationV1 {
+    request_id: [u8; 16],
+    request_body_digest: ObjectDigest,
+    assignment: BrokerAssignment,
+    runtime_handle: ObjectDigest,
+    request: HostExecutionGrantRequestV1,
+    effect: BrokerEffectIntentV1,
+}
+
+/// Retains the exact decoded request associated with a verified Host grant.
+pub enum HostExecutionGrantRequestV1 {
+    /// Applies one closed guest execution action.
+    Apply(ValidatedHostExecutionApplyV1),
+    /// Reads one exact protected execution outcome.
+    Query(ValidatedHostExecutionQueryV1),
+}
+
+impl HostExecutionGrantReservationV1 {
+    /// Checks the exact method, request, and protected runtime claimed at use.
+    #[must_use]
+    pub fn matches(
+        &self,
+        method: BrokerMethod,
+        request_id: [u8; 16],
+        body: &[u8],
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> bool {
+        matches!(
+            (&self.request, method),
+            (
+                HostExecutionGrantRequestV1::Apply(_),
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            ) | (
+                HostExecutionGrantRequestV1::Query(_),
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            )
+        ) && self.request_id == request_id
+            && self.request_body_digest.as_bytes() == Sha256::digest(body).as_slice()
+            && execution_assignment(claim).is_ok_and(|assignment| assignment == self.assignment)
+            && self.runtime_handle == claim.currentness().runtime().handle()
+            && self.effect.request_id() == &request_id
+    }
+
+    /// Borrows the exact validated request bound by the signed grant.
+    #[must_use]
+    pub const fn request(&self) -> &HostExecutionGrantRequestV1 {
+        &self.request
+    }
 }
 
 pub(crate) struct RetainedRuntimePins {
@@ -179,6 +240,252 @@ where
                 .guardian
                 .as_ref()
                 .is_some_and(|guardian| guardian.revalidate().is_ok())
+    }
+
+    /// Reserves one signed Host execution grant in the shared Host lease fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale protected runtime, malformed request, invalid signer or
+    /// lease, conflicting idempotency, or ambiguous durable Host state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_host_execution<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protected_boot_id: [u8; 16],
+        mut trusted_clock: F,
+    ) -> Result<HostExecutionGrantReservationV1>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        if !self.state_healthy {
+            let recovered = self.store.load()?;
+            recovered.validate_authenticated(&self.authority)?;
+            self.state = recovered;
+            self.state_healthy = true;
+        }
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected runtime claim is stale"))?;
+        let admission_clock = trusted_clock()?;
+        if admission_clock.host_boot_id() != protected_boot_id
+            || claim.host_verifier().boot_id() != protected_boot_id
+        {
+            return Err(HostError::Fence("Host execution boot changed"));
+        }
+        let assignment = execution_assignment(claim)?;
+        let (header, operation_id, execution_id, source_commitment, semantics, action, request) =
+            match method {
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
+                    let request = decode_host_execution_apply_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let semantics = canonical_host_execution_apply_semantics_v1(
+                        &request, assignment,
+                    )
+                    .map_err(|_| HostError::Fence("Host execution semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        request.operation_id(),
+                        request.execution_id(),
+                        request.source_commitment(),
+                        semantics,
+                        HostAction::ApplyExecution,
+                        HostExecutionGrantRequestV1::Apply(request),
+                    )
+                }
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
+                    let request = decode_host_execution_query_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let semantics = canonical_host_execution_query_semantics_v1(
+                        &request, assignment,
+                    )
+                    .map_err(|_| HostError::Fence("Host execution semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        request.operation_id(),
+                        request.execution_id(),
+                        request.source_commitment(),
+                        semantics,
+                        HostAction::QueryExecution,
+                        HostExecutionGrantRequestV1::Query(request),
+                    )
+                }
+                _ => return Err(HostError::Fence("Host execution method is invalid")),
+            };
+        if header.request_id() != &request_id {
+            return Err(HostError::Fence("Host execution request identity differs"));
+        }
+        let runtime_witness_request_id = self
+            .state
+            .runtime_witness_request_id(assignment.sandbox().as_bytes())
+            .ok_or(HostError::Fence("Host runtime witness is absent"))?;
+        if self.state.effect(&request_id).is_some()
+            && !self
+                .state
+                .execution_handoff_is_current(assignment.sandbox().as_bytes(), &request_id)
+        {
+            return Err(HostError::Fence("Host execution replay was superseded"));
+        }
+        let prior_fence = self
+            .state
+            .effect(&request_id)
+            .map_or_else(
+                || {
+                    self.state
+                        .prior_authorization(assignment.sandbox().as_bytes())
+                },
+                |_| self.state.request_base_authorization(&request_id),
+            )
+            .ok_or(HostError::Fence("Host execution base fence is absent"))?;
+        let admitted = self.authority.admit_execution(
+            artifacts,
+            assignment,
+            request_id,
+            request_body,
+            semantics,
+            header.deadline_boottime_nanoseconds(),
+            &admission_clock,
+            prior_fence,
+        )?;
+        let sealed_base_fence = self.authority.advance_base_execution_fence(
+            assignment.sandbox().as_bytes(),
+            prior_fence,
+            &admitted,
+        )?;
+        let sealed_fence = self
+            .authority
+            .seal_fence(assignment.sandbox().as_bytes(), &admitted.fence)?;
+        let sealed_effect = self.authority.seal_effect(&request_id, &admitted.effect)?;
+        let request_body_digest = ObjectDigest::from_bytes(Sha256::digest(request_body).into());
+        let handoff = HostExecutionHandoffRecord {
+            runtime_witness_request_id,
+            runtime_handle: *claim.currentness().runtime().handle().as_bytes(),
+            operation_id,
+            execution_id: *execution_id.as_bytes(),
+            source_commitment: *source_commitment.as_bytes(),
+            semantic_commitment: *semantics.commitment().digest().as_bytes(),
+        };
+        let mut proposed = self.state.clone();
+        proposed.admit_execution_handoff(
+            assignment,
+            request_id,
+            *request_body_digest.as_bytes(),
+            action,
+            handoff,
+            sealed_fence,
+            sealed_base_fence,
+            &admitted,
+            sealed_effect,
+            &self.authority,
+        )?;
+        if proposed != self.state {
+            self.commit_state(&proposed)?;
+        }
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected runtime changed after grant commit"))?;
+        self.authority
+            .check_before_effect(&admitted.effect, &mut || {
+                trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
+            })?;
+
+        Ok(HostExecutionGrantReservationV1 {
+            request_id,
+            request_body_digest,
+            assignment,
+            runtime_handle: claim.currentness().runtime().handle(),
+            request,
+            effect: admitted.effect,
+        })
+    }
+
+    /// Closes the shared Host reservation after exact runtime-journal readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale claim, substituted outcome, replaced fence, or an
+    /// ambiguous durable Host state commit.
+    pub fn complete_host_execution_reservation(
+        &mut self,
+        reservation: &HostExecutionGrantReservationV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        outcome: &[u8],
+    ) -> Result<()> {
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected runtime claim is stale"))?;
+        if outcome.is_empty()
+            || !self.state.execution_handoff_is_current(
+                reservation.assignment.sandbox().as_bytes(),
+                &reservation.request_id,
+            )
+            || !execution_assignment(claim)
+                .is_ok_and(|assignment| assignment == reservation.assignment)
+            || claim.currentness().runtime().handle() != reservation.runtime_handle
+        {
+            return Err(HostError::Fence("Host execution reservation is stale"));
+        }
+        let existing = self
+            .state
+            .effect(&reservation.request_id)
+            .ok_or(HostError::Fence("Host execution reservation is absent"))?;
+        let existing = self
+            .authority
+            .open_effect(&reservation.request_id, existing)?;
+        if existing.transport_request_digest() != reservation.request_body_digest
+            || existing.request_digest() != reservation.effect.request_digest()
+            || existing.verb() != reservation.effect.verb()
+            || existing.target() != reservation.effect.target()
+        {
+            return Err(HostError::Fence("Host execution reservation changed"));
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"aos.sandbox.host.execution-reservation-receipt.v1\0");
+        digest.update(reservation.request_id);
+        digest.update((outcome.len() as u64).to_be_bytes());
+        digest.update(outcome);
+        let receipt = digest.finalize().to_vec();
+        let completed = match existing.status() {
+            BrokerEffectStatusV1::Pending => existing
+                .complete(receipt.clone())
+                .map_err(|_| HostError::Fence("Host execution receipt is invalid"))?,
+            BrokerEffectStatusV1::Complete if existing.receipt() == receipt.as_slice() => {
+                return Ok(());
+            }
+            BrokerEffectStatusV1::Complete => {
+                return Err(HostError::Fence(
+                    "Host execution outcome conflicts with replay",
+                ));
+            }
+        };
+        let sealed = self
+            .authority
+            .seal_effect(&reservation.request_id, &completed)?;
+        let mut proposed = self.state.clone();
+        proposed.complete(
+            reservation.request_id,
+            *reservation.request_body_digest.as_bytes(),
+            sealed,
+            receipt,
+        )?;
+        self.commit_state(&proposed)?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected runtime changed after Host commit"))
     }
 
     /// Joins authenticated host authority with one bounded systemd snapshot.
@@ -1317,6 +1624,18 @@ where
         self.state_healthy = true;
         Ok(())
     }
+}
+
+fn execution_assignment(claim: &DormantRuntimeExecutionClaimV1<'_>) -> Result<BrokerAssignment> {
+    let current = claim.currentness().runtime().currentness();
+    BrokerAssignment::new(
+        current.sandbox(),
+        current.incarnation(),
+        current.assignment_epoch(),
+        current.desired_generation(),
+        current.assignment_digest(),
+    )
+    .map_err(|_| HostError::Fence("protected runtime assignment is invalid"))
 }
 
 fn historical_clock(effect: &BrokerEffectIntentV1) -> Result<RawPairedClockSample> {

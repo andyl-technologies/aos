@@ -10,6 +10,7 @@ use std::os::fd::OwnedFd;
 use std::pin::Pin;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -21,7 +22,7 @@ use aos_sandbox_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::HostError;
-use crate::broker::HostBroker;
+use crate::broker::{HostBroker, HostExecutionGrantReservationV1};
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
 use crate::worker::HostWorker;
@@ -165,6 +166,37 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
     ///
     /// Returns an error when the fixed credential is absent or no longer current.
     fn fixed_terminal_verifier_commitment(&self) -> Result<[u8; 32], DormantHostBrokerCallErrorV1>;
+
+    /// Reserves a signed execution grant in the shared durable Host fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale claim/boot, signer, lease, current assignment, or an
+    /// unresolved Host state commit.
+    #[allow(clippy::too_many_arguments)]
+    fn reserve_authenticated_execution(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protected_boot_id: [u8; 16],
+    ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1>;
+
+    /// Completes an exact Host authorization reservation after protected readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale currentness, conflicting outcome, or ambiguous Host state.
+    fn complete_authenticated_execution(
+        &mut self,
+        reservation: &HostExecutionGrantReservationV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        outcome: &[u8],
+    ) -> Result<(), DormantHostBrokerCallErrorV1>;
 
     /// Executes one exact authenticated Host ApplyRuntime operation.
     ///
@@ -352,6 +384,53 @@ where
         self.broker
             .terminal_verifier_commitment()
             .map_err(DormantHostBrokerCallErrorV1::from)
+    }
+
+    fn reserve_authenticated_execution(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protected_boot_id: [u8; 16],
+    ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1> {
+        let last_boottime = &mut self.last_boottime_nanoseconds;
+        self.broker
+            .reserve_host_execution(
+                claim,
+                method,
+                request_body,
+                request_id,
+                artifacts,
+                peer,
+                policy,
+                protected_boot_id,
+                || {
+                    let sample = crate::service::trusted_paired_clock_sample()?;
+                    if sample.host_boot_id() != protected_boot_id
+                        || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+                    {
+                        return Err(HostError::Fence("Host execution clock is stale"));
+                    }
+                    *last_boottime = Some(sample.boottime_nanoseconds());
+                    Ok(sample)
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    fn complete_authenticated_execution(
+        &mut self,
+        reservation: &HostExecutionGrantReservationV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        outcome: &[u8],
+    ) -> Result<(), DormantHostBrokerCallErrorV1> {
+        self.broker
+            .complete_host_execution_reservation(reservation, claim, outcome)
+            .map_err(Into::into)
     }
 
     fn consume_authenticated_apply<'call>(

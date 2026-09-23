@@ -1504,6 +1504,53 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.finish_observed_success(request, observation.response().to_vec())
     }
 
+    /// Applies or reads one controller-authenticated Host execution intent.
+    ///
+    /// The fixed Host execution owner reopens protected currentness and exact
+    /// operation history. A new intent may reach Pending only; guest dispatch
+    /// requires the separately authenticated agent session and route permit.
+    ///
+    /// # Errors
+    ///
+    /// Returns protected request custody for a pre-effect mismatch or for an
+    /// unresolved owner, effect, or terminal-commit ambiguity.
+    pub fn execute_host_execution_and_commit(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>,
+    > {
+        let method = request.0.method();
+        let method_matches = matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+        ) && request.0.authorization().is_some();
+        let (request, context) = self.begin_execution(request, method_matches)?;
+        let Some(artifacts) = request.0.authorization() else {
+            return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
+                error: BrokerSessionSecurityError::Currentness,
+                request,
+            });
+        };
+        let body = match crate::host_execution_handoff::dispatch_host_execution_handoff_v1(
+            host,
+            method,
+            request.0.exact_body(),
+            request.0.request_id(),
+            artifacts,
+            request.0.peer(),
+            request.0.peer_policy(),
+            context.boot_id(),
+        ) {
+            Ok(body) => body,
+            Err(error) => return Err(Self::unknown_domain(request, error)),
+        };
+        self.finish_observed_success(request, body)
+    }
+
     /// Executes a Host observe, inventory, or effect query before signing it.
     ///
     /// # Errors

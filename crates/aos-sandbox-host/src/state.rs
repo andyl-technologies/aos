@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use aos_sandbox_broker::VerifiedBrokerAdmission;
 use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1};
 use aos_sandbox_core::model::KeyUsage;
-use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
+use aos_sandbox_core::{BrokerAssignment, BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use buffa::Enumeration as _;
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ use crate::{HostError, Result};
 pub(crate) mod transition;
 
 pub(crate) use transition::HostAction;
-use transition::{DurableExecution, ExecutionContext};
+use transition::{DurableExecution, ExecutionContext, HostExecutionHandoffRecord};
 
 const MAGIC: &[u8; 8] = b"AOSHOST\0";
 const VERSION: u32 = 1;
@@ -176,6 +176,10 @@ struct DurableFence {
     desired_generation: u64,
     assignment_digest: [u8; 32],
     authorization: Vec<u8>,
+    // Exact execution plans rotate, but their verified lease advances the
+    // original Host plan so later lifecycle grants retain its digest pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_authorization: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -222,6 +226,7 @@ impl HostState {
         for (sandbox_id, durable) in &self.fences {
             let opened = authority.open_fence(sandbox_id, &durable.authorization)?;
             validate_opened_fence(durable, &opened)?;
+            validate_base_execution_fence(authority, durable, &opened)?;
         }
 
         let mut pending_sandboxes = BTreeSet::new();
@@ -241,6 +246,13 @@ impl HostState {
                     "authenticated host effect contradicts its request record".to_owned(),
                 ));
             }
+            if let DurableExecution::HostExecutionHandoff(handoff) = &request.execution
+                && effect.request_digest().as_bytes() != &handoff.semantic_commitment
+            {
+                return Err(HostError::State(
+                    "Host execution grant contradicts its retained semantics".to_owned(),
+                ));
+            }
             match (effect.status(), request.receipt.as_deref()) {
                 (aos_sandbox_broker::BrokerEffectStatusV1::Pending, None) => {}
                 (aos_sandbox_broker::BrokerEffectStatusV1::Complete, Some(receipt))
@@ -255,6 +267,7 @@ impl HostState {
             let embedded =
                 authority.open_fence(&request.fence.sandbox_id, &request.fence.authorization)?;
             validate_opened_fence(&request.fence, &embedded)?;
+            validate_base_execution_fence(authority, &request.fence, &embedded)?;
             if embedded.plan_digest() != effect.plan_digest()
                 || embedded.plan_expires_seconds() != effect.plan_expires_seconds()
                 || embedded.local_lease_record() != effect.local_lease_record()
@@ -419,6 +432,169 @@ impl HostState {
         Ok(Admission::New)
     }
 
+    /// Atomically retains a signed execution grant in the ordinary Host fence.
+    ///
+    /// The runtime journal may admit an effect only after this request and its
+    /// lease fence have been committed together in the shared Host snapshot.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_execution_handoff(
+        &mut self,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        action: HostAction,
+        handoff: HostExecutionHandoffRecord,
+        sealed_fence: Vec<u8>,
+        sealed_base_fence: Vec<u8>,
+        admitted: &VerifiedBrokerAdmission,
+        sealed_effect: Vec<u8>,
+        authority: &HostAuthorityV1,
+    ) -> Result<Admission> {
+        if !matches!(
+            action,
+            HostAction::ApplyExecution | HostAction::QueryExecution
+        ) || admitted.fence.assignment() != assignment
+            || admitted.effect.request_id() != &request_id
+            || admitted.effect.transport_request_digest().as_bytes() != &request_digest
+            || admitted.effect.request_digest().as_bytes() != &handoff.semantic_commitment
+            || admitted.effect.target() != BrokerGrantTarget::Assignment
+            || action_verb(action.code()) != Some(admitted.effect.verb())
+            || sealed_fence.is_empty()
+            || sealed_base_fence.is_empty()
+            || sealed_effect.is_empty()
+            || sealed_fence.len() > MAXIMUM_STATE_BYTES
+            || sealed_base_fence.len() > MAXIMUM_STATE_BYTES
+            || sealed_effect.len() > MAXIMUM_STATE_BYTES
+        {
+            return Err(HostError::Fence(
+                "Host execution authorization is inconsistent",
+            ));
+        }
+        self.ensure_incarnation_available(
+            assignment.sandbox().as_bytes(),
+            assignment.incarnation().as_bytes(),
+        )?;
+        if let Some(existing) = self.requests.get_mut(&request_id) {
+            if existing.request_digest != request_digest
+                || existing.action != action.code()
+                || existing.execution != DurableExecution::HostExecutionHandoff(handoff)
+            {
+                return Err(HostError::Fence("Host execution request ID was reused"));
+            }
+            if let Some(receipt) = &existing.receipt {
+                return Ok(Admission::Complete(receipt.clone()));
+            }
+            let prior_effect = authority.open_effect(&request_id, &existing.effect)?;
+            let prior_fence = authority.open_fence(
+                assignment.sandbox().as_bytes(),
+                &existing.fence.authorization,
+            )?;
+            if prior_effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
+                || prior_effect.transport_request_digest()
+                    != admitted.effect.transport_request_digest()
+                || prior_effect.request_digest() != admitted.effect.request_digest()
+                || prior_effect.verb() != admitted.effect.verb()
+                || prior_effect.target() != admitted.effect.target()
+                || prior_fence.assignment() != admitted.fence.assignment()
+                || prior_fence.node() != admitted.fence.node()
+                || prior_fence.plan_digest() != admitted.fence.plan_digest()
+                || prior_fence.ownership_authority() != admitted.fence.ownership_authority()
+            {
+                return Err(HostError::Fence(
+                    "Host execution grant replay changed authority",
+                ));
+            }
+            validate_execution_authentication(
+                authority,
+                existing,
+                stable_authority_digest(&admitted.effect, &admitted.fence)?,
+            )?;
+            existing.effect = sealed_effect;
+            existing.fence.authorization = sealed_fence.clone();
+            existing.fence.base_authorization = Some(sealed_base_fence.clone());
+            let current = self
+                .fences
+                .get_mut(assignment.sandbox().as_bytes())
+                .ok_or_else(|| {
+                    HostError::State("Host execution request lost its current fence".to_owned())
+                })?;
+            if current.witness_request_id != request_id {
+                return Err(HostError::Fence("Host execution request was superseded"));
+            }
+            current.authorization = sealed_fence;
+            current.base_authorization = Some(sealed_base_fence);
+            return Ok(Admission::Pending);
+        }
+
+        if self.requests.len() >= MAXIMUM_REQUESTS
+            || self.requests.values().any(|request| {
+                request.receipt.is_none()
+                    && request.fence.sandbox_id == *assignment.sandbox().as_bytes()
+            })
+        {
+            return Err(HostError::Fence("Host assignment has a pending transition"));
+        }
+        let current_runtime = self
+            .current_runtime_request(assignment.sandbox().as_bytes())
+            .ok_or(HostError::Fence("Host runtime witness is absent"))?;
+        if current_runtime.request_id != handoff.runtime_witness_request_id
+            || current_runtime.receipt.is_none()
+            || current_runtime.fence.sandbox_id != *assignment.sandbox().as_bytes()
+            || current_runtime.fence.incarnation_id != *assignment.incarnation().as_bytes()
+            || current_runtime.fence.assignment_epoch != assignment.epoch().get()
+            || matches!(current_runtime.action, 2 | 5 | 6 | 7)
+        {
+            return Err(HostError::Fence("Host runtime witness is not current"));
+        }
+
+        let mut proposed = DurableFence::from_assignment(assignment, request_id, sealed_fence);
+        proposed.base_authorization = Some(sealed_base_fence);
+        let current = self
+            .fences
+            .get(assignment.sandbox().as_bytes())
+            .ok_or(HostError::Fence(
+                "Host execution has no current runtime fence",
+            ))?;
+        current.validate_successor(&proposed)?;
+        let execution = DurableExecution::HostExecutionHandoff(handoff);
+        let context = execution_context_from_parts(
+            action,
+            request_id,
+            request_digest,
+            proposed.sandbox_id,
+            proposed.incarnation_id,
+            proposed.assignment_epoch,
+            proposed.desired_generation,
+            proposed.assignment_digest,
+            false,
+        );
+        if !execution.validate(context) {
+            return Err(HostError::Fence("Host execution handoff is invalid"));
+        }
+        let stable = stable_authority_digest(&admitted.effect, &admitted.fence)?;
+        let digest = execution
+            .authentication_digest(context, stable)
+            .ok_or_else(|| {
+                HostError::State("Host execution authentication is too large".to_owned())
+            })?;
+        let authentication = authority.seal_execution_record(&request_id, &digest)?;
+        self.fences.insert(proposed.sandbox_id, proposed.clone());
+        self.requests.insert(
+            request_id,
+            RequestRecord {
+                request_id,
+                request_digest,
+                fence: proposed,
+                action: action.code(),
+                execution,
+                execution_authentication: authentication,
+                effect: sealed_effect,
+                receipt: None,
+            },
+        );
+        Ok(Admission::New)
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Guardian admission commits one complete authenticated request atomically"
@@ -531,14 +707,29 @@ impl HostState {
         &self,
         sandbox_id: &[u8; 16],
     ) -> Option<([u8; 16], HostAction, [u8; 16], DurableExecution)> {
-        let fence = self.fences.get(sandbox_id)?;
-        let request = self.requests.get(&fence.witness_request_id)?;
+        let request = self.current_runtime_request(sandbox_id)?;
         Some((
             request.request_id,
             HostAction::from_code(request.action)?,
             request.fence.incarnation_id,
             request.execution.clone(),
         ))
+    }
+
+    pub(crate) fn runtime_witness_request_id(&self, sandbox_id: &[u8; 16]) -> Option<[u8; 16]> {
+        self.current_runtime_request(sandbox_id)
+            .map(|request| request.request_id)
+    }
+
+    fn current_runtime_request(&self, sandbox_id: &[u8; 16]) -> Option<&RequestRecord> {
+        let fence = self.fences.get(sandbox_id)?;
+        let current = self.requests.get(&fence.witness_request_id)?;
+        match &current.execution {
+            DurableExecution::HostExecutionHandoff(handoff) => {
+                self.requests.get(&handoff.runtime_witness_request_id)
+            }
+            _ => Some(current),
+        }
     }
 
     /// Classifies the Guardian launch lineage underlying the current live runtime.
@@ -577,12 +768,9 @@ impl HostState {
         if current_fence.incarnation_id != *incarnation_id {
             return Ok(GuardianLineage::Shadowed);
         }
-        let current = self
-            .requests
-            .get(&current_fence.witness_request_id)
-            .ok_or_else(|| {
-                HostError::State("current lineage lost its witness request".to_owned())
-            })?;
+        let Some(current) = self.current_runtime_request(sandbox_id) else {
+            return Ok(GuardianLineage::Shadowed);
+        };
         let current_action = HostAction::from_code(current.action)
             .ok_or_else(|| HostError::State("current lineage has an invalid action".to_owned()))?;
         if current.receipt.is_none() {
@@ -592,7 +780,10 @@ impl HostState {
             HostAction::Launch if current.execution.guardian_completed_invocations().is_none() => {
                 return Ok(GuardianLineage::Shadowed);
             }
-            HostAction::Stop | HostAction::Kill => return Ok(GuardianLineage::Shadowed),
+            HostAction::Stop
+            | HostAction::Kill
+            | HostAction::ApplyExecution
+            | HostAction::QueryExecution => return Ok(GuardianLineage::Shadowed),
             HostAction::Launch | HostAction::Freeze | HostAction::Thaw => {}
         }
 
@@ -866,6 +1057,24 @@ impl HostState {
 
     fn validate_execution_links(&self) -> Result<()> {
         for request in self.requests.values() {
+            if let DurableExecution::HostExecutionHandoff(handoff) = &request.execution {
+                let witness = self
+                    .requests
+                    .get(&handoff.runtime_witness_request_id)
+                    .ok_or_else(|| {
+                        HostError::State("Host execution lost its runtime witness".to_owned())
+                    })?;
+                if witness.receipt.is_none()
+                    || witness.fence.sandbox_id != request.fence.sandbox_id
+                    || witness.fence.incarnation_id != request.fence.incarnation_id
+                    || witness.fence.assignment_epoch != request.fence.assignment_epoch
+                    || matches!(witness.action, 2 | 5 | 6 | 7)
+                {
+                    return Err(HostError::State(
+                        "Host execution runtime witness is invalid".to_owned(),
+                    ));
+                }
+            }
             let Some(source) = request.execution.stop_source() else {
                 continue;
             };
@@ -965,15 +1174,40 @@ impl HostState {
     }
 
     pub(crate) fn prior_authorization(&self, sandbox_id: &[u8; 16]) -> Option<&[u8]> {
-        self.fences
-            .get(sandbox_id)
-            .map(|fence| fence.authorization.as_slice())
+        self.fences.get(sandbox_id).map(|fence| {
+            fence
+                .base_authorization
+                .as_deref()
+                .unwrap_or(&fence.authorization)
+        })
     }
 
     pub(crate) fn request_authorization(&self, request_id: &[u8; 16]) -> Option<&[u8]> {
         self.requests
             .get(request_id)
             .map(|request| request.fence.authorization.as_slice())
+    }
+
+    pub(crate) fn request_base_authorization(&self, request_id: &[u8; 16]) -> Option<&[u8]> {
+        self.requests
+            .get(request_id)
+            .and_then(|request| request.fence.base_authorization.as_deref())
+    }
+
+    pub(crate) fn execution_handoff_is_current(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+    ) -> bool {
+        self.fences
+            .get(sandbox_id)
+            .is_some_and(|fence| &fence.witness_request_id == request_id)
+            && self.requests.get(request_id).is_some_and(|request| {
+                matches!(
+                    &request.execution,
+                    DurableExecution::HostExecutionHandoff(_)
+                )
+            })
     }
 
     pub(crate) fn effect(&self, request_id: &[u8; 16]) -> Option<&[u8]> {
@@ -1025,15 +1259,17 @@ impl HostState {
             .map_err(|_| HostError::State("cannot reserve runtime history".to_owned()))?;
 
         for fence in self.fences.values() {
-            let request = self
-                .requests
-                .get(&fence.witness_request_id)
-                .ok_or_else(|| {
-                    HostError::State("current sandbox fence lost its witness request".to_owned())
-                })?;
-            current.push(retained_effect(request)?);
+            if let Some(request) = self.current_runtime_request(&fence.sandbox_id) {
+                current.push(retained_effect(request)?);
+            }
         }
         for request in self.requests.values() {
+            if matches!(
+                &request.execution,
+                DurableExecution::HostExecutionHandoff(_)
+            ) {
+                continue;
+            }
             let current_fence = self.fences.get(&request.fence.sandbox_id).ok_or_else(|| {
                 HostError::State("historical request lost its current sandbox fence".to_owned())
             })?;
@@ -1567,6 +1803,27 @@ fn validate_opened_fence(
     Ok(())
 }
 
+fn validate_base_execution_fence(
+    authority: &HostAuthorityV1,
+    durable: &DurableFence,
+    exact: &BrokerAuthorizationFenceV1,
+) -> Result<()> {
+    let Some(sealed_base) = durable.base_authorization.as_deref() else {
+        return Ok(());
+    };
+    let base = authority.open_fence(&durable.sandbox_id, sealed_base)?;
+    validate_opened_fence(durable, &base)?;
+    if base.node() != exact.node()
+        || base.ownership_authority() != exact.ownership_authority()
+        || base.local_lease_record() != exact.local_lease_record()
+    {
+        return Err(HostError::State(
+            "Host execution base fence lost its shared lease".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
     match action {
         1 => Some(aos_sandbox_core::BrokerVerb::HostLaunch),
@@ -1574,6 +1831,8 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
         3 => Some(aos_sandbox_core::BrokerVerb::HostFreeze),
         4 => Some(aos_sandbox_core::BrokerVerb::HostThaw),
         5 => Some(aos_sandbox_core::BrokerVerb::HostKill),
+        6 => Some(aos_sandbox_core::BrokerVerb::HostApplyExecution),
+        7 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecution),
         _ => None,
     }
 }
@@ -1675,6 +1934,8 @@ fn host_verb_code(verb: BrokerVerb) -> Option<u8> {
         BrokerVerb::HostFreeze => Some(3),
         BrokerVerb::HostThaw => Some(4),
         BrokerVerb::HostKill => Some(5),
+        BrokerVerb::HostApplyExecution => Some(6),
+        BrokerVerb::HostQueryExecution => Some(7),
         _ => None,
     }
 }
@@ -1737,7 +1998,8 @@ fn ensure_live_execution_enabled(execution: &DurableExecution) -> Result<()> {
     match execution {
         DurableExecution::DirectLifecycle
         | DurableExecution::GuardianLaunch(_)
-        | DurableExecution::CompositeStop(_) => Ok(()),
+        | DurableExecution::CompositeStop(_)
+        | DurableExecution::HostExecutionHandoff(_) => Ok(()),
     }
 }
 
@@ -1834,6 +2096,24 @@ impl DurableFence {
             desired_generation: fence.desired_generation(),
             assignment_digest: *fence.assignment_digest(),
             authorization,
+            base_authorization: None,
+        }
+    }
+
+    fn from_assignment(
+        assignment: BrokerAssignment,
+        witness_request_id: [u8; 16],
+        authorization: Vec<u8>,
+    ) -> Self {
+        Self {
+            witness_request_id,
+            sandbox_id: *assignment.sandbox().as_bytes(),
+            incarnation_id: *assignment.incarnation().as_bytes(),
+            assignment_epoch: assignment.epoch().get(),
+            desired_generation: assignment.desired_generation().get(),
+            assignment_digest: *assignment.digest().as_bytes(),
+            authorization,
+            base_authorization: None,
         }
     }
 
@@ -1871,6 +2151,10 @@ fn validate_fence(fence: &DurableFence) -> Result<()> {
         || fence.assignment_digest == [0; 32]
         || fence.authorization.is_empty()
         || fence.authorization.len() > MAXIMUM_STATE_BYTES
+        || fence
+            .base_authorization
+            .as_ref()
+            .is_some_and(|base| base.is_empty() || base.len() > MAXIMUM_STATE_BYTES)
     {
         return Err(HostError::State(
             "durable assignment fence contains a sentinel".to_owned(),
@@ -1881,6 +2165,16 @@ fn validate_fence(fence: &DurableFence) -> Result<()> {
 
 fn validate_request(request: &RequestRecord) -> Result<()> {
     validate_fence(&request.fence)?;
+    if request.fence.base_authorization.is_some()
+        != matches!(
+            &request.execution,
+            DurableExecution::HostExecutionHandoff(_)
+        )
+    {
+        return Err(HostError::State(
+            "Host execution base fence contradicts request kind".to_owned(),
+        ));
+    }
     if request.request_id == [0; 16]
         || request.request_digest == [0; 32]
         || request.effect.is_empty()
@@ -2080,11 +2374,12 @@ mod tests {
     use aos_sandbox_core::{
         AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
         BrokerGrantTarget, BrokerPlanTrustAnchor, BrokerVerb, DecodeLimits, DesiredGeneration,
-        GuardianPlanBinding, IncarnationId, LeaseAssignment, MediaType, NodeId, ObjectDescriptor,
-        ObjectDigest, OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId,
-        ProtocolVersion, RawClockProvenance, RawPairedClockSample, RevocationScopeId, SandboxId,
-        TrustScopeId, descriptor_for_bytes, sign_statement,
+        ExecutionId, GuardianPlanBinding, IncarnationId, LeaseAssignment, MediaType, NodeId,
+        ObjectDescriptor, ObjectDigest, OwnershipLease, OwnershipLeaseTrustAnchor,
+        PortableMediaType, ProtocolId, ProtocolVersion, RawClockProvenance, RawPairedClockSample,
+        RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
+    use aos_sandbox_protocol::semantics::host_execution_query_grant_v1;
     use aos_sandbox_protocol::session::{
         ValidatedUntrustedAuthorizationArtifacts, decode_request_envelope,
     };
@@ -2297,6 +2592,16 @@ mod tests {
                 0,
             )
             .unwrap();
+            self.artifacts_for_grant(assignment, grant, lease_generation, plan_expires_seconds)
+        }
+
+        fn artifacts_for_grant(
+            &self,
+            assignment: BrokerAssignment,
+            grant: BrokerGrant,
+            lease_generation: u64,
+            plan_expires_seconds: i64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Host,
                 ProtocolId::HostBroker,
@@ -2582,6 +2887,7 @@ mod tests {
             desired_generation: 56,
             assignment_digest: [57; 32],
             authorization: vec![58],
+            base_authorization: None,
         };
         let execution = DurableExecution::guardian_fixture(ExecutionContext {
             action: HostAction::Launch,
@@ -2704,6 +3010,169 @@ mod tests {
             Admission::New
         );
         state
+    }
+
+    #[test]
+    fn exact_execution_grants_advance_one_lease_without_replacing_base_plan() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let mut base_request = ApplyRuntimeRequest::decode_from_slice(&runtime_request()).unwrap();
+        base_request.action = RuntimeAction::RUNTIME_ACTION_FREEZE.into();
+        base_request.launch_plan = None.into();
+        base_request.guardian_arm = None.into();
+        let base_bytes = base_request.encode_to_vec();
+        let decoded = decode_runtime_request(
+            &base_bytes,
+            test_peer(),
+            test_policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*decoded.fence().sandbox_id()),
+            IncarnationId::from_bytes(*decoded.fence().incarnation_id()),
+            AssignmentEpoch::new(decoded.fence().assignment_epoch()),
+            DesiredGeneration::new(decoded.fence().desired_generation()),
+            ObjectDigest::from_bytes(*decoded.fence().assignment_digest()),
+        )
+        .unwrap();
+        let base = admitted_records(&fixture, &authority, &base_bytes, 1, 300, None);
+        let base_plan_digest = base.fence.plan_digest();
+        let base_request_id = *decoded.header().request_id();
+        let base_digest: [u8; 32] = Sha256::digest(&base_bytes).into();
+        let mut state = HostState::default();
+        state
+            .admit(
+                decoded.fence(),
+                base_request_id,
+                base_digest,
+                HostAction::Freeze.code(),
+                authority
+                    .seal_fence(decoded.fence().sandbox_id(), &base.fence)
+                    .unwrap(),
+                &base,
+                authority
+                    .seal_effect(&base_request_id, &base.effect)
+                    .unwrap(),
+                &authority,
+            )
+            .unwrap();
+        state
+            .complete(
+                base_request_id,
+                base_digest,
+                authority
+                    .seal_effect(&base_request_id, &base.effect.complete(vec![1]).unwrap())
+                    .unwrap(),
+                vec![1],
+            )
+            .unwrap();
+        state.validate_authenticated(&authority).unwrap();
+
+        for (request_byte, lease_generation) in [(111_u8, 2_u64), (112, 3)] {
+            let operation_id = [request_byte; 16];
+            let execution_id = ExecutionId::from_bytes([113; 16]);
+            let source = ObjectDigest::from_bytes([114; 32]);
+            let semantics =
+                host_execution_query_grant_v1(assignment, operation_id, execution_id, source)
+                    .unwrap();
+            let body = [request_byte; 8];
+            let grant = BrokerGrant::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.commitment(),
+                body.len() as u32,
+                0,
+            )
+            .unwrap();
+            let artifacts = fixture.artifacts_for_grant(assignment, grant, lease_generation, 300);
+            let prior_base = state
+                .prior_authorization(assignment.sandbox().as_bytes())
+                .unwrap()
+                .to_vec();
+            let admitted = authority
+                .admit_execution(
+                    &artifacts,
+                    assignment,
+                    [request_byte; 16],
+                    &body,
+                    semantics,
+                    1_000,
+                    &test_clock(),
+                    &prior_base,
+                )
+                .unwrap();
+            let advanced_base = authority
+                .advance_base_execution_fence(
+                    assignment.sandbox().as_bytes(),
+                    &prior_base,
+                    &admitted,
+                )
+                .unwrap();
+            let handoff = HostExecutionHandoffRecord {
+                runtime_witness_request_id: base_request_id,
+                runtime_handle: [115; 32],
+                operation_id,
+                execution_id: *execution_id.as_bytes(),
+                source_commitment: *source.as_bytes(),
+                semantic_commitment: *semantics.commitment().digest().as_bytes(),
+            };
+            let body_digest: [u8; 32] = Sha256::digest(body).into();
+            state
+                .admit_execution_handoff(
+                    assignment,
+                    [request_byte; 16],
+                    body_digest,
+                    HostAction::QueryExecution,
+                    handoff,
+                    authority
+                        .seal_fence(assignment.sandbox().as_bytes(), &admitted.fence)
+                        .unwrap(),
+                    advanced_base,
+                    &admitted,
+                    authority
+                        .seal_effect(&[request_byte; 16], &admitted.effect)
+                        .unwrap(),
+                    &authority,
+                )
+                .unwrap();
+            state
+                .complete(
+                    [request_byte; 16],
+                    body_digest,
+                    authority
+                        .seal_effect(
+                            &[request_byte; 16],
+                            &admitted.effect.complete(vec![request_byte]).unwrap(),
+                        )
+                        .unwrap(),
+                    vec![request_byte],
+                )
+                .unwrap();
+            state.validate_authenticated(&authority).unwrap();
+            let base_head = authority
+                .open_fence(
+                    assignment.sandbox().as_bytes(),
+                    state
+                        .prior_authorization(assignment.sandbox().as_bytes())
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(base_head.plan_digest(), base_plan_digest);
+            assert_eq!(
+                base_head.local_lease_record().lease_generation(),
+                lease_generation
+            );
+        }
+
+        admitted_records(
+            &fixture,
+            &authority,
+            &base_bytes,
+            4,
+            300,
+            state.prior_authorization(assignment.sandbox().as_bytes()),
+        );
     }
 
     fn runtime_proof() -> transition::RuntimeProofSnapshot {
@@ -3078,6 +3547,7 @@ mod tests {
                     desired_generation: 6,
                     assignment_digest: [7; 32],
                     authorization: vec![8],
+                    base_authorization: None,
                 },
                 action: HostAction::Freeze.code(),
                 execution: DurableExecution::DirectLifecycle,
