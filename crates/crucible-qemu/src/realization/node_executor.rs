@@ -419,19 +419,24 @@ impl QemuReplayValidationExecutor {
         validate_snapshot_pair(snapshot)?;
         require_fat_materialized_snapshot(snapshot, "exact snapshot probe")?;
         validate_exact_checkpoint_state(&snapshot.checkpoint, "exact snapshot probe")?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=validated");
         let restore = QemuGuardedProbeRestoreAdmission::new(&snapshot.checkpoint);
         self.shutdown_active_node_for("replace active realized QEMU node")?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=prior-node-cleared");
         let mut node = self
             .launcher
             .launch_materialized_probe_node_guarded(config, snapshot, restore)?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=exact-node-launched-paused");
         QemuRealizedNodeBackend::prepare_authoritative_observation_stream(&mut node).map_err(
             |source| node_backend_error("probe guarded exact-root QEMU snapshot", source),
         )?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=observation-stream-ready");
         let runtime_id = Backend::fingerprint(&mut node)
             .map(|fingerprint| fingerprint.hash)
             .map_err(|source| {
                 node_backend_error("fingerprint guarded exact-root QEMU snapshot probe", source)
             })?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=fingerprint-ready");
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         self.retain_runtime_basis(&runtime, config);

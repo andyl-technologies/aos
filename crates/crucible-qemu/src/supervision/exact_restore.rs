@@ -152,6 +152,7 @@ impl QemuProductionExactRestoreRequest {
                 &self.process_contract,
             )
             .map_err(|source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source })?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=vmstate-container-ready");
         let cancellation = self
             .process_contract
             .try_clone_cancellation_event()
@@ -165,6 +166,7 @@ impl QemuProductionExactRestoreRequest {
                 std::os::fd::AsFd::as_fd(&cancellation),
             )
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=ram-inputs-ready");
         let identity =
             QemuLiveNodeIdentity::new(&self.node.name, &self.router, &self.crash_detector);
         let admission = AtomicExactRestoreAdmission::admit(
@@ -176,7 +178,9 @@ impl QemuProductionExactRestoreRequest {
             ram_inputs,
             std::os::fd::AsFd::as_fd(&cancellation),
         )?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=atomic-admission-ready");
         let (node, target) = launch_atomic_exact_restore(&self.config, admission, false)?;
+        eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage=atomic-restore-complete");
 
         Ok(QemuProductionExactRestoreLaunch {
             node,
@@ -284,6 +288,21 @@ pub struct QemuProductionExactRestoreLaunch {
 }
 
 impl QemuProductionExactRestoreLaunch {
+    /// Retains a restored node at its authenticated paused boundary for replay comparison.
+    ///
+    /// The exact probe fingerprints the restored checkpoint before any guest
+    /// instruction may execute. Production resume uses `into_running_parts`
+    /// only after admitting that checkpoint as the live continuation.
+    pub(crate) fn into_paused_parts(
+        self,
+    ) -> (
+        QemuNode,
+        QemuPreparedRunDirectory,
+        crucible::exact_checkpoint::ExactCheckpointVerifiedNode,
+    ) {
+        (self.node, self.run_directory, self.target)
+    }
+
     /// Resumes a fully restored node under its retained exact relation.
     ///
     /// # Errors
