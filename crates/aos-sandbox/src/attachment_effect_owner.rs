@@ -26,6 +26,7 @@ use crate::attachment_slot_state::{
 };
 use crate::attachment_source::{
     self, AttachmentSourceBoundsV1, AttachmentSourceError, CurrentAttachmentSourcePlanV1,
+    PreparedCurrentAttachmentSourceAcquireV1,
 };
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
@@ -359,6 +360,34 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         attachment_source::plan_current(self.journal, desired, inventory, target, bounds, clock)
+    }
+
+    /// Compiles exact immutable Mount Acquire bytes from a current source plan.
+    ///
+    /// The returned request is not effect authority. It must be signed under
+    /// independent Mount policy and durably admitted before authenticated I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Acquire plan, changed protected source projection,
+    /// expired deadline, or invalid canonical Mount semantics.
+    pub fn prepare_current_source_acquire<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        operation_id: OperationId,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentSourceAcquireV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::prepare_current_acquire(
+            self.journal,
+            plan,
+            operation_id,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
     }
 
     /// Joins a fresh Mount resource inventory to one current namespace target.

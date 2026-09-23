@@ -29,9 +29,12 @@ use aos_proto::aos::sandbox::local::v1::{
     MountLifecycle, MountSourceAcquisitionPhase, MountSourceConsistency, MountSourceProofClass,
     RequestHeader,
 };
+use aos_sandbox_core::InvalidBrokerAuthorizationPlan;
 use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation};
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, RawPairedClockSample};
-use aos_sandbox_protocol::semantics::canonical_precatalog_mount_create_template_v1;
+use aos_sandbox_protocol::semantics::{
+    CanonicalPrecatalogMountCreateV1, canonical_precatalog_mount_create_template_v1,
+};
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, SourceRealizationBindingV1, ValidatedMountInventoryRecord,
     ValidatedMountSourceAcquisitionRecord, decode_mount_request,
@@ -51,7 +54,9 @@ use crate::mount_observation_state::{
     CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::{CurrentNamespaceTarget, NamespaceTargetError};
+use crate::runtime_scope::{
+    CurrentNamespaceTarget, CurrentRuntimeScopeError, NamespaceTargetError,
+};
 use crate::{Journal, JournalError};
 
 const PLAN_MAGIC: &[u8; 8] = b"AOSASP01";
@@ -323,6 +328,12 @@ pub enum AttachmentSourceError {
     /// Durable Mount attempt or completion custody is corrupt.
     #[error(transparent)]
     MountAttempt(#[from] crate::MountAttemptError),
+    /// Current Host-backed ownership authority is unavailable for a Mount plan.
+    #[error(transparent)]
+    Runtime(#[from] CurrentRuntimeScopeError),
+    /// The exact Mount source-acquisition plan cannot be represented.
+    #[error(transparent)]
+    Plan(#[from] InvalidBrokerAuthorizationPlan),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -401,7 +412,7 @@ where
     let history = CustodyHistory::load(journal)?;
     let projection = source_projection(journal, intent, target, sample);
     let (binding_digest, template_digest) = match projection {
-        Ok((binding, template_digest)) => (binding.digest(), template_digest),
+        Ok((binding, template)) => (binding.digest(), template.digest()),
         Err(AttachmentSourceError::UnsupportedSource) => {
             let outstanding = history.outstanding_acquisitions(*intent.id().as_bytes());
             let mut acquisitions = outstanding.iter().copied();
@@ -1104,12 +1115,12 @@ const fn mutation_mode(mutation: ViewMutation) -> u32 {
     }
 }
 
-fn source_projection(
+pub(super) fn source_projection(
     journal: &Journal,
     intent: &AttachmentIntent,
     target: &CurrentNamespaceTarget,
     sample: RawPairedClockSample,
-) -> Result<(SourceRealizationBindingV1, ObjectDigest), AttachmentSourceError> {
+) -> Result<(SourceRealizationBindingV1, CanonicalPrecatalogMountCreateV1), AttachmentSourceError> {
     let (view_id, revision) = intent.source_view();
     let view = filesystem_view_state::get_revision(journal, view_id, revision)?
         .filter(|view| {
@@ -1147,7 +1158,7 @@ fn source_projection(
     .map_err(|_| AttachmentSourceError::Protocol)?;
     let template = canonical_precatalog_mount_create_template_v1(&validated, &[])
         .map_err(|_| AttachmentSourceError::Protocol)?;
-    Ok((binding, template.digest()))
+    Ok((binding, template))
 }
 
 fn prospective_create(

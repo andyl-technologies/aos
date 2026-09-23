@@ -15,6 +15,7 @@
 mod custody;
 mod format;
 mod planning;
+mod preparation;
 
 pub use custody::{
     AttachmentSourceAttemptKindV1, AttachmentSourceAttemptOutcomeV1,
@@ -25,9 +26,11 @@ pub use planning::{
     AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
     CurrentAttachmentSourcePlanV1,
 };
+pub use preparation::PreparedCurrentAttachmentSourceAcquireV1;
 
 pub(crate) use custody::{
     record_completion, record_current_attempt, recover_open_attempt, validate_attempt_namespace,
     validate_completion_namespace,
 };
 pub(crate) use planning::plan_current;
+pub(crate) use preparation::prepare_current_acquire;
