@@ -1698,7 +1698,8 @@ fn validate_cache_transition(
             if successor.key().identity()[..32] != *record.partition.as_bytes()
                 || successor.key().identity()[49..81] != *record.subject.as_bytes()
                 || operation.is_some_and(|current| current != record.operation)
-                || !sequences.insert(record.sequence)
+                || (transition != CacheResidencyTransactionKindV1::PinChange
+                    && !sequences.insert(record.sequence))
             {
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
             }
@@ -1706,16 +1707,33 @@ fn validate_cache_transition(
             decoded.push((successor.key().kind(), record));
         }
         decoded.sort_by_key(|(kind, _)| CacheResidencyProtectedJournalSchemaV1::order(*kind));
-        if decoded.windows(2).any(|pair| {
+        let shared = decoded
+            .first()
+            .map(|(_, record)| record)
+            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if transition == CacheResidencyTransactionKindV1::PinChange {
+            // Accounting and Current are aliases of the one atomic Pin event.
+            // They cannot invent quota changes or advance durable history.
+            if shared.kind != CacheRecordKindV1::Pin
+                || decoded.iter().any(|(_, record)| record != shared)
+            {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+        } else if decoded.iter().any(|(kind, record)| {
+            matches!(
+                kind,
+                CacheResidencyProtectedRecordKindV1::GlobalAccounting
+                    | CacheResidencyProtectedRecordKindV1::ProjectAccounting
+                    | CacheResidencyProtectedRecordKindV1::DomainAccounting
+            ) && record.kind != CacheRecordKindV1::Quota
+        }) {
+            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+        } else if decoded.windows(2).any(|pair| {
             pair[0].1.sequence.checked_add(1) != Some(pair[1].1.sequence)
                 || pair[0].1.operation != pair[1].1.operation
         }) {
             return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
         }
-        let shared = decoded
-            .first()
-            .map(|(_, record)| record)
-            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
         if decoded.iter().skip(1).any(|(_, record)| {
             record.plan != shared.plan
                 || record.model != shared.model
@@ -1737,7 +1755,8 @@ fn validate_cache_transition(
             accounting(CacheResidencyProtectedRecordKindV1::GlobalAccounting),
             accounting(CacheResidencyProtectedRecordKindV1::ProjectAccounting),
             accounting(CacheResidencyProtectedRecordKindV1::DomainAccounting),
-        ) {
+        ) && transition != CacheResidencyTransactionKindV1::PinChange
+        {
             if global.amount < project.amount
                 || project.amount < domain.amount
                 || global.model != project.model
@@ -2025,13 +2044,29 @@ pub(super) fn reconstruct_cache_history<'envelope>(
         )
         .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
         .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if records_by_partition
+        let encoded_record = &reducer.body()[descriptor_end..];
+        let pin_alias = record.kind == CacheRecordKindV1::Pin
+            && matches!(
+                envelope.key().kind(),
+                CacheResidencyProtectedRecordKindV1::GlobalAccounting
+                    | CacheResidencyProtectedRecordKindV1::ProjectAccounting
+                    | CacheResidencyProtectedRecordKindV1::DomainAccounting
+                    | CacheResidencyProtectedRecordKindV1::Pin
+                    | CacheResidencyProtectedRecordKindV1::Current
+            );
+        match records_by_partition
             .entry(partition_digest)
             .or_default()
-            .insert(record.sequence, reducer.body()[descriptor_end..].to_vec())
-            .is_some()
+            .entry(record.sequence)
         {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(encoded_record.to_vec());
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if pin_alias && entry.get().as_slice() == encoded_record => {}
+            std::collections::btree_map::Entry::Occupied(_) => {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
         }
     }
     let mut inventories = Vec::with_capacity(partitions.len());
@@ -2265,7 +2300,7 @@ fn cache_record_kind_matches(
         CacheResidencyProtectedRecordKindV1::GlobalAccounting
         | CacheResidencyProtectedRecordKindV1::ProjectAccounting
         | CacheResidencyProtectedRecordKindV1::DomainAccounting => {
-            durable == CacheRecordKindV1::Quota
+            matches!(durable, CacheRecordKindV1::Quota | CacheRecordKindV1::Pin)
         }
         CacheResidencyProtectedRecordKindV1::Reservation => {
             durable == CacheRecordKindV1::Reservation

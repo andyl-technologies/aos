@@ -29,16 +29,16 @@ use super::protected_journal::{
 };
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
-    CacheAuthorityScopeV1, CachePinV1, CacheRecoveryLimitsV1, CacheResidencyAuthorityRequestV1,
-    CacheResidencyColdRecoveryV1, CacheResidencyCommitOutcomeV1, CacheResidencyControllerRecordV1,
-    CacheResidencyOutcomeUnknownV1, CacheResidencyProtectedJournalEnvelopeV1,
-    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalProjectionV1,
-    CacheResidencyProtectedJournalSnapshotV1, CacheResidencyProtectedJournalV1,
-    CacheResidencyProtectedRecordKindV1, CacheResidencyRecoveryV1, CacheResidencyReplayValidatorV1,
-    CacheResidencyTransactionKindV1, CacheScrubRecordV1, CacheTypedCheckpointV1,
-    EvictionProgressV1, EvictionRetryAuthorityV1, FrozenEvictionPlanV1, PhysicalPartitionId,
-    ReclamationEvidenceV1, ReleasedCachePinV1, UnlinkObservationV1,
-    ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
+    CacheAuthorityScopeV1, CachePinV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1,
+    CacheResidencyAuthorityRequestV1, CacheResidencyColdRecoveryV1, CacheResidencyCommitOutcomeV1,
+    CacheResidencyControllerRecordV1, CacheResidencyOutcomeUnknownV1,
+    CacheResidencyProtectedJournalEnvelopeV1, CacheResidencyProtectedJournalErrorV1,
+    CacheResidencyProtectedJournalProjectionV1, CacheResidencyProtectedJournalSnapshotV1,
+    CacheResidencyProtectedJournalV1, CacheResidencyProtectedRecordKindV1,
+    CacheResidencyRecoveryV1, CacheResidencyReplayValidatorV1, CacheResidencyTransactionKindV1,
+    CacheScrubRecordV1, CacheTypedCheckpointV1, EvictionProgressV1, EvictionRetryAuthorityV1,
+    FrozenEvictionPlanV1, PhysicalPartitionId, ReclamationEvidenceV1, ReleasedCachePinV1,
+    UnlinkObservationV1, ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
     cache_residency_protected_key_v1, cache_residency_reducer_envelope_v1, decode_floor,
     decode_typed_checkpoint, encode_floor,
 };
@@ -266,6 +266,54 @@ impl<'session, 'authority, 'journal>
             CacheAuthorityPurposeV1::PinDrain,
             scope,
         )
+    }
+
+    /// Seals one logical release as five aliases of the same durable Pin event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retained state, drain authority, projections, or
+    /// the exact payload-to-capability binding cannot be validated.
+    pub fn seal_logical_pin_release(
+        &self,
+        inventory: &CacheRecoveryInventoryV1,
+        pin: &CachePinV1,
+        operation: OperationId,
+        valid_until: u64,
+    ) -> Result<
+        Vec<CacheResidencyControllerRecordV1<'session>>,
+        CacheResidencyProtectedJournalErrorV1,
+    > {
+        let capability = self
+            .capability(0)
+            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let (payload, released) = inventory
+            .plan_logical_pin_release(
+                self.owner,
+                capability,
+                pin,
+                operation,
+                valid_until,
+                self.now,
+                CacheRecoveryLimitsV1::default(),
+            )
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let authorize = || {
+            self.authorize_pin_release_payload(payload.clone(), 0, &released)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
+        };
+        Ok(vec![
+            self.seal_pin(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_global_accounting(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_project_accounting(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_domain_accounting(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_current(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+        ])
     }
 
     /// Authorizes a scrub payload against its exact verifier-issued observation.

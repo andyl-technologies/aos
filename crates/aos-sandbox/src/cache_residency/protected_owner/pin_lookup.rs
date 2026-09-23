@@ -5,12 +5,43 @@ use std::sync::Arc;
 use aos_sandbox_core::{AttachmentId, ObjectDescriptor, ProjectId, ViewId};
 
 use super::{
-    CachePinV1, CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalV1,
-    CacheResidencyProtectedOwnerV1, ProtectedDomainJournalErrorV1,
+    CachePinV1, CacheRecoveryInventoryV1, CacheResidencyProtectedJournalErrorV1,
+    CacheResidencyProtectedJournalV1, CacheResidencyProtectedOwnerV1, PhysicalPartitionId,
+    ProtectedDomainJournalErrorV1,
 };
 use crate::cache_residency::{CachePinKindV1, protected_journal::reconstruct_cache_history};
 
 impl CacheResidencyProtectedOwnerV1 {
+    /// Reconstructs one exact partition beneath current protected Replay authority.
+    ///
+    /// This is retained state, not permission to acquire or drain a pin. A
+    /// controller must still present the partition's current purpose-specific
+    /// capability to the protected commit path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when replay, currentness, or partition selection fails.
+    pub fn reconstructed_partition(
+        &mut self,
+        partition: PhysicalPartitionId,
+    ) -> Result<CacheRecoveryInventoryV1, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let projection =
+                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
+            let inventory = reconstruct_cache_history(projection.records(), &validator)?
+                .into_iter()
+                .find(|inventory| inventory.global.node_quota.partition == partition)
+                .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+            refresh()?;
+            Ok(inventory)
+        })
+    }
+
     /// Finds every retained partition pin for a public consumer and object.
     ///
     /// Public unpin requests carry no physical partition. This lookup scans

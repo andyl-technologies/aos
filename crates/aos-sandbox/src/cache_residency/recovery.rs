@@ -47,7 +47,7 @@ use super::format::{
 };
 use super::pin::{
     CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1, PIN_FLOOR_BYTES,
-    PinCompactionFloorV1, PinDrainEvidenceV1, PinDrainOutcomeV1, ReleasedCachePinV1,
+    PinCompactionFloorV1, PinDrainEvidenceV1, PinDrainOutcomeV1, PinError, ReleasedCachePinV1,
     decode_pin_compaction_floor_persisted, encode_pin_compaction_floor,
 };
 use super::read_authority::{DescriptorHandoffPlanV1, DescriptorHandoffReceiptV1};
@@ -59,6 +59,7 @@ mod checkpoint;
 mod classification;
 mod codec;
 mod global;
+mod logical_pin_release;
 mod reducer;
 mod replay;
 mod state;
@@ -1406,6 +1407,9 @@ pub enum RecoveryError {
     /// Protected replay authority verification failed.
     #[error(transparent)]
     Authority(#[from] CacheAuthorityError),
+    /// A planned pin transition failed exact ledger or drain validation.
+    #[error(transparent)]
+    Pin(#[from] PinError),
     /// Atomic catalog/reservation/pin/progress projections disagree.
     #[error("cache recovery atomic projection commitment mismatches")]
     ProjectionMismatch,
