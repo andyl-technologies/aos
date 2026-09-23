@@ -775,16 +775,49 @@ fn admitted_observation_fixture(
     policy: &CampaignPolicy,
     name: &str,
 ) -> (CampaignSnapshotId, AttemptAdmissionResult, Observation) {
+    admitted_observation_fixture_with_stop(
+        repository,
+        lineage,
+        policy,
+        name,
+        StopCondition::NextChoice,
+        StopOutcome::Reached(StopCondition::NextChoice),
+        true,
+    )
+}
+
+fn admitted_observation_fixture_with_stop(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    policy: &CampaignPolicy,
+    name: &str,
+    stop: StopCondition,
+    outcome: StopOutcome,
+    discovered_choice: bool,
+) -> (CampaignSnapshotId, AttemptAdmissionResult, Observation) {
     let genesis = repository
         .create_funded(name, lineage, policy, &BTreeMap::new())
         .expect("create observation campaign");
-    let request = branch_request(
+    let original_request = branch_request(
         repository,
         lineage,
         lineage.genesis_content(),
         lineage.genesis(),
         name,
     );
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            original_request.branch_point(),
+            original_request.parent(),
+            original_request.opportunity(),
+            original_request.domain(),
+        ),
+        original_request.source().clone(),
+        original_request.cause(),
+        original_request.budget(),
+        stop,
+    )
+    .expect("observation branch request");
     let requested = repository
         .submit_known_branch_request(name, genesis.snapshot_id(), &request)
         .expect("submit observation request");
@@ -854,12 +887,16 @@ fn admitted_observation_fixture(
             child,
             child_content,
             path.id().expect("path id"),
-            StopOutcome::Reached(StopCondition::NextChoice),
+            outcome,
             measurement_id,
             property_id,
             coverage_id,
         ),
-        BTreeSet::from([request.opportunity()]),
+        if discovered_choice {
+            BTreeSet::from([request.opportunity()])
+        } else {
+            BTreeSet::new()
+        },
     )
     .expect("observation");
     (genesis.snapshot_id(), admitted, observation)

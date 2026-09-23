@@ -123,6 +123,7 @@ impl CampaignRepository {
                     )?;
                 }
                 StopOutcome::ModeledTimeout(_)
+                | StopOutcome::BoundedPrimaryTimeout { .. }
                 | StopOutcome::PolicyTimeout { .. }
                 | StopOutcome::GuestCrash(_)
                 | StopOutcome::AssertionFailure(_)

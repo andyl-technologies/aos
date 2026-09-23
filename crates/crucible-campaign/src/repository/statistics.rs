@@ -354,6 +354,7 @@ impl CampaignRepository {
                 observation.stop(),
                 StopOutcome::TerminalSuccess
                     | StopOutcome::ModeledTimeout(_)
+                    | StopOutcome::BoundedPrimaryTimeout { .. }
                     | StopOutcome::PolicyTimeout { .. }
                     | StopOutcome::GuestCrash(_)
                     | StopOutcome::AssertionFailure(_)
