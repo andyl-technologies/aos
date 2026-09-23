@@ -506,20 +506,17 @@ pub fn validate_preemption_branch_schedule(
                 if expected.as_slice() != &decisions[index..index + 2] {
                     return Err(preemption_producer_mismatch(index));
                 }
-            } else if let Some(Decision::Preemption(preemption)) = decisions.get(index + 1) {
-                if selection.is_campaign_branch()
-                    && matches!(
-                        selection.selection().map_err(preemption_choice_error)?.value(),
-                        crucible_campaign::ChoiceValue::Discrete(alternative)
-                            if *alternative == preemption_alternative_id(preemption)
-                    )
-                {
-                    return Err(EngineError::ScenarioSerialization {
-                        reason: format!(
-                            "preemption producer evidence is missing at decision {index}"
-                        ),
-                    });
-                }
+            } else if let Some(Decision::Preemption(preemption)) = decisions.get(index + 1)
+                && selection.is_campaign_branch()
+                && matches!(
+                    selection.selection().map_err(preemption_choice_error)?.value(),
+                    crucible_campaign::ChoiceValue::Discrete(alternative)
+                        if *alternative == preemption_alternative_id(preemption)
+                )
+            {
+                return Err(EngineError::ScenarioSerialization {
+                    reason: format!("preemption producer evidence is missing at decision {index}"),
+                });
             }
         }
         parent = try_step(&parent, decision.clone())?;
