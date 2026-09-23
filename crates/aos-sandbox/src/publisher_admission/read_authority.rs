@@ -123,7 +123,7 @@ impl ReadAuthorityGrantV1 {
         Ok(successor)
     }
 
-    pub(super) fn validate(&self) -> Result<(), CacheReadAuthorityError> {
+    pub(crate) fn validate(&self) -> Result<(), CacheReadAuthorityError> {
         if self.holder.as_bytes() == &[0; 16]
             || self.project.as_bytes() == &[0; 16]
             || self.resource.as_bytes() == &[0; 16]

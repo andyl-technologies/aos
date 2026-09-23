@@ -41,6 +41,7 @@ mod model;
 mod naming;
 mod payload;
 mod payload_decode;
+mod production_transfer;
 mod protected_journal;
 mod protocol;
 mod read_authority;
@@ -128,6 +129,10 @@ pub use model::{
     RecoveryDispositionV1, RecoveryObservationKindCodeV1, RecoveryObservationReceiptV1,
 };
 pub use payload_decode::DecodedPublisherPayloadV1;
+pub use production_transfer::{
+    PublisherSignedTransferV1, PublisherTransferErrorV1, PublisherTransferKindV1,
+    PublisherTransferScopeV1, PublisherTransferStatementV1,
+};
 pub use protocol::{
     CompletionDispositionV1, DescriptorAccessV1, DescriptorCommitmentV1, ObservedDescriptorV1,
     PublisherLocalBodyV1, PublisherLocalMessageV1, PublisherLocalMethodV1,
