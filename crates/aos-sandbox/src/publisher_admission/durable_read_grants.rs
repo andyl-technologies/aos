@@ -137,11 +137,32 @@ impl PublisherDurableReadGrantOwnerV1 {
         self.commit_issued_successor(grant)
     }
 
+    /// Durably revokes an exact current holder without granting new access.
+    pub(super) fn revoke_holder(
+        &mut self,
+        holder: aos_sandbox_core::PrincipalId,
+    ) -> Result<PublisherReadGrantCommitOutcomeV1, PublisherDurableReadGrantErrorV1> {
+        self.current_registry()?;
+        let current = self
+            .heads
+            .get(holder.as_bytes())
+            .ok_or(PublisherDurableReadGrantErrorV1::Invalid)?;
+        if current.state == ReadGrantStateV1::Revoked {
+            return Ok(PublisherReadGrantCommitOutcomeV1::Applied(current.clone()));
+        }
+
+        let successor = current
+            .revoked_successor()
+            .map_err(|_| PublisherDurableReadGrantErrorV1::Invalid)?;
+        self.commit_issued_successor(successor)
+    }
+
     /// Commits one successor after a separate protected issuer has been joined.
     ///
-    /// Only the policy-bound issuer wrapper above can call this method. A
-    /// public principal, request body, or publication permit cannot issue a
-    /// read grant. An unresolved append closes reads until exact recovery.
+    /// The policy-bound issuer admits active successors; trusted controller
+    /// custody may only add the revoked successor. A public principal, request
+    /// body, or publication permit cannot issue a read grant. An unresolved
+    /// append closes reads until exact recovery.
     fn commit_issued_successor(
         &mut self,
         grant: ReadAuthorityGrantV1,

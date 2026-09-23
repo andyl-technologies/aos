@@ -105,6 +105,24 @@ impl ReadAuthorityGrantV1 {
         Ok(grant)
     }
 
+    /// Prepares the sole revoked successor without changing current custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is a canonical active generation-one grant.
+    pub(super) fn revoked_successor(&self) -> Result<Self, CacheReadAuthorityError> {
+        self.validate()?;
+        if self.state != ReadGrantStateV1::Active || self.generation != 1 {
+            return Err(CacheReadAuthorityError::Conflict);
+        }
+
+        let mut successor = self.clone();
+        successor.generation = 2;
+        successor.state = ReadGrantStateV1::Revoked;
+        successor.grant_digest = read_grant_digest(&successor);
+        Ok(successor)
+    }
+
     pub(super) fn validate(&self) -> Result<(), CacheReadAuthorityError> {
         if self.holder.as_bytes() == &[0; 16]
             || self.project.as_bytes() == &[0; 16]

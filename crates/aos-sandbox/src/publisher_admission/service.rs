@@ -798,6 +798,34 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
         }
     }
 
+    /// Revokes one current publisher read grant under trusted controller custody.
+    ///
+    /// Revocation is denial-only and does not require a live publisher session
+    /// or a policy that still allows reads. An ambiguous append remains owned
+    /// by this service and closes subsequent read authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no grant exists or protected custody cannot prove
+    /// the exact current or newly revoked head.
+    pub fn revoke_publisher_read_grant(
+        &mut self,
+        holder: aos_sandbox_core::PrincipalId,
+    ) -> Result<ReadAuthorityGrantV1, PublisherDomainServiceErrorV1> {
+        self.recover_pending_read_grant()?;
+        let outcome = self
+            .read_grants
+            .revoke_holder(holder)
+            .map_err(|_| PublisherDomainServiceErrorV1::ReadGrant)?;
+        match outcome {
+            PublisherReadGrantCommitOutcomeV1::Applied(grant) => Ok(grant),
+            PublisherReadGrantCommitOutcomeV1::OutcomeUnknown(pending) => {
+                self.pending_read_grant = Some(pending);
+                Err(PublisherDomainServiceErrorV1::ReadGrant)
+            }
+        }
+    }
+
     /// Recovers one exact ambiguous read-grant append before new reads.
     ///
     /// # Errors
