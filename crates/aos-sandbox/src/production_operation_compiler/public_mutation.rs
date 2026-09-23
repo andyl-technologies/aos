@@ -133,10 +133,25 @@ pub(super) fn compile_public_mutation(
             request_digest,
             value,
         )?,
-        Request::ExecutionControl(_)
-        | Request::CancelExec(_)
-        | Request::CachePin(_)
-        | Request::CacheUnpin(_) => {
+        Request::ExecutionControl(value) => execution_mutation_intent(
+            journal,
+            peer.project(),
+            operation_id,
+            request.operation_method(),
+            canonical_request,
+            &value.execution_id,
+            value.mutation.as_option(),
+        )?,
+        Request::CancelExec(value) => execution_mutation_intent(
+            journal,
+            peer.project(),
+            operation_id,
+            request.operation_method(),
+            canonical_request,
+            &value.execution_id,
+            value.mutation.as_option(),
+        )?,
+        Request::CachePin(_) | Request::CacheUnpin(_) => {
             mutation_intent(operation_id, request.operation_method(), canonical_request)
         }
         Request::CancelOperation(value) => cancel_operation_intent(
@@ -627,6 +642,42 @@ fn create_execution_projection(
         operation,
         PublicProjectionResourceV1::Execution(execution),
     )
+}
+
+fn execution_mutation_intent(
+    journal: &Journal,
+    project: ProjectId,
+    operation: OperationId,
+    method: PublicOperationMethodV1,
+    canonical_request: &[u8],
+    execution_id: &[u8],
+    mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    let record = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Execution, exact_id(execution_id)?)
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .ok_or(OperationCompilationError::Rejected)?;
+    if record.project() != project {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let PublicProjectionResourceV1::Execution(execution) = record.resource() else {
+        return Err(OperationCompilationError::Rejected);
+    };
+    validate_execution_mutation(execution, mutation)?;
+
+    Ok(mutation_intent(operation, method, canonical_request))
+}
+
+fn validate_execution_mutation(
+    execution: &Execution,
+    mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+) -> Result<(), OperationCompilationError> {
+    validate_resource_mutation(&execution.resource_version, mutation)?;
+    let mutation = mutation.ok_or(OperationCompilationError::Malformed)?;
+    if mutation.expected_incarnation_id != execution.sandbox_incarnation_id {
+        return Err(OperationCompilationError::Rejected);
+    }
+    Ok(())
 }
 
 fn create_view_projection(
@@ -1300,5 +1351,49 @@ fn timestamp(seconds: i64) -> Timestamp {
         seconds,
         nanoseconds: 0,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_proto::aos::sandbox::v1::{Execution, MutationContext};
+
+    use super::{OperationCompilationError, validate_execution_mutation};
+
+    #[test]
+    fn execution_mutation_requires_current_version_and_incarnation() {
+        let execution = Execution {
+            resource_version: vec![0x31; 32],
+            sandbox_incarnation_id: vec![0x42; 16],
+            ..Default::default()
+        };
+        let mutation = MutationContext {
+            expected_resource_version: execution.resource_version.clone(),
+            expected_incarnation_id: execution.sandbox_incarnation_id.clone(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            validate_execution_mutation(&execution, Some(&mutation)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_execution_mutation(&execution, None),
+            Err(OperationCompilationError::Malformed)
+        );
+
+        let mut stale_version = mutation.clone();
+        stale_version.expected_resource_version[0] ^= 1;
+        assert_eq!(
+            validate_execution_mutation(&execution, Some(&stale_version)),
+            Err(OperationCompilationError::Rejected)
+        );
+
+        let mut stale_incarnation = mutation;
+        stale_incarnation.expected_incarnation_id[0] ^= 1;
+        assert_eq!(
+            validate_execution_mutation(&execution, Some(&stale_incarnation)),
+            Err(OperationCompilationError::Rejected)
+        );
     }
 }
