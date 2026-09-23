@@ -11,6 +11,15 @@
   stage,
 }: let
   finalStage = stage == "final";
+  # Target libraries cannot execute x86 sysroot binaries during their
+  # configure probes even when build and target CPUs match. A distinct vendor
+  # marks only those subconfigures as cross builds without changing the target.
+  runtimeBuildAliasArgument =
+    if buildPlatform.config == hostPlatform.config
+    then let
+      buildAlias = builtins.replaceStrings ["-unknown-"] ["-aosbuild-"] buildPlatform.config;
+    in "build_alias=${buildAlias} \\\n                "
+    else "";
   version = "16.2.0";
 in
   buildStdenv.mkDerivation {
@@ -128,14 +137,19 @@ in
         name = "build";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc
-          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-gcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
           ${
             if finalStage
             then ''
-              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3
-              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic
-              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libatomic \
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES" all-target-libgomp \
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             ''
             else ""
           }
@@ -145,14 +159,19 @@ in
         name = "install";
         script = ''
           export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-          make SHELL="$CONFIG_SHELL" install-gcc
-          make SHELL="$CONFIG_SHELL" install-target-libgcc
+          make SHELL="$CONFIG_SHELL" install-gcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+          make SHELL="$CONFIG_SHELL" install-target-libgcc \
+            AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
           ${
             if finalStage
             then ''
-              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3
-              make SHELL="$CONFIG_SHELL" install-target-libatomic
-              make SHELL="$CONFIG_SHELL" install-target-libgomp
+              make SHELL="$CONFIG_SHELL" install-target-libstdc++-v3 \
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" install-target-libatomic \
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+              make SHELL="$CONFIG_SHELL" install-target-libgomp \
+                ${runtimeBuildAliasArgument}AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
             ''
             else ""
           }
