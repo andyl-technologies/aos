@@ -33,7 +33,10 @@ use crate::destination_slot_inventory::{
     self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryObservationFenceV1,
     DurableDestinationSlotInventorySnapshotV1,
 };
-use crate::mount_attempt::{CurrentMountInventoryReconciliationV1, MountAttemptError};
+use crate::mount_attempt::{
+    CurrentMountInventoryReconciliationV1, DurableMountInventorySnapshotV1, MountAttemptError,
+    MountInventoryObservationFenceV1,
+};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     self, CurrentAssignmentTarget, CurrentNamespaceTarget, CurrentRuntimeScopeError,
@@ -238,6 +241,59 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             fence,
             outcome,
         )
+    }
+
+    /// Captures controller state before an authenticated Mount resource query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody or invalid prior Mount inventory.
+    pub fn begin_authenticated_mount_inventory(
+        &mut self,
+    ) -> Result<MountInventoryObservationFenceV1, MountAttemptError> {
+        self.journal.ensure_protected_authority()?;
+        crate::mount_attempt::authenticated_inventory::begin_observation(self.journal)
+    }
+
+    /// Commits a complete resource inventory from the retained Mount session.
+    ///
+    /// The session owner must recheck terminal currentness before completion.
+    /// This is observation evidence, not an attachment-effect permit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed controller state, malformed or regressing inventory,
+    /// wrong method or direction, and failed durability.
+    pub fn complete_authenticated_mount_inventory(
+        &mut self,
+        fence: MountInventoryObservationFenceV1,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<DurableMountInventorySnapshotV1, MountAttemptError> {
+        self.journal.ensure_protected_authority()?;
+        crate::mount_attempt::authenticated_inventory::complete_observation(
+            self.journal,
+            fence,
+            outcome,
+        )
+    }
+
+    /// Joins a fresh Mount resource inventory to one current namespace target.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale target, changed inventory or attempt history, or
+    /// contradictory resource and controller correlation.
+    pub fn reconcile_current_mount_inventory<T>(
+        &mut self,
+        target: CurrentNamespaceTarget,
+        snapshot: DurableMountInventorySnapshotV1,
+        clock: &mut T,
+    ) -> Result<CurrentMountInventoryReconciliationV1, MountAttemptError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        crate::mount_attempt::reconcile_current_inventory(self.journal, target, snapshot, clock)
     }
 
     /// Classifies an exact current logical slot against a retained Mount query.

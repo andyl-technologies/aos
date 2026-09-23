@@ -47,7 +47,7 @@ use aos_proto::aos::sandbox::v1::{
     OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
-    CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
+    AttachmentId, CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
     RawClockProvenance, RawPairedClockSample, ResourceId,
 };
 use aos_sandbox_core::{ResourceKind, Selector};
@@ -113,8 +113,9 @@ use aos_sandbox::{
     public_operation_resource_from_journal_v1,
 };
 
-mod attachment_slot_effect;
 mod attachment_desired;
+mod attachment_physical;
+mod attachment_slot_effect;
 mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
@@ -3826,9 +3827,30 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     journal,
                 )?;
             }
-            return Err(EffectFailure::Retryable(
-                "attachment desired-state and Mount source effect is pending".to_owned(),
-            ));
+            let attachment_id: [u8; 16] = attachment
+                .attachment_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| {
+                    EffectFailure::Permanent("admitted attachment identity is invalid".to_owned())
+                })?;
+            let action = attachment_physical::observe(
+                self,
+                operation_id,
+                AttachmentId::from_bytes(attachment_id),
+                sandbox,
+                journal,
+            )?;
+            let pending = match action {
+                aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1::Ready {
+                    ..
+                }
+                | aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1::Released => {
+                    "attachment physical state is verified; public completion is pending"
+                }
+                _ => "attachment source and Mount transaction is pending",
+            };
+            return Err(EffectFailure::Retryable(pending.to_owned()));
         }
         let cache_consumer = if matches!(
             &request,
