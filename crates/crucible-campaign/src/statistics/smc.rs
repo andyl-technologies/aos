@@ -1270,7 +1270,7 @@ mod tests {
     }
 
     fn policy_id(label: &str) -> CampaignPolicyId {
-        CampaignPolicyId::from_content_id(content_id(ObjectKind::Policy, 4, label))
+        CampaignPolicyId::from_content_id(content_id(ObjectKind::Policy, 5, label))
             .expect("policy ID")
     }
 
@@ -1290,9 +1290,9 @@ mod tests {
             coordinate,
             ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 2, label))
                 .expect("proposal ID"),
-            AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 8, label))
+            AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 9, label))
                 .expect("attempt ID"),
-            ObservationId::from_content_id(content_id(ObjectKind::Observation, 12, label))
+            ObservationId::from_content_id(content_id(ObjectKind::Observation, 13, label))
                 .expect("observation ID"),
             BranchPathId::from_content_id(content_id(ObjectKind::CampaignFact, 2, label))
                 .expect("path ID"),
@@ -1599,11 +1599,11 @@ mod tests {
             ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 2, "shared-proposal"))
                 .expect("shared proposal ID");
         let attempt =
-            AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 8, "shared-attempt"))
+            AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 9, "shared-attempt"))
                 .expect("shared attempt ID");
         let observation = ObservationId::from_content_id(content_id(
             ObjectKind::Observation,
-            12,
+            13,
             "shared-observation",
         ))
         .expect("shared observation ID");
@@ -1662,7 +1662,7 @@ mod tests {
         );
         assert_eq!(
             estimate.estimate_event(&BTreeSet::from([ObservationId::from_content_id(
-                content_id(ObjectKind::Observation, 12, "unknown-observation",)
+                content_id(ObjectKind::Observation, 13, "unknown-observation",)
             )
             .expect("unknown observation ID")])),
             Err(CampaignCodecError::InvalidValue {

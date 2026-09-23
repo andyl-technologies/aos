@@ -20,7 +20,7 @@ pub use smc::{
 };
 pub use statistical::{StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign};
 
-const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 4;
+const CAMPAIGN_POLICY_SCHEMA_VERSION: u32 = 5;
 pub(crate) const MAX_POLICY_ENTRIES: usize = 4_096;
 const MAX_CAMPAIGN_POLICY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_IDENTIFIER_BYTES: usize = 512;
@@ -1089,6 +1089,6 @@ mod campaign;
 use campaign::greatest_common_divisor;
 pub(crate) use campaign::validate_identifier;
 pub use campaign::{
-    CampaignPolicy, CampaignPolicyIdentity, CampaignPolicyRules, FairnessPolicy, GuidanceWeight,
-    InterventionLearningPolicy, RetentionPolicy,
+    CampaignAttemptTimeoutPolicy, CampaignPolicy, CampaignPolicyIdentity, CampaignPolicyRules,
+    FairnessPolicy, GuidanceWeight, InterventionLearningPolicy, RetentionPolicy,
 };

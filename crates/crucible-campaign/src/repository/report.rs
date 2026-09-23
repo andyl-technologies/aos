@@ -108,7 +108,9 @@ impl CampaignRepository {
             explored =
                 checked_report_increment(explored, "campaign-report-outcome-count-overflow")?;
             match observation.stop() {
-                StopOutcome::Reached(_) | StopOutcome::ObservationReached(_) => {
+                StopOutcome::Reached(_)
+                | StopOutcome::BoundedPrimaryReached { .. }
+                | StopOutcome::ObservationReached(_) => {
                     requested_stops = checked_report_increment(
                         requested_stops,
                         "campaign-report-outcome-count-overflow",
@@ -121,6 +123,7 @@ impl CampaignRepository {
                     )?;
                 }
                 StopOutcome::ModeledTimeout(_)
+                | StopOutcome::PolicyTimeout { .. }
                 | StopOutcome::GuestCrash(_)
                 | StopOutcome::AssertionFailure(_)
                 | StopOutcome::ScenarioFailure(_) => {

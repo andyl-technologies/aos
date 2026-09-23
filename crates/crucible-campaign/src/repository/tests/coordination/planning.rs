@@ -3402,7 +3402,7 @@ fn planner_cursor_and_imported_root_fail_closed() {
     );
     let fabricated_source = BranchRequestId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        9,
+        10,
         b"fabricated planner cursor",
     ))
     .expect("fabricated source");

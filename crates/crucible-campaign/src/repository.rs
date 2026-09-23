@@ -640,9 +640,7 @@ impl ObservationCandidate {
                 reason: "observation candidate already carries produced selections",
             });
         }
-        if !selections.is_empty()
-            && matches!(self.observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
-        {
+        if !selections.is_empty() && self.observation.stop().reached_next_choice() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "next-choice observation cannot carry produced selections",
             });

@@ -18,6 +18,79 @@ macro_rules! stored_id {
 }
 
 #[test]
+fn campaign_policy_deadlines_are_bounded_and_preserve_primary_precedence() {
+    assert!(CampaignAttemptTimeoutPolicy::new(None, None, Some(240_000)).is_err());
+    assert!(CampaignAttemptTimeoutPolicy::new(Some(0), None, None).is_err());
+    assert!(CampaignAttemptTimeoutPolicy::new(Some(10), None, Some(3_600_001)).is_err());
+
+    let policy = CampaignAttemptTimeoutPolicy::new(Some(10), Some(4), Some(240_000))
+        .expect("bounded policy");
+    let stop = StopCondition::bounded(
+        StopCondition::NextChoice,
+        policy.virtual_time_nanoseconds(),
+        policy.execution_quanta(),
+    )
+    .expect("bounded stop");
+    assert!(stop.accepts_next_choice());
+    assert_eq!(
+        decode::<StopCondition>(&codec::encode(&stop)).expect("round trip"),
+        stop
+    );
+    assert!(StopCondition::bounded(stop.clone(), Some(20), None).is_err());
+
+    let primary = StopOutcome::BoundedPrimaryReached {
+        stop: stop.clone(),
+        proof: BoundedStopProof::new(9, 3),
+    };
+    assert!(primary.reaches(&stop));
+    assert!(primary.reached_next_choice());
+    assert_eq!(
+        decode::<StopOutcome>(&codec::encode(&primary)).expect("primary proof"),
+        primary
+    );
+
+    let late_primary = StopOutcome::BoundedPrimaryReached {
+        stop: stop.clone(),
+        proof: BoundedStopProof::new(10, 3),
+    };
+    assert!(!late_primary.authenticates_requested_stop(&stop));
+    assert!(decode::<StopOutcome>(&codec::encode(&late_primary)).is_err());
+
+    let virtual_timeout = StopOutcome::PolicyTimeout {
+        stop: stop.clone(),
+        kind: PolicyTimeoutKind::VirtualTime,
+        proof: BoundedStopProof::new(10, 4),
+    };
+    assert!(virtual_timeout.authenticates_requested_stop(&stop));
+    assert!(!virtual_timeout.reaches(&stop));
+    assert!(!virtual_timeout.reached_next_choice());
+    assert_eq!(
+        decode::<StopOutcome>(&codec::encode(&virtual_timeout)).expect("virtual-time tie"),
+        virtual_timeout
+    );
+
+    let wrong_tie = StopOutcome::PolicyTimeout {
+        stop: stop.clone(),
+        kind: PolicyTimeoutKind::ExecutionQuanta,
+        proof: BoundedStopProof::new(10, 4),
+    };
+    assert!(!wrong_tie.authenticates_requested_stop(&stop));
+    assert!(decode::<StopOutcome>(&codec::encode(&wrong_tie)).is_err());
+
+    let quanta_timeout = StopOutcome::PolicyTimeout {
+        stop: stop.clone(),
+        kind: PolicyTimeoutKind::ExecutionQuanta,
+        proof: BoundedStopProof::new(9, 4),
+    };
+    assert!(quanta_timeout.authenticates_requested_stop(&stop));
+    assert_eq!(
+        decode::<StopOutcome>(&codec::encode(&quanta_timeout)).expect("quanta timeout"),
+        quanta_timeout
+    );
+    assert!(decode::<StopOutcome>(&codec::encode(&StopOutcome::Reached(stop))).is_err());
+}
+
+#[test]
 fn extended_stops_require_their_exact_enclosing_schema_versions() {
     let configuration = stored_id!(
         ConfigurationArtifactId,
@@ -51,9 +124,9 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("next-choice-or-timeout attempt");
-    assert_eq!(terminal_attempt.schema_version(), 8);
-    assert_eq!(attempt.schema_version(), 8);
-    assert_eq!(next_choice_or_timeout_attempt.schema_version(), 8);
+    assert_eq!(terminal_attempt.schema_version(), 9);
+    assert_eq!(attempt.schema_version(), 9);
+    assert_eq!(next_choice_or_timeout_attempt.schema_version(), 9);
     assert_eq!(
         Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("attempt round trip"),
         attempt
@@ -64,7 +137,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("attempt ID")
             .content_id()
             .schema_version(),
-        8
+        9
     );
     assert_eq!(
         Attempt::from_canonical_bytes(&next_choice_or_timeout_attempt.canonical_bytes())
@@ -114,7 +187,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("combined-stop branch request");
-    assert_eq!(branch.schema_version(), 9);
+    assert_eq!(branch.schema_version(), 10);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&branch.canonical_bytes()).expect("branch round trip"),
         branch
@@ -125,7 +198,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("branch ID")
             .content_id()
             .schema_version(),
-        9
+        10
     );
     let mut unsupported_branch_version = branch.canonical_bytes();
     unsupported_branch_version[..4].copy_from_slice(&u32::MAX.to_be_bytes());
@@ -164,7 +237,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         },
     )
     .expect("combined-stop SMC branch request");
-    assert_eq!(smc_branch.schema_version(), 9);
+    assert_eq!(smc_branch.schema_version(), 10);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&smc_branch.canonical_bytes())
             .expect("SMC branch round trip"),
@@ -176,7 +249,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("SMC branch ID")
             .content_id()
             .schema_version(),
-        9
+        10
     );
 
     let measurements = stored_id!(
@@ -211,7 +284,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         BTreeSet::new(),
     )
     .expect("execution-quanta observation");
-    assert_eq!(observation.schema_version(), 12);
+    assert_eq!(observation.schema_version(), 13);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -223,7 +296,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("observation ID")
             .content_id()
             .schema_version(),
-        12
+        13
     );
     let mut noncurrent_observation = observation.canonical_bytes();
     noncurrent_observation[..4].copy_from_slice(&0_u32.to_be_bytes());
@@ -239,7 +312,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 12);
+    assert_eq!(selection_observation.schema_version(), 13);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("selection observation round trip"),
@@ -261,10 +334,10 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     )
     .expect("execution-quanta discovery");
     let fact = CampaignFact::DiscoveryRequested(discovery.clone());
-    assert_eq!(&fact.canonical_bytes()[..4], &14_u32.to_be_bytes());
+    assert_eq!(&fact.canonical_bytes()[..4], &15_u32.to_be_bytes());
     assert_eq!(
         fact.id().expect("fact ID").content_id().schema_version(),
-        14
+        15
     );
     assert_eq!(
         CampaignFact::from_canonical_bytes(&fact.canonical_bytes()).expect("fact round trip"),
@@ -360,10 +433,10 @@ fn extended_stop_tags_reject_zero_bounds_and_unknown_values() {
     }
 
     assert!(matches!(
-        decode::<StopCondition>(&[9]),
+        decode::<StopCondition>(&[10]),
         Err(CampaignCodecError::UnknownTag {
             kind: "stop-condition",
-            tag: 9,
+            tag: 10,
         })
     ));
 }

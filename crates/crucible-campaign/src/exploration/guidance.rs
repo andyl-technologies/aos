@@ -1175,7 +1175,7 @@ mod tests {
         let policy =
             CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::Policy,
-                4,
+                5,
                 b"test.branch-puct-projection.policy",
             ))
             .expect("policy id");
@@ -1248,7 +1248,7 @@ mod tests {
         let policy =
             CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::Policy,
-                4,
+                5,
                 b"test.branch-puct-candidate.policy",
             ))
             .expect("policy id");
@@ -1319,7 +1319,7 @@ mod tests {
         let policy =
             CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::Policy,
-                4,
+                5,
                 b"test.weighted-branch-puct.policy",
             ))
             .expect("policy id");
@@ -1384,7 +1384,7 @@ mod tests {
         let policy =
             CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::Policy,
-                4,
+                5,
                 b"test.empty-branch-puct-projection.policy",
             ))
             .expect("policy id");
@@ -1417,7 +1417,7 @@ mod tests {
         let policy =
             CampaignPolicyId::from_content_id(crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::Policy,
-                4,
+                5,
                 b"test.branch-puct-novelty.policy",
             ))
             .expect("policy id");

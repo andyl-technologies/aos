@@ -106,7 +106,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
 
     let attempt = Attempt::new(AttemptStart::Discover { configuration }, path, stop.clone())
         .expect("observation-stop attempt");
-    assert_eq!(attempt.schema_version(), 8);
+    assert_eq!(attempt.schema_version(), 9);
     assert_eq!(
         Attempt::from_canonical_bytes(&attempt.canonical_bytes()).expect("attempt round trip"),
         attempt
@@ -147,7 +147,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         stop.clone(),
     )
     .expect("observation-stop branch request");
-    assert_eq!(branch.schema_version(), 9);
+    assert_eq!(branch.schema_version(), 10);
     assert_eq!(
         BranchRequest::from_canonical_bytes(&branch.canonical_bytes()).expect("branch round trip"),
         branch
@@ -179,7 +179,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         BTreeSet::new(),
     )
     .expect("observation-stop observation");
-    assert_eq!(observation.schema_version(), 12);
+    assert_eq!(observation.schema_version(), 13);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -214,7 +214,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     let selection_observation = observation
         .with_produced_selections(BTreeSet::from([selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 12);
+    assert_eq!(selection_observation.schema_version(), 13);
 
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(
@@ -232,10 +232,10 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     )
     .expect("observation-stop discovery");
     let fact = CampaignFact::DiscoveryRequested(discovery.clone());
-    assert_eq!(&fact.canonical_bytes()[..4], &14_u32.to_be_bytes());
+    assert_eq!(&fact.canonical_bytes()[..4], &15_u32.to_be_bytes());
     assert_eq!(
         fact.id().expect("fact ID").content_id().schema_version(),
-        14
+        15
     );
     assert_eq!(
         CampaignFact::from_canonical_bytes(&fact.canonical_bytes()).expect("fact round trip"),

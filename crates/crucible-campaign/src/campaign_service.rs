@@ -13,10 +13,10 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     BranchRequest, BranchRequestResult, CampaignCodecError, CampaignCommandResult, CampaignFact,
-    CampaignHash, CampaignLineageId, CampaignPolicyId, CampaignRecordKind, CampaignRepository,
-    CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId, CampaignState,
-    ChoiceOpportunityId, ControlRequest, FindingCandidateBundleId, MerkleMap, MerkleMapLookupProof,
-    MerkleMapPageProof, ObjectEnvelope,
+    CampaignHash, CampaignLineageId, CampaignPolicy, CampaignPolicyId, CampaignRecordKind,
+    CampaignRepository, CampaignRepositoryError, CampaignSnapshot, CampaignSnapshotId,
+    CampaignState, ChoiceOpportunityId, ControlRequest, FindingCandidateBundleId, MerkleMap,
+    MerkleMapLookupProof, MerkleMapPageProof, ObjectEnvelope,
 };
 
 mod create;
@@ -84,6 +84,7 @@ pub use status::{
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
 const CAMPAIGN_SERVICE_SCHEMA_VERSION: u32 = 1;
+const GET_CAMPAIGN_RESPONSE_SCHEMA_VERSION: u32 = 2;
 const SUBMIT_CAMPAIGN_BRANCH_RESPONSE_SCHEMA_VERSION: u32 = 2;
 
 /// Maximum canonical bytes accepted for one campaign-service message.
@@ -968,6 +969,7 @@ pub struct GetCampaignResponse {
     snapshot: CampaignSnapshotId,
     lineage: CampaignLineageId,
     policy: CampaignPolicyId,
+    policy_body: CampaignPolicy,
     state: CampaignState,
 }
 
@@ -983,14 +985,21 @@ impl GetCampaignResponse {
         snapshot: CampaignSnapshotId,
         lineage: CampaignLineageId,
         policy: CampaignPolicyId,
+        policy_body: CampaignPolicy,
         state: CampaignState,
     ) -> Result<Self, CampaignCodecError> {
+        if policy_body.id()? != policy {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign head policy body disagrees with policy ID",
+            });
+        }
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: GET_CAMPAIGN_RESPONSE_SCHEMA_VERSION,
             request_digest: request.request_digest(),
             snapshot,
             lineage,
             policy,
+            policy_body,
             state,
         };
         ensure_message_size(&response, "get-campaign-response-encoded-bytes")?;
@@ -1015,6 +1024,12 @@ impl GetCampaignResponse {
         self.policy
     }
 
+    /// Returns the exact active policy body authenticated by the head policy ID.
+    #[must_use]
+    pub const fn policy_body(&self) -> &CampaignPolicy {
+        &self.policy_body
+    }
+
     /// Returns the projected durable lifecycle state.
     #[must_use]
     pub const fn state(&self) -> CampaignState {
@@ -1028,7 +1043,13 @@ impl GetCampaignResponse {
     /// Returns [`CampaignCodecError`] when the response belongs to another
     /// canonical request.
     pub fn validate_for(&self, request: &GetCampaignRequest) -> Result<(), CampaignCodecError> {
-        validate_request_digest(self.request_digest, request.request_digest())
+        validate_request_digest(self.request_digest, request.request_digest())?;
+        if self.policy_body.id()? != self.policy {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign head policy body disagrees with policy ID",
+            });
+        }
+        Ok(())
     }
 
     /// Returns strict canonical component-message bytes.
@@ -1055,19 +1076,30 @@ impl Canonical for GetCampaignResponse {
         self.snapshot.encode(encoder);
         self.lineage.encode(encoder);
         self.policy.encode(encoder);
+        self.policy_body.encode(encoder);
         self.state.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_service_version(u32::decode(decoder)?)?;
+        if u32::decode(decoder)? != GET_CAMPAIGN_RESPONSE_SCHEMA_VERSION {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported get-campaign response schema version",
+            });
+        }
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: GET_CAMPAIGN_RESPONSE_SCHEMA_VERSION,
             request_digest: CampaignHash::decode(decoder)?,
             snapshot: CampaignSnapshotId::decode(decoder)?,
             lineage: CampaignLineageId::decode(decoder)?,
             policy: CampaignPolicyId::decode(decoder)?,
+            policy_body: CampaignPolicy::decode(decoder)?,
             state: CampaignState::decode(decoder)?,
         };
+        if response.policy_body.id()? != response.policy {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "campaign head policy body disagrees with policy ID",
+            });
+        }
         ensure_message_size(&response, "get-campaign-response-encoded-bytes")?;
         Ok(response)
     }

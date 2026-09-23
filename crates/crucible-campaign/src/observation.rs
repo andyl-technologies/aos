@@ -19,7 +19,7 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const OBSERVATION_SCHEMA_VERSION: u32 = 12;
+const OBSERVATION_SCHEMA_VERSION: u32 = 13;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -962,6 +962,76 @@ impl Canonical for ObservationStopProof {
     }
 }
 
+/// Executor-attested coordinates at one policy-bounded stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BoundedStopProof {
+    frontier_nanoseconds: u64,
+    completed_quanta: u64,
+}
+
+impl BoundedStopProof {
+    /// Records the exact scheduler frontier and absolute completed-quantum coordinate.
+    #[must_use]
+    pub const fn new(frontier_nanoseconds: u64, completed_quanta: u64) -> Self {
+        Self {
+            frontier_nanoseconds,
+            completed_quanta,
+        }
+    }
+
+    /// Returns the virtual-time frontier in nanoseconds.
+    #[must_use]
+    pub const fn frontier_nanoseconds(self) -> u64 {
+        self.frontier_nanoseconds
+    }
+
+    /// Returns the absolute completed-quantum coordinate.
+    #[must_use]
+    pub const fn completed_quanta(self) -> u64 {
+        self.completed_quanta
+    }
+}
+
+impl Canonical for BoundedStopProof {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.frontier_nanoseconds.encode(encoder);
+        self.completed_quanta.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::new(u64::decode(decoder)?, u64::decode(decoder)?))
+    }
+}
+
+/// Deterministic policy deadline that ended one attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PolicyTimeoutKind {
+    /// The virtual-time deadline won, including a same-quantum tie.
+    VirtualTime,
+    /// The scheduler-quantum deadline won before virtual time.
+    ExecutionQuanta,
+}
+
+impl Canonical for PolicyTimeoutKind {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::VirtualTime => 0,
+            Self::ExecutionQuanta => 1,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::VirtualTime),
+            1 => Ok(Self::ExecutionQuanta),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "policy-timeout-kind",
+                tag,
+            }),
+        }
+    }
+}
+
 /// Canonical modeled reason that execution stopped.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StopOutcome {
@@ -979,6 +1049,22 @@ pub enum StopOutcome {
     ScenarioFailure(Vec<String>),
     /// A newly completed quantum satisfied an authenticated observation condition.
     ObservationReached(Box<ObservationStopProof>),
+    /// A primary boundary won before either campaign-policy deadline.
+    BoundedPrimaryReached {
+        /// Exact bounded attempt stop.
+        stop: StopCondition,
+        /// Executor-attested coordinates before both policy deadlines.
+        proof: BoundedStopProof,
+    },
+    /// A campaign-policy deadline fired as a modeled, catchable timeout.
+    PolicyTimeout {
+        /// Exact bounded attempt stop.
+        stop: StopCondition,
+        /// Winning deterministic deadline.
+        kind: PolicyTimeoutKind,
+        /// Executor-attested coordinates at the deadline.
+        proof: BoundedStopProof,
+    },
 }
 
 impl StopOutcome {
@@ -987,7 +1073,31 @@ impl StopOutcome {
             Self::Reached(StopCondition::Observation(_)) => Err(CampaignCodecError::InvalidValue {
                 reason: "observation stop requires an authenticated reached proof",
             }),
+            Self::Reached(StopCondition::Bounded { .. }) => Err(CampaignCodecError::InvalidValue {
+                reason: "bounded stop requires a proof-bearing outcome",
+            }),
             Self::Reached(stop) => stop.validate(),
+            Self::BoundedPrimaryReached { stop, proof } => {
+                if matches!(stop.primary(), StopCondition::Observation(_)) {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "bounded observation primary requires an authenticated proof",
+                    });
+                }
+                if winning_policy_timeout(stop, *proof)?.is_some() {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "bounded primary reached at or after a policy deadline",
+                    });
+                }
+                Ok(())
+            }
+            Self::PolicyTimeout { stop, kind, proof } => {
+                if winning_policy_timeout(stop, *proof)? != Some(*kind) {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "policy timeout disagrees with bounded stop and precedence",
+                    });
+                }
+                Ok(())
+            }
             Self::ModeledTimeout(name) => validate_identifier(name, "timeout name is invalid"),
             Self::GuestCrash(class) => validate_identifier(class, "guest crash class is invalid"),
             Self::AssertionFailure(property) => {
@@ -1003,17 +1113,83 @@ impl StopOutcome {
     #[must_use]
     pub fn reaches(&self, requested: &StopCondition) -> bool {
         match (self, requested) {
+            (Self::BoundedPrimaryReached { stop, proof }, requested) => {
+                stop == requested && winning_policy_timeout(stop, *proof) == Ok(None)
+            }
             (Self::Reached(actual), requested)
-                if !matches!(actual, StopCondition::Observation(_)) =>
+                if !matches!(
+                    actual,
+                    StopCondition::Observation(_) | StopCondition::Bounded { .. }
+                ) =>
             {
                 actual == requested
             }
             (Self::ObservationReached(proof), StopCondition::Observation(condition)) => {
                 proof.condition() == condition
             }
+            (Self::ObservationReached(proof), bounded @ StopCondition::Bounded { primary, .. }) => {
+                matches!(primary.as_ref(), StopCondition::Observation(condition) if proof.condition() == condition)
+                    && winning_policy_timeout(
+                        bounded,
+                        BoundedStopProof::new(
+                            proof.boundary().frontier_nanoseconds(),
+                            proof.boundary().completed_quanta(),
+                        ),
+                    ) == Ok(None)
+            }
             _ => false,
         }
     }
+
+    /// Returns whether this outcome is structurally valid for one exact stop.
+    ///
+    /// A policy timeout validates its deadline and precedence but does not
+    /// count as reaching a statistical or choice-producing primary boundary.
+    #[must_use]
+    pub fn authenticates_requested_stop(&self, requested: &StopCondition) -> bool {
+        match self {
+            Self::PolicyTimeout { stop, .. } => stop == requested && self.validate().is_ok(),
+            Self::Reached(_) | Self::ObservationReached(_) | Self::BoundedPrimaryReached { .. } => {
+                self.reaches(requested)
+            }
+            _ => true,
+        }
+    }
+
+    /// Returns whether a reached primary stop exposes a next-choice boundary.
+    #[must_use]
+    pub fn reached_next_choice(&self) -> bool {
+        match self {
+            Self::Reached(stop) | Self::BoundedPrimaryReached { stop, .. } => {
+                stop.accepts_next_choice()
+            }
+            _ => false,
+        }
+    }
+}
+
+fn winning_policy_timeout(
+    stop: &StopCondition,
+    proof: BoundedStopProof,
+) -> Result<Option<PolicyTimeoutKind>, CampaignCodecError> {
+    let StopCondition::Bounded {
+        virtual_time_nanoseconds,
+        execution_quanta,
+        ..
+    } = stop
+    else {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "policy outcome does not name a bounded stop",
+        });
+    };
+    stop.validate()?;
+    if virtual_time_nanoseconds.is_some_and(|bound| proof.frontier_nanoseconds() >= bound) {
+        return Ok(Some(PolicyTimeoutKind::VirtualTime));
+    }
+    if execution_quanta.is_some_and(|bound| proof.completed_quanta() >= bound) {
+        return Ok(Some(PolicyTimeoutKind::ExecutionQuanta));
+    }
+    Ok(None)
 }
 
 impl Canonical for StopOutcome {
@@ -1044,6 +1220,17 @@ impl Canonical for StopOutcome {
                 encoder.u8(6);
                 proof.encode(encoder);
             }
+            Self::BoundedPrimaryReached { stop, proof } => {
+                encoder.u8(7);
+                stop.encode(encoder);
+                proof.encode(encoder);
+            }
+            Self::PolicyTimeout { stop, kind, proof } => {
+                encoder.u8(8);
+                stop.encode(encoder);
+                kind.encode(encoder);
+                proof.encode(encoder);
+            }
         }
     }
 
@@ -1071,6 +1258,15 @@ impl Canonical for StopOutcome {
                 },
             )?),
             6 => Self::ObservationReached(Box::new(ObservationStopProof::decode(decoder)?)),
+            7 => Self::BoundedPrimaryReached {
+                stop: StopCondition::decode(decoder)?,
+                proof: BoundedStopProof::decode(decoder)?,
+            },
+            8 => Self::PolicyTimeout {
+                stop: StopCondition::decode(decoder)?,
+                kind: PolicyTimeoutKind::decode(decoder)?,
+                proof: BoundedStopProof::decode(decoder)?,
+            },
             tag => {
                 return Err(CampaignCodecError::UnknownTag {
                     kind: "stop-outcome",

@@ -789,7 +789,7 @@ mod tests {
             ))?,
             CampaignPolicyId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Policy,
-                4,
+                5,
                 b"disabled-finding-retention-policy",
             ))?,
             AttemptAdmissionId::from_content_id(ContentId::for_bytes(
@@ -806,7 +806,7 @@ mod tests {
     fn bundle_round_trip_preserves_an_acyclic_child_graph() -> Result<(), CampaignCodecError> {
         let observation = ObservationId::from_content_id(ContentId::for_bytes(
             ObjectKind::Observation,
-            12,
+            13,
             b"finding-candidate-observation",
         ))?;
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
@@ -936,7 +936,7 @@ mod tests {
 
         let policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            4,
+            5,
             b"finding-exact-retention-policy",
         ))?;
         let admission = AttemptAdmissionId::from_content_id(ContentId::for_bytes(

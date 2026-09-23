@@ -419,7 +419,7 @@ fn canonical_finite_statistical_request(
         source,
         crate::BranchRequestCause::Planner(invocation),
         crate::BranchBudget::new(1, 1)?,
-        draw.stop().clone(),
+        request.policy().bound_stop(draw.stop().clone())?,
     )?;
     let selected = PlanningScanPosition::new(branch_point, branch_request.id()?);
     Ok((selected, branch_request))
@@ -487,7 +487,7 @@ fn canonical_smc_request(
         source,
         crate::BranchRequestCause::Planner(invocation),
         crate::BranchBudget::new(1, 1)?,
-        selector.stop().clone(),
+        request.policy().bound_stop(selector.stop().clone())?,
     )?;
     let selected = PlanningScanPosition::new(branch_point, branch_request.id()?);
     Ok((selected, branch_request))

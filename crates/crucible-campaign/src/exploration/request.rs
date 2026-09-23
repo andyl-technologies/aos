@@ -153,14 +153,65 @@ pub enum StopCondition {
         /// Absolute scheduler-quantum coordinate from scenario genesis.
         execution_quanta: u64,
     },
+    /// Stop at the primary boundary or an immutable campaign-policy deadline.
+    Bounded {
+        /// The original semantic boundary, retained for exact replay.
+        primary: Box<StopCondition>,
+        /// Absolute virtual-time deadline in nanoseconds, if configured.
+        virtual_time_nanoseconds: Option<u64>,
+        /// Absolute scheduler-quantum deadline, if configured.
+        execution_quanta: Option<u64>,
+    },
 }
 
 impl StopCondition {
+    /// Composes an attempt's primary boundary with a campaign-policy deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] for an empty, zero, or
+    /// nested policy deadline, or an invalid primary stop.
+    pub fn bounded(
+        primary: Self,
+        virtual_time_nanoseconds: Option<u64>,
+        execution_quanta: Option<u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        let bounded = Self::Bounded {
+            primary: Box::new(primary),
+            virtual_time_nanoseconds,
+            execution_quanta,
+        };
+        bounded.validate()?;
+        Ok(bounded)
+    }
+
+    /// Returns the primary semantic stop, without its policy deadline.
+    #[must_use]
+    pub fn primary(&self) -> &Self {
+        match self {
+            Self::Bounded { primary, .. } => primary,
+            _ => self,
+        }
+    }
+
+    /// Returns the virtual-time and quantum policy deadlines, when present.
+    #[must_use]
+    pub const fn bounded_deadlines(&self) -> Option<(Option<u64>, Option<u64>)> {
+        match self {
+            Self::Bounded {
+                virtual_time_nanoseconds,
+                execution_quanta,
+                ..
+            } => Some((*virtual_time_nanoseconds, *execution_quanta)),
+            _ => None,
+        }
+    }
+
     /// Returns whether reaching a typed choice satisfies this boundary.
     #[must_use]
-    pub const fn accepts_next_choice(&self) -> bool {
+    pub fn accepts_next_choice(&self) -> bool {
         matches!(
-            self,
+            self.primary(),
             Self::NextChoice | Self::NextChoiceOrExecutionQuanta { .. }
         )
     }
@@ -184,6 +235,22 @@ impl StopCondition {
             } => Err(CampaignCodecError::InvalidValue {
                 reason: "stop condition has a zero bound",
             }),
+            Self::Bounded {
+                primary,
+                virtual_time_nanoseconds,
+                execution_quanta,
+            } => {
+                if matches!(primary.as_ref(), Self::Bounded { .. })
+                    || (virtual_time_nanoseconds.is_none() && execution_quanta.is_none())
+                    || *virtual_time_nanoseconds == Some(0)
+                    || *execution_quanta == Some(0)
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "stop condition has an invalid policy deadline",
+                    });
+                }
+                primary.validate()
+            }
             Self::Observation(condition) => condition.validate(),
             _ => Ok(()),
         }
@@ -227,37 +294,66 @@ impl Canonical for StopCondition {
                 encoder.u8(8);
                 condition.encode(encoder);
             }
+            Self::Bounded {
+                primary,
+                virtual_time_nanoseconds,
+                execution_quanta,
+            } => {
+                encoder.u8(9);
+                primary.encode(encoder);
+                virtual_time_nanoseconds.encode(encoder);
+                execution_quanta.encode(encoder);
+            }
         }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let condition = match decoder.u8()? {
-            0 => Self::NextChoice,
-            1 => Self::NamedBoundary(
-                decoder.string_bounded(MAX_IDENTIFIER_BYTES, "stop-boundary-name-bytes")?,
-            ),
-            2 => Self::VirtualTimeNanoseconds(u64::decode(decoder)?),
-            3 => Self::EventCount(u64::decode(decoder)?),
-            4 => Self::Terminal,
-            5 => Self::ExecutionQuanta(u64::decode(decoder)?),
-            6 => Self::VirtualTimeOrExecutionQuanta {
-                virtual_time_nanoseconds: u64::decode(decoder)?,
-                execution_quanta: u64::decode(decoder)?,
-            },
-            7 => Self::NextChoiceOrExecutionQuanta {
-                execution_quanta: u64::decode(decoder)?,
-            },
-            8 => Self::Observation(ObservationCondition::decode(decoder)?),
-            tag => {
-                return Err(CampaignCodecError::UnknownTag {
-                    kind: "stop-condition",
-                    tag,
-                });
-            }
-        };
-        condition.validate()?;
-        Ok(condition)
+        let tag = decoder.u8()?;
+        decode_stop_condition(decoder, tag, true)
     }
+}
+
+fn decode_stop_condition(
+    decoder: &mut Decoder<'_>,
+    tag: u8,
+    allow_bounded: bool,
+) -> Result<StopCondition, CampaignCodecError> {
+    let condition = match tag {
+        0 => StopCondition::NextChoice,
+        1 => StopCondition::NamedBoundary(
+            decoder.string_bounded(MAX_IDENTIFIER_BYTES, "stop-boundary-name-bytes")?,
+        ),
+        2 => StopCondition::VirtualTimeNanoseconds(u64::decode(decoder)?),
+        3 => StopCondition::EventCount(u64::decode(decoder)?),
+        4 => StopCondition::Terminal,
+        5 => StopCondition::ExecutionQuanta(u64::decode(decoder)?),
+        6 => StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds: u64::decode(decoder)?,
+            execution_quanta: u64::decode(decoder)?,
+        },
+        7 => StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: u64::decode(decoder)?,
+        },
+        8 => StopCondition::Observation(ObservationCondition::decode(decoder)?),
+        9 if allow_bounded => {
+            let primary_tag = decoder.u8()?;
+            let primary = decode_stop_condition(decoder, primary_tag, false)?;
+            StopCondition::bounded(primary, Option::decode(decoder)?, Option::decode(decoder)?)?
+        }
+        9 => {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "nested policy-bound stop condition",
+            });
+        }
+        tag => {
+            return Err(CampaignCodecError::UnknownTag {
+                kind: "stop-condition",
+                tag,
+            });
+        }
+    };
+    condition.validate()?;
+    Ok(condition)
 }
 
 /// Bounded finite values or one suspended generated source.

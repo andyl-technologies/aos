@@ -214,10 +214,9 @@ impl CampaignRepository {
         let child = self.read_configuration_artifact(observation.child_content().content_id())?;
         if child.configuration() != observation.child()
             || attempt.path() != observation.path()
-            || (matches!(
-                observation.stop(),
-                StopOutcome::Reached(_) | StopOutcome::ObservationReached(_)
-            ) && !observation.stop().reaches(attempt.stop()))
+            || !observation
+                .stop()
+                .authenticates_requested_stop(attempt.stop())
         {
             return Err(integrity("observation-attempt-or-child-mismatch"));
         }
@@ -231,9 +230,7 @@ impl CampaignRepository {
             }
         }
         self.validate_observation_produced_selections(observation, &child)?;
-        if matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
-            && observation.discovered_choices().is_empty()
-        {
+        if observation.stop().reached_next_choice() && observation.discovered_choices().is_empty() {
             return Err(integrity("next-choice-observation-has-no-choice"));
         }
         if let StopOutcome::AssertionFailure(property) = observation.stop()

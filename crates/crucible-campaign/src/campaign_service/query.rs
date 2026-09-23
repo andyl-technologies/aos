@@ -1670,10 +1670,9 @@ impl ExplainCampaignAttemptResponse {
         if let Some(observation) = &self.observation
             && (observation.attempt() != request.attempt()
                 || observation.path() != self.attempt.path()
-                || matches!(
-                    observation.stop(),
-                    crate::StopOutcome::Reached(stop) if stop != self.attempt.stop()
-                ))
+                || !observation
+                    .stop()
+                    .authenticates_requested_stop(self.attempt.stop()))
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "campaign attempt explanation observation basis mismatch",

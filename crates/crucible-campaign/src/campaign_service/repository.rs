@@ -235,14 +235,15 @@ where
             request.campaign(),
             request.request_digest(),
         )?;
-        let (head, state) = self
+        let (head, state, policy_body) = self
             .repository
-            .head_with_state(request.campaign().as_str())?;
+            .head_with_state_and_policy(request.campaign().as_str())?;
         Ok(GetCampaignResponse::new(
             request,
             head.snapshot_id(),
             head.snapshot().lineage(),
             head.snapshot().active_policy(),
+            policy_body,
             state,
         )?)
     }

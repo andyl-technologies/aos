@@ -97,6 +97,29 @@ impl CampaignExecutorStore {
             .map(|policy| policy.retention())
     }
 
+    /// Loads an admission-authenticated attempt timeout policy for local supervision.
+    ///
+    /// The modeled bounds are already part of the canonical attempt stop. The
+    /// host watchdog is read from the same immutable policy selected by the
+    /// admission, never from the current mutable campaign head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the admission, attempt, lineage, or policy cannot
+    /// be authenticated from the exact execution basis.
+    pub fn load_attempt_timeout_policy(
+        &self,
+        lineage: CampaignLineageId,
+        attempt: AttemptId,
+        basis: AttemptRetentionPolicyBasis,
+    ) -> Result<Option<crate::CampaignAttemptTimeoutPolicy>, CampaignRepositoryError> {
+        self.repository
+            .validate_attempt_retention_policy_basis(lineage, attempt, basis)?;
+        self.repository
+            .read_policy(basis.policy().content_id())
+            .map(|policy| policy.attempt_timeout_policy())
+    }
+
     /// Loads and authenticates one campaign compatibility lineage.
     ///
     /// # Errors

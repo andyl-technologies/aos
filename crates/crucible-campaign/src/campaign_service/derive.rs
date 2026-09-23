@@ -281,7 +281,7 @@ mod tests {
     fn policy(label: &str) -> CampaignPolicyId {
         CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            4,
+            5,
             label.as_bytes(),
         ))
         .expect("policy")

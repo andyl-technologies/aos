@@ -88,7 +88,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(
         rows.get("crucible.campaign.fact")
             .expect("missing campaign fact schema")[1],
-        "14"
+        "15"
     );
     let selectable_catalog = rows
         .get("crucible.guest-selectable.catalog-plan")
