@@ -110,13 +110,19 @@ the private `aos-package-runtime` binary.
 
 ## Run checks
 
-Start with the evaluation and formatting checks:
+Start with the core evaluation and formatting checks:
 
 ```sh
 nix-build -A checks.eval
 crates/target/debug/aos fmt --check
 crates/target/debug/aos test eval
 ```
+
+`aos test eval` runs the complete evaluation suite, including rendered-system
+fixtures and each discovered system variant, through separate Nix evaluators.
+Use `aos test eval <suite>` to run one suite while iterating.
+`checks.eval` is the smaller core gate for a quick local pass; the other suites
+are available individually under `checks.eval-suites` and in flake checks.
 
 VM and fleet checks require a Linux builder with KVM. Package, module, image,
 and CLI changes should run the narrowest relevant build or test in addition to

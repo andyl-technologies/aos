@@ -1710,22 +1710,14 @@ in {
       mkSystem = mkFixtureSystem;
     };
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
-    # Pure evaluation and focused all-variant output contracts are one gate.
-    # Rendered store paths remain contextual Nix references rather than
-    # duplicated source snapshots.
+    # Keep the routine eval attr small. The complete suite is exposed below
+    # as independent derivations so separate evaluators can run concurrently.
     eval = pkgs.mkDerivation {
-      pname = "aos-eval-and-system-structure-checks";
+      pname = "aos-eval-core-checks";
       version = "0";
       src = null;
       buildDeps = [
         abilities
-        eval-standalone
-        system-structure
-        config-eval
-        config-manifest
-        config-provenance
-        config-materialize
-        darling-harness
         package-maintenance
       ];
       phases = [
@@ -1738,6 +1730,20 @@ in {
         }
       ];
     };
+    eval-suites =
+      {
+        core = eval;
+        rendered-system = eval-standalone;
+        config-eval = config-eval;
+        config-manifest = config-manifest;
+        config-provenance = config-provenance;
+        config-materialize = config-materialize;
+        darling-harness = darling-harness;
+      }
+      // builtins.listToAttrs (map (variant: {
+        name = "system-${variant}";
+        value = system-structure-variants.${variant};
+      }) (builtins.attrNames system-structure-variants));
     build = let
       toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
         pkgs = buildPackages;
@@ -2021,32 +2027,26 @@ in {
     systemd-lib = import ./tests/abilities/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./tests/abilities/systemd-generate.nix {inherit pkgs lib;};
     crucible = crucibleChecks;
-    system-structure = let
-      variants = lib.mapAttrs (variant: system:
-        import ./lib/testing/system-structure.nix {
-          inherit pkgs lib variant system;
-        })
-      discoverSystems;
-      check = pkgs.mkDerivation {
-        pname = "aos-system-structure-all";
-        version = "0";
-        src = null;
-        buildDeps = builtins.attrValues variants;
-        phases = [
-          {
-            name = "check";
-            script = ''
-              mkdir -p $out
-              echo PASS > $out/result
-            '';
-          }
-        ];
-      };
-    in
-      check
-      // {
-        inherit variants;
-      };
+    system-structure-variants = lib.mapAttrs (variant: system:
+      import ./lib/testing/system-structure.nix {
+        inherit pkgs lib variant system;
+      })
+    discoverSystems;
+    system-structure = pkgs.mkDerivation {
+      pname = "aos-system-structure-all";
+      version = "0";
+      src = null;
+      buildDeps = builtins.attrValues system-structure-variants;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p $out
+            echo PASS > $out/result
+          '';
+        }
+      ];
+    };
     systemd-credentials = import ./tests/abilities/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     package-preset = packagePresetCheck;

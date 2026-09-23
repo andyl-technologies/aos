@@ -303,7 +303,8 @@ the local design no worse and improve it where that is safe and proportionate.
 
 ## Testing
 
-- `nix-build -A checks.eval` — pure evaluation checks
+- `nix-build -A checks.eval` — core evaluation checks
+- `aos test eval` — complete sharded evaluation suite
 - `nix-build -A checks.vm.boot` — VM boot test using QEMU direct kernel boot
 - VM tests use `mkfs.ext4 -d` (sandbox-compatible, no losetup/mount)
 - VM tests require `requiredSystemFeatures = [ "kvm" ]`
