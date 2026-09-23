@@ -1465,6 +1465,7 @@ mod tests {
                 uid_range_start: 65_536,
                 uid_range_size: 65_536,
                 attachment_handles: Vec::new(),
+                guest_root_publication: None,
             }],
             networks: vec![ProjectedNetwork {
                 handle: [7; 32],
@@ -1510,6 +1511,7 @@ mod tests {
                 uid_range_start: 65_536,
                 uid_range_size: 65_536,
                 attachment_handles: Vec::new(),
+                guest_root_publication: None,
             }],
             networks: vec![ProjectedNetwork {
                 handle: [7; 32],
