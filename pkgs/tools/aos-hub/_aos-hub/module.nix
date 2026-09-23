@@ -146,12 +146,6 @@
       source = resultOf "credential-${name}-source" "resource";
       encrypted = false;
     };
-  credentialFragments =
-    builtins.concatMap (name: [
-      (credentialResolution name)
-      (credentialDelivery name)
-    ])
-    configuredCredentialNames;
   credentialViews =
     builtins.map (name: {
       name = credentialFields.${name}.handle;
@@ -176,178 +170,134 @@
   serviceFor = {
     views,
     tls,
-  }:
-    serviceManagement.forService {
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = {
-            allow_privilege_escalation = false;
-            ambient_privileges = lib.optionals tls ["bind-privileged-network-port"];
-            privilege_bounds = {
-              kind = "restricted";
-              privileges = lib.optionals tls ["bind-privileged-network-port"];
-            };
-            resource_control_delegation = false;
-            resource_control_access = "read-only";
-            device_access_scope = "shared";
-            host_clock_mutation = true;
-            host_name_mutation = true;
-            operating_system_log_access = true;
-            operating_system_extension_access = true;
-            operating_system_tunable_access = false;
-            lock_execution_personality = false;
-            writable_executable_memory = true;
-            isolation_domains = [];
-            network_families = ["ipv4" "ipv6" "local"];
-            memory_pressure_adjustment = 0;
-            permit_realtime = true;
-            permit_elevated_file_identity = true;
-            process_visibility = "all";
-            operation_architectures = [];
-            operation_allow = [];
-            operation_deny = [];
-            operation_profile = "privileged";
-            isolated_identity_mapping = "none";
-          };
-        })
-      ];
-      inherit serviceTypes;
-      consumerInstance = "service";
-      declaration = {
-        service = "hub";
-        enabled = true;
-        lifecycle = {
-          description = "AOS registry management hub (${packageName} ${packageVersion})";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [
-            (command (
-              [
-                "--root"
-                cfg.root
-                "serve"
-                "--listen"
-                cfg.listen
-                "--reindex-interval"
-                (toString cfg.reindexInterval)
-              ]
-              ++ lib.optionals (cfg.externalUrl != null) ["--external-url" cfg.externalUrl]
-            ))
-          ];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "always";
-          restart_delay_millis = 5000;
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        };
-        dependencies = {
-          after = [
-            (resultOf "network-readiness" "resource")
-            (resultOf "state-storage" "resource")
-          ];
-          before = [];
-          requires = [(resultOf "state-storage" "resource")];
-          wants = [(resultOf "network-readiness" "resource")];
-        };
-        supervision = {
-          startup_protocol = "process";
-          notification_access = "none";
-        };
-        readiness = {
-          mechanism = "process-running";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-        start_policy = {
-          accepted_exit_statuses = [];
-          restart_preventing_exit_statuses = [];
-          rate_interval_millis = 60000;
-          rate_burst = 5;
-        };
-        credentials.views = views;
-        storage.mounts = [
-          {
-            name = "state";
-            source = resultOf "state-storage" "planned-path";
-            access = "read-write";
-          }
-        ];
-        environment = {
-          variables = environmentVariables;
-          search_path = [];
-        };
-        logging = {
-          standard_output = "structured";
-          standard_error = "structured";
-          directories = [];
-          directory_mode = "0750";
-        };
-        identity = {
-          principal = resultOf "service-principal" "principal-name";
-          primary_group = resultOf "service-group" "group-name";
-          supplementary_groups = [];
-          ephemeral = false;
-          file_creation_mask = "0022";
-        };
-        isolation = {
-          privilege = "unprivileged";
-          filesystem = "read-only-system";
-          home_access = "inaccessible";
-          network = "host";
-          process_visibility = "host";
-          termination_scope = "all-processes";
-          temporary_directory = "private";
-          devices = [];
-          host_paths = [];
-          permit_core_dumps = true;
-        };
+  }: {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = lib.optionals tls ["bind-privileged-network-port"];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = lib.optionals tls ["bind-privileged-network-port"];
       };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = false;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
     };
+    consumerInstance = "service";
+    service = "hub";
+    lifecycle = {
+      description = "AOS registry management hub (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        (command (
+          [
+            "--root"
+            cfg.root
+            "serve"
+            "--listen"
+            cfg.listen
+            "--reindex-interval"
+            (toString cfg.reindexInterval)
+          ]
+          ++ lib.optionals (cfg.externalUrl != null) ["--external-url" cfg.externalUrl]
+        ))
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "network-readiness" "resource")
+        (resultOf "state-storage" "resource")
+      ];
+      before = [];
+      requires = [(resultOf "state-storage" "resource")];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "process";
+      notification_access = "none";
+    };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    start_policy = {
+      accepted_exit_statuses = [];
+      restart_preventing_exit_statuses = [];
+      rate_interval_millis = 60000;
+      rate_burst = 5;
+    };
+    credentials.views = views;
+    storage.mounts = [
+      {
+        name = "state";
+        source = resultOf "state-storage" "planned-path";
+        access = "read-write";
+      }
+    ];
+    environment = {
+      variables = environmentVariables;
+      search_path = [];
+    };
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      principal = resultOf "service-principal" "principal-name";
+      primary_group = resultOf "service-group" "group-name";
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0022";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      home_access = "inaccessible";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
+    };
+  };
   service = serviceFor {
     views = credentialViews;
     tls = usesTls;
   };
-  potentialCredentialResolution = producer "potential-credential-source" serviceManagement.interfaces.namedCredential {
-    name = "potential-credential";
-    scope = "system";
-  };
-  potentialCredentialDelivery = producer "potential-credential" serviceManagement.interfaces.credentialDelivery {
-    name = "potential-credential";
-    source = resultOf "potential-credential-source" "resource";
-    encrypted = false;
-  };
-  potentialService = serviceFor {
-    views = [
-      {
-        name = "potential-credential";
-        reference = resultOf "potential-credential" "credential-path";
-        encrypted = false;
-        optional = false;
-        environment_variable = "HUB_POTENTIAL_CREDENTIAL_FILE";
-      }
-    ];
-    tls = true;
-  };
-  potentialFragments = [
-    group
-    principal
-    storage
-    network
-    potentialCredentialResolution
-    potentialCredentialDelivery
-    potentialService
-  ];
-  configuredFragments = [group principal storage network] ++ credentialFragments ++ [service];
+  producers = [group principal storage network];
 in {
   options.aos.registry-hub = {
     enable = lib.mkOption {
@@ -412,50 +362,52 @@ in {
     credentialFields;
   };
 
-  config = lib.mkMerge [
-    {
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).declarations)
-        potentialFragments);
+  config = lib.mkMerge ([
+      {
+        aos.services."service.hub" = service // {enable = cfg.enable;};
 
-      assertions = [
-        {
-          assertion = !cfg.enable || cfg.credentials.routeReservationKeys != null;
-          message = "aos.registry-hub.credentials.routeReservationKeys is required";
-        }
-        {
-          assertion = !cfg.enable || cfg.credentials.domainProbeSignerManifest != null;
-          message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
-        }
-        {
-          assertion = !cfg.enable || (cfg.credentials.routePublicationManifest == null) == (cfg.routePublicationPublicKey == null);
-          message = "routePublicationManifest and routePublicationPublicKey must be configured together";
-        }
-        {
-          assertion = !cfg.enable || !releaseEvidenceConfigured || releaseEvidenceComplete;
-          message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
-        }
-        {
-          assertion = !cfg.enable || (cfg.credentials.tlsCertificate == null) == (cfg.credentials.tlsPrivateKey == null);
-          message = "native Hub TLS certificate and private-key credentials must be configured together";
-        }
-        {
-          assertion = !cfg.enable || cfg.credentials.tlsCertificate == null || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
-          message = "native Hub TLS requires an HTTPS externalUrl";
-        }
-        {
-          assertion = !cfg.enable || cfg.releaseReceiptKeyId == null || cfg.channelReceiptKeyId == null || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
-          message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
-        }
-      ];
-    }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.service = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        configuredFragments
-      );
-    })
-  ];
+        assertions = [
+          {
+            assertion = !cfg.enable || cfg.credentials.routeReservationKeys != null;
+            message = "aos.registry-hub.credentials.routeReservationKeys is required";
+          }
+          {
+            assertion = !cfg.enable || cfg.credentials.domainProbeSignerManifest != null;
+            message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
+          }
+          {
+            assertion = !cfg.enable || (cfg.credentials.routePublicationManifest == null) == (cfg.routePublicationPublicKey == null);
+            message = "routePublicationManifest and routePublicationPublicKey must be configured together";
+          }
+          {
+            assertion = !cfg.enable || !releaseEvidenceConfigured || releaseEvidenceComplete;
+            message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
+          }
+          {
+            assertion = !cfg.enable || (cfg.credentials.tlsCertificate == null) == (cfg.credentials.tlsPrivateKey == null);
+            message = "native Hub TLS certificate and private-key credentials must be configured together";
+          }
+          {
+            assertion = !cfg.enable || cfg.credentials.tlsCertificate == null || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
+            message = "native Hub TLS requires an HTTPS externalUrl";
+          }
+          {
+            assertion = !cfg.enable || cfg.releaseReceiptKeyId == null || cfg.channelReceiptKeyId == null || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
+            message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
+          }
+        ];
+      }
+      (serviceManagement.producerModule {
+        inherit config lib producers;
+        enabled = cfg.enable;
+      })
+    ]
+    ++ builtins.map
+    (name:
+      serviceManagement.producerModule {
+        inherit config lib;
+        producers = [(credentialResolution name) (credentialDelivery name)];
+        enabled = cfg.enable && cfg.credentials.${name} != null;
+      })
+    credentialNames);
 }
