@@ -236,7 +236,7 @@ fn midpoint_report(
         "configuration": midpoint.configuration().id().to_hex(),
         "restore_bytes": midpoint.restore_bytes(),
         "read_only": true,
-        "branch_classification": "canonical",
+        "branch_classification": "no-branch",
         "capture_role": format!("{:?}", capture.selected_side()),
         "selection_sequence": selections.join(","),
         "selections": selections,
@@ -273,7 +273,7 @@ fn print_midpoint_report(report: &Value, format: OutputFormat) -> Result<(), Cli
         }
         OutputFormat::Table | OutputFormat::Markdown => {
             println!(
-                "finding-midpoint checkpoint={} role={} configuration={} read-only=true branch=canonical selection={} failure={}",
+                "finding-midpoint checkpoint={} role={} configuration={} read-only=true branch=no-branch selection={} failure={}",
                 report["checkpoint"],
                 report["checkpoint_role"],
                 report["configuration"],
