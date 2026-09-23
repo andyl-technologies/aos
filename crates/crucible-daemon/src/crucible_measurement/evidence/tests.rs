@@ -8,6 +8,95 @@ use super::*;
 use crucible::model::{Aggregation, MeasurementDefinition, MetricSource, UnitId};
 use crucible::{EventLog, MarkerId, NodeTemplate, ReadyPoint, WhiteBoxPolicy};
 
+#[test]
+fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
+    let (scenario, configuration) = identities(b"assertion-boundary");
+    let unrelated = SchedulerEventLogEntry::assertion_state_observation(
+        0,
+        VirtualTime { ticks: 1 },
+        crucible::AssertionId::from_name("unrelated"),
+        AssertionPhase::Violated,
+    );
+    let failed = SchedulerEventLogEntry::assertion_state_observation(
+        1,
+        VirtualTime { ticks: 2 },
+        crucible::AssertionId::from_name("target"),
+        AssertionPhase::Violated,
+    );
+    let entries = vec![unrelated, failed.clone()];
+    let leaf = CrucibleMeasurementReplayEvidence {
+        scenario,
+        configuration,
+        definitions: CampaignHash::derive("test.definitions", b"none"),
+        entries: entries.clone(),
+        terminal: MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: VirtualTime { ticks: 2 },
+            node_icounts: BTreeMap::new(),
+            scheduler_quiescent: false,
+        },
+        stop: CrucibleMeasurementStopEvidence::Campaign,
+    };
+    let hash = CampaignHash::from_bytes(failed.content_hash().bytes);
+    let digest = observation_event_prefix_digest(&entries);
+    let witness = |prefix_digest, transition_hash, property: &str| {
+        FindingAssertionFailureBoundary::new(
+            leaf.id().expect("trace ID"),
+            prefix_digest,
+            2,
+            1,
+            1,
+            transition_hash,
+            property.to_owned(),
+        )
+        .expect("witness")
+    };
+
+    assert!(verify_assertion_failure_boundary(
+        &leaf,
+        &witness(digest, hash, "target")
+    ));
+    assert!(!verify_assertion_failure_boundary(
+        &leaf,
+        &witness(CampaignHash::derive("forged", b"prefix"), hash, "target")
+    ));
+    assert!(!verify_assertion_failure_boundary(
+        &leaf,
+        &witness(
+            digest,
+            CampaignHash::derive("forged", b"transition"),
+            "target"
+        )
+    ));
+    assert!(!verify_assertion_failure_boundary(
+        &leaf,
+        &witness(digest, hash, "unrelated")
+    ));
+
+    let duplicate = SchedulerEventLogEntry::assertion_state_observation(
+        2,
+        VirtualTime { ticks: 2 },
+        crucible::AssertionId::from_name("target"),
+        AssertionPhase::Violated,
+    );
+    let mut duplicate_leaf = leaf.clone();
+    duplicate_leaf.entries.push(duplicate);
+    let duplicate_witness = FindingAssertionFailureBoundary::new(
+        duplicate_leaf.id().expect("duplicate trace ID"),
+        observation_event_prefix_digest(duplicate_leaf.entries()),
+        3,
+        1,
+        1,
+        hash,
+        String::from("target"),
+    )
+    .expect("duplicate witness");
+    assert!(!verify_assertion_failure_boundary(
+        &duplicate_leaf,
+        &duplicate_witness
+    ));
+}
+
 fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),

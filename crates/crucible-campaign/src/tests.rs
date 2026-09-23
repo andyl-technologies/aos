@@ -173,7 +173,7 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(ObjectiveEvaluationId, ObjectKind::Observation, 2);
     assert_current_version!(RankingExplanationId, ObjectKind::Projection, 2);
     assert_current_version!(FindingId, ObjectKind::Finding, 4);
-    assert_current_version!(FindingCandidateBundleId, ObjectKind::Finding, 6);
+    assert_current_version!(FindingCandidateBundleId, ObjectKind::Finding, 7);
     assert_current_version!(FindingTriageReplayEvidenceId, ObjectKind::Finding, 2);
     assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 2);
     assert_current_version!(PlannerBeamCandidateId, ObjectKind::Projection, 2);

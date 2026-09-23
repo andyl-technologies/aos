@@ -36,12 +36,13 @@ use crucible::model::{
     validate_measurement_event_log,
 };
 use crucible::{
-    EventLogOffset, GuestMeasurementEvent, GuestMeasurementValue, Icount, NodeId,
-    ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload, VirtualTime,
+    AssertionPhase, EventLogOffset, EventSource, GuestMeasurementEvent, GuestMeasurementValue,
+    Icount, NodeId, ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    VirtualTime,
 };
 use crucible_campaign::{
-    CampaignHash, ConfigurationId, MeasurementSet, ObservationCondition, ObservationStopProof,
-    ObservationStopSatisfaction, ScenarioDefId,
+    CampaignHash, ConfigurationId, FindingAssertionFailureBoundary, MeasurementSet,
+    ObservationCondition, ObservationStopProof, ObservationStopSatisfaction, ScenarioDefId,
 };
 use crucible_cas::content_store::{ContentId, ObjectKind};
 use crucible_protocol::{
@@ -498,7 +499,7 @@ fn verify_assertion_observation_stop(
     Ok(())
 }
 
-fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
+pub(crate) fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
     hasher.update(&(entries.len() as u64).to_be_bytes());
@@ -507,6 +508,54 @@ fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> Campai
         hasher.update(&entry.content_hash().bytes);
     }
     CampaignHash::from_bytes(*hasher.finalize().as_bytes())
+}
+
+pub(crate) fn verified_assertion_transition<'a>(
+    entries: &'a [SchedulerEventLogEntry],
+    quantum_start_events: u64,
+    property: &str,
+) -> Option<&'a SchedulerEventLogEntry> {
+    if entries
+        .iter()
+        .enumerate()
+        .any(|(index, entry)| entry.sequence() != index as u64 || !entry.has_valid_content_hash())
+    {
+        return None;
+    }
+    let mut transitions = entries
+        .get(usize::try_from(quantum_start_events).ok()?..)?
+        .iter()
+        .filter(|entry| {
+            matches!(entry.source(), EventSource::Engine)
+                && matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::AssertionStateChanged { name, state }
+                    ) if name.name == property && *state == AssertionPhase::Violated
+                )
+        });
+    let transition = transitions.next()?;
+    transitions.next().is_none().then_some(transition)
+}
+
+pub(crate) fn verify_assertion_failure_boundary(
+    leaf: &CrucibleMeasurementReplayEvidence,
+    boundary: &FindingAssertionFailureBoundary,
+) -> bool {
+    let entries = leaf.entries();
+    let Some(transition) = verified_assertion_transition(
+        entries,
+        boundary.quantum_start_events(),
+        boundary.property(),
+    ) else {
+        return false;
+    };
+    leaf.id().ok() == Some(boundary.trace())
+        && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
+        && entries.len() as u64 == boundary.terminal_events()
+        && observation_event_prefix_digest(entries) == boundary.prefix_digest()
+        && transition.sequence() == boundary.transition_sequence()
+        && CampaignHash::from_bytes(transition.content_hash().bytes) == boundary.transition_hash()
 }
 
 /// A derived measurement set paired with the raw leaf required to verify it.

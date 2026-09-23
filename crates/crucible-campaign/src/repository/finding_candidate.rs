@@ -47,12 +47,13 @@ impl CampaignRepository {
 
     /// Publishes one candidate after typed whole-inventory authentication.
     ///
-    /// Current V6 retention is a daemon attestation: the trusted executor
+    /// Current V7 retention is a daemon attestation: the trusted executor
     /// enumerates candidates while holding its operational inventory fences,
     /// and this method authenticates every listed root before storing the
-    /// immutable attestation. Later cold loads validate the attested selection
-    /// and retained roots without requiring weak, unselected candidates to
-    /// survive normal garbage collection.
+    /// immutable attestation. Assertion failures additionally require a typed
+    /// replay of the raw Trace witness. Later cold loads validate the immutable
+    /// executor attestation and retained roots without re-evaluating scheduler
+    /// semantics or requiring weak, unselected candidates to survive GC.
     ///
     /// # Errors
     ///
@@ -687,8 +688,46 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("finding-exact-retention-evidence-is-missing"))?;
         let original = self.read_reproduction_artifact(bundle.reproduction().content_id())?;
         let expected_measurement = match observation.stop() {
-            crate::StopOutcome::ObservationReached(proof) => Some(proof.boundary().start_events()),
-            _ => None,
+            crate::StopOutcome::ObservationReached(proof) => {
+                if evidence.assertion_boundary().is_some() {
+                    return Err(integrity(
+                        "observation exact retention has assertion witness",
+                    ));
+                }
+                Some(proof.boundary().start_events())
+            }
+            crate::StopOutcome::AssertionFailure(property) => {
+                let boundary = evidence.assertion_boundary().ok_or_else(|| {
+                    integrity("assertion exact retention lacks terminal boundary witness")
+                })?;
+                let measurements =
+                    self.read_measurement_set(observation.measurements().content_id())?;
+                let properties =
+                    self.read_property_verdict_set(observation.properties().content_id())?;
+                if boundary.property() != property
+                    || boundary.terminal_events() != evidence.failure_events()
+                    || measurements.evaluation().evidence().len() != 1
+                    || !measurements
+                        .evaluation()
+                        .evidence()
+                        .contains(&boundary.trace())
+                    || properties
+                        .properties()
+                        .get(property)
+                        .is_none_or(|entry| entry.verdict() != crate::PropertyVerdict::Failed)
+                {
+                    return Err(integrity(
+                        "assertion exact retention witness disagrees with observation",
+                    ));
+                }
+                Some(boundary.quantum_start_events())
+            }
+            _ => {
+                if evidence.assertion_boundary().is_some() {
+                    return Err(integrity("unrelated exact retention has assertion witness"));
+                }
+                None
+            }
         };
         if evidence.measurement_boundary_events() != expected_measurement {
             return Err(integrity(
@@ -706,6 +745,19 @@ impl CampaignRepository {
                 .ok_or_else(|| integrity("finding-exact-checkpoint-authenticator-is-missing"))?;
             let mut remaining = MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL;
             for candidate in evidence.candidates() {
+                if let Some(boundary) = evidence.assertion_boundary() {
+                    authenticator
+                        .authenticate_finding_assertion_boundary(
+                            candidate.checkpoint(),
+                            boundary,
+                            original.scenario(),
+                            original.scenario_artifact(),
+                            original.configuration(),
+                        )
+                        .map_err(|_| {
+                            integrity("finding-assertion-boundary-authentication-failed")
+                        })?;
+                }
                 let metadata = authenticator
                     .authenticate_finding_exact_checkpoint(
                         candidate.checkpoint(),

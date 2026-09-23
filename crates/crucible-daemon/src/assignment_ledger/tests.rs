@@ -1198,7 +1198,7 @@ fn observation(byte: u8) -> ObservationId {
 
 fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
     FindingCandidateBundleId::parse(&format!(
-        "crucible.campaign.finding-candidate-bundle@finding.6.{}",
+        "crucible.campaign.finding-candidate-bundle@finding.7.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("finding candidate")

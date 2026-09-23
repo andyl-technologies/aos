@@ -261,7 +261,7 @@ impl CampaignRecordKind {
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 4,
-            Self::FindingCandidateBundle => 6,
+            Self::FindingCandidateBundle => 7,
             Self::FindingTriageReplayEvidence => 2,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
             Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,

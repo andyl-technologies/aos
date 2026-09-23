@@ -7,6 +7,173 @@ use crucible_cas::content_store::{
 };
 
 #[test]
+fn forged_assertion_boundary_fails_closed_at_executor_publication() {
+    let (repository, lineage, policy, _) = counted_fixture();
+    let name = "forged-assertion-boundary";
+    let (_, admitted, base) = admitted_observation_fixture_with_stop(
+        &repository,
+        &lineage,
+        &policy,
+        name,
+        StopCondition::NextChoice,
+        StopOutcome::AssertionFailure(String::from("network-recovers")),
+        false,
+    );
+    let trace_bytes = b"forged assertion trace".to_vec();
+    let trace = ContentId::for_bytes(ObjectKind::Trace, 2, &trace_bytes);
+    repository
+        .blobs
+        .put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes))
+        .expect("test trace");
+    let measurements =
+        MeasurementSet::test_evaluation(b"assertion-boundary", BTreeSet::from([trace]))
+            .expect("measurements");
+    let measurement_id = repository
+        .publish_measurement_set(&measurements)
+        .expect("publish measurements");
+    let properties = PropertyVerdictSet::new(BTreeMap::from([(
+        String::from("network-recovers"),
+        PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::new()).expect("failed property"),
+    )]))
+    .expect("properties");
+    let property_id = repository
+        .publish_property_verdict_set(&properties)
+        .expect("publish properties");
+    let observation = Observation::new(
+        base.attempt(),
+        Observation::outcome(
+            base.child(),
+            base.child_content(),
+            base.path(),
+            base.stop().clone(),
+            measurement_id,
+            property_id,
+            base.coverage(),
+        ),
+        base.discovered_choices().clone(),
+    )
+    .expect("assertion observation");
+    let published = repository
+        .publish_observation(name, admitted.new_snapshot, &observation)
+        .expect("publish assertion observation");
+
+    let fingerprint = CampaignHash::derive("test.assertion", b"fingerprint");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"original".to_vec(),
+        )
+        .expect("original reproduction");
+    let final_state = CampaignHash::derive("test.assertion", b"final-state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        3,
+        b"minimization".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            CampaignHash::derive("test.assertion", b"candidate"),
+            CampaignHash::derive("test.assertion", b"schedule"),
+            final_state,
+            Some(fingerprint),
+            true,
+        )],
+        final_state,
+    )
+    .expect("minimization");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"minimized".to_vec(),
+            minimization.clone(),
+        )
+        .expect("minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::PropertyViolation,
+        fingerprint,
+        Some(String::from("network-recovers")),
+        String::from("guest.property-violation"),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([property_id.content_id()]),
+    )
+    .expect("signature");
+    let signatures = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone()), Some(signature.clone())],
+        vec![Some(signature.clone()), Some(signature.clone())],
+    )
+    .expect("signature replays");
+    let (checkpoint, _, _) = publish_test_exact_checkpoint_closure(&repository, b"failure");
+    let witness = crate::FindingAssertionFailureBoundary::new(
+        trace,
+        CampaignHash::derive("forged", b"prefix"),
+        5,
+        2,
+        3,
+        CampaignHash::derive("forged", b"transition"),
+        String::from("network-recovers"),
+    )
+    .expect("shaped witness");
+    let evidence = FindingExactRetentionEvidence::select(
+        vec![FindingExactRetentionCandidate::new(checkpoint, 5)],
+        checkpoint,
+        5,
+        Some(2),
+    )
+    .expect("selected evidence")
+    .with_assertion_boundary(witness)
+    .expect("assertion evidence");
+    let basis = repository
+        .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+        .expect("retention basis");
+    let retention = FindingExactRetention::new(
+        basis.snapshot(),
+        basis.policy(),
+        basis.admission(),
+        1,
+        FindingExactRetentionDisposition::Complete,
+    )
+    .expect("complete retention");
+    let bundle = FindingCandidateBundle::new_with_authenticated_exact_retention(
+        crate::FindingCandidateCore::new(
+            published.observation,
+            signature,
+            original,
+            minimized,
+            signatures,
+            evidence.selected().clone(),
+        ),
+        None,
+        retention,
+        evidence,
+    )
+    .expect("candidate bundle");
+    let authenticator = recording_finding_checkpoint_authenticator(
+        Arc::new(Mutex::new(Vec::new())),
+        17,
+        BTreeMap::from([(checkpoint, 5)]),
+    );
+
+    assert!(matches!(
+        CampaignExecutorStore::new(Arc::new(repository))
+            .publish_executor_finding_candidate(&bundle, &authenticator),
+        Err(CampaignRepositoryError::Integrity {
+            reason: "finding-assertion-boundary-authentication-failed"
+        })
+    ));
+}
+
+#[test]
 fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, basis) =

@@ -1301,7 +1301,8 @@ where
             as Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>,
         main,
         replay,
-    );
+    )
+    .with_exact_failure_evidence(execution_evidence.clone());
     if request.verify_determinism_findings {
         runner = runner.with_determinism_finding_verification();
     }

@@ -442,6 +442,63 @@ impl<'a> ExactFindingCheckpointAuthenticator<'a> {
 }
 
 impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator<'_> {
+    fn authenticate_finding_assertion_boundary(
+        &self,
+        checkpoint: ExactCheckpointId,
+        boundary: &crucible_campaign::FindingAssertionFailureBoundary,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+    ) -> Result<(), FindingExactCheckpointAuthenticationError> {
+        let bytes = self
+            .campaign
+            .load_executor_trace_leaf(
+                boundary.trace(),
+                crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES as u64,
+            )
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let leaf = crate::CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        if leaf.scenario() != scenario
+            || leaf.configuration() != configuration
+            || !crate::crucible_measurement::verify_assertion_failure_boundary(&leaf, boundary)
+        {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+        }
+
+        let loaded = Arc::new(
+            self.checkpoints
+                .load_attempt_checkpoint(checkpoint)
+                .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?,
+        );
+        let artifact = self
+            .campaign
+            .load_scenario_artifact(scenario_artifact)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let source = crate::decode_crucible_scenario_artifact(&artifact)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let decoded = loaded
+            .decode_semantic_checkpoint(&source, &ExecutionCancellation::default())
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let scheduler = decoded.scheduler();
+        let checkpoint_events = scheduler.event_log_offset().events;
+        let shared_events = checkpoint_events.min(boundary.terminal_events());
+        let shared_len = usize::try_from(shared_events)
+            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        if ScenarioDefId::from_hash(CampaignHash::from_bytes(loaded.scenario().bytes)) != scenario
+            || ConfigurationId::from_hash(CampaignHash::from_bytes(
+                decoded.configuration().id().bytes,
+            )) != configuration
+            || scheduler.retained_event_log_base_events() != 0
+            || scheduler.retained_event_log_entries().len() as u64 != checkpoint_events
+            || scheduler.retained_event_log_entries().get(..shared_len)
+                != leaf.entries().get(..shared_len)
+        {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+        }
+        Ok(())
+    }
+
     fn authenticate_finding_exact_checkpoint(
         &self,
         checkpoint: ExactCheckpointId,
