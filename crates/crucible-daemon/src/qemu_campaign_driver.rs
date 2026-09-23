@@ -172,8 +172,8 @@ pub enum QemuFreshModeledDriverError {
     /// A selected continuation replay did not stop at its claimed boundary.
     #[error("selected continuation origin replay did not match its claimed boundary")]
     SelectedOriginBoundaryMismatch,
-    /// A later own checkpoint lies beyond the immutable attempt stop.
-    #[error("selected continuation checkpoint target lies beyond the attempt stop")]
+    /// An attempt start or selected checkpoint lies beyond the immutable attempt stop.
+    #[error("attempt start or selected checkpoint lies beyond the attempt stop")]
     SelectedResumeBeyondAttemptStop,
     /// Replay passed or disagreed with a later own checkpoint boundary.
     #[error("selected continuation checkpoint replay did not match its boundary")]
@@ -1160,6 +1160,17 @@ fn drive_modeled_attempt_inner(
                 attempt_event_count: observed_event_count,
             },
         );
+    }
+    // A choice-or-quanta fallback can be authenticated only at its exact
+    // quantum. An attempt starting past it has no valid stop proof.
+    if matches!(
+        input.attempt().stop().primary(),
+        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
+            if completed_quanta > *execution_quanta
+    ) {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop,
+        ));
     }
     if replay_target.is_some_and(|target| {
         target.matches(&configuration, completed_quanta, terminal_at, &event_log)
