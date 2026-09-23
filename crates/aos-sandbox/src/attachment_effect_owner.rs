@@ -20,8 +20,10 @@ use crate::attachment_state::{
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
 };
 use crate::destination_slot_effect::{
-    self, DestinationSlotEffectError, PreparedCurrentDestinationSlotResumeV1,
-    PreparedCurrentDestinationSlotV1,
+    self, CompletedCurrentDestinationSlotAttemptV1, DestinationSlotDispatchClient,
+    DestinationSlotEffectError, DurableCurrentDestinationSlotAttemptV1,
+    PreparedCurrentDestinationSlotDispatchV1, PreparedCurrentDestinationSlotResumeDispatchV1,
+    PreparedCurrentDestinationSlotResumeV1, PreparedCurrentDestinationSlotV1,
 };
 use crate::destination_slot_inventory::{
     self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryClient,
@@ -34,7 +36,7 @@ use crate::runtime_scope::{
     CurrentRuntimeScopePolicy, NamespaceTargetError, NamespaceTargetOutcome,
     RuntimeGenerationError, RuntimeScopeClient, RuntimeScopeHolder,
 };
-use crate::{Journal, JournalError};
+use crate::{Journal, JournalError, SignedBrokerPlan};
 
 /// Reports failure to bind a fresh Host observation to protected namespace authority.
 #[derive(Debug, thiserror::Error)]
@@ -235,6 +237,109 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     {
         self.journal.ensure_protected_authority()?;
         destination_slot_effect::prepare_current_resume(self.journal, reconciliation, target, clock)
+    }
+
+    /// Binds a separately signed Mount plan to exact new slot-effect semantics.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, stale assignment or inventory, a plan
+    /// signed outside current authority, or a grant that differs from the
+    /// prepared request.
+    pub fn bind_current_slot_plan<T>(
+        &mut self,
+        prepared: PreparedCurrentDestinationSlotV1,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentDestinationSlotDispatchV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::bind_signed_plan(self.journal, prepared, signed_plan, clock)
+    }
+
+    /// Binds the exact original signed Mount plan to a recovered slot attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, stale authority, or a plan whose digest or
+    /// semantics differ from the original durable attempt.
+    pub fn bind_current_slot_resume_plan<T>(
+        &mut self,
+        prepared: PreparedCurrentDestinationSlotResumeV1,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentDestinationSlotResumeDispatchV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::bind_resume_signed_plan(self.journal, prepared, signed_plan, clock)
+    }
+
+    /// Durably admits an exact signed slot effect before any Mount I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, stale authority, a deadline outside the
+    /// retained lease, conflicting attempts, or failed durability.
+    pub fn admit_current_slot_effect<T>(
+        &mut self,
+        prepared: PreparedCurrentDestinationSlotDispatchV1,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<DurableCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::admit_current(
+            self.journal,
+            prepared,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+    }
+
+    /// Reopens the original durable slot attempt under current authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, stale authority, a changed attempt or
+    /// original plan, and an elapsed protected deadline.
+    pub fn resume_current_slot_effect<T>(
+        &mut self,
+        prepared: PreparedCurrentDestinationSlotResumeDispatchV1,
+        clock: &mut T,
+    ) -> Result<DurableCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::resume_current(self.journal, prepared, clock)
+    }
+
+    /// Dispatches a durable slot attempt through an authenticated Mount channel.
+    ///
+    /// Success records the exact Mount receipt. A later fresh signed inventory
+    /// must still confirm physical Ready before an attachment may proceed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, stale authority, broker or channel
+    /// failure, a mismatched receipt, and failed completion durability.
+    pub fn dispatch_current_slot_effect<T>(
+        &mut self,
+        attempt: DurableCurrentDestinationSlotAttemptV1,
+        client: DestinationSlotDispatchClient,
+        clock: &mut T,
+    ) -> Result<CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::dispatch_current(self.journal, attempt, client, clock)
     }
 
     /// Loads the exact historical generation committed by an operation.
