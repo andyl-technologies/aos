@@ -236,6 +236,9 @@
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
+  dbusService = import ./dbus-service.nix {
+    inherit lib;
+  };
   serviceFeatures = import ./service-features.nix {
     inherit lib pkgs;
   };
@@ -639,6 +642,7 @@ in
   assert abilityBoundaryObserverService;
   assert zfstoolsService;
   assert serviceManagement;
+  assert dbusService;
   assert managedIdentityAllocation;
   assert compositionDriver;
   assert systemdPackagedUnit;

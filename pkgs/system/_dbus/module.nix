@@ -9,7 +9,6 @@
   cfg = config.aos.services.dbus;
   inherit (lib.abilities) pathWithin resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
   controllerAlias = "system-registration";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
@@ -86,190 +85,179 @@
     base = resultOf "runtime-storage" "planned-path";
     relativePath = "system_bus_socket";
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = true;
-          ambient_privileges = [];
-          privilege_bounds.kind = "unrestricted";
-          resource_control_delegation = false;
-          resource_control_access = "host";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = true;
-          remove_interprocess_communication = false;
-          isolation_domains = [];
-          isolation_domain_creation = "allowed";
-          network_families = [];
-          memory_pressure_adjustment = -900;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          denied_operation_action = "kill-process";
-          operation_profile = "privileged";
-          isolated_identity_mapping = "full";
-        };
-      })
-    ];
-    inherit serviceTypes;
-    consumerInstance = "system-bus";
-    declaration =
+  serviceDefinition = {
+    policy.hardening = {
+      allow_privilege_escalation = true;
+      ambient_privileges = [];
+      privilege_bounds.kind = "unrestricted";
+      resource_control_delegation = false;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      remove_interprocess_communication = false;
+      isolation_domains = [];
+      isolation_domain_creation = "allowed";
+      network_families = [];
+      memory_pressure_adjustment = -900;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      denied_operation_action = "kill-process";
+      operation_profile = "privileged";
+      isolated_identity_mapping = "full";
+    };
+    lifecycle = {
+      description = "D-Bus System Message Bus (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        (command "bin/dbus-daemon" [
+          "--address=systemd:"
+          "--nofork"
+          "--nopidfile"
+          "--systemd-activation"
+          "--config-file"
+          registrationConfigurationPath
+        ])
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 5000;
+      configuration_change_action = "reload";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      prerequisites = [
+        (resultOf "runtime-storage" "resource")
+        (resultOf "state-storage" "resource")
+        registrationResource
+        registrationConfigurationResource
+      ];
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    manager_identity = {
+      name = "dbus";
+      aliases = ["messagebus"];
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    reload = {
+      strategy = "command";
+      commands = [
+        (command "bin/dbus-send" [
+          "--print-reply"
+          "--system"
+          "--type=method_call"
+          "--dest=org.freedesktop.DBus"
+          "/"
+          "org.freedesktop.DBus.ReloadConfig"
+        ])
+      ];
+      completion = "command-exit";
+    };
+    configuration.views = [
       {
-        service = "dbus";
-        enabled = true;
-        lifecycle = {
-          description = "D-Bus System Message Bus (${packageName} ${packageVersion})";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [
-            (command "bin/dbus-daemon" [
-              "--address=systemd:"
-              "--nofork"
-              "--nopidfile"
-              "--systemd-activation"
-              "--config-file"
-              registrationConfigurationPath
-            ])
-          ];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "on-failure";
-          restart_delay_millis = 5000;
-          configuration_change_action = "reload";
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        };
-        dependencies = {
-          prerequisites = [
-            (resultOf "runtime-storage" "resource")
-            (resultOf "state-storage" "resource")
-            registrationResource
-            registrationConfigurationResource
-          ];
-          after = [];
-          before = [];
-          requires = [];
-          wants = [];
-        };
-        supervision = {
-          startup_protocol = "notification";
-          notification_access = "main-process";
-        };
-        manager_identity = {
-          name = "dbus";
-          aliases = ["messagebus"];
-        };
-        readiness = {
-          mechanism = "process-signal";
-          signal_scope = "main-process";
-          timeout_millis = 90000;
-        };
-        reload = {
-          strategy = "command";
-          commands = [
-            (command "bin/dbus-send" [
-              "--print-reply"
-              "--system"
-              "--type=method_call"
-              "--dest=org.freedesktop.DBus"
-              "/"
-              "org.freedesktop.DBus.ReloadConfig"
-            ])
-          ];
-          completion = "command-exit";
-        };
-        configuration.views = [
-          {
-            name = "system";
-            source = registrationConfigurationPath;
-            optional = false;
-          }
-        ];
-        storage.mounts = [
-          {
-            name = "runtime";
-            source = resultOf "runtime-storage" "planned-path";
-            access = "read-write";
-          }
-          {
-            name = "state";
-            source = resultOf "state-storage" "planned-path";
-            access = "read-write";
-          }
-        ];
-        socket_activation.sockets = [
-          {
-            name = "system-bus";
-            manager_name = "dbus";
-            enabled = true;
-            endpoints = [
-              {
-                kind = "unix";
-                path = socketPath;
-              }
-            ];
-            mode = "0666";
-            remove_on_stop = false;
-            prerequisites = [(resultOf "runtime-storage" "resource")];
-          }
-        ];
-        logging = {
-          standard_output = "structured";
-          standard_error = "structured";
-          directories = [];
-          directory_mode = "0755";
-        };
-        isolation = {
-          privilege = "privileged";
-          filesystem = "host";
-          home_access = "host";
-          network = "host";
-          process_visibility = "host";
-          termination_scope = "all-processes";
-          temporary_directory = "shared";
-          devices = [];
-          host_paths = [];
-          permit_core_dumps = true;
-        };
+        name = "system";
+        source = registrationConfigurationPath;
+        optional = false;
       }
-      // lib.optionalAttrs (cfg.openFileLimit != null) {
-        resources = {
-          open_files = {
-            kind = "maximum";
-            value = cfg.openFileLimit;
-          };
-          processes.kind = "unbounded";
-          tasks.kind = "unbounded";
+    ];
+    storage.mounts = [
+      {
+        name = "runtime";
+        source = resultOf "runtime-storage" "planned-path";
+        access = "read-write";
+      }
+      {
+        name = "state";
+        source = resultOf "state-storage" "planned-path";
+        access = "read-write";
+      }
+    ];
+    socket_activation.sockets = [
+      {
+        name = "system-bus";
+        manager_name = "dbus";
+        enabled = true;
+        endpoints = [
+          {
+            kind = "unix";
+            path = socketPath;
+          }
+        ];
+        mode = "0666";
+        remove_on_stop = false;
+        prerequisites = [(resultOf "runtime-storage" "resource")];
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0755";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      home_access = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
+    };
+    resources = {
+      open_files =
+        if cfg.openFileLimit == null
+        then null
+        else {
+          kind = "maximum";
+          value = cfg.openFileLimit;
         };
-      };
+      processes =
+        if cfg.openFileLimit == null
+        then null
+        else {kind = "unbounded";};
+      tasks =
+        if cfg.openFileLimit == null
+        then null
+        else {kind = "unbounded";};
+    };
   };
 
-  fragments = [
+  producers = [
     serviceGroup
     servicePrincipal
     runtimeStorage
     stateStorage
-    service
   ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./availability-interface.nix
@@ -297,24 +285,25 @@ in {
   };
 
   config = lib.mkMerge [
-    {
-      aos.abilities = lib.mkMerge (builtins.map (definition: definition.declarations) definitions);
-    }
+    {aos.services.dbus = serviceDefinition;}
+    (serviceManagement.projectService {
+      inherit config lib;
+      name = "dbus";
+      consumerInstance = "system-bus";
+    })
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [
-          {
-            instances = {
-              availability = {};
-              system-bus = {};
-              registration = {};
-            };
-            requirementTemplates.system-registration = registrationRequirement;
-            requests.system-registration = registrationRequest;
-          }
-        ]
-        ++ builtins.map (definition: definition.configured) definitions
-      );
+      aos.abilities = {
+        instances = {
+          availability = {};
+          registration = {};
+        };
+        requirementTemplates.system-registration = registrationRequirement;
+        requests.system-registration = registrationRequest;
+      };
     })
   ];
 }

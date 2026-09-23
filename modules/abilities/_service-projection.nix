@@ -26,7 +26,10 @@
       enabled = true;
     }
     // lib.filterAttrs
-    (field: value: builtins.hasAttr field serviceFields && value != null)
+    (field: value:
+      builtins.hasAttr field serviceFields
+      && value != null
+      && !(builtins.isAttrs value && value == {}))
     service;
   policyRequests = builtins.concatLists (builtins.map
     (name: let
