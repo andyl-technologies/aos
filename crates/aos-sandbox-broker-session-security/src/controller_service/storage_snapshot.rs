@@ -43,6 +43,8 @@ enum AtomicSnapshotPhaseV1 {
     Group(DormantAtomicStorageInventoryPredecessorV1),
     Finish(DormantAtomicStorageInventoryFinishRecoveryV1),
     Complete(DormantAtomicStorageInventoryCompletionV1),
+    // The group is terminal; only its protected history may complete custody.
+    Recover,
     Progress(LifecycleEffectObservationV1),
     Rejected,
 }
@@ -110,7 +112,14 @@ impl ProductionEffectExecutor {
                 .map_err(permanent)?;
             let operation_record = current.record();
 
-            if self.pending_atomic_snapshot.is_none() {
+            let recover_in_process = self
+                .pending_atomic_snapshot
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.operation == operation_id
+                        && matches!(pending.phase, AtomicSnapshotPhaseV1::Recover)
+                });
+            if self.pending_atomic_snapshot.is_none() || recover_in_process {
                 let pending_sources = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
                     .pending_reservations()
                     .map_err(retryable)?;
@@ -126,6 +135,11 @@ impl ProductionEffectExecutor {
                     .recover(operation_id)
                     .map_err(retryable)?
                 {
+                    LifecycleAtomicSnapshotSourceRecoveryV1::Absent if recover_in_process => {
+                        return Err(permanent(
+                            "successful Storage group lost its durable source reservation",
+                        ));
+                    }
                     LifecycleAtomicSnapshotSourceRecoveryV1::Absent => {}
                     LifecycleAtomicSnapshotSourceRecoveryV1::Pending {
                         request_id,
@@ -172,7 +186,7 @@ impl ProductionEffectExecutor {
                         let plan = barrier
                             .atomic_dataset_snapshot_plan(&current, &predecessor_inventory)
                             .map_err(permanent)?;
-                        let (completion, status) = match history {
+                        let (completion, uses_status_evidence) = match history {
                             crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete {
                                 ..
                             } => (
@@ -216,7 +230,7 @@ impl ProductionEffectExecutor {
                         };
                         drop(sessions);
                         let mut source = LifecycleAtomicSnapshotSourceStoreV1::new(journal);
-                        let complete = if status {
+                        let complete = if uses_status_evidence {
                             LifecycleAtomicSnapshotSourceStoreV1::complete_verified_status
                         } else {
                             LifecycleAtomicSnapshotSourceStoreV1::complete_verified_history
@@ -245,9 +259,7 @@ impl ProductionEffectExecutor {
                         drop(current);
                         drop(coordination);
                         drop(owner);
-                        if status {
-                            self.retire_completed_atomic_snapshot_archive(request_id)?;
-                        }
+                        self.retire_completed_atomic_snapshot_archive(request_id)?;
                         return self.commit_storage_snapshot_progress(
                             operation_id,
                             operation_key,
@@ -390,7 +402,9 @@ impl ProductionEffectExecutor {
                             let progress = match progress {
                                 Ok(progress) => progress,
                                 Err(error) => {
-                                    pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                                    // The group is terminal. Retry from its protected
+                                    // history, never from another Method25 dispatch.
+                                    pending.phase = AtomicSnapshotPhaseV1::Recover;
                                     self.pending_atomic_snapshot = Some(pending);
                                     return Err(retryable(error));
                                 }
@@ -441,7 +455,7 @@ impl ProductionEffectExecutor {
                     let progress = match progress {
                         Ok(progress) => progress,
                         Err(error) => {
-                            pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                            pending.phase = AtomicSnapshotPhaseV1::Recover;
                             self.pending_atomic_snapshot = Some(pending);
                             return Err(retryable(error));
                         }

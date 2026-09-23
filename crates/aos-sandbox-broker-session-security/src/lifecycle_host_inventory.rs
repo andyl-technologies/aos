@@ -691,6 +691,28 @@ impl DormantLifecycleInventorySessionV1 {
         self.drive_complete(progress)
     }
 
+    fn query_complete_or_resume_retained(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        let Some(recovery) = self.pending.take() else {
+            return self.query_complete(method);
+        };
+        if recovery.method != method.method() {
+            self.pending = Some(recovery);
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+
+        let progress = self.resume_query(recovery)?;
+        self.drive_complete(progress)
+    }
+
     fn slot_effect_complete(
         &mut self,
         attempt: &DurableCurrentDestinationSlotAttemptV1,
@@ -1282,7 +1304,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ) -> Result<DormantAtomicStorageInventoryCompletionV1, EffectFailure> {
         let (current, currentness) = self
             .0
-            .query_complete(LifecycleInventoryMethodV1::Storage)
+            .query_complete_or_resume_retained(LifecycleInventoryMethodV1::Storage)
             .map_err(|_| {
                 EffectFailure::Retryable("Storage status inventory is unavailable".to_owned())
             })?;
