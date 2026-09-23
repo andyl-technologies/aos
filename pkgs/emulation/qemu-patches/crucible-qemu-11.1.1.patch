@@ -1,430 +1,5 @@
-From 233aee57f1b92f53fd093030b01132b08d31438e Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] crucible: integrate deterministic QEMU execution
-
-Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,
-asynchronous-worker, and device-fingerprint implementation as one atomic,
-reconstructible QEMU 11.1.1 integration boundary.
-
-Rearm pending main-loop work after a deferred reset consumes its original AIO
-wake, allowing repeated require-ready watchdog resets to complete without
-external QMP activity. Make the fingerprint projection test wait for an
-executed guest TB before checking the outside-boundary marker result.
-
-Preserve sim-only virtio-rng rate-limit and HPET comparator history across
-exact VMState restore. Version the continuation projections that canonicalize
-native QMP pause flags and disabled UART THRI state while retaining strict
-guest-visible and active device state. Keep ordinary non-sim virtio ioeventfd
-policy unchanged.
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- MAINTAINERS                                   |    14 +
- accel/accel-common.c                          |     6 +
- accel/tcg/atomic_template.h                   |   166 +-
- accel/tcg/cpu-exec-common.c                   |     5 +
- accel/tcg/cpu-exec.c                          |   195 +-
- accel/tcg/cputlb.c                            |   621 +-
- accel/tcg/icount-common.c                     |   421 +
- accel/tcg/internal-common.h                   |     3 +
- accel/tcg/meson.build                         |     3 +
- accel/tcg/plugin-gen.c                        |    10 +-
- accel/tcg/tb-maint.c                          |     1 +
- accel/tcg/tcg-accel-ops-icount.c              |    89 +-
- accel/tcg/tcg-accel-ops-icount.h              |     3 +
- accel/tcg/tcg-accel-ops-preemption.c          |   175 +
- accel/tcg/tcg-accel-ops-rr.c                  |  2150 ++-
- accel/tcg/tcg-accel-ops-rr.h                  |   217 +
- accel/tcg/tcg-accel-ops-sim-shmem.c           |   148 +
- accel/tcg/tcg-accel-ops-sim-shmem.h           |    18 +
- accel/tcg/tcg-accel-ops-sim.c                 |    39 +
- accel/tcg/tcg-accel-ops.c                     |     3 +-
- accel/tcg/tcg-accel-ops.h                     |     1 +
- accel/tcg/tcg-all.c                           |    44 +
- accel/tcg/trace-events                        |     6 +
- accel/tcg/translate-all.c                     |    31 +
- accel/tcg/translator.c                        |   150 +-
- backends/rng-builtin.c                        |    23 +
- backends/rng.c                                |    34 +
- block.c                                       |     2 +
- block/block-backend.c                         |   621 +
- block/crucible-hot-fork-source.c              |  1316 ++
- block/crucible-shmem.c                        |   996 ++
- block/file-posix.c                            |   166 +
- block/graph-lock.c                            |    94 +
- block/io.c                                    |     6 +
- block/meson.build                             |     2 +
- block/qcow2.c                                 |     2 +
- block/qed.h                                   |     1 +
- block/raw-format.c                            |     2 +
- chardev/char-socket.c                         |   428 +
- gdbstub/gdbstub.c                             |     1 -
- hw/9pfs/virtio-9p-device.c                    |   376 +
- hw/9pfs/virtio-9p.h                           |     8 +
- hw/acpi/core.c                                |   151 +-
- hw/acpi/generic_event_device.c                |    19 +
- hw/acpi/ghes-stub.c                           |    31 +
- hw/acpi/ghes.c                                |   228 +-
- hw/acpi/ich9.c                                |    24 +
- hw/acpi/piix4.c                               |    96 +
- hw/arm/virt-acpi-build.c                      |    19 +
- hw/audio/pcspk.c                              |    19 +
- hw/block/fdc-fingerprint.h                    |   104 +
- hw/block/fdc-isa.c                            |    16 +
- hw/block/fdc-sysbus.c                         |    17 +
- hw/block/pflash_cfi01.c                       |    42 +-
- hw/block/virtio-blk.c                         |   298 +-
- hw/char/parallel.c                            |    16 +
- hw/char/pl011.c                               |    46 +-
- hw/char/serial-isa.c                          |    17 +
- hw/char/serial.c                              |    80 +
- hw/char/virtio-serial-bus.c                   |    69 +
- hw/core/cpu-common.c                          |     4 +
- hw/core/cpu-system.c                          |   159 +
- hw/core/machine-qmp-cmds.c                    |     1 +
- hw/display/vga-fingerprint.h                  |   151 +
- hw/display/vga-pci.c                          |    28 +
- hw/dma/i8257.c                                |    34 +
- hw/gpio/gpio_key.c                            |    28 +
- hw/gpio/pl061.c                               |    26 +
- hw/i2c/core.c                                 |    44 +
- hw/i2c/pm_smbus.c                             |    43 +
- hw/i2c/smbus_eeprom.c                         |    28 +
- hw/i2c/smbus_ich9.c                           |    25 +
- hw/i386/acpi-build.c                          |    19 +
- hw/i386/multiboot.c                           |    19 +-
- hw/i386/port92.c                              |    18 +
- hw/i386/vapic.c                               |    47 +
- hw/i386/vmmouse.c                             |    28 +
- hw/ide/ich-fingerprint.h                      |   139 +
- hw/ide/ich.c                                  |    26 +
- hw/ide/pci.c                                  |    91 +
- hw/input/pckbd.c                              |    57 +
- hw/input/ps2.c                                |    90 +
- hw/intc/apic.c                                |   715 +-
- hw/intc/apic_common.c                         |   207 +-
- hw/intc/arm_gic.c                             |   255 +-
- hw/intc/arm_gic_common.c                      |   172 +
- hw/intc/arm_gicv3.c                           |   243 +-
- hw/intc/arm_gicv3_common.c                    |    94 +
- hw/intc/arm_gicv3_cpuif.c                     |   223 +
- hw/intc/arm_gicv3_redist.c                    |    53 +-
- hw/intc/gic_internal.h                        |     4 +-
- hw/intc/i8259.c                               |   215 +-
- hw/intc/i8259_common.c                        |   107 +
- hw/intc/ioapic.c                              |    27 +-
- hw/intc/ioapic_common.c                       |    41 +
- hw/isa/lpc-ich9-fingerprint.h                 |   118 +
- hw/isa/lpc_ich9.c                             |    94 +
- hw/isa/piix.c                                 |    31 +
- hw/net/e1000-fingerprint.h                    |   112 +
- hw/net/e1000.c                                |    65 +-
- hw/net/virtio-net.c                           |   203 +-
- hw/nvram/fw_cfg.c                             |    28 +
- hw/pci-host/gpex.c                            |    16 +
- hw/pci-host/i440fx.c                          |    15 +
- hw/pci-host/q35.c                             |    16 +
- hw/pci/msi.c                                  |    13 +
- hw/pci/msix.c                                 |    57 +
- hw/pci/pci.c                                  |    80 +
- hw/pci/pci_host.c                             |    22 +
- hw/rtc/mc146818rtc.c                          |   669 +-
- hw/rtc/pl031.c                                |   264 +-
- hw/timer/arm_timer.c                          |     1 +
- hw/timer/hpet.c                               |   415 +-
- hw/timer/i8254.c                              |   174 +-
- hw/timer/i8254_common.c                       |    76 +
- hw/virtio/Kconfig                             |     5 +
- hw/virtio/meson.build                         |     2 +
- hw/virtio/virtio-crucible-accelerator-pci.c   |    77 +
- hw/virtio/virtio-crucible-accelerator.c       |   560 +
- hw/virtio/virtio-pci.c                        |    77 +
- hw/virtio/virtio-rng.c                        |    92 +-
- hw/virtio/virtio.c                            |   562 +-
- include/accel/accel-cpu-ops.h                 |     7 +
- include/block/block_int-common.h              |    46 +
- include/block/block_int-io.h                  |     6 +
- include/block/graph-lock.h                    |    28 +-
- include/block/thread-pool.h                   |     2 +
- include/chardev/char-socket.h                 |   132 +
- include/exec/icount.h                         |    25 +
- include/exec/translator.h                     |     7 +
- include/hw/acpi/acpi.h                        |     3 +
- .../acpi/generic-event-device-fingerprint.h   |   126 +
- include/hw/acpi/ghes.h                        |    21 +
- include/hw/acpi/piix4-fingerprint.h           |   116 +
- include/hw/char/parallel-isa-fingerprint.h    |    27 +
- include/hw/core/cpu.h                         |   201 +
- include/hw/core/qdev.h                        |     7 +
- include/hw/core/sysemu-cpu-ops.h              |    26 +
- include/hw/i2c/pm_smbus.h                     |     2 +
- include/hw/i386/apic_internal.h               |     7 +
- include/hw/intc/arm_gic_common.h              |     6 +
- include/hw/intc/arm_gicv3_common.h            |    11 +
- include/hw/isa/i8259_internal.h               |     5 +
- include/hw/pci/msix.h                         |     2 +
- include/hw/pci/pci.h                          |     4 +
- include/hw/rtc/mc146818rtc.h                  |    12 +
- include/hw/rtc/pl031.h                        |     4 +
- include/hw/southbridge/piix-fingerprint.h     |    29 +
- include/hw/timer/i8254_internal.h             |     3 +
- include/hw/virtio/virtio-blk.h                |     1 +
- include/hw/virtio/virtio-bus.h                |     2 +
- .../hw/virtio/virtio-crucible-accelerator.h   |    58 +
- include/hw/virtio/virtio-pci.h                |    21 +
- include/hw/virtio/virtio-rng.h                |     6 +-
- include/hw/virtio/virtio.h                    |    21 +
- include/migration/misc.h                      |    10 +
- include/migration/register.h                  |    10 +
- include/migration/vmstate.h                   |    17 +
- include/monitor/monitor.h                     |     1 +
- include/plugins/qemu-plugin.h                 |  1761 +++
- include/qemu/aio.h                            |   121 +
- include/qemu/crucible-fault.h                 |   715 +
- include/qemu/crucible-hot-fork-async.h        |    84 +
- include/qemu/crucible-hot-fork-child.h        |   407 +
- include/qemu/crucible-hot-fork-plugin.h       |    49 +
- include/qemu/crucible-idle-wait.h             |    58 +
- include/qemu/crucible-process.h               |    16 +
- include/qemu/guest-random.h                   |    31 +
- include/qemu/madvise.h                        |     7 +
- include/qemu/main-loop.h                      |     9 +
- include/qemu/plugin.h                         |   209 +
- include/qemu/rcu.h                            |    87 +
- include/qemu/thread-posix.h                   |     8 +
- include/qemu/thread.h                         |   154 +
- include/qemu/timer.h                          |    57 +
- include/qobject/json-parser.h                 |     4 +
- include/system/block-backend-global-state.h   |   298 +
- include/system/cpu-timers-internal.h          |     6 +
- include/system/cpus.h                         |     7 +
- include/system/crucible-checkpoint.h          |    75 +
- .../system/crucible-hot-fork-coordinator.h    |   100 +
- .../system/crucible-hot-fork-plugin-child.h   |   901 ++
- include/system/crucible-plugin-wake.h         |    21 +
- include/system/crucible-sim-ipi.h             |     8 +
- include/system/crucible-sim-preemption.h      |    22 +
- include/system/dma.h                          |    61 +-
- include/system/iothread.h                     |    13 +
- include/system/memory.h                       |    59 +-
- include/system/memory_cached.h                |    41 +
- include/system/memory_ldst_cached.h.inc       |    69 +
- include/system/ram_addr.h                     |     3 +-
- include/system/ramlist.h                      |    12 +
- include/system/replay.h                       |     7 +-
- include/system/rng.h                          |    10 +
- include/system/rtc.h                          |    10 +
- include/tcg/startup.h                         |     9 +
- iothread.c                                    |   149 +
- migration/migration.c                         |   114 +
- migration/savevm.c                            |   409 +-
- migration/savevm.h                            |    22 +
- migration/vmstate.c                           |    25 +
- monitor/fds.c                                 |    63 +
- monitor/monitor-internal.h                    |   171 +
- monitor/monitor.c                             |   752 +
- monitor/qmp-cmds-control.c                    |     1 +
- monitor/qmp-cmds.c                            |  6092 +++++++-
- monitor/qmp.c                                 |   108 +
- net/net.c                                     |    66 +-
- net/slirp.c                                   |    23 +
- plugins/api-system.c                          |  2420 +++-
- plugins/api.c                                 |  1103 +-
- plugins/core.c                                |     5 +
- plugins/crucible-fault-accelerator.c          |  1865 +++
- plugins/crucible-fault-clock.c                |  4509 ++++++
- plugins/crucible-fault-hardware-error.c       |  1869 +++
- plugins/crucible-fault-instruction.c          |  3281 +++++
- plugins/crucible-fault-interrupt.c            |  2741 ++++
- plugins/crucible-fault-lifecycle.c            |  2589 ++++
- plugins/crucible-fault-memory.c               |  1396 ++
- plugins/crucible-fault-node.c                 | 11990 ++++++++++++++++
- plugins/crucible-fault-register.c             |  1343 ++
- plugins/crucible-fault-vcpu-service.c         |  1473 ++
- plugins/crucible-fault-vmstate.c              |   658 +
- plugins/crucible-fault.c                      |  1426 ++
- plugins/crucible-idle-wait.c                  |   171 +
- plugins/loader.c                              |     5 +
- plugins/meson.build                           |    14 +-
- qapi/block-core.json                          |    18 +-
- qapi/misc.json                                |   179 +-
- qapi/run-state.json                           |  2674 ++++
- qemu-options.hx                               |    15 +-
- qobject/json-streamer.c                       |    10 +
- replay/replay-internal.c                      |     9 +-
- replay/replay-internal.h                      |     6 -
- replay/replay.c                               |     3 +-
- system/cpu-timers.c                           |   155 +-
- system/cpus.c                                 |    77 +-
- system/crucible-checkpoint-restore.c          |   740 +
- system/crucible-checkpoint.c                  |  1431 ++
- system/crucible-hot-fork-coordinator.c        |   552 +
- system/crucible-hot-fork-plugin-child.c       |  2278 +++
- system/ioport.c                               |    43 +-
- system/main.c                                 |   118 +
- system/memory.c                               |    53 +-
- system/meson.build                            |     8 +-
- system/physmem.c                              |   559 +-
- system/rtc.c                                  |    30 +-
- system/runstate.c                             |    22 +
- system/vl.c                                   |    28 +-
- target/arm/cpu-irq.c                          |    29 +-
- target/arm/cpu.c                              |    99 +
- target/arm/cpu.h                              |    51 +
- target/arm/crucible-fingerprint.h             |   124 +
- target/arm/crucible-register.c                |   547 +
- target/arm/helper.c                           |   252 +-
- target/arm/internals.h                        |     5 +
- target/arm/machine.c                          |   229 +-
- target/arm/meson.build                        |     1 +
- target/arm/ptw.c                              |   338 +-
- target/arm/tcg/tlb_helper.c                   |    37 +-
- target/arm/tcg/translate-a64.c                |    17 +-
- target/i386/cpu.c                             |    82 +
- target/i386/cpu.h                             |    36 +
- target/i386/crucible-fingerprint.h            |    93 +
- target/i386/crucible-register.c               |  1011 ++
- target/i386/gdbstub.c                         |    14 +-
- target/i386/machine.c                         |   128 +
- target/i386/meson.build                       |     1 +
- target/i386/tcg/fpu_helper.c                  |    24 +-
- target/i386/tcg/misc_helper.c                 |    27 +
- target/i386/tcg/seg_helper.c                  |     5 +-
- target/i386/tcg/system/excp_helper.c          |   481 +-
- target/i386/tcg/system/misc_helper.c          |    56 +-
- target/i386/tcg/system/svm_helper.c           |    36 +-
- target/i386/tcg/tcg-stub.c                    |     5 +
- target/i386/tcg/translate.c                   |     3 +
- tcg/region.c                                  |     1 -
- tcg/tcg.c                                     |    12 +
- tests/qtest/crucible-exact-tb-exit.py         |    85 +
- .../qtest/crucible-fingerprint-projection.py  |   720 +
- tests/qtest/crucible-idle-wait-liveness.py    |  1978 +++
- tests/qtest/crucible-multiboot-gap.py         |   107 +
- tests/qtest/meson.build                       |    45 +
- tests/qtest/qmp-cmd-test.c                    |     2 +
- tests/qtest/virtio-serial-test.c              |   119 +-
- tests/tcg/plugins/crucible-exact-tb-exit.c    |   135 +
- .../plugins/crucible-fingerprint-observer.c   |   317 +
- .../tcg/plugins/crucible-idle-wait-liveness.c |   334 +
- tests/tcg/plugins/crucible-instruction.c      |  1881 +++
- tests/tcg/plugins/crucible-memory-access.c    |  1047 ++
- tests/tcg/plugins/crucible-memory-dma.c       |   461 +
- tests/tcg/plugins/crucible-memory.c           |   953 ++
- tests/tcg/plugins/crucible-register.c         |  1041 ++
- tests/tcg/plugins/meson.build                 |    12 +
- tests/unit/check-json-parser.c                |    25 +
- tests/unit/meson.build                        |    69 +
- tests/unit/test-aio.c                         |   189 +
- tests/unit/test-block-backend.c               |  1378 ++
- tests/unit/test-char.c                        |   116 +
- .../test-crucible-acpi-piix-fingerprint.c     |   457 +
- tests/unit/test-crucible-ahci-fingerprint.c   |   145 +
- tests/unit/test-crucible-arm-fingerprint.c    |   237 +
- tests/unit/test-crucible-e1000-fingerprint.c  |   179 +
- tests/unit/test-crucible-fdc-fingerprint.c    |   212 +
- tests/unit/test-crucible-hot-fork-child.c     |  3197 ++++
- .../unit/test-crucible-hot-fork-coordinator.c |   298 +
- tests/unit/test-crucible-idle-wait.c          |   809 ++
- .../unit/test-crucible-parallel-fingerprint.c |    90 +
- tests/unit/test-crucible-vga-fingerprint.c    |   174 +
- tests/unit/test-crucible-x86-fingerprint.c    |   186 +
- tests/unit/test-rcu-list.c                    |    61 +
- tests/unit/test-vmstate.c                     |   138 +
- util/aio-posix.c                              |   203 +-
- util/aio-posix.h                              |     5 +
- util/aio-win32.c                              |     3 +
- util/async.c                                  |   692 +-
- util/crucible-hot-fork-child.c                |  1294 ++
- util/guest-random.c                           |    61 +
- util/main-loop.c                              |    79 +-
- util/meson.build                              |     1 +
- util/qemu-coroutine.c                         |     2 +
- util/qemu-thread-posix.c                      |  1516 +-
- util/qemu-timer.c                             |   424 +-
- util/rcu.c                                    |   417 +-
- util/thread-pool.c                            |     6 +
- util/trace-events                             |     6 +
- 326 files changed, 104624 insertions(+), 602 deletions(-)
- create mode 100644 accel/tcg/tcg-accel-ops-preemption.c
- create mode 100644 accel/tcg/tcg-accel-ops-sim-shmem.c
- create mode 100644 accel/tcg/tcg-accel-ops-sim-shmem.h
- create mode 100644 accel/tcg/tcg-accel-ops-sim.c
- create mode 100644 block/crucible-hot-fork-source.c
- create mode 100644 block/crucible-shmem.c
- create mode 100644 hw/block/fdc-fingerprint.h
- create mode 100644 hw/display/vga-fingerprint.h
- create mode 100644 hw/ide/ich-fingerprint.h
- create mode 100644 hw/isa/lpc-ich9-fingerprint.h
- create mode 100644 hw/net/e1000-fingerprint.h
- create mode 100644 hw/virtio/virtio-crucible-accelerator-pci.c
- create mode 100644 hw/virtio/virtio-crucible-accelerator.c
- create mode 100644 include/hw/acpi/generic-event-device-fingerprint.h
- create mode 100644 include/hw/acpi/piix4-fingerprint.h
- create mode 100644 include/hw/char/parallel-isa-fingerprint.h
- create mode 100644 include/hw/southbridge/piix-fingerprint.h
- create mode 100644 include/hw/virtio/virtio-crucible-accelerator.h
- create mode 100644 include/qemu/crucible-fault.h
- create mode 100644 include/qemu/crucible-hot-fork-async.h
- create mode 100644 include/qemu/crucible-hot-fork-child.h
- create mode 100644 include/qemu/crucible-hot-fork-plugin.h
- create mode 100644 include/qemu/crucible-idle-wait.h
- create mode 100644 include/qemu/crucible-process.h
- create mode 100644 include/system/crucible-checkpoint.h
- create mode 100644 include/system/crucible-hot-fork-coordinator.h
- create mode 100644 include/system/crucible-hot-fork-plugin-child.h
- create mode 100644 include/system/crucible-plugin-wake.h
- create mode 100644 include/system/crucible-sim-ipi.h
- create mode 100644 include/system/crucible-sim-preemption.h
- create mode 100644 plugins/crucible-fault-accelerator.c
- create mode 100644 plugins/crucible-fault-clock.c
- create mode 100644 plugins/crucible-fault-hardware-error.c
- create mode 100644 plugins/crucible-fault-instruction.c
- create mode 100644 plugins/crucible-fault-interrupt.c
- create mode 100644 plugins/crucible-fault-lifecycle.c
- create mode 100644 plugins/crucible-fault-memory.c
- create mode 100644 plugins/crucible-fault-node.c
- create mode 100644 plugins/crucible-fault-register.c
- create mode 100644 plugins/crucible-fault-vcpu-service.c
- create mode 100644 plugins/crucible-fault-vmstate.c
- create mode 100644 plugins/crucible-fault.c
- create mode 100644 plugins/crucible-idle-wait.c
- create mode 100644 system/crucible-checkpoint-restore.c
- create mode 100644 system/crucible-checkpoint.c
- create mode 100644 system/crucible-hot-fork-coordinator.c
- create mode 100644 system/crucible-hot-fork-plugin-child.c
- create mode 100644 target/arm/crucible-fingerprint.h
- create mode 100644 target/arm/crucible-register.c
- create mode 100644 target/i386/crucible-fingerprint.h
- create mode 100644 target/i386/crucible-register.c
- create mode 100644 tests/qtest/crucible-exact-tb-exit.py
- create mode 100644 tests/qtest/crucible-fingerprint-projection.py
- create mode 100644 tests/qtest/crucible-idle-wait-liveness.py
- create mode 100644 tests/qtest/crucible-multiboot-gap.py
- create mode 100644 tests/tcg/plugins/crucible-exact-tb-exit.c
- create mode 100644 tests/tcg/plugins/crucible-fingerprint-observer.c
- create mode 100644 tests/tcg/plugins/crucible-idle-wait-liveness.c
- create mode 100644 tests/tcg/plugins/crucible-instruction.c
- create mode 100644 tests/tcg/plugins/crucible-memory-access.c
- create mode 100644 tests/tcg/plugins/crucible-memory-dma.c
- create mode 100644 tests/tcg/plugins/crucible-memory.c
- create mode 100644 tests/tcg/plugins/crucible-register.c
- create mode 100644 tests/unit/test-crucible-acpi-piix-fingerprint.c
- create mode 100644 tests/unit/test-crucible-ahci-fingerprint.c
- create mode 100644 tests/unit/test-crucible-arm-fingerprint.c
- create mode 100644 tests/unit/test-crucible-e1000-fingerprint.c
- create mode 100644 tests/unit/test-crucible-fdc-fingerprint.c
- create mode 100644 tests/unit/test-crucible-hot-fork-child.c
- create mode 100644 tests/unit/test-crucible-hot-fork-coordinator.c
- create mode 100644 tests/unit/test-crucible-idle-wait.c
- create mode 100644 tests/unit/test-crucible-parallel-fingerprint.c
- create mode 100644 tests/unit/test-crucible-vga-fingerprint.c
- create mode 100644 tests/unit/test-crucible-x86-fingerprint.c
- create mode 100644 util/crucible-hot-fork-child.c
-
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 902db7721..179e04c42 100644
+index 902db77218eacc2461b54fe675c9816b3d98aec6..179e04c425b5c11c034ec3406a8f23ee9d293540 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -3472,6 +3472,7 @@ Main loop
@@ -461,7 +36,7 @@ index 902db7721..179e04c42 100644
  AArch64 TCG target
  M: Richard Henderson <richard.henderson@linaro.org>
 diff --git a/accel/accel-common.c b/accel/accel-common.c
-index 00a400243..46cced064 100644
+index 00a400243f0b28d82ef3b8e825a1dc9d02bd2c65..46cced064cdaf8913c5efeab80e9856ecb786230 100644
 --- a/accel/accel-common.c
 +++ b/accel/accel-common.c
 @@ -56,6 +56,12 @@ static void accel_init_cpu_interfaces(AccelClass *ac)
@@ -478,7 +53,7 @@ index 00a400243..46cced064 100644
  
      if (acc) {
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
-index f7924078f..ebee22174 100644
+index f7924078f77d42edb4b491787969715e717e0989..ebee2217475d784c58fd67d6306e7b77d3f459e5 100644
 --- a/accel/tcg/atomic_template.h
 +++ b/accel/tcg/atomic_template.h
 @@ -20,35 +20,52 @@
@@ -834,7 +409,7 @@ index f7924078f..ebee22174 100644
 +#undef CRUCIBLE_ATOMIC_DEFAULT_HOOKS
 +#endif
 diff --git a/accel/tcg/cpu-exec-common.c b/accel/tcg/cpu-exec-common.c
-index 44e84344f..2b719a55b 100644
+index 44e84344f3b37897c2158aa055b58f33f5f82d43..2b719a55b62e84fc57dee93bb91ab18ccd6854e1 100644
 --- a/accel/tcg/cpu-exec-common.c
 +++ b/accel/tcg/cpu-exec-common.c
 @@ -21,6 +21,7 @@
@@ -857,7 +432,7 @@ index 44e84344f..2b719a55b 100644
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 257211235..6f1288683 100644
+index 257211235dbb94d6d9cce1862126bc248c399f17..6f128868307771540d4e01321f968c4ac0df2f62 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -18,6 +18,7 @@
@@ -1151,7 +726,7 @@ index 257211235..6f1288683 100644
              /* Try to align the host and virtual clocks
                 if the guest is in advance */
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
-index 7f7c208ba..559eba339 100644
+index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..559eba339021f05997f15f101c6ebbab215be60e 100644
 --- a/accel/tcg/cputlb.c
 +++ b/accel/tcg/cputlb.c
 @@ -21,6 +21,7 @@
@@ -2165,7 +1740,7 @@ index 7f7c208ba..559eba339 100644
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005f..a824accad 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..a824accad71701ec05307d8d78023f515f8fa9d1 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,15 @@
@@ -2672,7 +2247,7 @@ index b1b6c005f..a824accad 100644
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
-index 9e7be2d78..19bf75413 100644
+index 9e7be2d78dfd6739e01d81bccd03664b4ae0001a..19bf75413a923683c257f3507943371673b747fc 100644
 --- a/accel/tcg/internal-common.h
 +++ b/accel/tcg/internal-common.h
 @@ -54,6 +54,9 @@ void tb_reset_jump(TranslationBlock *tb, int n);
@@ -2686,7 +2261,7 @@ index 9e7be2d78..19bf75413 100644
  /**
   * tlb_init - initialize a CPU's TLB
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
-index 002aa8f45..aa1aa17fa 100644
+index 002aa8f4588e6335f5151136f1dec33f3bc4c018..aa1aa17fa9d7276ead7af3f09aff79df085d9b34 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
 @@ -35,5 +35,8 @@ system_ss.add(files(
@@ -2699,7 +2274,7 @@ index 002aa8f45..aa1aa17fa 100644
    'watchpoint.c',
  ))
 diff --git a/accel/tcg/plugin-gen.c b/accel/tcg/plugin-gen.c
-index 1ffcb4b2d..9645e74d8 100644
+index 1ffcb4b2d2d0fc37c80f92ebcd76ed8a85fa7cae..9645e74d829fb2d8fd078305a5907b901beedbe5 100644
 --- a/accel/tcg/plugin-gen.c
 +++ b/accel/tcg/plugin-gen.c
 @@ -100,14 +100,10 @@ static void gen_disable_mem_helper(void)
@@ -2721,7 +2296,7 @@ index 1ffcb4b2d..9645e74d8 100644
      tcg_gen_ld_i32(cpu_index, tcg_env,
                     offsetof(CPUState, cpu_index) - sizeof(CPUState));
 diff --git a/accel/tcg/tb-maint.c b/accel/tcg/tb-maint.c
-index 4313864d2..bcab8b991 100644
+index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7cad1cb332 100644
 --- a/accel/tcg/tb-maint.c
 +++ b/accel/tcg/tb-maint.c
 @@ -20,6 +20,7 @@
@@ -2733,7 +2308,7 @@ index 4313864d2..bcab8b991 100644
  #include "exec/log.h"
  #include "exec/page-protection.h"
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index d0f7b410f..2a17b4c5b 100644
+index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..2a17b4c5b7b061bdf13965dd610921aeeb92c713 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -27,6 +27,7 @@
@@ -2877,7 +2452,7 @@ index d0f7b410f..2a17b4c5b 100644
  
  void icount_handle_interrupt(CPUState *cpu, int mask)
 diff --git a/accel/tcg/tcg-accel-ops-icount.h b/accel/tcg/tcg-accel-ops-icount.h
-index 16a301b6d..b74307a0b 100644
+index 16a301b6dc0ba515ecbc4073b28968f0a0604d14..b74307a0ba8684fe0c68fcfe5817fcc288eb924c 100644
 --- a/accel/tcg/tcg-accel-ops-icount.h
 +++ b/accel/tcg/tcg-accel-ops-icount.h
 @@ -12,8 +12,11 @@
@@ -2894,7 +2469,7 @@ index 16a301b6d..b74307a0b 100644
  
 diff --git a/accel/tcg/tcg-accel-ops-preemption.c b/accel/tcg/tcg-accel-ops-preemption.c
 new file mode 100644
-index 000000000..c6da84616
+index 0000000000000000000000000000000000000000..c6da8461684ef5790ae0755c4aafe3ad9928e6a2
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-preemption.c
 @@ -0,0 +1,175 @@
@@ -3074,7 +2649,7 @@ index 000000000..c6da84616
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118..e35a52300 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..e35a5230003c3bee0affab10938469963c84a053 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -27,41 +27,1544 @@
@@ -5358,7 +4933,7 @@ index cdaa3e118..e35a52300 100644
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a2961..138ed318e 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..138ed318ef500e48aaad46d705be30ccbcafb03b 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
 @@ -10,12 +10,229 @@
@@ -5593,7 +5168,7 @@ index 2a76a2961..138ed318e 100644
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 000000000..642fbec72
+index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98be04ca3b
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -0,0 +1,148 @@
@@ -5747,7 +5322,7 @@ index 000000000..642fbec72
 +}
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
 new file mode 100644
-index 000000000..cb7647dc0
+index 0000000000000000000000000000000000000000..cb7647dc0e607a78e1abd5819b2bb257d7e2013a
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
 @@ -0,0 +1,18 @@
@@ -5771,7 +5346,7 @@ index 000000000..cb7647dc0
 +#endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim.c b/accel/tcg/tcg-accel-ops-sim.c
 new file mode 100644
-index 000000000..d03425ef1
+index 0000000000000000000000000000000000000000..d03425ef1bac0c12281ad625b050ea75abf100ff
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim.c
 @@ -0,0 +1,39 @@
@@ -5815,7 +5390,7 @@ index 000000000..d03425ef1
 +}
 +type_init(sim_accel_ops_register_types);
 diff --git a/accel/tcg/tcg-accel-ops.c b/accel/tcg/tcg-accel-ops.c
-index 560fe2554..a6b30603d 100644
+index 560fe2554baf226da665b12e26056a59f7b0a7ec..a6b30603d12a423bb516348a033eda7d65872786 100644
 --- a/accel/tcg/tcg-accel-ops.c
 +++ b/accel/tcg/tcg-accel-ops.c
 @@ -207,6 +207,7 @@ static void tcg_accel_ops_init(AccelClass *ac)
@@ -5836,7 +5411,7 @@ index 560fe2554..a6b30603d 100644
      AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
  
 diff --git a/accel/tcg/tcg-accel-ops.h b/accel/tcg/tcg-accel-ops.h
-index aecce605d..a42ca5cdd 100644
+index aecce605d7b7a27101789158d9d6a5685665d3a9..a42ca5cdd9d755b92d094d815db6793de113e863 100644
 --- a/accel/tcg/tcg-accel-ops.h
 +++ b/accel/tcg/tcg-accel-ops.h
 @@ -19,5 +19,6 @@ int tcg_cpu_exec(CPUState *cpu);
@@ -5847,7 +5422,7 @@ index aecce605d..a42ca5cdd 100644
  
  #endif /* TCG_ACCEL_OPS_H */
 diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
-index 7186c10cf..c0c1f807d 100644
+index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..c0c1f807d24953b6a5dc74da395b5f075ecc553f 100644
 --- a/accel/tcg/tcg-all.c
 +++ b/accel/tcg/tcg-all.c
 @@ -27,6 +27,7 @@
@@ -5940,7 +5515,7 @@ index 7186c10cf..c0c1f807d 100644
  
  type_init(register_accel_types);
 diff --git a/accel/tcg/trace-events b/accel/tcg/trace-events
-index 0816cafd3..048b4738f 100644
+index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..048b4738f38af17e8d2ac733a9bf47f7cfdc3d90 100644
 --- a/accel/tcg/trace-events
 +++ b/accel/tcg/trace-events
 @@ -1,6 +1,12 @@
@@ -5957,7 +5532,7 @@ index 0816cafd3..048b4738f 100644
  exec_tb(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
  exec_tb_nocache(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
 diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 328d96aba..9fe466943 100644
+index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494acedf0662 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
 @@ -18,6 +18,7 @@
@@ -6043,7 +5618,7 @@ index 328d96aba..9fe466943 100644
  }
  
 diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
-index 57daded60..24867146e 100644
+index 57daded60ffc4c15fde400f6eeb491b37107d190..24867146e7fd49f26be6fa37b396199d3461e3e8 100644
 --- a/accel/tcg/translator.c
 +++ b/accel/tcg/translator.c
 @@ -11,6 +11,7 @@
@@ -6280,7 +5855,7 @@ index 57daded60..24867146e 100644
  
  static void record_save(DisasContextBase *db, vaddr pc,
 diff --git a/backends/rng-builtin.c b/backends/rng-builtin.c
-index 41b7bfaa2..16db2d31f 100644
+index 41b7bfaa27f62ff654e72d73546108152c44bf7e..16db2d31f901546dd1d63786e442fb8943da168d 100644
 --- a/backends/rng-builtin.c
 +++ b/backends/rng-builtin.c
 @@ -34,6 +34,28 @@ static void rng_builtin_receive_entropy_bh(void *opaque)
@@ -6321,7 +5896,7 @@ index 41b7bfaa2..16db2d31f 100644
  
  static const TypeInfo rng_builtin_info = {
 diff --git a/backends/rng.c b/backends/rng.c
-index bc9c7a5ab..3fd95b922 100644
+index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..3fd95b9225c5f2131a3b7daa1f4695b86cf009a0 100644
 --- a/backends/rng.c
 +++ b/backends/rng.c
 @@ -12,7 +12,9 @@
@@ -6374,7 +5949,7 @@ index bc9c7a5ab..3fd95b922 100644
  
          QSIMPLEQ_INSERT_TAIL(&s->requests, req, next);
 diff --git a/block.c b/block.c
-index f0a6042e6..a851e3ea2 100644
+index f0a6042e616031076bda4618737fdac804431712..a851e3ea2adfddd7f59ccdfcb72c595edf26dc97 100644
 --- a/block.c
 +++ b/block.c
 @@ -5564,6 +5564,8 @@ static void bdrv_delete(BlockDriverState *bs)
@@ -6387,7 +5962,7 @@ index f0a6042e6..a851e3ea2 100644
      g_free(bs);
  }
 diff --git a/block/block-backend.c b/block/block-backend.c
-index 37ba7e9fc..93c6a6744 100644
+index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910b716f5e4 100644
 --- a/block/block-backend.c
 +++ b/block/block-backend.c
 @@ -93,6 +93,21 @@ struct BlockBackend {
@@ -7155,7 +6730,7 @@ index 37ba7e9fc..93c6a6744 100644
          throttle_group_attach_aio_context(tgm, new_context);
 diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
 new file mode 100644
-index 000000000..363253b8b
+index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff03df6685
 --- /dev/null
 +++ b/block/crucible-hot-fork-source.c
 @@ -0,0 +1,1316 @@
@@ -8477,7 +8052,7 @@ index 000000000..363253b8b
 +}
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
 new file mode 100644
-index 000000000..55cf8fa5b
+index 0000000000000000000000000000000000000000..55cf8fa5b6e807407ea678df77a31da8918f4529
 --- /dev/null
 +++ b/block/crucible-shmem.c
 @@ -0,0 +1,996 @@
@@ -9478,7 +9053,7 @@ index 000000000..55cf8fa5b
 +}
 +block_init(bdrv_crucible_shmem_init);
 diff --git a/block/file-posix.c b/block/file-posix.c
-index 3c985da94..948196da2 100644
+index 3c985da94f563be9463b05c3573ac95e2d726f06..948196da20614148fb2edc9fd37958e5110d2257 100644
 --- a/block/file-posix.c
 +++ b/block/file-posix.c
 @@ -23,6 +23,8 @@
@@ -9698,7 +9273,7 @@ index 3c985da94..948196da2 100644
      .bdrv_co_create = raw_co_create,
      .bdrv_co_create_opts = raw_co_create_opts,
 diff --git a/block/graph-lock.c b/block/graph-lock.c
-index f2501d75f..7088cbd6a 100644
+index f2501d75fbe3a6bee09812a7b879a7235e95a9aa..7088cbd6a51725e2d90450475bf51dca41151021 100644
 --- a/block/graph-lock.c
 +++ b/block/graph-lock.c
 @@ -30,6 +30,19 @@ BdrvGraphLock graph_lock;
@@ -9834,7 +9409,7 @@ index f2501d75f..7088cbd6a 100644
          /*
           * No need for memory barriers, this works in pair with
 diff --git a/block/io.c b/block/io.c
-index a916b236c..8377aa6b7 100644
+index a916b236c3c81fec5870ac5e5a2e07d9a62053ec..8377aa6b75ec54104e088cfbf0b93ead7291a2ea 100644
 --- a/block/io.c
 +++ b/block/io.c
 @@ -3601,6 +3601,12 @@ void coroutine_fn bdrv_co_parent_cb_resize(BlockDriverState *bs)
@@ -9851,7 +9426,7 @@ index a916b236c..8377aa6b7 100644
   * Truncate file to 'offset' bytes (needed only for file protocols)
   *
 diff --git a/block/meson.build b/block/meson.build
-index bc419aebf..803105c65 100644
+index bc419aebf08f6c5ebf462c64fdab8d9d0f52a158..803105c65866b6e757b3fd66cd55794abdb82da5 100644
 --- a/block/meson.build
 +++ b/block/meson.build
 @@ -14,6 +14,7 @@ block_ss.add(files(
@@ -9871,7 +9446,7 @@ index bc419aebf..803105c65 100644
  subdir('export')
  subdir('monitor')
 diff --git a/block/qcow2.c b/block/qcow2.c
-index 7292dd036..74dbcc0a9 100644
+index 7292dd036c9d4cc9ca4d1f4ffc20924feb951115..74dbcc0a9354ebb882efac9a4380690a24eade8a 100644
 --- a/block/qcow2.c
 +++ b/block/qcow2.c
 @@ -6304,6 +6304,8 @@ static const char *const qcow2_strong_runtime_opts[] = {
@@ -9884,7 +9459,7 @@ index 7292dd036..74dbcc0a9 100644
      .bdrv_open                          = qcow2_open,
      .bdrv_close                         = qcow2_close,
 diff --git a/block/qed.h b/block/qed.h
-index 26d4bf038..b1e5f3891 100644
+index 26d4bf038c7a90473f2f47b7e597e0507df836d5..b1e5f389199d7a5b47c0cda8838d9ff1c0fc9d47 100644
 --- a/block/qed.h
 +++ b/block/qed.h
 @@ -103,6 +103,7 @@ typedef struct {
@@ -9896,7 +9471,7 @@ index 26d4bf038..b1e5f3891 100644
  } QEDTable;
  
 diff --git a/block/raw-format.c b/block/raw-format.c
-index a57c2922d..9e6c6af25 100644
+index a57c2922d55d0a5667374239e8d3d4f2fc764d21..9e6c6af25f42c57fbe884bb36afae51f8d8452e7 100644
 --- a/block/raw-format.c
 +++ b/block/raw-format.c
 @@ -638,6 +638,8 @@ static void raw_child_perm(BlockDriverState *bs, BdrvChild *c,
@@ -9909,7 +9484,7 @@ index a57c2922d..9e6c6af25 100644
      .bdrv_probe           = &raw_probe,
      .bdrv_reopen_prepare  = &raw_reopen_prepare,
 diff --git a/chardev/char-socket.c b/chardev/char-socket.c
-index b629575fc..78c06d827 100644
+index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db20884964 100644
 --- a/chardev/char-socket.c
 +++ b/chardev/char-socket.c
 @@ -24,6 +24,7 @@
@@ -10375,7 +9950,7 @@ index b629575fc..78c06d827 100644
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
 diff --git a/gdbstub/gdbstub.c b/gdbstub/gdbstub.c
-index 0a328b0dd..91035ab37 100644
+index 0a328b0dd4886ff7a278bbed1bd726c2eb740196..91035ab373024d5a8020db1afe8f313f48e4a9bc 100644
 --- a/gdbstub/gdbstub.c
 +++ b/gdbstub/gdbstub.c
 @@ -2522,4 +2522,3 @@ void gdb_create_default_process(GDBState *s)
@@ -10384,7 +9959,7 @@ index 0a328b0dd..91035ab37 100644
  }
 -
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
-index 2774fc229..b1cc80f0a 100644
+index 2774fc2290a83bc602816319adc1c3aa6d8c7989..b1cc80f0acce32e3e373b08cd9b0931dcd0a4d25 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -17,7 +17,9 @@
@@ -10846,7 +10421,7 @@ index 2774fc229..b1cc80f0a 100644
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
 diff --git a/hw/9pfs/virtio-9p.h b/hw/9pfs/virtio-9p.h
-index 20fa118f3..d15fa1e55 100644
+index 20fa118f3a666bd01cb7fd4e5004a6bac23d1830..d15fa1e5599da64af33e8298eefe60b686b43d56 100644
 --- a/hw/9pfs/virtio-9p.h
 +++ b/hw/9pfs/virtio-9p.h
 @@ -3,6 +3,7 @@
@@ -10872,7 +10447,7 @@ index 20fa118f3..d15fa1e55 100644
      V9fsState state;
  };
 diff --git a/hw/acpi/core.c b/hw/acpi/core.c
-index a6a62a742..c0723ec3c 100644
+index a6a62a742d11833b1001738e2d4e776fc4e594a0..c0723ec3c83ab148143e84f06f6bd72c02f079c6 100644
 --- a/hw/acpi/core.c
 +++ b/hw/acpi/core.c
 @@ -21,6 +21,8 @@
@@ -11102,7 +10677,7 @@ index a6a62a742..c0723ec3c 100644
  }
  
 diff --git a/hw/acpi/generic_event_device.c b/hw/acpi/generic_event_device.c
-index 9e9416d40..407aa9aed 100644
+index 9e9416d4067d2a34cca8b391d863ee53845675c8..407aa9aed68e2adf2c885d1f4167ca0fbeeeeb78 100644
 --- a/hw/acpi/generic_event_device.c
 +++ b/hw/acpi/generic_event_device.c
 @@ -15,12 +15,14 @@
@@ -11149,7 +10724,7 @@ index 9e9416d40..407aa9aed 100644
          VMSTATE_STRUCT(ged_state, AcpiGedState, 1, vmstate_ged_state, GEDState),
          VMSTATE_END_OF_LIST(),
 diff --git a/hw/acpi/ghes-stub.c b/hw/acpi/ghes-stub.c
-index 5f9313cce..fb83368a4 100644
+index 5f9313cce94ed2b9359abc8238e260eb0014d3e8..fb83368a4c1022799860f020c56b5e08d6fc6437 100644
 --- a/hw/acpi/ghes-stub.c
 +++ b/hw/acpi/ghes-stub.c
 @@ -21,3 +21,34 @@ AcpiGhesState *acpi_ghes_get_state(void)
@@ -11188,7 +10763,7 @@ index 5f9313cce..fb83368a4 100644
 +    return -1;
 +}
 diff --git a/hw/acpi/ghes.c b/hw/acpi/ghes.c
-index b2d5e3499..48da57eb7 100644
+index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361f8743ade 100644
 --- a/hw/acpi/ghes.c
 +++ b/hw/acpi/ghes.c
 @@ -20,6 +20,7 @@
@@ -11527,7 +11102,7 @@ index b2d5e3499..48da57eb7 100644
 +    return true;
 +}
 diff --git a/hw/acpi/ich9.c b/hw/acpi/ich9.c
-index 5e8f8a7ea..26d970d1b 100644
+index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..26d970d1b93ad33b917713c8c555decf77ef2885 100644
 --- a/hw/acpi/ich9.c
 +++ b/hw/acpi/ich9.c
 @@ -222,6 +222,29 @@ static const VMStateDescription vmstate_pcihp_state = {
@@ -11569,7 +11144,7 @@ index 5e8f8a7ea..26d970d1b 100644
      }
  };
 diff --git a/hw/acpi/piix4.c b/hw/acpi/piix4.c
-index 9b7f50c7a..3bb96b01d 100644
+index 9b7f50c7afac81f0d0991cdf5de55d9612da59dd..3bb96b01ddf37d5ab87a3bc341508eb80016429b 100644
 --- a/hw/acpi/piix4.c
 +++ b/hw/acpi/piix4.c
 @@ -28,6 +28,7 @@
@@ -11706,7 +11281,7 @@ index 9b7f50c7a..3bb96b01d 100644
      }
  };
 diff --git a/hw/arm/virt-acpi-build.c b/hw/arm/virt-acpi-build.c
-index f6386088b..6107e572d 100644
+index f6386088b6fa92b2495e6530cb8847dfddad44a9..6107e572d8a1eb20e4cc6e7c98480b8e47f6da3d 100644
 --- a/hw/arm/virt-acpi-build.c
 +++ b/hw/arm/virt-acpi-build.c
 @@ -59,6 +59,7 @@
@@ -11747,7 +11322,7 @@ index f6386088b..6107e572d 100644
          VMSTATE_BOOL(patched, AcpiBuildState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/audio/pcspk.c b/hw/audio/pcspk.c
-index 6b826507c..27d7bc627 100644
+index 6b826507ce32b585adeb365f615b41e77efde14f..27d7bc6277ac52390dfad5ffa653e18272ebf8aa 100644
 --- a/hw/audio/pcspk.c
 +++ b/hw/audio/pcspk.c
 @@ -31,6 +31,7 @@
@@ -11789,7 +11364,7 @@ index 6b826507c..27d7bc627 100644
          VMSTATE_UINT8(dummy_refresh_clock, PCSpkState),
 diff --git a/hw/block/fdc-fingerprint.h b/hw/block/fdc-fingerprint.h
 new file mode 100644
-index 000000000..b40c813d3
+index 0000000000000000000000000000000000000000..b40c813d3b11e73429ea8931e8cff07dc5ffb267
 --- /dev/null
 +++ b/hw/block/fdc-fingerprint.h
 @@ -0,0 +1,104 @@
@@ -11898,7 +11473,7 @@ index 000000000..b40c813d3
 +
 +#endif
 diff --git a/hw/block/fdc-isa.c b/hw/block/fdc-isa.c
-index a10f34a20..f2bb82dcb 100644
+index a10f34a20f54bb4b446eb96eb6d12cbd4f9ca4b8..f2bb82dcb8a441e07824e47a86b221e9a84d93d5 100644
 --- a/hw/block/fdc-isa.c
 +++ b/hw/block/fdc-isa.c
 @@ -49,6 +49,7 @@
@@ -11936,7 +11511,7 @@ index a10f34a20..f2bb82dcb 100644
          VMSTATE_STRUCT(state, FDCtrlISABus, 0, vmstate_fdc, FDCtrl),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/block/fdc-sysbus.c b/hw/block/fdc-sysbus.c
-index ab57dfd83..82ba03691 100644
+index ab57dfd83eace26fe475b4e227a82fec29dce30f..82ba036918a99959aaef3d124f0c4e03260108c3 100644
 --- a/hw/block/fdc-sysbus.c
 +++ b/hw/block/fdc-sysbus.c
 @@ -31,6 +31,7 @@
@@ -11975,7 +11550,7 @@ index ab57dfd83..82ba03691 100644
          VMSTATE_STRUCT(state, FDCtrlSysBus, 0, vmstate_fdc, FDCtrl),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/block/pflash_cfi01.c b/hw/block/pflash_cfi01.c
-index a13b91967..04d455731 100644
+index a13b91967ed8f8f39e0f7a2405525577e2e7ecac..04d4557316f743504c71649e1ccb423cd3278313 100644
 --- a/hw/block/pflash_cfi01.c
 +++ b/hw/block/pflash_cfi01.c
 @@ -50,6 +50,7 @@
@@ -12056,7 +11631,7 @@ index a13b91967..04d455731 100644
                                                          pfl);
      }
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index 6b92066af..ef8c64f16 100644
+index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd118cfa3b 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -12,6 +12,7 @@
@@ -12437,7 +12012,7 @@ index 6b92066af..ef8c64f16 100644
  
  static const Property virtio_blk_properties[] = {
 diff --git a/hw/char/parallel.c b/hw/char/parallel.c
-index 07bbc9443..82e7f18e1 100644
+index 07bbc9443fbd1989dcea909d10bc30fc6e85f61a..82e7f18e1105a4b98e65d4a8f4939af35dbece56 100644
 --- a/hw/char/parallel.c
 +++ b/hw/char/parallel.c
 @@ -30,6 +30,7 @@
@@ -12475,7 +12050,7 @@ index 07bbc9443..82e7f18e1 100644
          VMSTATE_UINT8(state.dataw, ISAParallelState),
          VMSTATE_UINT8(state.datar, ISAParallelState),
 diff --git a/hw/char/pl011.c b/hw/char/pl011.c
-index cb12c3e22..b781c0178 100644
+index cb12c3e224fbf1a9ebe85564dc76d4cf7f83e61a..b781c0178be5a677e82427223e4bdf8bf72bb5b0 100644
 --- a/hw/char/pl011.c
 +++ b/hw/char/pl011.c
 @@ -27,6 +27,7 @@
@@ -12555,7 +12130,7 @@ index cb12c3e22..b781c0178 100644
          VMSTATE_UNUSED(sizeof(uint32_t)),
          VMSTATE_UINT32(flags, PL011State),
 diff --git a/hw/char/serial-isa.c b/hw/char/serial-isa.c
-index eaa4e843c..de295b2b5 100644
+index eaa4e843c028b94248cb4a2a65268dbbd5dbcbe2..de295b2b583e3d3d373b0230434d31153d9fd6ac 100644
 --- a/hw/char/serial-isa.c
 +++ b/hw/char/serial-isa.c
 @@ -104,10 +104,27 @@ static void serial_isa_build_aml(AcpiDevAmlIf *adev, Aml *scope)
@@ -12587,7 +12162,7 @@ index eaa4e843c..de295b2b5 100644
          VMSTATE_STRUCT(state, ISASerialState, 0, vmstate_serial, SerialState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/char/serial.c b/hw/char/serial.c
-index 4339562ab..1e28780e8 100644
+index 4339562ab003a71fc227931a76daa66fa0c7c142..1e28780e8f50ce7c7a53c9a830b7c393733406da 100644
 --- a/hw/char/serial.c
 +++ b/hw/char/serial.c
 @@ -28,6 +28,7 @@
@@ -12692,7 +12267,7 @@ index 4339562ab..1e28780e8 100644
          VMSTATE_UINT16_V(divider, SerialState, 2),
          VMSTATE_UINT8(rbr, SerialState),
 diff --git a/hw/char/virtio-serial-bus.c b/hw/char/virtio-serial-bus.c
-index c1973f024..5aae6076c 100644
+index c1973f0248fce621be7c70e15df4928337c4669f..5aae6076c3feb107c01f43f5baa4c7584a768538 100644
 --- a/hw/char/virtio-serial-bus.c
 +++ b/hw/char/virtio-serial-bus.c
 @@ -1118,10 +1118,79 @@ static void virtio_serial_device_unrealize(DeviceState *dev)
@@ -12776,7 +12351,7 @@ index c1973f024..5aae6076c 100644
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index e314f916f..6b1d64b3e 100644
+index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..6b1d64b3ebcc306f64e6d4f62803275b441bc200 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
 @@ -22,6 +22,7 @@
@@ -12798,7 +12373,7 @@ index e314f916f..6b1d64b3e 100644
      cpu->neg.can_do_io = true;
      cpu->exception_index = -1;
 diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
-index 14eb4ed87..be06a3623 100644
+index 14eb4ed87f85aa9365125a0d4215e6e4e11c99f5..be06a3623832f481035b36524ccfc83ddc39951a 100644
 --- a/hw/core/cpu-system.c
 +++ b/hw/core/cpu-system.c
 @@ -20,7 +20,9 @@
@@ -13001,7 +12576,7 @@ index 14eb4ed87..be06a3623 100644
 +    g_assert_not_reached();
 +}
 diff --git a/hw/core/machine-qmp-cmds.c b/hw/core/machine-qmp-cmds.c
-index e62cb4ec8..71df5de40 100644
+index e62cb4ec888e8d356e469fe83160bd240f2741f4..71df5de4048049c9b8257138507560560dd2d1ac 100644
 --- a/hw/core/machine-qmp-cmds.c
 +++ b/hw/core/machine-qmp-cmds.c
 @@ -22,6 +22,7 @@
@@ -13014,7 +12589,7 @@ index e62cb4ec8..71df5de40 100644
  #include "system/hw_accel.h"
 diff --git a/hw/display/vga-fingerprint.h b/hw/display/vga-fingerprint.h
 new file mode 100644
-index 000000000..8c648d586
+index 0000000000000000000000000000000000000000..8c648d586970b3650b7f60ecb0f7323adcfb2f62
 --- /dev/null
 +++ b/hw/display/vga-fingerprint.h
 @@ -0,0 +1,151 @@
@@ -13170,7 +12745,7 @@ index 000000000..8c648d586
 +
 +#endif
 diff --git a/hw/display/vga-pci.c b/hw/display/vga-pci.c
-index d089847bd..3f40c5067 100644
+index d089847bdae123569879ab26948e3797c4019777..3f40c50670b430e626b7e46b007810f6263b9764 100644
 --- a/hw/display/vga-pci.c
 +++ b/hw/display/vga-pci.c
 @@ -35,6 +35,7 @@
@@ -13227,7 +12802,7 @@ index d089847bd..3f40c5067 100644
                                      unsigned size)
  {
 diff --git a/hw/dma/i8257.c b/hw/dma/i8257.c
-index 577154988..ae0b46a11 100644
+index 5771549889523861ad5bcde2a1b0f7234a6a0225..ae0b46a1161115c619da3bf266efb2826777d564 100644
 --- a/hw/dma/i8257.c
 +++ b/hw/dma/i8257.c
 @@ -26,6 +26,7 @@
@@ -13284,7 +12859,7 @@ index 577154988..ae0b46a11 100644
          VMSTATE_UINT8(command, I8257State),
          VMSTATE_UINT8(mask, I8257State),
 diff --git a/hw/gpio/gpio_key.c b/hw/gpio/gpio_key.c
-index 14e0fb9d4..b1d0c6987 100644
+index 14e0fb9d4cb23626535e8fb075a590583775156a..b1d0c69878327039cd3bff938510f32b53b10ca6 100644
 --- a/hw/gpio/gpio_key.c
 +++ b/hw/gpio/gpio_key.c
 @@ -23,9 +23,11 @@
@@ -13337,7 +12912,7 @@ index 14e0fb9d4..b1d0c6987 100644
          VMSTATE_TIMER_PTR(timer, GPIOKEYState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/gpio/pl061.c b/hw/gpio/pl061.c
-index d6a4fb90b..3663f3e0f 100644
+index d6a4fb90b961f4c11aac8df13d044a73d034a79e..3663f3e0f4daf0374947ca28c35edddb5aa71603 100644
 --- a/hw/gpio/pl061.c
 +++ b/hw/gpio/pl061.c
 @@ -34,6 +34,7 @@
@@ -13385,7 +12960,7 @@ index d6a4fb90b..3663f3e0f 100644
          VMSTATE_UINT32(locked, PL061State),
          VMSTATE_UINT32(data, PL061State),
 diff --git a/hw/i2c/core.c b/hw/i2c/core.c
-index 54f6bdca8..d4ba38753 100644
+index 54f6bdca882060b6f64e032fa52dde22009618be..d4ba38753b9eead3f913cb4fdc6398575023ca6c 100644
 --- a/hw/i2c/core.c
 +++ b/hw/i2c/core.c
 @@ -11,6 +11,7 @@
@@ -13452,7 +13027,7 @@ index 54f6bdca8..d4ba38753 100644
          VMSTATE_UINT8(saved_address, I2CBus),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/i2c/pm_smbus.c b/hw/i2c/pm_smbus.c
-index 5654d5163..cecb1bb46 100644
+index 5654d5163825540d6e70b495275276eee33aa93c..cecb1bb46af8cedf57391eeb55a64ce81605dea7 100644
 --- a/hw/i2c/pm_smbus.c
 +++ b/hw/i2c/pm_smbus.c
 @@ -19,10 +19,12 @@
@@ -13517,7 +13092,7 @@ index 5654d5163..cecb1bb46 100644
  {
      smb->op_done = true;
 diff --git a/hw/i2c/smbus_eeprom.c b/hw/i2c/smbus_eeprom.c
-index 693d47622..2e1cf1574 100644
+index 693d4762205227e73bcf1b68dfbf44dd77d63a91..2e1cf15746ac32180f0c6bdae1719ee4c1035246 100644
 --- a/hw/i2c/smbus_eeprom.c
 +++ b/hw/i2c/smbus_eeprom.c
 @@ -30,6 +30,7 @@
@@ -13568,7 +13143,7 @@ index 693d47622..2e1cf1574 100644
          VMSTATE_SMBUS_DEVICE(smbusdev, SMBusEEPROMDevice),
          VMSTATE_UINT8_ARRAY(data, SMBusEEPROMDevice, SMBUS_EEPROM_SIZE),
 diff --git a/hw/i2c/smbus_ich9.c b/hw/i2c/smbus_ich9.c
-index 51513e73f..c4e4e37ad 100644
+index 51513e73fdec284abe0e068711c6397804b7fdd1..c4e4e37ada29e4d249a1d29aecbea48645a30d8d 100644
 --- a/hw/i2c/smbus_ich9.c
 +++ b/hw/i2c/smbus_ich9.c
 @@ -25,6 +25,7 @@
@@ -13615,7 +13190,7 @@ index 51513e73f..c4e4e37ad 100644
          VMSTATE_PCI_DEVICE(dev, ICH9SMBState),
          VMSTATE_BOOL(irq_enabled, ICH9SMBState),
 diff --git a/hw/i386/acpi-build.c b/hw/i386/acpi-build.c
-index 8837b6968..e9c79954f 100644
+index 8837b69687d13ede3c2a809f2cec7a1d5583384e..e9c79954f161fd440a43ca67537509fd8e27f344 100644
 --- a/hw/i386/acpi-build.c
 +++ b/hw/i386/acpi-build.c
 @@ -50,6 +50,7 @@
@@ -13656,7 +13231,7 @@ index 8837b6968..e9c79954f 100644
          VMSTATE_UINT8(patched, AcpiBuildState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
-index d544b62af..b8e9aca02 100644
+index d544b62afbd5a50be84f476bc0e2820d4fbebb81..b8e9aca02b0523fd7a5b44162adfefbb9d3a3d6b 100644
 --- a/hw/i386/multiboot.c
 +++ b/hw/i386/multiboot.c
 @@ -31,6 +31,7 @@
@@ -13700,7 +13275,7 @@ index d544b62af..b8e9aca02 100644
  
      /* Calculate space for cmdlines, bootloader name, and mb_mods */
 diff --git a/hw/i386/port92.c b/hw/i386/port92.c
-index 48a174316..5d1c0a5ca 100644
+index 48a174316fdeb36663cc8b097bb0df8af6a4b451..5d1c0a5cae523814612bbdf8c745062a3adb1910 100644
 --- a/hw/i386/port92.c
 +++ b/hw/i386/port92.c
 @@ -9,6 +9,7 @@
@@ -13740,7 +13315,7 @@ index 48a174316..5d1c0a5ca 100644
          VMSTATE_UINT8(outport, Port92State),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/i386/vapic.c b/hw/i386/vapic.c
-index 8dd9188d9..dea19a647 100644
+index 8dd9188d96ff32141dbf42363775d098f9b40565..dea19a647ea281d44ae6fe905c9cb0b3f7bf83d2 100644
 --- a/hw/i386/vapic.c
 +++ b/hw/i386/vapic.c
 @@ -25,6 +25,8 @@
@@ -13810,7 +13385,7 @@ index 8dd9188d9..dea19a647 100644
          VMSTATE_STRUCT(rom_state, VAPICROMState, 0, vmstate_guest_rom,
                         GuestROMState),
 diff --git a/hw/i386/vmmouse.c b/hw/i386/vmmouse.c
-index e289bce8e..cef343ad5 100644
+index e289bce8e2eb844a388fe28b0e2eb73225cb59b7..cef343ad54bc16b58b27d811224f9fb3ad576260 100644
 --- a/hw/i386/vmmouse.c
 +++ b/hw/i386/vmmouse.c
 @@ -29,6 +29,7 @@
@@ -13862,7 +13437,7 @@ index e289bce8e..cef343ad5 100644
          VMSTATE_UINT32_ARRAY(queue, VMMouseState, VMMOUSE_QUEUE_SIZE),
 diff --git a/hw/ide/ich-fingerprint.h b/hw/ide/ich-fingerprint.h
 new file mode 100644
-index 000000000..b9245fea1
+index 0000000000000000000000000000000000000000..b9245fea176bf605f689e36fa7395133b47509b4
 --- /dev/null
 +++ b/hw/ide/ich-fingerprint.h
 @@ -0,0 +1,139 @@
@@ -14006,7 +13581,7 @@ index 000000000..b9245fea1
 +
 +#endif
 diff --git a/hw/ide/ich.c b/hw/ide/ich.c
-index b00987f08..1963278bd 100644
+index b00987f08d4cd8e9aad591971f6eb4568d8c9764..1963278bdbc850bb9355c0fdc276af7dd5566fa9 100644
 --- a/hw/ide/ich.c
 +++ b/hw/ide/ich.c
 @@ -64,12 +64,14 @@
@@ -14059,7 +13634,7 @@ index b00987f08..1963278bd 100644
          VMSTATE_PCI_DEVICE(parent_obj, AHCIPCIState),
          VMSTATE_AHCI(ahci, AHCIPCIState),
 diff --git a/hw/ide/pci.c b/hw/ide/pci.c
-index 7ce1ae67a..b31e4ac10 100644
+index 7ce1ae67ab22f86f2a624ca7dffe037c3952caf7..b31e4ac10cf23ba17040f20f079e534837350ba5 100644
 --- a/hw/ide/pci.c
 +++ b/hw/ide/pci.c
 @@ -26,7 +26,9 @@
@@ -14174,7 +13749,7 @@ index 7ce1ae67a..b31e4ac10 100644
          VMSTATE_PCI_DEVICE(parent_obj, PCIIDEState),
          VMSTATE_STRUCT_ARRAY(bmdma, PCIIDEState, 2, 0,
 diff --git a/hw/input/pckbd.c b/hw/input/pckbd.c
-index b09c3bce9..03758a6a8 100644
+index b09c3bce93395cb0bd3876f149734a54c851dfa7..03758a6a89952da4c3c50e5cf8bededfe9b8bce6 100644
 --- a/hw/input/pckbd.c
 +++ b/hw/input/pckbd.c
 @@ -29,6 +29,7 @@
@@ -14267,7 +13842,7 @@ index b09c3bce9..03758a6a8 100644
          VMSTATE_STRUCT(kbd, ISAKBDState, 0, vmstate_kbd, KBDState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/input/ps2.c b/hw/input/ps2.c
-index 5516eb262..129d39c67 100644
+index 5516eb262d70dca89e1f42a6868531dfa900930c..129d39c67aae057711eef24ac56ef941e3401305 100644
 --- a/hw/input/ps2.c
 +++ b/hw/input/ps2.c
 @@ -28,6 +28,7 @@
@@ -14394,7 +13969,7 @@ index 5516eb262..129d39c67 100644
          VMSTATE_STRUCT(parent_obj, PS2MouseState, 0, vmstate_ps2_common,
                         PS2State),
 diff --git a/hw/intc/apic.c b/hw/intc/apic.c
-index 74e25c60a..4c3bd003f 100644
+index 74e25c60a80c7d0eb536e9d9882d0240dda10756..4c3bd003f1f0d7e77e6af9a5d93c19867e256e5a 100644
 --- a/hw/intc/apic.c
 +++ b/hw/intc/apic.c
 @@ -26,9 +26,15 @@
@@ -15318,7 +14893,7 @@ index 74e25c60a..4c3bd003f 100644
  }
  
 diff --git a/hw/intc/apic_common.c b/hw/intc/apic_common.c
-index 49c03a5bc..07ed82543 100644
+index 49c03a5bceef38412a82779b49c0b686954eb935..07ed82543a70a2e63026f84abaace49deed9497e 100644
 --- a/hw/intc/apic_common.c
 +++ b/hw/intc/apic_common.c
 @@ -19,8 +19,10 @@
@@ -15595,7 +15170,7 @@ index 49c03a5bc..07ed82543 100644
      device_class_set_props(dc, apic_properties_common);
      dc->realize = apic_common_realize;
 diff --git a/hw/intc/arm_gic.c b/hw/intc/arm_gic.c
-index 4d4b79e6f..fac991f13 100644
+index 4d4b79e6f3408c43eae19c222edc75e41987b7ea..fac991f13e3c1dc7ac00db3efed277a3d008fd5e 100644
 --- a/hw/intc/arm_gic.c
 +++ b/hw/intc/arm_gic.c
 @@ -19,6 +19,9 @@
@@ -15920,7 +15495,7 @@ index 4d4b79e6f..fac991f13 100644
      /* Extra core-specific regions for the CPU interfaces. This is
       * necessary for "franken-GIC" implementations, for example on
 diff --git a/hw/intc/arm_gic_common.c b/hw/intc/arm_gic_common.c
-index 304d89cf5..4eaa189d3 100644
+index 304d89cf56219bf76eeeb24e55dbfe60be23ba43..4eaa189d31ed986d795c0fd311c6322da56e7fc8 100644
 --- a/hw/intc/arm_gic_common.c
 +++ b/hw/intc/arm_gic_common.c
 @@ -26,6 +26,7 @@
@@ -16137,7 +15712,7 @@ index 304d89cf5..4eaa189d3 100644
      dc->realize = arm_gic_common_realize;
      device_class_set_props(dc, arm_gic_common_properties);
 diff --git a/hw/intc/arm_gicv3.c b/hw/intc/arm_gicv3.c
-index e93c1df5b..13442f841 100644
+index e93c1df5b4e48238a56153fcce5d20beb640c47f..13442f8418579a41af812fca3c5409a79fe711e7 100644
 --- a/hw/intc/arm_gicv3.c
 +++ b/hw/intc/arm_gicv3.c
 @@ -17,6 +17,9 @@
@@ -16438,7 +16013,7 @@ index e93c1df5b..13442f841 100644
  
  static void arm_gicv3_class_init(ObjectClass *klass, const void *data)
 diff --git a/hw/intc/arm_gicv3_common.c b/hw/intc/arm_gicv3_common.c
-index f7ba74e6d..ab2f65be3 100644
+index f7ba74e6d52ae2dd2e4ec6d0a760e859b96cdb3e..ab2f65be3cc085d575ac9d1b114e220197b55aba 100644
 --- a/hw/intc/arm_gicv3_common.c
 +++ b/hw/intc/arm_gicv3_common.c
 @@ -25,6 +25,7 @@
@@ -16599,7 +16174,7 @@ index f7ba74e6d..ab2f65be3 100644
      dc->realize = arm_gicv3_common_realize;
      device_class_set_props(dc, arm_gicv3_common_properties);
 diff --git a/hw/intc/arm_gicv3_cpuif.c b/hw/intc/arm_gicv3_cpuif.c
-index 67a0bba4b..c7567e0cb 100644
+index 67a0bba4b03968035c00faa441de5462bf5d2024..c7567e0cb390503ab93751ea1de308fc14ab16c3 100644
 --- a/hw/intc/arm_gicv3_cpuif.c
 +++ b/hw/intc/arm_gicv3_cpuif.c
 @@ -17,6 +17,7 @@
@@ -16878,7 +16453,7 @@ index 67a0bba4b..c7567e0cb 100644
      trace_gicv3_icc_nmiar1_read(gicv3_redist_affid(cs), intid);
      return intid;
 diff --git a/hw/intc/arm_gicv3_redist.c b/hw/intc/arm_gicv3_redist.c
-index 90b238fac..d8e13f103 100644
+index 90b238fac0b5c4d3c29ba6024a9062ff8e914081..d8e13f103ab0c1feb242b4494ec235de62239bda 100644
 --- a/hw/intc/arm_gicv3_redist.c
 +++ b/hw/intc/arm_gicv3_redist.c
 @@ -10,7 +10,9 @@
@@ -16990,7 +16565,7 @@ index 90b238fac..d8e13f103 100644
          src_pend = 0;
          address_space_write(as, src_baddr + i, MEMTXATTRS_UNSPECIFIED,
 diff --git a/hw/intc/gic_internal.h b/hw/intc/gic_internal.h
-index b821f1feb..2cef7ac6f 100644
+index b821f1feb3bdc2fddbc9b8ece30729ece7e1166a..2cef7ac6fd987753b61ee4e12841512a17f7651e 100644
 --- a/hw/intc/gic_internal.h
 +++ b/hw/intc/gic_internal.h
 @@ -319,7 +319,9 @@ static inline int gic_get_priority(GICState *s, int irq, int cpu)
@@ -17005,7 +16580,7 @@ index b821f1feb..2cef7ac6f 100644
  }
  
 diff --git a/hw/intc/i8259.c b/hw/intc/i8259.c
-index 8f2aa1f0f..7883ae95e 100644
+index 8f2aa1f0fb115ecb107b705add80852f99f8d32e..7883ae95e77695114c9ee41870c114e3f3c0cb4d 100644
 --- a/hw/intc/i8259.c
 +++ b/hw/intc/i8259.c
 @@ -23,6 +23,10 @@
@@ -17271,7 +16846,7 @@ index 8f2aa1f0f..7883ae95e 100644
  }
  
 diff --git a/hw/intc/i8259_common.c b/hw/intc/i8259_common.c
-index 8ceb5841b..757dfc298 100644
+index 8ceb5841b9b63ff9d13f5ccfdb6eb9d951205dbe..757dfc298b5c34a2691f96ead75928bb87e25137 100644
 --- a/hw/intc/i8259_common.c
 +++ b/hw/intc/i8259_common.c
 @@ -27,6 +27,7 @@
@@ -17423,7 +16998,7 @@ index 8ceb5841b..757dfc298 100644
      device_class_set_props(dc, pic_properties_common);
      dc->realize = pic_common_realize;
 diff --git a/hw/intc/ioapic.c b/hw/intc/ioapic.c
-index 1b3f1e824..fc93f0648 100644
+index 1b3f1e824ac45834e9290dfc1681a25736536d97..fc93f0648aae7ee49bafc53592ee38192934b7d2 100644
 --- a/hw/intc/ioapic.c
 +++ b/hw/intc/ioapic.c
 @@ -21,6 +21,7 @@
@@ -17489,7 +17064,7 @@ index 1b3f1e824..fc93f0648 100644
      s->machine_done.notify = ioapic_machine_done_notify;
      qemu_add_machine_init_done_notifier(&s->machine_done);
 diff --git a/hw/intc/ioapic_common.c b/hw/intc/ioapic_common.c
-index d3bcd5699..710f5324c 100644
+index d3bcd5699f528054b81b0163e6423d728a569d29..710f5324c30fcb6903de9a29c3cf032cc225229c 100644
 --- a/hw/intc/ioapic_common.c
 +++ b/hw/intc/ioapic_common.c
 @@ -22,6 +22,8 @@
@@ -17562,7 +17137,7 @@ index d3bcd5699..710f5324c 100644
      ic->print_info = ioapic_print_info;
 diff --git a/hw/isa/lpc-ich9-fingerprint.h b/hw/isa/lpc-ich9-fingerprint.h
 new file mode 100644
-index 000000000..5da51a53f
+index 0000000000000000000000000000000000000000..5da51a53f39411e63b3288e35d4e7fd8b037ca4a
 --- /dev/null
 +++ b/hw/isa/lpc-ich9-fingerprint.h
 @@ -0,0 +1,118 @@
@@ -17685,7 +17260,7 @@ index 000000000..5da51a53f
 +
 +#endif
 diff --git a/hw/isa/lpc_ich9.c b/hw/isa/lpc_ich9.c
-index edf9783ec..6b77ce04c 100644
+index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..6b77ce04c3f6d9de6c4cf9d4a05d4a71885fc42e 100644
 --- a/hw/isa/lpc_ich9.c
 +++ b/hw/isa/lpc_ich9.c
 @@ -37,6 +37,7 @@
@@ -17811,7 +17386,7 @@ index edf9783ec..6b77ce04c 100644
          VMSTATE_PCI_DEVICE(d, ICH9LPCState),
          VMSTATE_STRUCT(apm, ICH9LPCState, 0, vmstate_apm, APMState),
 diff --git a/hw/isa/piix.c b/hw/isa/piix.c
-index 31fa53e6a..b42c679c8 100644
+index 31fa53e6a40f3353140530905027c95929439c27..b42c679c8bdb4c23974172143da21d366bdd4380 100644
 --- a/hw/isa/piix.c
 +++ b/hw/isa/piix.c
 @@ -28,12 +28,14 @@
@@ -17881,7 +17456,7 @@ index 31fa53e6a..b42c679c8 100644
          VMSTATE_UINT8_V(rcr, PIIXState, 3),
 diff --git a/hw/net/e1000-fingerprint.h b/hw/net/e1000-fingerprint.h
 new file mode 100644
-index 000000000..5fbd6efd3
+index 0000000000000000000000000000000000000000..5fbd6efd3db4444b957b3934af04fd554a23df83
 --- /dev/null
 +++ b/hw/net/e1000-fingerprint.h
 @@ -0,0 +1,112 @@
@@ -17998,7 +17573,7 @@ index 000000000..5fbd6efd3
 +
 +#endif
 diff --git a/hw/net/e1000.c b/hw/net/e1000.c
-index 202ad4040..558fd8ed6 100644
+index 202ad404013ae014caa9a95734238d9581ca23b1..558fd8ed6156c7bdf8ef87da03a69efa497148ba 100644
 --- a/hw/net/e1000.c
 +++ b/hw/net/e1000.c
 @@ -40,6 +40,7 @@
@@ -18095,7 +17670,7 @@ index 202ad4040..558fd8ed6 100644
          VMSTATE_PCI_DEVICE(parent_obj, E1000State),
          VMSTATE_UNUSED_TEST(is_version_1, 4), /* was instance id */
 diff --git a/hw/net/virtio-net.c b/hw/net/virtio-net.c
-index 814b99a43..4b948e540 100644
+index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..4b948e54032242428f488468743b9a6578ba840f 100644
 --- a/hw/net/virtio-net.c
 +++ b/hw/net/virtio-net.c
 @@ -17,6 +17,7 @@
@@ -18392,7 +17967,7 @@ index 814b99a43..4b948e540 100644
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
-index b057d870c..ba9de45d2 100644
+index b057d870c004110fdfbe4b34da55719acbf69c7a..ba9de45d2d9d789e6d0391d7edf538d0c1b0780e 100644
 --- a/hw/nvram/fw_cfg.c
 +++ b/hw/nvram/fw_cfg.c
 @@ -676,10 +676,38 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
@@ -18435,7 +18010,7 @@ index b057d870c..ba9de45d2 100644
          VMSTATE_UINT16(cur_entry, FWCfgState),
          VMSTATE_UINT16_HACK(cur_offset, FWCfgState, is_version_1),
 diff --git a/hw/pci-host/gpex.c b/hw/pci-host/gpex.c
-index e66784ce5..885405e09 100644
+index e66784ce516e60a98db2ae3ddd6ed4b6ddd14599..885405e09c933c7c8034b8374911cd6d8dc24a06 100644
 --- a/hw/pci-host/gpex.c
 +++ b/hw/pci-host/gpex.c
 @@ -47,6 +47,21 @@ struct GPEXIrq {
@@ -18469,7 +18044,7 @@ index e66784ce5..885405e09 100644
          VMSTATE_PCI_DEVICE(parent_obj, GPEXRootState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/pci-host/i440fx.c b/hw/pci-host/i440fx.c
-index c1982f796..aed53a59d 100644
+index c1982f7962a6e56edc90e053f16be9b5751b4fd8..aed53a59d16ee8d6bb2299bcaab6673e3fb77e74 100644
 --- a/hw/pci-host/i440fx.c
 +++ b/hw/pci-host/i440fx.c
 @@ -120,11 +120,26 @@ static int i440fx_post_load(void *opaque, int version_id)
@@ -18500,7 +18075,7 @@ index c1982f796..aed53a59d 100644
          VMSTATE_PCI_DEVICE(parent_obj, PCII440FXState),
          /* Used to be smm_enabled, which was basically always zero because
 diff --git a/hw/pci-host/q35.c b/hw/pci-host/q35.c
-index f4556ad03..00f1dca9d 100644
+index f4556ad03a04353af319628911dd15b6235d3f46..00f1dca9d280293983c94f8dfc40538db49720b4 100644
 --- a/hw/pci-host/q35.c
 +++ b/hw/pci-host/q35.c
 @@ -34,6 +34,7 @@
@@ -18539,7 +18114,7 @@ index f4556ad03..00f1dca9d 100644
          VMSTATE_PCI_DEVICE(parent_obj, MCHPCIState),
          /* Used to be smm_enabled, which was basically always zero because
 diff --git a/hw/pci/msi.c b/hw/pci/msi.c
-index b9f5b4592..2fd95a6f3 100644
+index b9f5b45920b66f33e34a8e85cb560536abe0d416..2fd95a6f36ded63f9ec63b4c9ba1cbd53a459df9 100644
 --- a/hw/pci/msi.c
 +++ b/hw/pci/msi.c
 @@ -22,6 +22,7 @@
@@ -18578,7 +18153,7 @@ index b9f5b4592..2fd95a6f3 100644
  
  /* Normally called by pci_default_write_config(). */
 diff --git a/hw/pci/msix.c b/hw/pci/msix.c
-index 1b23eaf10..7f351e5c7 100644
+index 1b23eaf10079f9f7501aae25f7826020c49d2e25..7f351e5c77e30b117c61c68394e65737bbce8558 100644
 --- a/hw/pci/msix.c
 +++ b/hw/pci/msix.c
 @@ -15,6 +15,7 @@
@@ -18675,7 +18250,7 @@ index 1b23eaf10..7f351e5c7 100644
  
  void msix_reset(PCIDevice *dev)
 diff --git a/hw/pci/pci.c b/hw/pci/pci.c
-index d3191609e..4c21f3c96 100644
+index d3191609e283eb456c65473eb2ee1bc7c90222b1..4c21f3c962a3ef82ce920692ca8b93672f2b74cb 100644
 --- a/hw/pci/pci.c
 +++ b/hw/pci/pci.c
 @@ -107,10 +107,34 @@ static const Property pci_props[] = {
@@ -18777,7 +18352,7 @@ index d3191609e..4c21f3c96 100644
  {
          d->irq_state &= ~(0x1 << irq_num);
 diff --git a/hw/pci/pci_host.c b/hw/pci/pci_host.c
-index 2a7fdfa56..1ad4d1b7e 100644
+index 2a7fdfa5636e0c9dac67bc4c608258599620e0fe..1ad4d1b7e3adab42d759613e4276a3363cf3ad54 100644
 --- a/hw/pci/pci_host.c
 +++ b/hw/pci/pci_host.c
 @@ -26,6 +26,7 @@
@@ -18822,7 +18397,7 @@ index 2a7fdfa56..1ad4d1b7e 100644
          VMSTATE_UINT32(config_reg, PCIHostState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/rtc/mc146818rtc.c b/hw/rtc/mc146818rtc.c
-index ba396435d..95ac0b7b6 100644
+index ba396435d1af30a82b1e14325df261d331fc9cac..95ac0b7b6255e3b390fa680b33bb00a627d51f2d 100644
 --- a/hw/rtc/mc146818rtc.c
 +++ b/hw/rtc/mc146818rtc.c
 @@ -26,6 +26,8 @@
@@ -19756,7 +19331,7 @@ index ba396435d..95ac0b7b6 100644
      dc->vmsd = &vmstate_rtc;
      rc->phases.enter = rtc_reset_enter;
 diff --git a/hw/rtc/pl031.c b/hw/rtc/pl031.c
-index 09d1b15c7..af8558b44 100644
+index 09d1b15c779ab0ec7fd660effb5360fff2d33a52..af8558b444a6b6540a7a9c29abba12ba9df2969a 100644
 --- a/hw/rtc/pl031.c
 +++ b/hw/rtc/pl031.c
 @@ -12,8 +12,10 @@
@@ -20135,7 +19710,7 @@ index 09d1b15c7..af8558b44 100644
  }
  
 diff --git a/hw/timer/arm_timer.c b/hw/timer/arm_timer.c
-index fb70333c5..323722e9d 100644
+index fb70333c538098323d435700dd36de29f6e8139d..323722e9d3b27c1a8252a24aec112d8ce175b005 100644
 --- a/hw/timer/arm_timer.c
 +++ b/hw/timer/arm_timer.c
 @@ -396,6 +396,7 @@ static void sp804_class_init(ObjectClass *klass, const void *data)
@@ -20147,7 +19722,7 @@ index fb70333c5..323722e9d 100644
      device_class_set_props(k, sp804_properties);
      k->vmsd = &vmstate_sp804;
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 42285cff7..49c89c1f7 100644
+index 42285cff762b03428c608c0e1d3943ba60cb880f..49c89c1f7af429e7e91d34ef60628ebba8f17353 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -25,9 +25,13 @@
@@ -20742,7 +20317,7 @@ index 42285cff7..49c89c1f7 100644
      device_class_set_legacy_reset(dc, hpet_reset);
      dc->vmsd = &vmstate_hpet;
 diff --git a/hw/timer/i8254.c b/hw/timer/i8254.c
-index 1a8b6bf9a..f1f059ebf 100644
+index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..f1f059ebfbbe6939a64acce47a35086f8160ce81 100644
 --- a/hw/timer/i8254.c
 +++ b/hw/timer/i8254.c
 @@ -25,6 +25,8 @@
@@ -21036,7 +20611,7 @@ index 1a8b6bf9a..f1f059ebf 100644
  
  static void pit_class_initfn(ObjectClass *klass, const void *data)
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 419d4cd6e..425e9e724 100644
+index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..425e9e724530029a49f8fe933b68006e5e2dc82b 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
 @@ -30,6 +30,7 @@
@@ -21157,7 +20732,7 @@ index 419d4cd6e..425e9e724 100644
      dc->vmsd = &vmstate_pit_common;
      /*
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
-index 91cf83340..3c1e258dc 100644
+index 91cf833407ce539d6335de113d87dc9dcbbbe7e5..3c1e258dc8f16036de728f444678072d1533d584 100644
 --- a/hw/virtio/Kconfig
 +++ b/hw/virtio/Kconfig
 @@ -6,6 +6,11 @@ config VIRTIO_RNG
@@ -21173,7 +20748,7 @@ index 91cf83340..3c1e258dc 100644
     bool
     depends on LIBCBOR && VIRTIO
 diff --git a/hw/virtio/meson.build b/hw/virtio/meson.build
-index 0e0232351..a39624951 100644
+index 0e023235164ba38742081e0297bb72c659c1bf7d..a396249510c02a2028d2f78adb038f860f50452c 100644
 --- a/hw/virtio/meson.build
 +++ b/hw/virtio/meson.build
 @@ -64,6 +64,7 @@ system_virtio_ss.add(when: 'CONFIG_VIRTIO_MEM', if_true: files('virtio-mem.c'))
@@ -21194,7 +20769,7 @@ index 0e0232351..a39624951 100644
  virtio_pci_ss.add(when: 'CONFIG_VIRTIO_9P', if_true: files('virtio-9p-pci.c'))
 diff --git a/hw/virtio/virtio-crucible-accelerator-pci.c b/hw/virtio/virtio-crucible-accelerator-pci.c
 new file mode 100644
-index 000000000..017b75e11
+index 0000000000000000000000000000000000000000..017b75e1147c0266e3ca5323f16e5c2a44832df9
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator-pci.c
 @@ -0,0 +1,77 @@
@@ -21277,7 +20852,7 @@ index 000000000..017b75e11
 +type_init(accelerator_pci_register)
 diff --git a/hw/virtio/virtio-crucible-accelerator.c b/hw/virtio/virtio-crucible-accelerator.c
 new file mode 100644
-index 000000000..8fc423dfd
+index 0000000000000000000000000000000000000000..8fc423dfdf13c5af4cbe5625ab7d22a6f265af24
 --- /dev/null
 +++ b/hw/virtio/virtio-crucible-accelerator.c
 @@ -0,0 +1,560 @@
@@ -21842,7 +21417,7 @@ index 000000000..8fc423dfd
 +
 +type_init(accelerator_register_types)
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
-index 6f5db5fc4..56c280803 100644
+index 6f5db5fc42b72975a564201aadd39f4ab535efe9..56c28080347890a94ba5fa20402ada82aaa838f4 100644
 --- a/hw/virtio/virtio-pci.c
 +++ b/hw/virtio/virtio-pci.c
 @@ -16,6 +16,8 @@
@@ -21951,7 +21526,7 @@ index 6f5db5fc4..56c280803 100644
      k->save_queue = virtio_pci_save_queue;
      k->load_queue = virtio_pci_load_queue;
 diff --git a/hw/virtio/virtio-rng.c b/hw/virtio/virtio-rng.c
-index d68d90119..492a8e238 100644
+index d68d9011953b5ee03a36c89d16c9384a27984caa..492a8e238eabc679efb07ffa5fb78a343422d636 100644
 --- a/hw/virtio/virtio-rng.c
 +++ b/hw/virtio/virtio-rng.c
 @@ -17,11 +17,16 @@
@@ -22076,7 +21651,7 @@ index d68d90119..492a8e238 100644
          VMSTATE_END_OF_LIST()
      },
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index daa560733..7f013facc 100644
+index daa5607338c94d2205fae1343559b97bf62480aa..7f013facc4da23a12b02a63429c57d2498f10739 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -12,6 +12,8 @@
@@ -22800,7 +22375,7 @@ index daa560733..7f013facc 100644
              if (len < desc.len) {
                  error_setg(errp, "Cannot map indirect buffer");
 diff --git a/include/accel/accel-cpu-ops.h b/include/accel/accel-cpu-ops.h
-index f0c7ee754..be1da32bd 100644
+index f0c7ee7542c24507f13787e57d3098db1fecf5d1..be1da32bd91c649e9b5c2271fd727cf7dbcc0d62 100644
 --- a/include/accel/accel-cpu-ops.h
 +++ b/include/accel/accel-cpu-ops.h
 @@ -41,6 +41,13 @@ struct AccelOpsClass {
@@ -22818,7 +22393,7 @@ index f0c7ee754..be1da32bd 100644
  
      /**
 diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
-index 147c08155..d15f5a748 100644
+index 147c08155f7c53b6a1ae360e5bf81187e921976f..d15f5a74803e4002c9a1b9234eada1f6d806d9d7 100644
 --- a/include/block/block_int-common.h
 +++ b/include/block/block_int-common.h
 @@ -91,6 +91,27 @@ typedef struct BdrvTrackedRequest {
@@ -22896,7 +22471,7 @@ index 147c08155..d15f5a748 100644
       * Try to get @bs's logical and physical block size.
       * On success, store them in @bsz and return zero.
 diff --git a/include/block/block_int-io.h b/include/block/block_int-io.h
-index ed8b5657d..d1be4edf6 100644
+index ed8b5657d6acd585294c5b980b229c6e73af45a2..d1be4edf64d997fcd0ae53066c1a0c71e86dc77e 100644
 --- a/include/block/block_int-io.h
 +++ b/include/block/block_int-io.h
 @@ -130,6 +130,12 @@ bdrv_co_refresh_total_sectors(BlockDriverState *bs, int64_t hint);
@@ -22913,7 +22488,7 @@ index ed8b5657d..d1be4edf6 100644
  BdrvChild * GRAPH_RDLOCK bdrv_filter_child(BlockDriverState *bs);
  BdrvChild * GRAPH_RDLOCK bdrv_filter_or_cow_child(BlockDriverState *bs);
 diff --git a/include/block/graph-lock.h b/include/block/graph-lock.h
-index 95bf5ede4..e41a44a19 100644
+index 95bf5ede40b3dd62214184895a215cc4c73d4860..e41a44a191cbffe9b0880381ade28dc2eda8f7e7 100644
 --- a/include/block/graph-lock.h
 +++ b/include/block/graph-lock.h
 @@ -59,6 +59,23 @@ typedef struct TSA_CAPABILITY("mutex") BdrvGraphLock {
@@ -22963,7 +22538,7 @@ index 95bf5ede4..e41a44a19 100644
  #endif /* GRAPH_LOCK_H */
 -
 diff --git a/include/block/thread-pool.h b/include/block/thread-pool.h
-index e9ddb2b6d..372586833 100644
+index e9ddb2b6d3c0f6866029e82d949849ffa32640fb..3725868333199704549a5bea1e390c6ac601294b 100644
 --- a/include/block/thread-pool.h
 +++ b/include/block/thread-pool.h
 @@ -29,6 +29,8 @@ typedef struct ThreadPoolAio ThreadPoolAio;
@@ -22976,7 +22551,7 @@ index e9ddb2b6d..372586833 100644
  /*
   * thread_pool_submit_{aio,co} API: submit I/O requests in the thread's
 diff --git a/include/chardev/char-socket.h b/include/chardev/char-socket.h
-index d6d13ad37..8bc71b897 100644
+index d6d13ad37f978ea8dcf816b66d06f3bf9645ffd7..8bc71b897f77ecbe385f3ea65e12fd83a5159a94 100644
 --- a/include/chardev/char-socket.h
 +++ b/include/chardev/char-socket.h
 @@ -78,9 +78,141 @@ struct SocketChardev {
@@ -23122,7 +22697,7 @@ index d6d13ad37..8bc71b897 100644
                           TYPE_CHARDEV_SOCKET)
  
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b4008..85314dcef 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..85314dcefe472ebda4047bf49293a927fec0391f 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
 @@ -46,6 +46,15 @@ void icount_update(CPUState *cpu);
@@ -23172,7 +22747,7 @@ index 7a26b4008..85314dcef 100644
  void icount_start_warp_timer(void);
  void icount_account_warp_timer(void);
 diff --git a/include/exec/translator.h b/include/exec/translator.h
-index 978dee25a..c0038fd0a 100644
+index 978dee25add2068f82102882d4dd00188b05b301..c0038fd0a71ed12bd2786d440e7ea417c51d9967 100644
 --- a/include/exec/translator.h
 +++ b/include/exec/translator.h
 @@ -60,6 +60,7 @@ typedef enum DisasJumpType {
@@ -23204,7 +22779,7 @@ index 978dee25a..c0038fd0a 100644
  
  /**
 diff --git a/include/hw/acpi/acpi.h b/include/hw/acpi/acpi.h
-index dc3672db5..b7c3e949d 100644
+index dc3672db5213598aee32de2e66f08f6216757fe4..b7c3e949decf9cced883305bd3eb710e20f0cf4d 100644
 --- a/include/hw/acpi/acpi.h
 +++ b/include/hw/acpi/acpi.h
 @@ -115,6 +115,9 @@ struct ACPIPMTimer {
@@ -23219,7 +22794,7 @@ index dc3672db5..b7c3e949d 100644
  };
 diff --git a/include/hw/acpi/generic-event-device-fingerprint.h b/include/hw/acpi/generic-event-device-fingerprint.h
 new file mode 100644
-index 000000000..a9fca903c
+index 0000000000000000000000000000000000000000..a9fca903cb2a618764bc63b6b4480c4a156b9cc5
 --- /dev/null
 +++ b/include/hw/acpi/generic-event-device-fingerprint.h
 @@ -0,0 +1,126 @@
@@ -23350,7 +22925,7 @@ index 000000000..a9fca903c
 +
 +#endif
 diff --git a/include/hw/acpi/ghes.h b/include/hw/acpi/ghes.h
-index 5b29aae4d..ae7674211 100644
+index 5b29aae4dd4f222c317c1e6bef9e74127270723f..ae7674211372a9e9e5b2342cf28dc9d93d430c75 100644
 --- a/include/hw/acpi/ghes.h
 +++ b/include/hw/acpi/ghes.h
 @@ -66,6 +66,7 @@ enum AcpiGhesNotifyType {
@@ -23402,7 +22977,7 @@ index 5b29aae4d..ae7674211 100644
  #endif
 diff --git a/include/hw/acpi/piix4-fingerprint.h b/include/hw/acpi/piix4-fingerprint.h
 new file mode 100644
-index 000000000..35cb42e23
+index 0000000000000000000000000000000000000000..35cb42e235dc4dbfbccdc2b6f9086953305262d0
 --- /dev/null
 +++ b/include/hw/acpi/piix4-fingerprint.h
 @@ -0,0 +1,116 @@
@@ -23524,7 +23099,7 @@ index 000000000..35cb42e23
 +#endif
 diff --git a/include/hw/char/parallel-isa-fingerprint.h b/include/hw/char/parallel-isa-fingerprint.h
 new file mode 100644
-index 000000000..5638546f4
+index 0000000000000000000000000000000000000000..5638546f455dd8f169b138c04abd3711fc0ae869
 --- /dev/null
 +++ b/include/hw/char/parallel-isa-fingerprint.h
 @@ -0,0 +1,27 @@
@@ -23556,7 +23131,7 @@ index 000000000..5638546f4
 +
 +#endif
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb1..56c058fea 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..56c058fea30098d593bfee74e7f0ca35c801df48 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -23810,7 +23385,7 @@ index b54035fb1..56c058fea 100644
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
 diff --git a/include/hw/core/qdev.h b/include/hw/core/qdev.h
-index e14762234..7b82d7a30 100644
+index e147622341151c110e22695d26d8a0600355322c..7b82d7a307cee1d63f4f5e99c7ba3abcfc815aa8 100644
 --- a/include/hw/core/qdev.h
 +++ b/include/hw/core/qdev.h
 @@ -161,6 +161,13 @@ struct DeviceClass {
@@ -23828,7 +23403,7 @@ index e14762234..7b82d7a30 100644
      /**
       * @legacy_reset: deprecated device reset method pointer
 diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
-index 9a4559616..7bf45e371 100644
+index 9a45596169a31823a0d4c1566fa4273a840bcd7c..7bf45e3718617b37855c66f322d7b8861d4257e1 100644
 --- a/include/hw/core/sysemu-cpu-ops.h
 +++ b/include/hw/core/sysemu-cpu-ops.h
 @@ -58,6 +58,32 @@ typedef struct SysemuCPUOps {
@@ -23865,7 +23440,7 @@ index 9a4559616..7bf45e371 100644
       * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
       *       a memory access with the specified memory transaction attributes.
 diff --git a/include/hw/i2c/pm_smbus.h b/include/hw/i2c/pm_smbus.h
-index 62bbd45e8..9d01e0012 100644
+index 62bbd45e803f6a6235e5cf4dfd3755083db6d3cc..9d01e0012853b0209ac9cfab65ad7e7ec32ff048 100644
 --- a/include/hw/i2c/pm_smbus.h
 +++ b/include/hw/i2c/pm_smbus.h
 @@ -45,5 +45,7 @@ typedef struct PMSMBus {
@@ -23877,7 +23452,7 @@ index 62bbd45e8..9d01e0012 100644
  
  #endif /* PM_SMBUS_H */
 diff --git a/include/hw/i386/apic_internal.h b/include/hw/i386/apic_internal.h
-index a26d53bb9..f2b954847 100644
+index a26d53bb9d9157747870a9c54d13a83513ec3e2c..f2b954847c16226261b5ad75bb9e7bc9fd556019 100644
 --- a/include/hw/i386/apic_internal.h
 +++ b/include/hw/i386/apic_internal.h
 @@ -170,6 +170,10 @@ struct APICCommonState {
@@ -23902,7 +23477,7 @@ index a26d53bb9..f2b954847 100644
      int wait_for_sipi;
  
 diff --git a/include/hw/intc/arm_gic_common.h b/include/hw/intc/arm_gic_common.h
-index b169394e6..2cf814454 100644
+index b169394e6ca28d787d70e9c103ebbe5b12202ecc..2cf8144540e7ab3574be176f29c81aa94343beb9 100644
 --- a/include/hw/intc/arm_gic_common.h
 +++ b/include/hw/intc/arm_gic_common.h
 @@ -95,6 +95,12 @@ struct GICState {
@@ -23919,7 +23494,7 @@ index b169394e6..2cf814454 100644
      uint16_t priority_mask[GIC_NCPU_VCPU];
      uint16_t running_priority[GIC_NCPU_VCPU];
 diff --git a/include/hw/intc/arm_gicv3_common.h b/include/hw/intc/arm_gicv3_common.h
-index 03ab3e8f2..e1aeb69a8 100644
+index 03ab3e8f2ff29d67c32b93a8672423cc0ff2e342..e1aeb69a8327298e0fde11acd2e96d7450d54c66 100644
 --- a/include/hw/intc/arm_gicv3_common.h
 +++ b/include/hw/intc/arm_gicv3_common.h
 @@ -153,6 +153,11 @@ struct GICv3CPUState {
@@ -23948,7 +23523,7 @@ index 03ab3e8f2..e1aeb69a8 100644
       * in the IROUTER registers
       */
 diff --git a/include/hw/isa/i8259_internal.h b/include/hw/isa/i8259_internal.h
-index f9dcc4163..d5c5294fe 100644
+index f9dcc4163ef3699c1fb127b19f9fc69bba6ea1f5..d5c5294fe941a474cc2433bb9af6a272ce910389 100644
 --- a/include/hw/isa/i8259_internal.h
 +++ b/include/hw/isa/i8259_internal.h
 @@ -62,6 +62,11 @@ struct PICCommonState {
@@ -23964,7 +23539,7 @@ index f9dcc4163..d5c5294fe 100644
      uint32_t master; /* reflects /SP input pin */
      uint32_t iobase;
 diff --git a/include/hw/pci/msix.h b/include/hw/pci/msix.h
-index 551a2bcfe..92c5ceb4a 100644
+index 551a2bcfe730fddc446f7749aae92af450482df3..92c5ceb4ab71c41435a92d1a9389ea6f1d73fb18 100644
 --- a/include/hw/pci/msix.h
 +++ b/include/hw/pci/msix.h
 @@ -25,6 +25,8 @@ unsigned int msix_nr_vectors_allocated(const PCIDevice *dev);
@@ -23977,7 +23552,7 @@ index 551a2bcfe..92c5ceb4a 100644
  int msix_enabled(PCIDevice *dev);
  int msix_present(PCIDevice *dev);
 diff --git a/include/hw/pci/pci.h b/include/hw/pci/pci.h
-index f2448e941..37aa5be08 100644
+index f2448e941a0b9b4003a7a63d23db7972a8513405..37aa5be08f95a5c02bb87d38c61ebd36b36bf43c 100644
 --- a/include/hw/pci/pci.h
 +++ b/include/hw/pci/pci.h
 @@ -1116,5 +1116,9 @@ MSIMessage pci_get_msi_message(PCIDevice *dev, int vector);
@@ -23991,7 +23566,7 @@ index f2448e941..37aa5be08 100644
  
  #endif
 diff --git a/include/hw/rtc/mc146818rtc.h b/include/hw/rtc/mc146818rtc.h
-index 64893be15..c2c6826da 100644
+index 64893be1515952a1722ffda0dc0db351eefda2e3..c2c6826da38f1f6783b6ed63df4eae74388a1f73 100644
 --- a/include/hw/rtc/mc146818rtc.h
 +++ b/include/hw/rtc/mc146818rtc.h
 @@ -43,6 +43,18 @@ struct MC146818RtcState {
@@ -24014,7 +23589,7 @@ index 64893be15..c2c6826da 100644
      LostTickPolicy lost_tick_policy;
      Notifier suspend_notifier;
 diff --git a/include/hw/rtc/pl031.h b/include/hw/rtc/pl031.h
-index 75779c631..34ff622cc 100644
+index 75779c63122544725904f7c06a024123231d2503..34ff622ccfeb037d3d46d593bd32a4fde3ac201a 100644
 --- a/include/hw/rtc/pl031.h
 +++ b/include/hw/rtc/pl031.h
 @@ -42,6 +42,10 @@ struct PL031State {
@@ -24030,7 +23605,7 @@ index 75779c631..34ff622cc 100644
  #endif
 diff --git a/include/hw/southbridge/piix-fingerprint.h b/include/hw/southbridge/piix-fingerprint.h
 new file mode 100644
-index 000000000..66e9766dd
+index 0000000000000000000000000000000000000000..66e9766dd58da83fe1db24ff5fd2eb858d1dfe7b
 --- /dev/null
 +++ b/include/hw/southbridge/piix-fingerprint.h
 @@ -0,0 +1,29 @@
@@ -24064,7 +23639,7 @@ index 000000000..66e9766dd
 +
 +#endif
 diff --git a/include/hw/timer/i8254_internal.h b/include/hw/timer/i8254_internal.h
-index 1761deb4c..94130eae8 100644
+index 1761deb4cf7e15212c1a37b14a30db5d667d8359..94130eae8051d7d093ac7d85432e2507be39a598 100644
 --- a/include/hw/timer/i8254_internal.h
 +++ b/include/hw/timer/i8254_internal.h
 @@ -48,6 +48,9 @@ typedef struct PITChannelState {
@@ -24078,7 +23653,7 @@ index 1761deb4c..94130eae8 100644
  
  struct PITCommonState {
 diff --git a/include/hw/virtio/virtio-blk.h b/include/hw/virtio/virtio-blk.h
-index 3d8dee7ec..881c16031 100644
+index 3d8dee7ec15848e59b87c055045a070b6967e62c..881c16031741439734670a34c23592bf87064368 100644
 --- a/include/hw/virtio/virtio-blk.h
 +++ b/include/hw/virtio/virtio-blk.h
 @@ -56,6 +56,7 @@ struct VirtIOBlock {
@@ -24090,7 +23665,7 @@ index 3d8dee7ec..881c16031 100644
      unsigned short sector_mask;
      bool original_wce;
 diff --git a/include/hw/virtio/virtio-bus.h b/include/hw/virtio/virtio-bus.h
-index f80fd7142..082f11b77 100644
+index f80fd71424419f4ec64536990753ed4bed1c5d45..082f11b776b542bbf6c63960d5ca484e7a871cb8 100644
 --- a/include/hw/virtio/virtio-bus.h
 +++ b/include/hw/virtio/virtio-bus.h
 @@ -42,6 +42,8 @@ struct VirtioBusClass {
@@ -24104,7 +23679,7 @@ index f80fd7142..082f11b77 100644
      int (*load_config)(DeviceState *d, QEMUFile *f);
 diff --git a/include/hw/virtio/virtio-crucible-accelerator.h b/include/hw/virtio/virtio-crucible-accelerator.h
 new file mode 100644
-index 000000000..d15d5f9b1
+index 0000000000000000000000000000000000000000..d15d5f9b17bf2a993e6ba7ecd34699c2aa18dc1c
 --- /dev/null
 +++ b/include/hw/virtio/virtio-crucible-accelerator.h
 @@ -0,0 +1,58 @@
@@ -24167,7 +23742,7 @@ index 000000000..d15d5f9b1
 +
 +#endif
 diff --git a/include/hw/virtio/virtio-pci.h b/include/hw/virtio/virtio-pci.h
-index ee50fb0d5..b371aa77b 100644
+index ee50fb0d551dfdde07a8d646041f28d87a01d364..b371aa77b90fb03a2c82c49b08d1c5edbfc8f990 100644
 --- a/include/hw/virtio/virtio-pci.h
 +++ b/include/hw/virtio/virtio-pci.h
 @@ -15,6 +15,7 @@
@@ -24206,7 +23781,7 @@ index ee50fb0d5..b371aa77b 100644
  #define VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY \
      (1 << VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY_BIT)
 diff --git a/include/hw/virtio/virtio-rng.h b/include/hw/virtio/virtio-rng.h
-index 7e6d27f9f..e90631fa2 100644
+index 7e6d27f9f0816eccae475a9ee814c27ffbcd7d56..e90631fa29aa6cd66178c08601759eeb79ea18a4 100644
 --- a/include/hw/virtio/virtio-rng.h
 +++ b/include/hw/virtio/virtio-rng.h
 @@ -38,12 +38,12 @@ struct VirtIORNG {
@@ -24226,7 +23801,7 @@ index 7e6d27f9f..e90631fa2 100644
      VMChangeStateEntry *vmstate;
  };
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index c99cb19d8..696374498 100644
+index c99cb19d8865b448edee9ec2eac249807be983cd..6963744982fa8f2cfad5cb265a344bbb93a50e51 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
 @@ -201,6 +201,7 @@ struct VirtIODevice
@@ -24274,7 +23849,7 @@ index c99cb19d8..696374498 100644
                                  VirtQueueElement *elem);
  int virtqueue_avail_bytes(VirtQueue *vq, unsigned int in_bytes,
 diff --git a/include/migration/misc.h b/include/migration/misc.h
-index 2b2fbb59a..b532fddff 100644
+index 2b2fbb59a409a35163b4578cf0d386977d3e5f80..b532fddffe17f91a74d9a8ac4b01f8f8e471141a 100644
 --- a/include/migration/misc.h
 +++ b/include/migration/misc.h
 @@ -66,6 +66,16 @@ bool migration_thread_is_self(void);
@@ -24295,7 +23870,7 @@ index 2b2fbb59a..b532fddff 100644
      MIG_EVENT_SETUP,
      MIG_EVENT_POSTCOPY_START,
 diff --git a/include/migration/register.h b/include/migration/register.h
-index 5825eb30c..296b170b2 100644
+index 5825eb30cb33e1721bec399f8a1c01df154d143b..296b170b2e517a5a600169b5c17123b0705748fc 100644
 --- a/include/migration/register.h
 +++ b/include/migration/register.h
 @@ -16,6 +16,8 @@
@@ -24323,7 +23898,7 @@ index 5825eb30c..296b170b2 100644
  
  /**
 diff --git a/include/migration/vmstate.h b/include/migration/vmstate.h
-index 1b7f29541..dd5a1663b 100644
+index 1b7f295417ea975dba982761a523e6037847ecd9..dd5a1663bfe691d745b0b86b98c1df8d311b0060 100644
 --- a/include/migration/vmstate.h
 +++ b/include/migration/vmstate.h
 @@ -32,6 +32,20 @@
@@ -24358,7 +23933,7 @@ index 1b7f29541..dd5a1663b 100644
      const VMStateDescription * const *subsections;
  };
 diff --git a/include/monitor/monitor.h b/include/monitor/monitor.h
-index 890497b0d..8211411eb 100644
+index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..8211411ebe9bd9345eab9a18844852e3f7dccebe 100644
 --- a/include/monitor/monitor.h
 +++ b/include/monitor/monitor.h
 @@ -41,6 +41,7 @@ void monitor_suspend(Monitor *mon);
@@ -24370,7 +23945,7 @@ index 890497b0d..8211411eb 100644
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89..9106da1cf 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..9106da1cfd15dca8d2d18b25c22c8ecb48a53501 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,317 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -26163,7 +25738,7 @@ index 3e913cd89..9106da1cf 100644
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 diff --git a/include/qemu/aio.h b/include/qemu/aio.h
-index e65e90093..9f4ec00fd 100644
+index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6ad644a2e 100644
 --- a/include/qemu/aio.h
 +++ b/include/qemu/aio.h
 @@ -18,6 +18,7 @@
@@ -26314,7 +25889,7 @@ index e65e90093..9f4ec00fd 100644
   *
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 000000000..bdfa18e83
+index 0000000000000000000000000000000000000000..bdfa18e83a9acf851a9f6e8bc2d8a99bec27ea6d
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
 @@ -0,0 +1,715 @@
@@ -27035,7 +26610,7 @@ index 000000000..bdfa18e83
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-async.h b/include/qemu/crucible-hot-fork-async.h
 new file mode 100644
-index 000000000..4b8f7d11a
+index 0000000000000000000000000000000000000000..4b8f7d11a929f46414f1d1bb57a3b27d05cb947f
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-async.h
 @@ -0,0 +1,84 @@
@@ -27125,7 +26700,7 @@ index 000000000..4b8f7d11a
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
 new file mode 100644
-index 000000000..100a255eb
+index 0000000000000000000000000000000000000000..100a255ebb828baf30e0e15353b544795c957891
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-child.h
 @@ -0,0 +1,407 @@
@@ -27538,7 +27113,7 @@ index 000000000..100a255eb
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-plugin.h b/include/qemu/crucible-hot-fork-plugin.h
 new file mode 100644
-index 000000000..140a94b0c
+index 0000000000000000000000000000000000000000..140a94b0ce5db390c532fb21bab6dc6e46eece1b
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-plugin.h
 @@ -0,0 +1,49 @@
@@ -27593,7 +27168,7 @@ index 000000000..140a94b0c
 +#endif
 diff --git a/include/qemu/crucible-idle-wait.h b/include/qemu/crucible-idle-wait.h
 new file mode 100644
-index 000000000..5fc1defcc
+index 0000000000000000000000000000000000000000..5fc1defcc00635027607c075e0f65a8355f1863c
 --- /dev/null
 +++ b/include/qemu/crucible-idle-wait.h
 @@ -0,0 +1,58 @@
@@ -27657,7 +27232,7 @@ index 000000000..5fc1defcc
 +#endif /* QEMU_CRUCIBLE_IDLE_WAIT_H */
 diff --git a/include/qemu/crucible-process.h b/include/qemu/crucible-process.h
 new file mode 100644
-index 000000000..aa8fa71be
+index 0000000000000000000000000000000000000000..aa8fa71be9f5904b9e6329a79f9b40c58dcfcc5e
 --- /dev/null
 +++ b/include/qemu/crucible-process.h
 @@ -0,0 +1,16 @@
@@ -27678,7 +27253,7 @@ index 000000000..aa8fa71be
 +
 +#endif /* QEMU_CRUCIBLE_PROCESS_H */
 diff --git a/include/qemu/guest-random.h b/include/qemu/guest-random.h
-index 5060d49d6..e6d56f256 100644
+index 5060d49d6092e77344ec7e59bd6a232aa9aad0bb..e6d56f256e2b8a287bbc38f5a39fd215e412aab9 100644
 --- a/include/qemu/guest-random.h
 +++ b/include/qemu/guest-random.h
 @@ -41,6 +41,25 @@ uint64_t qemu_guest_random_seed_thread_part1(void);
@@ -27725,7 +27300,7 @@ index 5060d49d6..e6d56f256 100644
 +
  #endif /* QEMU_GUEST_RANDOM_H */
 diff --git a/include/qemu/madvise.h b/include/qemu/madvise.h
-index e155f59a0..bc934bf69 100644
+index e155f59a0df573a85d2350a8f564ff4f8d331b9c..bc934bf69afda0f216efe8c7042e10c085af84ca 100644
 --- a/include/qemu/madvise.h
 +++ b/include/qemu/madvise.h
 @@ -19,6 +19,11 @@
@@ -27757,7 +27332,7 @@ index e155f59a0..bc934bf69 100644
  #define QEMU_MADV_UNMERGEABLE QEMU_MADV_INVALID
  #define QEMU_MADV_DODUMP QEMU_MADV_INVALID
 diff --git a/include/qemu/main-loop.h b/include/qemu/main-loop.h
-index 8c1241a2c..0c821e747 100644
+index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f46d1431e 100644
 --- a/include/qemu/main-loop.h
 +++ b/include/qemu/main-loop.h
 @@ -438,6 +438,7 @@ enum {
@@ -27783,7 +27358,7 @@ index 8c1241a2c..0c821e747 100644
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8cea..4c96078b1 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902beca18b4 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,6 +9,7 @@
@@ -28031,7 +27606,7 @@ index 9c2ec8cea..4c96078b1 100644
  void qemu_plugin_add_dyn_cb_arr(GArray *arr)
  { }
 diff --git a/include/qemu/rcu.h b/include/qemu/rcu.h
-index 020dbe4d8..326d32bdb 100644
+index 020dbe4d8b77126d4a520f5bdced6c885f10c346..326d32bdb6d99e5858145c0db31c4c982e41c441 100644
 --- a/include/qemu/rcu.h
 +++ b/include/qemu/rcu.h
 @@ -63,6 +63,7 @@ struct rcu_reader_data {
@@ -28159,7 +27734,7 @@ index 020dbe4d8..326d32bdb 100644
   * Support for fork().  fork() support is enabled at startup.
   */
 diff --git a/include/qemu/thread-posix.h b/include/qemu/thread-posix.h
-index 758808b70..bece818ef 100644
+index 758808b705e4b0bbbda1988c377f010ae179d3e1..bece818ef45e7be1e9c7dfcacfd5e3bfdd732a3e 100644
 --- a/include/qemu/thread-posix.h
 +++ b/include/qemu/thread-posix.h
 @@ -11,6 +11,14 @@ struct QemuMutex {
@@ -28178,7 +27753,7 @@ index 758808b70..bece818ef 100644
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41a..eff8dc4e5 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..eff8dc4e5e7a3693797bc130fa0647ffd7be70bd 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -218,6 +218,160 @@ G_NORETURN void qemu_thread_exit(void *retval);
@@ -28343,7 +27918,7 @@ index 98cc5c41a..eff8dc4e5 100644
  /**
   * qemu_thread_atexit_add:
 diff --git a/include/qemu/timer.h b/include/qemu/timer.h
-index 9a62ac8cd..1f6a2382e 100644
+index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..1f6a2382ef772763cc74b1e5baa3488c68d2b4fb 100644
 --- a/include/qemu/timer.h
 +++ b/include/qemu/timer.h
 @@ -81,6 +81,24 @@ struct QEMUTimerListGroup {
@@ -28425,7 +28000,7 @@ index 9a62ac8cd..1f6a2382e 100644
   * timer_pending:
   * @ts: the timer
 diff --git a/include/qobject/json-parser.h b/include/qobject/json-parser.h
-index e078b36b2..2016d37d1 100644
+index e078b36b2d57f295ce978622cfbcba8a0a36a9f9..2016d37d1e2ebbd80e3041accf35703e90fbd9e7 100644
 --- a/include/qobject/json-parser.h
 +++ b/include/qobject/json-parser.h
 @@ -49,6 +49,10 @@ void json_message_parser_feed(JSONMessageParser *parser,
@@ -28440,7 +28015,7 @@ index e078b36b2..2016d37d1 100644
  
  #endif
 diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
-index c3849640d..f404e899f 100644
+index c3849640df9f61c70f82f0534b42f400c27f424a..f404e899f09212521c1f80b00bde9c84acb013f7 100644
 --- a/include/system/block-backend-global-state.h
 +++ b/include/system/block-backend-global-state.h
 @@ -15,6 +15,304 @@
@@ -28749,7 +28324,7 @@ index c3849640d..f404e899f 100644
   * Global state (GS) API. These functions run under the BQL.
   *
 diff --git a/include/system/cpu-timers-internal.h b/include/system/cpu-timers-internal.h
-index 8c262ce13..2422d2986 100644
+index 8c262ce139c754764f4a9b8116569d3957ef34c9..2422d2986b07f4d730fefbe04b4b50161df520f0 100644
 --- a/include/system/cpu-timers-internal.h
 +++ b/include/system/cpu-timers-internal.h
 @@ -55,6 +55,12 @@ typedef struct TimersState {
@@ -28766,7 +28341,7 @@ index 8c262ce13..2422d2986 100644
      QEMUTimer *icount_rt_timer;
      QEMUTimer *icount_vm_timer;
 diff --git a/include/system/cpus.h b/include/system/cpus.h
-index 508444ccf..6d6b3031b 100644
+index 508444ccf1c30b215914743946066395f29db7c3..6d6b3031b49ff66006fb6a61ee3d6ada20ddf0df 100644
 --- a/include/system/cpus.h
 +++ b/include/system/cpus.h
 @@ -20,6 +20,13 @@ bool cpu_can_run(CPUState *cpu);
@@ -28785,7 +28360,7 @@ index 508444ccf..6d6b3031b 100644
  /* end interface for cpus accelerator threads */
 diff --git a/include/system/crucible-checkpoint.h b/include/system/crucible-checkpoint.h
 new file mode 100644
-index 000000000..3eaa92c69
+index 0000000000000000000000000000000000000000..3eaa92c69d83ad3548013ba3ffee39bc02294a1b
 --- /dev/null
 +++ b/include/system/crucible-checkpoint.h
 @@ -0,0 +1,75 @@
@@ -28866,7 +28441,7 @@ index 000000000..3eaa92c69
 +#endif
 diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
 new file mode 100644
-index 000000000..6367bbafe
+index 0000000000000000000000000000000000000000..6367bbafe19336c30d89dbabf197766e1f574614
 --- /dev/null
 +++ b/include/system/crucible-hot-fork-coordinator.h
 @@ -0,0 +1,100 @@
@@ -28972,7 +28547,7 @@ index 000000000..6367bbafe
 +#endif
 diff --git a/include/system/crucible-hot-fork-plugin-child.h b/include/system/crucible-hot-fork-plugin-child.h
 new file mode 100644
-index 000000000..4a4d665eb
+index 0000000000000000000000000000000000000000..4a4d665eb7262cd2b9fff0ab1ceed5140f6f055d
 --- /dev/null
 +++ b/include/system/crucible-hot-fork-plugin-child.h
 @@ -0,0 +1,901 @@
@@ -29879,7 +29454,7 @@ index 000000000..4a4d665eb
 +#endif
 diff --git a/include/system/crucible-plugin-wake.h b/include/system/crucible-plugin-wake.h
 new file mode 100644
-index 000000000..e44b2f077
+index 0000000000000000000000000000000000000000..e44b2f07791f09347e1879f204cccbb81dd49bfe
 --- /dev/null
 +++ b/include/system/crucible-plugin-wake.h
 @@ -0,0 +1,21 @@
@@ -29906,7 +29481,7 @@ index 000000000..e44b2f077
 +#endif
 diff --git a/include/system/crucible-sim-ipi.h b/include/system/crucible-sim-ipi.h
 new file mode 100644
-index 000000000..ce6c686a5
+index 0000000000000000000000000000000000000000..ce6c686a533830194d46eaf0f036d0ff4104eed5
 --- /dev/null
 +++ b/include/system/crucible-sim-ipi.h
 @@ -0,0 +1,8 @@
@@ -29920,7 +29495,7 @@ index 000000000..ce6c686a5
 +#endif /* SYSTEM_CRUCIBLE_SIM_IPI_H */
 diff --git a/include/system/crucible-sim-preemption.h b/include/system/crucible-sim-preemption.h
 new file mode 100644
-index 000000000..769175164
+index 0000000000000000000000000000000000000000..769175164425283a7410b7d1c28d6521b085c60f
 --- /dev/null
 +++ b/include/system/crucible-sim-preemption.h
 @@ -0,0 +1,22 @@
@@ -29947,7 +29522,7 @@ index 000000000..769175164
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/include/system/dma.h b/include/system/dma.h
-index 82e7ad543..68eaf51ee 100644
+index 82e7ad54374f1b200edbc7b06ff08bddd5ec8b15..68eaf51eefc7de83834cdb5bb6d2352a6eca2faa 100644
 --- a/include/system/dma.h
 +++ b/include/system/dma.h
 @@ -12,6 +12,7 @@
@@ -30051,7 +29626,7 @@ index 82e7ad543..68eaf51ee 100644
  
  #define DEFINE_LDST_DMA(_lname, _sname, _bits, _end) \
 diff --git a/include/system/iothread.h b/include/system/iothread.h
-index a1ef7696c..6bb18f133 100644
+index a1ef7696cb56c7e8ef0bd269898c9185419287c2..6bb18f133e987699c4467b5283bc1bb8711ec468 100644
 --- a/include/system/iothread.h
 +++ b/include/system/iothread.h
 @@ -50,6 +50,7 @@ struct IOThread {
@@ -30082,7 +29657,7 @@ index a1ef7696c..6bb18f133 100644
   * Returns true if executing within IOThread context,
   * false otherwise.
 diff --git a/include/system/memory.h b/include/system/memory.h
-index 2192fc9bd..9cdd10da4 100644
+index 2192fc9bdc5b7c2115cf82d5120b280fee750d6d..9cdd10da48752977ddce5c6fa7e3b36e09479448 100644
 --- a/include/system/memory.h
 +++ b/include/system/memory.h
 @@ -70,7 +70,14 @@ static inline void fuzz_dma_read_cb(size_t addr,
@@ -30180,7 +29755,7 @@ index 2192fc9bd..9cdd10da4 100644
                  memcpy(buf, ptr, len);
              } else {
 diff --git a/include/system/memory_cached.h b/include/system/memory_cached.h
-index 09d46821b..4f95433d8 100644
+index 09d46821bec9e664bc5159721385b2df83d9a935..4f95433d808ba9b5aa6817d63e8da3de018a8813 100644
 --- a/include/system/memory_cached.h
 +++ b/include/system/memory_cached.h
 @@ -14,6 +14,7 @@
@@ -30270,7 +29845,7 @@ index 09d46821b..4f95433d8 100644
          memcpy(cache->ptr + addr, buf, len);
          return MEMTX_OK;
 diff --git a/include/system/memory_ldst_cached.h.inc b/include/system/memory_ldst_cached.h.inc
-index b4c696bff..303e82010 100644
+index b4c696bff1f526ac3f696bd27b24faec652c63ab..303e8201067b844dfa037d9eb13aea616e5ffc48 100644
 --- a/include/system/memory_ldst_cached.h.inc
 +++ b/include/system/memory_ldst_cached.h.inc
 @@ -28,7 +28,18 @@ static inline
@@ -30391,7 +29966,7 @@ index b4c696bff..303e82010 100644
          ST_P(q)(cache->ptr + addr, val);
      } else {
 diff --git a/include/system/ram_addr.h b/include/system/ram_addr.h
-index 129f6b875..f3eb38b91 100644
+index 129f6b8757dd9ee4d10aec2265e9e4e3e869bd7b..f3eb38b916723b40dc70727c3afbae70d51f2b72 100644
 --- a/include/system/ram_addr.h
 +++ b/include/system/ram_addr.h
 @@ -28,6 +28,7 @@ typedef uintptr_t ram_addr_t;
@@ -30404,7 +29979,7 @@ index 129f6b875..f3eb38b91 100644
  
  #endif
 diff --git a/include/system/ramlist.h b/include/system/ramlist.h
-index c7f388f48..9271adc4e 100644
+index c7f388f487d7057665c5fd03e723ea4c62c0daed..9271adc4e4682deddd4ff60a3ac863087f3281aa 100644
 --- a/include/system/ramlist.h
 +++ b/include/system/ramlist.h
 @@ -52,6 +52,9 @@ typedef struct RAMList {
@@ -30434,7 +30009,7 @@ index c7f388f48..9271adc4e 100644
  void ram_block_notifier_remove(RAMBlockNotifier *n);
  void ram_block_notify_add(void *host, size_t size, size_t max_size);
 diff --git a/include/system/replay.h b/include/system/replay.h
-index 3b0038682..c62bf27bc 100644
+index 3b00386821b6b99c8f4d88a85ffc36d8ffd773f7..c62bf27bc5c259136634b3aa6f7a34fc3bcf67af 100644
 --- a/include/system/replay.h
 +++ b/include/system/replay.h
 @@ -51,13 +51,16 @@ extern char *replay_snapshot;
@@ -30457,7 +30032,7 @@ index 3b0038682..c62bf27bc 100644
  void replay_mutex_unlock(void);
  
 diff --git a/include/system/rng.h b/include/system/rng.h
-index a2667d75e..8e075edee 100644
+index a2667d75efd0747f2369cbc2f7f53f514ab1343e..8e075edeeed08c4e631f20938938d64a571488c0 100644
 --- a/include/system/rng.h
 +++ b/include/system/rng.h
 @@ -44,6 +44,16 @@ struct RngBackendClass
@@ -30478,7 +30053,7 @@ index a2667d75e..8e075edee 100644
  };
  
 diff --git a/include/system/rtc.h b/include/system/rtc.h
-index cde83fab1..309a4b03d 100644
+index cde83fab15f5b5544047f6e8a3fcdbdf28abe2d0..309a4b03d9f5410d3809fa6e9721261277e6da6b 100644
 --- a/include/system/rtc.h
 +++ b/include/system/rtc.h
 @@ -55,4 +55,14 @@ void qemu_get_timedate(struct tm *tm, time_t offset);
@@ -30497,7 +30072,7 @@ index cde83fab1..309a4b03d 100644
 +
  #endif
 diff --git a/include/tcg/startup.h b/include/tcg/startup.h
-index 95f574af2..2df736e72 100644
+index 95f574af2be90781bd488e0f30a8e7c6e1ca713a..2df736e72c69a415cf373bf2e856003965da72de 100644
 --- a/include/tcg/startup.h
 +++ b/include/tcg/startup.h
 @@ -45,6 +45,15 @@ void tcg_init(size_t tb_size, int splitwx, unsigned max_threads);
@@ -30517,7 +30092,7 @@ index 95f574af2..2df736e72 100644
   * tcg_prologue_init(): Generate the code for the TCG prologue
   *
 diff --git a/iothread.c b/iothread.c
-index 3558535b4..f07b4c572 100644
+index 3558535b40f52fc841e4790433d41aab39f062cd..f07b4c572b614166eb161b924759fe0d5deb42b0 100644
 --- a/iothread.c
 +++ b/iothread.c
 @@ -12,6 +12,10 @@
@@ -30704,7 +30279,7 @@ index 3558535b4..f07b4c572 100644
   * iothread_create() objects. */
  IOThread *iothread_by_id(const char *id)
 diff --git a/migration/migration.c b/migration/migration.c
-index 9df6da131..f8388da64 100644
+index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62ca33444b6 100644
 --- a/migration/migration.c
 +++ b/migration/migration.c
 @@ -17,6 +17,7 @@
@@ -30864,7 +30439,7 @@ index 9df6da131..f8388da64 100644
          return true;
      }
 diff --git a/migration/savevm.c b/migration/savevm.c
-index 34dd06f9f..a0bbce841 100644
+index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..a0bbce84182945454035c4ff42c848dab959731b 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -28,6 +28,9 @@
@@ -31360,7 +30935,7 @@ index 34dd06f9f..a0bbce841 100644
  
  err_drain:
 diff --git a/migration/savevm.h b/migration/savevm.h
-index f7dcdd7d1..366ad0c3d 100644
+index f7dcdd7d1b6b7b5397eb1b6aab5cb5816a92f1a8..366ad0c3d0cbcc26e74d0f3ccfe66054ee88af1e 100644
 --- a/migration/savevm.h
 +++ b/migration/savevm.h
 @@ -69,6 +69,28 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
@@ -31393,7 +30968,7 @@ index f7dcdd7d1..366ad0c3d 100644
  int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
                             Error **errp);
 diff --git a/migration/vmstate.c b/migration/vmstate.c
-index 50ebe3784..0b91ba43a 100644
+index 50ebe37845285d7cc1d427d35a261dff58b914b7..0b91ba43a596cbc372c9b2fdf1465029ea859eaa 100644
 --- a/migration/vmstate.c
 +++ b/migration/vmstate.c
 @@ -21,6 +21,31 @@
@@ -31429,7 +31004,7 @@ index 50ebe3784..0b91ba43a 100644
                                      void *opaque, JSONWriter *vmdesc,
                                      Error **errp);
 diff --git a/monitor/fds.c b/monitor/fds.c
-index cc35d2ec3..c9b720678 100644
+index cc35d2ec334929216bb9653890b058406035f4f6..758af92785572fe27da1bc988978619249fb3132 100644
 --- a/monitor/fds.c
 +++ b/monitor/fds.c
 @@ -166,6 +166,36 @@ int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp)
@@ -31513,7 +31088,107 @@ index cc35d2ec3..c9b720678 100644
  AddfdInfo *qmp_add_fd(bool has_fdset_id, int64_t fdset_id,
                        const char *opaque, Error **errp)
  {
-@@ -512,4 +572,7 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
+@@ -331,6 +391,99 @@ FdsetInfoList *qmp_query_fdsets(Error **errp)
+     return fdset_list;
+ }
+ 
++/*
++ * The launch owner supplies one regular image per fixed fdset. Startup has
++ * already closed the inherited fd numbers; block opens retain duplicates.
++ * Validate every live duplicate before changing either startup fdset.
++ */
++static bool monitor_crucible_launch_fdset_valid(MonFdset *fdset,
++                                                const char *expected_opaque,
++                                                Error **errp)
++{
++    MonFdsetFd *original = QLIST_FIRST(&fdset->fds);
++    MonFdsetFd *duplicate;
++    struct stat original_stat;
++
++    if (!original || QLIST_NEXT(original, next) ||
++        !original->opaque ||
++        strcmp(original->opaque, expected_opaque) != 0 ||
++        QLIST_EMPTY(&fdset->dup_fds) ||
++        fstat(original->fd, &original_stat) < 0 ||
++        !S_ISREG(original_stat.st_mode)) {
++        error_setg(errp, "Crucible launch fdset %" PRId64
++                   " has no single pinned regular %s image",
++                   fdset->id, expected_opaque);
++        return false;
++    }
++
++    QLIST_FOREACH(duplicate, &fdset->dup_fds, next) {
++        struct stat duplicate_stat;
++
++        if (duplicate->opaque ||
++            fstat(duplicate->fd, &duplicate_stat) < 0 ||
++            duplicate_stat.st_dev != original_stat.st_dev ||
++            duplicate_stat.st_ino != original_stat.st_ino ||
++            duplicate_stat.st_mode != original_stat.st_mode) {
++            error_setg(errp, "Crucible launch fdset %" PRId64
++                       " contains a mismatched block descriptor",
++                       fdset->id);
++            return false;
++        }
++    }
++
++    return true;
++}
++
++void qmp_x_crucible_adopt_launch_fdsets(bool root_overlay, Error **errp)
++{
++    MonFdset *fdset;
++    MonFdset *vmstate = NULL;
++    MonFdset *overlay = NULL;
++    MonFdset *sets[2];
++    size_t set_count = root_overlay ? 2 : 1;
++    size_t i;
++
++    QEMU_LOCK_GUARD(&mon_fdsets_lock);
++    QLIST_FOREACH(fdset, &mon_fdsets, next) {
++        if (fdset->id == 1 && !vmstate) {
++            vmstate = fdset;
++        } else if (fdset->id == 2 && root_overlay && !overlay) {
++            overlay = fdset;
++        } else {
++            error_setg(errp, "Unexpected fdset during Crucible launch adoption");
++            return;
++        }
++    }
++
++    if (!vmstate || (root_overlay && !overlay)) {
++        error_setg(errp, "Missing Crucible launch fdset");
++        return;
++    }
++    if (!monitor_crucible_launch_fdset_valid(vmstate, "crucible-vmstate",
++                                             errp) ||
++        (root_overlay &&
++         !monitor_crucible_launch_fdset_valid(overlay,
++                                              "crucible-root-overlay", errp))) {
++        return;
++    }
++
++    sets[0] = vmstate;
++    sets[1] = overlay;
++    for (i = 0; i < set_count; i++) {
++        MonFdsetFd *duplicate;
++        MonFdsetFd *next_duplicate;
++
++        monitor_fdset_fd_free(QLIST_FIRST(&sets[i]->fds));
++        QLIST_FOREACH_SAFE(duplicate, &sets[i]->dup_fds, next,
++                           next_duplicate) {
++            /* The block node still owns the live descriptor. */
++            QLIST_REMOVE(duplicate, next);
++            g_free(duplicate);
++        }
++        monitor_fdset_free(sets[i]);
++    }
++}
++
+ AddfdInfo *monitor_fdset_add_fd(int fd, bool has_fdset_id, int64_t fdset_id,
+                                 const char *opaque, Error **errp)
+ {
+@@ -512,4 +665,7 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
  static void __attribute__((__constructor__)) monitor_fds_init(void)
  {
      qemu_mutex_init(&mon_fdsets_lock);
@@ -31522,7 +31197,7 @@ index cc35d2ec3..c9b720678 100644
 +        monitor_hot_fork_child_drop_fd_names);
  }
 diff --git a/monitor/monitor-internal.h b/monitor/monitor-internal.h
-index 23829f32f..5f2cc4b99 100644
+index 23829f32f9ab6e083a86b90e1104022ae4326617..5f2cc4b9963b4a52da65a37132dbb59c009082ee 100644
 --- a/monitor/monitor-internal.h
 +++ b/monitor/monitor-internal.h
 @@ -26,6 +26,7 @@
@@ -31740,7 +31415,7 @@ index 23829f32f..5f2cc4b99 100644
  int hmp_compare_cmd(const char *name, const char *list);
  
 diff --git a/monitor/monitor.c b/monitor/monitor.c
-index ed195fd97..e982166be 100644
+index ed195fd97bbca2a99d1827c16e3f602051b6403d..e982166bed458b1b2fb884ae699a8e56b1df12e2 100644
 --- a/monitor/monitor.c
 +++ b/monitor/monitor.c
 @@ -24,12 +24,14 @@
@@ -32558,7 +32233,7 @@ index ed195fd97..e982166be 100644
  
          ctx = iothread_get_aio_context(mon_iothread);
 diff --git a/monitor/qmp-cmds-control.c b/monitor/qmp-cmds-control.c
-index 8fe0876a3..5434d4501 100644
+index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e489a7bc04a 100644
 --- a/monitor/qmp-cmds-control.c
 +++ b/monitor/qmp-cmds-control.c
 @@ -73,6 +73,7 @@ void qmp_qmp_capabilities(bool has_enable, QMPCapabilityList *enable,
@@ -32570,7 +32245,7 @@ index 8fe0876a3..5434d4501 100644
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587f..5f56fcef7 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819e5ffd2f4 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -14,53 +14,5948 @@
@@ -38719,7 +38394,7 @@ index 6cb0b587f..5f56fcef7 100644
                      bool has_skipauth, bool skipauth, bool has_tls, bool tls,
                      Error **errp)
 diff --git a/monitor/qmp.c b/monitor/qmp.c
-index 338d37cb7..a7306e957 100644
+index 338d37cb7e5af19dfebd5de23a8694f18f81b332..a7306e957232e4755396ee6fe78fcc33e12fe693 100644
 --- a/monitor/qmp.c
 +++ b/monitor/qmp.c
 @@ -28,6 +28,7 @@
@@ -38903,7 +38578,7 @@ index 338d37cb7..a7306e957 100644
      }
  
 diff --git a/net/net.c b/net/net.c
-index 0a30579ca..c17bc0862 100644
+index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd92ea774b8 100644
 --- a/net/net.c
 +++ b/net/net.c
 @@ -23,6 +23,7 @@
@@ -39014,7 +38689,7 @@ index 0a30579ca..c17bc0862 100644
      }
  
 diff --git a/net/slirp.c b/net/slirp.c
-index 9e9941fe7..2be3d8051 100644
+index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..2be3d8051f98dc40f9ef5ec53c6cce3f2e39e9a3 100644
 --- a/net/slirp.c
 +++ b/net/slirp.c
 @@ -384,6 +384,8 @@ static void net_slirp_poll_notify(Notifier *notifier, void *data)
@@ -39058,7 +38733,7 @@ index 9e9941fe7..2be3d8051 100644
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd6..2cee840b3 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..2cee840b3471ed6f4166bbd5e6b86753a3dc721f 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -41511,7 +41186,7 @@ index fbf905cd6..2cee840b3 100644
 +    qemu_mutex_unlock(&qemu_plugin_crucible_virtual_timer_witness_lock);
 +}
 diff --git a/plugins/api.c b/plugins/api.c
-index eb982f9aa..359b4a4d1 100644
+index eb982f9aad7f564314654723e70a5fd679c5256f..359b4a4d1a11d8d994f13eb7d06f1683d6735fa5 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -36,14 +36,33 @@
@@ -42665,7 +42340,7 @@ index eb982f9aa..359b4a4d1 100644
  }
 -
 diff --git a/plugins/core.c b/plugins/core.c
-index 1113bfe56..af48eb2ce 100644
+index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..af48eb2ce69374dda6347c5c054a72957f780318 100644
 --- a/plugins/core.c
 +++ b/plugins/core.c
 @@ -15,6 +15,7 @@
@@ -42689,7 +42364,7 @@ index 1113bfe56..af48eb2ce 100644
  static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 000000000..526250973
+index 0000000000000000000000000000000000000000..5262509739367d13058185caa962a9499cac3500
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
 @@ -0,0 +1,1865 @@
@@ -44560,7 +44235,7 @@ index 000000000..526250973
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 000000000..c25a4e34e
+index 0000000000000000000000000000000000000000..c25a4e34e95722389fe4d7c6f75ffe629c52275d
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
 @@ -0,0 +1,4509 @@
@@ -49075,7 +48750,7 @@ index 000000000..c25a4e34e
 +type_init(crucible_clock_register)
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
 new file mode 100644
-index 000000000..165f4fb93
+index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889e689ccc3
 --- /dev/null
 +++ b/plugins/crucible-fault-hardware-error.c
 @@ -0,0 +1,1869 @@
@@ -50950,7 +50625,7 @@ index 000000000..165f4fb93
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 000000000..57aba682b
+index 0000000000000000000000000000000000000000..57aba682b1d0f96d775194bf1c0f8983081a04ea
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
 @@ -0,0 +1,3281 @@
@@ -54237,7 +53912,7 @@ index 000000000..57aba682b
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 000000000..b5f1dab68
+index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9ae0fd4f7a
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -0,0 +1,2741 @@
@@ -56984,7 +56659,7 @@ index 000000000..b5f1dab68
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 000000000..375cddbb3
+index 0000000000000000000000000000000000000000..375cddbb344de1fb0cd93d04b3fc49304243b353
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
 @@ -0,0 +1,2589 @@
@@ -59579,7 +59254,7 @@ index 000000000..375cddbb3
 +type_init(crucible_lifecycle_register)
 diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
 new file mode 100644
-index 000000000..4e4c1457c
+index 0000000000000000000000000000000000000000..4e4c1457c80b594038357e0ca8c1023110ac0e31
 --- /dev/null
 +++ b/plugins/crucible-fault-memory.c
 @@ -0,0 +1,1396 @@
@@ -60981,7 +60656,7 @@ index 000000000..4e4c1457c
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 000000000..2e44cf930
+index 0000000000000000000000000000000000000000..2e44cf930cfe28a5b336f806366a28fc57efeac5
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
 @@ -0,0 +1,11990 @@
@@ -72977,7 +72652,7 @@ index 000000000..2e44cf930
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 000000000..db4f82751
+index 0000000000000000000000000000000000000000..db4f8275156bb9f2d80653cdb369bb2eca119396
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
 @@ -0,0 +1,1343 @@
@@ -74326,7 +74001,7 @@ index 000000000..db4f82751
 +}
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
-index 000000000..6d4d1dc12
+index 0000000000000000000000000000000000000000..6d4d1dc1264d8939f54b223cbbab82a2d017d65b
 --- /dev/null
 +++ b/plugins/crucible-fault-vcpu-service.c
 @@ -0,0 +1,1473 @@
@@ -75805,7 +75480,7 @@ index 000000000..6d4d1dc12
 +type_init(crucible_vcpu_service_register)
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
 new file mode 100644
-index 000000000..e937bbff1
+index 0000000000000000000000000000000000000000..e937bbff1fd07184a0536fdd74962267cd14fa63
 --- /dev/null
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -0,0 +1,658 @@
@@ -76469,7 +76144,7 @@ index 000000000..e937bbff1
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 000000000..c205caeed
+index 0000000000000000000000000000000000000000..c205caeed5675e9076afb18ac47002d6df9d0aaa
 --- /dev/null
 +++ b/plugins/crucible-fault.c
 @@ -0,0 +1,1426 @@
@@ -77901,7 +77576,7 @@ index 000000000..c205caeed
 +type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/crucible-idle-wait.c b/plugins/crucible-idle-wait.c
 new file mode 100644
-index 000000000..b6cb47e27
+index 0000000000000000000000000000000000000000..b6cb47e272f3169d316e7fbe40aa9d5abc928739
 --- /dev/null
 +++ b/plugins/crucible-idle-wait.c
 @@ -0,0 +1,171 @@
@@ -78077,7 +77752,7 @@ index 000000000..b6cb47e27
 +    return 0;
 +}
 diff --git a/plugins/loader.c b/plugins/loader.c
-index b10ebe8cc..269bbde2f 100644
+index b10ebe8cc050e5dc436aaf62f04adc5f9eae5fd1..269bbde2f8324b8fa39facba65dc12456ef50103 100644
 --- a/plugins/loader.c
 +++ b/plugins/loader.c
 @@ -391,6 +391,11 @@ void plugin_reset_uninstall(qemu_plugin_id_t id,
@@ -78093,7 +77768,7 @@ index b10ebe8cc..269bbde2f 100644
          ctx = plugin_id_to_ctx_locked(id);
          if (ctx->uninstalling || (reset && ctx->resetting)) {
 diff --git a/plugins/meson.build b/plugins/meson.build
-index 9899f166e..220033b16 100644
+index 9899f166ee851b4db22f1cf04e79fae874574529..220033b16e00bde6e7b13d624f5e31bcb42c8168 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -79,10 +79,20 @@ else
@@ -78120,7 +77795,7 @@ index 9899f166e..220033b16 100644
  common_ss.add(files('loader.c'))
 -
 diff --git a/qapi/block-core.json b/qapi/block-core.json
-index 1f87b0785..2d99203a7 100644
+index 1f87b078505ad1ec41c2a8efb037fed0b3cae069..2d99203a7eeead610af03ea47d988ed9b59049ef 100644
 --- a/qapi/block-core.json
 +++ b/qapi/block-core.json
 @@ -3324,6 +3324,8 @@
@@ -78170,7 +77845,7 @@ index 1f87b0785..2d99203a7 100644
        'file':       'BlockdevOptionsFile',
        'ftp':        'BlockdevOptionsCurlFtp',
 diff --git a/qapi/misc.json b/qapi/misc.json
-index 22b7afed9..66762b6f3 100644
+index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415ea300ab7 100644
 --- a/qapi/misc.json
 +++ b/qapi/misc.json
 @@ -181,6 +181,172 @@
@@ -78383,8 +78058,33 @@ index 22b7afed9..66762b6f3 100644
  
  ##
  # @AddfdInfo:
+@@ -455,6 +630,24 @@
+ ##
+ { 'command': 'query-fdsets', 'returns': ['FdsetInfo'] }
+ 
++##
++# @x-crucible-adopt-launch-fdsets:
++#
++# Detach startup fdsets after the block roots have opened.
++# Preserve block-owned descriptors and remove their bookkeeping so
++# a later hot fork starts with an empty fdset registry.
++#
++# @root-overlay: Whether startup supplied root-overlay fdset 2.
++#
++# Errors:
++#     - If the fixed fdsets or live duplicates do not match
++#       the expected launch images, GenericError
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-adopt-launch-fdsets',
++  'data': { 'root-overlay': 'bool' } }
++
+ ##
+ # @CommandLineParameterType:
+ #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46..6a654ac3b 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..6a654ac3ba0c5cefb59fe8cc7fcfb5fb1a52fd3b 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -132,6 +132,2680 @@
@@ -81069,7 +80769,7 @@ index a5771ad46..6a654ac3b 100644
  # @SHUTDOWN:
  #
 diff --git a/qemu-options.hx b/qemu-options.hx
-index 34970fffc..9085a23fc 100644
+index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..9085a23fc054e4263095dc806ac965783de98c52 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -232,7 +232,7 @@ SRST
@@ -81114,7 +80814,7 @@ index 34970fffc..9085a23fc 100644
      Typically this happens when the shift value is high (how high
      depends on the host machine). The default if icount is enabled
 diff --git a/qobject/json-streamer.c b/qobject/json-streamer.c
-index b634bbe99..ddc476dde 100644
+index b634bbe99cc368c55debe10f5a698127ff5f7dd0..ddc476dde3e8fea359fff757278d586ff817e94d 100644
 --- a/qobject/json-streamer.c
 +++ b/qobject/json-streamer.c
 @@ -136,6 +136,16 @@ void json_message_parser_flush(JSONMessageParser *parser)
@@ -81135,7 +80835,7 @@ index b634bbe99..ddc476dde 100644
  {
      json_lexer_destroy(&parser->lexer);
 diff --git a/replay/replay-internal.c b/replay/replay-internal.c
-index 4839f2b63..78572a8af 100644
+index 4839f2b63213898461922c9d5e6fcd3c7704c2f7..78572a8afb905b4bb44b35ae8787a827ab8a6d38 100644
 --- a/replay/replay-internal.c
 +++ b/replay/replay-internal.c
 @@ -26,6 +26,7 @@ static QemuMutex lock;
@@ -81182,7 +80882,7 @@ index 4839f2b63..78572a8af 100644
          qemu_mutex_lock(&lock);
          ++mutex_head;
 diff --git a/replay/replay-internal.h b/replay/replay-internal.h
-index 42c393542..3e0dfcd42 100644
+index 42c393542eb3151564c62a7383788502782d4b2f..3e0dfcd42de4cf86aaa07127efd77c21000b139a 100644
 --- a/replay/replay-internal.h
 +++ b/replay/replay-internal.h
 @@ -122,12 +122,6 @@ int64_t replay_get_qword(void);
@@ -81199,7 +80899,7 @@ index 42c393542..3e0dfcd42 100644
  void replay_check_error(void);
  
 diff --git a/replay/replay.c b/replay/replay.c
-index 14437b325..d3119bb7d 100644
+index 14437b32566b71f2b889215be45eaef22a93b781..d3119bb7d0d49faea64333604c20b8526dbbe013 100644
 --- a/replay/replay.c
 +++ b/replay/replay.c
 @@ -365,7 +365,7 @@ static void replay_enable(const char *fname, int mode)
@@ -81220,7 +80920,7 @@ index 14437b325..d3119bb7d 100644
      } else if (!strcmp(rr, "record")) {
          mode = REPLAY_MODE_RECORD;
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index 9919b4623..2f07c2218 100644
+index 9919b46230f1caf8be1a1b6ef00acd94678437ce..2f07c22184eae7b10d9b29c8bf701dbc450e52f5 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
 @@ -25,11 +25,16 @@
@@ -81427,7 +81127,7 @@ index 9919b4623..2f07c2218 100644
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5ede..47c7f9c23 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a1868fd61 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -81583,7 +81283,7 @@ index 97e5a5ede..47c7f9c23 100644
 -
 diff --git a/system/crucible-checkpoint-restore.c b/system/crucible-checkpoint-restore.c
 new file mode 100644
-index 000000000..ff98b964c
+index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c344599d2
 --- /dev/null
 +++ b/system/crucible-checkpoint-restore.c
 @@ -0,0 +1,740 @@
@@ -82329,7 +82029,7 @@ index 000000000..ff98b964c
 +}
 diff --git a/system/crucible-checkpoint.c b/system/crucible-checkpoint.c
 new file mode 100644
-index 000000000..6d8f8ffc1
+index 0000000000000000000000000000000000000000..6d8f8ffc1221e7a2c35adee5980c72f367c8f2b2
 --- /dev/null
 +++ b/system/crucible-checkpoint.c
 @@ -0,0 +1,1431 @@
@@ -83766,7 +83466,7 @@ index 000000000..6d8f8ffc1
 +}
 diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
 new file mode 100644
-index 000000000..e8f027d46
+index 0000000000000000000000000000000000000000..e8f027d4691f650dec356f26638c11943a6cc7bf
 --- /dev/null
 +++ b/system/crucible-hot-fork-coordinator.c
 @@ -0,0 +1,552 @@
@@ -84324,7 +84024,7 @@ index 000000000..e8f027d46
 +}
 diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
 new file mode 100644
-index 000000000..ca14cb74d
+index 0000000000000000000000000000000000000000..ca14cb74dec55ff9bef5d7360cdec1540ae50723
 --- /dev/null
 +++ b/system/crucible-hot-fork-plugin-child.c
 @@ -0,0 +1,2278 @@
@@ -86607,7 +86307,7 @@ index 000000000..ca14cb74d
 +    return 0;
 +}
 diff --git a/system/ioport.c b/system/ioport.c
-index 0a1b80f29..a4a44491d 100644
+index 0a1b80f29949e8c92c500e0a60aafa8868e88960..a4a44491d8085b662f053765509616ef66ece15e 100644
 --- a/system/ioport.c
 +++ b/system/ioport.c
 @@ -26,10 +26,12 @@
@@ -86711,7 +86411,7 @@ index 0a1b80f29..a4a44491d 100644
      return val;
  }
 diff --git a/system/main.c b/system/main.c
-index b8f7157cc..101f4d1e9 100644
+index b8f7157cc346a37095700d51f96b1a353d06b549..101f4d1e946aaec3a750ce9e3117488d5f841c4b 100644
 --- a/system/main.c
 +++ b/system/main.c
 @@ -23,6 +23,7 @@
@@ -86854,7 +86554,7 @@ index b8f7157cc..101f4d1e9 100644
  
      /*
 diff --git a/system/memory.c b/system/memory.c
-index 5fc36708e..4e0bad5c8 100644
+index 5fc36708ec349d94605f0503c647d7f9d1475a2d..4e0bad5c8604c9af077269608402748093b02d77 100644
 --- a/system/memory.c
 +++ b/system/memory.c
 @@ -700,6 +700,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
@@ -86969,7 +86669,7 @@ index 5fc36708e..4e0bad5c8 100644
      }
  }
 diff --git a/system/meson.build b/system/meson.build
-index cd3193d17..ce7f42b18 100644
+index cd3193d170b2b5759cb34e4087a6d0ebfa805287..ce7f42b183e3e8eb61c0e1915fc1ff99828278da 100644
 --- a/system/meson.build
 +++ b/system/meson.build
 @@ -8,6 +8,9 @@ system_ss.add(files(
@@ -86993,7 +86693,7 @@ index cd3193d17..ce7f42b18 100644
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea9291..4e21850ba 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..4e21850ba940c6eb7724320aa8293f774506b00f 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -80,6 +80,7 @@
@@ -87819,7 +87519,7 @@ index c21ea9291..4e21850ba 100644
      return ret;
  }
 diff --git a/system/rtc.c b/system/rtc.c
-index 018609a4f..f37950af1 100644
+index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..f37950af1dbf5a67574340a5d875d6b5b3a379c0 100644
 --- a/system/rtc.c
 +++ b/system/rtc.c
 @@ -45,8 +45,34 @@ static time_t rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME *
@@ -87876,7 +87576,7 @@ index 018609a4f..f37950af1 100644
  
  static void configure_rtc_base_datetime(const char *startdate)
 diff --git a/system/runstate.c b/system/runstate.c
-index 08acf801b..17973c85b 100644
+index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3fddcfab2 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
 @@ -43,10 +43,15 @@
@@ -87934,7 +87634,7 @@ index 08acf801b..17973c85b 100644
      notifier_list_notify(&shutdown_notifiers, &cause);
  }
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf86..c6f6acf80 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208a29f5e9b 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -43,6 +43,7 @@
@@ -88008,7 +87708,7 @@ index 061cbdf86..c6f6acf80 100644
  
      user_register_global_props();
 diff --git a/target/arm/cpu-irq.c b/target/arm/cpu-irq.c
-index 883e8a176..959461eb5 100644
+index 883e8a176c3b519406a0e80a292413cd680dddbe..959461eb56b034d33739dadc6a8b70878209d1b7 100644
 --- a/target/arm/cpu-irq.c
 +++ b/target/arm/cpu-irq.c
 @@ -265,12 +265,40 @@ bool arm_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
@@ -88058,7 +87758,7 @@ index 883e8a176..959461eb5 100644
  }
 -
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 787e4dc7a..294a97306 100644
+index 787e4dc7ab23377fb9bc50e2532e841b193a1968..294a9730632daad661b0bce53b8e26be86ded2bf 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -22,6 +22,8 @@
@@ -88224,7 +87924,7 @@ index 787e4dc7a..294a97306 100644
  
  type_init(arm_cpu_register_types)
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index c0492c8df..60bf4cf61 100644
+index c0492c8dfbc4d77aecd6a17ec7ef434f1ccdf90f..60bf4cf6190ad63074a19d46faff9b3271b6248e 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -65,6 +65,7 @@
@@ -88322,7 +88022,7 @@ index c0492c8df..60bf4cf61 100644
   * Return a pointer to the Dn register within env in 32-bit mode.
 diff --git a/target/arm/crucible-fingerprint.h b/target/arm/crucible-fingerprint.h
 new file mode 100644
-index 000000000..3840557b2
+index 0000000000000000000000000000000000000000..3840557b2c10b8c646254ea7afd479629575005f
 --- /dev/null
 +++ b/target/arm/crucible-fingerprint.h
 @@ -0,0 +1,124 @@
@@ -88452,7 +88152,7 @@ index 000000000..3840557b2
 +#endif
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
-index 000000000..30a7b924f
+index 0000000000000000000000000000000000000000..30a7b924fa5470418c8db76b21f1c3371a31f185
 --- /dev/null
 +++ b/target/arm/crucible-register.c
 @@ -0,0 +1,547 @@
@@ -89004,7 +88704,7 @@ index 000000000..30a7b924f
 +    return -EINVAL;
 +}
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index af45234ad..9b0433ff4 100644
+index af45234ad2a7e86bbc02f6faa6c5534436133e1b..9b0433ff402b972a1510b3048ed057cc0e8e5f0c 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -8,6 +8,7 @@
@@ -89413,7 +89113,7 @@ index af45234ad..9b0433ff4 100644
          cpu_set_interrupt(cs, CPU_INTERRUPT_EXITTB);
      }
 diff --git a/target/arm/internals.h b/target/arm/internals.h
-index 4026f6757..b7f6aef38 100644
+index 4026f67579e768232b51cddc792e156adfb1d680..b7f6aef38ffa0b420aec1ac6f7e5c13ea29efb3b 100644
 --- a/target/arm/internals.h
 +++ b/target/arm/internals.h
 @@ -1053,6 +1053,10 @@ G_NORETURN void arm_cpu_do_unaligned_access(CPUState *cs, vaddr vaddr,
@@ -89436,7 +89136,7 @@ index 4026f6757..b7f6aef38 100644
   * Return the currently applicable offset between the system counter
   * and the counter for the specified timer, as used for direct register
 diff --git a/target/arm/machine.c b/target/arm/machine.c
-index 89127e5d8..dcf764bfa 100644
+index 89127e5d83c0ea6c303e2ee55106911c07565e5b..dcf764bfaf25691054e8e7e76846ea87071bc628 100644
 --- a/target/arm/machine.c
 +++ b/target/arm/machine.c
 @@ -1,4 +1,5 @@
@@ -89718,7 +89418,7 @@ index 89127e5d8..dcf764bfa 100644
          &vmstate_wfxt_timer,
          &vmstate_syndrome64,
 diff --git a/target/arm/meson.build b/target/arm/meson.build
-index 0369f96b4..e20c3d763 100644
+index 0369f96b4cc6b6d9b7368388df47feb6ca2122d5..e20c3d7638c6cb06a407daa0b59eddd4cf42d090 100644
 --- a/target/arm/meson.build
 +++ b/target/arm/meson.build
 @@ -54,6 +54,7 @@ arm_common_system_ss.add(when: 'CONFIG_ARM_COMPATIBLE_SEMIHOSTING',
@@ -89730,7 +89430,7 @@ index 0369f96b4..e20c3d763 100644
    'cpregs-omap.c',
    'cpu-irq.c',
 diff --git a/target/arm/ptw.c b/target/arm/ptw.c
-index a29de0385..73998ea5f 100644
+index a29de0385f4e9990457d4b8009e8e8ec57888939..73998ea5f97614667450b2d577788a1e3aa0e83d 100644
 --- a/target/arm/ptw.c
 +++ b/target/arm/ptw.c
 @@ -11,9 +11,12 @@
@@ -90146,7 +89846,7 @@ index a29de0385..73998ea5f 100644
 +                      cpu_mmu_index(cs, false), &fi);
 +}
 diff --git a/target/arm/tcg/tlb_helper.c b/target/arm/tcg/tlb_helper.c
-index 4c3f16dc2..a96724e44 100644
+index 4c3f16dc2aadd53d0ebc4d41b8fcca4a550c8d88..a96724e4480093ffa17055eadb99553a58fb6712 100644
 --- a/target/arm/tcg/tlb_helper.c
 +++ b/target/arm/tcg/tlb_helper.c
 @@ -12,6 +12,9 @@
@@ -90217,7 +89917,7 @@ index 4c3f16dc2..a96724e44 100644
          res.f.extra.arm.shareability = res.cacheattrs.shareability;
          *out = res.f;
 diff --git a/target/arm/tcg/translate-a64.c b/target/arm/tcg/translate-a64.c
-index 178049006..ad30a1e37 100644
+index 1780490065e14fe81fe56513e24484c56f3a542f..ad30a1e37c6bec63f7eb7cd64d94e0a140df3b12 100644
 --- a/target/arm/tcg/translate-a64.c
 +++ b/target/arm/tcg/translate-a64.c
 @@ -2119,6 +2119,16 @@ static bool trans_ERETA(DisasContext *s, arg_reta *a)
@@ -90252,7 +89952,7 @@ index 178049006..ad30a1e37 100644
          default:
          case DISAS_UPDATE_EXIT:
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index 5805d33ab..27b93b96a 100644
+index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..27b93b96a19db6a68579a449bc089900cd8a461a 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -41,6 +41,7 @@
@@ -90380,7 +90080,7 @@ index 5805d33ab..27b93b96a 100644
  
  type_init(x86_cpu_register_types)
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index e6a197602..65240fbb3 100644
+index e6a197602d874bec5e99fa936675052f7759d44f..65240fbb34b04cadc3d4cab46d44e6bdfc7a43b8 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
 @@ -2579,6 +2579,20 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
@@ -90442,7 +90142,7 @@ index e6a197602..65240fbb3 100644
  static inline void cpu_set_mxcsr(CPUX86State *env, uint32_t mxcsr)
 diff --git a/target/i386/crucible-fingerprint.h b/target/i386/crucible-fingerprint.h
 new file mode 100644
-index 000000000..2d9a51585
+index 0000000000000000000000000000000000000000..2d9a51585444f15cae159772e306d8b504c2e339
 --- /dev/null
 +++ b/target/i386/crucible-fingerprint.h
 @@ -0,0 +1,93 @@
@@ -90541,7 +90241,7 @@ index 000000000..2d9a51585
 +#endif
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
 new file mode 100644
-index 000000000..7507cf5db
+index 0000000000000000000000000000000000000000..7507cf5db7693707572e032b98c2899a27221935
 --- /dev/null
 +++ b/target/i386/crucible-register.c
 @@ -0,0 +1,1011 @@
@@ -91557,7 +91257,7 @@ index 000000000..7507cf5db
 +    return -EINVAL;
 +}
 diff --git a/target/i386/gdbstub.c b/target/i386/gdbstub.c
-index 5c5fa7272..57da2d164 100644
+index 5c5fa72721637cdf2258291c8d3eeaf2b3b5bc9e..57da2d164d39e02dac8b2fca4f629ccb919e0060 100644
 --- a/target/i386/gdbstub.c
 +++ b/target/i386/gdbstub.c
 @@ -136,6 +136,17 @@ int x86_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
@@ -91589,7 +91289,7 @@ index 5c5fa7272..57da2d164 100644
          case IDX_CTL_CR0_REG:
              return gdb_read_reg_cs64(env->hflags, mem_buf, env->cr[0]);
 diff --git a/target/i386/machine.c b/target/i386/machine.c
-index df0e0c178..6fd202343 100644
+index df0e0c178e436050ecede6d576fc25bc5846692c..6fd2023432e994ecbef4fa2d8320146dc30620e6 100644
 --- a/target/i386/machine.c
 +++ b/target/i386/machine.c
 @@ -3,6 +3,7 @@
@@ -91749,7 +91449,7 @@ index df0e0c178..6fd202343 100644
          VMSTATE_UINTTL_SUB_ARRAY(env.regs, X86CPU, 0, CPU_NB_REGS),
          VMSTATE_UINTTL(env.eip, X86CPU),
 diff --git a/target/i386/meson.build b/target/i386/meson.build
-index b4fbf8a53..795d516ae 100644
+index b4fbf8a53746e13c1c5490bdd0205cbb4c524f2d..795d516ae1a36ae88dbd2c2663dd92816d7c2c65 100644
 --- a/target/i386/meson.build
 +++ b/target/i386/meson.build
 @@ -18,6 +18,7 @@ i386_system_ss = ss.source_set()
@@ -91761,7 +91461,7 @@ index b4fbf8a53..795d516ae 100644
    'monitor.c',
    'cpu-apic.c',
 diff --git a/target/i386/tcg/fpu_helper.c b/target/i386/tcg/fpu_helper.c
-index b812125ef..08bd8930a 100644
+index b812125efa17c18ef31b3e4fe81cd34d27a37444..08bd8930aa6f6e2fcf09da5f6d24224ad985ebf7 100644
 --- a/target/i386/tcg/fpu_helper.c
 +++ b/target/i386/tcg/fpu_helper.c
 @@ -3267,17 +3267,23 @@ void update_mxcsr_status(CPUX86State *env)
@@ -91798,7 +91498,7 @@ index b812125ef..08bd8930a 100644
  
  void helper_update_mxcsr(CPUX86State *env)
 diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
-index f7342871d..375cfba42 100644
+index f7342871ded72b73b6998ac506651890aeeefc0e..375cfba42808150c992004d876283992ef178718 100644
 --- a/target/i386/tcg/misc_helper.c
 +++ b/target/i386/tcg/misc_helper.c
 @@ -18,8 +18,11 @@
@@ -91852,7 +91552,7 @@ index f7342871d..375cfba42 100644
      cpu_loop_exit(cs);
  }
 diff --git a/target/i386/tcg/seg_helper.c b/target/i386/tcg/seg_helper.c
-index 6d424349a..39a3ef905 100644
+index 6d424349a58a388483b2dcbf9d2a9691999d580e..39a3ef90527e739d4b75d9ac1a04c56bdb4c6bd1 100644
 --- a/target/i386/tcg/seg_helper.c
 +++ b/target/i386/tcg/seg_helper.c
 @@ -21,6 +21,7 @@
@@ -91875,7 +91575,7 @@ index 6d424349a..39a3ef905 100644
  }
  
 diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
-index d7ea77c85..81b4771c0 100644
+index d7ea77c85580709dfbd305135901649c35a9ebf6..81b4771c05d655bfac841fab9a53cd0b8d32d87a 100644
 --- a/target/i386/tcg/system/excp_helper.c
 +++ b/target/i386/tcg/system/excp_helper.c
 @@ -18,13 +18,17 @@
@@ -92571,7 +92271,7 @@ index d7ea77c85..81b4771c0 100644
           * Even if 4MB pages, we map only one 4KB page in the cache to
           * avoid filling it too fast.
 diff --git a/target/i386/tcg/system/misc_helper.c b/target/i386/tcg/system/misc_helper.c
-index 2998b1aae..8f6f6b128 100644
+index 2998b1aae752c31a487b84dc6c303aac98b9be47..8f6f6b1288f622c3a33356e501462a3142bcec48 100644
 --- a/target/i386/tcg/system/misc_helper.c
 +++ b/target/i386/tcg/system/misc_helper.c
 @@ -18,6 +18,8 @@
@@ -92668,7 +92368,7 @@ index 2998b1aae..8f6f6b128 100644
  
  target_ulong helper_read_cr8(CPUX86State *env)
 diff --git a/target/i386/tcg/system/svm_helper.c b/target/i386/tcg/system/svm_helper.c
-index 52a234e7f..534d525bc 100644
+index 52a234e7facac935d5ac9c15da9f3043acf2edea..534d525bc5ecd9d0d357fcaed5dfa767ab374816 100644
 --- a/target/i386/tcg/system/svm_helper.c
 +++ b/target/i386/tcg/system/svm_helper.c
 @@ -19,6 +19,8 @@
@@ -92729,7 +92429,7 @@ index 52a234e7f..534d525bc 100644
      env->gdt.base  = x86_ldq_phys(cs, env->vm_hsave + offsetof(struct vmcb,
                                                         save.gdtr.base));
 diff --git a/target/i386/tcg/tcg-stub.c b/target/i386/tcg/tcg-stub.c
-index 8d45579ad..7d74404d9 100644
+index 8d45579ada253388acfe98316153f26bee59cb9b..7d74404d9f3b1f8562182d68bf6c100463d9b5ac 100644
 --- a/target/i386/tcg/tcg-stub.c
 +++ b/target/i386/tcg/tcg-stub.c
 @@ -20,6 +20,11 @@
@@ -92745,7 +92445,7 @@ index 8d45579ad..7d74404d9 100644
  {
  }
 diff --git a/target/i386/tcg/translate.c b/target/i386/tcg/translate.c
-index 2115c5cd2..b06a89107 100644
+index 2115c5cd24ba4b07ad7588c2413095dc37d15dc0..b06a8910790cc4b6c135e0838f5088c99c383d33 100644
 --- a/target/i386/tcg/translate.c
 +++ b/target/i386/tcg/translate.c
 @@ -3585,6 +3585,9 @@ static void i386_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
@@ -92759,7 +92459,7 @@ index 2115c5cd2..b06a89107 100644
          break;
      case DISAS_EOB_NEXT:
 diff --git a/tcg/region.c b/tcg/region.c
-index 1145f3508..db65b7382 100644
+index 1145f35085cf045d54ca8e2c54ebf00e6e96ad17..db65b7382ad550e7605d5a88f998933b83f0f159 100644
 --- a/tcg/region.c
 +++ b/tcg/region.c
 @@ -776,7 +776,6 @@ void tcg_region_init(size_t tb_size, int splitwx, unsigned max_threads)
@@ -92771,7 +92471,7 @@ index 1145f3508..db65b7382 100644
      assert(have_prot >= 0);
  
 diff --git a/tcg/tcg.c b/tcg/tcg.c
-index db43589fa..9accb43cc 100644
+index db43589fa2fba025804b29fcade3482724542a6c..9accb43cce8e8e4053b040360d1b4fdfa5c39fab 100644
 --- a/tcg/tcg.c
 +++ b/tcg/tcg.c
 @@ -1284,6 +1284,18 @@ void tcg_register_thread(void)
@@ -92795,7 +92495,7 @@ index db43589fa..9accb43cc 100644
  /* pool based memory allocation */
 diff --git a/tests/qtest/crucible-exact-tb-exit.py b/tests/qtest/crucible-exact-tb-exit.py
 new file mode 100644
-index 000000000..74f76ce9c
+index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b493f3b2a9
 --- /dev/null
 +++ b/tests/qtest/crucible-exact-tb-exit.py
 @@ -0,0 +1,85 @@
@@ -92886,7 +92586,7 @@ index 000000000..74f76ce9c
 +    main()
 diff --git a/tests/qtest/crucible-fingerprint-projection.py b/tests/qtest/crucible-fingerprint-projection.py
 new file mode 100644
-index 000000000..89c384636
+index 0000000000000000000000000000000000000000..89c38463657e93c2061e91ca7a1f47036a633112
 --- /dev/null
 +++ b/tests/qtest/crucible-fingerprint-projection.py
 @@ -0,0 +1,720 @@
@@ -93612,7 +93312,7 @@ index 000000000..89c384636
 +    main()
 diff --git a/tests/qtest/crucible-idle-wait-liveness.py b/tests/qtest/crucible-idle-wait-liveness.py
 new file mode 100644
-index 000000000..3b2add8a7
+index 0000000000000000000000000000000000000000..3b2add8a7d3d89061d022a5fda07568d9f9b0fdb
 --- /dev/null
 +++ b/tests/qtest/crucible-idle-wait-liveness.py
 @@ -0,0 +1,1978 @@
@@ -95596,7 +95296,7 @@ index 000000000..3b2add8a7
 +    main()
 diff --git a/tests/qtest/crucible-multiboot-gap.py b/tests/qtest/crucible-multiboot-gap.py
 new file mode 100644
-index 000000000..124c2d30b
+index 0000000000000000000000000000000000000000..124c2d30b918ffbbe9ae38fdaa3c66fea5e0e5ec
 --- /dev/null
 +++ b/tests/qtest/crucible-multiboot-gap.py
 @@ -0,0 +1,107 @@
@@ -95708,7 +95408,7 @@ index 000000000..124c2d30b
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/qtest/meson.build b/tests/qtest/meson.build
-index 56ff860e2..a5114635e 100644
+index 56ff860e216c8f37105b56839447b54cd05712de..a5114635e2227b01983182228354611db95eda17 100644
 --- a/tests/qtest/meson.build
 +++ b/tests/qtest/meson.build
 @@ -505,3 +505,48 @@ foreach dir : target_dirs
@@ -95761,10 +95461,18 @@ index 56ff860e2..a5114635e 100644
 +  )
 +endif
 diff --git a/tests/qtest/qmp-cmd-test.c b/tests/qtest/qmp-cmd-test.c
-index 279a8f561..eea527109 100644
+index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb7460637834c2f 100644
 --- a/tests/qtest/qmp-cmd-test.c
 +++ b/tests/qtest/qmp-cmd-test.c
-@@ -46,6 +46,8 @@ static int query_error_class(const char *cmd)
+@@ -15,6 +15,7 @@
+ #include "qapi/error.h"
+ #include "qapi/qapi-visit-introspect.h"
+ #include "qobject/qdict.h"
++#include "qobject/qlist.h"
+ #include "qapi/qobject-input-visitor.h"
+ 
+ const char common_args[] = "-nodefaults -machine none";
+@@ -46,6 +47,8 @@ static int query_error_class(const char *cmd)
          { "query-balloon", ERROR_CLASS_DEVICE_NOT_ACTIVE },
          { "query-hotpluggable-cpus", ERROR_CLASS_GENERIC_ERROR },
          { "query-hv-balloon-status-report", ERROR_CLASS_GENERIC_ERROR },
@@ -95773,8 +95481,183 @@ index 279a8f561..eea527109 100644
          { "query-vm-generation-id", ERROR_CLASS_GENERIC_ERROR },
          /* Only valid with a USB bus added */
          { "x-query-usb", ERROR_CLASS_GENERIC_ERROR },
+@@ -343,6 +346,156 @@ static void test_object_add_failure_modes(void)
+     qtest_quit(qts);
+ }
+ 
++#ifndef _WIN32
++static int crucible_test_image(void)
++{
++    g_autofree char *path = NULL;
++    int fd = g_file_open_tmp("crucible-launch-image-XXXXXX", &path, NULL);
++
++    g_assert_cmpint(fd, >=, 0);
++    g_assert_cmpint(ftruncate(fd, 4096), ==, 0);
++    g_assert_cmpint(unlink(path), ==, 0);
++    return fd;
++}
++
++static void crucible_assert_fdsets_empty(QTestState *qts)
++{
++    QDict *reply = qtest_qmp(qts, "{'execute':'query-fdsets'}");
++
++    g_assert(qlist_empty(qdict_get_qlist(reply, "return")));
++    qobject_unref(reply);
++}
++
++static void test_crucible_adopt_launch_fdsets(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int vmstate_fd = crucible_test_image();
++    int overlay_fd = crucible_test_image();
++
++    qtest_qmp_fds_assert_success(qts, &vmstate_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':1,"
++        "'opaque':'crucible-vmstate'}}");
++    qtest_qmp_fds_assert_success(qts, &overlay_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':2,"
++        "'opaque':'crucible-root-overlay'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-add','arguments':{'driver':'file',"
++        "'filename':'/dev/fdset/1','node-name':'vmstate-test'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-add','arguments':{'driver':'file',"
++        "'filename':'/dev/fdset/2','node-name':'overlay-test'}}");
++
++    qtest_qmp_assert_success(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':true}}");
++    crucible_assert_fdsets_empty(qts);
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'vmstate-test'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'overlay-test'}}");
++
++    close(vmstate_fd);
++    close(overlay_fd);
++    qtest_quit(qts);
++}
++
++static void test_crucible_reject_replaced_launch_image(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int original_fd = crucible_test_image();
++    int replacement_fd = crucible_test_image();
++    QDict *reply;
++
++    qtest_qmp_fds_assert_success(qts, &original_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':1,"
++        "'opaque':'crucible-vmstate'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-add','arguments':{'driver':'file',"
++        "'filename':'/dev/fdset/1','node-name':'vmstate-test'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':1}}");
++    qtest_qmp_fds_assert_success(qts, &replacement_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':1,"
++        "'opaque':'crucible-vmstate'}}");
++
++    reply = qtest_qmp(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':false}}");
++    qmp_expect_error_and_unref(reply, "GenericError");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':1}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'vmstate-test'}}");
++    crucible_assert_fdsets_empty(qts);
++
++    close(original_fd);
++    close(replacement_fd);
++    qtest_quit(qts);
++}
++
++static void test_crucible_reject_extra_launch_fdset(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int vmstate_fd = crucible_test_image();
++    int extra_fd = crucible_test_image();
++    QDict *reply;
++
++    qtest_qmp_fds_assert_success(qts, &vmstate_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':1,"
++        "'opaque':'crucible-vmstate'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-add','arguments':{'driver':'file',"
++        "'filename':'/dev/fdset/1','node-name':'vmstate-test'}}");
++    qtest_qmp_fds_assert_success(qts, &extra_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':9,"
++        "'opaque':'unexpected'}}");
++
++    reply = qtest_qmp(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':false}}");
++    qmp_expect_error_and_unref(reply, "GenericError");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':9}}");
++
++    /* Re-adoption proves the rejected call preserved the live block node. */
++    qtest_qmp_assert_success(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':false}}");
++    crucible_assert_fdsets_empty(qts);
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'vmstate-test'}}");
++
++    close(vmstate_fd);
++    close(extra_fd);
++    qtest_quit(qts);
++}
++
++static void test_crucible_reject_unopened_launch_image(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int vmstate_fd = crucible_test_image();
++    QDict *reply;
++
++    qtest_qmp_fds_assert_success(qts, &vmstate_fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':1,"
++        "'opaque':'crucible-vmstate'}}");
++
++    reply = qtest_qmp(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':false}}");
++    qmp_expect_error_and_unref(reply, "GenericError");
++    reply = qtest_qmp(qts, "{'execute':'query-fdsets'}");
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(reply, "return")), ==, 1);
++    qobject_unref(reply);
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':1}}");
++    crucible_assert_fdsets_empty(qts);
++
++    close(vmstate_fd);
++    qtest_quit(qts);
++}
++#endif
++
+ int main(int argc, char *argv[])
+ {
+     QmpSchema schema;
+@@ -356,6 +509,17 @@ int main(int argc, char *argv[])
+     qtest_add_func("qmp/object-add-failure-modes",
+                    test_object_add_failure_modes);
+ 
++#ifndef _WIN32
++    qtest_add_func("qmp/crucible-adopt-launch-fdsets",
++                   test_crucible_adopt_launch_fdsets);
++    qtest_add_func("qmp/crucible-reject-replaced-launch-image",
++                   test_crucible_reject_replaced_launch_image);
++    qtest_add_func("qmp/crucible-reject-extra-launch-fdset",
++                   test_crucible_reject_extra_launch_fdset);
++    qtest_add_func("qmp/crucible-reject-unopened-launch-image",
++                   test_crucible_reject_unopened_launch_image);
++#endif
++
+     ret = g_test_run();
+ 
+     qmp_schema_cleanup(&schema);
 diff --git a/tests/qtest/virtio-serial-test.c b/tests/qtest/virtio-serial-test.c
-index 254103482..2e259f855 100644
+index 2541034822d89fba0102222634de2ed185274dde..2e259f855884a1e496ae4e7347875b11735b6765 100644
 --- a/tests/qtest/virtio-serial-test.c
 +++ b/tests/qtest/virtio-serial-test.c
 @@ -10,14 +10,119 @@
@@ -95923,7 +95806,7 @@ index 254103482..2e259f855 100644
  
 diff --git a/tests/tcg/plugins/crucible-exact-tb-exit.c b/tests/tcg/plugins/crucible-exact-tb-exit.c
 new file mode 100644
-index 000000000..d622a5548
+index 0000000000000000000000000000000000000000..d622a5548c4d850037867543e302a28961c022dd
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-exact-tb-exit.c
 @@ -0,0 +1,135 @@
@@ -96064,7 +95947,7 @@ index 000000000..d622a5548
 +}
 diff --git a/tests/tcg/plugins/crucible-fingerprint-observer.c b/tests/tcg/plugins/crucible-fingerprint-observer.c
 new file mode 100644
-index 000000000..db286854d
+index 0000000000000000000000000000000000000000..db286854dfc30f6efbbff961b9e0ac65b2422df1
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-fingerprint-observer.c
 @@ -0,0 +1,317 @@
@@ -96387,7 +96270,7 @@ index 000000000..db286854d
 +}
 diff --git a/tests/tcg/plugins/crucible-idle-wait-liveness.c b/tests/tcg/plugins/crucible-idle-wait-liveness.c
 new file mode 100644
-index 000000000..2c77d72e4
+index 0000000000000000000000000000000000000000..2c77d72e4c5018750216b428aa1d1ae146474977
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-idle-wait-liveness.c
 @@ -0,0 +1,334 @@
@@ -96727,7 +96610,7 @@ index 000000000..2c77d72e4
 +}
 diff --git a/tests/tcg/plugins/crucible-instruction.c b/tests/tcg/plugins/crucible-instruction.c
 new file mode 100644
-index 000000000..f1dd5e82e
+index 0000000000000000000000000000000000000000..f1dd5e82e85e3ff4bff76c5571378b3be8a147fc
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-instruction.c
 @@ -0,0 +1,1881 @@
@@ -98614,7 +98497,7 @@ index 000000000..f1dd5e82e
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 000000000..cc70705b9
+index 0000000000000000000000000000000000000000..cc70705b9fb5c6d2ce1fd429eea7f8230d98efc1
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
 @@ -0,0 +1,1047 @@
@@ -99667,7 +99550,7 @@ index 000000000..cc70705b9
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-dma.c b/tests/tcg/plugins/crucible-memory-dma.c
 new file mode 100644
-index 000000000..0028bd8c8
+index 0000000000000000000000000000000000000000..0028bd8c805f500eca5488eb29b538e5d2b729f7
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-dma.c
 @@ -0,0 +1,461 @@
@@ -100134,7 +100017,7 @@ index 000000000..0028bd8c8
 +}
 diff --git a/tests/tcg/plugins/crucible-memory.c b/tests/tcg/plugins/crucible-memory.c
 new file mode 100644
-index 000000000..ad3b5bc4e
+index 0000000000000000000000000000000000000000..ad3b5bc4ed37ccc6059fe8c951ccf84ede87d123
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory.c
 @@ -0,0 +1,953 @@
@@ -101093,7 +100976,7 @@ index 000000000..ad3b5bc4e
 +}
 diff --git a/tests/tcg/plugins/crucible-register.c b/tests/tcg/plugins/crucible-register.c
 new file mode 100644
-index 000000000..f281d88ea
+index 0000000000000000000000000000000000000000..f281d88ea3d33904ffa0a957c08089694a9f02b1
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-register.c
 @@ -0,0 +1,1041 @@
@@ -102139,7 +102022,7 @@ index 000000000..f281d88ea
 +    return 0;
 +}
 diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
-index d7f8f0ae0..1e4bc21cf 100644
+index d7f8f0ae0ad4ed24f91b1c44ec36fff81c37631e..1e4bc21cff92c508a934a2affb52c19a1d80ea1f 100644
 --- a/tests/tcg/plugins/meson.build
 +++ b/tests/tcg/plugins/meson.build
 @@ -1,5 +1,11 @@
@@ -102168,7 +102051,7 @@ index d7f8f0ae0..1e4bc21cf 100644
  if t.length() > 0
    alias_target('test-plugins', t)
 diff --git a/tests/unit/check-json-parser.c b/tests/unit/check-json-parser.c
-index 656a47524..21a5585d8 100644
+index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561aa604abe 100644
 --- a/tests/unit/check-json-parser.c
 +++ b/tests/unit/check-json-parser.c
 @@ -42,6 +42,29 @@ static void parse_emit(void *opaque, QObject *json, Error *err)
@@ -102211,7 +102094,7 @@ index 656a47524..21a5585d8 100644
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c..844063b04 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..844063b04c1bf857b7c1dc5a92b5970131f2902b 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,27 @@ if have_system
@@ -102295,7 +102178,7 @@ index dc3fb954c..844063b04 100644
 +  )
 +endif
 diff --git a/tests/unit/test-aio.c b/tests/unit/test-aio.c
-index b3ca4d8a5..9cfdc591d 100644
+index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..9cfdc591dacc8c00c0b0c7c89a9549971b3d9978 100644
 --- a/tests/unit/test-aio.c
 +++ b/tests/unit/test-aio.c
 @@ -20,6 +20,8 @@
@@ -102525,7 +102408,7 @@ index b3ca4d8a5..9cfdc591d 100644
      g_test_add_func("/aio-gsource/flush",                   test_source_flush);
      g_test_add_func("/aio-gsource/bh/schedule",             test_source_bh_schedule);
 diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
-index 4257b3f81..7f8d6173e 100644
+index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b93843cdfc 100644
 --- a/tests/unit/test-block-backend.c
 +++ b/tests/unit/test-block-backend.c
 @@ -24,9 +24,100 @@
@@ -103934,7 +103817,7 @@ index 4257b3f81..7f8d6173e 100644
      return g_test_run();
  }
 diff --git a/tests/unit/test-char.c b/tests/unit/test-char.c
-index b88b55713..f850ad2c5 100644
+index b88b557133a721fc87bab91701271ef9f1888fc7..f850ad2c5fcc10989db7a0d032055e8a4515d5e5 100644
 --- a/tests/unit/test-char.c
 +++ b/tests/unit/test-char.c
 @@ -7,6 +7,7 @@
@@ -104083,7 +103966,7 @@ index b88b55713..f850ad2c5 100644
  
 diff --git a/tests/unit/test-crucible-acpi-piix-fingerprint.c b/tests/unit/test-crucible-acpi-piix-fingerprint.c
 new file mode 100644
-index 000000000..6ece48df5
+index 0000000000000000000000000000000000000000..6ece48df5aa3e0c5203f300c3721198bef4f5c6e
 --- /dev/null
 +++ b/tests/unit/test-crucible-acpi-piix-fingerprint.c
 @@ -0,0 +1,457 @@
@@ -104546,7 +104429,7 @@ index 000000000..6ece48df5
 +}
 diff --git a/tests/unit/test-crucible-ahci-fingerprint.c b/tests/unit/test-crucible-ahci-fingerprint.c
 new file mode 100644
-index 000000000..b0522d7ec
+index 0000000000000000000000000000000000000000..b0522d7ecc1acfddf400f671a89967e58a28b1da
 --- /dev/null
 +++ b/tests/unit/test-crucible-ahci-fingerprint.c
 @@ -0,0 +1,145 @@
@@ -104697,7 +104580,7 @@ index 000000000..b0522d7ec
 +}
 diff --git a/tests/unit/test-crucible-arm-fingerprint.c b/tests/unit/test-crucible-arm-fingerprint.c
 new file mode 100644
-index 000000000..22ecfa425
+index 0000000000000000000000000000000000000000..22ecfa4256467ccd58ead478ac6a5dcd3819fb0f
 --- /dev/null
 +++ b/tests/unit/test-crucible-arm-fingerprint.c
 @@ -0,0 +1,237 @@
@@ -104940,7 +104823,7 @@ index 000000000..22ecfa425
 +}
 diff --git a/tests/unit/test-crucible-e1000-fingerprint.c b/tests/unit/test-crucible-e1000-fingerprint.c
 new file mode 100644
-index 000000000..a56f97cc6
+index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4be22e0fc
 --- /dev/null
 +++ b/tests/unit/test-crucible-e1000-fingerprint.c
 @@ -0,0 +1,179 @@
@@ -105125,7 +105008,7 @@ index 000000000..a56f97cc6
 +}
 diff --git a/tests/unit/test-crucible-fdc-fingerprint.c b/tests/unit/test-crucible-fdc-fingerprint.c
 new file mode 100644
-index 000000000..118d1778a
+index 0000000000000000000000000000000000000000..118d1778a4dc88077a56e15648cf174aeb5f5d41
 --- /dev/null
 +++ b/tests/unit/test-crucible-fdc-fingerprint.c
 @@ -0,0 +1,212 @@
@@ -105343,7 +105226,7 @@ index 000000000..118d1778a
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
 new file mode 100644
-index 000000000..fc75645df
+index 0000000000000000000000000000000000000000..fc75645df2e1ca7c76d293c845fa61f6d209df49
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-child.c
 @@ -0,0 +1,3197 @@
@@ -108546,7 +108429,7 @@ index 000000000..fc75645df
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
 new file mode 100644
-index 000000000..05bca6590
+index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be2435dc52
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-coordinator.c
 @@ -0,0 +1,298 @@
@@ -108850,7 +108733,7 @@ index 000000000..05bca6590
 +}
 diff --git a/tests/unit/test-crucible-idle-wait.c b/tests/unit/test-crucible-idle-wait.c
 new file mode 100644
-index 000000000..8f85ec9ac
+index 0000000000000000000000000000000000000000..8f85ec9ac352a7866c6e65f40c8401f29e58cb7f
 --- /dev/null
 +++ b/tests/unit/test-crucible-idle-wait.c
 @@ -0,0 +1,809 @@
@@ -109665,7 +109548,7 @@ index 000000000..8f85ec9ac
 +}
 diff --git a/tests/unit/test-crucible-parallel-fingerprint.c b/tests/unit/test-crucible-parallel-fingerprint.c
 new file mode 100644
-index 000000000..1ba2a64a8
+index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8fad8970d5
 --- /dev/null
 +++ b/tests/unit/test-crucible-parallel-fingerprint.c
 @@ -0,0 +1,90 @@
@@ -109761,7 +109644,7 @@ index 000000000..1ba2a64a8
 +}
 diff --git a/tests/unit/test-crucible-vga-fingerprint.c b/tests/unit/test-crucible-vga-fingerprint.c
 new file mode 100644
-index 000000000..8bca357b6
+index 0000000000000000000000000000000000000000..8bca357b65257a6572ee6c8ace8267d431c85521
 --- /dev/null
 +++ b/tests/unit/test-crucible-vga-fingerprint.c
 @@ -0,0 +1,174 @@
@@ -109941,7 +109824,7 @@ index 000000000..8bca357b6
 +}
 diff --git a/tests/unit/test-crucible-x86-fingerprint.c b/tests/unit/test-crucible-x86-fingerprint.c
 new file mode 100644
-index 000000000..bdc7cb8fb
+index 0000000000000000000000000000000000000000..bdc7cb8fb2d200e987a605412e39a6069f6d37cc
 --- /dev/null
 +++ b/tests/unit/test-crucible-x86-fingerprint.c
 @@ -0,0 +1,186 @@
@@ -110132,7 +110015,7 @@ index 000000000..bdc7cb8fb
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-rcu-list.c b/tests/unit/test-rcu-list.c
-index 8dde3e61a..0a1c335ae 100644
+index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0a1c335ae51a65c7c7e28316fd1c866614d9c790 100644
 --- a/tests/unit/test-rcu-list.c
 +++ b/tests/unit/test-rcu-list.c
 @@ -329,6 +329,65 @@ static void usage(int argc, char *argv[])
@@ -110211,7 +110094,7 @@ index 8dde3e61a..0a1c335ae 100644
              return g_test_run();
          }
 diff --git a/tests/unit/test-vmstate.c b/tests/unit/test-vmstate.c
-index df1fb4c77..e6bd2f8c2 100644
+index df1fb4c7780813b1f2063035e2447f7dbc3427b9..e6bd2f8c25e98a3a2bab1e6d6738665fbdb9a0a7 100644
 --- a/tests/unit/test-vmstate.c
 +++ b/tests/unit/test-vmstate.c
 @@ -1619,6 +1619,142 @@ static void test_tmp_struct(void)
@@ -110367,7 +110250,7 @@ index df1fb4c77..e6bd2f8c2 100644
  
      close(temp_fd);
 diff --git a/util/aio-posix.c b/util/aio-posix.c
-index df1c213ce..770e0c9a4 100644
+index df1c213ce568d071596cc8586fe07408190af588..770e0c9a42bfcf9c1287b5eb99b42f9672df1cba 100644
 --- a/util/aio-posix.c
 +++ b/util/aio-posix.c
 @@ -28,6 +28,138 @@
@@ -110773,7 +110656,7 @@ index df1c213ce..770e0c9a4 100644
  
  #ifdef CONFIG_LINUX_IO_URING
 diff --git a/util/aio-posix.h b/util/aio-posix.h
-index cd459bbba..0dd20437c 100644
+index cd459bbbaedaa4e1facb57dc31807b2da1e69eb3..0dd20437cd280fc1b4056a2872c0d0283111c7fd 100644
 --- a/util/aio-posix.h
 +++ b/util/aio-posix.h
 @@ -41,6 +41,11 @@ struct AioHandler {
@@ -110789,7 +110672,7 @@ index cd459bbba..0dd20437c 100644
  
  /* Add a handler to a ready list */
 diff --git a/util/aio-win32.c b/util/aio-win32.c
-index 198584323..22dd5695d 100644
+index 1985843233efa577ce4c0228856514daa2830549..22dd5695d7f4409c79abf7546600cfca18ada42e 100644
 --- a/util/aio-win32.c
 +++ b/util/aio-win32.c
 @@ -339,6 +339,8 @@ bool aio_poll(AioContext *ctx, bool blocking)
@@ -110810,7 +110693,7 @@ index 198584323..22dd5695d 100644
  }
  
 diff --git a/util/async.c b/util/async.c
-index 741fcfd6a..604ea3ef1 100644
+index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30f0152185 100644
 --- a/util/async.c
 +++ b/util/async.c
 @@ -31,14 +31,187 @@
@@ -111800,7 +111683,7 @@ index 741fcfd6a..604ea3ef1 100644
  void aio_context_set_thread_pool_params(AioContext *ctx, int64_t min,
 diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
 new file mode 100644
-index 000000000..5f70f85ad
+index 0000000000000000000000000000000000000000..5f70f85adcf9054eede4d2f2f23ba52cc9eafb36
 --- /dev/null
 +++ b/util/crucible-hot-fork-child.c
 @@ -0,0 +1,1294 @@
@@ -113099,7 +112982,7 @@ index 000000000..5f70f85ad
 +        transaction, shared_mappings, shared_mapping_count);
 +}
 diff --git a/util/guest-random.c b/util/guest-random.c
-index 33607d5ff..13bf69f12 100644
+index 33607d5ff24d0ace1ddec5fc90dc11235234d866..13bf69f128e31c939a2594d0ca21f07174762fe1 100644
 --- a/util/guest-random.c
 +++ b/util/guest-random.c
 @@ -11,6 +11,7 @@
@@ -113207,7 +113090,7 @@ index 33607d5ff..13bf69f12 100644
          return 0;
      }
 diff --git a/util/main-loop.c b/util/main-loop.c
-index 65e5dbcc9..da6e36c96 100644
+index 65e5dbcc941bd2d397c42befad5b212959329714..da6e36c960864eeca759dfc9fd2f228cff1d7a33 100644
 --- a/util/main-loop.c
 +++ b/util/main-loop.c
 @@ -30,6 +30,7 @@
@@ -113334,7 +113217,7 @@ index 65e5dbcc9..da6e36c96 100644
  
  /* Functions to operate on the main QEMU AioContext.  */
 diff --git a/util/meson.build b/util/meson.build
-index fa174c07a..5ee896ab0 100644
+index fa174c07a57a422f19315e990147ea9364782ba7..5ee896ab013f8d99c3ce57bbfce329c6d739c522 100644
 --- a/util/meson.build
 +++ b/util/meson.build
 @@ -71,6 +71,7 @@ if have_system
@@ -113346,7 +113229,7 @@ index fa174c07a..5ee896ab0 100644
    endif
  endif
 diff --git a/util/qemu-coroutine.c b/util/qemu-coroutine.c
-index d17135f58..a8a35db75 100644
+index d17135f585aef5fd0adf7a6e0f889eeebfade754..a8a35db75afbf1a9aca85b47b4c0a7402f1ebb41 100644
 --- a/util/qemu-coroutine.c
 +++ b/util/qemu-coroutine.c
 @@ -248,6 +248,7 @@ void qemu_aio_coroutine_enter(AioContext *ctx, Coroutine *co)
@@ -113366,7 +113249,7 @@ index d17135f58..a8a35db75 100644
  
  void qemu_coroutine_enter(Coroutine *co)
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93..0dba015b8 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14faab7069 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,58 @@
@@ -115020,7 +114903,7 @@ index 089606c93..0dba015b8 100644
      pthread_sigmask(SIG_SETMASK, &oldset, NULL);
  
 diff --git a/util/qemu-timer.c b/util/qemu-timer.c
-index d93a02006..1d928afe9 100644
+index d93a020064fe2a82602c5739f4cb39a930d64a0e..1d928afe96c384790944bd346fefc6ef3b733b0b 100644
 --- a/util/qemu-timer.c
 +++ b/util/qemu-timer.c
 @@ -23,6 +23,8 @@
@@ -115668,7 +115551,7 @@ index d93a02006..1d928afe9 100644
      return clock;
  }
 diff --git a/util/rcu.c b/util/rcu.c
-index acac9446e..148fdee8b 100644
+index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a04070ede1459 100644
 --- a/util/rcu.c
 +++ b/util/rcu.c
 @@ -51,8 +51,46 @@ unsigned long rcu_gp_ctr = RCU_GP_LOCKED;
@@ -116156,7 +116039,7 @@ index acac9446e..148fdee8b 100644
  {
      atfork_depth++;
 diff --git a/util/thread-pool.c b/util/thread-pool.c
-index 4e75191c9..4d005a816 100644
+index 4e75191c983e080a3df7f757c084f6d3edc7cd9f..4d005a8161d63ef506855e0585f450e667342249 100644
 --- a/util/thread-pool.c
 +++ b/util/thread-pool.c
 @@ -346,6 +346,12 @@ ThreadPoolAio *thread_pool_new_aio(AioContext *ctx)
@@ -116173,7 +116056,7 @@ index 4e75191c9..4d005a816 100644
  {
      if (!pool) {
 diff --git a/util/trace-events b/util/trace-events
-index df549646d..fa10fa04e 100644
+index df549646d12fd29400cb551b8e7b5ff111a92083..fa10fa04edd8f4f3bec785b8949805547a6be319 100644
 --- a/util/trace-events
 +++ b/util/trace-events
 @@ -1,5 +1,11 @@
@@ -116188,6 +116071,3 @@ index df549646d..fa10fa04e 100644
  # aio-posix.c
  run_poll_handlers_begin(void *ctx, int64_t max_ns, int64_t timeout) "ctx %p max_ns %"PRId64 " timeout %"PRId64
  run_poll_handlers_end(void *ctx, bool progress, int64_t timeout) "ctx %p progress %d new timeout %"PRId64
--- 
-2.55.0
-
