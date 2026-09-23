@@ -59,7 +59,7 @@ pub const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize =
 /// Maximum exact completed Host Apply receipt carried by an effect query.
 pub const MAXIMUM_RUNTIME_EFFECT_RECEIPT_BYTES: usize = 1024 * 1024;
 const MAXIMUM_AUTHORIZATION_ARTIFACT_BYTES: usize = 960 * 1024;
-const MAXIMUM_BROKER_METHODS: usize = 22;
+const MAXIMUM_BROKER_METHODS: usize = 23;
 const MAXIMUM_REQUIRED_FEATURES: usize = 64;
 const MAXIMUM_SAFE_ERROR_MESSAGE_BYTES: usize = 1024;
 
@@ -1234,6 +1234,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+            | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
     )
 }
@@ -1811,6 +1812,7 @@ fn validate_method(
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+                | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         ) | (
             ProtocolId::NetworkBroker,
@@ -4240,6 +4242,68 @@ mod tests {
                 &[method],
             ),
             Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn grouped_storage_snapshot_requires_authority_and_no_descriptors() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT;
+        let features = client_features();
+        let hello = BrokerClientHello {
+            protocol_major: 1,
+            protocol_minor: 0,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            maximum_response_bytes: 4096,
+            required_features: features.iter().map(proto_feature).collect(),
+            required_methods: vec![method.into()],
+            ..Default::default()
+        };
+        let session = negotiate_client_hello(
+            &hello.encode_to_vec(),
+            peer(),
+            policy(),
+            ProtocolId::StorageBroker,
+            &features,
+            &[method],
+        )
+        .unwrap();
+        let artifacts = authorization_artifacts();
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            b"canonical group",
+            &[],
+            borrowed_artifacts(&artifacts),
+        )
+        .unwrap();
+
+        assert!(session.decode_request(&packet, 0).is_ok());
+
+        let unsigned = BrokerRequestEnvelope {
+            method: method.into(),
+            body: b"canonical group".to_vec(),
+            ..Default::default()
+        };
+        assert!(
+            session
+                .decode_request(&unsigned.encode_to_vec(), 0)
+                .is_err()
+        );
+        assert!(matches!(
+            encode_unauthed_request_envelope(ProtocolId::StorageBroker, method, b"canonical group"),
+            Err(ProtocolValidationError::InvalidField(
+                "envelope.authorization profile"
+            ))
+        ));
+        assert_eq!(
+            encode_authorized_request_envelope(
+                ProtocolId::StorageBroker,
+                method,
+                b"canonical group",
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT],
+                borrowed_artifacts(&artifacts),
+            ),
+            Err(ProtocolValidationError::DescriptorTableMismatch)
         );
     }
 

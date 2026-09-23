@@ -153,11 +153,11 @@ pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectRecoveryV1,
 };
 pub use lifecycle_host_inventory::{
-    DormantAtomicStorageInventoryFinishProgressV1, DormantAtomicStorageInventoryFinishRecoveryV1,
-    DormantAtomicStorageInventoryPredecessorV1, DormantHostRuntimeInventoryOwnerV1,
-    DormantLifecycleInventoryQueryProgressV1, DormantLifecycleInventoryQueryRecoveryV1,
-    DormantMountLifecycleInventoryOwnerV1, DormantNetworkLifecycleInventoryOwnerV1,
-    DormantStorageLifecycleInventoryOwnerV1,
+    DormantAtomicStorageInventoryCompletionV1, DormantAtomicStorageInventoryFinishProgressV1,
+    DormantAtomicStorageInventoryFinishRecoveryV1, DormantAtomicStorageInventoryPredecessorV1,
+    DormantHostRuntimeInventoryOwnerV1, DormantLifecycleInventoryQueryProgressV1,
+    DormantLifecycleInventoryQueryRecoveryV1, DormantMountLifecycleInventoryOwnerV1,
+    DormantNetworkLifecycleInventoryOwnerV1, DormantStorageLifecycleInventoryOwnerV1,
 };
 pub use manifest::{
     BROKER_SESSION_SECURITY_MANIFEST_BYTES, BrokerSessionManifestBindingV1,

@@ -112,7 +112,7 @@ const SERVER_HELLO_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-server-he
 const REQUEST_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-request-fields-v1\0";
 const RESPONSE_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-outcome-fields-v1\0";
 const MAXIMUM_FEATURES: usize = 64;
-const MAXIMUM_METHODS: usize = 22;
+const MAXIMUM_METHODS: usize = 23;
 
 /// Reports a malformed, noncanonical, incorrectly bounded, or wrong-sized packet.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

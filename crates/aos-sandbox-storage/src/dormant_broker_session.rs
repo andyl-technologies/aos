@@ -1,7 +1,7 @@
-//! Dormant authenticated-session callsite for Storage Apply.
+//! Authenticated-session callsite for Storage effects.
 //!
 //! This module deliberately has no service registration. It joins the
-//! constructible protected Apply runtime to the existing signed admission and
+//! constructible protected Storage runtime to the existing signed admission and
 //! one-shot execution paths only when an external protected-session owner
 //! supplies the exact already-authenticated body and kernel identity evidence.
 
@@ -138,7 +138,8 @@ pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
         protected_boot_id: [u8; 16],
     ) -> Result<DormantStorageBrokerObservationV1, DormantStorageBrokerCallErrorV1>;
 
-    /// Executes one exact authenticated Storage prepare or repair operation.
+    /// Executes one exact authenticated Storage prepare, repair, or grouped
+    /// snapshot.
     ///
     /// # Errors
     ///

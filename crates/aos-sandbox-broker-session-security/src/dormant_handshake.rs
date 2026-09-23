@@ -3485,7 +3485,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.finish_observed_success(request, response)
     }
 
-    /// Executes Storage catalog preparation or repair before signing success.
+    /// Executes Storage catalog preparation, repair, or grouped snapshot
+    /// before signing success.
     ///
     /// # Errors
     ///

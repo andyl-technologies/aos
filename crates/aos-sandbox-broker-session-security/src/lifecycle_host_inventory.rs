@@ -820,6 +820,12 @@ impl DormantAtomicStorageInventoryPredecessorV1 {
     pub const fn inventory(&self) -> &LifecycleAuthenticatedStorageInventoryV1 {
         &self.inventory
     }
+
+    /// Borrows the signed predecessor exchange retained for the adjacent join.
+    #[must_use]
+    pub const fn outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.outcome
+    }
 }
 
 /// Retains both sides of a post-atomic Storage inventory ambiguity.
@@ -834,9 +840,61 @@ pub struct DormantAtomicStorageInventoryFinishRecoveryV1 {
 #[must_use = "consume the successor or retain and resume protected custody"]
 pub enum DormantAtomicStorageInventoryFinishProgressV1 {
     /// The authenticated predecessor/successor join completed.
-    Complete(LifecycleAuthenticatedAtomicStorageSuccessorV1),
+    Complete(DormantAtomicStorageInventoryCompletionV1),
     /// The post-effect query remains ambiguous without losing its predecessor.
     RecoveryRequired(DormantAtomicStorageInventoryFinishRecoveryV1),
+}
+
+/// Retains the verified successor with all three exact signed exchanges.
+///
+/// These packets are moved from the adjacent query and group custody only after
+/// the fixed endpoint attestation verifies their predecessor/group/successor
+/// relationship. A lifecycle source record can then commit their exact hashes.
+#[must_use = "retain the verified successor and adjacent signed packet evidence"]
+pub struct DormantAtomicStorageInventoryCompletionV1 {
+    successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
+    predecessor: AuthenticatedBrokerMethodOutcomeV1,
+    group: AuthenticatedBrokerMethodOutcomeV1,
+    current: AuthenticatedBrokerMethodOutcomeV1,
+}
+
+impl DormantAtomicStorageInventoryCompletionV1 {
+    /// Borrows the verified complete Storage successor.
+    #[must_use]
+    pub const fn successor(&self) -> &LifecycleAuthenticatedAtomicStorageSuccessorV1 {
+        &self.successor
+    }
+
+    /// Borrows the exact signed pre-effect inventory exchange.
+    #[must_use]
+    pub const fn predecessor_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.predecessor
+    }
+
+    /// Borrows the exact signed grouped-effect exchange.
+    #[must_use]
+    pub const fn group_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.group
+    }
+
+    /// Borrows the exact signed post-effect inventory exchange.
+    #[must_use]
+    pub const fn successor_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.current
+    }
+
+    /// Moves the verified successor and all three signed exchanges together.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        LifecycleAuthenticatedAtomicStorageSuccessorV1,
+        AuthenticatedBrokerMethodOutcomeV1,
+        AuthenticatedBrokerMethodOutcomeV1,
+        AuthenticatedBrokerMethodOutcomeV1,
+    ) {
+        (self.successor, self.predecessor, self.group, self.current)
+    }
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
@@ -1177,7 +1235,12 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 signature,
             )?;
         Ok(DormantAtomicStorageInventoryFinishProgressV1::Complete(
-            successor,
+            DormantAtomicStorageInventoryCompletionV1 {
+                successor,
+                predecessor: previous.outcome,
+                group,
+                current,
+            },
         ))
     }
 }
