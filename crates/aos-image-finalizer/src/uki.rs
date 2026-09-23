@@ -156,6 +156,13 @@ pub async fn build_signed_efi_artifacts(
     )?;
     let sbat = inputs.join("aos.sbat");
     write_new(&sbat, sbat_policy(assembly)?.as_bytes())?;
+    let stub_sbat = inputs.join("stub.sbat");
+    extract_section(&objcopy, &stub, "sbat", &stub_sbat).await?;
+    let expected_sbat = inputs.join("combined.sbat");
+    write_new(
+        &expected_sbat,
+        &combine_sbat_sections(&fs::read(&stub_sbat)?, &fs::read(&sbat)?)?,
+    )?;
     let cmdline_a = inputs.join("cmdline-a");
     let cmdline_b = inputs.join("cmdline-b");
     let recovery_cmdline = inputs.join("cmdline-recovery");
@@ -176,11 +183,13 @@ pub async fn build_signed_efi_artifacts(
         &os_release,
         &cmdline_a,
         &sbat,
+        &expected_sbat,
         &pcr_public_key,
         &secure_boot_certificate,
         &output,
         &scratch,
         &ukify,
+        &objcopy,
         &measure,
         &openssl,
         &sbverify,
@@ -197,7 +206,7 @@ pub async fn build_signed_efi_artifacts(
             ("initrd", &prepared.initrd),
             ("osrel", &os_release),
             ("cmdline", &cmdline_a),
-            ("sbat", &sbat),
+            ("sbat", &expected_sbat),
             ("pcrpkey", &pcr_public_key),
             ("pcrsig", &pcr_a.signed_policy),
         ],
@@ -213,11 +222,13 @@ pub async fn build_signed_efi_artifacts(
         &os_release,
         &cmdline_b,
         &sbat,
+        &expected_sbat,
         &pcr_public_key,
         &secure_boot_certificate,
         &output,
         &scratch,
         &ukify,
+        &objcopy,
         &measure,
         &openssl,
         &sbverify,
@@ -234,7 +245,7 @@ pub async fn build_signed_efi_artifacts(
             ("initrd", &prepared.initrd),
             ("osrel", &os_release),
             ("cmdline", &cmdline_b),
-            ("sbat", &sbat),
+            ("sbat", &expected_sbat),
             ("pcrpkey", &pcr_public_key),
             ("pcrsig", &pcr_b.signed_policy),
         ],
@@ -282,7 +293,7 @@ pub async fn build_signed_efi_artifacts(
             ("initrd", &recovery.initrd_a),
             ("osrel", &recovery_os_release_a),
             ("cmdline", &recovery_cmdline),
-            ("sbat", &sbat),
+            ("sbat", &expected_sbat),
         ],
         &scratch.join("verify-recovery-a"),
     )
@@ -328,7 +339,7 @@ pub async fn build_signed_efi_artifacts(
             ("initrd", &recovery.initrd_b),
             ("osrel", &recovery_os_release_b),
             ("cmdline", &recovery_cmdline),
-            ("sbat", &sbat),
+            ("sbat", &expected_sbat),
         ],
         &scratch.join("verify-recovery-b"),
     )
@@ -395,11 +406,13 @@ async fn build_normal_uki(
     os_release: &Path,
     cmdline: &Path,
     sbat: &Path,
+    expected_sbat: &PathBuf,
     pcr_public_key: &Path,
     certificate: &Path,
     output: &Path,
     scratch: &Path,
     ukify: &PinnedTool,
+    objcopy: &PinnedTool,
     measure: &PinnedTool,
     openssl: &PinnedTool,
     sbverify: &PinnedTool,
@@ -414,20 +427,6 @@ async fn build_normal_uki(
 )> {
     let operation = scratch.join(name);
     fs::create_dir(&operation)?;
-    let preliminary = operation.join("preliminary.efi");
-    build_uki(
-        ukify,
-        stub,
-        kernel,
-        initrd,
-        os_release,
-        cmdline,
-        sbat,
-        Some(pcr_public_key),
-        &preliminary,
-        maximum_bytes,
-    )
-    .await?;
     let pcr = sign_pcr_policy(
         assembly,
         &PcrSections {
@@ -435,7 +434,7 @@ async fn build_normal_uki(
             osrel: os_release,
             cmdline,
             initrd,
-            sbat,
+            sbat: expected_sbat,
             pcrpkey: pcr_public_key,
         },
         &operation.join("pcr"),
@@ -445,21 +444,34 @@ async fn build_normal_uki(
         authorizer,
     )
     .await?;
-    let with_pcr = operation.join("with-pcrsig.efi");
-    let join = vec![
-        OsString::from("build"),
-        option_path("--join-pcrsig=", &preliminary),
-        option_path("--pcrsig=@", &pcr.signed_policy),
-        option_path("--output=", &with_pcr),
-    ];
-    let _ = ukify.run(join, MAX_TOOL_STDOUT_BYTES).await?;
-    require_bounded_file(&with_pcr, maximum_bytes)?;
+    let unsigned = operation.join("unsigned.efi");
+    build_uki(
+        ukify,
+        stub,
+        kernel,
+        initrd,
+        os_release,
+        cmdline,
+        sbat,
+        Some(pcr_public_key),
+        Some(&pcr.signed_policy),
+        &unsigned,
+        maximum_bytes,
+    )
+    .await?;
+    verify_uki_sections(
+        objcopy,
+        &unsigned,
+        &[("sbat", expected_sbat), ("pcrsig", &pcr.signed_policy)],
+        &operation.join("verify-unsigned"),
+    )
+    .await?;
     let finalized = output.join(format!("{name}.efi"));
     let authenticode = sign_pe(
         assembly,
         "uki",
         assembly.sbat_generation,
-        &with_pcr,
+        &unsigned,
         &finalized,
         certificate,
         sbverify,
@@ -518,6 +530,7 @@ async fn build_recovery_uki(
         cmdline,
         sbat,
         None,
+        None,
         &unsigned,
         maximum_bytes,
     )
@@ -549,6 +562,7 @@ async fn build_uki(
     cmdline: &Path,
     sbat: &Path,
     pcr_public_key: Option<&Path>,
+    pcr_signature: Option<&Path>,
     output: &Path,
     maximum_bytes: u64,
 ) -> Result<()> {
@@ -563,6 +577,10 @@ async fn build_uki(
     ];
     if let Some(public_key) = pcr_public_key {
         command.push(option_path("--pcrpkey=", public_key));
+    }
+    if let Some(signature) = pcr_signature {
+        // ukify's join command only updates a .pcrsig section that already exists.
+        command.push(option_path("--section=.pcrsig:@", signature));
     }
     command.push(option_path("--output=", output));
     let _ = ukify.run(command, MAX_TOOL_STDOUT_BYTES).await?;
@@ -719,6 +737,43 @@ fn sbat_policy(assembly: &UnsignedImageAssemblyV1) -> Result<String> {
     ))
 }
 
+fn combine_sbat_sections(stub_section: &[u8], aos_policy: &[u8]) -> Result<Vec<u8>> {
+    let stub_length = stub_section
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map(|index| index + 1)
+        .context("UKI stub has no SBAT section content")?;
+    let stub = &stub_section[..stub_length];
+    if stub.contains(&0) || !stub.ends_with(b"\n") {
+        bail!("UKI stub SBAT section is malformed");
+    }
+    if aos_policy.contains(&0) || !aos_policy.ends_with(b"\n") {
+        bail!("AOS SBAT policy is malformed");
+    }
+
+    let stub_header_end = stub
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .context("UKI stub SBAT section has no header")?;
+    let policy_header_end = aos_policy
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .context("AOS SBAT policy has no header")?;
+    if stub[..=stub_header_end] != aos_policy[..=policy_header_end] {
+        bail!("UKI stub and AOS SBAT headers differ");
+    }
+
+    let policy_rows = &aos_policy[policy_header_end + 1..];
+    if policy_rows.is_empty() {
+        bail!("AOS SBAT policy has no component row");
+    }
+
+    // ukify keeps the stub rows and appends the AOS row without a second header.
+    let mut combined = stub.to_vec();
+    combined.extend_from_slice(policy_rows);
+    Ok(combined)
+}
+
 fn pe_machine(platform: Platform) -> Result<&'static str> {
     match platform {
         Platform::X86_64Linux => Ok("8664"),
@@ -783,5 +838,26 @@ mod tests {
         assert!(matches!(pe_machine(Platform::X86_64Linux), Ok("8664")));
         assert!(matches!(pe_machine(Platform::Aarch64Linux), Ok("aa64")));
         assert!(pe_machine(Platform::Aarch64Darwin).is_err());
+    }
+
+    #[test]
+    fn combined_sbat_retains_stub_rows_and_one_header() {
+        let stub = b"sbat,1,SBAT Version\nsystemd-stub,1,systemd\n\0\0";
+        let aos = b"sbat,1,SBAT Version\naos,1,Andyl\n";
+
+        let combined = combine_sbat_sections(stub, aos).unwrap();
+
+        assert_eq!(
+            combined.as_slice(),
+            b"sbat,1,SBAT Version\nsystemd-stub,1,systemd\naos,1,Andyl\n".as_slice()
+        );
+    }
+
+    #[test]
+    fn combined_sbat_rejects_changed_header_and_missing_aos_row() {
+        let stub = b"sbat,1,SBAT Version\nsystemd-stub,1,systemd\n";
+
+        assert!(combine_sbat_sections(stub, b"sbat,2,SBAT Version\naos,1,Andyl\n").is_err());
+        assert!(combine_sbat_sections(stub, b"sbat,1,SBAT Version\n").is_err());
     }
 }

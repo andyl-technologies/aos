@@ -277,8 +277,20 @@ pub struct ImageBudgetsV1 {
     pub initrd_mib: u64,
     /// Maximum finalized UKI size in MiB.
     pub uki_mib: u64,
-    /// Maximum size of each downloadable encoding in MiB.
+    /// Maximum size of the compressed raw disk image in MiB.
     pub download_mib: u64,
+    /// Maximum size of each converted disk image in MiB.
+    ///
+    /// Older assemblies omit this field and use the raw image limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converted_download_mib: Option<u64>,
+}
+
+impl ImageBudgetsV1 {
+    /// Returns the converted-format limit, using the raw limit for older assemblies.
+    pub fn converted_download_limit_mib(&self) -> u64 {
+        self.converted_download_mib.unwrap_or(self.download_mib)
+    }
 }
 
 impl UnsignedImageAssemblyV1 {
@@ -305,14 +317,14 @@ impl UnsignedImageAssemblyV1 {
             require_identifier(value, label)?;
         }
         self.layout.validate()?;
-        if [
+
+        let required_budgets = [
             self.budgets.root_mib,
             self.budgets.initrd_mib,
             self.budgets.uki_mib,
             self.budgets.download_mib,
-        ]
-        .contains(&0)
-        {
+        ];
+        if required_budgets.contains(&0) || self.budgets.converted_download_mib == Some(0) {
             bail!("image artifact budgets must be nonzero");
         }
         if self.version.is_empty()
@@ -616,7 +628,7 @@ fn require_store_executable_path(value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::require_store_executable_path;
+    use super::{ImageBudgetsV1, require_store_executable_path};
 
     const STORE_HASH: &str = "00000000000000000000000000000000";
 
@@ -652,5 +664,22 @@ mod tests {
                 "accepted malformed executable {executable}"
             );
         }
+    }
+
+    #[test]
+    fn converted_budget_preserves_existing_assembly_limit() {
+        let old = r#"{"root_mib":640,"initrd_mib":132,"uki_mib":160,"download_mib":768}"#;
+        let existing: ImageBudgetsV1 = serde_json::from_str(old).unwrap();
+        assert_eq!(existing.converted_download_limit_mib(), 768);
+        assert!(
+            serde_json::to_value(&existing)
+                .unwrap()
+                .get("converted_download_mib")
+                .is_none()
+        );
+
+        let updated = r#"{"root_mib":640,"initrd_mib":132,"uki_mib":160,"download_mib":768,"converted_download_mib":896}"#;
+        let current: ImageBudgetsV1 = serde_json::from_str(updated).unwrap();
+        assert_eq!(current.converted_download_limit_mib(), 896);
     }
 }

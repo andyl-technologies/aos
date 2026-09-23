@@ -1,8 +1,14 @@
 ##! systems/aos-testing.nix — Public experimental AOS disk and OCI artifacts
-{
+{pkgs, ...}: {
   imports = [./server.nix];
 
   aos.profiles.testingRelease.enable = true;
+
+  # The converted disk formats exceed the compressed raw image budget.
+  aos.image.budgets.maxConvertedDownloadMiB =
+    if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+    then 1024
+    else 896;
 
   # The experimental images are canonical release artifacts: the Nix build emits
   # an unsigned assembly and `aos release finalize-image` applies Secure Boot,

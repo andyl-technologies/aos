@@ -33,14 +33,16 @@ pub struct DiskFormatsV1 {
 ///
 /// # Errors
 ///
-/// Returns an error when conversion/checking fails, an encoding exceeds the
-/// download budget, a format contains an unrecognized nondeterministic field,
-/// or any reconstruction differs in length or SHA-256 from `logical_disk`.
+/// Returns an error when conversion/checking fails, a compressed or converted
+/// encoding exceeds its respective download budget, a format contains an
+/// unrecognized nondeterministic field, or any reconstruction differs in
+/// length or SHA-256 from `logical_disk`.
 pub async fn build_disk_formats(
     logical_disk: &Path,
     output_directory: &Path,
     scratch: &Path,
-    download_budget_bytes: u64,
+    raw_download_budget_bytes: u64,
+    converted_download_budget_bytes: u64,
     zstd: &PinnedTool,
     qemu_img: &PinnedTool,
 ) -> Result<DiskFormatsV1> {
@@ -64,7 +66,7 @@ pub async fn build_disk_formats(
             ],
             None,
             &raw_zstd,
-            download_budget_bytes,
+            raw_download_budget_bytes,
         )
         .await?;
     verify_zstd_round_trip(&raw_zstd, logical_size, logical_digest, scratch, zstd).await?;
@@ -78,7 +80,7 @@ pub async fn build_disk_formats(
         &qcow2,
     )
     .await?;
-    require_bounded(&qcow2, download_budget_bytes)?;
+    require_bounded(&qcow2, converted_download_budget_bytes)?;
     verify_qemu_round_trip(
         &qcow2,
         "qcow2",
@@ -100,7 +102,7 @@ pub async fn build_disk_formats(
     )
     .await?;
     normalize_vmdk_cid(&vmdk, logical_digest)?;
-    require_bounded(&vmdk, download_budget_bytes)?;
+    require_bounded(&vmdk, converted_download_budget_bytes)?;
     verify_qemu_round_trip(
         &vmdk,
         "vmdk",
@@ -122,7 +124,7 @@ pub async fn build_disk_formats(
     )
     .await?;
     normalize_vhd_footers(&vhd, logical_digest)?;
-    require_bounded(&vhd, download_budget_bytes)?;
+    require_bounded(&vhd, converted_download_budget_bytes)?;
     verify_qemu_round_trip(
         &vhd,
         "vpc",
@@ -244,11 +246,14 @@ fn normalize_vmdk_cid(path: &Path, logical_digest: Sha256Digest) -> Result<()> {
     let maximum = file.metadata()?.len().min(1024 * 1024);
     let mut prefix = vec![0_u8; usize::try_from(maximum)?];
     file.read_exact(&mut prefix)?;
+    // parentCID contains the same suffix; only a whole descriptor line names this disk.
     let marker = b"CID=";
     let positions = prefix
         .windows(marker.len())
         .enumerate()
-        .filter(|(_, window)| *window == marker)
+        .filter(|(offset, window)| {
+            *window == marker && (*offset == 0 || prefix[*offset - 1] == b'\n')
+        })
         .map(|(offset, _)| offset)
         .collect::<Vec<_>>();
     if positions.len() != 1 {
@@ -258,10 +263,11 @@ fn normalize_vmdk_cid(path: &Path, logical_digest: Sha256Digest) -> Result<()> {
     let value_end = value_start
         .checked_add(8)
         .context("VMDK CID offset overflow")?;
-    if value_end > prefix.len()
+    if value_end >= prefix.len()
         || !prefix[value_start..value_end]
             .iter()
             .all(u8::is_ascii_hexdigit)
+        || !matches!(prefix[value_end], b'\r' | b'\n')
     {
         bail!("stream-optimized VMDK has a malformed CID field");
     }
@@ -330,6 +336,45 @@ fn path_text(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_vmdk_cid_without_changing_parent_cid() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("disk.vmdk");
+        fs::write(
+            &path,
+            b"KDMV\0# Disk DescriptorFile\nversion=1\nCID=12345678\nparentCID=ffffffff\n",
+        )?;
+
+        let digest = Sha256Digest::of_bytes("disk");
+        normalize_vmdk_cid(&path, digest)?;
+
+        let normalized = fs::read(path)?;
+        let expected_cid = format!("CID={}\n", &digest.hex()[..8]);
+        assert!(
+            normalized
+                .windows(expected_cid.len())
+                .any(|window| window == expected_cid.as_bytes())
+        );
+        assert!(
+            normalized
+                .windows(b"parentCID=ffffffff".len())
+                .any(|window| window == b"parentCID=ffffffff")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_duplicate_vmdk_cid_fields() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("disk.vmdk");
+        fs::write(&path, b"CID=12345678\nCID=87654321\nparentCID=ffffffff\n")?;
+
+        let result = normalize_vmdk_cid(&path, Sha256Digest::of_bytes("disk"));
+
+        assert!(result.is_err());
+        Ok(())
+    }
 
     #[test]
     fn normalizes_redundant_vhd_footer_identity() -> Result<()> {
