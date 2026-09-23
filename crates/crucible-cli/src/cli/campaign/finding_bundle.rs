@@ -12,6 +12,7 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -143,7 +144,7 @@ fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle,
     )?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| usage_error("finding bundle ledger is not valid UTF-8"))?;
-    let temporary = tempfile::tempdir().map_err(CliError::Io)?;
+    let temporary = private_bundle_tempdir()?;
     let store = crucible::LocalDagStore::new(temporary.path().join("evidence"));
     let mut loaded =
         crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
@@ -182,6 +183,14 @@ fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle,
         archive_id,
         evidence,
     })
+}
+
+fn private_bundle_tempdir() -> Result<tempfile::TempDir, CliError> {
+    let directory = tempfile::tempdir().map_err(CliError::Io)?;
+    // Tempdir mode follows host defaults; clamp it before writing guest assets or keys.
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .map_err(CliError::Io)?;
+    Ok(directory)
 }
 
 /// Exports one retained finding through the existing authenticated triage ledger.

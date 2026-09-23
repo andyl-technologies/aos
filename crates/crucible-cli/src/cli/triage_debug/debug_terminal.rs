@@ -96,6 +96,72 @@ pub(crate) async fn run_debug_relay_with_client_async(
     node: crucible::NodeId,
     gdb_listen: std::net::SocketAddr,
 ) -> Result<(), CliError> {
+    let listener = tokio::net::TcpListener::bind(gdb_listen)
+        .await
+        .map_err(|error| {
+            backend_error(format!("cannot bind local GDB relay {gdb_listen}: {error}"))
+        })?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| backend_error(format!("cannot read local GDB relay address: {error}")))?;
+    let ready = format!("crucible: remote GDB relay listening at {address}");
+    run_debug_relay_with_listener_async(client, session, node, listener.accept(), &ready).await
+}
+
+/// Relays one finding bundle's debugger through an owner-only Unix socket.
+pub(crate) async fn run_private_unix_debug_relay_with_client_async(
+    client: &RpcControlClient,
+    session: SessionRef,
+    node: crucible::NodeId,
+    socket: &std::path::Path,
+) -> Result<(), CliError> {
+    let listener = bind_private_gdb_socket(socket)?;
+    let ready = format!(
+        "crucible: private GDB relay listening at {}",
+        socket.display()
+    );
+    run_debug_relay_with_listener_async(client, session, node, listener.accept(), &ready).await
+}
+
+fn bind_private_gdb_socket(socket: &std::path::Path) -> Result<tokio::net::UnixListener, CliError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let parent = socket
+        .parent()
+        .ok_or_else(|| usage_error("private GDB socket has no parent directory"))?;
+    let metadata = std::fs::symlink_metadata(parent).map_err(CliError::Io)?;
+    if !metadata.file_type().is_dir()
+        || metadata.permissions().mode() & 0o077 != 0
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+    {
+        return Err(usage_error(
+            "private GDB socket requires an owner-only directory",
+        ));
+    }
+
+    let listener = tokio::net::UnixListener::bind(socket).map_err(|error| {
+        backend_error(format!(
+            "cannot bind private GDB relay {}: {error}",
+            socket.display()
+        ))
+    })?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+        .map_err(CliError::Io)?;
+    Ok(listener)
+}
+
+async fn run_debug_relay_with_listener_async<S, A, F>(
+    client: &RpcControlClient,
+    session: SessionRef,
+    node: crucible::NodeId,
+    accepted: F,
+    ready: &str,
+) -> Result<(), CliError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    F: std::future::Future<Output = std::io::Result<(S, A)>>,
+{
+    use std::io::Write as _;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let acquisition = crucible_api::DebugControllerAcquisition::new();
@@ -114,28 +180,14 @@ pub(crate) async fn run_debug_relay_with_client_async(
             return Err(control_client_error(error));
         }
     };
-    let listener = match tokio::net::TcpListener::bind(gdb_listen).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            let _ = client.close_debug_relay(session, &lease, relay).await;
-            return Err(backend_error(format!(
-                "cannot bind local GDB relay {gdb_listen}: {error}"
-            )));
-        }
-    };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => {
-            let _ = client.close_debug_relay(session, &lease, relay).await;
-            return Err(backend_error(format!(
-                "cannot read local GDB relay address: {error}"
-            )));
-        }
-    };
-    println!("crucible: remote GDB relay listening at {address}");
+    println!("{ready}");
+    if let Err(error) = std::io::stdout().flush() {
+        let _ = client.close_debug_relay(session, &lease, relay).await;
+        return Err(CliError::Io(error));
+    }
     let accepted = tokio::select! {
         biased;
-        accepted = listener.accept() => Some(accepted),
+        accepted = accepted => Some(accepted),
         signal = tokio::signal::ctrl_c() => {
             match signal {
                 Ok(()) => None,
@@ -735,6 +787,43 @@ pub(super) fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliErro
 #[cfg(test)]
 mod remote_debug_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn private_gdb_socket_is_owner_only_and_rejects_existing_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let private = tempfile::tempdir().expect("private GDB directory");
+        let socket = private.path().join("gdb.sock");
+        std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("temporarily open GDB directory");
+        assert!(bind_private_gdb_socket(&socket).is_err());
+        std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure GDB directory");
+        let listener = bind_private_gdb_socket(&socket).expect("private GDB listener");
+        assert_eq!(
+            std::fs::metadata(private.path())
+                .expect("private GDB directory metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&socket)
+                .expect("private GDB socket metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(bind_private_gdb_socket(&socket).is_err());
+
+        drop(listener);
+        std::fs::remove_file(&socket).expect("remove private GDB socket");
+        std::os::unix::fs::symlink(private.path().join("outside"), &socket)
+            .expect("plant GDB socket symlink");
+        assert!(bind_private_gdb_socket(&socket).is_err());
+    }
 
     #[test]
     fn remote_session_reference_requires_canonical_complete_identity() {
