@@ -83,6 +83,8 @@
   # when the final WebAssembly distribution is evaluated for Darwin.
   buildProtobuf = buildPackages.protobuf;
   buildCc = buildPackages.cc;
+  buildBash = buildPackages.bash;
+  buildCoreutils = buildPackages.coreutils;
   buildConsoleDist = buildPackages.aos-hub-console-dist;
   buildMiniflare = buildPackages.miniflare;
   nativeRustTarget = stdenv.buildPlatform.config;
@@ -212,7 +214,7 @@ in
     # The wasm32 toolchain (rustc + cargo + the wasm32 std + rust-lld), the
     # version-locked bindgen CLI, node for the glue-rewrite script, and a host
     # `cc` on PATH for any build-script native compile during the cargo build.
-    buildDeps = [rust wasm-bindgen-cli nodejs buildProtobuf buildCc];
+    buildDeps = [rust wasm-bindgen-cli nodejs buildProtobuf buildCc buildBash buildCoreutils];
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
     # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
@@ -262,8 +264,45 @@ in
           export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
           export CARGO_PROFILE_RELEASE_PANIC="abort"
           export CARGO_PROFILE_RELEASE_STRIP="symbols"
-          # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
-          # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
+          # rust-lld may leave a zero-filled output on the build filesystem.
+          # Link on tmpfs, then copy the completed wasm into Cargo's target dir.
+          cat > "$TMPDIR/aos-wasm-linker" <<'LINKER'
+          #!${buildBash}/bin/bash
+          set -euo pipefail
+
+          stage_dir=$(${buildCoreutils}/bin/mktemp -d /dev/shm/aos-wasm-link.XXXXXXXX)
+          trap '${buildCoreutils}/bin/rm -rf "$stage_dir"' EXIT
+
+          output=
+          arguments=()
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              -o)
+                [ "$#" -ge 2 ]
+                output="$2"
+                arguments+=("-o" "$stage_dir/output.wasm")
+                shift 2
+                ;;
+              -o=*)
+                output="''${1#-o=}"
+                arguments+=("-o" "$stage_dir/output.wasm")
+                shift
+                ;;
+              *)
+                arguments+=("$1")
+                shift
+                ;;
+            esac
+          done
+
+          [ -n "$output" ]
+          ${rust}/lib/rustlib/${nativeRustTarget}/bin/rust-lld "''${arguments[@]}"
+          ${buildCoreutils}/bin/cat "$stage_dir/output.wasm" > "$output"
+          LINKER
+          chmod +x "$TMPDIR/aos-wasm-linker"
+          export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$TMPDIR/aos-wasm-linker"
+
+          # Step 1 — compile the worker cdylib to wasm32.
           #
           # Features are passed package-qualified (`aos-hub-worker/<feat>`): a
           # bare `--features <feat>` with `-p` in this virtual workspace is
