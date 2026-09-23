@@ -370,20 +370,17 @@ impl CampaignRepository {
         .map_err(CampaignRepositoryError::from)
     }
 
-    /// Authenticates one exact-capable finding in a complete imported archive.
+    /// Authenticates one finding in a complete imported archive.
     ///
     /// The archive binds the original snapshot, finding evidence, scenario and
-    /// configuration artifacts, and every finding-retained checkpoint closure.
-    /// Only executable policies can publish the private campaign head required
-    /// by the existing debug-session service. The returned finding retains its
-    /// role-tagged checkpoints for that service's ordinary selection path.
+    /// configuration artifacts. This read supports model-only findings without
+    /// requiring a retained exact checkpoint.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignRepositoryError`] when the archive is partial or
-    /// corrupt, the finding is absent from its source snapshot, or the finding
-    /// has no exact checkpoint for a midpoint debug session.
-    pub fn inspect_archived_exact_finding(
+    /// corrupt, or the finding is absent from its source snapshot.
+    pub fn inspect_archived_finding(
         &self,
         archive: CampaignArchiveManifestId,
         finding: crate::FindingId,
@@ -394,12 +391,30 @@ impl CampaignRepository {
             CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
         ) {
             return Err(CampaignRepositoryError::InvalidRequest {
-                reason: "exact finding handoff requires an executable archive",
+                reason: "finding handoff requires an executable archive",
             });
         }
 
         let snapshot = self.read_snapshot(inspection.manifest().source_snapshot().content_id())?;
         let (finding, _) = self.finding_with_proof(snapshot.snapshot.roots().findings, finding)?;
+        Ok(finding)
+    }
+
+    /// Authenticates one exact-capable finding in a complete imported archive.
+    ///
+    /// The returned finding retains role-tagged checkpoints for the ordinary
+    /// debug-session selection path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when archive membership fails or
+    /// the finding has no retained exact checkpoint.
+    pub fn inspect_archived_exact_finding(
+        &self,
+        archive: CampaignArchiveManifestId,
+        finding: crate::FindingId,
+    ) -> Result<Finding, CampaignRepositoryError> {
+        let finding = self.inspect_archived_finding(archive, finding)?;
         if finding.exact_pins().is_empty() {
             return Err(CampaignRepositoryError::InvalidRequest {
                 reason: "archived finding has no retained exact checkpoint",
