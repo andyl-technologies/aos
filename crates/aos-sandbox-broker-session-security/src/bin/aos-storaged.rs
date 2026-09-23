@@ -14,6 +14,7 @@ use aos_sandbox_broker_session_security::{
     production_deadline_after,
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
 use aos_sandbox_storage::{
     DormantStorageApplyCompositionV1, StorageIdentityPoolV1, StoragePrepareReadiness,
     StorageRuntimeError, StorageServiceError, SystemdZfsExecutor,
@@ -52,6 +53,8 @@ fn run() -> Result<(), StorageServiceError> {
             .map_err(StorageRuntimeError::WorkspaceCatalog)?;
     let executor = SystemdZfsExecutor::new(PathBuf::from(ZFS_WORKER_SOCKET), open_cgroup_root()?)
         .map_err(StorageRuntimeError::Worker)?;
+    let guest_root_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
+        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
     let mut storage = DormantStorageApplyCompositionV1::open_root_owned(
         &arguments.authority_directory,
         &arguments.bootstrap_directory,
@@ -60,7 +63,8 @@ fn run() -> Result<(), StorageServiceError> {
         identity_pool,
         arguments.zfs_executable,
         executor,
-    )?;
+    )?
+    .with_guest_root_template(guest_root_template);
     if let Some(diagnostic) = prepare_readiness_diagnostic(storage.runtime().prepare_readiness()) {
         eprintln!("aos-storaged: {diagnostic}");
     }
@@ -115,6 +119,7 @@ struct Arguments {
     authority_directory: PathBuf,
     bootstrap_directory: PathBuf,
     resolver_policy_directory: Option<PathBuf>,
+    guest_root_template: PathBuf,
 }
 
 fn arguments() -> Result<Arguments, StorageServiceError> {
@@ -128,6 +133,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
     let authority_directory = required_path(arguments.next(), "authority directory")?;
     let bootstrap_directory = required_path(arguments.next(), "bootstrap directory")?;
     let resolver_policy_directory = optional_path(arguments.next(), "resolver policy directory")?;
+    let guest_root_template = required_path(arguments.next(), "guest root template")?;
     if arguments.next().is_some() {
         return Err(usage_error());
     }
@@ -140,6 +146,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         authority_directory,
         bootstrap_directory,
         resolver_policy_directory,
+        guest_root_template,
     })
 }
 
@@ -194,7 +201,7 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY [RESOLVER_POLICY_DIRECTORY|-]"
+        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE"
             .to_owned(),
     )
 }

@@ -18,6 +18,10 @@ use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use crate::guest_root_inventory::{
+    ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
+};
+use crate::pin_worker::boottime_now_nanoseconds;
 use crate::{
     StorageAdmissionError, StorageAdmissionOutcome, StorageBrokerRuntime, StorageIdentityPoolV1,
     StorageOperation, StorageRuntimeError, StorageRuntimeMutationOutcome, SystemdZfsExecutor,
@@ -166,6 +170,7 @@ pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
 /// install a listener; consumption remains an explicit broker-session call.
 pub struct DormantStorageApplyCompositionV1 {
     runtime: StorageBrokerRuntime,
+    guest_root_template: Option<ProtectedGuestRootTemplateV1>,
 }
 
 impl DormantStorageApplyCompositionV1 {
@@ -194,13 +199,26 @@ impl DormantStorageApplyCompositionV1 {
             zfs_executable,
             executor,
         )?;
-        Ok(Self { runtime })
+        Ok(Self {
+            runtime,
+            guest_root_template: None,
+        })
     }
 
     /// Wraps an already-open explicit dormant Apply runtime.
     #[must_use]
     pub const fn from_runtime(runtime: StorageBrokerRuntime) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            guest_root_template: None,
+        }
+    }
+
+    /// Pins the independently selected AOS package for physical root readback.
+    #[must_use]
+    pub fn with_guest_root_template(mut self, template: ProtectedGuestRootTemplateV1) -> Self {
+        self.guest_root_template = Some(template);
+        self
     }
 
     /// Returns the retained runtime for explicit recovery coordination.
@@ -224,10 +242,21 @@ impl DormantStorageApplyCompositionV1 {
         activation_deadline_boottime_nanoseconds: u64,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<Vec<u8>, StorageRuntimeError> {
-        self.runtime.dormant_lifecycle_inventory_resources(
+        let inventory = self.runtime.dormant_lifecycle_inventory_resources(
             activation_deadline_boottime_nanoseconds,
             worker_cutoff_boottime_nanoseconds,
-        )
+        )?;
+        let inventory = match self.guest_root_template.as_ref() {
+            Some(template) => attach_guest_root_publication_readback_v1(&inventory, template)
+                .map_err(|_| StorageRuntimeError::Recovery)?,
+            None => inventory,
+        };
+        if boottime_now_nanoseconds().map_err(|_| StorageRuntimeError::Recovery)?
+            >= activation_deadline_boottime_nanoseconds
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(inventory)
     }
 
     /// Resolves an atomic lifecycle dataset snapshot against protected Storage state.
