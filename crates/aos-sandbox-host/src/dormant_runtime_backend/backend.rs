@@ -8,11 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use aos_sandbox::runtime_execution::{
-    CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
-    DormantRuntimeExecutionOwnerErrorV1, ExecutionJournalRecoveryTokenV1,
-    JournalExecutionCompletionV1, JournalRuntimeExecutionError, RuntimeExecutionEvidenceError,
-    agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
-    completion_from_backend_observation_v1,
+    AuthenticatedRecoveredHostAgentOutcomeV1, CommittedHostAgentOutcomeV1,
+    DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
+    ExecutionJournalRecoveryTokenV1, JournalExecutionCompletionV1, JournalRuntimeExecutionError,
+    RuntimeExecutionEvidenceError, agent_handshake_signing_message_v1,
+    agent_outcome_signing_message_v1, completion_from_backend_observation_v1,
 };
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
@@ -1821,6 +1821,118 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         self.submit_committed_agent_observation(&expected, &recovered)
     }
 
+    /// Accepts a signed reply for an exact protected route retained across restart.
+    ///
+    /// This is receive-only recovery: it never reissues the guest operation.
+    /// A previously committed packet keeps its original observation identity;
+    /// a newly received packet is verified and committed before entering the
+    /// volatile inbox. Ambiguous custody requires another protected reopen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeBackendError`] for a foreign or stale route, invalid
+    /// signature or observation, occupied inbox, or uncertain Host custody.
+    pub fn accept_recovered_agent_outcome_packet(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeBackendError> {
+        self.revalidate()?;
+        if self.agent_session.as_ref().is_some_and(|session| {
+            session.outstanding.is_some() || session.control_outstanding.is_some()
+        }) || !self.execution_observations.is_empty()
+            || !self.runtime_observations.is_empty()
+        {
+            return Err(RuntimeBackendError::ResourceExhausted);
+        }
+        let packet = decode_signed_agent_outcome_packet_v1(bytes)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        let operation = *packet.outcome().operation_id().as_bytes();
+        let effect = self
+            .authority
+            .load_effect(&operation)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?
+            .ok_or(RuntimeBackendError::IntegrityFailure)?;
+        if !matches!(
+            effect.phase(),
+            EffectPhaseV1::Issued | EffectPhaseV1::Indeterminate
+        ) || effect.admission().currentness() != self.authority.currentness()
+        {
+            return Err(RuntimeBackendError::StateConflict);
+        }
+        let authenticated = self
+            .authority
+            .authenticate_recovered_agent_outcome_packet(
+                &operation,
+                SignedAgentOutcomePacketV1::new(packet.outcome().clone(), *packet.signature())
+                    .map_err(|_| RuntimeBackendError::IntegrityFailure)?,
+            )
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        let admission = effect.admission();
+        let expected = BackendExecutionInspectionRequestV1::new(
+            self.agent_evidence_authority(),
+            effect.issue().idempotency().operation(),
+            effect.issue().sequence(),
+            effect.issue().idempotency().request_digest(),
+            admission.execution(),
+            admission.specification_digest(),
+            admission.admission_commitment(),
+            *self.authority.currentness().runtime(),
+            self.authority.currentness().payload_boot_id(),
+        )
+        .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        if let Some(committed) = self
+            .authority
+            .recover_committed_host_agent_outcome(&operation)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?
+        {
+            self.authority
+                .commit_signed_host_agent_outcome_packet(
+                    &operation,
+                    &packet,
+                    committed.observation_sequence(),
+                    committed.observation_commitment(),
+                )
+                .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+            self.submit_committed_agent_observation(&expected, &committed)?;
+            return Ok(());
+        }
+
+        let next = self
+            .last_observation_sequence
+            .checked_add(1)
+            .filter(|sequence| *sequence != u64::MAX)
+            .ok_or(RuntimeBackendError::InvalidSequence)?;
+        let sequence = ObservationSequence::new(next);
+        if self
+            .authority
+            .committed_host_agent_outcome_at_observation_sequence(sequence)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?
+        {
+            return Err(RuntimeBackendError::StateConflict);
+        }
+        let observation =
+            self.verify_recovered_agent_observation(&expected, &authenticated, sequence)?;
+        if self
+            .authority
+            .commit_signed_host_agent_outcome_packet(
+                &operation,
+                &packet,
+                observation.sequence(),
+                observation.observation_commitment(),
+            )
+            .is_err()
+        {
+            self.agent_outcome_recovery_required = true;
+            return Err(RuntimeBackendError::AgentUnavailable);
+        }
+        let submitted = self.submit_execution_observation(observation);
+        if submitted.is_err() {
+            // Custody has committed even if the volatile inbox could not accept it.
+            self.agent_outcome_recovery_required = true;
+        }
+        submitted
+    }
+
     // Replays only the Host's committed packet; absence never authorizes a second dispatch.
     fn submit_committed_agent_control_observation(
         &mut self,
@@ -1847,6 +1959,24 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
     ) -> Result<bool, RuntimeBackendError> {
         self.revalidate()?;
         let authenticated = recovered.authenticated();
+        let observation = self.verify_recovered_agent_observation(
+            expected,
+            authenticated,
+            recovered.observation_sequence(),
+        )?;
+        if observation.observation_commitment() != recovered.observation_commitment() {
+            return Err(RuntimeBackendError::IntegrityFailure);
+        }
+        self.submit_execution_observation(observation)?;
+        Ok(true)
+    }
+
+    fn verify_recovered_agent_observation(
+        &self,
+        expected: &BackendExecutionInspectionRequestV1,
+        authenticated: &AuthenticatedRecoveredHostAgentOutcomeV1,
+        observation_sequence: ObservationSequence,
+    ) -> Result<BackendExecutionInspectionV1, RuntimeBackendError> {
         if authenticated.effect_request() != expected.effect_request_digest() {
             return Err(RuntimeBackendError::IntegrityFailure);
         }
@@ -1856,7 +1986,6 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             return Err(RuntimeBackendError::IntegrityFailure);
         }
         let outcome = authenticated.outcome();
-        let observation_sequence = recovered.observation_sequence();
         if observation_sequence.get()
             != self
                 .last_observation_sequence
@@ -1890,15 +2019,9 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             outcome.result_digest(),
             *authenticated.signature(),
         );
-        let observation = self
-            .agent_evidence_verifier
+        self.agent_evidence_verifier
             .verify_execution_inspection(expected, observation_sequence, envelope)
-            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
-        if observation.observation_commitment() != recovered.observation_commitment() {
-            return Err(RuntimeBackendError::IntegrityFailure);
-        }
-        self.submit_execution_observation(observation)?;
-        Ok(true)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)
     }
 
     fn submit_execution_observation(
