@@ -794,6 +794,9 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
 
     // A reply committed before a crash still owns its sequence after inbox loss.
     fn ensure_next_agent_observation_available(&self) -> Result<(), DormantBackendHandoffErrorV1> {
+        if self.authority.has_unsettled_host_agent_route()? {
+            return Err(DormantBackendHandoffErrorV1::PriorAgentRoutePending);
+        }
         let next = self
             .last_observation_sequence
             .checked_add(1)
@@ -2664,6 +2667,9 @@ pub enum DormantBackendHandoffErrorV1 {
     /// A verified observation must be consumed before another agent request.
     #[error("dormant backend has a pending authenticated observation")]
     ObservationPending,
+    /// A prior protected route must be recovered before another guest effect.
+    #[error("dormant backend has an unsettled protected agent route")]
+    PriorAgentRoutePending,
     /// No authenticated agent session is retained by the protected backend.
     #[error("dormant backend has no authenticated agent session")]
     MissingAgentSession,

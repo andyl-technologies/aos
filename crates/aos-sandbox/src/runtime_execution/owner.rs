@@ -1881,6 +1881,21 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             .map_err(Into::into)
     }
 
+    /// Reports whether a previous agent route still owns unfinished work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] when fixed ownership is
+    /// stale or protected route/effect custody cannot be read canonically.
+    pub fn has_unsettled_host_agent_route(
+        &self,
+    ) -> Result<bool, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .has_unsettled_agent_route()
+            .map_err(Into::into)
+    }
+
     /// Verifies a fixed-peer handshake and binds one exact AOSAGE request to an effect.
     ///
     /// Authorization and control requests must match the issued effect's closed

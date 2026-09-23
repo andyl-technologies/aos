@@ -553,6 +553,28 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         Ok(false)
     }
 
+    /// Reports whether an earlier protected agent route still owns an effect.
+    pub(crate) fn has_unsettled_agent_route(&self) -> Result<bool, JournalRuntimeExecutionError> {
+        for (key, _) in self.authority.records()? {
+            if key.first() != Some(&ROUTE_KEY_PREFIX) || key.len() != 17 {
+                continue;
+            }
+            let operation: &[u8; 16] = key[1..]
+                .try_into()
+                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+            let effect = self
+                .load_effect(operation)?
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+            if matches!(
+                effect.phase(),
+                EffectPhaseV1::Issued | EffectPhaseV1::Indeterminate
+            ) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Reads one exact signed packet from protected Host custody after restart.
     pub(crate) fn load_signed_agent_outcome_packet(
         &self,
