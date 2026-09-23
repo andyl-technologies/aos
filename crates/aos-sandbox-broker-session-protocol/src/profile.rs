@@ -345,7 +345,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-        | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => BrokerSessionProtocolV1::Storage,
+    | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => BrokerSessionProtocolV1::Storage,
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
@@ -372,6 +372,8 @@ pub const fn authenticated_broker_method_profile_v1(
     let authorization = if matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
