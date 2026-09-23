@@ -60,10 +60,37 @@
   evalSubmoduleResult = moduleArgs: loc: defs: let
     # `submodule [m1 m2 m3]` and `submodule m` should both work; nixpkgs
     # accepts either a single module or a list of modules.
-    baseModules =
-      if builtins.isList moduleArgs
-      then moduleArgs
-      else [moduleArgs];
+    moduleRecords =
+      if builtins.isAttrs moduleArgs && moduleArgs ? _aosOriginRecords
+      then moduleArgs._aosOriginRecords
+      else
+        builtins.map
+        (module: {
+          inherit module;
+          provenance = "@base";
+        })
+        (
+          if builtins.isList moduleArgs
+          then moduleArgs
+          else [moduleArgs]
+        );
+    baseModules = builtins.map (record: record.module) (builtins.filter
+      (record:
+        builtins.elem record.provenance ["@base" "@host-import" "@runtime-import"])
+      moduleRecords);
+    operatorOptionModules = builtins.map (record: record.module) (builtins.filter
+      (record: record.provenance == "@host")
+      moduleRecords);
+    runtimeOptionModules = builtins.map (record: record.module) (builtins.filter
+      (record: record.provenance == "@runtime")
+      moduleRecords);
+    packageOptionModules =
+      builtins.map (record: {
+        name = strings.removePrefix "package:" record.provenance;
+        module = record.module;
+      }) (builtins.filter
+        (record: strings.hasPrefix "package:" record.provenance)
+        moduleRecords);
 
     # Each definition becomes a `config = def.value` module, so the
     # submodule's option declarations (defaults, types, mkIf/mkMerge)
@@ -136,9 +163,9 @@
       # and also recursively delegate to `evalSubmodule`.
       lib = finalLib;
       inherit specialArgs;
-      operatorModules = operatorDefModules;
-      runtimeModules = runtimeDefModules;
-      packageModules = packageDefRecords;
+      operatorModules = operatorOptionModules ++ operatorDefModules;
+      runtimeModules = runtimeOptionModules ++ runtimeDefModules;
+      packageModules = packageOptionModules ++ packageDefRecords;
       enforcePackageAuthorship = false;
     };
   in
