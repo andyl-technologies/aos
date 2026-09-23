@@ -20,7 +20,9 @@ use aos_sandbox_linux::cgroup::{
 use aos_sandbox_linux::mount::{FileSystemContext, MountAttributes, unmount_child};
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
-use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+use aos_sandbox_linux::seqpacket::descriptor_subject::{
+    DescriptorSubjectSocket, ReceivedDescriptorRecord,
+};
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError,
 };
@@ -128,6 +130,13 @@ pub(crate) struct SystemdWorkspacePinExecutor {
     fail_stopped: bool,
 }
 
+type VerifiedWorkerConnection = (
+    DescriptorSubjectSocket,
+    ReceivedDescriptorRecord,
+    RetainedCgroupAnchor,
+    CgroupPopulationMonitor,
+);
+
 impl SystemdWorkspacePinExecutor {
     pub(crate) fn new(
         socket_path: PathBuf,
@@ -176,23 +185,8 @@ impl SystemdWorkspacePinExecutor {
         custody: &WorkspacePinHostCustody,
         exchange_deadline: u64,
     ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
-        if self.fail_stopped {
-            return Err(ZfsWorkerError::Protocol(
-                "workspace pin executor is fail-stopped",
-            ));
-        }
-        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
-        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
-        let ready_deadline = transfer_deadline()?;
-        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, ready_deadline)?;
-        let worker_path = decode_ready(ready.payload(), self.role)?;
-        let worker_cgroup = verify_worker_subject(
-            ready.subject(),
-            &self.worker_parent_cgroup,
-            Path::new(worker_path),
-            self.role,
-        )?;
-        let population = worker_cgroup.population_monitor()?;
+        let (mut socket, ready, worker_cgroup, population) =
+            self.open_verified_worker(transfer_deadline)?;
 
         let exchange = exchange_after_ready(
             &mut socket,
@@ -214,23 +208,8 @@ impl SystemdWorkspacePinExecutor {
         custody: &WorkspacePinHostCustody,
         exchange_deadline: u64,
     ) -> Result<WorkspacePinRepairObserverResultV1, ZfsWorkerError> {
-        if self.fail_stopped {
-            return Err(ZfsWorkerError::Protocol(
-                "workspace pin executor is fail-stopped",
-            ));
-        }
-        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
-        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
-        let ready_deadline = transfer_deadline()?;
-        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, ready_deadline)?;
-        let worker_path = decode_ready(ready.payload(), self.role)?;
-        let worker_cgroup = verify_worker_subject(
-            ready.subject(),
-            &self.worker_parent_cgroup,
-            Path::new(worker_path),
-            self.role,
-        )?;
-        let population = worker_cgroup.population_monitor()?;
+        let (mut socket, ready, worker_cgroup, population) =
+            self.open_verified_worker(transfer_deadline)?;
         let exchange = exchange_repair_after_ready(
             &mut socket,
             request,
@@ -251,23 +230,8 @@ impl SystemdWorkspacePinExecutor {
         custody: &WorkspacePinHostCustody,
         exchange_deadline: u64,
     ) -> Result<ValidatedWorkspacePinRepairAdmissionObservationV1, ZfsWorkerError> {
-        if self.fail_stopped {
-            return Err(ZfsWorkerError::Protocol(
-                "workspace pin executor is fail-stopped",
-            ));
-        }
-        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
-        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
-        let ready_deadline = transfer_deadline()?;
-        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, ready_deadline)?;
-        let worker_path = decode_ready(ready.payload(), self.role)?;
-        let worker_cgroup = verify_worker_subject(
-            ready.subject(),
-            &self.worker_parent_cgroup,
-            Path::new(worker_path),
-            self.role,
-        )?;
-        let population = worker_cgroup.population_monitor()?;
+        let (mut socket, ready, worker_cgroup, population) =
+            self.open_verified_worker(transfer_deadline)?;
         let exchange = exchange_repair_admission_after_ready(
             &mut socket,
             request,
@@ -287,22 +251,8 @@ impl SystemdWorkspacePinExecutor {
         custody: &WorkspacePinHostCustody,
         exchange_deadline: u64,
     ) -> Result<WorkspaceCatalogObservationResultV1, ZfsWorkerError> {
-        if self.fail_stopped {
-            return Err(ZfsWorkerError::Protocol(
-                "workspace pin executor is fail-stopped",
-            ));
-        }
-        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
-        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
-        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, exchange_deadline)?;
-        let worker_path = decode_ready(ready.payload(), self.role)?;
-        let worker_cgroup = verify_worker_subject(
-            ready.subject(),
-            &self.worker_parent_cgroup,
-            Path::new(worker_path),
-            self.role,
-        )?;
-        let population = worker_cgroup.population_monitor()?;
+        let (mut socket, ready, worker_cgroup, population) =
+            self.open_verified_worker(|| Ok(exchange_deadline))?;
         let exchange = exchange_catalog_observation_after_ready(
             &mut socket,
             request_bytes,
@@ -313,6 +263,29 @@ impl SystemdWorkspacePinExecutor {
             exchange_deadline,
         );
         self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
+    }
+
+    fn open_verified_worker(
+        &self,
+        ready_deadline: impl FnOnce() -> Result<u64, ZfsWorkerError>,
+    ) -> Result<VerifiedWorkerConnection, ZfsWorkerError> {
+        if self.fail_stopped {
+            return Err(ZfsWorkerError::Protocol(
+                "workspace pin executor is fail-stopped",
+            ));
+        }
+        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
+        verify_systemd_peer(socket.peer(), &self.systemd_manager_cgroup)?;
+        let ready = receive_packet_before(&mut socket, MAXIMUM_READY_BYTES, ready_deadline()?)?;
+        let worker_path = decode_ready(ready.payload(), self.role)?;
+        let worker_cgroup = verify_worker_subject(
+            ready.subject(),
+            &self.worker_parent_cgroup,
+            Path::new(worker_path),
+            self.role,
+        )?;
+        let population = worker_cgroup.population_monitor()?;
+        Ok((socket, ready, worker_cgroup, population))
     }
 
     fn finish_exchange<T>(
