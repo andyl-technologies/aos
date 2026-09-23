@@ -82,7 +82,7 @@ use super::agent_reducer::{
     AgentRecoveredOperationV1, AgentRecoveredOutcomeCommitV1, AgentRecoveredReservationV1,
     AgentReservationRecoveryTokenV1, AgentReservationStoreTransitionV1,
     AuthenticatedRecoveredAgentOutcomeV1, PreparedAgentOperationV1,
-    agent_handshake_signing_message_v1,
+    agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
 };
 
 use crate::journal::{
@@ -95,6 +95,9 @@ use super::agent_store::{
 };
 use super::evidence::JournalExecutionCompletionV1;
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
+use super::route_record::{
+    ProtectedAgentRouteRecordV1, route_binding as protected_agent_route_binding,
+};
 use super::store::{
     AuthenticatedJournalExecutionRecoveryV1 as JournalRecoveryV1, ExecutionJournalRecoveryTokenV1,
     JournalRuntimeExecutionError, JournalRuntimeExecutionStoreV1,
@@ -661,6 +664,71 @@ struct ProtectedAgentRouteReservationV1 {
     effect_request: ObjectDigest,
     agent_request: ObjectDigest,
     route_binding: ObjectDigest,
+}
+
+/// Retains an exact historical Host-to-agent request for recovery inspection.
+///
+/// This value grants no fresh dispatch. A caller must obtain a new protected
+/// session and resolve the original guest outcome before changing execution
+/// state; replaying these bytes is not an authorized new effect.
+pub struct RecoveredHostAgentRouteV1 {
+    request: AgentOperationRequestV1,
+    effect_request: ObjectDigest,
+    route_binding: ObjectDigest,
+}
+
+/// Owns one guest outcome verified against a cold-recovered Host route.
+pub struct AuthenticatedRecoveredHostAgentOutcomeV1 {
+    request: AgentOperationRequestV1,
+    outcome: AgentExecutionOutcomeV1,
+    signature: [u8; 64],
+    effect_request: ObjectDigest,
+}
+
+impl AuthenticatedRecoveredHostAgentOutcomeV1 {
+    /// Borrows the original protected Host-to-agent request.
+    #[must_use]
+    pub const fn request(&self) -> &AgentOperationRequestV1 {
+        &self.request
+    }
+
+    /// Borrows the authenticated terminal guest outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &AgentExecutionOutcomeV1 {
+        &self.outcome
+    }
+
+    /// Returns the checked detached signature for Host observation custody.
+    #[must_use]
+    pub const fn signature(&self) -> &[u8; 64] {
+        &self.signature
+    }
+
+    /// Returns the original durable effect-request commitment.
+    #[must_use]
+    pub const fn effect_request(&self) -> ObjectDigest {
+        self.effect_request
+    }
+}
+
+impl RecoveredHostAgentRouteV1 {
+    /// Borrows the exact original agent request for outcome verification.
+    #[must_use]
+    pub const fn request(&self) -> &AgentOperationRequestV1 {
+        &self.request
+    }
+
+    /// Returns the original durable effect-request commitment.
+    #[must_use]
+    pub const fn effect_request(&self) -> ObjectDigest {
+        self.effect_request
+    }
+
+    /// Returns the protected co-owned route binding.
+    #[must_use]
+    pub const fn route_binding(&self) -> ObjectDigest {
+        self.route_binding
+    }
 }
 
 /// Describes one protected lifecycle issue recovered under the fixed owner.
@@ -1640,6 +1708,75 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         self.execution.load_recovery(operation).map_err(Into::into)
     }
 
+    /// Recovers the exact historical agent request without minting dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] for stale peer
+    /// currentness, a malformed route, or unavailable protected execution
+    /// state. An absent route does not prove that an earlier append failed.
+    pub fn recover_agent_route(
+        &self,
+        operation: &[u8; 16],
+    ) -> Result<Option<RecoveredHostAgentRouteV1>, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let Some(route) = self.execution.load_agent_route(operation)? else {
+            return Ok(None);
+        };
+        if route.peer_authority() != self.agent_peer.authority_binding
+            || route.channel_binding() != self.agent_peer.channel_binding
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
+        let (request, effect_request, route_binding) = route.into_recovery_parts();
+        Ok(Some(RecoveredHostAgentRouteV1 {
+            request,
+            effect_request,
+            route_binding,
+        }))
+    }
+
+    /// Authenticates a cold-recovered outcome against its original route.
+    ///
+    /// This verifies the fixed protected peer key, channel, exact request,
+    /// and durable effect identity. It does not redispatch or complete the
+    /// portable effect; the Host must still settle that effect separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] for absent or stale
+    /// route custody, cross-request outcome fields, or signature failure.
+    pub fn authenticate_recovered_agent_outcome_packet(
+        &self,
+        operation: &[u8; 16],
+        packet: aos_sandbox_agent::SignedAgentOutcomePacketV1,
+    ) -> Result<AuthenticatedRecoveredHostAgentOutcomeV1, DormantRuntimeExecutionOwnerErrorV1> {
+        let route = self
+            .recover_agent_route(operation)?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let (outcome, signature) = packet.into_parts();
+        let request = route.request();
+        if outcome.session() != request.session()
+            || outcome.sequence() != request.sequence()
+            || outcome.operation_id() != request.operation_id()
+            || outcome.request_commitment() != request.request_commitment()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
+        let message =
+            agent_outcome_signing_message_v1(self.agent_peer.channel_binding, request, &outcome);
+        let key = VerifyingKey::from_bytes(&self.agent_peer.public_key)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        key.verify_strict(&message, &Signature::from_bytes(&signature))
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        Ok(AuthenticatedRecoveredHostAgentOutcomeV1 {
+            request: route.request,
+            outcome,
+            signature,
+            effect_request: route.effect_request,
+        })
+    }
+
     /// Verifies a fixed-peer handshake and binds one exact AOSAGE request to an effect.
     ///
     /// Authorization and control requests must match the issued effect's closed
@@ -1776,14 +1913,10 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         {
             return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
         }
-        let route_binding = hash_parts(
-            b"aos.sandbox.runtime-execution.coowned-agent-route.v1\0",
-            &[
-                effect.issue().idempotency().request_digest().as_bytes(),
-                agent_request.request_commitment().as_bytes(),
-                session.digest().as_bytes(),
-                self.agent_peer.authority_binding.as_bytes(),
-            ],
+        let route_binding = protected_agent_route_binding(
+            effect.issue().idempotency().request_digest(),
+            agent_request,
+            self.agent_peer.authority_binding,
         );
         Ok(ProtectedAgentRouteReservationV1 {
             effect_request: effect.issue().idempotency().request_digest(),
@@ -1810,14 +1943,10 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         effect: &DurableExecutionEffectV1,
     ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
         self.validate_current()?;
-        let expected_route = hash_parts(
-            b"aos.sandbox.runtime-execution.coowned-agent-route.v1\0",
-            &[
-                effect.issue().idempotency().request_digest().as_bytes(),
-                agent_request.request_commitment().as_bytes(),
-                agent_request.session().digest().as_bytes(),
-                self.agent_peer.authority_binding.as_bytes(),
-            ],
+        let expected_route = protected_agent_route_binding(
+            effect.issue().idempotency().request_digest(),
+            agent_request,
+            self.agent_peer.authority_binding,
         );
         if route.effect_request != effect.issue().idempotency().request_digest()
             || route.agent_request != agent_request.request_commitment()
@@ -1825,8 +1954,17 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         {
             return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
         }
+        let record = ProtectedAgentRouteRecordV1::new(
+            effect,
+            agent_request.clone(),
+            self.agent_peer.authority_binding,
+            self.agent_peer.channel_binding,
+        )?;
+        if record.route_binding() != route.route_binding {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
         let permit = self.execution.prepare_dispatch(effect)?;
-        self.execution.consume_dispatch(permit)?;
+        self.execution.consume_dispatch(permit, record)?;
         Ok(())
     }
 

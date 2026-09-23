@@ -14,6 +14,7 @@ mod evidence;
 mod guest_authority;
 mod owner;
 mod recovery;
+mod route_record;
 mod store;
 
 #[cfg(unix)]
@@ -49,9 +50,9 @@ pub use guest_authority::{
     dormant_guest_reserved_readback_signing_message_v1,
 };
 pub use owner::{
-    DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    DormantRuntimeExecutionOwnerV1, ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1,
-    ProtectedRuntimeHostVerifierV1,
+    AuthenticatedRecoveredHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
+    DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1, ProtectedLifecycleIssueV1,
+    ProtectedRuntimeAgentPeerV1, ProtectedRuntimeHostVerifierV1, RecoveredHostAgentRouteV1,
 };
 pub use recovery::AppliedExecutionRecoveryV1;
 pub use store::{

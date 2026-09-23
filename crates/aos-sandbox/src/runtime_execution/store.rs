@@ -8,6 +8,7 @@
 //!             || global_capacity_reservation[32]
 //! terminal  = admission[32] || operation[16] || terminal_effect[32]
 //!             || global_capacity_reservation[32]
+//! route     = 'q' || operation[16] => AOSHRQ01 protected agent request
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,6 +34,7 @@ use crate::journal::{
 use super::evidence::{
     JournalExecutionCompletionV1, completion_observes_terminal_execution, validate_completion,
 };
+use super::route_record::{ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key};
 
 const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
@@ -384,15 +386,18 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         })
     }
 
-    /// Consumes one permit immediately before handing its request to a backend.
+    /// Commits one exact agent route before handing its request to a backend.
     ///
     /// # Errors
     ///
     /// Returns [`JournalRuntimeExecutionError`] when the permit belongs to
-    /// another store, any journal mutation intervened, or the effect changed.
+    /// another store, any journal mutation intervened, the effect changed, or
+    /// the route could not be durably read back. A failed append is recovery-
+    /// only even if the caller did not observe its commit.
     pub(crate) fn consume_dispatch(
-        &self,
+        &mut self,
         permit: PreparedExecutionDispatchV1,
+        route: ProtectedAgentRouteRecordV1,
     ) -> Result<(), JournalRuntimeExecutionError> {
         if permit.store_binding != self.store_binding {
             return Err(JournalRuntimeExecutionError::InvalidBinding);
@@ -410,7 +415,50 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         if stored.record_commitment() != permit.effect.record_commitment() {
             return Err(JournalRuntimeExecutionError::RecordConflict);
         }
+        route.validate_effect(&stored, true)?;
+        let key = route_key(operation);
+        if self.authority.get(&key)?.is_some() {
+            return Err(JournalRuntimeExecutionError::DispatchAlreadyConsumed);
+        }
+        let bytes = route.encode()?;
+        let record_digest = ObjectDigest::from_bytes(Sha256::digest(&bytes).into());
+        let transaction = JournalTransaction::new(
+            transaction_id(b"agent-route", record_digest),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                key.clone(),
+                bytes.clone(),
+            )],
+        )?;
+        let preflight = self
+            .authority
+            .preflight_transactions(std::slice::from_ref(&transaction))?;
+        self.authority
+            .validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
+        self.authority.commit(&transaction)?;
+        if self.authority.get(&key)? != Some(bytes.as_slice()) {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
         Ok(())
+    }
+
+    /// Loads the original protected route for cold inspection, never dispatch.
+    pub(crate) fn load_agent_route(
+        &self,
+        operation: &[u8; 16],
+    ) -> Result<Option<ProtectedAgentRouteRecordV1>, JournalRuntimeExecutionError> {
+        let Some(bytes) = self.authority.get(&route_key(operation))? else {
+            return Ok(None);
+        };
+        let route = ProtectedAgentRouteRecordV1::decode(bytes)?;
+        let effect = self
+            .load_effect(operation)?
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        if route.request().operation_id().as_bytes() != operation {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        route.validate_effect(&effect, false)?;
+        Ok(Some(route))
     }
 
     pub(crate) fn disarm_recovery_issue(&mut self, effect: &DurableExecutionEffectV1) {
@@ -1178,6 +1226,7 @@ fn owned_key(key: &[u8]) -> bool {
                 if key.len() == 17
         )
         || matches!(key, [SEQUENCE_KEY_PREFIX, ..] if key.len() == 33)
+        || matches!(key, [ROUTE_KEY_PREFIX, ..] if key.len() == 17)
 }
 
 fn validate_runtime_execution_replay(
@@ -1191,6 +1240,7 @@ fn validate_runtime_execution_replay(
     let mut idempotency = BTreeMap::new();
     let mut resources = BTreeMap::new();
     let mut effects = BTreeMap::new();
+    let mut routes = BTreeMap::new();
     let mut sequence_heads = BTreeMap::new();
     let mut terminals = BTreeMap::new();
     let mut record_count = 0_usize;
@@ -1272,6 +1322,13 @@ fn validate_runtime_execution_replay(
                     || encode_durable_execution_effect_v1(&effect) != value
                     || effects.insert(operation, effect).is_some()
                 {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
+            Some(ROUTE_KEY_PREFIX) if key.len() == 17 => {
+                let route = ProtectedAgentRouteRecordV1::decode(value)?;
+                let operation = *route.request().operation_id().as_bytes();
+                if route_key(&operation) != key || routes.insert(operation, route).is_some() {
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
                 }
             }
@@ -1419,6 +1476,12 @@ fn validate_runtime_execution_replay(
             )
             .or_default()
             .push(effect);
+    }
+    for (operation, route) in &routes {
+        let effect = effects
+            .get(operation)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        route.validate_effect(effect, false)?;
     }
     if effects_by_runtime.len() != sequence_heads.len()
         || terminal_effect_by_execution.len() != terminals.len()
