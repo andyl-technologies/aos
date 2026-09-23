@@ -689,6 +689,10 @@ pub enum CacheCommandV1 {
     Pin {
         /// Selects the descriptor.
         object: CliSelectorV1,
+        /// Selects the view holding the dependency.
+        view: CliSelectorV1,
+        /// Selects the attached consumer when one exists.
+        attachment: Option<CliSelectorV1>,
         /// Carries idempotency and wait controls.
         control: MutationControlV1,
     },
@@ -696,6 +700,10 @@ pub enum CacheCommandV1 {
     Unpin {
         /// Selects the descriptor.
         object: CliSelectorV1,
+        /// Selects the view holding the dependency.
+        view: CliSelectorV1,
+        /// Selects the attached consumer when one exists.
+        attachment: Option<CliSelectorV1>,
         /// Carries idempotency and wait controls.
         control: MutationControlV1,
     },

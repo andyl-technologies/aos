@@ -533,6 +533,8 @@ message GetCacheStatusResponse { CacheStatus status = 1; }
 message PinCacheObjectRequest {
   ObjectDescriptor object = 1;
   MutationContext mutation = 2;
+  bytes view_id = 3; // Exactly 16 bytes; the view holding the dependency.
+  bytes attachment_id = 4; // Exactly 16 bytes when the consumer is attached.
 }
 
 message PinCacheObjectResponse { Operation operation = 1; }
@@ -540,6 +542,8 @@ message PinCacheObjectResponse { Operation operation = 1; }
 message UnpinCacheObjectRequest {
   ObjectDescriptor object = 1;
   MutationContext mutation = 2;
+  bytes view_id = 3; // Exactly 16 bytes; the view holding the dependency.
+  bytes attachment_id = 4; // Exactly 16 bytes when the consumer is attached.
 }
 
 message UnpinCacheObjectResponse { Operation operation = 1; }

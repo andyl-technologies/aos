@@ -45,6 +45,10 @@ aos sandbox cache pin
 aos sandbox cache unpin
 ```
 
+Cache pin and unpin identify the consuming view with `--view-id` and, for an
+attached consumer, its attachment with `--attachment-id`. An object descriptor
+alone does not identify the correctness dependency being changed.
+
 Commands accept opaque sandbox IDs and unambiguous project-scoped selectors.
 Names are labels, not identities. Relative selectors such as `self`, `parent`,
 and `child:<label>` are resolved by the service under the caller's capability;

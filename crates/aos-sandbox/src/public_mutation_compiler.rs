@@ -397,18 +397,24 @@ fn endpoint_semantics(
             &value.operation_id,
             mutation(value.mutation.as_option())?,
         )?,
-        R::CachePin(value) => descriptor_mutation(
-            M::PinCacheObject,
-            Operation::Publish,
-            value.object.as_option(),
-            mutation(value.mutation.as_option())?,
-        )?,
-        R::CacheUnpin(value) => descriptor_mutation(
-            M::UnpinCacheObject,
-            Operation::Remove,
-            value.object.as_option(),
-            mutation(value.mutation.as_option())?,
-        )?,
+        R::CachePin(value) => {
+            validate_cache_consumer(&value.view_id, &value.attachment_id)?;
+            descriptor_mutation(
+                M::PinCacheObject,
+                Operation::Publish,
+                value.object.as_option(),
+                mutation(value.mutation.as_option())?,
+            )?
+        }
+        R::CacheUnpin(value) => {
+            validate_cache_consumer(&value.view_id, &value.attachment_id)?;
+            descriptor_mutation(
+                M::UnpinCacheObject,
+                Operation::Remove,
+                value.object.as_option(),
+                mutation(value.mutation.as_option())?,
+            )?
+        }
         _ => return Err(PublicMutationResolutionErrorV1::Malformed),
     };
 
@@ -463,6 +469,18 @@ fn descriptor_mutation(
         idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())?,
         target_project: None,
     })
+}
+
+fn validate_cache_consumer(
+    view_id: &[u8],
+    attachment_id: &[u8],
+) -> Result<(), PublicMutationResolutionErrorV1> {
+    let valid_identity =
+        |identity: &[u8]| identity.len() == 16 && identity.iter().any(|byte| *byte != 0);
+    if !valid_identity(view_id) || (!attachment_id.is_empty() && !valid_identity(attachment_id)) {
+        return Err(PublicMutationResolutionErrorV1::Malformed);
+    }
+    Ok(())
 }
 
 fn mutation(

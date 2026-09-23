@@ -575,6 +575,10 @@ pub enum ResolvedPublicMutationV1 {
     CachePin {
         /// Supplies the exact object descriptor.
         object: CheckedObjectDescriptorV1,
+        /// Identifies the view holding the dependency.
+        view: CliIdentityV1,
+        /// Identifies an attached consumer when one exists.
+        attachment: Option<CliIdentityV1>,
         /// Supplies complete mutation fences.
         mutation: MutationFenceV1,
     },
@@ -582,6 +586,10 @@ pub enum ResolvedPublicMutationV1 {
     CacheUnpin {
         /// Supplies the exact object descriptor.
         object: CheckedObjectDescriptorV1,
+        /// Identifies the view holding the dependency.
+        view: CliIdentityV1,
+        /// Identifies an attached consumer when one exists.
+        attachment: Option<CliIdentityV1>,
         /// Supplies complete mutation fences.
         mutation: MutationFenceV1,
     },
@@ -961,20 +969,34 @@ impl ResolvedPublicMutationV1 {
                     ..Default::default()
                 })
             }
-            Self::CachePin { object, mutation } => {
-                ResolvedPublicMutationProtoV1::CachePin(wire::PinCacheObjectRequest {
-                    object: object.as_proto().clone().into(),
-                    mutation: mutation_context_proto(mutation).into(),
-                    ..Default::default()
-                })
-            }
-            Self::CacheUnpin { object, mutation } => {
-                ResolvedPublicMutationProtoV1::CacheUnpin(wire::UnpinCacheObjectRequest {
-                    object: object.as_proto().clone().into(),
-                    mutation: mutation_context_proto(mutation).into(),
-                    ..Default::default()
-                })
-            }
+            Self::CachePin {
+                object,
+                view,
+                attachment,
+                mutation,
+            } => ResolvedPublicMutationProtoV1::CachePin(wire::PinCacheObjectRequest {
+                object: object.as_proto().clone().into(),
+                mutation: mutation_context_proto(mutation).into(),
+                view_id: view.as_bytes().to_vec(),
+                attachment_id: attachment
+                    .as_ref()
+                    .map_or_else(Vec::new, |id| id.as_bytes().to_vec()),
+                ..Default::default()
+            }),
+            Self::CacheUnpin {
+                object,
+                view,
+                attachment,
+                mutation,
+            } => ResolvedPublicMutationProtoV1::CacheUnpin(wire::UnpinCacheObjectRequest {
+                object: object.as_proto().clone().into(),
+                mutation: mutation_context_proto(mutation).into(),
+                view_id: view.as_bytes().to_vec(),
+                attachment_id: attachment
+                    .as_ref()
+                    .map_or_else(Vec::new, |id| id.as_bytes().to_vec()),
+                ..Default::default()
+            }),
             Self::Capability(command) => ResolvedPublicMutationProtoV1::Capability(match command {
                 CapabilityCommandV1::Attenuate {
                     parent_handle,
@@ -1449,14 +1471,40 @@ impl ResolvedPublicMutationV1 {
                     *client_wait,
                 );
             }
-            Self::CachePin { object, mutation } => {
+            Self::CachePin {
+                object,
+                view,
+                attachment,
+                mutation,
+            } => {
                 binding.variant(15);
                 binding.descriptor(object.as_proto());
+                binding.identity(view);
+                match attachment {
+                    Some(attachment) => {
+                        binding.variant(1);
+                        binding.identity(attachment);
+                    }
+                    None => binding.variant(0),
+                }
                 binding.mutation_fence(mutation);
             }
-            Self::CacheUnpin { object, mutation } => {
+            Self::CacheUnpin {
+                object,
+                view,
+                attachment,
+                mutation,
+            } => {
                 binding.variant(16);
                 binding.descriptor(object.as_proto());
+                binding.identity(view);
+                match attachment {
+                    Some(attachment) => {
+                        binding.variant(1);
+                        binding.identity(attachment);
+                    }
+                    None => binding.variant(0),
+                }
                 binding.mutation_fence(mutation);
             }
             Self::Capability(command) => {

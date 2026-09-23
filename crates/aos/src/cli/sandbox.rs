@@ -645,6 +645,12 @@ pub struct CacheStatusArgs {
 pub struct CacheMutationArgs {
     #[arg(long)]
     object: DescriptorValue,
+    /// Identify the view holding this cache dependency.
+    #[arg(long, value_parser = identity_hex)]
+    view_id: HexValue,
+    /// Identify the attachment when the dependency has an attached consumer.
+    #[arg(long, value_parser = identity_hex)]
+    attachment_id: Option<HexValue>,
     #[command(flatten)]
     mutation: MutationArgs,
 }
@@ -1126,11 +1132,15 @@ impl CacheSubcommand {
             Self::Pin(a) => K::CachePin(wire::PinCacheObjectRequest {
                 object: a.object.0.clone().into(),
                 mutation: a.mutation.proto().into(),
+                view_id: a.view_id.clone(),
+                attachment_id: optional_bytes(&a.attachment_id),
                 ..Default::default()
             }),
             Self::Unpin(a) => K::CacheUnpin(wire::UnpinCacheObjectRequest {
                 object: a.object.0.clone().into(),
                 mutation: a.mutation.proto().into(),
+                view_id: a.view_id.clone(),
+                attachment_id: optional_bytes(&a.attachment_id),
                 ..Default::default()
             }),
         }

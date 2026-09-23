@@ -778,10 +778,12 @@ impl DormantSandboxRequestV1 {
             K::CacheStatus(r) => nonempty(&r.project_id) != nonempty(&r.sandbox_id),
             K::CachePin(r) => {
                 descriptor_present(r.object.as_option())
+                    && valid_cache_consumer(&r.view_id, &r.attachment_id)
                     && mutation_resource_only(r.mutation.as_option())
             }
             K::CacheUnpin(r) => {
                 descriptor_present(r.object.as_option())
+                    && valid_cache_consumer(&r.view_id, &r.attachment_id)
                     && mutation_resource_only(r.mutation.as_option())
             }
             K::CapabilitiesPublicApi(_) => true,
@@ -1155,6 +1157,11 @@ impl DormantPublicApiRouteV1 {
 
 fn nonempty(value: &[u8]) -> bool {
     !value.is_empty()
+}
+
+fn valid_cache_consumer(view_id: &[u8], attachment_id: &[u8]) -> bool {
+    let valid_identity = |value: &[u8]| value.len() == 16 && value.iter().any(|byte| *byte != 0);
+    valid_identity(view_id) && (attachment_id.is_empty() || valid_identity(attachment_id))
 }
 
 fn descriptor_present(value: Option<&wire::ObjectDescriptor>) -> bool {
