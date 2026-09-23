@@ -71,7 +71,7 @@
       }
       {
         label = "T-CLI-13 local-double fuzz runner progress";
-        needle = "executes local\n  `--backend double fuzz` through\n  `ScenarioFamily::fuzz_coverage_guided`";
+        needle = "The test-only\n  `--backend double fuzz` path executes\n  `ScenarioFamily::fuzz_coverage_guided`";
       }
       {
         label = "T-CLI-13 local-double fuzz corpus progress";
