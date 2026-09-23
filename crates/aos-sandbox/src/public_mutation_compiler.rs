@@ -522,7 +522,7 @@ fn exact_identity(bytes: &[u8]) -> Result<[u8; 16], PublicMutationResolutionErro
     Ok(identity)
 }
 
-fn object_descriptor(
+pub(crate) fn object_descriptor(
     value: &ProtoObjectDescriptor,
 ) -> Result<ObjectDescriptor, PublicMutationResolutionErrorV1> {
     let digest: [u8; 32] = value

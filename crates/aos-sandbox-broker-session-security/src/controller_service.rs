@@ -2617,7 +2617,7 @@ impl ProductionEffectExecutor {
         self.settle_auxiliary_publication(operation_id, disposition, "snapshot coordination")
     }
 
-    fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
+    fn ensure_cache_inventory_owner(&mut self) -> Result<(), EffectFailure> {
         let (mut cache_source, _) =
             CacheReplayControllerBootstrapOwnerV1::open_fixed_protected_for_uid(
                 self.controller_uid,
@@ -2652,6 +2652,12 @@ impl ProductionEffectExecutor {
         cache_source
             .reconcile_fixed_cache(cache)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        Ok(())
+    }
+
+    fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
+        self.ensure_cache_inventory_owner()?;
+
         if self.transfer_inventory.is_none() {
             let (mut owner, _, initial) =
                 aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected()
@@ -3467,16 +3473,44 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         let request = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-        if matches!(
+        let cache_consumer = if matches!(
             &request,
             DormantSandboxRequestKindV1::CachePin(_) | DormantSandboxRequestKindV1::CacheUnpin(_)
         ) {
-            aos_sandbox::production_operation_compiler::recheck_cache_consumer_projection_v1(
-                journal,
-                context.project(),
-                &request,
+            Some(
+                aos_sandbox::production_operation_compiler::recheck_cache_consumer_projection_v1(
+                    journal,
+                    context.project(),
+                    &request,
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?,
             )
-            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        } else {
+            None
+        };
+        if matches!(&request, DormantSandboxRequestKindV1::CacheUnpin(_)) {
+            let consumer = cache_consumer.as_ref().ok_or_else(|| {
+                EffectFailure::Permanent("cache unpin consumer is unavailable".to_owned())
+            })?;
+            self.ensure_cache_inventory_owner()?;
+            let cache = self.cache_inventory.as_mut().ok_or_else(|| {
+                EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+            })?;
+            let retained = cache
+                .retained_consumer_logical_pins(
+                    consumer.object(),
+                    consumer.project(),
+                    consumer.view(),
+                    consumer.attachment(),
+                )
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            if retained.is_empty() {
+                let mut receipt = Vec::with_capacity(24);
+                receipt.extend_from_slice(b"AOSCUN01");
+                receipt.extend_from_slice(operation_id.as_bytes());
+                return EffectReceipt::new(receipt)
+                    .map_err(|error| EffectFailure::Permanent(error.to_string()));
+            }
         }
         if is_lifecycle_mutation(&request) {
             let operation =

@@ -40,7 +40,7 @@ mod policy_plan;
 mod public_mutation;
 
 pub use execution_control::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
-pub use public_mutation::recheck_cache_consumer_projection_v1;
+pub use public_mutation::{RecheckedCacheConsumerV1, recheck_cache_consumer_projection_v1};
 
 const CAPABILITY_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-capability-resource-version.v1\0";

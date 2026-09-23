@@ -13,7 +13,8 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
 use aos_sandbox_core::{
-    AttachmentId, ExecutionId, OperationId, ProjectId, SandboxId, SnapshotId, ViewId,
+    AttachmentId, ExecutionId, ObjectDescriptor, OperationId, ProjectId, SandboxId, SnapshotId,
+    ViewId,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -1372,6 +1373,44 @@ enum CacheConsumerMutationV1 {
     Release,
 }
 
+/// Retains the exact public cache consumer checked against current desired state.
+///
+/// This is not source-object membership, protected pin authority, or physical
+/// residency evidence. It only carries the consumer identity needed to select
+/// retained obligations after project and resource-version validation.
+pub struct RecheckedCacheConsumerV1 {
+    object: ObjectDescriptor,
+    project: ProjectId,
+    view: ViewId,
+    attachment: Option<AttachmentId>,
+}
+
+impl RecheckedCacheConsumerV1 {
+    /// Returns the exact immutable object selected by the public request.
+    #[must_use]
+    pub const fn object(&self) -> &ObjectDescriptor {
+        &self.object
+    }
+
+    /// Returns the project charged for this logical dependency.
+    #[must_use]
+    pub const fn project(&self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the checked consuming view identity.
+    #[must_use]
+    pub const fn view(&self) -> ViewId {
+        self.view
+    }
+
+    /// Returns the checked attached consumer, when one was named.
+    #[must_use]
+    pub const fn attachment(&self) -> Option<AttachmentId> {
+        self.attachment
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cache_consumer_mutation_intent(
     journal: &Journal,
@@ -1411,26 +1450,49 @@ pub fn recheck_cache_consumer_projection_v1(
     journal: &Journal,
     project: ProjectId,
     request: &crate::cli_model::DormantSandboxRequestKindV1,
-) -> Result<(), OperationCompilationError> {
-    match request {
-        Request::CachePin(value) => validate_cache_consumer_projection(
-            journal,
-            project,
-            &value.view_id,
-            &value.attachment_id,
+) -> Result<RecheckedCacheConsumerV1, OperationCompilationError> {
+    let (object, view_id, attachment_id, mutation, mutation_kind) = match request {
+        Request::CachePin(value) => (
+            value.object.as_option(),
+            value.view_id.as_slice(),
+            value.attachment_id.as_slice(),
             value.mutation.as_option(),
             CacheConsumerMutationV1::Acquire,
         ),
-        Request::CacheUnpin(value) => validate_cache_consumer_projection(
-            journal,
-            project,
-            &value.view_id,
-            &value.attachment_id,
+        Request::CacheUnpin(value) => (
+            value.object.as_option(),
+            value.view_id.as_slice(),
+            value.attachment_id.as_slice(),
             value.mutation.as_option(),
             CacheConsumerMutationV1::Release,
         ),
-        _ => Err(OperationCompilationError::Rejected),
-    }
+        _ => return Err(OperationCompilationError::Rejected),
+    };
+    validate_cache_consumer_projection(
+        journal,
+        project,
+        view_id,
+        attachment_id,
+        mutation,
+        mutation_kind,
+    )?;
+
+    let object = crate::public_mutation_compiler::object_descriptor(
+        object.ok_or(OperationCompilationError::Malformed)?,
+    )
+    .map_err(|_| OperationCompilationError::Malformed)?;
+    let attachment = if attachment_id.is_empty() {
+        None
+    } else {
+        Some(AttachmentId::from_bytes(exact_id(attachment_id)?))
+    };
+
+    Ok(RecheckedCacheConsumerV1 {
+        object,
+        project,
+        view: ViewId::from_bytes(exact_id(view_id)?),
+        attachment,
+    })
 }
 
 fn validate_cache_consumer_projection(
