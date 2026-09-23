@@ -797,8 +797,8 @@ fn print_exact_option(
         "  owner: {} / {}{}",
         option.owner.package,
         option.owner.root,
-        if option.contributable {
-            " (contributable)"
+        if option.extensible {
+            " (extensible)"
         } else {
             ""
         }
@@ -1149,7 +1149,7 @@ mod tests {
                 example: None,
                 visibility: OptionVisibility::Public,
                 read_only: false,
-                contributable: false,
+                extensible: false,
                 deprecated: None,
                 replacement: None,
                 source: OptionSource {

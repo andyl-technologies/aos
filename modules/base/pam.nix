@@ -324,7 +324,7 @@ in {
       });
       default = null;
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Selected system-manager integration for authenticated login sessions.";
     };
   };

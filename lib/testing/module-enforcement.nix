@@ -477,12 +477,12 @@
       serviceRegistryEvaluation.options.aos.services.type._elementType
       ["aos" "services" "second"]);
 
-  # --- Contributable option surface -----------------------------------
+  # --- Extensible option surface -----------------------------------
   #
-  # An owner marks the curated extension points `contributable = true` and
+  # An owner marks the curated extension points `extensible = true` and
   # leaves `enable` / globals owner-only (the default). The marker is a pure
   # declaration field — it must not perturb the merged value — and is
-  # surfaced via `result._optionDecls` / `lib.contributableSurface`.
+  # surfaced via `result._optionDecls` / `lib.extensibleSurface`.
   f3bEval = lib.evalModules {
     modules = [
       ({lib, ...}: {
@@ -500,15 +500,15 @@
             };
           });
           default = {};
-          contributable = true;
+          extensible = true;
         };
       })
       {config.nginx.enable = true;}
     ];
     lib = lib;
   };
-  f3bSurfacePaths = builtins.map (d: d.pathStr) (lib.contributableSurface f3bEval);
-  # exactly the marked extension point is contributable
+  f3bSurfacePaths = builtins.map (d: d.pathStr) (lib.extensibleSurface f3bEval);
+  # exactly the marked extension point is extensible
   f3bSurfaceIsVirtualHosts = f3bSurfacePaths == ["nginx.virtualHosts"];
   # the marker did not change the merged value
   f3bValueUnperturbed = f3bEval.config.nginx.enable == true;
@@ -532,7 +532,7 @@
     }
     && f3bEnableDocumentation.visibility == "public"
     && !f3bEnableDocumentation.readOnly
-    && !f3bEnableDocumentation.contributable;
+    && !f3bEnableDocumentation.extensible;
 
   packageDiagnosticsEval = lib.evalModules {
     modules = [
@@ -571,7 +571,7 @@
   # --- Operator priority-75 band --------------------------------------
   #
   # A bare def from a resolver-supplied `operatorModules` member is lifted to
-  # tier 75 and beats a normal package contribution (tier 100), regardless of
+  # tier 75 and beats a normal package definition (tier 100), regardless of
   # module order. With no `operatorModules` the lift never fires (no-op).
   opDecl = {lib, ...}: {
     options.svc.x = lib.mkOption {
@@ -651,7 +651,7 @@
             artifacts = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
-              contributable = true;
+              extensible = true;
             };
             observedOwner = lib.mkOption {type = lib.types.str;};
           };
@@ -696,7 +696,7 @@
         };
       });
       default = {};
-      contributable = true;
+      extensible = true;
     };
   };
   packageRecord = module: {
@@ -756,7 +756,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -785,7 +785,7 @@
             options.nginx.enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
-              contributable = true;
+              extensible = true;
             };
           })
         ];
@@ -810,7 +810,7 @@
                 };
               });
               default = {};
-              contributable = true;
+              extensible = true;
             };
           })
         ];
@@ -895,7 +895,7 @@
           options.nginx.virtualHosts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
         })
       ];
@@ -907,7 +907,7 @@
     .virtualHosts
     .demo
     == "ok";
-  nonContributableContributionRejected =
+  nonExtensibleDefinitionRejected =
     !(builtins.tryEval (
       builtins.deepSeq (lib.evalModules {
         modules = [
@@ -941,7 +941,7 @@
           options.rules = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [];
-            contributable = true;
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -969,7 +969,7 @@
               };
             });
             default = {};
-            contributable = true;
+            extensible = true;
           };
           options.observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
         })
@@ -1003,7 +1003,7 @@
                 options.package = lib.mkOption {type = lib.types.package;};
               });
               default = {};
-              contributable = true;
+              extensible = true;
             };
             observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
           };
@@ -1027,7 +1027,7 @@
             artifacts = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
-              contributable = true;
+              extensible = true;
             };
             observed = lib.mkOption {type = lib.types.str;};
           };
@@ -1091,7 +1091,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -1122,7 +1122,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
         })
       ];
@@ -1141,7 +1141,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
         })
       ];
@@ -1185,7 +1185,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
           options.observed = lib.mkOption {type = lib.types.str;};
         })
@@ -1205,7 +1205,7 @@
           options.artifacts = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {};
-            contributable = true;
+            extensible = true;
           };
         })
       ];
@@ -1571,7 +1571,7 @@
       }
       {
         ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;
-        message = "contributable typed documentation surface";
+        message = "extensible typed documentation surface";
       }
       {
         ok = packageEngineDiagnosticsAccepted;
@@ -1602,7 +1602,7 @@
           foreignEnableRejected
           && nestedForeignEnableRejected
           && allowedContributionAccepted
-          && nonContributableContributionRejected
+          && nonExtensibleDefinitionRejected
           && undeclaredPackageWriteRejected;
         message = "actual package write authorization";
       }
@@ -1678,7 +1678,7 @@ in
           echo "  types.pathInStore — rejects non-paths: OK"
           echo "  types.addCheck — validates merged scalar/submodule/list values: OK"
           echo "  types.submodule — hides engine metadata and preserves merge semantics: OK"
-          echo "  contributable surface exposed, marker inert: OK"
+          echo "  extensible surface exposed, marker inert: OK"
           echo "  operator tier-75 beats package, mkForce beats operator: OK"
           echo "  no operatorModules means no priority lift: OK"
           echo "  package provenance cannot forge operator priority: OK"

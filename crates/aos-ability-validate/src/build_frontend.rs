@@ -991,7 +991,7 @@ mod tests {
             example: None,
             visibility: aos_ability_model::OptionVisibility::Public,
             read_only: false,
-            contributable: false,
+            extensible: false,
             deprecated: None,
             replacement: None,
             source: aos_ability_model::OptionSource {

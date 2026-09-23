@@ -33,7 +33,7 @@
           options.assertions = lib.mkOption {
             type = lib.types.listOf lib.types.attrs;
             default = [];
-            contributable = true;
+            extensible = true;
           };
           aos.abilities.environment = environment;
           postgresql = postgresqlConfig;

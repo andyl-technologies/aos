@@ -166,7 +166,7 @@ flag and source provenance.
 
 Publication derives these fields from the signed package fixed-point projection
 and rejects any disagreement. A contributor cannot claim documentation
-ownership or mark a forbidden path contributable through prose.
+ownership or mark a forbidden path extensible through prose.
 
 ## Abilities and deployment observations
 

@@ -27,7 +27,7 @@ in {
       });
       default = {};
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Package-owned mount points materialized by selected storage providers.";
     };
 
@@ -52,7 +52,7 @@ in {
       });
       default = {};
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Package-owned host policy recommendations from selected storage providers.";
     };
 
@@ -74,7 +74,7 @@ in {
       type = lib.types.attrsOf readinessList;
       default = {};
       internal = true;
-      contributable = true;
+      extensible = true;
       description = ''
         Readiness resources keyed by the selected storage provider that owns
         them. Provider keys preserve authorship while the derived projection

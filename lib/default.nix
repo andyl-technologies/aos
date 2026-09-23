@@ -157,7 +157,7 @@
     then (evalSubmoduleResult optionType._submodule loc []).options
     else throw "submoduleOptions requires a submodule option type";
 
-  # Declaration-derived contributable-surface helpers.
+  # Declaration-derived extensible-surface helpers.
   namespacing = import ./namespacing.nix {};
 
   abilityCore = import ./abilities {
@@ -322,11 +322,11 @@
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
 
-      # Declaration-derived contributable-surface helpers.
+      # Declaration-derived extensible-surface helpers.
       inherit
         (namespacing)
         optionSurface
-        contributableSurface
+        extensibleSurface
         ;
 
       # Compiler-hardening token vocabulary and set algebra. Used by the

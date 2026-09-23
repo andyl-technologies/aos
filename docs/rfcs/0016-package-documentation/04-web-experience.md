@@ -65,7 +65,7 @@ keyboard shortcuts. It never changes result authority or hides a server result
 behind a client-only index.
 
 Filters include registry, package, version/release/channel, platform, result
-kind, option type, owner, contributable state, deprecation, and activation
+kind, option type, owner, extensible state, deprecation, and activation
 effect. Active filters and the query live in the URL. Pagination is cursor-based
 and bounded; there is no infinite scroll.
 
@@ -95,7 +95,7 @@ The option tree:
   structure;
 - distinguishes owned roots and contributed subtrees;
 - preserves expansion/selection in the URL or local navigation state;
-- shows badges for required, deprecated, read-only, internal, contributable,
+- shows badges for required, deprecated, read-only, internal, extensible,
   and credential-related declarations;
 - supports keyboard tree navigation and a linear accessible fallback.
 

@@ -24,7 +24,7 @@ in {
   options.aos.pam.packageServices = lib.mkOption {
     type = packageOwnedMap pamService;
     default = {};
-    contributable = true;
+    extensible = true;
     description = "Package-owned PAM service policies consumed by the host authentication module.";
   };
 }

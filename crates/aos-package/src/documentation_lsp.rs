@@ -493,7 +493,7 @@ impl Server {
                         "type": option.type_signature,
                         "required": option.default.is_none(),
                         "readOnly": option.read_only,
-                        "contributable": option.contributable,
+                        "extensible": option.extensible,
                         "packageDigest": package_digest(loaded)
                     })
                 })
@@ -818,7 +818,7 @@ mod tests {
                 example: None,
                 visibility: OptionVisibility::Public,
                 read_only: false,
-                contributable: true,
+                extensible: true,
                 deprecated: None,
                 replacement: None,
                 source: OptionSource {

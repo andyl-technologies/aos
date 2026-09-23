@@ -260,7 +260,7 @@ fn package_option(path: &str, option_type: OptionType) -> PackageOptionDeclarati
         example: None,
         visibility: OptionVisibility::Public,
         read_only: false,
-        contributable: false,
+        extensible: false,
         deprecated: None,
         replacement: None,
         source: OptionSource {

@@ -9,7 +9,7 @@ proposal requires no new syntax or evaluator fork. It extends the shared AOS
 option vocabulary, libraries, and package construction.
 
 The existing option interfaces remain useful. A virtual-host request should
-reuse nginx's types within an explicitly authorized contribution surface. A
+reuse nginx's types within an explicitly authorized option extension surface. A
 package service requests the typed `aos.service-management` lifecycle and the
 exact features it needs. Backend-specific definitions stay inside the selected
 provider, so the public contract remains rich without becoming a universal
@@ -46,8 +46,8 @@ and generated reference documentation consume projections from those
 declarations. Package modules do not repeat the same facts in metadata or a
 documentation-only tree.
 
-Existing pure mappings into nginx or another owner's option tree remain a
-useful contribution mechanism. They are only one facet of an exported ability.
+Existing pure definitions in nginx or another owner's option tree remain a
+useful extension mechanism. They are only one facet of an exported ability.
 The provider must also declare how it consumes other abilities to realize the
 merged desired state and its transitions. Those relationships cannot remain
 implicit inside an unrelated central renderer.
@@ -63,23 +63,23 @@ Configuration interactions have different authority:
 
 | Interaction | Example | Contract |
 | --- | --- | --- |
-| Contribute | Add one application virtual host | Authorized write scope and interface ABI |
+| Extend owner options | Define one application virtual host | Authorized option path and interface ABI |
 | Consume an output | Read an endpoint or rendered config artifact | Named result and data/retention dependency |
 | Apply behavior | Reload a service after config changes | Separately authorized lifecycle effect |
 
 The trusted projection attributes lowered definitions to the original
 consumer, provider, request, and binding. It validates both the provider's
-declared mapping authority and the consumer's granted contribution scope.
+declared mapping authority and the consumer's granted option scope.
 Calling provider-authored code is not a way to launder a consumer request into
 owner privileges. Privileged results, such as Kubernetes RBAC declarations,
 require their own authorization before application.
 
-Existing `ownsRoots`, `contributes`, `contributable`, and interface ABI checks
-remain the basis for ownership. Configuration merging happens inside the
+Existing root ownership, `extensible` option declarations, and interface ABI
+checks remain the basis for ownership. Configuration merging happens inside the
 authorized surface. `mkForce`, option precedence, `readOnly`, and a fabricated
 attribute set MUST NOT expand that surface.
 
-Multiple consumers can contribute disjoint named entries. Colliding exclusive
+Multiple consumers can define disjoint named entries. Colliding exclusive
 slots fail validation. Shared aggregate interfaces must define their merge
 semantics rather than depend on incidental import ordering. Enablement and
 global service policy remain operator/owner decisions unless explicitly
@@ -88,7 +88,7 @@ delegated.
 Structural option ownership is necessary but not sufficient for safe
 delegation. Raw configuration fragments, filesystem paths, endpoints, and
 privileged object fields can change behavior outside the apparent named slot.
-The exported contribution interface must restrict or separately authorize
+The exported extension interface must restrict or separately authorize
 those uses. The owner's full native configuration interface remains available
 under its own authority; a narrower caller grant does not inherit it.
 

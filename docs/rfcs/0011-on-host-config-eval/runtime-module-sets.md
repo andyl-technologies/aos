@@ -112,7 +112,7 @@ existing authorization rules remain the boundary:
 
 - a package owns its exact package-name option root by default;
 - a shared root has exactly one installed owner and an interface ABI;
-- a meta-package may write only owner-declared contributable subpaths at the
+- a meta-package may write only owner-declared extensible subpaths at the
   matching interface ABI;
 - no package may enable another package; the operator runtime module selects
   packages and enables services;
@@ -127,8 +127,8 @@ target, unit, user, or group), never ownership of the whole
 
 The three k3s role packages publish the same versioned `k3s` interface and are
 mutually exclusive providers of that root. Its CNI and CSI integration
-subtrees are contributable without allowing an integration package to enable
-k3s. nginx owns the versioned `nginx` root and exposes contributable
+subtrees are extensible without allowing an integration package to enable
+k3s. nginx owns the versioned `nginx` root and exposes extensible
 virtual-host and upstream subtrees. Envoy owns the versioned `envoy` root and
 exposes listener, cluster, endpoint, route, secret-reference, and runtime-layer
 subtrees. Credentials are references to the credential channel and never

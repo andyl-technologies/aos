@@ -321,7 +321,7 @@ impl VersionedDocument for PackageDocument {
             default: Option<&'a AbilityValue>,
             visibility: crate::OptionVisibility,
             read_only: bool,
-            contributable: bool,
+            extensible: bool,
         }
 
         #[derive(Serialize)]
@@ -525,7 +525,7 @@ impl VersionedDocument for PackageDocument {
                     },
                     visibility: declaration.visibility,
                     read_only: declaration.read_only,
-                    contributable: declaration.contributable,
+                    extensible: declaration.extensible,
                 })
                 .collect(),
             exports: self

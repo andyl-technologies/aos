@@ -38,7 +38,7 @@
         options.assertions = lib.mkOption {
           type = lib.types.listOf lib.types.attrs;
           default = [];
-          contributable = true;
+          extensible = true;
         };
         aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
         aos.services.releaseCoordinator = {

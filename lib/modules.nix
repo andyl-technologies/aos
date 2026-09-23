@@ -118,7 +118,7 @@
     internal ? false,
     deprecated ? null,
     replacement ? null,
-    # `contributable` marks the capability-scoped contribution surface. It
+    # `extensible` marks option paths open to other package modules. It
     # never changes how an option's value is merged. The declaring owner sets
     # it on the extension points other package modules may write into
     # (e.g. `nginx.virtualHosts`, `nginx.upstreams`) and leaves the root
@@ -128,7 +128,7 @@
     # this marker with resolver-stamped declaration and definition provenance
     # to reject unauthorized package writes. The flag is also exposed through
     # `_optionDecls` for publication and documentation. Defaults `false`.
-    contributable ? false,
+    extensible ? false,
   }: {
     _type = "option";
     inherit
@@ -143,7 +143,7 @@
       internal
       deprecated
       replacement
-      contributable
+      extensible
       ;
   };
 
@@ -542,12 +542,12 @@
     #   args ← config._module.args ← modules' config ← modules' args
     # Only the specific module function body forcing `args.customPkg`
     # forces `config._module.args.customPkg`, which in turn forces
-    # just the one setter module's contribution at that path.
+    # just the one setter module's definition at that path.
     #
     # An older naive attempt — `args = … // (config._module.args or {})`
     # — cycled because `//` forces both operands to enumerate their
     # full key sets, which requires fully evaluating every module's
-    # config._module.args contribution before any module's args can
+    # config._module.args definition before any module's args can
     # be constructed.
     proxyArgs =
       if builtins.isFunction loaded
@@ -646,11 +646,11 @@
     specialArgs ? {},
     # `operatorModules` contains modules the
     # RESOLVER has authenticated as operator-provenance (the verified
-    # `host.nix` store path). Every def these modules contribute is stamped
+    # `host.nix` store path). Every def these modules add is stamped
     # with engine provenance `@host` and lifted to the reserved priority-75
-    # band (between `mkForce` and normal package contributions) at the
+    # band (between `mkForce` and normal package definitions) at the
     # priority-assignment step, so the operator deterministically beats any
-    # package contribution regardless of module order. Provenance is keyed to
+    # package definition regardless of module order. Provenance is keyed to
     # a module's POSITION in this resolver-controlled list, NOT to its
     # forgeable `_file`, and does NOT propagate through `imports` — a package
     # cannot inject itself here, cannot forge `_provenance` in its own body
@@ -690,7 +690,7 @@
     # path would lose that prefix and reject valid writes.
     enforcePackageAuthorship ? true,
     # Stage-1 package selection deliberately evaluates against only the
-    # desired-package declaration, before selected package modules contribute
+    # desired-package declaration, before selected package modules define
     # their option schemas. The resolver disables this check only for that
     # seed evaluation; full stage-2 evaluation remains fail-closed.
     enforceRuntimeDeclarations ? true,
@@ -720,7 +720,7 @@
       # Synthetic internal module that declares the three `_module.*`
       # options used by the engine itself. Without these declarations
       # strict-mode evaluation (see configWithFreeform below) would flag
-      # `_module.args` contributions as undeclared, and there would be
+      # `_module.args` definitions as undeclared, and there would be
       # nowhere to type-check `_module.freeformType`. Injected first in
       # `collectModules` so its declarations are available to all other
       # modules and submodules.
@@ -790,12 +790,12 @@
                 != []
                 && ownerForProvenance (decl.provenance or "@base") == package)
               allOptionDecls));
-          contributableRoots = lists.unique (builtins.map
+          extensibleRoots = lists.unique (builtins.map
             (decl: builtins.head decl.path)
             (builtins.filter
-              (decl: decl.path != [] && (decl.option.contributable or false))
+              (decl: decl.path != [] && (decl.option.extensible or false))
               allOptionDecls));
-          allowedRoots = declaredRoots ++ contributableRoots;
+          allowedRoots = declaredRoots ++ extensibleRoots;
           foreignPackageRoots =
             builtins.filter
             (root: !builtins.elem root allowedRoots)
@@ -1254,34 +1254,34 @@
       in
         builtins.any declaresEnable modules;
 
-      contributionEntryPaths = detectNestedEnable: path: name: value:
+      definitionEntryPaths = detectNestedEnable: path: name: value:
         if isMkIf value
         then
           if enableAbilitySelection
-          then contributionEntryPaths detectNestedEnable path name value._value
+          then definitionEntryPaths detectNestedEnable path name value._value
           else []
         else if isMkMerge value
-        then builtins.concatLists (builtins.map (contributionEntryPaths detectNestedEnable path name) value._values)
+        then builtins.concatLists (builtins.map (definitionEntryPaths detectNestedEnable path name) value._values)
         else if isOverride value || isOrder value
-        then contributionEntryPaths detectNestedEnable path name value._value
+        then definitionEntryPaths detectNestedEnable path name value._value
         else if detectNestedEnable && builtins.isAttrs value && value ? enable
         then [(path ++ [name "enable"])]
         else [(path ++ [name])];
 
-      contributionPaths = detectNestedEnable: path: value:
+      definitionPaths = detectNestedEnable: path: value:
         if isMkIf value
         then
           if enableAbilitySelection
-          then contributionPaths detectNestedEnable path value._value
+          then definitionPaths detectNestedEnable path value._value
           else []
         else if isMkMerge value
-        then builtins.concatLists (builtins.map (contributionPaths detectNestedEnable path) value._values)
+        then builtins.concatLists (builtins.map (definitionPaths detectNestedEnable path) value._values)
         else if isOverride value || isOrder value
-        then contributionPaths detectNestedEnable path value._value
+        then definitionPaths detectNestedEnable path value._value
         else if builtins.isAttrs value
         then
           builtins.concatLists (builtins.map
-            (name: contributionEntryPaths detectNestedEnable path name value.${name})
+            (name: definitionEntryPaths detectNestedEnable path name value.${name})
             (builtins.attrNames value))
         else [path];
 
@@ -1303,12 +1303,12 @@
           && submoduleDeclaresImmediateEnable declaration.option.type;
       in
         # A declared option is one authored leaf unless it is an attribute-set
-        # contribution surface. Those dynamic entries must remain visible so
+        # extension surface. Those dynamic entries must remain visible so
         # packages cannot hide writes to nested foreign `enable` options.
         if declaration != null
         then
           if containsNamedContributions
-          then contributionPaths detectsNestedEnable path value
+          then definitionPaths detectsNestedEnable path value
           else [path]
         else if isMkIf value
         then
@@ -1339,7 +1339,7 @@
         (i: builtins.elemAt prefix i == builtins.elemAt path i)
         (builtins.genList (i: i) (builtins.length prefix));
 
-      # Package modules may contribute only to these module-engine diagnostic
+      # Package modules may define only these module-engine diagnostic
       # channels without declaring their options. They are typed and consumed
       # by the engine itself; they cannot materialize runtime state.
       packageEngineContributionRoots = ["assertions" "warnings"];
@@ -1386,9 +1386,9 @@
         then true
         else if foreignEnable
         then throw "evalModules: package '${package}' may not write foreign enable path '${pathStr}'"
-        else if declaration.option.contributable or false
+        else if declaration.option.extensible or false
         then true
-        else throw "evalModules: package '${package}' writes non-contributable option '${pathStr}' declared by '${declarationOwner}'";
+        else throw "evalModules: package '${package}' writes non-extensible option '${pathStr}' declared by '${declarationOwner}'";
 
       packageAuthorshipCheck =
         if !enforcePackageAuthorship
@@ -1644,7 +1644,7 @@
         in
           chooseOwner "${builtins.concatStringsSep "." path}.${name}" defs;
 
-        # Returns every active authenticated owner whose definition contributes
+        # Returns every active authenticated owner whose definition adds
         # to one dynamic attribute, independent of merge priority. Artifact
         # renderers use this to reject a unit or /etc leaf whose bytes depend
         # on more than one package: degraded projection cannot safely retain a
@@ -1795,7 +1795,7 @@
                   if later.option.apply != null
                   then later.option.apply
                   else earlier.option.apply;
-                contributable = earlier.option.contributable || later.option.contributable;
+                extensible = earlier.option.extensible || later.option.extensible;
               };
           };
 
@@ -1848,7 +1848,7 @@
             # `"operator"` (it came from a resolver-supplied `host.nix`
             # module) is lifted to the reserved priority-75 band, so the
             # operator deterministically beats any package's normal-tier
-            # contribution regardless of module order — without subtree-
+            # definition regardless of module order — without subtree-
             # wrapping (the `collectDefsAtPath` override-marker trap). An
             # operator def that DOES carry an explicit override marker keeps
             # that explicit priority (the operator can still `mkForce`/
@@ -1957,7 +1957,7 @@
       # `_module.args` is declared by the synthetic internal module and
       # seeded with `extraArgs // specialArgs` there, so `mergedOptions`
       # already contains the caller-provided args folded with any
-      # module's `_module.args.<name> = …` contribution via the `attrs`
+      # module's `_module.args.<name> = …` definition via the `attrs`
       # type's merge. No post-hoc override is needed — the previous
       # `// { _module = { args = …; }; }` shim would have wiped the
       # sibling `_module.freeformType` / `_module.strict` values that
@@ -2154,18 +2154,18 @@
           }
           // builtins.removeAttrs args ["modules"]);
 
-      # The declared contributable option surface, flattened to one record
+      # The declared extensible option surface, flattened to one record
       # per declared option path, carrying the stable type description and
-      # `contributable` marker. This
+      # `extensible` marker. This
       # is the data the publish-time options-only eval folds into the
       # registry inverted index (`option-path → {owner@version,
-      # typeSig; contributable}`) so the resolver can hash the normative ABI
+      # typeSig; extensible}`) so the resolver can hash the normative ABI
       # schema and authorize foreign writes
       # (CS5). It is a lazy, additive field — forced only when a publish
       # tool reads it — and is derived purely from `optionMap` (declarations),
-      # never forcing any `config` value. `contributable` defaults `false`
+      # never forcing any `config` value. `extensible` defaults `false`
       # (owner-only) for every option that does not opt in. `lib.optionSurface`
-      # / `lib.contributableSurface` are the public accessors.
+      # / `lib.extensibleSurface` are the public accessors.
       _optionDecls = builtins.map (
         key: let
           decl = optionMap.${key};
@@ -2207,7 +2207,7 @@
             then "hidden"
             else "public";
           readOnly = option.readOnly or false;
-          contributable = option.contributable or false;
+          extensible = option.extensible or false;
           owner = ownerForProvenance (decl.provenance or "@base");
           deprecated = option.deprecated or null;
           replacement = option.replacement or null;

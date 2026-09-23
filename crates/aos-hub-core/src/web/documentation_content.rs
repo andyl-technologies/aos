@@ -56,7 +56,7 @@ pub(super) fn option(option: &OptionDocument, slug: &str, release: &str) -> Stri
     let mut html = format!("<article class=\"doc-option\" id=\"{}\"><h2>{}</h2><div class=\"doc-badges\"><span>{}</span>{}{}</div>",
         aos_doc_model::documentation_anchor("option", &option.display_path), escape(&option.display_path), escape(&option.type_signature),
         if option.read_only { "<span>Read only</span>" } else { "" },
-        if option.contributable { "<span>Accepts package contributions</span>" } else { "" });
+        if option.extensible { "<span>Other packages may define values</span>" } else { "" });
     if let Some(notice) = &option.deprecated {
         let _ = write!(
             html,

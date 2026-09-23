@@ -1181,7 +1181,7 @@ fn package_option_view(
         r#type: option.type_signature.clone(),
         owner_package: option.owner.package.clone(),
         owner_root: option.owner.root.clone(),
-        contributable: option.contributable,
+        extensible: option.extensible,
         canonical_option_json: serde_json::to_vec(option)?,
     })
 }
@@ -12326,8 +12326,8 @@ impl RpcService {
                 continue;
             }
             if req
-                .contributable
-                .is_some_and(|contributable| option.contributable != contributable)
+                .extensible
+                .is_some_and(|extensible| option.extensible != extensible)
             {
                 continue;
             }

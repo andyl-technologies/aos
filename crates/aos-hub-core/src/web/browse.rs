@@ -439,8 +439,8 @@ pub struct BrowseQuery {
     /// Documentation option type-signature filter.
     #[serde(rename = "type")]
     pub option_type: Option<String>,
-    /// Documentation contribution filter.
-    pub contributable: Option<bool>,
+    /// Filters options that other packages may extend.
+    pub extensible: Option<bool>,
     /// Source package version for a documentation comparison.
     pub from: Option<String>,
     /// Destination package version for a documentation comparison.
@@ -527,7 +527,7 @@ impl BrowseQuery {
                 "prefix" => out.prefix = Some(value.into_owned()),
                 "owner" => out.owner = Some(value.into_owned()),
                 "type" => out.option_type = Some(value.into_owned()),
-                "contributable" => out.contributable = value.parse().ok(),
+                "extensible" => out.extensible = value.parse().ok(),
                 "from" => out.from = Some(value.into_owned()),
                 "to" => out.to = Some(value.into_owned()),
                 "platform" => out.platform = Some(value.into_owned()),
@@ -2420,7 +2420,7 @@ pub async fn api_package_options(
                 prefix: query.prefix.clone().unwrap_or_default(),
                 owner: query.owner.clone().unwrap_or_default(),
                 r#type: query.option_type.clone().unwrap_or_default(),
-                contributable: query.contributable,
+                extensible: query.extensible,
                 page_size: 1_000,
                 page_token: String::new(),
             },

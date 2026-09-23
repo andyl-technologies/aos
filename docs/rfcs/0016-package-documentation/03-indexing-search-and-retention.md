@@ -66,7 +66,7 @@ package_documentation_artifacts
 option_search_documents
   documentation_artifact_id, option_ordinal, display_path, package_name,
   type_kind, type_signature, owner_package, owner_root, interface_abi,
-  visibility, contributable, deprecated, activation_kind, summary_text
+  visibility, extensible, deprecated, activation_kind, summary_text
 
 option_search_terms
   documentation_artifact_id, option_ordinal, term, field, weight, position
@@ -106,7 +106,7 @@ Queries support exact and fuzzy text plus structured filters:
   guarantee, deployment resource, or conceptual section;
 - option type and package;
 - public/internal visibility permitted to the caller;
-- contributable, deprecated, or required;
+- extensible, deprecated, or required;
 - changed relative to another exact document.
 
 Highlight ranges index plain result text. Hub never returns or stores

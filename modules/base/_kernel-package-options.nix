@@ -11,7 +11,7 @@ in {
       canonicalOrder = true;
     });
     default = {};
-    contributable = true;
+    extensible = true;
     description = ''
       Package-owned source packages rebuilt against the selected kernel and
       retained in the running and recovery environments.

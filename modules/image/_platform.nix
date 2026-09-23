@@ -273,7 +273,7 @@ in {
     default = null;
     readOnly = true;
     internal = true;
-    contributable = true;
+    extensible = true;
     description = "Exact package-owned image builder selected by an ability binding.";
   };
 

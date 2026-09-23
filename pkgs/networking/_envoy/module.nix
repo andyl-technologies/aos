@@ -509,14 +509,14 @@ in {
     listeners = lib.mkOption {
       type = envoyTypes.listeners;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "The statically configured listeners.";
     };
 
     clusters = lib.mkOption {
       type = envoyTypes.clusters;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "The statically configured upstream clusters.";
     };
 
@@ -529,7 +529,7 @@ in {
     runtimeLayers = lib.mkOption {
       type = envoyTypes.runtimeLayers;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Static, non-secret Envoy runtime layers.";
     };
 

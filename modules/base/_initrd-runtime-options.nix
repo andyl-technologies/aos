@@ -38,7 +38,7 @@ in {
           canonicalOrder = true;
         });
         default = {};
-        contributable = true;
+        extensible = true;
         description = ''
           Package-owned groups of generated store artifacts copied into the
           initial runtime without admitting them as package module roots.
@@ -48,7 +48,7 @@ in {
       files = lib.mkOption {
         type = packageOwnedMap runtimeFileMap;
         default = {};
-        contributable = true;
+        extensible = true;
         description = ''
           Package-owned groups of flat runtime files rendered once into
           immutable trees for the initial runtime.

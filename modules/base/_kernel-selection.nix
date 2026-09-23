@@ -129,7 +129,7 @@ in {
       default = null;
       readOnly = true;
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Derived kernel artifact selected by the checked ability binding.";
     };
 

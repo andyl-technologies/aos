@@ -80,8 +80,8 @@ are *specified here* so the tests are written before the code:
   partition sizes remain unchanged.
 - **Conscription / capability-scoped contribution** (`checks.eval`): a foreign
   `enable` write is rejected at resolve time (its paths are not a subset of the
-  installed owner's contributable surface in `SystemRoots`); a contribution to an
-  owner-declared contributable sub-path is allowed; provenance from the
+  installed owner's extensible surface in `SystemRoots`); a contribution to an
+  owner-declared extensible sub-path is allowed; provenance from the
   authenticated source
   (forged `_file` does not earn operator priority — review M-forgeable-file).
 

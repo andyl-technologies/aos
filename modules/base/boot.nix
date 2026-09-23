@@ -167,7 +167,7 @@ in {
         default = [];
         apply = uniqueStoreRoots;
         internal = true;
-        contributable = true;
+        extensible = true;
         description = ''
           Exact derivations whose authenticated declarations form the initrd
           static contract. Non-package paths belong in

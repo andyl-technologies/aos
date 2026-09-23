@@ -101,7 +101,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
             prefix,
             owner,
             option_type,
-            contributable,
+            extensible,
             pagination,
         } => {
             let client = hub_client(&access.hub, access.token.as_deref()).await?;
@@ -117,7 +117,7 @@ pub(super) async fn documentation(printer: &Printer, command: &HubDocumentationC
                     prefix: prefix.clone().unwrap_or_default(),
                     owner: owner.clone().unwrap_or_default(),
                     r#type: option_type.clone().unwrap_or_default(),
-                    contributable: *contributable,
+                    extensible: *extensible,
                     page_size: pagination.page_size.unwrap_or_default(),
                     page_token: pagination.page_token.clone().unwrap_or_default(),
                 },

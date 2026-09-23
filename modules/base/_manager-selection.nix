@@ -208,7 +208,7 @@ in {
     default = null;
     readOnly = true;
     internal = true;
-    contributable = true;
+    extensible = true;
     description = "Derived view of the manager selected by the checked ability binding.";
   };
 }

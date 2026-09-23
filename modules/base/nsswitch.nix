@@ -105,7 +105,7 @@ in {
       type = lib.types.attrsOf sourceType;
       default = {};
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Package-owned typed NSS source definitions.";
     };
   };

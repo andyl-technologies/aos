@@ -696,13 +696,13 @@ in {
       type = upstreamMap;
       default = {};
       description = "Named reverse-proxy upstream pools.";
-      contributable = true;
+      extensible = true;
     };
     virtualHosts = lib.mkOption {
       type = virtualHostMap;
       default = {};
       description = "Named HTTP virtual hosts.";
-      contributable = true;
+      extensible = true;
     };
     extraHttpConfig = lib.mkOption {
       type = confinedDirectives;

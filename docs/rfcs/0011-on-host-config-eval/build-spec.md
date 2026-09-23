@@ -315,7 +315,7 @@ pub struct InstanceFactsInput {
 Package write authority is not a manifest input. The evaluator derives it from
 resolver-stamped option declaration and definition provenance in the admitted
 module graph. A package owns options it uniquely declares and may write beneath
-foreign declarations only when the declaring option is marked `contributable`.
+foreign declarations only when the declaring option is marked `extensible`.
 
 **Canonicalization + hashing of each input (normative):**
 
@@ -2105,7 +2105,7 @@ generations. It refines the conceptual split in
 storage location of every field, fixes the GC-root set from
 [`operability.md`](operability.md), and locks the upgrade/rollback ordering. It
 incorporates the locked decisions F1 (dm-verity-anchored base lib), F2
-(`jobScripts` text-carrying manifest), F3 (`contributable` authorization), and
+(`jobScripts` text-carrying manifest), F3 (`extensible` authorization), and
 the five generations-`§Open questions` resolutions (retention depth, measured
 locus, `stateVersion` orthogonality, first-boot re-eval, content-pinned
 `host.nix`).

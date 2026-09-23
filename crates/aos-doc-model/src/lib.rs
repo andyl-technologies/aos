@@ -420,9 +420,9 @@ pub struct OptionDocument {
     pub replacement: Option<Vec<PathSegment>>,
     /// Authenticated option owner.
     pub owner: OptionOwner,
-    /// Whether non-owner packages may contribute below this option.
+    /// Whether non-owner packages may define values below this option.
     #[serde(default)]
-    pub contributable: bool,
+    pub extensible: bool,
     /// Declaration source locator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocator>,
@@ -1082,7 +1082,7 @@ struct SemanticOption<'a> {
     deprecated: &'a Option<String>,
     replacement: &'a Option<Vec<PathSegment>>,
     owner: &'a OptionOwner,
-    contributable: bool,
+    extensible: bool,
 }
 
 fn semantic_option(option: &OptionDocument) -> SemanticOption<'_> {
@@ -1095,7 +1095,7 @@ fn semantic_option(option: &OptionDocument) -> SemanticOption<'_> {
         deprecated: &option.deprecated,
         replacement: &option.replacement,
         owner: &option.owner,
-        contributable: option.contributable,
+        extensible: option.extensible,
     }
 }
 
@@ -1805,7 +1805,7 @@ mod tests {
                 root: "nginx".to_string(),
                 interface_abi: Some(1),
             },
-            contributable: true,
+            extensible: true,
             source: Some(SourceLocator {
                 path: aos_ability_model::RelativePath::new(
                     "pkgs/networking/_nginx-config/module.nix",
@@ -1844,7 +1844,7 @@ mod tests {
                 example: None,
                 visibility: OptionVisibility::Public,
                 read_only: false,
-                contributable: false,
+                extensible: false,
                 deprecated: None,
                 replacement: None,
                 source: OptionSource {
