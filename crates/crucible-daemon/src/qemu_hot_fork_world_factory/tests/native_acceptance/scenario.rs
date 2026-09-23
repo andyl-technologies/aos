@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 use std::error::Error;
+use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
 
 use crucible::model::{
@@ -25,9 +27,9 @@ use crucible::model::{
     WorldStorageFaultDevice, WorldStorageKind,
 };
 use crucible::{
-    AssertionDef, AssertionId, LinkDef, LinkLossProbability, MarkerId, NodeId, Plan, Properties,
-    Property, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables, Seed, SimDuration,
-    World,
+    AssertionDef, AssertionId, ContentAddressedBlobRef, ContentHash, LinkDef, LinkLossProbability,
+    MarkerId, NodeId, Plan, Properties, Property, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, Seed, SimDuration, World,
 };
 use crucible_campaign::{
     ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue, ExactRational, IntegerDomain,
@@ -40,13 +42,39 @@ const NATIVE_LINK_LATENCY_NANOS: u64 = 5_000_000_000;
 pub(super) const INACTIVE_WORLD_NANOS: u64 = 80_000_000_000;
 pub(super) const REACTIVATION_NANOS: u64 = 81_000_000_000;
 
+fn native_world(fixture: &str, kernel: &Path, root_image: &Path) -> Result<World, Box<dyn Error>> {
+    // The reviewed Phase 4 fixture uses symbolic launch asset identities. Bind
+    // the files selected by this native gate before deriving its new world ID.
+    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
+    let kernel_identity = ContentHash::from_reader(File::open(kernel)?)?;
+    let root_image_identity = ContentHash::from_reader(File::open(root_image)?)?;
+    let mut nodes = base.world().nodes().to_vec();
+
+    for node in &mut nodes {
+        let WorldNodeDef::Vm(vm) = node else {
+            continue;
+        };
+        if vm.kernel.is_none() || vm.root_image.is_none() {
+            return Err("representative VM omits a reviewed launch asset".into());
+        }
+        vm.kernel = Some(ContentAddressedBlobRef::from_hash(kernel_identity));
+        vm.root_image = Some(ContentAddressedBlobRef::from_hash(root_image_identity));
+    }
+
+    Ok(
+        World::from_node_defs_and_links(nodes, base.world().links().to_vec())?
+            .with_fault_topology(base.world().fault_topology().clone())?,
+    )
+}
+
 /// Builds the native acceptance scenario from the reviewed three-node fixture.
 pub(super) fn build(
     fixture: &str,
     artifacts: Arc<dyn DagStore>,
+    kernel: &Path,
+    root_image: &Path,
 ) -> Result<(ScenarioDefForm, Arc<dyn DagStore>), Box<dyn Error>> {
-    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
-    let world = with_shared_fault_path(base.world().clone())?;
+    let world = with_shared_fault_path(native_world(fixture, kernel, root_image)?)?;
     let properties = Properties::from_assertions_for_world(
         &world,
         vec![
@@ -94,9 +122,10 @@ pub(super) fn build(
 pub(super) fn build_equivalence(
     fixture: &str,
     artifacts: Arc<dyn DagStore>,
+    kernel: &Path,
+    root_image: &Path,
 ) -> Result<(ScenarioDefForm, Arc<dyn DagStore>), Box<dyn Error>> {
-    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
-    let world = with_shared_fault_path(base.world().clone())?;
+    let world = with_shared_fault_path(native_world(fixture, kernel, root_image)?)?;
     let properties = Properties::from_assertions_for_world(
         &world,
         vec![
@@ -152,10 +181,11 @@ pub(super) fn build_equivalence(
 pub(super) fn build_single_node_equivalence(
     fixture: &str,
     artifacts: Arc<dyn DagStore>,
+    kernel: &Path,
+    root_image: &Path,
 ) -> Result<(ScenarioDefForm, Arc<dyn DagStore>), Box<dyn Error>> {
-    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
-    let mut node = base
-        .world()
+    let world = native_world(fixture, kernel, root_image)?;
+    let mut node = world
         .vm_nodes()
         .iter()
         .find(|node| node.id.name == "curl")
@@ -164,7 +194,7 @@ pub(super) fn build_single_node_equivalence(
     node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-single");
     let owner = node.id.clone();
     let mut nodes = vec![WorldNodeDef::Vm(node)];
-    nodes.extend(base.world().io_nodes().cloned().map(|mut io| {
+    nodes.extend(world.io_nodes().cloned().map(|mut io| {
         io.owner = owner.clone();
         WorldNodeDef::Io(io)
     }));
@@ -197,10 +227,11 @@ pub(super) fn build_single_node_equivalence_with_memory(
     fixture: &str,
     artifacts: Arc<dyn DagStore>,
     memory_mib: u32,
+    kernel: &Path,
+    root_image: &Path,
 ) -> Result<(ScenarioDefForm, Arc<dyn DagStore>), Box<dyn Error>> {
-    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
-    let mut node = base
-        .world()
+    let world = native_world(fixture, kernel, root_image)?;
+    let mut node = world
         .vm_nodes()
         .iter()
         .find(|node| node.id.name == "curl")
@@ -210,7 +241,7 @@ pub(super) fn build_single_node_equivalence_with_memory(
     node.memory_mib = memory_mib;
     let owner = node.id.clone();
     let mut nodes = vec![WorldNodeDef::Vm(node)];
-    nodes.extend(base.world().io_nodes().cloned().map(|mut io| {
+    nodes.extend(world.io_nodes().cloned().map(|mut io| {
         io.owner = owner.clone();
         WorldNodeDef::Io(io)
     }));
@@ -242,10 +273,11 @@ pub(super) fn build_single_node_equivalence_with_memory(
 pub(super) fn build_single_node_scaling(
     fixture: &str,
     artifacts: Arc<dyn DagStore>,
+    kernel: &Path,
+    root_image: &Path,
 ) -> Result<(ScenarioDefForm, Arc<dyn DagStore>), Box<dyn Error>> {
-    let base = ScenarioDefForm::from_canonical_toml(fixture)?;
-    let mut node = base
-        .world()
+    let world = native_world(fixture, kernel, root_image)?;
+    let mut node = world
         .vm_nodes()
         .iter()
         .find(|node| node.id.name == "curl")
@@ -775,14 +807,44 @@ fn object_id(name: &str) -> Result<FaultObjectId, Box<dyn Error>> {
 }
 
 #[test]
+fn native_world_binds_selected_launch_asset_bytes() {
+    let fixture =
+        include_str!("../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
+    let base = ScenarioDefForm::from_canonical_toml(fixture).expect("parse reviewed scenario");
+    let directory = tempfile::tempdir().expect("create test directory");
+    let kernel = directory.path().join("kernel");
+    let root_image = directory.path().join("root.ext4");
+    std::fs::write(&kernel, b"selected kernel bytes").expect("write selected kernel");
+    std::fs::write(&root_image, b"selected root bytes").expect("write selected root image");
+
+    let world = native_world(fixture, &kernel, &root_image).expect("bind selected assets");
+    let expected_kernel = ContentHash::from_bytes(b"selected kernel bytes");
+    let expected_root = ContentHash::from_bytes(b"selected root bytes");
+
+    assert_ne!(world.id(), base.world().id());
+    assert_eq!(world.links(), base.world().links());
+    assert_eq!(world.fault_topology(), base.world().fault_topology());
+    for node in world.vm_nodes().iter() {
+        assert_eq!(
+            node.kernel.map(ContentAddressedBlobRef::hash),
+            Some(expected_kernel)
+        );
+        assert_eq!(
+            node.root_image.map(ContentAddressedBlobRef::hash),
+            Some(expected_root)
+        );
+    }
+}
+
+#[test]
 fn representative_world_admits_the_shared_fault_path() {
     let fixture =
         include_str!("../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
-    let artifacts: Arc<dyn DagStore> = Arc::new(crucible::model::MemoryDagStore::new());
-    let (source, _) = build_equivalence(fixture, artifacts).expect("build shared fault scenario");
-    let topology = source.world().fault_topology();
+    let base = ScenarioDefForm::from_canonical_toml(fixture).expect("parse reviewed scenario");
+    let world = with_shared_fault_path(base.world().clone()).expect("build shared fault topology");
+    let topology = world.fault_topology();
 
-    assert!(source.world().links().iter().all(|link| {
+    assert!(world.links().iter().all(|link| {
         link.latency().nanos == NATIVE_LINK_LATENCY_NANOS
             && link.jitter().nanos == 0
             && link.loss() == LinkLossProbability::ZERO

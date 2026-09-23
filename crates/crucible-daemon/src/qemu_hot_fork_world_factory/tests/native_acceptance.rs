@@ -87,7 +87,9 @@ fn production_factory_forks_complete_live_world_atomically() {
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
-    let (source, artifacts) = scenario::build(&fixture, artifacts).expect("build source scenario");
+    let (source, artifacts) =
+        scenario::build(&fixture, artifacts, &paths.kernel, &paths.root_image)
+            .expect("build source scenario");
     let source_input = execution_input_for_scenario(source.clone());
     let source_context = execution_context(&source_input, 0x70);
 
@@ -380,7 +382,9 @@ fn prepare_native_source(
 ) -> PreparedNativeSource {
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
-    let (source, artifacts) = scenario::build(&fixture, artifacts).expect("build source scenario");
+    let (source, artifacts) =
+        scenario::build(&fixture, artifacts, &paths.kernel, &paths.root_image)
+            .expect("build source scenario");
     let input = execution_input_for_scenario(source.clone());
     let context = execution_context(&input, execution_byte);
     let host = open_host(paths, &format!("{lane}-source"), project_id_start);
