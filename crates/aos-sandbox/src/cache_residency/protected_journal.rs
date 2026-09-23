@@ -5,7 +5,7 @@
 //! change. Those actions require the postcommit capabilities minted here.
 
 use aos_sandbox_core::{
-    CacheDomainId, ObjectDescriptor, ObjectDigest, ProjectId,
+    AttachmentId, CacheDomainId, ObjectDescriptor, ObjectDigest, OperationId, ProjectId, ViewId,
     model::{CacheDomain, CacheDomainKind},
 };
 use sha2::{Digest as _, Sha256};
@@ -1575,6 +1575,48 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
                 })
             }
         }
+    }
+
+    /// Reconciles only the current physical acquisition of one admitted public pin.
+    ///
+    /// The recovered transaction must name the original public operation and
+    /// exact logical consumer. A later renewal may change lease authority but
+    /// cannot make a different pin or operation eligible for this handoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transaction is not the current acquisition
+    /// or renewal for the supplied consumer, or the physical owner rejects it.
+    #[cfg(target_os = "linux")]
+    pub fn reconcile_public_logical_pin_acquisition(
+        self,
+        owner: &mut super::DormantCacheOwnerV1,
+        operation: OperationId,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+    ) -> Result<super::CacheOwnerPinReconciliationV1, super::CacheOwnerPinSettlementErrorV1> {
+        let physical = self
+            .current_pin_effect
+            .as_ref()
+            .ok_or(CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+        if physical.operation != operation
+            || !matches!(
+                physical.action,
+                CurrentPhysicalPinActionV1::Acquire | CurrentPhysicalPinActionV1::Retain
+            )
+            || physical.pin.kind != super::CachePinKindV1::LogicalLease
+            || &physical.pin.object != object
+            || physical.pin.project != project
+            || physical.pin.view != view
+            || physical.pin.attachment != attachment
+        {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into());
+        }
+
+        let pin = physical.pin.clone();
+        self.reconcile_cache_owner_pin_change(owner, super::CacheOwnerPinActionV1::Acquire, &pin)
     }
 
     /// Issues one single-use physical admission from an exact reserved record.

@@ -1,5 +1,7 @@
 //! Current protected-state fencing for physical Cache pin effects.
 
+use aos_sandbox_core::OperationId;
+
 use crate::cache_residency::pin::valid_logical_renewal;
 use crate::cache_residency::{CachePinV1, CacheRecordKindV1, decode_atomic_object_record};
 use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
@@ -20,6 +22,7 @@ pub(super) enum CurrentPhysicalPinActionV1 {
 
 pub(super) struct CurrentPhysicalPinEffectV1 {
     pub(super) action: CurrentPhysicalPinActionV1,
+    pub(super) operation: OperationId,
     pub(super) pin: CachePinV1,
 }
 
@@ -137,5 +140,9 @@ pub(super) fn current_physical_pin_effect(
             released.pin == pin && released.drain.digest() == payload.record.authority
         }),
     });
-    Ok(still_retained.then_some(CurrentPhysicalPinEffectV1 { action, pin }))
+    Ok(still_retained.then_some(CurrentPhysicalPinEffectV1 {
+        action,
+        operation: payload.record.operation,
+        pin,
+    }))
 }

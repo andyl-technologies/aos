@@ -1697,6 +1697,56 @@ impl CacheResidencyProtectedOwnerV1 {
         })
     }
 
+    /// Recovers a public acquisition using its original protected operation.
+    ///
+    /// The original event supplies the physical pin and partition, so a retry
+    /// cannot redirect a cold handoff by selecting a different current
+    /// partition. The event must still retain the same logical consumer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when protected replay or exact consumer validation
+    /// fails closed. Physical failures remain in the result for exact retry.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_current_public_logical_pin_acquisition(
+        &mut self,
+        transaction_id: [u8; 16],
+        operation: OperationId,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+        physical: &mut super::DormantCacheOwnerV1,
+    ) -> Result<CacheResidencyProtectedPinRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let journal = CacheResidencyProtectedJournalV1::claim(journal, validator)?;
+            let cold = match journal.recover_current_transaction(transaction_id)? {
+                CacheResidencyColdRecoveryV1::StateOnly => {
+                    refresh()?;
+                    return Ok(CacheResidencyProtectedPinRecoveryV1::StateOnly);
+                }
+                CacheResidencyColdRecoveryV1::ObservePending(cold)
+                | CacheResidencyColdRecoveryV1::Terminal(cold) => cold,
+            };
+            refresh()?;
+            let validated = cold.consume(&journal)?;
+            Ok(
+                match validated.reconcile_public_logical_pin_acquisition(
+                    physical, operation, object, project, view, attachment,
+                ) {
+                    Ok(settlement) => CacheResidencyProtectedPinRecoveryV1::Settled(settlement),
+                    Err(error) => CacheResidencyProtectedPinRecoveryV1::PhysicalError(error),
+                },
+            )
+        })
+    }
+
     fn reopen_state(&mut self) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         drop(self.state_journal.take());
         let (journal, _) = open_cache_journal(

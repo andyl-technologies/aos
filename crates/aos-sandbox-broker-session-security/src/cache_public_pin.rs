@@ -3,8 +3,8 @@
 use aos_filesystem_view_core::{ObjectSource, ValidatedViewSourceObject};
 use aos_sandbox::Journal;
 use aos_sandbox::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1,
-    CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
+    CacheOwnerCurrentnessV1, CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1,
+    CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CachePinV1,
     CacheResidencyCommitOutcomeV1, CacheResidencyProtectedJournalErrorV1,
     CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, CatalogPresenceV1,
@@ -117,6 +117,30 @@ pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
     Physical(#[from] CacheOwnerErrorV1),
 }
 
+/// Classifies a cold public pin acquisition without selecting a new partition.
+#[must_use = "public pin recovery must be settled or retried"]
+pub enum PublicCachePinRecoveryV1 {
+    /// The original transaction has no current physical effect.
+    StateOnly,
+    /// The original acquisition is physically present, newly or previously.
+    Acquired(CacheOwnerPinReconciliationStateV1),
+    /// A renewal retained the one physical pin.
+    Retained(CacheOwnerCurrentnessV1),
+    /// The current protected effect still needs its exact physical settlement.
+    PhysicalError(CacheOwnerPinSettlementErrorV1),
+}
+
+/// Reports an invalid or unavailable public pin recovery attempt.
+#[derive(Debug, thiserror::Error)]
+pub enum PublicCachePinRecoveryErrorV1 {
+    /// The consumer no longer has an acquisition fence.
+    #[error("public cache pin recovery requires an acquisition-fenced consumer")]
+    MissingAcquisitionFence,
+    /// Protected replay or exact original-event validation failed closed.
+    #[error(transparent)]
+    Protected(#[from] CacheResidencyProtectedJournalErrorV1),
+}
+
 /// Reports failure while confirming every public unpin obligation is gone.
 #[derive(Debug, thiserror::Error)]
 pub enum PublicCacheUnpinObservationErrorV1 {
@@ -227,6 +251,51 @@ pub fn public_cache_unpin_transaction_id_v1(pin: &CachePinV1) -> [u8; 16] {
         transaction_id[15] = 1;
     }
     transaction_id
+}
+
+/// Reconciles the original public pin after restart or ambiguous settlement.
+///
+/// The operation identifies its stable protected transaction. Cold replay
+/// supplies the original pin and partition, while the rechecked consumer must
+/// match that event exactly. No fresh source or partition selection is used.
+///
+/// # Errors
+///
+/// Returns an error when the consumer lacks an acquisition fence or protected
+/// replay cannot validate the original transaction and consumer.
+pub fn recover_public_cache_pin_v1(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    consumer: &RecheckedCacheConsumerV1,
+    operation: OperationId,
+) -> Result<PublicCachePinRecoveryV1, PublicCachePinRecoveryErrorV1> {
+    if consumer.acquisition_fence().is_none() {
+        return Err(PublicCachePinRecoveryErrorV1::MissingAcquisitionFence);
+    }
+
+    match protected.reconcile_current_public_logical_pin_acquisition(
+        public_cache_pin_transaction_id_v1(operation),
+        operation,
+        consumer.object(),
+        consumer.project(),
+        consumer.view(),
+        consumer.attachment(),
+        physical,
+    )? {
+        CacheResidencyProtectedPinRecoveryV1::StateOnly => Ok(PublicCachePinRecoveryV1::StateOnly),
+        CacheResidencyProtectedPinRecoveryV1::Settled(CacheOwnerPinReconciliationV1::Acquired(
+            settlement,
+        )) => Ok(PublicCachePinRecoveryV1::Acquired(settlement)),
+        CacheResidencyProtectedPinRecoveryV1::Settled(CacheOwnerPinReconciliationV1::Retained(
+            currentness,
+        )) => Ok(PublicCachePinRecoveryV1::Retained(currentness)),
+        CacheResidencyProtectedPinRecoveryV1::Settled(CacheOwnerPinReconciliationV1::Released(
+            _,
+        )) => Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into()),
+        CacheResidencyProtectedPinRecoveryV1::PhysicalError(error) => {
+            Ok(PublicCachePinRecoveryV1::PhysicalError(error))
+        }
+    }
 }
 
 /// Reconciles one released public pin after process restart or ambiguous effect.
