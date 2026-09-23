@@ -836,7 +836,7 @@ impl Journal {
         })?;
 
         let existed = path.exists();
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -845,43 +845,7 @@ impl Journal {
         if !existed {
             sync_parent(&path)?;
         }
-        let length = file.metadata()?.len();
-        if length > limits.maximum_journal_bytes {
-            return Err(JournalError::JournalTooLarge);
-        }
-
-        let replay = replay(&mut file, limits)?;
-        let truncated_bytes = length.saturating_sub(replay.durable_end);
-        if truncated_bytes > 0 {
-            file.set_len(replay.durable_end)?;
-            file.sync_data()?;
-        }
-        file.seek(SeekFrom::End(0))?;
-
-        let report = RecoveryReport {
-            committed_transactions: replay.committed_transactions,
-            committed_records: replay.committed_records,
-            truncated_bytes,
-        };
-        Ok((
-            Self {
-                path,
-                file,
-                _lock: lock,
-                limits,
-                next_sequence: replay.next_sequence,
-                committed_transactions: replay.committed_transactions,
-                transaction_ids: replay.transaction_ids,
-                committed_namespaces: replay.committed_namespaces,
-                state: replay.state,
-                materialized_bytes: replay.materialized_bytes,
-                idempotency: replay.idempotency,
-                poisoned: false,
-                protected: None,
-                authority_instance: Arc::new(JournalAuthorityInstance),
-            },
-            report,
-        ))
+        Self::recover_opened(path, file, lock, limits, None)
     }
 
     /// Opens a root-owned journal beneath one protected directory.
@@ -1001,8 +965,26 @@ impl Journal {
             }
         })?;
         remove_stale_protected_compaction(&directory, name)?;
-        let mut file = open_protected_file(&directory, name, expected_uid, true, false, false)?;
+        let file = open_protected_file(&directory, name, expected_uid, true, false, false)?;
         fsync(&directory).map_err(rustix_io)?;
+
+        let protected = ProtectedJournalLocation {
+            directory,
+            name: name.to_owned(),
+            expected_uid,
+        };
+        Self::recover_opened(PathBuf::from(name), file, lock, limits, Some(protected))
+    }
+
+    // Both openers finish the same durable replay after their distinct lock,
+    // directory, and file-boundary checks have completed.
+    fn recover_opened(
+        path: PathBuf,
+        mut file: File,
+        lock: File,
+        limits: JournalLimits,
+        protected: Option<ProtectedJournalLocation>,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
         let length = file.metadata()?.len();
         if length > limits.maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
@@ -1021,7 +1003,7 @@ impl Journal {
         };
         Ok((
             Self {
-                path: PathBuf::from(name),
+                path,
                 file,
                 _lock: lock,
                 limits,
@@ -1033,11 +1015,7 @@ impl Journal {
                 materialized_bytes: replay.materialized_bytes,
                 idempotency: replay.idempotency,
                 poisoned: false,
-                protected: Some(ProtectedJournalLocation {
-                    directory,
-                    name: name.to_owned(),
-                    expected_uid,
-                }),
+                protected,
                 authority_instance: Arc::new(JournalAuthorityInstance),
             },
             report,
@@ -4375,15 +4353,34 @@ mod tests {
     fn protected_reopen_truncates_a_partial_crash_tail() {
         let directory = TestDirectory::new("protected-crash-tail");
         let path = directory.0.join("protected.journal");
-        let (journal, _) = protected_open(&directory.0).unwrap();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let committed_length = journal
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"key".to_vec(),
+                    b"value".to_vec(),
+                )],
+            ))
+            .unwrap()
+            .durable_bytes;
         drop(journal);
+
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(b"partial-frame").unwrap();
         file.sync_data().unwrap();
         drop(file);
-        let (_, report) = protected_open(&directory.0).unwrap();
+
+        let (journal, report) = protected_open(&directory.0).unwrap();
+        assert_eq!(report.committed_transactions, 1);
+        assert_eq!(report.committed_records, 1);
         assert_eq!(report.truncated_bytes, 13);
-        assert_eq!(fs::metadata(path).unwrap().len(), 0);
+        assert_eq!(
+            journal.get(RecordNamespace::DesiredState, b"key"),
+            Some(b"value".as_slice())
+        );
+        assert_eq!(fs::metadata(path).unwrap().len(), committed_length);
     }
 
     fn commit_fixture(path: &Path) -> u64 {
