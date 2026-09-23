@@ -104,7 +104,10 @@ participant, not a client-selectable stream transport.
 hex-encoded evidence for the holder key; no private key enters the public API.
 The holder's private key is read from the protected credential file named
 `sandbox-execution-<32 lowercase hex execution ID>-key`, so a separate ephemeral
-key can be retained for each execution.
+key can be retained for each execution. The CLI checks that the proof signs the
+exact attach request and that the protected private key matches its canonical
+Ed25519 public key before submitting the mutation. The SSHSIG wire profile is
+specified in `09-protocols-and-formats.md`.
 
 ## Tree inspection
 

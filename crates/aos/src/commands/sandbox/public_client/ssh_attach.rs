@@ -13,6 +13,7 @@ use aos_proto::aos::sandbox::v1::{
     ExecutionControlRequest, ExecutionIoMode, ExecutionServiceClient, GetExecutionRequest,
     OpenSshAccessEndpoint,
 };
+use aos_sandbox::attach_holder_proof::verify_attach_holder_private_key_v1;
 use aos_sandbox::cli_model::CheckedExecutionControlResultV1;
 use aos_sandbox::controller_query::CheckedExecutionResourceV1;
 use zeroize::Zeroizing;
@@ -29,13 +30,19 @@ use super::AuthorizedEndpoint;
 /// Rejects missing credentials, an invalid execution ID, or unsafe key custody.
 pub(super) fn load_holder_key(
     args: &SandboxArgs,
-    execution_id: &[u8],
+    request: &ExecutionControlRequest,
 ) -> Result<Zeroizing<Vec<u8>>> {
     let credential_path = args
         .public_credentials
         .as_deref()
         .context("--public-api requires --public-credentials")?;
-    super::super::public_transport::load_execution_private_key(credential_path, execution_id)
+    let private_key = super::super::public_transport::load_execution_private_key(
+        credential_path,
+        &request.execution_id,
+    )?;
+    verify_attach_holder_private_key_v1(request, &private_key)
+        .context("execution attachment proof does not match the retained holder key")?;
+    Ok(private_key)
 }
 
 /// Opens the checked, separately authorized execution stream.

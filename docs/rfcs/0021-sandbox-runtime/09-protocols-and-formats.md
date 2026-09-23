@@ -129,6 +129,20 @@ feature grants rather than incidental SSH properties. The guest agent's local
 control channel is node-internal and is not a second public execution data
 plane. A future alternative requires a separately versioned protocol and RFC.
 
+For v1 attach, `client_public_key` is the canonical UTF-8 OpenSSH `ssh-ed25519`
+public line without a comment or trailing newline. `proof_of_possession` is an
+OpenSSH SSHSIG PEM signature using SHA-256, an empty reserved field, and the
+namespace `aos.sandbox.execution.attach-holder-proof.v1`. Its signed message
+is the v1 deterministic protobuf encoding of the complete
+`ExecutionControlRequest` with only `proof_of_possession` cleared. Unknown
+fields in that request or its mutation, duration, and features are rejected;
+known fields use ascending field-number order and minimal varints. The
+execution ID, optimistic version,
+incarnation fence, idempotency key, required features, and exact public key are
+therefore signed together. The controller independently authenticates the TLS
+peer and authorizes the execution; this signature alone grants no access. A
+route can be issued only for the proven key and must still be short-lived.
+
 Attach requests require `aos.sandbox.execution.attach-holder-proof, 1, 0` in
 `MutationContext.required_features`; resize and signal requests carry no holder
 key or proof. Cache pin and unpin requests require

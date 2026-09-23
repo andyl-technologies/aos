@@ -8,7 +8,9 @@
 //! inert execution/challenge audit records; Linux publisher control and sessions
 //! bind their registration to the original live process without granting effects.
 //! [`client_state`], [`cli_model`], and [`controller_query`] provide dormant pure
-//! client and observation projections. [`environment`], [`git`], [`hierarchy`],
+//! client and observation projections. [`attach_holder_proof`] defines the
+//! holder-key signature profile for execution attachment. [`environment`],
+//! [`git`], [`hierarchy`],
 //! [`lifecycle`], [`multi_node`], [`policy_compiler`], and
 //! [`publisher_admission`] own inert RFC-0021 domain models and
 //! protected-journal seams. [`publisher_roots`] owns
@@ -30,6 +32,7 @@ pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
 pub mod authority;
+pub mod attach_holder_proof;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod client_state;

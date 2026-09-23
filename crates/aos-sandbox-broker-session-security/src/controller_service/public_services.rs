@@ -767,6 +767,15 @@ impl ExecutionService for CapabilityService {
         let execution_id = request.view().execution_id.to_vec();
         let action = request.view().action;
         if action.as_known() == Some(Action::EXECUTION_CONTROL_ACTION_ATTACH) {
+            aos_sandbox::attach_holder_proof::verify_attach_holder_proof_v1(
+                &request.to_owned_message(),
+            )
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::InvalidArgument,
+                    "execution attachment holder proof is invalid",
+                )
+            })?;
             // Admission cannot claim success before the holder proof is verified
             // and a short-lived OpenSSH route is actually issued.
             return Err(ConnectError::new(

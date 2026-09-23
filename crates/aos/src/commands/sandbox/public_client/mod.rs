@@ -297,7 +297,7 @@ pub(super) async fn dispatch_mutation(
             let holder_key = if message.action.as_known()
                 == Some(aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
             {
-                Some(ssh_attach::load_holder_key(args, &message.execution_id)?)
+                Some(ssh_attach::load_holder_key(args, message)?)
             } else {
                 None
             };
