@@ -687,7 +687,7 @@ fn query_findings(fixture: &FlightFixture, snapshot: &str) -> Result<Value, Box<
             "--snapshot",
             snapshot,
             "--limit",
-            "8",
+            "4",
             "--pages",
             "16",
         ]),
