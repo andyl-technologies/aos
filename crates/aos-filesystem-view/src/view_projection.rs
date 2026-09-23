@@ -243,6 +243,27 @@ impl<'index, 'bytes> ValidatedViewProjection<'index, 'bytes> {
         self.index
     }
 
+    /// Reports whether this exact View's immutable source references an object.
+    ///
+    /// Compilation authenticated the View descriptor and bound its source tree
+    /// to the retained index. An object may be hidden by presentation actions;
+    /// source membership is a retention proof, not permission to read a path.
+    /// Callers authorizing a cache pin must still establish current View and
+    /// consumer authority, physical partition, and pin-acquisition authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectionError::Index`] if an authenticated index record
+    /// cannot be decoded, which safe callers cannot cause.
+    pub fn references_source_object(
+        &self,
+        object: &ObjectDescriptor,
+    ) -> Result<bool, ProjectionError> {
+        self.index
+            .references_portable_object(object)
+            .map_err(ProjectionError::Index)
+    }
+
     /// Returns all mappings in byte-component path order.
     #[must_use]
     pub fn nodes(&self) -> &[ProjectedNode] {

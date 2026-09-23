@@ -7,6 +7,8 @@
 
 use std::iter::FusedIterator;
 
+use aos_sandbox_core::PortableMediaType;
+
 use super::view::*;
 use super::wire::*;
 use super::*;
@@ -157,6 +159,12 @@ impl<'a> IndexObjectDescriptorView<'a> {
     #[must_use]
     pub const fn encoded_size(&self) -> u64 {
         self.encoded_size
+    }
+
+    fn matches(self, object: &ObjectDescriptor) -> bool {
+        self.media_type == object.media_type().as_str()
+            && self.digest == object.digest()
+            && self.encoded_size == object.encoded_size()
     }
 }
 
@@ -438,6 +446,55 @@ impl<'a> IndexExtentView<'a> {
 }
 
 impl<'bytes> ValidatedIndex<'bytes> {
+    /// Reports whether the authenticated source tree references an exact portable object.
+    ///
+    /// The tree root and every expanded directory, whole-file content object,
+    /// and sparse extent are included. This proves membership only in the
+    /// source tree validated for this index; a caller authorizing a view must
+    /// separately bind that tree to the current view revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::InvalidRecord`] if a retained authenticated
+    /// record cannot be decoded, which safe callers cannot cause.
+    pub fn references_portable_object(
+        &self,
+        object: &ObjectDescriptor,
+    ) -> Result<bool, IndexError> {
+        let tree = &self.summary;
+        if object.media_type().as_str() == PortableMediaType::Tree.as_str()
+            && object.digest() == tree.tree_digest
+            && object.encoded_size() == tree.tree_size
+        {
+            return Ok(true);
+        }
+
+        for record in self.records() {
+            let record = record?;
+            match self.record_semantics(&record)?.body() {
+                IndexNodeBodyView::Directory { descriptor } if descriptor.matches(object) => {
+                    return Ok(true);
+                }
+                IndexNodeBodyView::File(file) => match file.content() {
+                    IndexContentView::Whole { content } if content.matches(object) => {
+                        return Ok(true);
+                    }
+                    IndexContentView::Sparse(sparse) => {
+                        for extent in sparse.extents() {
+                            if extent?.content().matches(object) {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                    IndexContentView::Whole { .. } => {}
+                },
+                IndexNodeBodyView::Directory { .. } | IndexNodeBodyView::Symlink { .. } => {}
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Borrows a node's authenticated variable metadata and semantic body.
     ///
     /// Locator authentication is constant-time for a root; other nodes use a
