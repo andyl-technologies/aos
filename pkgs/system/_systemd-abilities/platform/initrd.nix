@@ -62,21 +62,7 @@
   };
 
   cfg = config.boot.initrd.systemd;
-  providerRenderPlanType = lib.types.submodule {
-    config._module.strict = true;
-    options = {
-      input = lib.mkOption {type = lib.types.str;};
-      name = lib.mkOption {type = lib.types.nonEmptyStr;};
-    };
-  };
-  providerNetworkRenderPlanType = lib.types.submodule {
-    config._module.strict = true;
-    options = {
-      input = lib.mkOption {type = lib.types.str;};
-      name = lib.mkOption {type = lib.types.nonEmptyStr;};
-      resolverEnabled = lib.mkOption {type = lib.types.bool;};
-    };
-  };
+  providerPlanTypes = import ./render-plan-types.nix {inherit lib;};
 
   # Render each initrd unit category through its stage-1 *-ToUnit
   # renderer and key the result by unit file name (e.g. "foo.service").
@@ -194,10 +180,10 @@ in {
         etc = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
         jobScripts = lib.mkOption {type = lib.types.attrsOf lib.types.attrs;};
         providerPlans = lib.mkOption {
-          type = lib.types.listOf providerRenderPlanType;
+          type = lib.types.listOf providerPlanTypes.render;
         };
         providerNetworkPlans = lib.mkOption {
-          type = lib.types.listOf providerNetworkRenderPlanType;
+          type = lib.types.listOf providerPlanTypes.network;
         };
         renderedUnits = lib.mkOption {type = lib.types.listOf lib.types.str;};
       };
