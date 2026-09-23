@@ -1,0 +1,12 @@
+--- a/src/cmd/link/internal/ld/outbuf_mmap.go
++++ b/src/cmd/link/internal/ld/outbuf_mmap.go
+@@ -54,6 +54,9 @@ func (out *OutBuf) munmap() {
+ 	if out.buf == nil {
+ 		return
+ 	}
++	if err := out.f.Sync(); err != nil {
++		Exitf("sync output file failed: %v", err)
++	}
+ 	syscall.Munmap(out.buf)
+ 	out.buf = nil
+ }
