@@ -826,6 +826,19 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/replay/live.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/replay/proof.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/resume/remote.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve/evidence.rs|qemu
+# The API trigger test supplies an empty host adapter while checking only the modeled scheduler frontier.
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/runtime/tests/trigger_deadlines.rs|Qemu
+# The packaged CLI test authenticates host-side runtime markers; no plugin code links into the CLI.
+qemu-manifest|crucible-cli|crates/crucible-cli/Cargo.toml|crucible-qemu|dev-dependencies
+# The branch command authenticates a copied finding and starts a private daemon executor.
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/branch.rs|qemu
+# The exact command selects an immutable runtime and compares daemon replay with retained evidence.
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/exact.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/exact.rs|Qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/exact.rs|QEMU
+# The midpoint command delegates its local restore to the daemon and exposes a bounded relay.
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/midpoint.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/midpoint.rs|Qemu
 shape-review|crates/crucible/src/example_corpus.rs|sha256:c5f29789adaa6e571d6697cb8f6963bdc02cd02c7ba37b4f7e6c86ec30a427d1|implementation|2231|Executable deterministic examples spanning scenarios, graphs, replay, coverage, and campaign artifacts.|The examples share canonical builders and return one public corpus used by documentation and end-to-end gates.
 shape-review|crates/crucible/src/model/fault_signal/spatial/sampling.rs|sha256:4b5432e7f74e267cf9c1064e5bf780de8ac30d93dd4a0ed8e8fb366776cb3842|implementation|1003|Exact spatial signal sampling for point, grid, tiled, and analytic sources.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/campaign_service/query/tests.rs|sha256:a2ada1c2a1c3c5724e340f509ab5833c3d5a237ff48b73451f57c7d4a09f07c8|tests|1771|Authenticated campaign query, pagination, graph, object, and snapshot regression tests.|The query tests reuse one repository fixture and verify the complete bounded snapshot-query contract.
