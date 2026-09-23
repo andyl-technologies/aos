@@ -30,6 +30,13 @@
   host = evaluate "host" [
     {aos.services.getty.autologin.enable = true;}
   ];
+  disabledConsoleServices = evaluate "host" [
+    {aos.services.getty.autologin.enable = true;}
+    ({lib, ...}: {
+      aos.services."getty.virtual-console".enable = lib.mkForce false;
+      aos.services."getty.serial-console".enable = lib.mkForce false;
+    })
+  ];
   initrd = evaluate "initrd" [
     {
       aos.services.getty.autologin = {
@@ -79,6 +86,8 @@
     (builtins.attrValues options);
 in
   assert disabled.config.aos.abilities.requests == {};
+  assert disabledConsoleServices.config.aos.abilities.requests == {};
+  assert disabledConsoleServices.config.aos.abilities.requirementTemplates == host.config.aos.abilities.requirementTemplates;
   assert builtins.attrNames pkgs.util-linux.abilities.requirementTemplates
   == [
     "activation-milestone"
