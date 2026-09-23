@@ -927,6 +927,10 @@ pub(crate) struct PrivatePackagedCampaignRun<'a> {
 ///
 /// Returns an error if the private service fails, the completion check fails,
 /// or the bounded execution deadline expires.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the host-only watchdog bounds an independent service and never enters campaign state"
+)]
 pub(crate) fn run_private_packaged_campaign_until<F>(
     run: PrivatePackagedCampaignRun<'_>,
     mut completed: F,
@@ -966,9 +970,9 @@ where
     let shutdown = prepared.service.shutdown_handle();
     let thread = std::thread::Builder::new()
         .name(String::from("crucible-private-campaign"))
-        .spawn(move || prepared.service.serve())
+        .spawn(move || prepared.service.serve().map_err(Box::new))
         .map_err(|error| serve_error(format!("private campaign service thread error: {error}")))?;
-    let deadline = std::time::Instant::now() + run.timeout;
+    let started = std::time::Instant::now();
     let result = loop {
         match completed() {
             Ok(true) => break Ok(()),
@@ -977,7 +981,7 @@ where
                     "private packaged campaign service stopped early",
                 ));
             }
-            Ok(false) if std::time::Instant::now() < deadline => {
+            Ok(false) if started.elapsed() < run.timeout => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Ok(false) => break Err(serve_error("private packaged campaign execution timed out")),
@@ -989,9 +993,14 @@ where
         .join()
         .map_err(|_| serve_error("private packaged campaign service thread panicked"))?
         .map_err(|error| campaign_service_join_error(&error));
-    result?;
-    joined?;
-    Ok(())
+    // A branch failure must not hide a separate failure to reap its executor.
+    match (result, joined) {
+        (Ok(()), Ok(_)) => Ok(()),
+        (Err(error), Ok(_)) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(serve_error(format!(
+            "{error}; private packaged campaign cleanup also failed: {cleanup}"
+        ))),
+    }
 }
 
 pub(super) fn campaign_executor_endpoint(
