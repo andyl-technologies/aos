@@ -217,6 +217,8 @@ pub struct DormantCacheOwnerV1 {
     pinned_bytes: u64,
     orphans: BTreeMap<ObjectDigest, OrphanEntry>,
     fenced: bool,
+    // A manifest with unknown durability must be resolved before any other effect.
+    pending_manifest: Option<ObjectDigest>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -545,6 +547,7 @@ impl DormantCacheOwnerV1 {
             pinned_bytes: 0,
             orphans: BTreeMap::new(),
             fenced: false,
+            pending_manifest: None,
         };
         owner.recover_and_verify()?;
         owner.quarantine_orphan_staging()?;
@@ -577,6 +580,7 @@ impl DormantCacheOwnerV1 {
             pinned_bytes: 0,
             orphans: BTreeMap::new(),
             fenced: false,
+            pending_manifest: None,
         }
     }
 
@@ -1617,7 +1621,7 @@ impl DormantCacheOwnerV1 {
     }
 
     fn ensure_unfenced(&self) -> Result<(), CacheOwnerErrorV1> {
-        if self.fenced {
+        if self.fenced || self.pending_manifest.is_some() {
             return Err(CacheOwnerErrorV1::Fenced);
         }
         Ok(())
@@ -1723,6 +1727,25 @@ impl DormantCacheOwnerV1 {
         kind: &[u8],
         subject: &[u8],
     ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
+        let result = self.persist_inner(kind, subject);
+
+        // Callers may have already changed memory; only exact recovery or reopen
+        // can reconcile a failed durable write with those tentative changes.
+        match &result {
+            Ok(_) => {}
+            Err(CacheOwnerErrorV1::OutcomeUnknown(pending)) => {
+                self.pending_manifest = Some(pending.effect);
+            }
+            Err(_) => self.fenced = true,
+        }
+        result
+    }
+
+    fn persist_inner(
+        &mut self,
+        kind: &[u8],
+        subject: &[u8],
+    ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
         self.recheck_root()?;
         let predecessor = self.currentness();
         self.validate_durable_head(predecessor)?;
@@ -1807,7 +1830,17 @@ impl DormantCacheOwnerV1 {
         &mut self,
         pending: &CacheOwnerOutcomeUnknownV1,
     ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
-        self.ensure_unfenced()?;
+        if self.fenced {
+            return Err(CacheOwnerErrorV1::Fenced);
+        }
+        // A cold reopen has no volatile marker; the durable comparison below
+        // still authenticates the exact recovery token.
+        if self
+            .pending_manifest
+            .is_some_and(|effect| effect != pending.effect)
+        {
+            return Err(CacheOwnerErrorV1::Stale);
+        }
         self.recheck_root()?;
         if decode_generation(&pending.expected)? != pending.generation {
             return Err(CacheOwnerErrorV1::InvalidManifest);
@@ -1820,6 +1853,7 @@ impl DormantCacheOwnerV1 {
             rustix::fs::fsync(&self.root)?;
             remove_exact_temporary(&self.root, &pending.temporary_name, &pending.expected)?;
             self.adopt_manifest(&pending.expected)?;
+            self.pending_manifest = None;
             return Ok(CacheEffectObservationV1 {
                 effect: pending.effect,
                 current: self.currentness(),
@@ -1898,6 +1932,7 @@ impl DormantCacheOwnerV1 {
             return Err(CacheOwnerErrorV1::RecoveryMismatch);
         }
         self.adopt_manifest(&pending.expected)?;
+        self.pending_manifest = None;
         Ok(CacheEffectObservationV1 {
             effect: pending.effect,
             current: self.currentness(),
@@ -2459,8 +2494,8 @@ pub enum CacheOwnerErrorV1 {
     /// Protected read authority is stale, expired, or does not bind this object.
     #[error("cache owner rejected protected read authority: {0}")]
     ReadAuthority(#[from] super::ReadAuthorityError),
-    /// An unclassified materialization result requires dropping and reopening the owner.
-    #[error("cache owner is fenced after unclassified materialization ambiguity")]
+    /// A failed effect or ambiguous manifest requires exact recovery or owner reopen.
+    #[error("cache owner is fenced until its durable state is recovered")]
     Fenced,
     /// One or more hard owner bounds are zero or inconsistent.
     #[error("invalid cache owner limits")]
