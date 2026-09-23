@@ -3054,6 +3054,9 @@ in rec {
       campaignFindingSignalVm = import ./phase9-campaign-finding-signal-vm.nix {
         inherit pkgs lib;
       };
+      campaignFindingForkWriteVm = import ./phase9-campaign-finding-fork-write-vm.nix {
+        inherit pkgs lib;
+      };
       campaignOperationalContinuity = import ./phase9-campaign-operational-continuity.nix {
         inherit pkgs lib;
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;
