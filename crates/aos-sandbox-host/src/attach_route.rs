@@ -13,6 +13,14 @@
 //! HostExecution key = "openssh-attach-route-v1/" || execution_id[16]
 //! value = canonical JSON RouteRecordV1 with deny_unknown_fields
 //! ```
+//!
+//! The externally supplied systemd trust credential is compact canonical
+//! JSON with exactly these static fields; no per-operation config digest or
+//! private host key belongs in it:
+//!
+//! ```text
+//! {"magic":"AOSHAT01","host":"guest.example","port":2222,"user":"aos_exec","host_public_key":"ssh-ed25519 ...","trusted_user_ca_public_key":"ssh-ed25519 ..."}
+//! ```
 
 use std::fs::OpenOptions;
 use std::io::Read as _;
@@ -121,10 +129,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
             .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
         let grant = verify_public_attach_pending_grant_v1(packet, &verifier)?;
         let (trust, trust_digest) = read_deployment_trust()?;
-        if grant.trust_digest != trust_digest
-            || grant.gate_config_digest != trust.gate_config_digest
-            || grant.expires_at <= current_unix_seconds()?
-        {
+        if grant.trust_digest != trust_digest || grant.expires_at <= current_unix_seconds()? {
             return Err(HostOpenSshAttachRouteErrorV1::TrustMismatch);
         }
         validate_grant_currentness(&grant, lease)?;
@@ -490,8 +495,8 @@ struct RouteRecordV1 {
 /// Exact externally provisioned systemd credential for one gate route.
 ///
 /// The credential is an independent deployment trust input, not a route
-/// assertion or evidence that the guest installed anything. A new attach
-/// operation with different config bytes requires a matching new credential.
+/// assertion or evidence that the guest installed anything. Per-operation
+/// configuration is derived from the signed grant and these static pins.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DeploymentTrustV1 {
@@ -501,7 +506,6 @@ struct DeploymentTrustV1 {
     user: String,
     host_public_key: String,
     trusted_user_ca_public_key: String,
-    gate_config_digest: [u8; 32],
 }
 
 struct ProtectedRouteV1 {
@@ -578,21 +582,29 @@ fn validate_grant_currentness(
 
 fn validate_deployment_trust(route: &RouteRecordV1) -> Result<(), HostOpenSshAttachRouteErrorV1> {
     let (trust, _) = read_deployment_trust()?;
-    if trust.host != route.host
-        || trust.port != route.port
-        || trust.user != route.user
-        || trust.host_public_key != route.host_public_key
-        || trust.trusted_user_ca_public_key != route.trusted_user_ca_public_key
-        || trust.gate_config_digest != route.gate_config_digest
-    {
+    if !route_matches_trust(route, &trust) {
         return Err(HostOpenSshAttachRouteErrorV1::TrustMismatch);
     }
     Ok(())
 }
 
+fn route_matches_trust(route: &RouteRecordV1, trust: &DeploymentTrustV1) -> bool {
+    trust.host == route.host
+        && trust.port == route.port
+        && trust.user == route.user
+        && trust.host_public_key == route.host_public_key
+        && trust.trusted_user_ca_public_key == route.trusted_user_ca_public_key
+}
+
 fn read_deployment_trust() -> Result<(DeploymentTrustV1, [u8; 32]), HostOpenSshAttachRouteErrorV1> {
     let bytes = read_fixed_credential(TRUST_CREDENTIAL_PATH, MAXIMUM_ROUTE_BYTES)?;
-    let trust: DeploymentTrustV1 = serde_json::from_slice(&bytes)
+    decode_deployment_trust(&bytes)
+}
+
+fn decode_deployment_trust(
+    bytes: &[u8],
+) -> Result<(DeploymentTrustV1, [u8; 32]), HostOpenSshAttachRouteErrorV1> {
+    let trust: DeploymentTrustV1 = serde_json::from_slice(bytes)
         .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
     if serde_json::to_vec(&trust).map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?
         != bytes
@@ -602,11 +614,10 @@ fn read_deployment_trust() -> Result<(DeploymentTrustV1, [u8; 32]), HostOpenSshA
         || !valid_user(&trust.user)
         || !canonical_ed25519_key(&trust.host_public_key)
         || !canonical_ed25519_key(&trust.trusted_user_ca_public_key)
-        || trust.gate_config_digest == [0; 32]
     {
         return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
     }
-    let digest = Sha256::digest(&bytes).into();
+    let digest = Sha256::digest(bytes).into();
     Ok((trust, digest))
 }
 
@@ -778,8 +789,9 @@ mod tests {
     use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
 
     use super::{
-        HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC, RouteRecordV1,
-        decode_route_record, verify_readback_binding,
+        DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC,
+        RouteRecordV1, TRUST_MAGIC, decode_deployment_trust, decode_route_record,
+        route_matches_trust, verify_readback_binding,
     };
 
     fn route_record() -> RouteRecordV1 {
@@ -882,5 +894,41 @@ mod tests {
             verify_readback_binding(&protected, [12; 32], [13; 32], &readback),
             Err(HostOpenSshAttachRouteErrorV1::GateMismatch)
         ));
+    }
+
+    #[test]
+    fn static_trust_pins_two_distinct_operation_configurations() {
+        let first = route_record();
+        let trust = DeploymentTrustV1 {
+            magic: TRUST_MAGIC.to_owned(),
+            host: first.host.clone(),
+            port: first.port,
+            user: first.user.clone(),
+            host_public_key: first.host_public_key.clone(),
+            trusted_user_ca_public_key: first.trusted_user_ca_public_key.clone(),
+        };
+        let credential = serde_json::to_vec(&trust).unwrap();
+        let (_, trust_digest) = decode_deployment_trust(&credential).unwrap();
+
+        let mut second = first.clone();
+        second.attach_operation_id = [25; 16];
+        second.principal_id = [26; 16];
+        second.audit_id = [27; 16];
+        let binding = ProtectedRouteV1 {
+            record: second.clone(),
+            route_digest: [0; 32],
+        }
+        .gate_binding();
+        second.gate_config_digest =
+            Sha256::digest(expected_openssh_gate_config_v1(&binding).unwrap()).into();
+
+        assert_ne!(first.gate_config_digest, second.gate_config_digest);
+        assert!(route_matches_trust(&first, &trust));
+        assert!(route_matches_trust(&second, &trust));
+        assert_eq!(
+            decode_deployment_trust(&credential).unwrap().1,
+            trust_digest
+        );
+        assert!(decode_route_record(&serde_json::to_vec(&second).unwrap()).is_ok());
     }
 }

@@ -99,7 +99,7 @@ in {
             if name == "backendReadiness"
             then "Optional protected boot-local readiness claims published externally as ${credentialFile}; ingestion alone never enables Apply."
             else if name == "opensshAttachTrust"
-            then "Optional externally provisioned OpenSSH attach trust pins (endpoint, server host public key, user CA public key, and expected gate configuration digest) loaded as ${credentialFile}; their presence alone never enables attach."
+            then "Optional externally provisioned OpenSSH attach trust pins (endpoint, account, server host public key, and user CA public key) loaded as ${credentialFile}; the per-operation gate configuration digest is signed in the pending grant."
             else if name == "opensshAttachGrantPublicKey"
             then "Optional dedicated controller OpenSSH attach-grant verifier key loaded as ${credentialFile}; broker-plan verification keys cannot authorize attach grants."
             else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
