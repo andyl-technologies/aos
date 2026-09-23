@@ -548,8 +548,12 @@ where
     let mut thin_directory = guard.prepare_generation_run_directory(requirements)?;
     guard.check_operational_boundary()?;
 
-    let (exact_config, thin_config) =
-        replay_oracle_launch_configs(profile, exact_directory.path(), thin_directory.path());
+    let (exact_config, thin_config) = replay_oracle_launch_configs(
+        profile,
+        exact_directory.path(),
+        thin_directory.path(),
+        exact.process_generation(),
+    )?;
     // The thin leg cold-boots QEMU, so its pinned directory needs the same
     // guarded VMState and root-overlay preparation as an ordinary fresh launch.
     let preparation = thin_directory.prepare_fresh_artifacts_guarded(
@@ -603,15 +607,21 @@ fn replay_oracle_launch_configs(
     profile: &ProductionVmNodeReplayLaunchProfile,
     exact_directory: &Path,
     thin_directory: &Path,
-) -> (QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateConfig) {
+    process_generation: u64,
+) -> Result<(QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateConfig), QemuVmRealizationError> {
     // The legs run sequentially in separate guarded directories. Their
-    // lifecycle generation is continuation state compared by the oracle.
-    const PROCESS_GENERATION: u64 = 1;
+    // lifecycle generation belongs to the authenticated continuation state.
+    if process_generation == 0 {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "replay-oracle lifecycle generation",
+            message: String::from("authenticated process generation is zero"),
+        });
+    }
 
-    (
-        profile.for_generation(exact_directory, PROCESS_GENERATION),
-        profile.for_generation(thin_directory, PROCESS_GENERATION),
-    )
+    Ok((
+        profile.for_generation(exact_directory, process_generation),
+        profile.for_generation(thin_directory, process_generation),
+    ))
 }
 
 fn map_replay_admission_error(error: LifecycleApiError) -> QemuVmRealizationError {
@@ -690,13 +700,27 @@ mod tests {
             ),
         );
 
-        let (exact, thin) =
-            replay_oracle_launch_configs(&profile, Path::new("/run/exact"), Path::new("/run/thin"));
+        let (exact, thin) = replay_oracle_launch_configs(
+            &profile,
+            Path::new("/run/exact"),
+            Path::new("/run/thin"),
+            2,
+        )
+        .expect("authenticated generation");
 
-        assert_eq!(exact, profile.for_generation("/run/exact", 1));
+        assert_eq!(exact, profile.for_generation("/run/exact", 2));
         assert_eq!(thin, exact.clone().with_run_directory("/run/thin"));
-        assert_ne!(thin, profile.for_generation("/run/thin", 2));
+        assert_ne!(thin, profile.for_generation("/run/thin", 1));
         assert_ne!(exact.run_directory(), thin.run_directory());
+        assert!(
+            replay_oracle_launch_configs(
+                &profile,
+                Path::new("/run/exact"),
+                Path::new("/run/thin"),
+                0,
+            )
+            .is_err()
+        );
     }
 
     #[test]
