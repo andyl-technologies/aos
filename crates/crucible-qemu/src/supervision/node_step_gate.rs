@@ -998,6 +998,15 @@ fn build_live_node_with_authority(
     resume_restored: bool,
     exact_binding: Option<crate::spawn::QemuExactDeviceStateBinding>,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    let restoring_checkpoint = restore.is_some();
+    macro_rules! trace_restore {
+        ($stage:literal) => {
+            if restoring_checkpoint {
+                eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage={}", $stage);
+            }
+        };
+    }
+    trace_restore!("authority-start");
     let run_directory_path = run_directory.path();
     #[cfg(target_os = "linux")]
     let checkpoint_cancellation = retain_checkpoint_operation_cancellation(
@@ -1153,6 +1162,7 @@ fn build_live_node_with_authority(
     let region_config = RegionConfig::new(1, config.queue_capacity, 0);
     let allocation = RegionAllocation::new(region_config)
         .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
+    trace_restore!("child-spawn-start");
     let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         &command,
         run_directory,
@@ -1161,7 +1171,9 @@ fn build_live_node_with_authority(
     )
     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
+    trace_restore!("child-spawn-complete");
 
+    trace_restore!("host-setup-start");
     let (child, setup) = complete_host_setup_or_reap(child, || {
         complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             resources.into_setup_resources(),
@@ -1171,6 +1183,7 @@ fn build_live_node_with_authority(
             command.plugin_setup_plan(),
         )
     })?;
+    trace_restore!("host-setup-complete");
 
     macro_rules! launch_try {
         ($result:expr) => {
@@ -1309,7 +1322,6 @@ fn build_live_node_with_authority(
             .transpose()
             .map_err(|source| QemuLiveNodeStepGateError::AcceleratorServicer { source })
     );
-    let restoring_checkpoint = restore.is_some();
     let boot_backpressure_payload = (!restoring_checkpoint)
         .then_some(config.boot_network_backpressure_capture.as_ref())
         .flatten()
@@ -1320,6 +1332,7 @@ fn build_live_node_with_authority(
         config.coverage,
         boot_backpressure_payload,
     ));
+    trace_restore!("qmp-connect-start");
     let mut qmp = launch_try!(
         crate::QemuQmpVmStateControlChannel::connect_unix_socket_with_policies(
             qmp_config.socket_path(run_directory_path),
@@ -1328,6 +1341,7 @@ fn build_live_node_with_authority(
         )
         .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })
     );
+    trace_restore!("qmp-connect-complete");
     let realized_projection_manifest = launch_try!(
         qmp.query_fingerprint_projection_manifest()
             .map_err(|source| QemuLiveNodeStepGateError::FingerprintProjectionManifest { source })
@@ -1352,10 +1366,13 @@ fn build_live_node_with_authority(
             },
         ));
     }
+    trace_restore!("early-resume-start");
     launch_try!(
         qmp.resume_guest_acknowledged()
             .map_err(|source| QemuLiveNodeStepGateError::QmpStart { source })
     );
+    trace_restore!("early-resume-complete");
+    trace_restore!("guest-prime-start");
     let mut priming = launch_try!(complete_guest_prime(
         &setup,
         config.completion_timeout,
@@ -1364,6 +1381,7 @@ fn build_live_node_with_authority(
         ninep_servicer.as_mut(),
         boot_backpressure_payload,
     ));
+    trace_restore!("guest-prime-complete");
     if !restoring_checkpoint
         && let Some(capture) = config.boot_network_backpressure_capture.as_ref()
         && capture.capture_icount > 1
@@ -1399,6 +1417,7 @@ fn build_live_node_with_authority(
         config.shmem_block.as_ref().map(|block| block.latency),
         config.completion_timeout,
     ));
+    trace_restore!("runtime-prime-complete");
     let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
         let activation_stream = launch_try!(debug_guest_activation_stream.ok_or_else(|| {
             QemuLiveNodeStepGateError::prime(
@@ -1426,6 +1445,7 @@ fn build_live_node_with_authority(
         QemuCrashDetector::new(identity.crash_detector),
         runtime,
     );
+    trace_restore!("node-restore-start");
     let mut node = match restore {
         Some(restore) if resume_restored => {
             build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, factory_runtime)
@@ -1440,6 +1460,7 @@ fn build_live_node_with_authority(
         None => build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime),
     }
     .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
+    trace_restore!("node-restore-complete");
 
     macro_rules! node_try {
         ($result:expr) => {
@@ -1477,9 +1498,11 @@ fn build_live_node_with_authority(
                 })
         );
     }
+    trace_restore!("observed-time-sync-start");
     let ready_boundary = node_try!(node.synchronize_observed_time().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
     }));
+    trace_restore!("observed-time-sync-complete");
     if !restoring_checkpoint {
         node = node.with_priming_observable_events(priming.observable_events, ready_boundary);
     }

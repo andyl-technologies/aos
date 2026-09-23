@@ -723,6 +723,14 @@ where
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
+    macro_rules! trace_paused_restore {
+        ($stage:literal) => {
+            if !resume_guest {
+                eprintln!("CRUCIBLE-PROMOTION-PROBE-TRACE-V1 stage={}", $stage);
+            }
+        };
+    }
+    trace_paused_restore!("paused-restore-start");
     if let Err(source) = restore.validate_immutable_descriptors() {
         return Err(reap_failed_restore_child(
             child,
@@ -800,12 +808,14 @@ where
         Ok(prepared_setup) => prepared_setup,
         Err(error) => return Err(reap_failed_restore_child(child, error)),
     };
+    trace_paused_restore!("paused-setup-ready");
     if let Err(source) = host_io_runtime.quiesce_for_checkpoint(async_policy.qmp_command_timeout) {
         return Err(reap_failed_restore_child(
             child,
             QemuNodeFactoryError::CheckpointPause { source },
         ));
     }
+    trace_paused_restore!("paused-host-io-quiescent");
     // Prevalidate while the plugin's exact barrier is still acknowledged and
     // guest/device dispatch is frozen. Delaying this work until after QMP stop
     // and pause release admits a transient callback publication; delaying
@@ -830,12 +840,14 @@ where
         };
         return Err(reap_failed_restore_child(child, primary));
     }
+    trace_paused_restore!("paused-qmp-stopped");
     if let Err(release) = host_io_runtime.clear_checkpoint_pause_while_stopped() {
         return Err(reap_failed_restore_child(
             child,
             QemuNodeFactoryError::CheckpointPauseRelease { source: release },
         ));
     }
+    trace_paused_restore!("paused-host-io-released");
     let restore_result = (|| {
         let restored_icount = node_continuation.last_observed_time().ticks;
         let published_icount =
@@ -875,9 +887,11 @@ where
                 exact_checkpoint.descriptors.cancellation,
             )
             .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
+            trace_paused_restore!("paused-descriptors-installed");
             let restored = qmp
                 .restore_exact_checkpoint(exact_checkpoint.request)
                 .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
+            trace_paused_restore!("paused-qmp-restore-complete");
             if restored.topology() != exact_checkpoint.topology {
                 return Err(QemuNodeFactoryError::VmStateRestore {
                     source: QemuNodeChannelError::new(
@@ -897,6 +911,7 @@ where
         // is deliberately insufficient for this realization transaction.
         return Err(reap_failed_restore_child(child, error));
     }
+    trace_paused_restore!("paused-host-io-restored");
 
     let restored_calibration = node_continuation.logical_time_calibration();
     let restored_icount = restored_calibration.logical_icount;
@@ -963,6 +978,7 @@ where
             },
         ));
     }
+    trace_paused_restore!("paused-boundary-acknowledged");
     if let Err(source) = qmp.confirm_restore_boundary_pause() {
         return Err(reap_failed_restore_child(
             child,
@@ -972,6 +988,7 @@ where
             },
         ));
     }
+    trace_paused_restore!("paused-native-stop-confirmed");
     if let Err(source) = prepared_setup
         .shmem_hot_path
         .commit_coverage_restore_generation(restore_generation)
