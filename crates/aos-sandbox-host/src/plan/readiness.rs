@@ -35,6 +35,18 @@ const BACKEND_POLICY_MAGIC: &[u8; 9] = b"AOSBPA01\n";
 const EXECUTABLE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
+pub(super) fn verified_packaged_nspawn_digest(path: &str) -> Result<[u8; 32]> {
+    let declared = read_backend_policy_artifact(path)?.nspawn_digest;
+    let pin = super::open_executable_pin(path)?;
+    let (_, actual) = snapshot_and_hash_executable(pin.as_fd())?;
+    if actual != declared {
+        return Err(HostError::State(
+            "packaged nspawn digest differs from the live executable".to_owned(),
+        ));
+    }
+    Ok(actual)
+}
+
 /// Proves that the exact node-local nspawn backend passed all executable gates.
 ///
 /// The type intentionally has no production constructor yet. Protected phase-0
@@ -378,6 +390,10 @@ impl ReadinessBindingV1 {
 }
 
 impl ProtectedBackendReadinessEvidence {
+    pub(super) const fn phase0_probe_claim(&self) -> [u8; 32] {
+        self.claims.probe_digest
+    }
+
     /// Loads and rollback-protects one systemd-provisioned readiness artifact.
     ///
     /// The loader reads the fixed `backend-readiness.json` child of a private,

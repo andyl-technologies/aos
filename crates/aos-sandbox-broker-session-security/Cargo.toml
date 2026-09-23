@@ -53,6 +53,10 @@ name = "aos-sandbox-hostd"
 path = "src/bin/aos-sandbox-hostd.rs"
 
 [[bin]]
+name = "aos-sandbox-host-phase0-probe"
+path = "src/bin/aos-sandbox-host-phase0-probe.rs"
+
+[[bin]]
 name = "aos-storaged"
 path = "src/bin/aos-storaged.rs"
 

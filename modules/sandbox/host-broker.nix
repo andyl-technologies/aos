@@ -50,6 +50,8 @@
       opensshAttachGrantPublicKey = "openssh-attach-grant-public-key";
       guestAgentSigningSeed = "guest-agent-signing-seed-v1";
       opensshAttachHostPrivateKey = "openssh-attach-host-private-key-v1";
+      phase0ProbeSigningSeed = "phase0-probe-signing-seed-v1";
+      phase0ProbePublicKey = "phase0-probe-public-key-v1";
     };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
@@ -57,11 +59,20 @@
   # values. PID 1 copies their runtime bytes into the service credential
   # directory, so evaluating and building the system never captures secrets in
   # a derivation or Nix store path.
+  hostCredentials = lib.filterAttrs (name: _: name != "phase0ProbeSigningSeed") configuredCredentials;
   loadCredentials =
     lib.mapAttrsToList (
       name: _: "${credentialFields.${name}}:/run/credentials/@system/${cfg.credentials.${name}}"
     )
-    configuredCredentials;
+    hostCredentials;
+  phase0ProbeActive = cfg.credentials.phase0ProbeSigningSeed != null && cfg.credentials.phase0ProbePublicKey != null;
+  phase0ProbeCredentials =
+    if phase0ProbeActive && cfg.credentials.phase0ProbeSigningSeed != null && cfg.credentials.phase0ProbePublicKey != null
+    then [
+      "phase0-probe-signing-seed-v1:/run/credentials/@system/${cfg.credentials.phase0ProbeSigningSeed}"
+      "phase0-probe-public-key-v1:/run/credentials/@system/${cfg.credentials.phase0ProbePublicKey}"
+    ]
+    else [];
 in {
   options.aos.sandbox.hostBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox host broker";
@@ -108,6 +119,10 @@ in {
             then "Optional externally provisioned AOSGSK01 guest-agent signing seed loaded as ${credentialFile}; its derived public key must match the protected runtime peer before launch."
             else if name == "opensshAttachHostPrivateKey"
             then "Optional externally provisioned unencrypted Ed25519 OpenSSH server private key loaded as ${credentialFile}; its public key must match independent protected attach trust pins before launch."
+            else if name == "phase0ProbeSigningSeed"
+            then "Dedicated external Ed25519 signing seed available only to the fixed shifted-target phase-0 inspector."
+            else if name == "phase0ProbePublicKey"
+            then "Independent external Ed25519 verifier pin for the boot-local shifted-target phase-0 report."
             else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields
@@ -128,6 +143,16 @@ in {
             (cfg.credentials.opensshAttachTrust == null)
             == (cfg.credentials.opensshAttachGrantPublicKey == null);
           message = "OpenSSH attach trust and dedicated attach-grant verifier credentials must be provisioned together";
+        }
+        {
+          assertion =
+            (cfg.credentials.phase0ProbeSigningSeed == null)
+            == (cfg.credentials.phase0ProbePublicKey == null);
+          message = "phase-0 probe signing seed and independent verifier pin must be provisioned together";
+        }
+        {
+          assertion = cfg.credentials.backendReadiness == null || phase0ProbeActive;
+          message = "phase-0 backend readiness requires the fixed shifted-target inspector credentials";
         }
       ];
 
@@ -173,13 +198,13 @@ in {
         "aos-sandbox-hostd.socket"
         "aos-sandbox-host-root-mount.socket"
         "dbus.socket"
-      ];
+      ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
       after = [
         "aos-sandbox-hostd.socket"
         "aos-sandbox-host-root-mount.socket"
         "dbus.socket"
         "local-fs.target"
-      ];
+      ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
@@ -228,6 +253,85 @@ in {
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.services.aos-sandbox-host-phase0-target = lib.mkIf phase0ProbeActive {
+      description = "AOS fixed shifted-userns phase-0 target";
+      after = ["local-fs.target"];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe target";
+        RuntimeMaxSec = "60s";
+        TimeoutStopSec = "1s";
+        Restart = "no";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = "";
+        PrivateUsers = "managed";
+        RestrictNamespaces = true;
+        PrivateNetwork = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        MemoryMax = "64M";
+        TasksMax = 4;
+      };
+    };
+
+    systemd.services.aos-sandbox-host-phase0-inspector = lib.mkIf phase0ProbeActive {
+      description = "AOS fixed privileged shifted-userns phase-0 inspector";
+      requires = ["aos-sandbox-host-phase0-target.service" "dbus.socket"];
+      after = ["aos-sandbox-host-phase0-target.service" "dbus.socket" "local-fs.target"];
+      before = ["aos-sandbox-hostd.service"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe inspect ${pkgs.systemd}/bin/systemd-nspawn ${cfg.package}/bin/aos-sandbox-hostd ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+        LoadCredential = phase0ProbeCredentials;
+        TimeoutStartSec = "20s";
+        Restart = "no";
+        User = "root";
+        Group = "root";
+        UMask = "0077";
+        StateDirectory = "aos/sandbox-host-phase0";
+        StateDirectoryMode = "0700";
+        CapabilityBoundingSet = ["CAP_SYS_PTRACE"];
+        AmbientCapabilities = ["CAP_SYS_PTRACE"];
+        SecureBits = ["noroot" "noroot-locked" "no-setuid-fixup" "no-setuid-fixup-locked"];
+        DevicePolicy = "closed";
+        LimitNOFILE = 64;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        MemoryMax = "192M";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = ["@system-service" "~@mount" "~@reboot" "~@swap" "~@module" "~@raw-io" "~bpf" "~setns" "~unshare"];
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 8;
       };
     };
   };

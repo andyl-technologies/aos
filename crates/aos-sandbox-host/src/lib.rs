@@ -32,6 +32,7 @@ pub mod dormant_runtime_backend;
 pub mod live_agent;
 mod observation;
 pub mod peer;
+pub mod phase0_probe;
 pub mod plan;
 pub mod recovery;
 pub mod service;
