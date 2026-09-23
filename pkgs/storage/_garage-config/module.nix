@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.garage;
+  serviceEnabled = config.aos.services."garage.main".enable;
   inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -489,15 +490,15 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || serviceManagement.credentialReferenceConfigured rpcSecret;
+          assertion = !serviceEnabled || serviceManagement.credentialReferenceConfigured rpcSecret;
           message = "garage.rpc.secret requires a credential reference when Garage is enabled";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || serviceManagement.credentialReferenceConfigured adminToken;
+          assertion = !serviceEnabled || !cfg.admin.enable || serviceManagement.credentialReferenceConfigured adminToken;
           message = "garage.admin.token requires a credential reference when the administration API is enabled";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || !cfg.admin.metrics.requireToken || serviceManagement.credentialReferenceConfigured metricsToken;
+          assertion = !serviceEnabled || !cfg.admin.enable || !cfg.admin.metrics.requireToken || serviceManagement.credentialReferenceConfigured metricsToken;
           message = "garage.admin.metrics.token requires a credential reference when authenticated metrics are enabled";
         }
         {
@@ -512,7 +513,7 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       inherit (configured) producers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;

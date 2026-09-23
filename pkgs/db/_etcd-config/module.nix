@@ -603,7 +603,7 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       inherit (configured) producers;
-      enabled = cfg.enable;
+      enabled = config.aos.services."etcd.main".enable;
     })
     (serviceManagement.producerModule {
       inherit config lib;

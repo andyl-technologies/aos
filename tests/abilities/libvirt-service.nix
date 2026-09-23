@@ -4,6 +4,7 @@
   pkgs,
 }: let
   evaluateBase = import ./base-module-evaluation.nix {inherit lib pkgs;};
+  packages = [pkgs.libvirt pkgs.systemd pkgs.dbus pkgs.polkit];
   evaluate = enabled:
     evaluateBase {
       name = "libvirt";
@@ -11,15 +12,33 @@
         enable = enabled;
         allowedUsers = ["operator"];
       };
-      packages = [pkgs.libvirt pkgs.systemd pkgs.dbus pkgs.polkit];
+      inherit packages;
     };
   disabled = evaluate false;
   enabled = evaluate true;
+  disabledServices = evaluateBase {
+    name = "libvirt-services-disabled";
+    module = {lib, ...}: {
+      aos.virtualization.libvirt = {
+        enable = true;
+        allowedUsers = ["operator"];
+      };
+      aos.services."libvirt.libvirtd".enable = lib.mkForce false;
+      aos.services."libvirt.virtlockd".enable = lib.mkForce false;
+      aos.services."libvirt.virtlogd".enable = lib.mkForce false;
+    };
+    inherit packages;
+  };
   libvirtRequests = config:
     lib.filterAttrs (name: _: lib.hasPrefix "libvirt:" name) config.aos.abilities.requests;
   requests = libvirtRequests enabled.config;
 in
   assert libvirtRequests disabled.config == {};
+  assert libvirtRequests disabledServices.config == {};
+  assert disabled.config.aos.abilities.requirementTemplates == enabled.config.aos.abilities.requirementTemplates;
+  assert disabledServices.config.aos.abilities.requirementTemplates == enabled.config.aos.abilities.requirementTemplates;
+  assert !(disabledServices.config.environment.etc ? libvirt);
+  assert !(disabledServices.config.aos.abilities.runtimeChecks ? "libvirt:libvirt");
   assert requests ? "libvirt:libvirtd-lifecycle";
   assert requests ? "libvirt:virtlockd-lifecycle";
   assert requests ? "libvirt:virtlogd-lifecycle";

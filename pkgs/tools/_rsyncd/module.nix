@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.rsyncd;
+  serviceEnabled = config.aos.services."rsyncd.main".enable;
   inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -349,7 +350,7 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || cfg.modules != {};
+          assertion = !serviceEnabled || cfg.modules != {};
           message = "rsyncd.enable requires at least one rsyncd.modules entry";
         }
         {
@@ -363,12 +364,12 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [credentialRequest];
-      enabled = cfg.enable && authenticated;
+      enabled = serviceEnabled && authenticated;
     })
   ];
 }

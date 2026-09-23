@@ -121,7 +121,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable && initrdStage;
+      enabled = config.aos.services."verity-root-verification.aos-verity-root-verify".enable;
     })
   ];
 }

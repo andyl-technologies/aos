@@ -7,6 +7,7 @@
   ...
 }: let
   cfg = config.aos.registry-hub;
+  serviceEnabled = config.aos.services."service.hub".enable;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
@@ -368,38 +369,38 @@ in {
 
         assertions = [
           {
-            assertion = !cfg.enable || cfg.credentials.routeReservationKeys != null;
+            assertion = !serviceEnabled || cfg.credentials.routeReservationKeys != null;
             message = "aos.registry-hub.credentials.routeReservationKeys is required";
           }
           {
-            assertion = !cfg.enable || cfg.credentials.domainProbeSignerManifest != null;
+            assertion = !serviceEnabled || cfg.credentials.domainProbeSignerManifest != null;
             message = "aos.registry-hub.credentials.domainProbeSignerManifest is required";
           }
           {
-            assertion = !cfg.enable || (cfg.credentials.routePublicationManifest == null) == (cfg.routePublicationPublicKey == null);
+            assertion = !serviceEnabled || (cfg.credentials.routePublicationManifest == null) == (cfg.routePublicationPublicKey == null);
             message = "routePublicationManifest and routePublicationPublicKey must be configured together";
           }
           {
-            assertion = !cfg.enable || !releaseEvidenceConfigured || releaseEvidenceComplete;
+            assertion = !serviceEnabled || !releaseEvidenceConfigured || releaseEvidenceComplete;
             message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
           }
           {
-            assertion = !cfg.enable || (cfg.credentials.tlsCertificate == null) == (cfg.credentials.tlsPrivateKey == null);
+            assertion = !serviceEnabled || (cfg.credentials.tlsCertificate == null) == (cfg.credentials.tlsPrivateKey == null);
             message = "native Hub TLS certificate and private-key credentials must be configured together";
           }
           {
-            assertion = !cfg.enable || cfg.credentials.tlsCertificate == null || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
+            assertion = !serviceEnabled || cfg.credentials.tlsCertificate == null || (cfg.externalUrl != null && lib.hasPrefix "https://" cfg.externalUrl);
             message = "native Hub TLS requires an HTTPS externalUrl";
           }
           {
-            assertion = !cfg.enable || cfg.releaseReceiptKeyId == null || cfg.channelReceiptKeyId == null || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
+            assertion = !serviceEnabled || cfg.releaseReceiptKeyId == null || cfg.channelReceiptKeyId == null || cfg.releaseReceiptKeyId != cfg.channelReceiptKeyId;
             message = "releaseReceiptKeyId and channelReceiptKeyId must be distinct";
           }
         ];
       }
       (serviceManagement.producerModule {
         inherit config lib producers;
-        enabled = cfg.enable;
+        enabled = serviceEnabled;
       })
     ]
     ++ builtins.map
@@ -407,7 +408,7 @@ in {
       serviceManagement.producerModule {
         inherit config lib;
         producers = [(credentialResolution name) (credentialDelivery name)];
-        enabled = cfg.enable && cfg.credentials.${name} != null;
+        enabled = serviceEnabled && cfg.credentials.${name} != null;
       })
     credentialNames);
 }

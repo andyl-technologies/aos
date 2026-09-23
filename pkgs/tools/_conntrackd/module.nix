@@ -368,7 +368,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = config.aos.services."conntrack-tools.main".enable;
     })
   ];
 }

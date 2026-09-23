@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.openldap;
+  serviceEnabled = config.aos.services."openldap.main".enable;
   inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -411,7 +412,7 @@ in {
       assertions = [
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || serviceManagement.credentialReferenceConfigured cfg.rootPassword;
           message = "openldap.enable requires an openldap.rootPassword credential reference";
         }
@@ -437,7 +438,7 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       inherit (fragments) producers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
   ];
 }
