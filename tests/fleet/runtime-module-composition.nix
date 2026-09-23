@@ -692,7 +692,7 @@ in {
       }
       """
       services_module = """{
-        nginx = {
+        aos.services.nginx = {
           enable = true;
           virtualHosts.runtime = {
             listen = [ 18080 ];
@@ -1311,7 +1311,7 @@ in {
       # content. Boot authority must remain the retained generation snapshot.
       dirty_module = """{
         environment.etc."runtime-modules/operator.conf".text = "DIRTY\\n";
-        nginx.enable = false;
+        aos.services.nginx.enable = false;
         envoy.enable = false;
       }
       """

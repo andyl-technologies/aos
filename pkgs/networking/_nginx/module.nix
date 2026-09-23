@@ -10,7 +10,7 @@
   lib,
   ...
 }: let
-  cfg = config.nginx;
+  cfg = config.aos.services.nginx;
 
   inherit (lib.abilities) pathWithin resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -307,7 +307,9 @@
     ++ [(literal (indent "    " host.extraConfig))]
     ++ [(literal "  }\n")];
 
-  usesTls = builtins.any (host: host.tls.enable) (builtins.attrValues virtualHosts);
+  usesTlsFor = hosts:
+    builtins.any (host: (normalizeVirtualHost host).tls.enable) (builtins.attrValues hosts);
+  usesTls = usesTlsFor cfg.virtualHosts;
   validUpstreamNames =
     builtins.all
     (name: builtins.match "[A-Za-z0-9_-]+" name != null)
@@ -491,248 +493,236 @@
       mode = "0444";
     };
   };
-  serviceFor = withCredentials: let
+  service = let
     configurationPath = resultOf "server-configuration" "planned-path";
-    credentials =
-      if withCredentials
-      then {
-        views = [
-          {
-            name = "tls-certificate";
-            inherit (tlsCredentials.certificate) encrypted;
-            reference = resultOf "credential-tls-certificate" "credential-path";
-            optional = false;
-          }
-          {
-            name = "tls-private-key";
-            inherit (tlsCredentials.privateKey) encrypted;
-            reference = resultOf "credential-tls-private-key" "credential-path";
-            optional = false;
-          }
-        ];
-      }
-      else null;
-  in
-    serviceManagement.forService {
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = {
-            allow_privilege_escalation = false;
-            ambient_privileges = ["bind-privileged-network-port"];
-            privilege_bounds = {
-              kind = "restricted";
-              privileges = ["bind-privileged-network-port"];
-            };
-            resource_control_delegation = false;
-            resource_control_access = "read-only";
-            device_access_scope = "shared";
-            host_clock_mutation = false;
-            host_name_mutation = false;
-            operating_system_log_access = false;
-            operating_system_extension_access = false;
-            operating_system_tunable_access = false;
-            lock_execution_personality = true;
-            writable_executable_memory = false;
-            isolation_domains = [];
-            network_families = ["ipv4" "ipv6" "local"];
-            memory_pressure_adjustment = 0;
-            permit_realtime = false;
-            permit_elevated_file_identity = false;
-            process_visibility = "all";
-            security_label = "aos-pkg-nginx";
-            operation_architectures = [];
-            operation_allow = [];
-            operation_deny = [];
-            operation_profile = "system-service";
-            isolated_identity_mapping = "none";
-          };
-        })
+  in {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = ["bind-privileged-network-port"];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = ["bind-privileged-network-port"];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "shared";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      security_label = "aos-pkg-nginx";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
+    consumerInstance = "nginx";
+    service = "main";
+    lifecycle = {
+      description = "nginx HTTP and reverse proxy server";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [(command ["-t" "-c" configurationPath])];
+      start = [(command ["-c" configurationPath "-g" "daemon off;"])];
+      post_start = [];
+      stop = [(command ["-c" configurationPath "-s" "quit"])];
+      post_stop = [];
+      restart = "on-failure";
+      restart_token = cfg.restartToken;
+      restart_delay_millis = 2000;
+      configuration_change_action = "reload";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 60000;
+    };
+    supervision = {
+      startup_protocol = "process";
+      notification_access = "none";
+    };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    reload = {
+      strategy = "command";
+      commands = [
+        (command ["-t" "-c" configurationPath])
+        (command ["-c" configurationPath "-s" "reload"])
       ];
-      inherit serviceTypes;
-      consumerInstance = "nginx";
-      declaration = {
-        service = "main";
-        enabled = true;
-        lifecycle = {
-          description = "nginx HTTP and reverse proxy server";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [(command ["-t" "-c" configurationPath])];
-          start = [(command ["-c" configurationPath "-g" "daemon off;"])];
-          post_start = [];
-          stop = [(command ["-c" configurationPath "-s" "quit"])];
-          post_stop = [];
-          restart = "on-failure";
-          restart_token = cfg.restartToken;
-          restart_delay_millis = 2000;
-          configuration_change_action = "reload";
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 60000;
-        };
-        supervision = {
-          startup_protocol = "process";
-          notification_access = "none";
-        };
-        readiness = {
-          mechanism = "process-running";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-        reload = {
-          strategy = "command";
-          commands = [
-            (command ["-t" "-c" configurationPath])
-            (command ["-c" configurationPath "-s" "reload"])
-          ];
-          completion = "command-exit";
-        };
-        inherit credentials;
-        configuration.views = [
-          {
-            name = "server";
-            source = configurationPath;
-            optional = false;
-          }
-        ];
-        storage.mounts = [
-          {
-            name = "runtime";
-            source = resultOf "runtime-storage" "planned-path";
-            access = "read-write";
-          }
-          {
-            name = "state";
-            source = resultOf "state-storage" "planned-path";
-            access = "read-write";
-          }
-          {
-            name = "logs";
-            source = resultOf "log-storage" "planned-path";
-            access = "read-write";
-          }
-        ];
-        logging = {
-          standard_output = "structured";
-          standard_error = "structured";
-          directories = [];
-          directory_mode = "0750";
-        };
-        identity = {
-          supplementary_groups = [];
-          ephemeral = true;
-          file_creation_mask = "0027";
-        };
-        isolation = {
-          privilege = "unprivileged";
-          filesystem = "read-only-system";
-          network = "host";
-          process_visibility = "host";
-          termination_scope = "all-processes";
-          temporary_directory = "private";
-          devices = [];
-          host_paths = [];
-          permit_core_dumps = false;
-        };
-        resources.open_files = {
-          kind = "maximum";
-          value = 65536;
-        };
-      };
+      completion = "command-exit";
     };
-  configuredService = serviceFor usesTls;
-  potentialAbilityFragments = [
-    storage
-    runtimeStorage
-    credentialRequests
-    configuration
-    (serviceFor true)
-  ];
-  configuredAbilityFragments = [storage runtimeStorage credentialRequests configuration configuredService];
+    configuration.views = [
+      {
+        name = "server";
+        source = configurationPath;
+        optional = false;
+      }
+    ];
+    storage.mounts = [
+      {
+        name = "runtime";
+        source = resultOf "runtime-storage" "planned-path";
+        access = "read-write";
+      }
+      {
+        name = "state";
+        source = resultOf "state-storage" "planned-path";
+        access = "read-write";
+      }
+      {
+        name = "logs";
+        source = resultOf "log-storage" "planned-path";
+        access = "read-write";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = true;
+      file_creation_mask = "0027";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
+    };
+    resources.open_files = {
+      kind = "maximum";
+      value = 65536;
+    };
+  };
+  producers = [storage runtimeStorage credentialRequests configuration];
 in {
-  options.nginx = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable the nginx HTTP and reverse proxy service.";
-    };
-    workerProcesses = lib.mkOption {
-      type = abilityTypes.disjointUnion [positiveInt (abilityTypes.enum ["auto"])];
-      default = "auto";
-      description = "Number of nginx worker processes, or `auto`.";
-    };
-    workerConnections = lib.mkOption {
-      type = positiveInt;
-      default = 1024;
-      description = "Maximum simultaneous connections handled by each worker.";
-    };
-    clientMaxBodySize = lib.mkOption {
-      type = size;
-      default = "1m";
-      description = "Maximum accepted HTTP request body size.";
-    };
-    gzip = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Enable gzip response compression.";
-    };
-    accessLog = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Write the HTTP access log to nginx's managed log directory.";
-    };
-    restartToken = lib.mkOption {
-      type = abilityTypes.optional serviceTypes.restartToken;
-      default = null;
-      description = "Operator-controlled token whose change requests a service restart.";
-    };
-    upstreams = lib.mkOption {
-      type = upstreamMap;
-      default = {};
-      description = "Named reverse-proxy upstream pools.";
-      extensible = true;
-    };
-    virtualHosts = lib.mkOption {
-      type = virtualHostMap;
-      default = {};
-      description = "Named HTTP virtual hosts.";
-      extensible = true;
-    };
-    extraHttpConfig = lib.mkOption {
-      type = confinedDirectives;
-      default = "";
-      description = "Trusted nginx directives appended to the global HTTP block.";
-    };
-    tlsCredentials = {
-      certificate = lib.mkOption {
-        type = credentialReference;
-        default = {};
-        description = "Opaque reference for the PEM certificate reserved for conditional delivery as `tls-certificate`.";
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({
+      name,
+      config,
+      ...
+    }: let
+      serviceUsesTls = usesTlsFor config.virtualHosts;
+    in {
+      options = lib.optionalAttrs (name == "nginx") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Enable the nginx HTTP and reverse proxy service.";
+        };
+        workerProcesses = lib.mkOption {
+          type = abilityTypes.disjointUnion [positiveInt (abilityTypes.enum ["auto"])];
+          default = "auto";
+          description = "Number of nginx worker processes, or `auto`.";
+        };
+        workerConnections = lib.mkOption {
+          type = positiveInt;
+          default = 1024;
+          description = "Maximum simultaneous connections handled by each worker.";
+        };
+        clientMaxBodySize = lib.mkOption {
+          type = size;
+          default = "1m";
+          description = "Maximum accepted HTTP request body size.";
+        };
+        gzip = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Enable gzip response compression.";
+        };
+        accessLog = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Write the HTTP access log to nginx's managed log directory.";
+        };
+        restartToken = lib.mkOption {
+          type = abilityTypes.optional serviceTypes.restartToken;
+          default = null;
+          description = "Operator-controlled token whose change requests a service restart.";
+        };
+        upstreams = lib.mkOption {
+          type = upstreamMap;
+          default = {};
+          description = "Named reverse-proxy upstream pools.";
+          extensible = true;
+        };
+        virtualHosts = lib.mkOption {
+          type = virtualHostMap;
+          default = {};
+          description = "Named HTTP virtual hosts.";
+          extensible = true;
+        };
+        extraHttpConfig = lib.mkOption {
+          type = confinedDirectives;
+          default = "";
+          description = "Trusted nginx directives appended to the global HTTP block.";
+        };
+        tlsCredentials = {
+          certificate = lib.mkOption {
+            type = credentialReference;
+            default = {};
+            description = "Opaque reference for the PEM certificate reserved for conditional delivery as `tls-certificate`.";
+          };
+          privateKey = lib.mkOption {
+            type = credentialReference;
+            default = {};
+            description = "Opaque reference for the PEM private key reserved for conditional delivery as `tls-private-key`.";
+          };
+        };
       };
-      privateKey = lib.mkOption {
-        type = credentialReference;
-        default = {};
-        description = "Opaque reference for the PEM private key reserved for conditional delivery as `tls-private-key`.";
+      config = lib.optionalAttrs (name == "nginx") {
+        credentials =
+          if serviceUsesTls
+          then {
+            views = [
+              {
+                name = "tls-certificate";
+                inherit (config.tlsCredentials.certificate) encrypted;
+                reference = resultOf "credential-tls-certificate" "credential-path";
+                optional = false;
+              }
+              {
+                name = "tls-private-key";
+                inherit (config.tlsCredentials.privateKey) encrypted;
+                reference = resultOf "credential-tls-private-key" "credential-path";
+                optional = false;
+              }
+            ];
+          }
+          else null;
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).declarations)
-        potentialAbilityFragments);
+      aos.services.nginx = service;
 
       assertions = [
         {
           assertion = !cfg.enable || cfg.virtualHosts != {};
-          message = "nginx.enable requires at least one nginx.virtualHosts entry";
+          message = "aos.services.nginx.enable requires at least one virtual host";
         }
         {
           assertion =
@@ -750,7 +740,7 @@ in {
         }
         {
           assertion = validUpstreamNames;
-          message = "nginx.upstreams names may contain only letters, digits, underscores, and hyphens";
+          message = "aos.services.nginx.upstreams names may contain only letters, digits, underscores, and hyphens";
         }
         {
           assertion = validLocationExpressions;
@@ -766,13 +756,9 @@ in {
         }
       ];
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.nginx = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        configuredAbilityFragments
-      );
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
     })
   ];
 }
