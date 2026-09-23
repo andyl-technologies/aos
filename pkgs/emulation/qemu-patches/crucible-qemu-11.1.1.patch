@@ -1,4 +1,4 @@
-From 643a345e14f046f7d71f4ec8bfeda49866ecfdd7 Mon Sep 17 00:00:00 2001
+From 233aee57f1b92f53fd093030b01132b08d31438e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -92886,7 +92886,7 @@ index 000000000..74f76ce9c
 +    main()
 diff --git a/tests/qtest/crucible-fingerprint-projection.py b/tests/qtest/crucible-fingerprint-projection.py
 new file mode 100644
-index 000000000..dec27d543
+index 000000000..89c384636
 --- /dev/null
 +++ b/tests/qtest/crucible-fingerprint-projection.py
 @@ -0,0 +1,720 @@
@@ -93485,7 +93485,7 @@ index 000000000..dec27d543
 +    def capture_net_scheduler(live, scheduler):
 +        live.capture()
 +        net_material[scheduler] = projection_suffix(
-+            live.last_material, "0000:00:02.0/virtio-net", 0, 2)
++            live.last_material, "0000:00:02.0/virtio-net", 0, 3)
 +
 +    with_machine(
 +        qemu, plugin, "aarch64",
@@ -93504,7 +93504,7 @@ index 000000000..dec27d543
 +
 +    def check_acpi_ged(live):
 +        baseline = capture_section(live, "acpi-ged")
-+        net_marker = section_marker("0000:00:02.0/virtio-net", 0, 2)
++        net_marker = section_marker("0000:00:02.0/virtio-net", 0, 3)
 +        if live.last_material.count(net_marker) != 1:
 +            raise AssertionError(
 +                "AArch64 aggregate omitted the canonical BH virtio-net "
