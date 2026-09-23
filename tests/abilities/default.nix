@@ -242,6 +242,9 @@
   bindService = import ./bind-service.nix {
     inherit lib;
   };
+  smartmontoolsService = import ./smartmontools-service.nix {
+    inherit lib;
+  };
   serviceFeatures = import ./service-features.nix {
     inherit lib pkgs;
   };
@@ -650,6 +653,7 @@ in
   assert serviceManagement;
   assert dbusService;
   assert bindService;
+  assert smartmontoolsService;
   assert managedIdentityAllocation;
   assert compositionDriver;
   assert systemdPackagedUnit;
