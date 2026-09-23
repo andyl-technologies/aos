@@ -17,6 +17,7 @@ aos-sandbox-host.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-mount.workspace = true
 aos-sandbox-network.workspace = true
+aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-storage.workspace = true
 aos-sandbox-source-provider.workspace = true
