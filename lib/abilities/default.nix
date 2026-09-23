@@ -986,6 +986,16 @@ in rec {
     inherit value;
   };
 
+  # Domain modules carry authenticated source provenance across a projection
+  # into the shared graph. The graph option unwraps this before type checking.
+  derivedDefinition = {
+    provenance,
+    value,
+  }: {
+    _type = "aos-derived-ability-definition";
+    inherit provenance value;
+  };
+
   packageOutput = args: let
     checked = requireAttrs "package output selector" ["package" "output"] args;
   in {

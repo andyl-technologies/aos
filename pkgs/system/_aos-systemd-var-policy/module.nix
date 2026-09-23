@@ -170,10 +170,6 @@ in {
     {
       aos.services."measured-var.aos-var-crypt" = serviceDefinition // {enable = cfg.enable && initrdStage;};
     }
-    (serviceManagement.projectService {
-      inherit config lib consumerInstance;
-      name = "measured-var.aos-var-crypt";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable && initrdStage;

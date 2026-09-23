@@ -973,11 +973,7 @@
     packageModules = [
       {
         name = "policy-owner";
-        module = {
-          config,
-          lib,
-          ...
-        }: {
+        module = {lib, ...}: {
           options.aos.services = lib.mkOption {
             type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
               options = lib.optionalAttrs (name == "policy-owner.main") {
@@ -990,22 +986,14 @@
             default = {};
           };
 
-          config = lib.mkMerge [
-            {
-              aos.services."policy-owner.main" = {
-                enable = true;
-                inherit (minimalService) lifecycle;
-                resources.open_files = {
-                  kind = "maximum";
-                  value = 128;
-                };
-              };
-            }
-            (serviceManagement.projectService {
-              inherit config lib;
-              name = "policy-owner.main";
-            })
-          ];
+          config.aos.services."policy-owner.main" = {
+            enable = true;
+            inherit (minimalService) lifecycle;
+            resources.open_files = {
+              kind = "maximum";
+              value = 128;
+            };
+          };
         };
       }
       {
@@ -1028,6 +1016,23 @@
             rules = [];
           };
           config.aos.services."policy-owner.main".resources.processes.kind = "unbounded";
+        };
+      }
+    ];
+  };
+  sourceComposedService = lib.evalModules {
+    specialArgs = {inherit lib;};
+    modules = [
+      ../../modules/abilities/default.nix
+      {
+        aos.abilities.environment = {
+          authority = "deployment";
+          key = "source-service-test";
+          stage = "host";
+        };
+        aos.services.demo = {
+          enable = true;
+          inherit (minimalService) lifecycle;
         };
       }
     ];
@@ -1602,6 +1607,13 @@ in
     baseline_access = "declared-devices-only";
     rules = [];
   };
+  assert composedServiceFixedPoint.config.aos.abilities.requests."policy-owner:main-lifecycle".authority
+  == {
+    kind = "package";
+    package = "policy-owner";
+  };
+  assert sourceComposedService.config.aos.abilities.requests."aos:demo-lifecycle".authority.kind
+  == "system";
   assert composedServiceFixedPoint.config.aos.abilities.requests."policy-owner:main-resources".parameters
   == {
     service = "main";

@@ -295,14 +295,34 @@
     base
     // {
       merge = location: definitions:
-        base.merge location (builtins.map (definition: let
-          identity = identityForDefinition definition;
-        in
+        base.merge location (builtins.map (definition:
           definition
           // {
-            value = builtins.listToAttrs (builtins.map (name: {
+            value = builtins.listToAttrs (builtins.map (name: let
+                authored = definition.value.${name};
+                derived =
+                  builtins.isAttrs authored
+                  && (authored._type or null) == "aos-derived-ability-definition";
+                identity =
+                  if !derived
+                  then identityForDefinition definition
+                  else if (definition.provenance or "@base") != "@base"
+                  then throw "Only a domain module may project a definition with derived provenance."
+                  else if builtins.attrNames authored != ["_type" "provenance" "value"]
+                  then throw "A derived ability definition must contain only its source provenance and value."
+                  else identityForDefinition (definition // {provenance = authored.provenance;});
+              in {
                 name = declarationName identity name;
-                value = qualifyAbilityValue collection identity (localKeyFor name) definition.value.${name};
+                value =
+                  qualifyAbilityValue
+                  collection
+                  identity
+                  (localKeyFor name)
+                  (
+                    if derived
+                    then authored.value
+                    else authored
+                  );
               })
               (builtins.attrNames definition.value));
           })

@@ -2,7 +2,12 @@
 ##!
 ##! Packages extend the same `aos.services` submodule type with ordinary option
 ##! declarations, so the domain and package fields share one fixed point.
-{lib, ...}: let
+{
+  config,
+  lib,
+  provenance,
+  ...
+}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   servicePolicy = lib.abilities.interfaces.servicePolicy;
   serviceFields =
@@ -47,6 +52,11 @@
   serviceModuleFor = name: let
     nameParts = lib.splitString "." name;
     localName = builtins.elemAt nameParts (builtins.length nameParts - 1);
+    packageParts = builtins.genList (index: builtins.elemAt nameParts index) (builtins.length nameParts - 1);
+    defaultConsumerInstance =
+      if packageParts == []
+      then name
+      else builtins.concatStringsSep "." packageParts;
   in {
     imports =
       [
@@ -63,15 +73,54 @@
             extensible = true;
             description = "Enable this service instance.";
           };
+          options.consumerInstance = lib.mkOption {
+            type = lib.abilities.types.localKey;
+            default = defaultConsumerInstance;
+            internal = true;
+            description = "Local ability instance receiving this service's requests.";
+          };
         }
       ]
       ++ featureModules;
   };
+  sourceForService = name: let
+    definitions =
+      provenance.definitionsOfNestedAttr ["aos" "services"] [name "service"]
+      ++ provenance.definitionsOfNestedAttr ["aos" "services"] [name "lifecycle"];
+    sources = lib.unique (builtins.map (definition: definition.provenance) definitions);
+    packages = builtins.filter (source: lib.hasPrefix "package:" source) sources;
+  in
+    if builtins.length packages > 1
+    then throw "Service '${name}' has conflicting package owners."
+    else if packages != []
+    then builtins.head packages
+    else if builtins.elem "@runtime" sources
+    then "@runtime"
+    else if builtins.elem "@host" sources
+    then "@host"
+    else "@base";
+
+  project = name: let
+    service = config.aos.services.${name};
+  in
+    lib.optional (service.lifecycle != null) (serviceManagement.projectService {
+      inherit config lib name;
+      consumerInstance = service.consumerInstance;
+      derivedProvenance = sourceForService name;
+    });
+  graphs = builtins.concatMap project (builtins.attrNames config.aos.services);
+  merged = field: lib.mkMerge (builtins.map (graph: graph.${field}) graphs);
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: serviceModuleFor name));
     default = {};
     extensible = true;
     description = "Typed service configurations assembled from domain feature modules.";
+  };
+
+  config.aos.abilities = {
+    requirementTemplates = merged "requirementTemplates";
+    instances = merged "instances";
+    requests = merged "requests";
   };
 }

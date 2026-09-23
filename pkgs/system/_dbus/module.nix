@@ -86,6 +86,7 @@
     relativePath = "system_bus_socket";
   };
   serviceDefinition = {
+    consumerInstance = "system-bus";
     policy.hardening = {
       allow_privilege_escalation = true;
       ambient_privileges = [];
@@ -288,11 +289,6 @@ in {
 
   config = lib.mkMerge [
     {aos.services.dbus = serviceDefinition;}
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "dbus";
-      consumerInstance = "system-bus";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

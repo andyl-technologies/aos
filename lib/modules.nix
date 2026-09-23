@@ -1650,6 +1650,19 @@
         then throw "evalModules: provenance query names undeclared option '${key}'"
         else configForOption optionMap.${key};
 
+      nestedOptionDefs = path: segments:
+        builtins.foldl'
+        (defs: segment:
+          builtins.concatLists (builtins.map (def:
+            if builtins.isAttrs def.value && builtins.hasAttr segment def.value
+            then peelOwnedDef def.file def.provenance def.condition def.priority def.value.${segment}
+            else [])
+          defs))
+        (builtins.concatLists (builtins.map (def:
+          peelOwnedDef def.file (def.provenance or "@base") true (defBasePriority def) def.value)
+        (optionDefs path)))
+        segments;
+
       defBasePriority = d:
         if isOverride d.value
         then d.value._priority
@@ -1669,6 +1682,12 @@
         # order. Manifest renderers use this to discover package-private
         # projection options without granting packages a shared write root.
         packageNames = builtins.map (record: record.name) validatedPackageModules;
+
+        definitionsOfNestedAttr = path: segments:
+          builtins.map (def: {
+            inherit (def) file provenance priority;
+            owner = ownerForProvenance def.provenance;
+          }) (builtins.filter (def: def.condition) (nestedOptionDefs path segments));
 
         ownerOfOption = path: let
           defs = builtins.concatLists (builtins.map (d:

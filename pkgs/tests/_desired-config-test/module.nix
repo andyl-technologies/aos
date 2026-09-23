@@ -117,10 +117,6 @@ in {
     {
       aos.services."desired-config-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "desired-config-test.main";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

@@ -72,10 +72,6 @@ in {
     {
       aos.services."landlock-argv-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "landlock-argv-test.main";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

@@ -32,6 +32,7 @@
     device = "/dev/net/tun";
   };
   serviceDefinition = {
+    consumerInstance = "service";
     service = "tailscaled";
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -181,11 +182,6 @@ in {
 
   config = lib.mkMerge [
     {aos.services.tailscale = serviceDefinition;}
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "tailscale";
-      consumerInstance = "service";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

@@ -156,6 +156,7 @@
     prerequisites = [(resultOf "network-readiness" "resource")];
   };
   serviceDefinition = {
+    consumerInstance = "service";
     service = "named";
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -340,11 +341,6 @@ in {
         fallback = null;
       };
     }
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "bind";
-      consumerInstance = "service";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

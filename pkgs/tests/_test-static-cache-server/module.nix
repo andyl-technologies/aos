@@ -116,10 +116,6 @@ in {
     {
       aos.services."test-static-cache-server.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "test-static-cache-server.main";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

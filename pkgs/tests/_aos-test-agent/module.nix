@@ -78,9 +78,5 @@ in {
 
   config = lib.mkMerge [
     {aos.services."aos-test-agent.main" = serviceDefinition // {enable = cfg.enable;};}
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "aos-test-agent.main";
-    })
   ];
 }

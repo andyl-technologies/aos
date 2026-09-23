@@ -189,6 +189,7 @@
     prerequisites = [(resultOf "network-readiness" "resource")];
   };
   serviceDefinition = {
+    consumerInstance = "service";
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = ["administer-network" "bind-privileged-network-port" "raw-network"];
@@ -357,11 +358,6 @@ in {
         fallback = null;
       };
     }
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "dnsmasq";
-      consumerInstance = "service";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;
