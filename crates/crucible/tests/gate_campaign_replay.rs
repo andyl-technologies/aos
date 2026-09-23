@@ -281,7 +281,7 @@ fn consume_export(directory: &Path) -> Result<(), Box<dyn Error>> {
         SELECTED_REPRODUCTION_FILE,
     )?)?;
 
-    if bundle.schema_version() != 6
+    if bundle.schema_version() != 7
         || original.id()? != bundle.reproduction()
         || selected.id()? != bundle.minimized()
     {
