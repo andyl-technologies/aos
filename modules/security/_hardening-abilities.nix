@@ -24,39 +24,28 @@
       dependencies = [];
     };
   };
-  tunables = serviceManagement.splitDefinition kernelTunables;
+  crashDump = {
+    requirementTemplates.crash-dump-policy = {
+      description = "Requires the selected crash-dump policy implementation.";
+      interface = crashDumpPolicy.identity.name;
+      inherit (crashDumpPolicy.identity) abi descriptor;
+    };
+    requests.crash-dump-policy = {
+      requirement = "crash-dump-policy";
+      consumer = consumerInstance;
+      scope = ["crash-dumps"];
+      parameters.enabled = coreDumpsEnabled;
+    };
+  };
   configured =
     enable
     && config.aos.abilities.environment
     != null
     && config.aos.abilities.environment.stage == "host";
 in {
-  config = lib.mkMerge [
-    {
-      aos.abilities = lib.mkMerge [
-        tunables.declarations
-        {
-          requirementTemplates.crash-dump-policy = {
-            description = "Requires the selected crash-dump policy implementation.";
-            interface = crashDumpPolicy.identity.name;
-            inherit (crashDumpPolicy.identity) abi descriptor;
-          };
-        }
-      ];
-    }
-    (lib.mkIf configured {
-      aos.abilities = lib.mkMerge [
-        tunables.configured
-        {
-          instances.${consumerInstance} = {};
-          requests.crash-dump-policy = {
-            requirement = "crash-dump-policy";
-            consumer = consumerInstance;
-            scope = ["crash-dumps"];
-            parameters.enabled = coreDumpsEnabled;
-          };
-        }
-      ];
-    })
-  ];
+  config = serviceManagement.producerModule {
+    inherit config lib;
+    producers = [kernelTunables crashDump];
+    enabled = configured;
+  };
 }
