@@ -915,15 +915,15 @@ where
 
     let restored_calibration = node_continuation.logical_time_calibration();
     let restored_icount = restored_calibration.logical_icount;
-    let restore_generation = prepared_setup
+    let restore_boundary = prepared_setup
         .shmem_hot_path
         .arm_logical_time_restore_boundary(restored_icount)
         .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
             stage: "arm",
             message: source.to_string(),
         });
-    let restore_generation = match restore_generation {
-        Ok(generation) => generation,
+    let restore_boundary = match restore_boundary {
+        Ok(boundary) => boundary,
         Err(error) => return Err(reap_failed_restore_child(child, error)),
     };
     if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
@@ -940,7 +940,7 @@ where
     for attempt in 0..polls {
         let boundary_acknowledged = prepared_setup
             .shmem_hot_path
-            .logical_time_restore_boundary_acknowledged(restore_generation, restored_calibration)
+            .logical_time_restore_boundary_acknowledged(restore_boundary, restored_calibration)
             .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "observe acknowledgement",
                 message: source.to_string(),
@@ -972,7 +972,8 @@ where
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "await acknowledgement",
                 message: format!(
-                    "plugin did not acknowledge generation {restore_generation} at icount {restored_icount} within {:?}",
+                    "plugin did not acknowledge generation {} at icount {restored_icount} within {:?}",
+                    restore_boundary.logical_generation(),
                     async_policy.qmp_command_timeout
                 ),
             },
@@ -991,7 +992,7 @@ where
     trace_paused_restore!("paused-native-stop-confirmed");
     if let Err(source) = prepared_setup
         .shmem_hot_path
-        .commit_coverage_restore_generation(restore_generation)
+        .commit_coverage_restore_generation(restore_boundary.logical_generation())
     {
         return Err(reap_failed_restore_child(
             child,
