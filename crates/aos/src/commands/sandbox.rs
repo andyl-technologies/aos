@@ -25,6 +25,22 @@ use crate::cli::sandbox::SandboxArgs;
 mod public_client;
 mod public_transport;
 
+/// Preserves the OpenSSH data-plane exit status at the CLI process boundary.
+#[derive(Debug)]
+pub(crate) struct SandboxAttachExitCode(pub i32);
+
+impl std::fmt::Display for SandboxAttachExitCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "execution attachment exited with status {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for SandboxAttachExitCode {}
+
 const NODE_DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_DISCOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;

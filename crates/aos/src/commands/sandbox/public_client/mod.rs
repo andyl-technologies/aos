@@ -12,8 +12,8 @@ use aos_proto::aos::sandbox::v1::{
     OperatorServiceClient, SandboxServiceClient, SnapshotServiceClient,
 };
 use aos_sandbox::cli_model::{
-    DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
-    EstablishedProtoJson,
+    CheckedExecutionControlResultV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
+    DormantSandboxRequestV1, EstablishedProtoJson,
 };
 use aos_sandbox::client_state::{
     MAXIMUM_WAIT_OBSERVATIONS, OperationWaitApplyOutcomeV1, OperationWaitPolicyV1,
@@ -32,6 +32,7 @@ use http::Uri;
 use crate::cli::sandbox::SandboxArgs;
 
 mod reads;
+mod ssh_attach;
 mod watch;
 
 pub(super) use reads::dispatch_read;
@@ -299,11 +300,19 @@ pub(super) async fn dispatch_mutation(
                     .await
                     .context("controller rejected execution control")?
                     .into_owned();
+            let checked = CheckedExecutionControlResultV1::try_from(response)
+                .context("controller returned an invalid execution control result")?;
+            if message.action.as_known()
+                == Some(aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
+            {
+                ssh_attach::attach(args, &endpoint, message, &checked).await?;
+                return Ok(true);
+            }
             finish_operation::<CheckedExecutionResourceV1>(
                 &endpoint,
                 request,
                 output,
-                required_operation(response.operation, "execution control")?,
+                required_operation(checked.as_proto().operation.clone(), "execution control")?,
                 None,
             )
             .await?;

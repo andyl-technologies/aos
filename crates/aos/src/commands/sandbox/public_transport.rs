@@ -6,6 +6,7 @@
 //! sandbox-server-ca
 //! sandbox-client-cert
 //! sandbox-client-key
+//! sandbox-execution-key
 //! ```
 //!
 //! Authorized operation reads additionally load `sandbox-capability-id`, whose
@@ -36,6 +37,7 @@ const PUBLIC_SOCKET: &str = "/run/aos/sandboxd/public.sock";
 const SERVER_CA: &str = "sandbox-server-ca";
 const CLIENT_CERTIFICATE: &str = "sandbox-client-cert";
 const CLIENT_KEY: &str = "sandbox-client-key";
+const EXECUTION_KEY: &str = "sandbox-execution-key";
 const CAPABILITY_ID: &str = "sandbox-capability-id";
 const MAXIMUM_CREDENTIAL_BYTES: u64 = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -170,6 +172,22 @@ pub(super) fn load_capability_id(path: &Path) -> Result<CapabilityId> {
     let directory = open_protected_directory(path, uid)?;
     let capability = read_credential(&directory, uid, CAPABILITY_ID, true)?;
     parse_capability_id(&capability)
+}
+
+/// Loads the holder's OpenSSH key from the same protected credential custody.
+///
+/// # Errors
+///
+/// Rejects an absent key or unsafe directory or file custody.
+pub(super) fn load_execution_private_key(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    let uid = rustix::process::geteuid().as_raw();
+    let directory = open_protected_directory(path, uid)?;
+    Ok(Zeroizing::new(read_credential(
+        &directory,
+        uid,
+        EXECUTION_KEY,
+        true,
+    )?))
 }
 
 fn parse_capability_id(bytes: &[u8]) -> Result<CapabilityId> {

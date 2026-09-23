@@ -388,8 +388,10 @@ the outstanding work concrete:
   the exact canonical capability ID from the protected credential directory.
   With `--public-api`, the packaged CLI dispatches read, mutation, and watch
   routes through generated clients; without it, those routes fail closed.
-  `attach-exec` currently admits a control RPC but does not launch the OpenSSH
-  data route or manage the holder's private key, so `SBX-CLI-01` remains open.
+  `attach-exec` now consumes an issued, checked OpenSSH route, verifies its
+  execution incarnation and audit identity, pins the host key, loads a separate
+  protected holder key, and preserves the OpenSSH exit status. The controller
+  still does not issue an attach route, so `SBX-CLI-01` remains open.
   Qualify the packaged CLI against the deployed endpoint for each route,
   including operation waits, structured output, watch, and the separately
   authorized execution data plane.

@@ -83,7 +83,7 @@
   # invoke. Nix therefore computes a distinct runtime closure for every output.
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
-  aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
+  aosRuntimeTools = [bash git-minimal nix openssh qemu-img zstd];
   aprRuntimeTools =
     [bash nix openssl sbsigntools mtools qemu-img zstd]
     ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure];
@@ -269,9 +269,10 @@ in
     # builds expose target headers and libraries without splicing in native
     # Linux shared objects.
     #
-    # openssh and zstd are build-only inputs for the check phase: the workspace
-    # tests use `ssh-keygen` for repository fixtures and exercise compressed
-    # registry packs. Nix supplies the multicall commands exercised by the
+    # The native OpenSSH and zstd inputs serve the check phase: workspace tests
+    # use `ssh-keygen` for repository fixtures and exercise compressed registry
+    # packs. The target OpenSSH client is also retained in the `aos` runtime
+    # closure for authorized execution attachment. Nix supplies commands in the
     # executable-resolution tests. `git-minimal` is also used by tests, but remains in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
