@@ -158,6 +158,7 @@ pub struct DormantProtectedGuestExecutionControllerV1<'claim, 'owner> {
     recovered_handoff: Option<GuestLocalExecutionHandoffV1>,
     cold_reopened: bool,
     checkpoint_recovery_required: bool,
+    signed_outcome_recovery_required: bool,
     owner: &'claim mut DormantRuntimeExecutionClaimV1<'owner>,
 }
 
@@ -188,6 +189,7 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
             recovered_handoff: None,
             cold_reopened: false,
             checkpoint_recovery_required: false,
+            signed_outcome_recovery_required: false,
             owner,
         })
     }
@@ -215,6 +217,7 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
             recovered_handoff: None,
             cold_reopened: true,
             checkpoint_recovery_required: false,
+            signed_outcome_recovery_required: false,
             owner,
         };
         controller.recovered_handoff = controller.heal_operation_ahead_checkpoint()?;
@@ -238,7 +241,10 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         &mut self,
         request: &AgentOperationRequestV1,
     ) -> Result<DormantGuestExecutionPreparationV1, DormantProtectedGuestExecutionErrorV1> {
-        if !self.cold_reopened || self.checkpoint_recovery_required {
+        if !self.cold_reopened
+            || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
+        {
             return Err(DormantProtectedGuestExecutionErrorV1::ColdReopenRequired);
         }
         let Some(handoff) = self.recovered_handoff.as_ref() else {
@@ -271,6 +277,7 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
     ) -> Result<DormantGuestExecutionPreparationV1, DormantProtectedGuestExecutionErrorV1> {
         if !self.cold_reopened
             || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
             || token.outcome_commitment.is_some()
             || token.request_commitment != request.request_commitment()
         {
@@ -306,7 +313,10 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         token: DormantGuestCheckpointRecoveryTokenV1,
         observed: ObservedGuestLocalExecutionV1,
     ) -> Result<AgentExecutionOutcomeV1, DormantProtectedGuestCompletionErrorV1> {
-        if !self.cold_reopened || self.checkpoint_recovery_required {
+        if !self.cold_reopened
+            || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
+        {
             return Err(DormantProtectedGuestCompletionErrorV1 {
                 error: DormantProtectedGuestExecutionErrorV1::ColdReopenRequired,
                 observed,
@@ -565,7 +575,11 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
             .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)?;
         let packet = SignedAgentOutcomePacketV1::new(outcome, signature)
             .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)?;
-        self.owner.commit_signed_guest_outcome_packet(&packet)?;
+        if let Err(error) = self.owner.commit_signed_guest_outcome_packet(&packet) {
+            // The append may have committed before its error was observed.
+            self.signed_outcome_recovery_required = true;
+            return Err(error.into());
+        }
         Ok(packet)
     }
 
@@ -616,7 +630,10 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         token: AgentReservationRecoveryTokenV1,
         request: AgentOperationRequestV1,
     ) -> Result<DormantGuestExecutionPreparationV1, DormantProtectedGuestExecutionErrorV1> {
-        if !self.cold_reopened || self.checkpoint_recovery_required {
+        if !self.cold_reopened
+            || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
+        {
             return Err(DormantProtectedGuestExecutionErrorV1::ColdReopenRequired);
         }
         match self
@@ -664,7 +681,10 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         token: AgentOutcomeRecoveryTokenV1,
         observed: ObservedGuestLocalExecutionV1,
     ) -> Result<AgentExecutionOutcomeV1, DormantProtectedGuestCompletionErrorV1> {
-        if !self.cold_reopened || self.checkpoint_recovery_required {
+        if !self.cold_reopened
+            || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
+        {
             return Err(DormantProtectedGuestCompletionErrorV1 {
                 error: DormantProtectedGuestExecutionErrorV1::ColdReopenRequired,
                 observed,
@@ -759,6 +779,7 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         let retained_evidence = evidence.retained_copy();
         if !self.cold_reopened
             || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
             || self.recovered_handoff.is_some()
         {
             return Err(DormantGuestReservedReadbackReconciliationErrorV1::new(
@@ -900,7 +921,10 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         DormantGuestReservedReadbackReconciliationErrorV1,
     > {
         let retained_evidence = evidence.retained_copy();
-        if !self.cold_reopened || self.checkpoint_recovery_required {
+        if !self.cold_reopened
+            || self.checkpoint_recovery_required
+            || self.signed_outcome_recovery_required
+        {
             return Err(DormantGuestReservedReadbackReconciliationErrorV1::new(
                 DormantProtectedGuestExecutionErrorV1::ColdReopenRequired,
                 retained_evidence,
@@ -1097,7 +1121,7 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
     }
 
     fn require_current_checkpoint(&self) -> Result<(), DormantProtectedGuestExecutionErrorV1> {
-        if self.checkpoint_recovery_required {
+        if self.checkpoint_recovery_required || self.signed_outcome_recovery_required {
             return Err(DormantProtectedGuestExecutionErrorV1::ColdReopenRequired);
         }
         Ok(())
