@@ -10,7 +10,11 @@
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
-  scenario = ./fixtures/e2e-determinism.scenario.toml;
+  scenario = pkgs.writeTextFile {
+    name = "crucible-e2e-determinism-scenario";
+    destination = "/scenario.toml";
+    text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
+  };
   flight = pkgs.mkDerivation {
     pname = "crucible-qemu-hot-fork-scaling-flight";
     version = "0";
@@ -72,6 +76,7 @@ in
     rootfsDeps = [
       flight
       guest
+      scenario
       pkgs.crucible
       pkgs.qemu-crucible
       pkgs.crucible-qemu-plugin
@@ -152,7 +157,7 @@ in
       export CRUCIBLE_ATOMIC_WORLD_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
       export CRUCIBLE_ATOMIC_WORLD_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
       export CRUCIBLE_ATOMIC_WORLD_ROOT=${guest}/root.ext4
-      export CRUCIBLE_ATOMIC_WORLD_SCENARIO=${scenario}
+      export CRUCIBLE_ATOMIC_WORLD_SCENARIO=${scenario}/scenario.toml
       export CRUCIBLE_ATOMIC_WORLD_ARTIFACTS=/tmp/artifacts
       export CRUCIBLE_ATOMIC_WORLD_CGROUP=/sys/fs/cgroup/crucible
       export CRUCIBLE_ATOMIC_WORLD_STORAGE=/tmp/attempts/run
