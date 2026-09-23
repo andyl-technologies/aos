@@ -340,6 +340,10 @@ fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
             include_str!("../src/model/temporal_graph/debug_helpers.rs"),
         ),
         (
+            "src/model/temporal_graph/debug_storage.rs",
+            include_str!("../src/model/temporal_graph/debug_storage.rs"),
+        ),
+        (
             "src/model/temporal_graph/search_storage.rs",
             include_str!("../src/model/temporal_graph/search_storage.rs"),
         ),
