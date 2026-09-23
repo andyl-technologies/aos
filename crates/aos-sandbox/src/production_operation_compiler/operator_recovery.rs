@@ -5,6 +5,7 @@
 //! capability check is built. The checked recovery current head is then
 //! committed atomically with the public operation and its orchestration effect.
 
+use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_core::{CapabilityId, OperationId, ProjectId, ResourceId, ResourceKind, Selector};
 
 use crate::cli_model::{
@@ -63,6 +64,19 @@ pub(super) fn compile_public_operator_recovery(
 
     let target = resolve_recovery_target(journal, peer.project(), request.resource_id())?;
     if !target.current.validates_request(&request) {
+        return Err(OperationCompilationError::Rejected);
+    }
+    // Only ownership retry has a completing production effect. Reject other
+    // recovery targets before creating an operation that cannot terminate.
+    if request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY as i32
+        || target.resource_kind != ResourceKind::Operation
+        || crate::reconciler::validated_ownership_gate_from_journal_v1(
+            journal,
+            OperationId::from_bytes(request.resource_id()),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .is_none()
+    {
         return Err(OperationCompilationError::Rejected);
     }
     let selector = Selector::Resource {

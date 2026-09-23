@@ -305,9 +305,11 @@ the outstanding work concrete:
   effects. The lifecycle, ownership retry, and cancellation paths have
   production handlers; `ExecutionControl`, `CachePin`, and `CacheUnpin`
   currently admit but fall through to a retry-only controller effect. Other
-  operator recovery actions also lack a completing effect path. Connect these
-  methods to their protected owners before claiming the public mutation family
-  is complete.
+  operator recovery actions other than ownership-gate Retry lack a completing
+  effect path and are rejected before new admission; Retry is admitted only for
+  an operation with a validated ownership gate. Connect the remaining methods
+  to their protected owners before claiming the public mutation family is
+  complete.
 - Execution control is not a same-process owner call. Public admission now
   separates OpenSSH attach from checked resize and signal effects, and the
   dormant Host backend can bind issued authorize, resize, signal, cancel, and
