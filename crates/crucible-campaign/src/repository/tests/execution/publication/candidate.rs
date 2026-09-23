@@ -1,6 +1,10 @@
 //! Executor candidate publication and exact-retention regressions.
 
 use super::*;
+use crate::CampaignArchivePolicy;
+use crucible_cas::content_store::{
+    DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,
+};
 
 #[test]
 fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
@@ -825,5 +829,48 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         )
         .expect("cold replay of incorporated bundle")
         .replayed
+    );
+
+    let head = cold
+        .head("authenticated-exact-retention")
+        .expect("finding handoff source head");
+    let plan = cold
+        .plan_campaign_archive(
+            head.snapshot_id(),
+            CampaignArchivePolicy::Executable,
+            [],
+            None,
+        )
+        .expect("plan exact finding handoff");
+    cold.stage_campaign_archive_metadata(&plan)
+        .expect("stage exact finding handoff metadata");
+    let private = tempfile::tempdir().expect("private finding handoff store");
+    let imported = CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "private-finding-handoff",
+            private.path().join("objects"),
+        )),
+        Arc::new(DirectoryRefBackend::new(private.path().join("refs"))),
+    );
+    cold.transfer_campaign_archive_objects(
+        &imported,
+        &plan,
+        DurabilityRequirement::new(1, false).expect("private store durability"),
+    )
+    .expect("transfer exact finding handoff");
+    imported
+        .publish_transferred_campaign("private-handoff", None, plan.manifest_id())
+        .expect("publish private campaign head");
+
+    let handed_off = imported
+        .inspect_archived_exact_finding(plan.manifest_id(), incorporated.finding)
+        .expect("authenticate imported finding and checkpoint closure");
+    assert_eq!(handed_off.exact_pins(), &BTreeSet::from([checkpoint]));
+    assert_eq!(
+        imported
+            .head("private-handoff")
+            .expect("private imported head")
+            .snapshot_id(),
+        head.snapshot_id()
     );
 }
