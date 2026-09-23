@@ -1,5 +1,6 @@
 //! Exact-checkpoint, attempt-boundary, and debug-policy quantum-loop tests.
 
+// crucible-lint: allow panic-shortcut -- quantum-loop fixtures use expect for precise failure localization.
 #![allow(clippy::expect_used)]
 
 use super::*;
