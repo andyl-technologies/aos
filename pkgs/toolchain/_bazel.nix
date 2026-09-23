@@ -179,6 +179,12 @@
     if isCross
     then buildPackages.gcc-libs
     else gcc-libs;
+  # The ARM cross bootstrap runs target-architecture Bazel exec tools.
+  bazelExecGccLibs =
+    if isCross
+    then gcc-libs
+    else buildGccLibs;
+  bazelExecRuntimePath = lib.optionalString stdenv.hostPlatform.isLinux ":${bazelExecGccLibs}/lib";
   buildLlvm =
     if isCross
     then buildPackages.llvm
@@ -1463,7 +1469,7 @@ in
             cat > ../tools/bash-with-path << BASHWRAP
             #!${buildBash}/bin/bash
             export PATH="${buildToolsPath}:\$PATH"
-            export LD_LIBRARY_PATH="$BT_LIB''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="$BT_LIB${bazelExecRuntimePath}''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
             exec ${buildBash}/bin/bash "\$@"
             BASHWRAP
             chmod +x ../tools/bash-with-path
@@ -1495,15 +1501,19 @@ in
             # --repository_disable_download prevents any network access.
             VENDOR_ABS="$(cd ../vendor_dir && pwd)"
 
+            # Bazel exec actions clear the environment before running C++ tools
+            # such as protoc, so their runtime library must be linked.
             export EXTRA_BAZEL_ARGS="
               --verbose_failures
               --curses=no
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+              --linkopt=-Wl,-rpath,${gcc-libs}/lib
+              --host_linkopt=-Wl,-rpath,${bazelExecGccLibs}/lib
+            ''}
               ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
               --cpu=aarch64
               --host_cpu=aarch64
               --noenable_platform_specific_config
-              --linkopt=-Wl,-rpath,${gcc-libs}/lib
-              --host_linkopt=-Wl,-rpath,${gcc-libs}/lib
             ''}
               --tool_java_runtime_version=local_jdk_21
               --java_runtime_version=local_jdk_21
@@ -1516,8 +1526,8 @@ in
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
               --host_action_env=PATH=${buildToolsPath}
-              --action_env=LD_LIBRARY_PATH=$BT_LIB${lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ":${gcc-libs}/lib"}
-              --host_action_env=LD_LIBRARY_PATH=$BT_LIB${lib.optionalString (isCross && stdenv.hostPlatform.isLinux) ":${gcc-libs}/lib"}
+              --action_env=LD_LIBRARY_PATH=$BT_LIB${bazelExecRuntimePath}
+              --host_action_env=LD_LIBRARY_PATH=$BT_LIB${bazelExecRuntimePath}
               --shell_executable=$(cd ../tools && pwd)/bash-with-path
               --python_path=${buildPython3}/bin/python3
             "
