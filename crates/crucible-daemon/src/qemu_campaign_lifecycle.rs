@@ -1058,8 +1058,9 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
         cleanup: SchedulerError,
     },
     /// Cleanup failed after start replay or another runner-owned phase failed.
+    // The retained error is recursive, so Debug exposes it without a cyclic Display bound.
     #[error(
-        "fresh production QEMU lifecycle cleanup failed after a prior runner failure: {cleanup}"
+        "fresh production QEMU lifecycle cleanup failed after a prior runner failure: {cleanup}; original runner failure: {failure:?}"
     )]
     CleanupAfterRunner {
         /// Original runner failure retained for diagnosis.
