@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "251a1f5ae05b9e4e7d0425a66c3df5908e7c2e14afe170b20d59d65249f2e186";
+  sha256 = "1f3d3d348f089f474d21dbe447b105351a8f059005dba7ab7955b87d5a9d1861";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -23,9 +23,13 @@
     "native QMP pause flags and disabled UART THRI state while retaining strict"
     "guest-visible and active device state. Keep ordinary non-sim virtio ioeventfd"
     "policy unchanged."
+    ""
+    "Adopt pinned launch images into live block roots before hot fork,"
+    "retiring verified startup fdset bookkeeping without closing the"
+    "block-owned descriptors."
   ];
-  commit = "233aee57f1b92f53fd093030b01132b08d31438e";
-  tree = "cbbbae0f623c093ce4e12bd14d7bf44c0e944191";
+  commit = "e0ca7ee7610119b2f7e0b3f19e1751ce44d352b0";
+  tree = "155dfbd1d722a9385d489b73efa9456c6929fe40";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -34,7 +38,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "7872f8d18475ecb575a7e49721305923830bea02f02377bbd3d0bcc12c9e45c1";
+  bundleSha256 = "6d3bc5e448574d4578ca8a4635d4551500af38f611130b74123448d7b25253ad";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

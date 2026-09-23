@@ -1409,6 +1409,24 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
+                timeout -k 5 60 build/tests/qtest/qmp-cmd-test --tap \
+                -p /x86_64/qmp/crucible-adopt-launch-fdsets \
+                -p /x86_64/qmp/crucible-reject-replaced-launch-image \
+                -p /x86_64/qmp/crucible-reject-extra-launch-fdset \
+                -p /x86_64/qmp/crucible-reject-unopened-launch-image \
+                > launch-fdset-qtests.tap
+              cat launch-fdset-qtests.tap
+              test "$(grep -E -c '^ok [0-9]+ /x86_64/qmp/crucible-' \
+                launch-fdset-qtests.tap)" -eq 4
+              grep -E -q '^ok [0-9]+ /x86_64/qmp/crucible-adopt-launch-fdsets$' \
+                launch-fdset-qtests.tap
+              grep -E -q '^ok [0-9]+ /x86_64/qmp/crucible-reject-replaced-launch-image$' \
+                launch-fdset-qtests.tap
+              grep -E -q '^ok [0-9]+ /x86_64/qmp/crucible-reject-extra-launch-fdset$' \
+                launch-fdset-qtests.tap
+              grep -E -q '^ok [0-9]+ /x86_64/qmp/crucible-reject-unopened-launch-image$' \
+                launch-fdset-qtests.tap
               build/tests/unit/test-crucible-x86-fingerprint --tap \
                 -p /crucible/x86/mmx-empty-tag
               build/tests/unit/test-crucible-acpi-piix-fingerprint --tap \
