@@ -55,6 +55,11 @@ fn resume_authenticates_attempt_timeout_and_bounded_primary_frontier() {
         campaign_resume_status(&plan, &timed_out).or_panic("policy timeout status"),
         (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
     );
+    plan.terminal_condition = RunTerminalCondition::Stopped;
+    assert_eq!(
+        campaign_resume_final_state(&plan, &timed_out, OutcomeKind::Timeout),
+        "timeout"
+    );
 }
 
 #[test]

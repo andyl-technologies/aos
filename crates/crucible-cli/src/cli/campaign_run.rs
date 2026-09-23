@@ -637,7 +637,9 @@ fn campaign_resume_final_state(
         {
             String::from("virtual-time")
         }
-        (RunTerminalCondition::Stopped, _) => String::from("stopped"),
+        (RunTerminalCondition::Stopped, _) if outcome == OutcomeKind::Passed => {
+            String::from("stopped")
+        }
         _ => terminal_outcome_label(Some(outcome)).to_owned(),
     }
 }
