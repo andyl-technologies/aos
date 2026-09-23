@@ -160,6 +160,9 @@ pub struct CacheResidencyProtectedJournalSchemaV1;
 
 /// Revalidates complete cache history against protected authority on every replay.
 trait CacheResidencyReplayAuthorityV1: Send + Sync {
+    /// Lists every custodied partition, including a checkpoint-only partition.
+    fn partitions(&self) -> Result<Vec<PhysicalPartitionId>, RecoveryError>;
+
     /// Replays a canonical suffix beneath one exact protected checkpoint/floor anchor.
     fn validate_partition(
         &self,
@@ -252,6 +255,14 @@ struct CacheResidencyAuthoritySessionPartitionV1 {
 }
 
 impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
+    fn partitions(&self) -> Result<Vec<PhysicalPartitionId>, RecoveryError> {
+        Ok(self
+            .partitions
+            .values()
+            .map(|partition| partition.evidence.partition)
+            .collect())
+    }
+
     fn validate_partition(
         &self,
         partition: PhysicalPartitionId,
@@ -439,6 +450,16 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
 }
 
 impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV1 {
+    fn partitions(&self) -> Result<Vec<PhysicalPartitionId>, RecoveryError> {
+        Ok(self
+            .partitions
+            .lock()
+            .map_err(|_| RecoveryError::AnchorMismatch)?
+            .values()
+            .map(|partition| partition.partition)
+            .collect())
+    }
+
     fn validate_partition(
         &self,
         partition: PhysicalPartitionId,
@@ -1941,7 +1962,24 @@ fn validate_cache_history<'envelope>(
     envelopes: impl IntoIterator<Item = &'envelope CacheResidencyProtectedJournalEnvelopeV1>,
     validator: &CacheResidencyReplayValidatorV1,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    reconstruct_cache_history(envelopes, validator).map(|_| ())
+}
+
+/// Reconstructs every custodied partition, including checkpoint-only state.
+pub(super) fn reconstruct_cache_history<'envelope>(
+    envelopes: impl IntoIterator<Item = &'envelope CacheResidencyProtectedJournalEnvelopeV1>,
+    validator: &CacheResidencyReplayValidatorV1,
+) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
     let mut partitions = BTreeMap::<ObjectDigest, PhysicalPartitionId>::new();
+    for partition in validator
+        .authority
+        .partitions()
+        .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
+    {
+        if partitions.insert(partition.digest(), partition).is_some() {
+            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+    }
     let mut records_by_partition = BTreeMap::<ObjectDigest, BTreeMap<u64, Vec<u8>>>::new();
     let mut checkpoints_by_partition = BTreeMap::<ObjectDigest, Vec<Vec<u8>>>::new();
     for envelope in envelopes {
@@ -1996,6 +2034,7 @@ fn validate_cache_history<'envelope>(
             return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
         }
     }
+    let mut inventories = Vec::with_capacity(partitions.len());
     for (partition_digest, partition) in partitions {
         let checkpoints = checkpoints_by_partition
             .remove(&partition_digest)
@@ -2018,8 +2057,9 @@ fn validate_cache_history<'envelope>(
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
             }
         }
+        inventories.push(inventory);
     }
-    Ok(())
+    Ok(inventories)
 }
 
 fn cache_transaction_partition(

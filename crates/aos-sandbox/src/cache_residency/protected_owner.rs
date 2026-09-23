@@ -7,7 +7,6 @@
 //! merely because a process restarted or the wall clock moved backwards.
 
 use std::{
-    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -25,8 +24,8 @@ use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
 use super::protected_journal::{
     CacheResidencyCurrentTimeAuthorityV1, CacheResidencyReplayPartitionEvidenceV1,
-    ProtectedCacheResidencyReplayAuthorityV1, decode_cache_payload_for_lifecycle,
-    decode_partition_descriptor, encode_partition_descriptor,
+    ProtectedCacheResidencyReplayAuthorityV1, decode_partition_descriptor,
+    encode_partition_descriptor, reconstruct_cache_history,
 };
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
@@ -783,37 +782,32 @@ impl CacheResidencyProtectedOwnerV1 {
                 .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
             let projection =
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let mut latest: Option<(u64, Vec<CachePinV1>)> = None;
-
-            for envelope in projection.records().iter().filter(|envelope| {
-                envelope.key().kind() == CacheResidencyProtectedRecordKindV1::Pin
-            }) {
-                let payload = decode_cache_payload_for_lifecycle(envelope, &validator)?
-                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-                if payload.plan.partition != partition
-                    || &payload.plan.descriptor != object
-                    || payload.plan.project != project
-                {
-                    continue;
-                }
-                if latest
-                    .as_ref()
-                    .is_none_or(|(sequence, _)| payload.record.sequence > *sequence)
-                {
-                    latest = Some((payload.record.sequence, payload.pins));
+            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+            let mut pin = None;
+            for inventory in inventories {
+                for payload in inventory.reconstructed {
+                    if payload.plan.partition != partition
+                        || &payload.plan.descriptor != object
+                        || payload.plan.project != project
+                    {
+                        continue;
+                    }
+                    for candidate in payload.pins {
+                        if candidate.partition != partition
+                            || &candidate.object != object
+                            || candidate.project != project
+                            || candidate.view != view
+                            || candidate.attachment != attachment
+                            || candidate.kind != super::CachePinKindV1::LogicalLease
+                        {
+                            continue;
+                        }
+                        if pin.replace(candidate).is_some() {
+                            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+                        }
+                    }
                 }
             }
-
-            let pin = latest.and_then(|(_, pins)| {
-                pins.into_iter().find(|pin| {
-                    pin.partition == partition
-                        && &pin.object == object
-                        && pin.project == project
-                        && pin.view == view
-                        && pin.attachment == attachment
-                        && pin.kind == super::CachePinKindV1::LogicalLease
-                })
-            });
             refresh()?;
             Ok(pin)
         })
@@ -836,41 +830,14 @@ impl CacheResidencyProtectedOwnerV1 {
                 .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
             let projection =
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let mut latest = BTreeMap::new();
-            for envelope in projection.records().iter().filter(|envelope| {
-                matches!(
-                    envelope.key().kind(),
-                    CacheResidencyProtectedRecordKindV1::Reservation
-                        | CacheResidencyProtectedRecordKindV1::Pin
-                        | CacheResidencyProtectedRecordKindV1::Catalog
-                )
-            }) {
-                let payload = decode_cache_payload_for_lifecycle(envelope, &validator)?
-                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-                // The same object may have independent obligations in multiple partitions.
-                let key = (
-                    envelope.key().kind(),
-                    payload.record.partition,
-                    payload.record.subject,
-                );
-                match latest.get(&key) {
-                    Some((sequence, _, _)) if *sequence >= payload.record.sequence => {}
-                    _ => {
-                        latest.insert(key, (payload.record.sequence, envelope.digest(), payload));
-                    }
-                }
-            }
-
+            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
             let mut entries = Vec::new();
-            for ((kind, _, _), (_, _envelope, payload)) in latest {
-                match kind {
-                    CacheResidencyProtectedRecordKindV1::Reservation
-                        if matches!(
-                            payload.reservation.state,
-                            super::ReservationStateV1::Reserved
-                                | super::ReservationStateV1::Uncertain
-                        ) =>
-                    {
+            for inventory in inventories {
+                for payload in inventory.reconstructed {
+                    if matches!(
+                        payload.reservation.state,
+                        super::ReservationStateV1::Reserved | super::ReservationStateV1::Uncertain
+                    ) {
                         entries.push(
                             crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
                                 crate::lifecycle::LifecycleResourceV1::Capability(
@@ -883,58 +850,50 @@ impl CacheResidencyProtectedOwnerV1 {
                             .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
                         );
                     }
-                    CacheResidencyProtectedRecordKindV1::Catalog => {
-                        if let Some(catalog) = payload
-                            .catalog
-                            .filter(|catalog| catalog.presence != super::CatalogPresenceV1::Evicted)
-                        {
-                            let mut environment = [0_u8; 16];
-                            environment
-                                .copy_from_slice(&catalog.descriptor.digest().as_bytes()[..16]);
-                            entries.push(
-                                crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                    crate::lifecycle::LifecycleResourceV1::Environment(
-                                        aos_sandbox_core::ResourceId::from_bytes(environment),
-                                    ),
-                                    catalog.digest,
-                                )
-                                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
-                            );
-                        }
+
+                    if let Some(catalog) = payload
+                        .catalog
+                        .filter(|catalog| catalog.presence != super::CatalogPresenceV1::Evicted)
+                    {
+                        let mut environment = [0_u8; 16];
+                        environment.copy_from_slice(&catalog.descriptor.digest().as_bytes()[..16]);
+                        entries.push(
+                            crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
+                                crate::lifecycle::LifecycleResourceV1::Environment(
+                                    aos_sandbox_core::ResourceId::from_bytes(environment),
+                                ),
+                                catalog.digest,
+                            )
+                            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+                        );
                     }
-                    CacheResidencyProtectedRecordKindV1::Pin => {
-                        for pin in payload.pins {
-                            let resource = if let Some(attachment) = pin.attachment {
-                                crate::lifecycle::LifecycleResourceV1::Attachment(
-                                    aos_sandbox_core::ResourceId::from_bytes(
-                                        *attachment.as_bytes(),
-                                    ),
-                                )
-                            } else {
-                                crate::lifecycle::LifecycleResourceV1::View(pin.view)
-                            };
-                            // Physical obligations remain distinct across disclosure partitions.
-                            let identity = ObjectDigest::from_bytes(
-                                Sha256::new()
-                                    .chain_update(
-                                        b"aos.sandbox.lifecycle.cache-pin-physical-row.v2\0",
-                                    )
-                                    .chain_update(pin.partition.digest().as_bytes())
-                                    .chain_update(pin.id.as_bytes())
-                                    .chain_update(pin.object.digest().as_bytes())
-                                    .chain_update([pin.kind as u8])
-                                    .finalize()
-                                    .into(),
-                            );
-                            entries.push(
-                                crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                    resource, identity,
-                                )
-                                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
-                            );
-                        }
+
+                    for pin in payload.pins {
+                        let resource = if let Some(attachment) = pin.attachment {
+                            crate::lifecycle::LifecycleResourceV1::Attachment(
+                                aos_sandbox_core::ResourceId::from_bytes(*attachment.as_bytes()),
+                            )
+                        } else {
+                            crate::lifecycle::LifecycleResourceV1::View(pin.view)
+                        };
+                        // Physical obligations remain distinct across disclosure partitions.
+                        let identity = ObjectDigest::from_bytes(
+                            Sha256::new()
+                                .chain_update(b"aos.sandbox.lifecycle.cache-pin-physical-row.v2\0")
+                                .chain_update(pin.partition.digest().as_bytes())
+                                .chain_update(pin.id.as_bytes())
+                                .chain_update(pin.object.digest().as_bytes())
+                                .chain_update([pin.kind as u8])
+                                .finalize()
+                                .into(),
+                        );
+                        entries.push(
+                            crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
+                                resource, identity,
+                            )
+                            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+                        );
                     }
-                    _ => {}
                 }
             }
             entries.sort_unstable();

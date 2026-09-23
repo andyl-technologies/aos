@@ -1,15 +1,14 @@
 //! Partition-independent lookup of retained public logical cache pins.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
-use aos_sandbox_core::{AttachmentId, ObjectDescriptor, ObjectDigest, ProjectId, ViewId};
+use aos_sandbox_core::{AttachmentId, ObjectDescriptor, ProjectId, ViewId};
 
 use super::{
     CachePinV1, CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedRecordKindV1,
-    ProtectedDomainJournalErrorV1, decode_cache_payload_for_lifecycle,
+    CacheResidencyProtectedOwnerV1, ProtectedDomainJournalErrorV1,
 };
-use crate::cache_residency::CachePinKindV1;
+use crate::cache_residency::{CachePinKindV1, protected_journal::reconstruct_cache_history};
 
 impl CacheResidencyProtectedOwnerV1 {
     /// Finds every retained partition pin for a public consumer and object.
@@ -39,38 +38,27 @@ impl CacheResidencyProtectedOwnerV1 {
                 .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
             let projection =
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let mut latest = BTreeMap::<ObjectDigest, (u64, Vec<CachePinV1>)>::new();
-
-            for envelope in projection.records().iter().filter(|envelope| {
-                envelope.key().kind() == CacheResidencyProtectedRecordKindV1::Pin
-            }) {
-                let payload = decode_cache_payload_for_lifecycle(envelope, &validator)?
-                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-                if &payload.plan.descriptor != object || payload.plan.project != project {
-                    continue;
-                }
-                let partition = payload.plan.partition.digest();
-                let entry = latest.entry(partition).or_insert_with(|| (0, Vec::new()));
-                if payload.record.sequence > entry.0 {
-                    *entry = (payload.record.sequence, payload.pins);
-                }
-            }
-
+            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
             let mut retained = Vec::new();
-            for (partition, (_, pins)) in latest {
+            for inventory in inventories {
                 let mut partition_pin = None;
-                for pin in pins {
-                    if pin.partition.digest() != partition
-                        || &pin.object != object
-                        || pin.project != project
-                        || pin.view != view
-                        || pin.attachment != attachment
-                        || pin.kind != CachePinKindV1::LogicalLease
-                    {
+                for payload in inventory.reconstructed {
+                    if &payload.plan.descriptor != object || payload.plan.project != project {
                         continue;
                     }
-                    if partition_pin.replace(pin).is_some() {
-                        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+                    for pin in payload.pins {
+                        if pin.partition != payload.plan.partition
+                            || &pin.object != object
+                            || pin.project != project
+                            || pin.view != view
+                            || pin.attachment != attachment
+                            || pin.kind != CachePinKindV1::LogicalLease
+                        {
+                            continue;
+                        }
+                        if partition_pin.replace(pin).is_some() {
+                            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+                        }
                     }
                 }
                 if let Some(pin) = partition_pin {
