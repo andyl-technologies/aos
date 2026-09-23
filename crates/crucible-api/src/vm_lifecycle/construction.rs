@@ -969,16 +969,19 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let fault_search_overrides =
         production_fault_search_overrides(config.signal_fault_replay.as_ref())?;
     let signal_artifact_objects = if signal_plan.programs().is_empty() {
-        BTreeMap::new()
+        Arc::new(BTreeMap::new())
     } else if let Some(checkpoint) = &restore_checkpoint {
-        checkpoint.signal_artifact_objects.clone()
+        Arc::clone(&checkpoint.signal_artifact_objects)
     } else {
         let store = config.signal_artifacts.as_ref().ok_or_else(|| {
             loop_factory_error(
                 "a nonempty signal fault plan requires a production signal-artifact store",
             )
         })?;
-        collect_signal_artifact_objects(&signal_plan, store.as_ref())?
+        Arc::new(collect_signal_artifact_objects(
+            &signal_plan,
+            store.as_ref(),
+        )?)
     };
     let signal_artifacts: Option<Arc<dyn SignalArtifactProvider>> =
         if signal_plan.programs().is_empty() {

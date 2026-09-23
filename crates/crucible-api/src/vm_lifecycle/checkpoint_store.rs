@@ -1207,8 +1207,8 @@ fn load_exact_checkpoint_set_with_boundary(
         identity,
         configuration,
         scheduler,
-        event_log_objects,
-        signal_artifact_objects,
+        event_log_objects: Arc::new(event_log_objects),
+        signal_artifact_objects: Arc::new(signal_artifact_objects),
         trigger_state,
         assertion_state,
         terminal_verdict: lifecycle.terminal,
@@ -1452,14 +1452,14 @@ fn validate_checkpoint_set(
             "exact checkpoint event-log closure is incomplete or out of order",
         ));
     }
-    for (identity, bytes) in &checkpoint.event_log_objects {
+    for (identity, bytes) in checkpoint.event_log_objects.iter() {
         if ContentHash::from_bytes(bytes) != *identity {
             return Err(store_error(
                 "exact checkpoint event-log object failed content authentication",
             ));
         }
     }
-    for (identity, bytes) in &checkpoint.signal_artifact_objects {
+    for (identity, bytes) in checkpoint.signal_artifact_objects.iter() {
         if ContentHash::from_bytes(bytes) != *identity {
             return Err(store_error(
                 "exact checkpoint signal artifact failed content authentication",
@@ -2412,8 +2412,8 @@ fn manifest_and_objects_with_boundary(
         ClosureObjects {
             schedule,
             scheduler,
-            event_log_segments: checkpoint.event_log_objects.clone(),
-            signal_artifacts: checkpoint.signal_artifact_objects.clone(),
+            event_log_segments: (*checkpoint.event_log_objects).clone(),
+            signal_artifacts: (*checkpoint.signal_artifact_objects).clone(),
             trigger_state,
             assertion_state,
             lifecycle_state,
