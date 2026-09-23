@@ -1108,9 +1108,17 @@ fn run_public_debug_client(
         Ok(stop_reply_class) => stop_reply_class,
         Err(error) => {
             let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            return Err(error);
+            let output = child.wait_with_output()?;
+            let stdout = stdout_reader
+                .join()
+                .map_err(|_| "campaign debug readiness reader panicked")??;
+            return Err(format!(
+                "{error}; campaign debug status={}; stdout={:?}; stderr={:?}",
+                output.status,
+                bounded_debug_output(&stdout),
+                bounded_debug_output(&output.stderr),
+            )
+            .into());
         }
     };
 
@@ -1132,6 +1140,17 @@ fn run_public_debug_client(
     evidence.stop_reply_class = stop_reply_class;
 
     Ok(evidence)
+}
+
+fn bounded_debug_output(bytes: &[u8]) -> String {
+    const MAX_DIAGNOSTIC_BYTES: usize = 4 * 1024;
+
+    let prefix = &bytes[..bytes.len().min(MAX_DIAGNOSTIC_BYTES)];
+    let mut output = String::from_utf8_lossy(prefix).into_owned();
+    if bytes.len() > prefix.len() {
+        output.push_str(" [truncated]");
+    }
+    output
 }
 
 #[derive(Debug)]
