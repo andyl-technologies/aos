@@ -402,19 +402,6 @@ impl PromotionQueue {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PromotionQueue;
-
-    #[test]
-    fn pending_cleanup_can_inspect_a_busy_promotion_queue() {
-        let queue = PromotionQueue::default();
-        let _held = queue.state.lock().expect("promotion queue lock");
-
-        assert_eq!(queue.try_counts(), Err("busy"));
-    }
-}
-
 pub(super) fn promotion_worker_loop<L, V, W>(
     shared: std::sync::Arc<SharedExecutor<L, V>>,
     mut worker: W,
@@ -858,5 +845,20 @@ fn work_key(work: &CheckpointPromotionRestartWork) -> AttemptExecutionKey {
     match work {
         CheckpointPromotionRestartWork::Paused(recovery) => recovery.key(),
         CheckpointPromotionRestartWork::Staged(recovery) => recovery.key(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PromotionQueue;
+
+    #[test]
+    fn pending_cleanup_can_inspect_a_busy_promotion_queue() {
+        let queue = PromotionQueue::default();
+        let Ok(_held) = queue.state.lock() else {
+            panic!("promotion queue lock poisoned");
+        };
+
+        assert_eq!(queue.try_counts(), Err("busy"));
     }
 }
