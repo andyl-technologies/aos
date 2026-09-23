@@ -8,6 +8,10 @@ use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 
+#[path = "fuzz/corpus.rs"]
+mod corpus;
+use corpus::{load_qemu_fuzz_corpus, persist_qemu_fuzz_corpus};
+
 pub(crate) fn run_local_qemu_fuzz_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -46,7 +50,11 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         plan,
         backend_plan,
     };
-    let execution = execute_qemu_fuzz_iterations(&execution_context, &family)?;
+    let previous_corpus = match &plan.corpus {
+        Some(corpus) => load_qemu_fuzz_corpus(corpus)?,
+        None => Vec::new(),
+    };
+    let execution = execute_qemu_fuzz_iterations(&execution_context, &family, previous_corpus)?;
     let (retained_entries, store_puts) = match &plan.corpus {
         Some(corpus) => persist_qemu_fuzz_corpus(corpus, &execution.corpus_candidates)?,
         None => (0, 0),
@@ -63,7 +71,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         new_coverage: execution.new_coverage,
         retained_entries,
         admissions: execution.admissions,
-        replay_oracle_validations: execution.admissions as u64,
+        replay_oracle_validations: execution.replay_oracle_validations,
         generated_mutants: execution
             .campaigns
             .iter()
@@ -149,6 +157,7 @@ struct QemuFuzzExecution {
     feedback: Vec<crucible::EventLogCoverageFeedback>,
     corpus_candidates: Vec<LiveFuzzCorpusCandidate>,
     admissions: usize,
+    replay_oracle_validations: u64,
     new_coverage: usize,
     campaigns: Vec<QemuFuzzCampaignRecord>,
     findings: Vec<TriageFindingEvidence>,
@@ -158,6 +167,7 @@ struct QemuFuzzExecution {
 struct LiveFuzzCorpusCandidate {
     artifact: crucible::ReproductionArtifact,
     feedback: crucible::EventLogCoverageFeedback,
+    coverage_entries: Vec<crucible::SchedulerEventLogEntry>,
     coverage_ids: std::collections::BTreeSet<crucible::ContentHash>,
     novel_coverage: usize,
     parent: Option<crucible::ContentHash>,
@@ -165,6 +175,7 @@ struct LiveFuzzCorpusCandidate {
     energy: u64,
     replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     resumable_choice: bool,
+    descriptor: Option<crucible::ContentHash>,
 }
 
 struct QemuFuzzCampaignRecord {
@@ -321,6 +332,12 @@ fn authenticate_qemu_fuzz_campaign(
         let feedback = crucible::EventLogCoverageFeedback::from_event_log(
             accepted.evidence().event_log_entries(),
         );
+        let coverage_entries = feedback
+            .projection()
+            .entries()
+            .iter()
+            .map(|entry| accepted.evidence().event_log_entries()[entry.raw_index].clone())
+            .collect();
         let coverage_ids = feedback
             .projection()
             .entries()
@@ -330,6 +347,7 @@ fn authenticate_qemu_fuzz_campaign(
         candidates.push(LiveFuzzCorpusCandidate {
             artifact,
             feedback,
+            coverage_entries,
             coverage_ids,
             novel_coverage: 0,
             parent,
@@ -337,6 +355,7 @@ fn authenticate_qemu_fuzz_campaign(
             energy,
             replay_closure: accepted.replay_closure().clone(),
             resumable_choice: accepted.observation().stop().reached_next_choice(),
+            descriptor: None,
         });
     }
 
@@ -413,106 +432,22 @@ fn admit_novel_coverage_feedback(
     novel
 }
 
-fn persist_qemu_fuzz_corpus(
-    path: &Path,
-    candidates: &[LiveFuzzCorpusCandidate],
-) -> Result<(usize, u64), CliError> {
-    fs::create_dir_all(path).map_err(|error| {
-        backend_error(format!(
-            "QEMU fuzz could not create corpus `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    let store = crucible::LocalDagStore::new(path.to_path_buf());
-    let mut seen_coverage = std::collections::BTreeSet::new();
-    let mut artifact_coverage = std::collections::BTreeMap::new();
-    let mut stored = 0;
-
-    for candidate in candidates {
-        let coverage = candidate.feedback.fingerprint();
-        let artifact = candidate.artifact.id();
-        if let Some(previous) = artifact_coverage.insert(artifact, coverage)
-            && previous != coverage
-        {
-            return Err(artifact_error(
-                "QEMU fuzz produced conflicting coverage for one reproduction artifact",
-            ));
-        }
-        if candidate.feedback.projection().is_empty() || !seen_coverage.insert(coverage) {
-            continue;
-        }
-
-        let artifact_key = store
-            .put(&candidate.artifact.to_compact_binary())
-            .map_err(CliError::Store)?;
-        if artifact_key != artifact {
-            return Err(artifact_error(
-                "stored QEMU fuzz reproduction differs from its content identity",
-            ));
-        }
-        let closure_key = store
-            .put(
-                &candidate
-                    .replay_closure
-                    .to_canonical_bytes()
-                    .map_err(|error| {
-                        artifact_error(format!("encode QEMU fuzz replay closure: {error}"))
-                    })?,
-            )
-            .map_err(CliError::Store)?;
-        let retained = crucible::ReproductionArtifact::from_compact_binary(
-            &store.get(&artifact_key).map_err(CliError::Store)?,
-        )
-        .map_err(|error| artifact_error(format!("decode retained QEMU fuzz artifact: {error}")))?;
-        if retained.id() != artifact {
-            return Err(artifact_error(
-                "retained QEMU fuzz artifact changed content identity",
-            ));
-        }
-        retained
-            .verify_replay(
-                candidate
-                    .artifact
-                    .replay()
-                    .map_err(|error| {
-                        artifact_error(format!("replay QEMU fuzz corpus source: {error}"))
-                    })?
-                    .state,
-            )
-            .map_err(|error| {
-                artifact_error(format!("replay retained QEMU fuzz artifact: {error}"))
-            })?;
-        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
-            &store.get(&closure_key).map_err(CliError::Store)?,
-        )
-        .and_then(|closure| closure.validate_for_schedule(retained.scenario_form(), retained.schedule()))
-        .map_err(|error| artifact_error(format!("authenticate retained QEMU fuzz choice closure: {error}")))?;
-        let descriptor = format!(
-            "schema=crucible.live-fuzz-corpus.v1\nartifact={}\nclosure={}\ncoverage={}\nparent={}\nsample_index={}\nenergy={}\nnovel_coverage={}\n",
-            artifact.to_hex(),
-            closure_key.to_hex(),
-            coverage.to_hex(),
-            candidate
-                .parent
-                .map_or_else(|| String::from("seed"), |parent| parent.to_hex()),
-            candidate.sample_index,
-            candidate.energy,
-            candidate.novel_coverage,
-        );
-        store.put(descriptor.as_bytes()).map_err(CliError::Store)?;
-        stored += 1;
-    }
-
-    Ok((stored, 3 * stored as u64))
-}
-
 fn execute_qemu_fuzz_iterations(
     context: &QemuFuzzExecutionContext<'_>,
     family: &crucible::ScenarioFamily,
+    previous_corpus: Vec<LiveFuzzCorpusCandidate>,
 ) -> Result<QemuFuzzExecution, CliError> {
-    let mut execution = QemuFuzzExecution::default();
     let mut observed_coverage = std::collections::BTreeSet::new();
-    let mut guidance = Vec::new();
+    let mut guidance = Vec::with_capacity(previous_corpus.len());
+    for candidate in &previous_corpus {
+        observed_coverage.extend(candidate.coverage_ids.iter().copied());
+        guidance.push(candidate.feedback.clone());
+    }
+    let mut execution = QemuFuzzExecution {
+        replay_oracle_validations: previous_corpus.len() as u64,
+        corpus_candidates: previous_corpus,
+        ..QemuFuzzExecution::default()
+    };
     for sequence in 0..context.plan.config.iterations {
         let (sample_index, pinned, energy) = family
             .sample_coverage_guided(context.plan.config, sequence, &guidance)
@@ -603,6 +538,7 @@ fn execute_qemu_fuzz_iterations(
         let finding = qemu_fuzz_finding_evidence(
             &form,
             &report,
+            terminal.observation().stop(),
             sequence,
             context.backend_plan,
             campaign_completion,
@@ -613,6 +549,7 @@ fn execute_qemu_fuzz_iterations(
                 .map(|candidate| candidate.feedback.clone()),
         );
         execution.admissions += candidates.len();
+        execution.replay_oracle_validations += candidates.len() as u64;
         let admitted = admit_qemu_fuzz_candidates(
             &mut execution.corpus_candidates,
             &mut observed_coverage,
@@ -643,6 +580,7 @@ fn execute_qemu_fuzz_iterations(
 fn qemu_fuzz_finding_evidence(
     form: &crucible::ScenarioDefForm,
     report: &RunWorkflowReport,
+    stop: &StopOutcome,
     sequence: u64,
     backend_plan: &BackendSelectionPlan,
     campaign_completion: bool,
@@ -685,9 +623,10 @@ fn qemu_fuzz_finding_evidence(
             )
         }
         BackendCommandStatus::Timeout => {
+            let (budget_kind, configured_limit) = qemu_fuzz_timeout_budget(stop)?;
             let timeout = crucible_model::FailureTimeoutRecord::new(
-                crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
-                None,
+                budget_kind,
+                configured_limit,
                 report.final_quanta,
                 crucible::VirtualTime {
                     ticks: report.final_frontier_ticks,
@@ -720,6 +659,54 @@ fn qemu_fuzz_finding_evidence(
         LiveQemuReplayBranch::None,
     )?;
     Ok(Some((evidence, reproduction)))
+}
+
+fn qemu_fuzz_timeout_budget(
+    stop: &StopOutcome,
+) -> Result<(crucible_model::FailureTimeoutBudgetKind, Option<u64>), CliError> {
+    use crucible_campaign::PolicyTimeoutKind;
+    use crucible_model::FailureTimeoutBudgetKind;
+
+    match stop {
+        StopOutcome::ModeledTimeout(name) if name == "execution-quanta" => Ok((
+            FailureTimeoutBudgetKind::ExecutionQuanta,
+            Some(LIVE_FUZZ_QUANTUM_LIMIT),
+        )),
+        StopOutcome::ModeledTimeout(name) if name == "virtual-time" => {
+            Ok((FailureTimeoutBudgetKind::VirtualTime, None))
+        }
+        StopOutcome::BoundedPrimaryTimeout { stop, .. } => match stop.primary() {
+            StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => Ok((
+                FailureTimeoutBudgetKind::ExecutionQuanta,
+                Some(*execution_quanta),
+            )),
+            _ => Err(artifact_error(
+                "QEMU fuzz primary timeout lacks an execution-quanta bound",
+            )),
+        },
+        StopOutcome::PolicyTimeout { stop, kind, .. } => match (stop, kind) {
+            (
+                StopCondition::Bounded {
+                    virtual_time_nanoseconds: Some(limit),
+                    ..
+                },
+                PolicyTimeoutKind::VirtualTime,
+            ) => Ok((FailureTimeoutBudgetKind::VirtualTime, Some(*limit))),
+            (
+                StopCondition::Bounded {
+                    execution_quanta: Some(limit),
+                    ..
+                },
+                PolicyTimeoutKind::ExecutionQuanta,
+            ) => Ok((FailureTimeoutBudgetKind::ExecutionQuanta, Some(*limit))),
+            _ => Err(artifact_error(
+                "QEMU fuzz policy timeout lacks its typed bound",
+            )),
+        },
+        _ => Err(artifact_error(
+            "QEMU fuzz timeout has no supported deterministic budget kind",
+        )),
+    }
 }
 
 fn push_qemu_fuzz_finding(
@@ -822,6 +809,44 @@ mod finding_tests {
             1,
         );
         assert_eq!(guidance.len(), 2);
+    }
+
+    #[test]
+    fn policy_virtual_timeout_keeps_its_budget_domain() -> Result<(), Box<dyn std::error::Error>> {
+        let stop = StopCondition::bounded(
+            StopCondition::NextChoiceOrExecutionQuanta {
+                execution_quanta: LIVE_FUZZ_QUANTUM_LIMIT,
+            },
+            Some(80),
+            Some(300),
+        )?;
+        let proof = crucible_campaign::BoundedStopProof::new(80, 12);
+        let virtual_timeout = StopOutcome::PolicyTimeout {
+            stop: stop.clone(),
+            kind: crucible_campaign::PolicyTimeoutKind::VirtualTime,
+            proof,
+        };
+        let quantum_timeout = StopOutcome::PolicyTimeout {
+            stop,
+            kind: crucible_campaign::PolicyTimeoutKind::ExecutionQuanta,
+            proof,
+        };
+
+        assert_eq!(
+            qemu_fuzz_timeout_budget(&virtual_timeout)?,
+            (
+                crucible_model::FailureTimeoutBudgetKind::VirtualTime,
+                Some(80)
+            ),
+        );
+        assert_eq!(
+            qemu_fuzz_timeout_budget(&quantum_timeout)?,
+            (
+                crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+                Some(300)
+            ),
+        );
+        Ok(())
     }
 
     #[test]
