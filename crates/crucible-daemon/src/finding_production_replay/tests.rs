@@ -1,5 +1,6 @@
 //! Capture validation and bounded producer regression tests.
 
+use super::capture::validate_execution_side;
 use super::*;
 use crucible::model::{
     FaultResourceLimits, FaultSignalPlan, NormalizedSpatialArtifact, SignalBoundaryBehavior,
@@ -225,6 +226,24 @@ fn continuation_event_parts_require_dense_nonoverlapping_sequences() {
     assert!(matches!(
         validate_event_log_parts(&[prefix], &[overlap], VirtualTime { ticks: 7 }),
         Err(FindingProductionReplayCaptureError::InvalidEventLog)
+    ));
+}
+
+#[test]
+fn terminal_fingerprint_may_precede_but_not_exceed_shared_frontier() {
+    let finding = finding();
+    let limits = FindingProductionReplayCaptureLimits::for_finding(&finding);
+    let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");
+    let mut paused = side("paused-selectable");
+    paused.terminal_fingerprints[0].at = VirtualTime { ticks: 5 };
+
+    validate_execution_side(&paused, finding.artifact.scenario_form(), recipe, limits)
+        .expect("a stopped node may be behind the shared frontier");
+
+    paused.terminal_fingerprints[0].at = VirtualTime { ticks: 8 };
+    assert!(matches!(
+        validate_execution_side(&paused, finding.artifact.scenario_form(), recipe, limits),
+        Err(FindingProductionReplayCaptureError::InvalidTerminalFingerprints)
     ));
 }
 
