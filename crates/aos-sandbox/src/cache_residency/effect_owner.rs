@@ -504,6 +504,26 @@ pub enum CacheOwnerPinSettlementV1 {
     Retained(CacheOwnerCurrentnessV1),
 }
 
+/// Describes whether exact physical reconciliation changed the owner manifest.
+#[must_use = "cold pin recovery must account for the exact physical result"]
+pub enum CacheOwnerPinReconciliationStateV1 {
+    /// The missing physical action changed the durable owner manifest.
+    Changed(CacheEffectObservationV1),
+    /// The exact pin was already in the protected event's desired state.
+    AlreadySettled(CacheOwnerCurrentnessV1),
+}
+
+/// Binds cold physical reconciliation to the protected pin action.
+#[must_use = "cold pin recovery must account for the protected action"]
+pub enum CacheOwnerPinReconciliationV1 {
+    /// The protected acquisition has one present physical pin.
+    Acquired(CacheOwnerPinReconciliationStateV1),
+    /// The protected release has no remaining physical pin.
+    Released(CacheOwnerPinReconciliationStateV1),
+    /// A renewal retained its one already-present physical pin.
+    Retained(CacheOwnerCurrentnessV1),
+}
+
 /// Reports a failed protected-to-physical Cache pin handoff.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheOwnerPinSettlementErrorV1 {

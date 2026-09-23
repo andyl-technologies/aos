@@ -123,6 +123,18 @@ pub enum CacheResidencyProtectedColdOutcomeV1<R> {
     Terminal(R),
 }
 
+/// Classifies an exact cold pin change against current protected and owner state.
+#[cfg(target_os = "linux")]
+#[must_use = "cold pin recovery must be settled or retried"]
+pub enum CacheResidencyProtectedPinRecoveryV1 {
+    /// No complete current pin effect exists for this transaction identity.
+    StateOnly,
+    /// The exact physical pin was reconciled or was already in its desired state.
+    Settled(super::CacheOwnerPinReconciliationV1),
+    /// The current protected effect exists, but the physical owner rejected it.
+    PhysicalError(super::CacheOwnerPinSettlementErrorV1),
+}
+
 /// Borrows exact cache authority for one fixed-owner controller construction.
 pub struct CacheResidencyAuthorizedControllerV1<'session, 'authority, 'journal> {
     owner: &'session CacheAuthorityOwner<'authority, 'journal>,
@@ -1519,6 +1531,59 @@ impl CacheResidencyProtectedOwnerV1 {
                     )))
                 }
             }
+        })
+    }
+
+    /// Reconciles a cold pin transaction only after exact physical observation.
+    ///
+    /// This is narrower than generic cold effect recovery: the owner manifest
+    /// proves whether this exact pin action is already settled before an
+    /// admission can be applied. The caller must derive `transaction_id` from
+    /// its durable operation and pin identity. The expected action and exact
+    /// pin must match the recovered protected event before any physical effect.
+    /// An arbitrary historical ID cannot grant an effect if that event is no
+    /// longer current.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when protected replay, currentness, or exact
+    /// transaction classification fails closed. Physical failures are retained
+    /// in the result so the caller can retry the same transaction identity.
+    #[cfg(target_os = "linux")]
+    pub fn reconcile_current_pin_change(
+        &mut self,
+        transaction_id: [u8; 16],
+        expected_action: super::CacheOwnerPinActionV1,
+        expected_pin: &CachePinV1,
+        physical: &mut super::DormantCacheOwnerV1,
+    ) -> Result<CacheResidencyProtectedPinRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let journal = CacheResidencyProtectedJournalV1::claim(journal, validator)?;
+            let cold = match journal.recover_current_transaction(transaction_id)? {
+                CacheResidencyColdRecoveryV1::StateOnly => {
+                    refresh()?;
+                    return Ok(CacheResidencyProtectedPinRecoveryV1::StateOnly);
+                }
+                CacheResidencyColdRecoveryV1::ObservePending(cold)
+                | CacheResidencyColdRecoveryV1::Terminal(cold) => cold,
+            };
+            refresh()?;
+            let validated = cold.consume(&journal)?;
+            Ok(
+                match validated.reconcile_cache_owner_pin_change(
+                    physical,
+                    expected_action,
+                    expected_pin,
+                ) {
+                    Ok(settlement) => CacheResidencyProtectedPinRecoveryV1::Settled(settlement),
+                    Err(error) => CacheResidencyProtectedPinRecoveryV1::PhysicalError(error),
+                },
+            )
         })
     }
 

@@ -3,9 +3,11 @@
 use aos_filesystem_view_core::ObjectSource;
 use aos_sandbox::Journal;
 use aos_sandbox::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1, CacheOwnerPinSettlementErrorV1,
-    CacheOwnerPinSettlementV1, CachePinV1, CacheResidencyCommitOutcomeV1,
-    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1,
+    CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1,
+    CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
+    CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CachePinV1,
+    CacheResidencyCommitOutcomeV1, CacheResidencyProtectedJournalErrorV1,
+    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, DormantCacheOwnerV1,
     PhysicalPartitionId, PublicLogicalPinAcquisitionCommitV1, PublicLogicalPinAcquisitionErrorV1,
     ValidatedPublicLogicalPinAcquisitionV1,
 };
@@ -120,6 +122,81 @@ pub enum PublicCacheUnpinObservationErrorV1 {
     /// The durable physical owner could not confirm an exact pin's absence.
     #[error(transparent)]
     Physical(#[from] CacheOwnerErrorV1),
+}
+
+/// Classifies one exact public unpin after protected and physical cold replay.
+#[must_use = "public unpin recovery must not be mistaken for completion"]
+pub enum PublicCacheUnpinRecoveryV1 {
+    /// The named transaction has no current protected pin effect.
+    StateOnly,
+    /// The protected release and exact physical absence are confirmed.
+    Released(CacheOwnerPinReconciliationStateV1),
+    /// Physical settlement is still unresolved and retains its exact error.
+    PhysicalError(CacheOwnerPinSettlementErrorV1),
+}
+
+/// Reports an invalid or unavailable public unpin recovery attempt.
+#[derive(Debug, thiserror::Error)]
+pub enum PublicCacheUnpinRecoveryErrorV1 {
+    /// The expected pin is not this release-only consumer's retained tombstone.
+    #[error("public cache unpin recovery does not match a released consumer pin")]
+    MismatchedPin,
+    /// Protected currentness or transaction replay failed closed.
+    #[error(transparent)]
+    Protected(#[from] CacheResidencyProtectedJournalErrorV1),
+}
+
+/// Reconciles one released public pin after process restart or ambiguous effect.
+///
+/// The caller supplies the durable transaction identity derived for this
+/// operation and pin. The exact release tombstone and current protected
+/// transaction must both agree before the physical owner can be changed.
+/// `Released` confirms this partition only; the public operation must also
+/// inspect every other retained or released partition obligation.
+///
+/// # Errors
+///
+/// Returns an error when the expected pin is not a released obligation of the
+/// rechecked consumer or protected authority cannot validate the transaction.
+pub fn recover_public_cache_unpin_v1(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    consumer: &RecheckedCacheConsumerV1,
+    transaction_id: [u8; 16],
+    pin: &CachePinV1,
+) -> Result<PublicCacheUnpinRecoveryV1, PublicCacheUnpinRecoveryErrorV1> {
+    if consumer.acquisition_fence().is_some() {
+        return Err(PublicCacheUnpinRecoveryErrorV1::MismatchedPin);
+    }
+    let released = protected.released_consumer_logical_pins(
+        consumer.object(),
+        consumer.project(),
+        consumer.view(),
+        consumer.attachment(),
+    )?;
+    if !released.contains(pin) {
+        return Err(PublicCacheUnpinRecoveryErrorV1::MismatchedPin);
+    }
+
+    match protected.reconcile_current_pin_change(
+        transaction_id,
+        CacheOwnerPinActionV1::Release,
+        pin,
+        physical,
+    )? {
+        CacheResidencyProtectedPinRecoveryV1::StateOnly => {
+            Ok(PublicCacheUnpinRecoveryV1::StateOnly)
+        }
+        CacheResidencyProtectedPinRecoveryV1::Settled(CacheOwnerPinReconciliationV1::Released(
+            settlement,
+        )) => Ok(PublicCacheUnpinRecoveryV1::Released(settlement)),
+        CacheResidencyProtectedPinRecoveryV1::Settled(_) => {
+            Err(PublicCacheUnpinRecoveryErrorV1::MismatchedPin)
+        }
+        CacheResidencyProtectedPinRecoveryV1::PhysicalError(error) => {
+            Ok(PublicCacheUnpinRecoveryV1::PhysicalError(error))
+        }
+    }
 }
 
 /// Confirms that no matching logical or physical public pin remains.

@@ -71,9 +71,9 @@ pub use effect_owner::{
     CacheOrphanResolutionPendingV1, CacheOwnerAdmissionV1, CacheOwnerCurrentnessV1,
     CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerLimitsV1,
     CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
-    CacheOwnerPinPresenceV1, CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1,
-    CacheOwnerPinSnapshotV1, CacheOwnerRecoveryFailureV1, DormantCacheOwnerV1,
-    EvictedCacheObjectV1,
+    CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
+    CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,
+    CacheOwnerRecoveryFailureV1, DormantCacheOwnerV1, EvictedCacheObjectV1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use effect_owner::{
@@ -112,6 +112,8 @@ pub(crate) use protected_journal::{
     CacheResidencyReplayPartitionEvidenceV1, cache_residency_reducer_envelope_v1,
 };
 pub(crate) use protected_owner::CacheLifecycleBootInventoryV1;
+#[cfg(target_os = "linux")]
+pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
 pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,

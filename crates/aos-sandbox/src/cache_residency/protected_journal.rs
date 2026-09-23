@@ -26,8 +26,6 @@ use crate::lifecycle::protected_journal_adapter::{
     encode_reducer_payload_with_validator,
 };
 
-#[cfg(target_os = "linux")]
-use super::ImmutableAdmissionPlanV1;
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
     CacheAuthorityScopeV1, CacheDurableRecordV1, CacheHistoryFloorV1, CacheNodeIdV1,
@@ -35,6 +33,8 @@ use super::{
     PhysicalPartitionId, ProtectedBackingIdentityV1, RecoveryError, decode_atomic_object_record,
     decode_typed_checkpoint, encode_atomic_object_record, encode_typed_checkpoint,
 };
+#[cfg(target_os = "linux")]
+use super::{CachePinV1, ImmutableAdmissionPlanV1};
 
 mod pin_effect;
 mod provisioning;
@@ -1478,6 +1478,84 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
         let admission = self.into_cache_owner_pin_admission(owner)?;
         let observation = owner.apply_pin_change(admission)?;
         Ok(super::CacheOwnerPinSettlementV1::Changed(observation))
+    }
+
+    /// Reconciles one current pin event after cold protected and physical replay.
+    ///
+    /// Exact owner-manifest presence distinguishes an already settled action
+    /// from one that still needs an effect. The protected transaction must
+    /// remain current, and the owner admission fences any intervening manifest
+    /// replacement. This does not grant blind replay of a generic cache effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale protected authority, a conflicting physical
+    /// pin identity, or a failed durable owner update.
+    pub fn reconcile_cache_owner_pin_change(
+        self,
+        owner: &mut super::DormantCacheOwnerV1,
+        expected_action: super::CacheOwnerPinActionV1,
+        expected_pin: &CachePinV1,
+    ) -> Result<super::CacheOwnerPinReconciliationV1, super::CacheOwnerPinSettlementErrorV1> {
+        if self.kind != CacheResidencyTransactionKindV1::PinChange {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into());
+        }
+        let physical = self
+            .current_pin_effect
+            .as_ref()
+            .ok_or(CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+        let action_matches = matches!(
+            (expected_action, physical.action),
+            (
+                super::CacheOwnerPinActionV1::Acquire,
+                CurrentPhysicalPinActionV1::Acquire | CurrentPhysicalPinActionV1::Retain
+            ) | (
+                super::CacheOwnerPinActionV1::Release,
+                CurrentPhysicalPinActionV1::Release
+            )
+        );
+        if !action_matches || &physical.pin != expected_pin {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into());
+        }
+        let partition = physical.pin.partition;
+        let id = super::CacheOwnerPinIdV1::for_cache_pin(partition, physical.pin.id)?;
+        let presence = owner.observe_pin(id, partition, &physical.pin.object)?;
+        match (physical.action, presence) {
+            (CurrentPhysicalPinActionV1::Retain, super::CacheOwnerPinPresenceV1::Present) => Ok(
+                super::CacheOwnerPinReconciliationV1::Retained(owner.currentness()),
+            ),
+            (CurrentPhysicalPinActionV1::Retain, super::CacheOwnerPinPresenceV1::Absent) => {
+                Err(super::CacheOwnerErrorV1::RecoveryMismatch.into())
+            }
+            (CurrentPhysicalPinActionV1::Acquire, super::CacheOwnerPinPresenceV1::Present) => {
+                Ok(super::CacheOwnerPinReconciliationV1::Acquired(
+                    super::CacheOwnerPinReconciliationStateV1::AlreadySettled(owner.currentness()),
+                ))
+            }
+            (CurrentPhysicalPinActionV1::Release, super::CacheOwnerPinPresenceV1::Absent) => {
+                Ok(super::CacheOwnerPinReconciliationV1::Released(
+                    super::CacheOwnerPinReconciliationStateV1::AlreadySettled(owner.currentness()),
+                ))
+            }
+            (action, _) => {
+                let settlement = self.settle_cache_owner_pin_change(owner)?;
+                let super::CacheOwnerPinSettlementV1::Changed(observation) = settlement else {
+                    return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into());
+                };
+                let settled = super::CacheOwnerPinReconciliationStateV1::Changed(observation);
+                Ok(match action {
+                    CurrentPhysicalPinActionV1::Acquire => {
+                        super::CacheOwnerPinReconciliationV1::Acquired(settled)
+                    }
+                    CurrentPhysicalPinActionV1::Release => {
+                        super::CacheOwnerPinReconciliationV1::Released(settled)
+                    }
+                    CurrentPhysicalPinActionV1::Retain => {
+                        return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into());
+                    }
+                })
+            }
+        }
     }
 
     /// Issues one single-use physical admission from an exact reserved record.
