@@ -560,6 +560,7 @@ fn controller_worker(
                     attach_credentials.as_ref(),
                     attach_plan_signer.as_ref(),
                     NodeId::from_bytes(node_id),
+                    &sessions,
                     command,
                 ) {
                     let _ = events.send(WorkerEvent::Fatal(message));
@@ -583,6 +584,7 @@ fn handle_controller_command(
     attach_credentials: Option<&ControllerAttachCredentialsV1>,
     attach_plan_signer: Option<&ControllerBrokerPlanSignerV1>,
     node: NodeId,
+    sessions: &SharedControllerBrokerSessions,
     command: ControllerCommand,
 ) -> Result<(), String> {
     match command {
@@ -872,17 +874,25 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            let mut host = public_attach::UnavailableHostAttachRouteV1;
-            let result = public_attach::admit_public_attach(
-                controller,
-                attach_credentials,
-                attach_plan_signer,
-                node,
-                &mut host,
-                &peer,
-                capability_id,
-                &canonical_request,
-            );
+            let result = sessions
+                .lock()
+                .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
+                .and_then(|mut sessions| {
+                    let host = sessions
+                        .host
+                        .as_mut()
+                        .ok_or(ControllerCommandFailure::ControllerUnavailable)?;
+                    public_attach::admit_public_attach(
+                        controller,
+                        attach_credentials,
+                        attach_plan_signer,
+                        node,
+                        host,
+                        &peer,
+                        capability_id,
+                        &canonical_request,
+                    )
+                });
             let _ = reply.send(result);
             Ok(())
         }

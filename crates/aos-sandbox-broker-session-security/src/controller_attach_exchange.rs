@@ -1,12 +1,13 @@
 //! Retained authenticated controller-to-Host attach-gate broker exchange.
 //!
-//! The exact method-28 request remains in protected broker-session custody
-//! across send, response, and commit ambiguity. This owner never turns a Host
-//! error or an unauthenticated body into attach route evidence.
+//! Exact install, readiness, and accepted-route query requests remain in
+//! protected broker-session custody across send, response, and commit
+//! ambiguity. This owner never treats unauthenticated bytes as route evidence.
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerAuthorizationArtifactsV1, BrokerMethod, BrokerRequestEnvelope,
-    InstallHostAttachGateRequestV1, RequestHeader,
+    InstallHostAttachGateRequestV1, QueryHostAttachGateReadinessRequestV1,
+    QueryHostAttachGateRouteRequestV1, RequestHeader,
 };
 use aos_sandbox::EffectFailure;
 use aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES;
@@ -26,12 +27,17 @@ const RETAINED_RECOVERY: &str = "attach gate request retains protected Host sess
 const SESSION_UNUSABLE: &str = "attach gate Host session is unusable";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct HostAttachInstallIntentV1 {
-    grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
+enum HostAttachIntentV1 {
+    Install([u8; PUBLIC_ATTACH_GRANT_BYTES]),
+    Readiness,
+    Route {
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+    },
 }
 
-impl HostAttachInstallIntentV1 {
-    fn new(grant: &[u8]) -> Result<Self, EffectFailure> {
+impl HostAttachIntentV1 {
+    fn install(grant: &[u8]) -> Result<Self, EffectFailure> {
         let grant: [u8; PUBLIC_ATTACH_GRANT_BYTES] = grant.try_into().map_err(|_| {
             EffectFailure::Permanent("attach pending grant length is invalid".to_owned())
         })?;
@@ -40,7 +46,15 @@ impl HostAttachInstallIntentV1 {
                 "attach pending grant magic is invalid".to_owned(),
             ));
         }
-        Ok(Self { grant })
+        Ok(Self::Install(grant))
+    }
+
+    fn method(&self) -> BrokerMethod {
+        match self {
+            Self::Install(_) => BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
+            Self::Readiness => BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS,
+            Self::Route { .. } => BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
+        }
     }
 
     fn envelope(
@@ -57,14 +71,32 @@ impl HostAttachInstallIntentV1 {
             maximum_response_bytes: coordinates.maximum_response_bytes(),
             ..Default::default()
         };
-        let body = InstallHostAttachGateRequestV1 {
-            header: Some(header).into(),
-            pending_grant: self.grant.to_vec(),
-            ..Default::default()
+        let body = match self {
+            Self::Install(grant) => InstallHostAttachGateRequestV1 {
+                header: Some(header).into(),
+                pending_grant: grant.to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::Readiness => QueryHostAttachGateReadinessRequestV1 {
+                header: Some(header).into(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::Route {
+                operation_id,
+                execution_id,
+            } => QueryHostAttachGateRouteRequestV1 {
+                header: Some(header).into(),
+                operation_id: operation_id.to_vec(),
+                execution_id: execution_id.to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
         };
         BrokerRequestEnvelope {
-            method: BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE.into(),
-            body: body.encode_to_vec(),
+            method: self.method().into(),
+            body,
             authorization: Some(authorization.clone()).into(),
             ..Default::default()
         }
@@ -72,7 +104,7 @@ impl HostAttachInstallIntentV1 {
 }
 
 struct PendingHostAttachInstallV1 {
-    intent: HostAttachInstallIntentV1,
+    intent: HostAttachIntentV1,
     stage: HostAttachInstallStageV1,
 }
 
@@ -108,6 +140,20 @@ impl ControllerHostAttachGateExchangeV1 {
         self.failed
     }
 
+    /// Resolves retained prior custody before the controller renews its expiry.
+    pub(crate) fn drain_pending(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, EffectFailure> {
+        if self.failed {
+            return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
+        }
+        if self.pending.is_none() {
+            return Ok(None);
+        }
+        self.drive(session).map(Some)
+    }
+
     /// Installs one exact signed grant through the retained Host session.
     ///
     /// # Errors
@@ -124,7 +170,48 @@ impl ControllerHostAttachGateExchangeV1 {
         if self.failed {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        let intent = HostAttachInstallIntentV1::new(grant)?;
+        let intent = HostAttachIntentV1::install(grant)?;
+        self.exchange(session, intent, authorization)
+    }
+
+    /// Queries live Host readiness without creating a public reservation.
+    pub(crate) fn query_readiness(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        self.exchange(session, HostAttachIntentV1::Readiness, authorization)
+    }
+
+    /// Reads an accepted route with a fresh signed guest gate observation.
+    pub(crate) fn query_route(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        if operation_id == [0; 16] || execution_id == [0; 16] {
+            return Err(EffectFailure::Permanent(
+                "attach route selector is invalid".to_owned(),
+            ));
+        }
+        self.exchange(
+            session,
+            HostAttachIntentV1::Route {
+                operation_id,
+                execution_id,
+            },
+            authorization,
+        )
+    }
+
+    fn exchange(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        intent: HostAttachIntentV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
         if self
             .pending
             .as_ref()
@@ -140,7 +227,7 @@ impl ControllerHostAttachGateExchangeV1 {
             })?;
             let preparation = session
                 .prepare_authenticated_request_checked(
-                    BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
+                    intent.method(),
                     |coordinates| intent.envelope(coordinates, authorization),
                     |request| {
                         request.exact_body().len()
@@ -252,7 +339,7 @@ impl ControllerHostAttachGateExchangeV1 {
 
     fn retain<T>(
         &mut self,
-        intent: HostAttachInstallIntentV1,
+        intent: HostAttachIntentV1,
         stage: HostAttachInstallStageV1,
     ) -> Result<T, EffectFailure> {
         self.pending = Some(PendingHostAttachInstallV1 { intent, stage });

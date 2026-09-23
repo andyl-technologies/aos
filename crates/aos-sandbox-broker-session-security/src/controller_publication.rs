@@ -101,6 +101,47 @@ impl ControllerHostPublication {
         grant: &[u8],
         authorization: &BrokerAuthorizationArtifactsV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        self.with_attach_gate(|exchange, session| {
+            exchange.install(session, grant, Some(authorization))
+        })
+    }
+
+    /// Queries authenticated live Host gate readiness before a public CAS.
+    pub(crate) fn query_attach_gate_readiness(
+        &mut self,
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        self.with_attach_gate(|exchange, session| {
+            exchange.query_readiness(session, Some(authorization))
+        })
+    }
+
+    /// Queries an accepted route with a fresh physical gate observation.
+    pub(crate) fn query_attach_gate_route(
+        &mut self,
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        self.with_attach_gate(|exchange, session| {
+            exchange.query_route(session, operation_id, execution_id, Some(authorization))
+        })
+    }
+
+    /// Completes exact retained attach custody before an expiry renewal.
+    pub(crate) fn drain_attach_gate(
+        &mut self,
+    ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, EffectFailure> {
+        self.with_attach_gate(|exchange, session| exchange.drain_pending(session))
+    }
+
+    fn with_attach_gate<T>(
+        &mut self,
+        run: impl FnOnce(
+            &mut ControllerHostAttachGateExchangeV1,
+            &mut DormantAuthenticatedBrokerSessionV1,
+        ) -> Result<T, EffectFailure>,
+    ) -> Result<T, EffectFailure> {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
@@ -113,8 +154,7 @@ impl ControllerHostPublication {
         let session = self.session.as_mut().ok_or_else(|| {
             EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
         })?;
-        self.attach_gate
-            .install(session, grant, Some(authorization))
+        run(&mut self.attach_gate, session)
     }
 
     /// Applies or resumes one exact Host authority effect on this same session.

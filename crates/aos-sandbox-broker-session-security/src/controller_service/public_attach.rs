@@ -1,13 +1,15 @@
 //! Sole-worker public ATTACH sequencing behind authenticated Host evidence.
 //!
-//! The Host exchange is deliberately unavailable until the retained broker
-//! session implements the signed pending-grant install and physical readback
-//! method. Its availability check precedes the durable reservation, so an
-//! unsupported deployment does not strand a public idempotency key.
+//! A signed live-readiness query precedes a new durable reservation. Existing
+//! pending identity resumes its exact Host install request, while accepted
+//! replay requires a fresh read-only physical gate observation.
 
-use aos_proto::aos::sandbox::local::v1::{BrokerAuthorizationArtifactsV1, BrokerMethod};
+use aos_proto::aos::sandbox::local::v1::{
+    BrokerAuthorizationArtifactsV1, BrokerMethod, HostAttachGateEvidenceV1,
+};
 use aos_sandbox::attach_route_issuer::AuthenticatedOpenSshRouteV1;
 use aos_sandbox::public_api_session::PublicApiPeer;
+use aos_sandbox::public_attach_pending::PublicAttachHostQueryDraftV1;
 use aos_sandbox::public_attach_pending::PublicAttachPendingV1;
 use aos_sandbox::{AcceptOutcome, ControllerServiceError, OperationCompilationError};
 use aos_sandbox_core::{CapabilityId, NodeId};
@@ -17,51 +19,76 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 };
 use aos_sandbox_protocol::{
     decode_host_attach_gate_evidence_v1, decode_host_attach_gate_request_v1,
+    decode_host_attach_readiness_request_v1, decode_host_attach_readiness_v1,
+    decode_host_attach_route_evidence_v1, decode_host_attach_route_query_v1,
 };
 
 use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
 use crate::controller_ownership::sample_ownership_clock;
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_publication::ControllerHostPublication;
 
 use super::{AdmittedPublicAttachV1, ControllerCommandFailure, ProductionController};
 
-/// Adapts only a retained authenticated Host broker session to route evidence.
-///
-/// An implementation must submit the exact signed grant, verify the Host
-/// method's authenticated response and signed physical gate commitment, and
-/// construct the route solely from that response. It must not accept any route
-/// fields from the public request or a caller-supplied address.
+/// Adapts only a retained authenticated Host broker session to signed outcomes.
 pub(super) trait AuthenticatedHostAttachRouteExchangeV1 {
-    /// Reports whether the Host method and retained authenticated session exist.
-    fn is_available(&self) -> bool;
+    /// Completes any older exact request before its reservation is renewed.
+    fn drain_pending(&mut self) -> Result<(), ControllerCommandFailure>;
 
-    /// Installs and reads back the exact pending operation's Host gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the signed grant, current Host admission, gate
-    /// installation, or signed physical readback cannot be verified.
-    fn install_and_observe(
+    /// Queries live Host readiness before the public reservation CAS.
+    fn query_readiness(
+        &mut self,
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure>;
+
+    /// Installs and observes the exact signed pending grant.
+    fn install(
         &mut self,
         grant: &[u8],
         authorization: &BrokerAuthorizationArtifactsV1,
-    ) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure>;
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure>;
+
+    /// Reads an accepted route with fresh signed physical gate evidence.
+    fn query_route(
+        &mut self,
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure>;
 }
 
-/// Fail-closed adapter until the Host broker route method is wired.
-pub(super) struct UnavailableHostAttachRouteV1;
-
-impl AuthenticatedHostAttachRouteExchangeV1 for UnavailableHostAttachRouteV1 {
-    fn is_available(&self) -> bool {
-        false
+impl AuthenticatedHostAttachRouteExchangeV1 for ControllerHostPublication {
+    fn drain_pending(&mut self) -> Result<(), ControllerCommandFailure> {
+        self.drain_attach_gate()
+            .map(|_| ())
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
     }
 
-    fn install_and_observe(
+    fn query_readiness(
         &mut self,
-        _grant: &[u8],
-        _authorization: &BrokerAuthorizationArtifactsV1,
-    ) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure> {
-        Err(ControllerCommandFailure::ControllerUnavailable)
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure> {
+        self.query_attach_gate_readiness(authorization)
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
+    }
+
+    fn install(
+        &mut self,
+        grant: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure> {
+        self.install_attach_gate(grant, authorization)
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
+    }
+
+    fn query_route(
+        &mut self,
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure> {
+        self.query_attach_gate_route(operation_id, execution_id, authorization)
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
     }
 }
 
@@ -105,6 +132,47 @@ pub(super) fn route_from_authenticated_outcome(
     };
     let evidence = decode_host_attach_gate_evidence_v1(exact_body, &request)
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    route_from_host_evidence(evidence, pending, credentials, now.wall_seconds())
+}
+
+fn route_from_query_outcome(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    pending: &PublicAttachPendingV1,
+    credentials: &ControllerAttachCredentialsV1,
+) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure> {
+    if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        || outcome.method() != BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    let now =
+        sample_ownership_clock().map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let request = decode_host_attach_route_query_v1(
+        outcome.request().exact_body(),
+        outcome.request().peer(),
+        outcome.request().peer_policy(),
+        now.boottime_nanoseconds(),
+    )
+    .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    if request.operation_id() != *pending.operation_id().as_bytes()
+        || request.execution_id() != pending.execution_id()
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    };
+    let evidence = decode_host_attach_route_evidence_v1(exact_body, &request)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    route_from_host_evidence(evidence, pending, credentials, now.wall_seconds())
+}
+
+fn route_from_host_evidence(
+    evidence: HostAttachGateEvidenceV1,
+    pending: &PublicAttachPendingV1,
+    credentials: &ControllerAttachCredentialsV1,
+    now_seconds: i64,
+) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure> {
     let port = u16::try_from(evidence.port)
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
     if evidence.incarnation_id != pending.sandbox_incarnation_id()
@@ -112,7 +180,7 @@ pub(super) fn route_from_authenticated_outcome(
         || evidence.principal_id != pending.principal_id()
         || evidence.audit_id != pending.audit_id()
         || evidence.expires_at != pending.expires_at()
-        || evidence.expires_at <= now.wall_seconds()
+        || evidence.expires_at <= now_seconds
         || !credentials.matches_route_pins(
             &evidence.host,
             port,
@@ -153,6 +221,60 @@ pub(super) fn route_from_authenticated_outcome(
     })
 }
 
+fn authorization_from_query_draft(
+    draft: PublicAttachHostQueryDraftV1,
+    signer: &ControllerBrokerPlanSignerV1,
+    now_seconds: i64,
+) -> Result<BrokerAuthorizationArtifactsV1, ControllerCommandFailure> {
+    let (plan, ownership_lease, ownership_lease_signature) = draft.into_parts();
+    let signed_plan = signer
+        .sign_plan(plan, now_seconds)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    Ok(BrokerAuthorizationArtifactsV1 {
+        broker_plan: signed_plan.canonical_plan().to_vec(),
+        broker_plan_signature: signed_plan.canonical_signature().to_vec(),
+        ownership_lease,
+        ownership_lease_signature,
+        ..Default::default()
+    })
+}
+
+fn verify_readiness_outcome(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    currentness: ([u8; 16], u64, [u8; 32], u64, [u8; 32]),
+    trust_digest: [u8; 32],
+) -> Result<(), ControllerCommandFailure> {
+    if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        || outcome.method() != BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    let now =
+        sample_ownership_clock().map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    decode_host_attach_readiness_request_v1(
+        outcome.request().exact_body(),
+        outcome.request().peer(),
+        outcome.request().peer_policy(),
+        now.boottime_nanoseconds(),
+    )
+    .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    };
+    let readiness = decode_host_attach_readiness_v1(exact_body)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    if readiness.incarnation_id != currentness.0
+        || readiness.assignment_epoch != currentness.1
+        || readiness.assignment_digest != currentness.2
+        || readiness.lease_generation != currentness.3
+        || readiness.lease_digest != currentness.4
+        || readiness.trust_digest != trust_digest
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    Ok(())
+}
+
 pub(super) fn admit_public_attach(
     controller: &mut ProductionController,
     credentials: Option<&ControllerAttachCredentialsV1>,
@@ -165,8 +287,48 @@ pub(super) fn admit_public_attach(
 ) -> Result<AdmittedPublicAttachV1, ControllerCommandFailure> {
     let credentials = credentials.ok_or(ControllerCommandFailure::ControllerUnavailable)?;
     let plan_signer = plan_signer.ok_or(ControllerCommandFailure::ControllerUnavailable)?;
-    if !host.is_available() {
-        return Err(ControllerCommandFailure::ControllerUnavailable);
+    let existing = controller
+        .lookup_public_attach_existing(peer, capability_id, canonical_request)
+        .map_err(classify_controller_error)?;
+    if let Some((pending, true)) = &existing {
+        return replay_attach(
+            controller,
+            credentials,
+            plan_signer,
+            node,
+            host,
+            peer,
+            capability_id,
+            canonical_request,
+            pending,
+        );
+    }
+    if let Some((pending, false)) = &existing {
+        let now_seconds = sample_ownership_clock()
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
+            .wall_seconds();
+        if pending.expires_at() <= now_seconds {
+            host.drain_pending()?;
+        }
+    }
+    if existing.is_none() {
+        let preflight_time = sample_ownership_clock()
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
+            .wall_seconds();
+        let readiness_draft = controller
+            .prepare_public_attach_readiness(
+                peer,
+                capability_id,
+                canonical_request,
+                node,
+                preflight_time,
+            )
+            .map_err(classify_controller_error)?;
+        let expected_currentness = readiness_draft.currentness();
+        let readiness_authorization =
+            authorization_from_query_draft(readiness_draft, plan_signer, preflight_time)?;
+        let readiness = host.query_readiness(&readiness_authorization)?;
+        verify_readiness_outcome(&readiness, expected_currentness, credentials.trust_digest())?;
     }
 
     let pending = controller
@@ -177,9 +339,17 @@ pub(super) fn admit_public_attach(
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
         .is_some()
     {
-        // Accepted replay needs method-30 fresh read-only Host gate proof.
-        // The Vacant-only grant signer must never create another install.
-        return Err(ControllerCommandFailure::ControllerUnavailable);
+        return replay_attach(
+            controller,
+            credentials,
+            plan_signer,
+            node,
+            host,
+            peer,
+            capability_id,
+            canonical_request,
+            &pending,
+        );
     }
     let now_seconds = sample_ownership_clock()
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
@@ -211,14 +381,79 @@ pub(super) fn admit_public_attach(
         ownership_lease_signature,
         ..Default::default()
     };
-    let route = host.install_and_observe(&grant, &authorization)?;
+    let outcome = host.install(&grant, &authorization)?;
+    let route = route_from_authenticated_outcome(&outcome, &grant, &pending, credentials)?;
+    finalize_attach(
+        controller,
+        credentials,
+        peer,
+        capability_id,
+        canonical_request,
+        &pending,
+        &route,
+    )
+}
+
+fn replay_attach(
+    controller: &mut ProductionController,
+    credentials: &ControllerAttachCredentialsV1,
+    plan_signer: &ControllerBrokerPlanSignerV1,
+    node: NodeId,
+    host: &mut impl AuthenticatedHostAttachRouteExchangeV1,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    pending: &PublicAttachPendingV1,
+) -> Result<AdmittedPublicAttachV1, ControllerCommandFailure> {
+    // Accepted replay cannot invoke the Vacant-only grant signer or mutate
+    // Host route state. It needs a fresh read-only physical readback.
+    let now_seconds = sample_ownership_clock()
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
+        .wall_seconds();
+    let query_draft = controller
+        .prepare_public_attach_route_query(
+            peer,
+            capability_id,
+            canonical_request,
+            pending,
+            node,
+            now_seconds,
+        )
+        .map_err(classify_controller_error)?;
+    let authorization = authorization_from_query_draft(query_draft, plan_signer, now_seconds)?;
+    let outcome = host.query_route(
+        *pending.operation_id().as_bytes(),
+        pending.execution_id(),
+        &authorization,
+    )?;
+    let route = route_from_query_outcome(&outcome, pending, credentials)?;
+    finalize_attach(
+        controller,
+        credentials,
+        peer,
+        capability_id,
+        canonical_request,
+        pending,
+        &route,
+    )
+}
+
+fn finalize_attach(
+    controller: &mut ProductionController,
+    credentials: &ControllerAttachCredentialsV1,
+    peer: &PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    pending: &PublicAttachPendingV1,
+    route: &AuthenticatedOpenSshRouteV1,
+) -> Result<AdmittedPublicAttachV1, ControllerCommandFailure> {
     let (outcome, access) = controller
         .admit_public_attach_route(
             peer,
             capability_id,
             canonical_request,
-            &pending,
-            &route,
+            pending,
+            route,
             credentials.issuer(),
         )
         .map_err(classify_controller_error)?;

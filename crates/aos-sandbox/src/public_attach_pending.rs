@@ -17,8 +17,11 @@ use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, NodeId, OperationId, ProjectId,
     ProtocolId, ProtocolVersion, SandboxId,
 };
-use aos_sandbox_protocol::semantics::host_attach_gate::canonical_host_attach_gate_semantics_v1;
 use aos_sandbox_protocol::HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES;
+use aos_sandbox_protocol::semantics::host_attach_gate::{
+    canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
+    canonical_host_attach_route_query_semantics_v1,
+};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
@@ -247,6 +250,42 @@ impl PublicAttachHostInstallDraftV1 {
     }
 }
 
+/// Carries a read-only Host query plan and its protected currentness fence.
+pub struct PublicAttachHostQueryDraftV1 {
+    plan: BrokerAuthorizationPlan,
+    ownership_lease: Vec<u8>,
+    ownership_lease_signature: Vec<u8>,
+    incarnation: [u8; 16],
+    assignment_epoch: u64,
+    assignment_digest: [u8; 32],
+    lease_generation: u64,
+    lease_digest: [u8; 32],
+}
+
+impl PublicAttachHostQueryDraftV1 {
+    /// Returns the exact assignment and lease fence expected from readiness.
+    #[must_use]
+    pub const fn currentness(&self) -> ([u8; 16], u64, [u8; 32], u64, [u8; 32]) {
+        (
+            self.incarnation,
+            self.assignment_epoch,
+            self.assignment_digest,
+            self.lease_generation,
+            self.lease_digest,
+        )
+    }
+
+    /// Consumes the query into independent plan-signing and lease artifacts.
+    #[must_use]
+    pub fn into_parts(self) -> (BrokerAuthorizationPlan, Vec<u8>, Vec<u8>) {
+        (
+            self.plan,
+            self.ownership_lease,
+            self.ownership_lease_signature,
+        )
+    }
+}
+
 /// Derives one exact Host-install plan from the protected current publication.
 ///
 /// The caller must first produce `grant` using the same protected pending
@@ -394,6 +433,158 @@ pub(crate) fn prepare_public_attach_host_install_v1(
         plan,
         ownership_lease: current.lease().canonical_lease().to_vec(),
         ownership_lease_signature: current.lease().canonical_signature().to_vec(),
+    })
+}
+
+/// Prepares a read-only Host query from current protected execution authority.
+///
+/// `pending` selects accepted-route replay. Without it the query is advisory
+/// readiness and must precede the public reservation CAS. The independent
+/// broker-plan signer, not an unrelated exact template grant, authorizes the
+/// resulting query verb.
+///
+/// # Errors
+///
+/// Rejects stale execution, assignment, lease, accepted replay, or template
+/// state before any Host broker request is issued.
+pub(crate) fn prepare_public_attach_host_query_v1(
+    journal: &mut Journal,
+    project: ProjectId,
+    node: NodeId,
+    execution_id: [u8; 16],
+    pending: Option<&PublicAttachPendingV1>,
+    now_seconds: i64,
+) -> Result<PublicAttachHostQueryDraftV1, PublicAttachPendingErrorV1> {
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Execution, execution_id)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let PublicProjectionResourceV1::Execution(execution) = projection.resource() else {
+        return Err(PublicAttachPendingErrorV1::Corrupt);
+    };
+    if projection.project() != project
+        || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    if let Some(pending) = pending {
+        let stored = load_public_attach_pending_v1(journal, &pending.key)?
+            .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+        if stored != *pending
+            || pending.expires_at <= now_seconds
+            || projection.operation() != pending.operation
+            || !pending.matches_execution(
+                &execution.execution_id,
+                &execution.sandbox_incarnation_id,
+                execution.assignment_epoch,
+                &pending.principal,
+                &execution.audit_id,
+            )
+            || journal.check_idempotency(&pending.key, pending.request_digest)
+                != IdempotencyOutcome::Replay(pending.operation)
+            || crate::attach_route_issuer::load_public_attach_route_v1(
+                journal,
+                pending.operation,
+                pending.request_digest,
+            )
+            .is_err()
+        {
+            return Err(PublicAttachPendingErrorV1::Conflict);
+        }
+    }
+    let sandbox = SandboxId::from_bytes(
+        execution
+            .sandbox_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicAttachPendingErrorV1::Corrupt)?,
+    );
+    let current = AuthorityPublicationStore::new(journal)
+        .current(sandbox)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let manifest = current.manifest().manifest();
+    let assignment = current
+        .manifest()
+        .broker_assignment()
+        .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let lease_assignment = current.lease().lease().assignment();
+    if manifest.project() != project
+        || manifest.node() != node
+        || manifest.incarnation().as_bytes() != execution.sandbox_incarnation_id.as_slice()
+        || manifest.epoch().get() != execution.assignment_epoch
+        || lease_assignment.sandbox() != assignment.sandbox()
+        || lease_assignment.incarnation() != assignment.incarnation()
+        || lease_assignment.epoch() != assignment.epoch()
+        || lease_assignment.digest() != assignment.digest()
+        || current.lease().lease().node() != node
+        || current.lease().lease().authority_expires_seconds() <= now_seconds
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let semantics = if let Some(pending) = pending {
+        canonical_host_attach_route_query_semantics_v1(
+            assignment,
+            *pending.operation.as_bytes(),
+            pending.execution,
+        )
+        .map_err(|_| PublicAttachPendingErrorV1::Conflict)?
+    } else {
+        canonical_host_attach_readiness_semantics_v1(assignment)
+    };
+    let template = current
+        .templates()
+        .iter()
+        .find(|candidate| candidate.audience() == BrokerAudience::Host)
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let parent = template.plan();
+    if parent.assignment() != assignment || parent.node() != node {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let expires = now_seconds
+        .checked_add(30)
+        .map(|limit| {
+            let limit = limit
+                .min(parent.expires_seconds())
+                .min(current.lease().lease().authority_expires_seconds());
+            pending.map_or(limit, |pending| limit.min(pending.expires_at))
+        })
+        .filter(|expiry| *expiry > now_seconds && now_seconds >= parent.issued_seconds())
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let broker_grant = BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        u32::try_from(HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES)
+            .map_err(|_| PublicAttachPendingErrorV1::Conflict)?,
+        0,
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 0),
+        assignment,
+        node,
+        parent.ownership_authority().clone(),
+        vec![broker_grant],
+        parent.policy_commitment(),
+        parent.revocation_scope(),
+        now_seconds,
+        expires,
+        Vec::new(),
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+
+    Ok(PublicAttachHostQueryDraftV1 {
+        plan,
+        ownership_lease: current.lease().canonical_lease().to_vec(),
+        ownership_lease_signature: current.lease().canonical_signature().to_vec(),
+        incarnation: *manifest.incarnation().as_bytes(),
+        assignment_epoch: manifest.epoch().get(),
+        assignment_digest: *assignment.digest().as_bytes(),
+        lease_generation: current.lease_generation(),
+        lease_digest: *current.lease_digest().as_bytes(),
     })
 }
 

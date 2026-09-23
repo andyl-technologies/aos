@@ -25,6 +25,10 @@ use crate::controller_service::public_projection::{
     PublicProjectionStoreV1,
 };
 #[cfg(target_os = "linux")]
+use crate::public_attach_pending::{
+    PublicAttachHostQueryDraftV1, prepare_public_attach_host_query_v1,
+};
+#[cfg(target_os = "linux")]
 use crate::public_attach_pending::{PublicAttachPendingV1, reserve_public_attach_pending_v1};
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 #[cfg(target_os = "linux")]
@@ -36,6 +40,89 @@ use crate::{
 };
 
 use super::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
+
+#[cfg(target_os = "linux")]
+pub(super) fn prepare_authorized_attach_readiness(
+    journal: &mut Journal,
+    authorized: &AuthorizedPublicMutationRequestV1,
+    node: NodeId,
+    now_seconds: i64,
+) -> Result<PublicAttachHostQueryDraftV1, OperationCompilationError> {
+    let Request::ExecutionControl(control) = authorized.request().request() else {
+        return Err(OperationCompilationError::Malformed);
+    };
+    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
+        return Err(OperationCompilationError::Malformed);
+    }
+    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    let execution = load_execution_for_mutation(
+        journal,
+        authorized.project(),
+        &control.execution_id,
+        control.mutation.as_option(),
+    )?;
+    validate_execution_control(&execution, control)?;
+    if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+        || execution.command.as_option().is_none_or(|command| {
+            !matches!(
+                command.io_mode.as_known(),
+                Some(
+                    ExecutionIoMode::EXECUTION_IO_MODE_PTY
+                        | ExecutionIoMode::EXECUTION_IO_MODE_STREAM
+                )
+            )
+        })
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    prepare_public_attach_host_query_v1(
+        journal,
+        authorized.project(),
+        node,
+        exact_id(&execution.execution_id)?,
+        None,
+        now_seconds,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn lookup_authorized_attach_existing(
+    journal: &mut Journal,
+    authorized: &AuthorizedPublicMutationRequestV1,
+    request_digest: [u8; 32],
+) -> Result<Option<(PublicAttachPendingV1, bool)>, OperationCompilationError> {
+    let Request::ExecutionControl(control) = authorized.request().request() else {
+        return Err(OperationCompilationError::Malformed);
+    };
+    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
+        return Err(OperationCompilationError::Malformed);
+    }
+    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    let Some(pending) = crate::public_attach_pending::load_public_attach_pending_v1(
+        journal,
+        authorized.request().idempotency_key(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?
+    else {
+        return Ok(None);
+    };
+    if !pending.matches_request(authorized.request().idempotency_key(), request_digest)
+        || pending.execution_id().as_slice() != control.execution_id.as_slice()
+        || pending.principal_id() != *authorized.caller().as_bytes()
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    match journal.check_idempotency(authorized.request().idempotency_key(), request_digest) {
+        IdempotencyOutcome::Replay(operation) if operation == pending.operation_id() => {
+            Ok(Some((pending, true)))
+        }
+        IdempotencyOutcome::Vacant => Ok(Some((pending, false))),
+        _ => Err(OperationCompilationError::Rejected),
+    }
+}
 
 #[cfg(target_os = "linux")]
 pub(super) fn reserve_authorized_attach(

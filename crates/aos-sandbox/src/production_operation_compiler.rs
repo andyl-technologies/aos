@@ -160,6 +160,72 @@ pub fn reserve_public_attach_v1(
     public_mutation::reserve_authorized_attach(journal, &authorized, request_digest)
 }
 
+/// Prepares an authorized, read-only Host readiness query before reservation.
+///
+/// # Errors
+///
+/// Rejects malformed or unauthorized attach requests and stale execution or
+/// protected Host authority without writing a public pending record.
+#[cfg(target_os = "linux")]
+pub fn prepare_public_attach_readiness_v1(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    node: aos_sandbox_core::NodeId,
+    now_seconds: i64,
+) -> Result<crate::public_attach_pending::PublicAttachHostQueryDraftV1, OperationCompilationError> {
+    let authorized = AuthorizedPublicMutationRequestV1::authorize(
+        journal,
+        peer,
+        capability_id,
+        canonical_request,
+    )
+    .map_err(|error| match error {
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
+            OperationCompilationError::Malformed
+        }
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
+            OperationCompilationError::Rejected
+        }
+    })?;
+    public_mutation::prepare_authorized_attach_readiness(journal, &authorized, node, now_seconds)
+}
+
+/// Looks up an existing pending or accepted ATTACH without another reservation.
+///
+/// # Errors
+///
+/// Rejects malformed public input, stale capability authorization, or a
+/// conflicting protected idempotency/pending identity.
+#[cfg(target_os = "linux")]
+pub fn lookup_public_attach_existing_v1(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+) -> Result<
+    Option<(crate::public_attach_pending::PublicAttachPendingV1, bool)>,
+    OperationCompilationError,
+> {
+    let authorized = AuthorizedPublicMutationRequestV1::authorize(
+        journal,
+        peer,
+        capability_id,
+        canonical_request,
+    )
+    .map_err(|error| match error {
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
+            OperationCompilationError::Malformed
+        }
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
+            OperationCompilationError::Rejected
+        }
+    })?;
+    public_mutation::lookup_authorized_attach_existing(journal, &authorized, request_digest)
+}
+
 impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
     fn compile(
         &mut self,

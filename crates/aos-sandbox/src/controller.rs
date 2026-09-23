@@ -5174,6 +5174,107 @@ where
         Ok(pending)
     }
 
+    /// Prepares a read-only authenticated Host readiness query before ATTACH CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale peer authorization, holder proof, execution, or protected
+    /// assignment state without reserving an attach operation.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_public_attach_readiness(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+        node: aos_sandbox_core::NodeId,
+        now_seconds: i64,
+    ) -> Result<crate::public_attach_pending::PublicAttachHostQueryDraftV1, ControllerServiceError>
+    {
+        self.checked_public_request_digest(peer, canonical_request)?;
+        let draft = crate::production_operation_compiler::prepare_public_attach_readiness_v1(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            node,
+            now_seconds,
+        )?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(draft)
+    }
+
+    /// Looks up an existing ATTACH and whether it was durably accepted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale peer authorization or a conflicting protected request.
+    #[cfg(target_os = "linux")]
+    pub fn lookup_public_attach_existing(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+    ) -> Result<
+        Option<(crate::public_attach_pending::PublicAttachPendingV1, bool)>,
+        ControllerServiceError,
+    > {
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
+        let pending = crate::production_operation_compiler::lookup_public_attach_existing_v1(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(pending)
+    }
+
+    /// Prepares a fresh read-only Host query for an accepted ATTACH replay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched public authorization, pending identity, durable
+    /// admission, current execution, or Host assignment authority.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_public_attach_route_query(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+        pending: &crate::public_attach_pending::PublicAttachPendingV1,
+        node: aos_sandbox_core::NodeId,
+        now_seconds: i64,
+    ) -> Result<crate::public_attach_pending::PublicAttachHostQueryDraftV1, ControllerServiceError>
+    {
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
+        let rechecked = crate::production_operation_compiler::reserve_public_attach_v1(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )?;
+        if rechecked != *pending {
+            return Err(OperationCompilationError::Rejected.into());
+        }
+        let draft = crate::public_attach_pending::prepare_public_attach_host_query_v1(
+            self.reconciler.journal_mut(),
+            peer.project(),
+            node,
+            pending.execution_id(),
+            Some(pending),
+            now_seconds,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(draft)
+    }
+
     /// Signs a protected pending attach for the separately authenticated Host.
     ///
     /// The signing key must be the externally provisioned attach-grant key;
