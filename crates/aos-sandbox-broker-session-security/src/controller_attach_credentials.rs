@@ -24,6 +24,7 @@ use ed25519_dalek::SigningKey;
 use rustix::fs::{CWD, Mode, OFlags, openat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use ssh_key::{Algorithm, PublicKey};
 use zeroize::Zeroizing;
 
 const GRANT_SIGNING_KEY: &str = "openssh-attach-grant-signing-key";
@@ -33,6 +34,9 @@ const TRUST: &str = "openssh-attach-trust.json";
 const TRUST_MAGIC: &str = "AOSHAT01";
 const MAXIMUM_CA_BYTES: usize = 8 * 1024;
 const MAXIMUM_TRUST_BYTES: usize = 2048;
+const MAXIMUM_HOST_BYTES: usize = 255;
+const MAXIMUM_USER_BYTES: usize = 32;
+const MAXIMUM_KEY_BYTES: usize = 128;
 
 /// Owns the independent signing inputs for one controller worker.
 pub(crate) struct ControllerAttachCredentialsV1 {
@@ -107,15 +111,7 @@ impl ControllerAttachCredentialsV1 {
         let issuer = OpenSshAttachRouteIssuerV1::new(&ca_key)
             .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
         let trust_bytes = read_required(directory, TRUST, MAXIMUM_TRUST_BYTES)?;
-        let trust: DeploymentTrustV1 = serde_json::from_slice(&trust_bytes)
-            .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
-        if trust.magic != TRUST_MAGIC
-            || trust.host.is_empty()
-            || serde_json::to_vec(&trust).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?
-                != trust_bytes
-        {
-            return Err(ControllerAttachCredentialErrorV1::Invalid);
-        }
+        let trust = parse_deployment_trust(&trust_bytes)?;
         let trust_digest = Sha256::digest(&trust_bytes).into();
 
         Ok(Some(Self {
@@ -172,6 +168,54 @@ impl ControllerAttachCredentialsV1 {
     }
 }
 
+fn parse_deployment_trust(
+    bytes: &[u8],
+) -> Result<DeploymentTrustV1, ControllerAttachCredentialErrorV1> {
+    let trust: DeploymentTrustV1 =
+        serde_json::from_slice(bytes).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
+    if trust.magic != TRUST_MAGIC
+        || !valid_host(&trust.host)
+        || trust.port == 0
+        || !valid_user(&trust.user)
+        || !canonical_ed25519_key(&trust.host_public_key)
+        || !canonical_ed25519_key(&trust.trusted_user_ca_public_key)
+        || serde_json::to_vec(&trust).map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?
+            != bytes
+    {
+        return Err(ControllerAttachCredentialErrorV1::Invalid);
+    }
+    Ok(trust)
+}
+
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= MAXIMUM_HOST_BYTES
+        && host.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+        })
+        && !host.starts_with('-')
+}
+
+fn valid_user(user: &str) -> bool {
+    !user.is_empty()
+        && user.len() <= MAXIMUM_USER_BYTES
+        && user.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || byte == b'_' || (index != 0 && byte == b'-')
+        })
+}
+
+fn canonical_ed25519_key(line: &str) -> bool {
+    if line.len() > MAXIMUM_KEY_BYTES {
+        return false;
+    }
+    let Ok(key) = PublicKey::from_openssh(line) else {
+        return false;
+    };
+    key.algorithm() == Algorithm::Ed25519
+        && key.comment().is_empty()
+        && key.to_openssh().is_ok_and(|encoded| encoded == line)
+}
+
 fn read_required(
     directory: &Path,
     name: &str,
@@ -216,4 +260,31 @@ fn read_credential(
         return Err(ControllerAttachCredentialErrorV1::Invalid);
     }
     Ok(Some(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_deployment_trust;
+
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILM+rvN+ot98qgEN796jTiQfZfG1KaT0PtFDJ/XFSqti";
+
+    #[test]
+    fn deployment_trust_requires_exact_static_canonical_schema() {
+        let trust = format!(
+            "{{\"magic\":\"AOSHAT01\",\"host\":\"attach.example\",\"port\":2222,\"user\":\"aos\",\"host_public_key\":\"{KEY}\",\"trusted_user_ca_public_key\":\"{KEY}\"}}"
+        );
+
+        assert!(parse_deployment_trust(trust.as_bytes()).is_ok());
+        assert!(parse_deployment_trust(format!("{trust}\n").as_bytes()).is_err());
+        assert!(parse_deployment_trust(trust.replace("AOSHAT01", "AOSHAT02").as_bytes()).is_err());
+        assert!(
+            parse_deployment_trust(
+                trust
+                    .replace(",\"port\"", ",\"gate_config_digest\":[],\"port\"")
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
 }
