@@ -82,6 +82,7 @@
   backend = selected.config.aos.artifacts.backend;
   output = selected.config.aos.abilities.compositionOutputs."aos:artifact-backend".artifact-reference;
 in
+  assert builtins.elem "ability-effects-v1" pkgs.aos-oci-backend.contract.value.required_features;
   assert static.config.aos.artifacts.backend == null;
   assert !(static.config.aos.abilities.instances ? "aos-oci-backend:artifact-backend-provider");
   assert alternateRequest.success;
