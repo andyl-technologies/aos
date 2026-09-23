@@ -150,16 +150,9 @@ impl GuestAgentLaunchRecordV1 {
     /// Encodes the canonical 258-byte `AOSAGP01` sealed-memfd payload.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let runtime = &self.runtime;
         let mut bytes = Vec::with_capacity(PROVISIONING_BYTES);
         bytes.extend_from_slice(PROVISIONING_MAGIC);
-        bytes.extend_from_slice(runtime.sandbox().as_bytes());
-        bytes.extend_from_slice(runtime.incarnation().as_bytes());
-        bytes.extend_from_slice(&runtime.assignment_epoch().get().to_be_bytes());
-        bytes.extend_from_slice(runtime.assignment_digest().as_bytes());
-        bytes.extend_from_slice(&runtime.desired_generation().get().to_be_bytes());
-        bytes.extend_from_slice(&runtime.namespace_generation().get().to_be_bytes());
-        bytes.extend_from_slice(runtime.payload_boot_id());
+        bytes.extend_from_slice(&encode_agent_runtime_binding_v1(self.runtime));
         bytes.extend_from_slice(self.channel.as_bytes());
         bytes.extend_from_slice(&self.instance);
         bytes.extend_from_slice(&self.signing_key.to_bytes());
@@ -176,6 +169,20 @@ impl GuestAgentLaunchRecordV1 {
         bytes.extend_from_slice(&checksum);
         bytes
     }
+}
+
+/// Encodes the exact runtime prefix shared by sealed guest launch credentials.
+#[must_use]
+pub fn encode_agent_runtime_binding_v1(runtime: AgentRuntimeBindingV1) -> [u8; 104] {
+    let mut bytes = [0_u8; 104];
+    bytes[..16].copy_from_slice(runtime.sandbox().as_bytes());
+    bytes[16..32].copy_from_slice(runtime.incarnation().as_bytes());
+    bytes[32..40].copy_from_slice(&runtime.assignment_epoch().get().to_be_bytes());
+    bytes[40..72].copy_from_slice(runtime.assignment_digest().as_bytes());
+    bytes[72..80].copy_from_slice(&runtime.desired_generation().get().to_be_bytes());
+    bytes[80..88].copy_from_slice(&runtime.namespace_generation().get().to_be_bytes());
+    bytes[88..104].copy_from_slice(runtime.payload_boot_id());
+    bytes
 }
 
 /// Applies a previously decoded operation within the guest-local effect owner.

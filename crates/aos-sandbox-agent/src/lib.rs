@@ -23,6 +23,8 @@
 pub mod broker_adapter;
 pub mod dormant_guest_agent;
 pub mod dormant_package;
+#[cfg(target_os = "linux")]
+pub mod guest_attach_trust;
 #[cfg(unix)]
 pub mod dormant_root_builder;
 pub mod model;
