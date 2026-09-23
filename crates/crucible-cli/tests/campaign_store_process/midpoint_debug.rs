@@ -538,9 +538,10 @@ fn drive_fast_q7_failure(
         Duration::from_secs(300),
     )?;
     let q7 = guest_choice::wait_for_attempt_observation(fixture, q7_attempt)?;
+    // The marker reaches the requested boundary; its failed property owns the stop outcome.
     if q7["proposal"]["request"] != q7_request
         || q7["selection"]["value"] != "u64:7"
-        || q7["observation"]["stop"] != "reached:boundary:selected-fast-q7"
+        || q7["observation"]["stop"] != "assertion-failure:known-midpoint-failure"
     {
         return Err(format!("q7 midpoint branch returned unexpected evidence: {q7}").into());
     }
