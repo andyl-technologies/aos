@@ -290,9 +290,20 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
     extra_replay.pending = Some(second.clone());
     assert!(reject_unrecorded_local_request(&mut extra_replay).is_err());
     extra_replay.pending = Some(first.clone());
-    assert!(verify_target_pending_request(&mut extra_replay, Some(&first)).is_ok());
+    assert!(
+        verify_target_pending_request(&mut extra_replay, Icount { retired: 42 }, Some(&first))
+            .is_ok()
+    );
+    extra_replay.pending = Some(first.clone());
+    assert!(
+        verify_target_pending_request(&mut extra_replay, Icount { retired: 43 }, Some(&first))
+            .is_err()
+    );
     extra_replay.pending = Some(second);
-    assert!(verify_target_pending_request(&mut extra_replay, Some(&first)).is_err());
+    assert!(
+        verify_target_pending_request(&mut extra_replay, Icount { retired: 82 }, Some(&first))
+            .is_err()
+    );
     let mut stalled_reissues = 0;
     assert_eq!(
         next_replay_ceiling(
