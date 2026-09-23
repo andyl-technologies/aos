@@ -9,6 +9,7 @@ mod advisory;
 mod authority;
 mod compiler;
 mod controller_adapter;
+mod deployment_head;
 mod model;
 mod namespace;
 mod protected_journal;
@@ -26,6 +27,10 @@ pub use authority::{
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{
     PolicyCompilerControllerCommitV1, policy_compiler_controller_commit_v1,
+};
+pub use deployment_head::{
+    PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
+    admit_fixed_policy_deployment_head_v1, verify_policy_deployment_head_v1,
 };
 pub use model::{
     AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,

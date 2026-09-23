@@ -41,7 +41,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandboxd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-policy-authorityd"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox -p aos-sandbox-broker-session-security"
     ];
     buildDeps = [buildProtobuf];
@@ -52,7 +52,7 @@ in
     pname = "aos-sandboxd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandboxd";
+    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-policy-authorityd";
     # Keep the core suite when moving process ownership into the transport crate.
     cargoTestFlags = "-p aos-sandbox -p aos-sandbox-broker-session-security";
     cargoNextest = true;
@@ -62,6 +62,7 @@ in
 
     postInstall = ''
       test -x "$out/bin/aos-sandboxd"
+      test -x "$out/bin/aos-sandbox-policy-authorityd"
     '';
 
     passthru = {

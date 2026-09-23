@@ -34,9 +34,9 @@ use super::{
     PolicyPublicationPrerequisitesV1, PolicyPublicationRecoveryV1,
 };
 
-const PROTECTED_POLICY_ROOT: &str = "/var/lib/aos/sandbox/policy-compiler";
+pub(super) const PROTECTED_POLICY_ROOT: &str = "/var/lib/aos/sandbox/policy-compiler";
 const POLICY_STATE_JOURNAL: &str = "state.journal";
-const POLICY_AUTHORITY_JOURNAL: &str = "authority.journal";
+pub(super) const POLICY_AUTHORITY_JOURNAL: &str = "authority.journal";
 const POLICY_BINDING_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v1\0";
 const POLICY_BINDING_MAGIC: &[u8; 8] = b"AOSPCB01";
 const POLICY_BINDING_BYTES: usize = 280;
@@ -685,7 +685,7 @@ fn policy_state_journal_limits() -> JournalLimits {
     JournalLimits::default()
 }
 
-fn policy_authority_journal_limits() -> JournalLimits {
+pub(super) fn policy_authority_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 64 * 1024 * 1024,
         maximum_record_bytes: 4 * 1024,
@@ -694,7 +694,7 @@ fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS,
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 1,
     }
 }
 
