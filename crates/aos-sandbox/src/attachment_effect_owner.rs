@@ -6,11 +6,12 @@
 //! inventory alone. A mutation still requires a freshly bound namespace target;
 //! reconciliation requires an authenticated current-target Mount inventory.
 
-use aos_sandbox_core::{AttachmentId, OperationId, RawPairedClockSample};
+use aos_sandbox_core::{AttachmentId, AttachmentSlotId, OperationId, RawPairedClockSample};
 
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
 };
+use crate::attachment_slot_state::{self, AttachmentSlotStateError, DurableAttachmentSlotV1};
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
@@ -104,6 +105,21 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     ) -> Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
         self.journal.ensure_protected_authority()?;
         attachment_state::get(self.journal, attachment_id)
+    }
+
+    /// Loads the exact current destination-slot binding, including a tombstone.
+    ///
+    /// This structural readback cannot prove a live Mount-owned descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody or invalid slot history.
+    pub fn current_slot(
+        &self,
+        slot_id: AttachmentSlotId,
+    ) -> Result<Option<DurableAttachmentSlotV1>, AttachmentSlotStateError> {
+        self.journal.ensure_protected_authority()?;
+        attachment_slot_state::get_current(self.journal, slot_id)
     }
 
     /// Loads the exact historical generation committed by an operation.
