@@ -10,7 +10,6 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
-  rust,
   wasm-bindgen-cli,
   stdenv,
   buildPackages,
@@ -25,6 +24,7 @@
   buildCc = buildPackages.cc;
   buildBash = buildPackages.bash;
   buildCoreutils = buildPackages.coreutils;
+  buildRust = buildPackages.rust;
   nativeRustTarget = stdenv.buildPlatform.config;
   nativeRustCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] nativeRustTarget);
   nativeRustCcPrefix = builtins.replaceStrings ["-"] ["_"] nativeRustTarget;
@@ -133,7 +133,7 @@ in
     pname = "aos-hub-console-dist";
     inherit version src;
 
-    buildDeps = [rust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils];
+    buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils];
     inherit cargoDeps;
 
     phases = [
@@ -197,7 +197,7 @@ in
           done
 
           [ -n "$output" ]
-          ${rust}/lib/rustlib/${nativeRustTarget}/bin/rust-lld "''${arguments[@]}"
+          ${buildRust}/lib/rustlib/${nativeRustTarget}/bin/rust-lld "''${arguments[@]}"
           ${buildCoreutils}/bin/cat "$stage_dir/output.wasm" > "$output"
           LINKER
           chmod +x "$TMPDIR/aos-wasm-linker"
