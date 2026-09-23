@@ -114,6 +114,7 @@ pub struct PublisherDomainServiceV1<'journal> {
     roots: PublicationRootRegistry,
     catalog: ReadCatalogProjectionV1,
     durable_catalog: PublisherDurableCatalogOwnerV1,
+    read_grants: super::durable_read_grants::PublisherDurableReadGrantOwnerV1,
     committed: Option<CommittedAdmissionFrontier>,
     clock: PublisherServiceClockV1,
     maximum_catalog_entries: usize,
@@ -306,6 +307,9 @@ pub enum PublisherDomainServiceErrorV1 {
     /// The supplied source is not the exact readable descriptor in the message.
     #[error("publisher source descriptor observation differs")]
     SourceDescriptor,
+    /// Protected read-grant currentness could not be confirmed.
+    #[error("publisher read-grant authority is unavailable")]
+    ReadGrant,
 }
 
 impl<'journal> PublisherDomainServiceV1<'journal> {
@@ -322,6 +326,7 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
     pub(super) fn claim(
         journal: &'journal mut Journal,
         durable_catalog: PublisherDurableCatalogOwnerV1,
+        read_grants: super::durable_read_grants::PublisherDurableReadGrantOwnerV1,
         config: PublisherDomainServiceConfigV1,
     ) -> Result<Self, PublisherDomainServiceErrorV1> {
         if config.root_device == 0
@@ -330,6 +335,9 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
         {
             return Err(PublisherDomainServiceErrorV1::AuthorityUnavailable);
         }
+        read_grants
+            .current_registry()
+            .map_err(|_| PublisherDomainServiceErrorV1::ReadGrant)?;
         let protected = PublisherProtectedJournalOwnerV1::claim(
             journal,
             config.admission_limits,
@@ -405,6 +413,7 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
             roots,
             catalog,
             durable_catalog,
+            read_grants,
             committed,
             clock,
             maximum_catalog_entries: config.maximum_catalog_entries,

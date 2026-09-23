@@ -28,6 +28,8 @@ pub(crate) mod dormant_effects;
 #[cfg(target_os = "linux")]
 mod durable_catalog;
 #[cfg(target_os = "linux")]
+mod durable_read_grants;
+#[cfg(target_os = "linux")]
 mod executor_registry;
 #[cfg(target_os = "linux")]
 mod fixed_owner;

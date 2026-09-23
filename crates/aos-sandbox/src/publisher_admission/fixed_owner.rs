@@ -1,6 +1,6 @@
 //! Fixed protected ownership for the dormant publisher domain.
 //!
-//! This is the public ownership boundary. It opens three internally selected
+//! This is the public ownership boundary. It opens fixed internally selected
 //! root-owned journals, decodes one closed protected configuration, retains
 //! the authority/state locks, and revalidates the exact fixed object directory
 //! before handing sidecar ownership to a short-lived domain service. It
@@ -15,6 +15,8 @@
 //!   canonical publisher-admission protected transactions
 //! catalog-observation-v1.journal:
 //!   exact externally durable catalog predecessor/successor observation
+//! read-grants-v1.journal:
+//!   independently revocable current disclosure grants
 //! ```
 
 use std::path::Path;
@@ -31,6 +33,7 @@ use super::dormant_effects::{
     PublisherDormantEffectCapabilityV1, PublisherDormantEffectCompositionV1,
 };
 use super::durable_catalog::PublisherDurableCatalogOwnerV1;
+use super::durable_read_grants::PublisherDurableReadGrantOwnerV1;
 use super::executor_registry::PublisherFixedExecutorGrantV1;
 use super::service::{
     FIXED_PUBLISHER_OBJECT_ROOT, PublisherDomainServiceConfigV1, PublisherDomainServiceErrorV1,
@@ -53,7 +56,7 @@ const RECOVERY_FENCE_KEY_PREFIX: &[u8] = b"\0aos-publisher-recovery-fence-v1\0";
 const RECOVERY_FENCE_MAGIC: &[u8; 8] = b"AOSPRF01";
 const RECOVERY_FENCE_DOMAIN: &[u8] = b"aos.sandbox.publisher.fixed-recovery-fence.v1\0";
 
-/// Reports cold replay of both fixed protected publisher journals.
+/// Reports cold replay of the fixed protected publisher journals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublisherFixedProtectedOpenReportV1 {
     /// Reports authority/configuration journal recovery.
@@ -62,6 +65,8 @@ pub struct PublisherFixedProtectedOpenReportV1 {
     pub state: RecoveryReport,
     /// Reports independently protected durable-catalog observation recovery.
     pub catalog_observation: RecoveryReport,
+    /// Reports independently protected read-grant recovery.
+    pub read_grants: RecoveryReport,
 }
 
 /// Reports fixed publisher-owner protection or replay failures.
@@ -82,6 +87,9 @@ pub enum PublisherFixedProtectedOwnerErrorV1 {
     /// Durable catalog-observation custody could not be authenticated.
     #[error("protected durable catalog observation is unavailable")]
     Catalog,
+    /// Current read-grant custody could not be authenticated.
+    #[error("protected publisher read grants are unavailable")]
+    ReadGrants,
 }
 
 /// Exclusively owns the fixed dormant publisher journals and root binding.
@@ -176,6 +184,10 @@ impl PublisherFixedProtectedOwnerV1 {
             PublisherDurableCatalogOwnerV1::open_fixed_protected()
                 .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Catalog)?;
         drop(catalog_observation);
+        let (read_grants, read_grants_report) =
+            PublisherDurableReadGrantOwnerV1::open_fixed_protected()
+                .map_err(|_| PublisherFixedProtectedOwnerErrorV1::ReadGrants)?;
+        drop(read_grants);
         let (config, config_digest) = read_config(&authority_journal)?;
         validate_fixed_root(config)?;
 
@@ -194,6 +206,7 @@ impl PublisherFixedProtectedOwnerV1 {
                 authority: authority_report,
                 state: state_report,
                 catalog_observation: catalog_observation_report,
+                read_grants: read_grants_report,
             },
         ))
     }
@@ -220,8 +233,15 @@ impl PublisherFixedProtectedOwnerV1 {
         validate_fixed_root(config)?;
         let (durable_catalog, _) = PublisherDurableCatalogOwnerV1::open_fixed_protected()
             .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Catalog)?;
-        PublisherDomainServiceV1::claim(&mut self.state_journal, durable_catalog, config)
-            .map_err(Into::into)
+        let (read_grants, _) = PublisherDurableReadGrantOwnerV1::open_fixed_protected()
+            .map_err(|_| PublisherFixedProtectedOwnerErrorV1::ReadGrants)?;
+        PublisherDomainServiceV1::claim(
+            &mut self.state_journal,
+            durable_catalog,
+            read_grants,
+            config,
+        )
+        .map_err(Into::into)
     }
 
     /// Claims the domain together with explicitly injected dormant effects.

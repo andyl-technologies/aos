@@ -102,7 +102,7 @@ impl ReadAuthorityGrantV1 {
         Ok(grant)
     }
 
-    fn validate(&self) -> Result<(), CacheReadAuthorityError> {
+    pub(super) fn validate(&self) -> Result<(), CacheReadAuthorityError> {
         if self.holder.as_bytes() == &[0; 16]
             || self.project.as_bytes() == &[0; 16]
             || self.resource.as_bytes() == &[0; 16]
@@ -130,6 +130,41 @@ pub struct ReadAuthorityRegistryV1 {
 }
 
 impl ReadAuthorityRegistryV1 {
+    /// Reconstructs only protected current heads after durable journal replay.
+    ///
+    /// The fixed journal validates each head's predecessor commitment before
+    /// calling this constructor. A revoked head is the sole successor of an
+    /// active generation-one grant; it cannot authorize another open.
+    pub(super) fn from_current_heads(
+        maximum_records: usize,
+        heads: impl IntoIterator<Item = ReadAuthorityGrantV1>,
+    ) -> Result<Self, CacheReadAuthorityError> {
+        if maximum_records == 0 || maximum_records > 65_536 {
+            return Err(CacheReadAuthorityError::Capacity);
+        }
+        let mut grants = BTreeMap::new();
+        for grant in heads {
+            grant.validate()?;
+            let expected_generation = match grant.state {
+                ReadGrantStateV1::Active => 1,
+                ReadGrantStateV1::Revoked => 2,
+            };
+            if grant.generation != expected_generation
+                || grants.insert(*grant.holder.as_bytes(), grant).is_some()
+            {
+                return Err(CacheReadAuthorityError::Conflict);
+            }
+            if grants.len() > maximum_records {
+                return Err(CacheReadAuthorityError::Capacity);
+            }
+        }
+        let checkpoint_digest = read_registry_digest(&grants);
+        Ok(Self {
+            grants,
+            checkpoint_digest,
+        })
+    }
+
     /// Replays a bounded grant projection, rejecting gaps and forks.
     ///
     /// # Errors
