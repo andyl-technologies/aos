@@ -4,10 +4,9 @@
   lib,
   ...
 }: let
-  cfg = config.aos.services.zfsMaintenance;
+  cfg = config.aos.filesystems.zfs.maintenance;
   zfs = config.aos.filesystems.zfs;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
   consumerInstance = "zfs-storage";
   selfArtifact = lib.abilities.packageOutput {};
@@ -63,69 +62,66 @@
     scheduling ? null,
     acceptedExitStatuses ? [0],
   }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration =
+    {
+      inherit consumerInstance;
+      service = key;
+      autoStart = enabled;
+      lifecycle = {
+        inherit description restart;
+        execution_model = executionModel;
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command program)];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart_delay_millis =
+          if restart == "never"
+          then 0
+          else 5000;
+        configuration_change_action = "restart";
+        remain_after_exit = remainAfterExit;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      dependencies = {
+        prerequisites = [poolReadiness];
+        after = [poolReadiness];
+        before = [];
+        requires = [poolReadiness];
+        wants = [];
+      };
+      conditions.all = [
         {
-          service = key;
-          inherit enabled;
-          lifecycle = {
-            inherit description restart;
-            execution_model = executionModel;
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            start = [(command program)];
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart_delay_millis =
-              if restart == "never"
-              then 0
-              else 5000;
-            configuration_change_action = "restart";
-            remain_after_exit = remainAfterExit;
-            start_timeout_millis = 90000;
-            stop_timeout_millis = 90000;
-          };
-          dependencies = {
-            prerequisites = [poolReadiness];
-            after = [poolReadiness];
-            before = [];
-            requires = [poolReadiness];
-            wants = [];
-          };
-          conditions.all = [
-            {
-              kind = "path";
-              predicate = "is-directory";
-              path = "/sys/module/zfs";
-              negated = false;
-            }
-          ];
-          start_policy = {
-            accepted_exit_statuses = acceptedExitStatuses;
-            restart_preventing_exit_statuses = [];
-            rate_interval_millis = null;
-            rate_burst = null;
-          };
-          isolation = {
-            privilege = "privileged";
-            filesystem = "host";
-            network = "none";
-            process_visibility = "host";
-            termination_scope = "main-process";
-            temporary_directory = "private";
-            devices = [];
-            host_paths = [];
-            permit_core_dumps = false;
-          };
+          kind = "path";
+          predicate = "is-directory";
+          path = "/sys/module/zfs";
+          negated = false;
         }
-        // lib.optionalAttrs (activation != null) {inherit activation;}
-        // lib.optionalAttrs (directories != null) {inherit directories;}
-        // lib.optionalAttrs (environment != null) {inherit environment;}
-        // lib.optionalAttrs (scheduling != null) {inherit scheduling;};
-    };
+      ];
+      start_policy = {
+        accepted_exit_statuses = acceptedExitStatuses;
+        restart_preventing_exit_statuses = [];
+        rate_interval_millis = null;
+        rate_burst = null;
+      };
+      isolation = {
+        privilege = "privileged";
+        filesystem = "host";
+        network = "none";
+        process_visibility = "host";
+        termination_scope = "main-process";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [];
+        permit_core_dumps = false;
+      };
+    }
+    // lib.optionalAttrs (activation != null) {inherit activation;}
+    // lib.optionalAttrs (directories != null) {inherit directories;}
+    // lib.optionalAttrs (environment != null) {inherit environment;}
+    // lib.optionalAttrs (scheduling != null) {inherit scheduling;};
   triggeredBy = key: {
     bindings = [
       {
@@ -246,111 +242,121 @@
     persistent = false;
     randomizedDelayMillis = 0;
   };
-  fragments =
-    lib.optional cfg.eventDaemon zed
-    ++ lib.optionals cfg.scrub.enable [scrub scrubSchedule]
-    ++ lib.optionals cfg.trim.enable [trim trimSchedule]
-    ++ lib.optionals cfg.healthCheck.enable [health healthSchedule]
-    ++ lib.optionals cfg.metrics.enable [metrics metricsSchedule];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
-  options.aos.services = lib.mkOption {
-    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
-      options = lib.optionalAttrs (name == "zfsMaintenance") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Retain package-owned OpenZFS event, health, scrub, trim, and telemetry resources.";
-        };
-        eventDaemon = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = true;
-          description = "Observe pool events so device faults and resilvers produce durable actions.";
-        };
-        scrubAfterResilver = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = true;
-          description = "Start a scrub after each resilver completes.";
-        };
-        scrub = {
-          enable = lib.mkOption {
-            type = abilityTypes.boolean;
-            default = true;
-            description = "Verify every pool block against its checksum on a schedule.";
-          };
-          calendar = lib.mkOption {
-            type = calendar;
-            default = "monthly";
-            description = "Calendar expression for pool scrubs.";
-          };
-        };
-        trim = {
-          enable = lib.mkOption {
-            type = abilityTypes.boolean;
-            default = true;
-            description = "Discard unused pool blocks on a schedule.";
-          };
-          calendar = lib.mkOption {
-            type = calendar;
-            default = "weekly";
-            description = "Calendar expression for pool trims.";
-          };
-        };
-        healthCheck = {
-          enable = lib.mkOption {
-            type = abilityTypes.boolean;
-            default = true;
-            description = "Report pool degradation, device errors, and unpinned feature sets.";
-          };
-          calendar = lib.mkOption {
-            type = calendar;
-            default = "*:0/15";
-            description = "Calendar expression for pool health checks.";
-          };
-        };
-        metrics = {
-          enable = lib.mkOption {
-            type = abilityTypes.boolean;
-            default = true;
-            description = "Publish ARC, fragmentation, compaction, and NUMA memory evidence.";
-          };
-          calendar = lib.mkOption {
-            type = calendar;
-            default = "*:0/1";
-            description = "Calendar expression for metric snapshots.";
-          };
-          path = lib.mkOption {
-            type = abilityTypes.executionPath;
-            default = "/var/lib/aos-metrics/zfs.prom";
-            description = "Absolute Prometheus textfile-collector destination.";
-          };
-        };
-        randomizedDelayMillis = lib.mkOption {
-          type = abilityTypes.integer {
-            minimum = 0;
-            maximum = 86400000;
-          };
-          default = 600000;
-          description = "Maximum fleet-wide jitter for scrub and trim schedules.";
-        };
+  options.aos.filesystems.zfs.maintenance = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Retain package-owned OpenZFS event, health, scrub, trim, and telemetry resources.";
+    };
+    eventDaemon = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = true;
+      description = "Observe pool events so device faults and resilvers produce durable actions.";
+    };
+    scrubAfterResilver = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = true;
+      description = "Start a scrub after each resilver completes.";
+    };
+    scrub = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Verify every pool block against its checksum on a schedule.";
       };
-    }));
-    default = {};
+      calendar = lib.mkOption {
+        type = calendar;
+        default = "monthly";
+        description = "Calendar expression for pool scrubs.";
+      };
+    };
+    trim = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Discard unused pool blocks on a schedule.";
+      };
+      calendar = lib.mkOption {
+        type = calendar;
+        default = "weekly";
+        description = "Calendar expression for pool trims.";
+      };
+    };
+    healthCheck = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Report pool degradation, device errors, and unpinned feature sets.";
+      };
+      calendar = lib.mkOption {
+        type = calendar;
+        default = "*:0/15";
+        description = "Calendar expression for pool health checks.";
+      };
+    };
+    metrics = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Publish ARC, fragmentation, compaction, and NUMA memory evidence.";
+      };
+      calendar = lib.mkOption {
+        type = calendar;
+        default = "*:0/1";
+        description = "Calendar expression for metric snapshots.";
+      };
+      path = lib.mkOption {
+        type = abilityTypes.executionPath;
+        default = "/var/lib/aos-metrics/zfs.prom";
+        description = "Absolute Prometheus textfile-collector destination.";
+      };
+    };
+    randomizedDelayMillis = lib.mkOption {
+      type = abilityTypes.integer {
+        minimum = 0;
+        maximum = 86400000;
+      };
+      default = 600000;
+      description = "Maximum fleet-wide jitter for scrub and trim schedules.";
+    };
   };
 
   config = lib.mkMerge [
-    {aos.services.zfsMaintenance = {};}
     {
       assertions = [
         {
           assertion = !cfg.enable || zfs.enable;
-          message = "aos.services.zfsMaintenance requires aos.filesystems.zfs.enable";
+          message = "aos.filesystems.zfs.maintenance requires aos.filesystems.zfs.enable";
         }
       ];
-      aos.abilities = lib.mkMerge (builtins.map (definition: definition.declarations) definitions);
+      aos.services = {
+        "zfs-storage.zfs-zed" = zed // {enable = cfg.enable && zfs.enable && cfg.eventDaemon;};
+        "zfs-storage.zfs-scrub" = scrub // {enable = cfg.enable && zfs.enable && cfg.scrub.enable;};
+        "zfs-storage.zfs-trim" = trim // {enable = cfg.enable && zfs.enable && cfg.trim.enable;};
+        "zfs-storage.zfs-health" = health // {enable = cfg.enable && zfs.enable && cfg.healthCheck.enable;};
+        "zfs-storage.zfs-metrics" = metrics // {enable = cfg.enable && zfs.enable && cfg.metrics.enable;};
+      };
     }
-    (lib.mkIf (cfg.enable && zfs.enable) {
-      aos.abilities = lib.mkMerge (builtins.map (definition: definition.configured) definitions);
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [scrubSchedule];
+      enabled = cfg.enable && zfs.enable && cfg.scrub.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [trimSchedule];
+      enabled = cfg.enable && zfs.enable && cfg.trim.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [healthSchedule];
+      enabled = cfg.enable && zfs.enable && cfg.healthCheck.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [metricsSchedule];
+      enabled = cfg.enable && zfs.enable && cfg.metrics.enable;
     })
   ];
 }
