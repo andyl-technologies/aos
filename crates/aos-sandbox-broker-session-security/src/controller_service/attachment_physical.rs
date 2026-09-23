@@ -592,4 +592,29 @@ mod tests {
         assert!(!source_allows_mount(Some(awaiting), detach));
         assert!(source_allows_mount(Some(draining), detach));
     }
+
+    #[test]
+    fn attachment_release_waits_for_source_release_custody() {
+        let mount = AttachmentReconciliationActionV1::Released;
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Release {
+                acquisition_id: [1; 32],
+                revision: 2,
+                record_digest: [2; 32],
+            }),
+            mount,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::CompleteRelease {
+                acquisition_id: [1; 32],
+                revision: 3,
+                record_digest: [3; 32],
+            }),
+            mount,
+        ));
+        assert!(source_allows_mount(
+            Some(AttachmentSourceActionV1::Released),
+            mount,
+        ));
+    }
 }
