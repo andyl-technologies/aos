@@ -14,7 +14,13 @@
     inherit lib;
     entry = ../../crates/crucible/src/lib.rs;
   };
+  cliSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-cli/src/main.rs;
+  };
   coverageGuidedFuzzingTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_guided_fuzzing.rs;
+  liveFuzzFixture = builtins.readFile ./fixtures/live-qemu-fuzz.family.toml;
+  cliSearchFuzzGate = builtins.readFile ./phase5-cli-search-fuzz-workflow.nix;
   coverageFeedbackGate = builtins.readFile ./phase6-coverage-feedback.nix;
   searchStrategiesGate = builtins.readFile ./phase6-search-strategies.nix;
   basicBlockCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
@@ -146,8 +152,8 @@
         needle = "family.instantiate_sample(sample_index)?";
       }
       {
-        label = "schedule override mutation";
-        needle = "Decision::Override(OverrideDecision";
+        label = "typed family sampler selection";
+        needle = "fn coverage_guided_fuzz_selection_decision";
       }
       {
         label = "corpus parent selection";
@@ -214,8 +220,8 @@
         needle = "EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing";
       }
       {
-        label = "schedule override assertion";
-        needle = "matches!(iteration.mutation, Decision::Override(_))";
+        label = "typed family sampler assertion";
+        needle = "matches!(iteration.mutation, Decision::Selection(_))";
       }
       {
         label = "typed mutation variation assertion";
@@ -242,6 +248,40 @@
       {
         label = "placeholder pending panic";
         needle = "implementation is pending";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/main.rs" cliSource [
+      {
+        label = "live coverage-guided campaign exploration";
+        needle = "GuardedCampaignExplorationStrategy::CoverageGuided";
+      }
+      {
+        label = "accepted schedule override observation";
+        needle = "matches!(decision, crucible::Decision::Override(_))";
+      }
+      {
+        label = "accepted schedule replay closure validation";
+        needle = ".validate_for_schedule(form, &configuration.schedule)";
+      }
+      {
+        label = "accepted schedule reproduction validation";
+        needle = ".verify_replay(configuration.id())";
+      }
+    ]
+    ++ failuresFor "tests/crucible/fixtures/live-qemu-fuzz.family.toml" liveFuzzFixture [
+      {
+        label = "live fault-plan density";
+        needle = "fault_densities = [1]";
+      }
+      {
+        label = "live searchable fault binding";
+        needle = ''search = "branch_parameter"'';
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase5-cli-search-fuzz-workflow.nix" cliSearchFuzzGate [
+      {
+        label = "executable positive override evidence";
+        needle = "override_observations=[1-9][0-9]*";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix coverageGuidedFuzzing block" defaultCoverageGuidedFuzzingBlock [
