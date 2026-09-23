@@ -35,6 +35,8 @@ mod format;
 #[cfg(target_os = "linux")]
 mod linux_bridge;
 mod model;
+#[cfg(target_os = "linux")]
+mod naming;
 mod payload;
 mod payload_decode;
 mod protected_journal;
@@ -130,7 +132,9 @@ pub use protocol::{
     PublisherLocalProtocolError, decode_local_message_v1, encode_local_message_v1,
 };
 #[cfg(target_os = "linux")]
-pub use read_authority::{AuthorizedCacheRead, CacheReadDecisionV1, authorize_cache_read_v1};
+pub use read_authority::{
+    AuthorizedCacheRead, CacheReadDecisionV1, CacheReadOpenErrorV1, authorize_cache_read_v1,
+};
 pub use read_authority::{
     CacheReadAuthorityError, CommittedReadEntryV1, CurrentReadAuthority, CurrentReadCatalog,
     ExclusiveCatalogEvictionCustody, OpenForReadRequestV1, ReadAuthorityGrantV1,

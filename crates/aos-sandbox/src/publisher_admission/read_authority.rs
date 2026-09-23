@@ -14,8 +14,14 @@ use aos_sandbox_core::{
 use crate::publisher_roots::PublicationRootId;
 #[cfg(target_os = "linux")]
 use crate::publisher_roots::{AuthorizedPublicationRoot, PublicationRootRegistry};
+#[cfg(target_os = "linux")]
+use aos_sandbox_linux::immutable_file::{
+    FsVerityDigest, ObserveSealedPublicationError, ObservedSealedPublicationFile,
+};
 
 use super::digest_parts;
+#[cfg(target_os = "linux")]
+use super::naming::published_name_for_object;
 
 const READ_GRANT_DOMAIN: &[u8] = b"aos.sandbox.publisher.read-grant.v1\0";
 const CATALOG_ENTRY_DOMAIN: &[u8] = b"aos.sandbox.publisher.read-catalog-entry.v1\0";
@@ -650,6 +656,21 @@ pub enum CacheReadDecisionV1<'authority> {
     },
 }
 
+/// Reports failure to open the exact sealed backing named by a read proof.
+#[derive(Debug, thiserror::Error)]
+#[cfg(target_os = "linux")]
+pub enum CacheReadOpenErrorV1 {
+    /// The internally derived publication name was rejected.
+    #[error("canonical cache publication name is invalid")]
+    InvalidName,
+    /// Exact descriptor-relative sealed-file observation failed.
+    #[error(transparent)]
+    Observation(#[from] ObserveSealedPublicationError),
+    /// The current catalog names a backing that is absent or has changed.
+    #[error("committed cache backing does not match its protected catalog entry")]
+    BackingMismatch,
+}
+
 /// Resolves independent current read authority while retaining all borrows.
 ///
 /// Existing committed entries remain readable while their root is `Draining`.
@@ -704,6 +725,38 @@ pub fn authorize_cache_read_v1<'authority>(
 
 #[cfg(target_os = "linux")]
 impl AuthorizedCacheRead<'_> {
+    /// Opens the exact fs-verity-sealed backing under retained read authority.
+    ///
+    /// The filename is derived from the authenticated object digest, never
+    /// supplied by a caller. The observed size, allocation, and SHA-256
+    /// fs-verity measurement must match the protected catalog before the
+    /// descriptor may be used. Reading still requires the caller to verify
+    /// object bytes against their complete media-type/size/digest descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is invalid, the backing is absent or
+    /// substituted, or sealed descriptor-relative observation fails.
+    pub fn open_sealed(&self) -> Result<ObservedSealedPublicationFile<'_>, CacheReadOpenErrorV1> {
+        let name = published_name_for_object(&self.entry.object)
+            .map_err(|_| CacheReadOpenErrorV1::InvalidName)?;
+        let observed = self
+            ._root
+            .mechanics()
+            .open_named_sealed(&name, self.entry.object.encoded_size())?
+            .ok_or(CacheReadOpenErrorV1::BackingMismatch)?;
+        let expected_verity =
+            FsVerityDigest::Sha256(*self.entry.backing_identity_digest.as_bytes());
+        if observed.bytes() != self.entry.object.encoded_size()
+            || observed.allocated_bytes() != self.entry.allocated_bytes
+            || observed.observed_verity_digest() != expected_verity
+        {
+            return Err(CacheReadOpenErrorV1::BackingMismatch);
+        }
+
+        Ok(observed)
+    }
+
     /// Returns the exact pinned object descriptor.
     #[must_use]
     pub const fn object(&self) -> &ObjectDescriptor {

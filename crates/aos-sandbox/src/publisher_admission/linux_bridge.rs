@@ -25,6 +25,7 @@ use super::durable_catalog::{
     PublisherDurableCatalogErrorV1, PublisherDurableCatalogOutcomeUnknownV1,
     PublisherDurableCatalogOwnerV1, PublisherDurableCatalogRecoveryV1,
 };
+use super::naming::{hex, published_name_for_object};
 use super::{
     AdmissionError, AdmissionLedger, ArtifactPreparation, ArtifactPreparationIntent,
     CommittedAdmissionFrontier, CommittedArtifactPreparationIntent, CommittedCatalogObservation,
@@ -1025,12 +1026,10 @@ fn canonical_names(
     content: &ObjectDescriptor,
 ) -> Result<(PublicationName, PublicationName), PublisherLinuxBridgeErrorV1> {
     let private = format!(".aos-pub-{}.private", hex(operation.as_bytes()));
-    let final_name = format!("sha256-{}", hex(content.digest().as_bytes()));
     Ok((
         PublicationName::new(OsStr::new(&private))
             .map_err(|_| PublisherLinuxBridgeErrorV1::Name)?,
-        PublicationName::new(OsStr::new(&final_name))
-            .map_err(|_| PublisherLinuxBridgeErrorV1::Name)?,
+        published_name_for_object(content).map_err(|_| PublisherLinuxBridgeErrorV1::Name)?,
     ))
 }
 
@@ -1078,14 +1077,4 @@ fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
         hasher.update(part);
     }
     ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    encoded
 }
