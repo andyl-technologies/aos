@@ -403,7 +403,7 @@ fn decode_command(decoder: &mut Decoder<'_>) -> Result<ExecutionCommandV1, Canon
 }
 
 fn decode_arguments(decoder: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, CanonicalCborError> {
-    let length = bounded_array_len(decoder, MAX_EXECUTION_ARGUMENTS)?;
+    let length = decoder.bounded_array_len(MAX_EXECUTION_ARGUMENTS)?;
     let mut remaining = MAX_EXECUTION_ARGUMENT_BYTES;
     let mut arguments = Vec::with_capacity(length);
     for _ in 0..length {
@@ -419,7 +419,7 @@ fn decode_arguments(decoder: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, Canonical
 fn decode_environment_overlay(
     decoder: &mut Decoder<'_>,
 ) -> Result<Vec<ExecutionEnvironmentEntry>, CanonicalCborError> {
-    let length = bounded_array_len(decoder, MAX_EXECUTION_ENVIRONMENT_ENTRIES)?;
+    let length = decoder.bounded_array_len(MAX_EXECUTION_ENVIRONMENT_ENTRIES)?;
     let mut remaining = MAX_EXECUTION_ENVIRONMENT_BYTES;
     let mut environment = Vec::with_capacity(length);
     for _ in 0..length {
@@ -519,7 +519,7 @@ fn decode_credentials(
     decoder.array(3)?;
     let user_id = decode_u32(decoder, "execution user ID")?;
     let primary_group_id = decode_u32(decoder, "execution primary group ID")?;
-    let group_count = bounded_array_len(decoder, MAX_EXECUTION_SUPPLEMENTARY_GROUPS)?;
+    let group_count = decoder.bounded_array_len(MAX_EXECUTION_SUPPLEMENTARY_GROUPS)?;
     let mut supplementary_group_ids = Vec::with_capacity(group_count);
     for _ in 0..group_count {
         supplementary_group_ids.push(decode_u32(decoder, "execution supplementary group ID")?);
@@ -554,16 +554,10 @@ fn decode_resource_admission(
     nested_limits: DecodeLimits,
 ) -> Result<ExecutionResourceAdmissionV1, CanonicalCborError> {
     decoder.array(5)?;
-    let requested = decode_bounded_vec(
-        decoder,
-        MAX_EXECUTION_RESOURCE_SETTINGS,
-        decode_resource_request,
-    )?;
-    let admitted = decode_bounded_vec(
-        decoder,
-        MAX_EXECUTION_RESOURCE_SETTINGS,
-        decode_resource_sublimit,
-    )?;
+    let requested =
+        decoder.bounded_vec(MAX_EXECUTION_RESOURCE_SETTINGS, decode_resource_request)?;
+    let admitted =
+        decoder.bounded_vec(MAX_EXECUTION_RESOURCE_SETTINGS, decode_resource_sublimit)?;
     let parent_profile = decode_resource_profile(decoder)?;
     let parent_commitment = ObjectDigest::from_bytes(exact_bytes(decoder, 32)?);
     let output_bytes = decode_output_byte_admission(decoder, nested_limits)?;
@@ -732,11 +726,7 @@ fn encode_resource_profile(encoder: &mut Encoder, profile: &ResourceProfile) {
 fn decode_resource_profile(
     decoder: &mut Decoder<'_>,
 ) -> Result<ResourceProfile, CanonicalCborError> {
-    let limits = decode_bounded_vec(
-        decoder,
-        MAX_EXECUTION_RESOURCE_SETTINGS,
-        decode_parent_limit,
-    )?;
+    let limits = decoder.bounded_vec(MAX_EXECUTION_RESOURCE_SETTINGS, decode_parent_limit)?;
     ResourceProfile::new(limits).map_err(|error| semantics("parent resource profile", error))
 }
 
@@ -913,8 +903,7 @@ fn decode_access_route(
                     InvalidExecutionSpec::InvalidPublicKey,
                 ));
             }
-            let capabilities = decode_bounded_vec(
-                decoder,
+            let capabilities = decoder.bounded_vec(
                 MAX_EXECUTION_ENDPOINT_CAPABILITIES,
                 decode_endpoint_capability,
             )?;
@@ -953,26 +942,18 @@ fn decode_base_environment(
     let mut decoder = Decoder::new(bytes, limits)?;
     decoder.array(5)?;
     decoder.exact("embedded base environment version", 1)?;
-    let closure = decode_bounded_vec(
-        &mut decoder,
-        MAX_EXECUTION_BASE_ENVIRONMENT_COLLECTION_ITEMS,
-        |decoder| decode_descriptor_for_role(decoder, DescriptorRole::EnvironmentClosure),
-    )?;
-    let variables = decode_bounded_vec(
-        &mut decoder,
+    let closure = decoder
+        .bounded_vec(MAX_EXECUTION_BASE_ENVIRONMENT_COLLECTION_ITEMS, |decoder| {
+            decode_descriptor_for_role(decoder, DescriptorRole::EnvironmentClosure)
+        })?;
+    let variables = decoder.bounded_vec(
         MAX_EXECUTION_ENVIRONMENT_ENTRIES,
         decode_base_environment_entry,
     )?;
-    let command_search_path = decode_bounded_vec(
-        &mut decoder,
-        MAX_EXECUTION_BASE_ENVIRONMENT_COLLECTION_ITEMS,
-        decode_path,
-    )?;
-    let required_features = decode_bounded_vec(
-        &mut decoder,
-        MAX_EXECUTION_BASE_ENVIRONMENT_FEATURES,
-        decode_feature,
-    )?;
+    let command_search_path =
+        decoder.bounded_vec(MAX_EXECUTION_BASE_ENVIRONMENT_COLLECTION_ITEMS, decode_path)?;
+    let required_features =
+        decoder.bounded_vec(MAX_EXECUTION_BASE_ENVIRONMENT_FEATURES, decode_feature)?;
     decoder.finish()?;
     Environment::new(closure, variables, command_search_path, required_features)
         .map_err(|error| semantics("embedded base environment", error))
@@ -995,7 +976,7 @@ fn encode_path(encoder: &mut Encoder, path: &RelativePath) {
 }
 
 fn decode_path(decoder: &mut Decoder<'_>) -> Result<RelativePath, CanonicalCborError> {
-    let components = decode_bounded_vec(decoder, RelativePath::MAX_COMPONENTS, |decoder| {
+    let components = decoder.bounded_vec(RelativePath::MAX_COMPONENTS, |decoder| {
         PathName::new(decoder.bytes(255)?.to_vec())
             .map_err(|error| semantics("working-directory component", error))
     })?;
@@ -1161,18 +1142,11 @@ fn decode_captured_output(
         (0, 1) => Ok(None),
         (1, 1) => Ok(Some(ExecutionCapturedOutputV1::Unavailable)),
         (2, 2) => Ok(Some(ExecutionCapturedOutputV1::Partial {
-            streams: decode_bounded_vec(
-                decoder,
-                MAX_EXECUTION_CAPTURED_STREAMS,
-                decode_captured_stream,
-            )?,
+            streams: decoder.bounded_vec(MAX_EXECUTION_CAPTURED_STREAMS, decode_captured_stream)?,
         })),
         (3, 2) => {
-            let streams = decode_bounded_vec(
-                decoder,
-                MAX_EXECUTION_CAPTURED_STREAMS,
-                decode_captured_stream,
-            )?;
+            let streams =
+                decoder.bounded_vec(MAX_EXECUTION_CAPTURED_STREAMS, decode_captured_stream)?;
             let converted: Result<
                 [CapturedStreamV1; MAX_EXECUTION_CAPTURED_STREAMS],
                 Vec<CapturedStreamV1>,
@@ -1281,32 +1255,6 @@ fn embedded_assignment_limits(parent: DecodeLimits, encoded_bytes: usize) -> Dec
 fn execution_item_limits(mut limits: DecodeLimits, maximum_total_items: usize) -> DecodeLimits {
     limits.maximum_total_items = limits.maximum_total_items.min(maximum_total_items);
     limits
-}
-
-fn bounded_array_len(
-    decoder: &mut Decoder<'_>,
-    maximum: usize,
-) -> Result<usize, CanonicalCborError> {
-    let offset = decoder.position();
-    let length = decoder.array_len()?;
-    if length > maximum {
-        Err(CanonicalCborError::CollectionTooLarge { offset })
-    } else {
-        Ok(length)
-    }
-}
-
-fn decode_bounded_vec<T>(
-    decoder: &mut Decoder<'_>,
-    maximum: usize,
-    mut decode: impl FnMut(&mut Decoder<'_>) -> Result<T, CanonicalCborError>,
-) -> Result<Vec<T>, CanonicalCborError> {
-    let length = bounded_array_len(decoder, maximum)?;
-    let mut values = Vec::with_capacity(length);
-    for _ in 0..length {
-        values.push(decode(decoder)?);
-    }
-    Ok(values)
 }
 
 fn decode_u16(decoder: &mut Decoder<'_>, object: &'static str) -> Result<u16, CanonicalCborError> {

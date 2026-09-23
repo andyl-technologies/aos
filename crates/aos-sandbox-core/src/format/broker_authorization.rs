@@ -64,12 +64,12 @@ pub fn decode_broker_authorization_plan(
     let assignment = decode_assignment(&mut decoder)?;
     let node = NodeId::from_bytes(exact_bytes::<16>(&mut decoder, 16)?);
     let ownership_authority = decode_key_reference(&mut decoder)?;
-    let grants = decode_bounded_vec(&mut decoder, 1_024, decode_grant)?;
+    let grants = decoder.bounded_vec(1_024, decode_grant)?;
     let policy_commitment = ObjectDigest::from_bytes(exact_bytes::<32>(&mut decoder, 32)?);
     let revocation_scope = RevocationScopeId::from_bytes(exact_bytes::<16>(&mut decoder, 16)?);
     let issued_seconds = decoder.signed()?;
     let expires_seconds = decoder.signed()?;
-    let required_features = decode_bounded_vec(&mut decoder, 64, decode_feature)?;
+    let required_features = decoder.bounded_vec(64, decode_feature)?;
     decoder.finish()?;
 
     BrokerAuthorizationPlan::new(
@@ -189,23 +189,6 @@ fn decode_target(decoder: &mut Decoder<'_>) -> Result<BrokerGrantTarget, Canonic
             offset,
         }),
     }
-}
-
-fn decode_bounded_vec<T>(
-    decoder: &mut Decoder<'_>,
-    maximum: usize,
-    mut decode: impl FnMut(&mut Decoder<'_>) -> Result<T, CanonicalCborError>,
-) -> Result<Vec<T>, CanonicalCborError> {
-    let offset = decoder.position();
-    let length = decoder.array_len()?;
-    if length > maximum {
-        return Err(CanonicalCborError::CollectionTooLarge { offset });
-    }
-    let mut values = Vec::with_capacity(length);
-    for _ in 0..length {
-        values.push(decode(decoder)?);
-    }
-    Ok(values)
 }
 
 const fn audience_code(audience: BrokerAudience) -> u64 {
@@ -654,7 +637,7 @@ mod tests {
         let bytes = encoder.finish();
         let mut decoder = Decoder::new(&bytes, DecodeLimits::default())
             .unwrap_or_else(|error| panic!("test decoder failed: {error}"));
-        let result: Result<Vec<()>, _> = decode_bounded_vec(&mut decoder, 1_024, |_decoder| {
+        let result: Result<Vec<()>, _> = decoder.bounded_vec(1_024, |_decoder| {
             panic!("oversized collection must fail before element decode")
         });
         assert!(matches!(

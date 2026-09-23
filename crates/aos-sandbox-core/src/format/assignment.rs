@@ -74,22 +74,16 @@ pub fn decode_assignment_manifest_v1(
     let policy = decode_descriptor(&mut decoder)?;
     let environment = decode_descriptor(&mut decoder)?;
     let root_view = decode_descriptor(&mut decoder)?;
-    let source_commitments = decode_bounded_vec(
-        &mut decoder,
-        MAX_ASSIGNMENT_SOURCE_COMMITMENTS,
-        decode_descriptor,
-    )?;
+    let source_commitments =
+        decoder.bounded_vec(MAX_ASSIGNMENT_SOURCE_COMMITMENTS, decode_descriptor)?;
     let resource_commitment = ObjectDigest::from_bytes(exact_bytes(&mut decoder, 32)?);
     decoder.array(ResourceDimension::COUNT)?;
     let mut reservations = [0_u64; ResourceDimension::COUNT];
     for amount in &mut reservations {
         *amount = decoder.unsigned()?;
     }
-    let required_features = decode_bounded_vec(
-        &mut decoder,
-        MAX_ASSIGNMENT_REQUIRED_FEATURES,
-        decode_feature,
-    )?;
+    let required_features =
+        decoder.bounded_vec(MAX_ASSIGNMENT_REQUIRED_FEATURES, decode_feature)?;
     decoder.finish()?;
 
     AssignmentManifestV1::new(
@@ -121,26 +115,9 @@ fn encode_ids(encoder: &mut Encoder, identities: &[SandboxId]) {
 }
 
 fn decode_ids(decoder: &mut Decoder<'_>) -> Result<Vec<SandboxId>, CanonicalCborError> {
-    decode_bounded_vec(decoder, MAX_ANCESTRY_DEPTH, |decoder| {
+    decoder.bounded_vec(MAX_ANCESTRY_DEPTH, |decoder| {
         exact_bytes(decoder, 16).map(SandboxId::from_bytes)
     })
-}
-
-fn decode_bounded_vec<T>(
-    decoder: &mut Decoder<'_>,
-    maximum: usize,
-    decode: fn(&mut Decoder<'_>) -> Result<T, CanonicalCborError>,
-) -> Result<Vec<T>, CanonicalCborError> {
-    let offset = decoder.position();
-    let length = decoder.array_len()?;
-    if length > maximum {
-        return Err(CanonicalCborError::CollectionTooLarge { offset });
-    }
-    let mut values = Vec::with_capacity(length);
-    for _ in 0..length {
-        values.push(decode(decoder)?);
-    }
-    Ok(values)
 }
 
 #[cfg(test)]

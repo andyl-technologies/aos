@@ -410,6 +410,32 @@ impl<'a> Decoder<'a> {
         self.collection_length(head)
     }
 
+    pub(crate) fn bounded_array_len(
+        &mut self,
+        maximum: usize,
+    ) -> Result<usize, CanonicalCborError> {
+        let offset = self.position;
+        let length = self.array_len()?;
+        if length > maximum {
+            Err(CanonicalCborError::CollectionTooLarge { offset })
+        } else {
+            Ok(length)
+        }
+    }
+
+    pub(crate) fn bounded_vec<T>(
+        &mut self,
+        maximum: usize,
+        mut decode: impl FnMut(&mut Self) -> Result<T, CanonicalCborError>,
+    ) -> Result<Vec<T>, CanonicalCborError> {
+        let length = self.bounded_array_len(maximum)?;
+        let mut values = Vec::with_capacity(length);
+        for _ in 0..length {
+            values.push(decode(self)?);
+        }
+        Ok(values)
+    }
+
     pub(crate) fn bytes(&mut self, maximum: usize) -> Result<&'a [u8], CanonicalCborError> {
         let head = self.read_head()?;
         if head.major != 2 {
