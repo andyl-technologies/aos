@@ -85,8 +85,9 @@ bypass recovery.
 
 The packaged CLI and direct registered clients can use public reads, watch,
 and mutation admission through this endpoint. `CacheUnpin` has a completing
-controller effect, while `CachePin` and `ExecutionControl` still admit without
-one; other effect paths require their own production and qualification checks.
+controller effect. `CachePin` can cold-recover an existing protected acquisition,
+but fresh pins and `ExecutionControl` still admit without completing effects;
+other effect paths require their own production and qualification checks.
 Do not infer operation completion from an accepted mutation response.
 
 The service-UID VM qualification exercises protected credential loading,

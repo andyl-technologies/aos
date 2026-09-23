@@ -306,7 +306,9 @@ the outstanding work concrete:
   production handlers. `CacheUnpin` now drains every retained partition pin
   through protected and physical owners, retains ambiguous in-process custody,
   and cold-reconciles released tombstones before completing. `ExecutionControl`
-  and `CachePin` still admit but fall through to a retry-only controller effect.
+  still admits but falls through to a retry-only controller effect. `CachePin`
+  can cold-recover an existing protected acquisition and its exact physical
+  pin, but a fresh acquisition remains retry-only.
   Cache pin admission fences the named view or attachment to its project and
   current resource version, and the source-membership and protected pin helpers
   exist. A protected, project-scoped sealed source adapter can stream exact

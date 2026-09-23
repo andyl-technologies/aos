@@ -112,6 +112,7 @@ use aos_sandbox::{
     public_operation_resource_from_journal_v1,
 };
 
+mod cache_pin;
 mod cache_unpin;
 mod public_api;
 mod public_hierarchy;
@@ -1535,6 +1536,7 @@ struct ProductionEffectExecutor {
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
     cache_physical_limits: Option<CacheOwnerLimitsV1>,
+    pending_cache_pin: Option<cache_pin::PendingControllerCachePinV1>,
     pending_cache_unpin: Option<cache_unpin::PendingControllerCacheUnpinV1>,
     controller_uid: u32,
     transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
@@ -1581,6 +1583,7 @@ impl ProductionEffectExecutor {
             cache_inventory: None,
             cache_physical: None,
             cache_physical_limits: None,
+            pending_cache_pin: None,
             pending_cache_unpin: None,
             controller_uid,
             transfer_inventory: None,
@@ -3464,6 +3467,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.ensure_cache_physical_owner()?;
             self.recover_pending_cache_unpin(operation_id)?;
         }
+        if self.pending_cache_pin.is_some() {
+            self.ensure_cache_physical_owner()?;
+            self.recover_pending_cache_pin(operation_id)?;
+        }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
@@ -3536,6 +3543,12 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         } else {
             None
         };
+        if matches!(&request, DormantSandboxRequestKindV1::CachePin(_)) {
+            let consumer = cache_consumer.as_ref().ok_or_else(|| {
+                EffectFailure::Permanent("cache pin consumer is unavailable".to_owned())
+            })?;
+            return self.recover_public_cache_pin(operation_id, consumer);
+        }
         if matches!(&request, DormantSandboxRequestKindV1::CacheUnpin(_)) {
             let consumer = cache_consumer.as_ref().ok_or_else(|| {
                 EffectFailure::Permanent("cache unpin consumer is unavailable".to_owned())
