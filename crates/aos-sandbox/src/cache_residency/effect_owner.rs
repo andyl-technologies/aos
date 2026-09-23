@@ -1329,15 +1329,12 @@ impl DormantCacheOwnerV1 {
     pub fn acquire_pin(
         &mut self,
         admission: CacheOwnerPinAdmissionV1,
-        id: CacheOwnerPinIdV1,
-        partition: PhysicalPartitionId,
-        descriptor: &ObjectDescriptor,
     ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
         self.ensure_unfenced()?;
+        let id = admission.id;
+        let partition = admission.partition;
+        let descriptor = &admission.descriptor;
         if admission.action != CacheOwnerPinActionV1::Acquire
-            || admission.id != id
-            || admission.partition != partition
-            || admission.descriptor != *descriptor
             || admission.predecessor != self.currentness()
             || admission.maximum_pins != self.limits.maximum_pins
             || admission.maximum_pinned_bytes != self.limits.maximum_pinned_bytes
@@ -1379,16 +1376,15 @@ impl DormantCacheOwnerV1 {
     pub fn release_pin(
         &mut self,
         admission: CacheOwnerPinAdmissionV1,
-        id: CacheOwnerPinIdV1,
     ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
         self.ensure_unfenced()?;
+        let id = admission.id;
         let key = self
             .pin_index
             .get(&id)
             .ok_or(CacheOwnerErrorV1::InvalidPin)?
             .clone();
         if admission.action != CacheOwnerPinActionV1::Release
-            || admission.id != id
             || admission.partition.digest() != key.partition
             || admission.descriptor != key.descriptor
             || admission.predecessor != self.currentness()

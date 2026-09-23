@@ -5,16 +5,134 @@ use std::sync::Arc;
 use aos_sandbox_core::{AttachmentId, ObjectDescriptor, OperationId, ProjectId, ViewId};
 
 use super::{
-    CacheAuthorityPurposeV1, CachePinV1, CacheRecoveryInventoryV1,
+    CacheAuthorityPurposeV1, CachePinV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1,
     CacheResidencyAuthorityRequestV1, CacheResidencyCommitOutcomeV1,
     CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalV1,
     CacheResidencyProtectedOwnerV1, PhysicalPartitionId, ProtectedDomainJournalErrorV1,
     ValidatedCacheResidencyPostcommitV1,
 };
-use crate::cache_residency::{CachePinKindV1, protected_journal::reconstruct_cache_history};
+use crate::cache_residency::{
+    CachePinId, CachePinKindV1, CachePinLedgerV1, CatalogPresenceV1,
+    ValidatedPublicLogicalPinAcquisitionV1,
+    protected_journal::{LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS, reconstruct_cache_history},
+};
 use crate::production_operation_compiler::RecheckedCacheConsumerV1;
+use crate::production_operation_compiler::recheck_cache_consumer_projection_v1;
+
+/// Classifies a public acquisition without treating a no-op as a new pin event.
+#[must_use = "physical owner state and protected commit outcomes require settlement"]
+pub enum PublicLogicalPinAcquisitionCommitV1<R> {
+    /// The sole retained pin already has this clock tick's maximum lease.
+    Retained(CachePinV1),
+    /// A new pin or renewal reached the protected commit path.
+    Committed {
+        /// Exact protected commit outcome, including ambiguous recovery custody.
+        outcome: CacheResidencyCommitOutcomeV1,
+        /// Current postcommit result, absent when protected authority is ambiguous.
+        handoff: Option<R>,
+    },
+}
 
 impl CacheResidencyProtectedOwnerV1 {
+    /// Commits one source-proven public logical pin acquisition or renewal.
+    ///
+    /// The caller must hold the authenticated View/index inputs. This method
+    /// rechecks the same source journal and request inside the protected
+    /// authority callback before sealing the pin. A new pin also
+    /// requires physical owner admission from the postcommit callback before
+    /// public completion; renewal must not acquire a second owner pin.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent or nonresident catalog entry, incompatible renewal,
+    /// exhausted pin identity, stale authority, or failed protected commit.
+    pub fn commit_public_logical_pin_acquisition<R>(
+        &mut self,
+        transaction_id: [u8; 16],
+        acquisition: &ValidatedPublicLogicalPinAcquisitionV1<'_, '_, '_, '_>,
+        operation: OperationId,
+        source_journal: &crate::Journal,
+        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+    ) -> Result<PublicLogicalPinAcquisitionCommitV1<R>, CacheResidencyProtectedJournalErrorV1> {
+        let inventory = self.reconstructed_partition(acquisition.partition())?;
+        let (id, previous) = select_public_logical_pin_id(&inventory, acquisition)?;
+        let now = self.authority.current_unix_seconds()?;
+        let maximum_current_lease = now
+            .checked_add(LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS)
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if let Some(previous) = previous
+            && previous.lease_valid_until >= maximum_current_lease
+        {
+            let current = recheck_cache_consumer_projection_v1(
+                source_journal,
+                acquisition.project(),
+                request,
+            )
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+            if current != *acquisition.consumer() {
+                return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+            }
+            let retained = self.retained_logical_pin(
+                acquisition.partition(),
+                acquisition.object(),
+                acquisition.project(),
+                acquisition.view(),
+                acquisition.attachment(),
+            )?;
+            if retained.as_ref() != Some(&previous) {
+                return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+            }
+            return Ok(PublicLogicalPinAcquisitionCommitV1::Retained(previous));
+        }
+        let (record_key, valid_until) = self
+            .authority
+            .issue_logical_pin_acquire_record(acquisition, id)?;
+        let authority_request =
+            CacheResidencyAuthorityRequestV1::new(CacheAuthorityPurposeV1::PinAcquire, record_key)
+                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let (sandbox, incarnation, assignment_epoch) = acquisition.runtime_fields();
+
+        let (outcome, handoff) = self.commit_authorized_pin_acquisition(
+            transaction_id,
+            vec![authority_request],
+            |controller| {
+                let current = recheck_cache_consumer_projection_v1(
+                    source_journal,
+                    acquisition.project(),
+                    request,
+                )
+                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+                if current != *acquisition.consumer() {
+                    return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+                }
+                let capability = controller
+                    .capability(0)
+                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+                let pin = CachePinV1::from_verified(
+                    controller.owner(),
+                    capability,
+                    id,
+                    acquisition.partition(),
+                    acquisition.object().clone(),
+                    acquisition.project(),
+                    acquisition.view(),
+                    acquisition.attachment(),
+                    sandbox,
+                    incarnation,
+                    CachePinKindV1::LogicalLease,
+                    assignment_epoch,
+                    valid_until,
+                    controller.current_unix_seconds(),
+                )
+                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+                controller.seal_logical_pin_acquisition(&inventory, pin, operation)
+            },
+            handoff,
+        )?;
+        Ok(PublicLogicalPinAcquisitionCommitV1::Committed { outcome, handoff })
+    }
+
     /// Commits one public logical-pin release under its exact protected drain record.
     ///
     /// The postcommit callback can turn a confirmed release into a physical
@@ -172,4 +290,63 @@ impl CacheResidencyProtectedOwnerV1 {
             Ok(retained)
         })
     }
+}
+
+fn select_public_logical_pin_id(
+    inventory: &CacheRecoveryInventoryV1,
+    acquisition: &ValidatedPublicLogicalPinAcquisitionV1<'_, '_, '_, '_>,
+) -> Result<(CachePinId, Option<CachePinV1>), CacheResidencyProtectedJournalErrorV1> {
+    if inventory.authority_poisoned
+        || inventory.global.node_quota.partition != acquisition.partition()
+    {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+    }
+    let mut matching_catalogs = inventory.reconstructed.iter().filter(|payload| {
+        payload.plan.partition == acquisition.partition()
+            && payload.plan.project == acquisition.project()
+            && &payload.plan.descriptor == acquisition.object()
+            && payload
+                .catalog
+                .as_ref()
+                .is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
+    });
+    if matching_catalogs.next().is_none() || matching_catalogs.next().is_some() {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+    }
+
+    let active = inventory
+        .reconstructed
+        .iter()
+        .flat_map(|payload| payload.pins.iter().cloned());
+    let released = inventory
+        .reconstructed
+        .iter()
+        .flat_map(|payload| payload.released_pins.iter().cloned());
+    let ledger = CachePinLedgerV1::replay(
+        CacheRecoveryLimitsV1::default().maximum_records,
+        inventory.global.pin_floor,
+        active,
+        released,
+    )
+    .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    if let Some(previous) = ledger.logical_consumer_pin(
+        acquisition.partition(),
+        acquisition.object(),
+        acquisition.project(),
+        acquisition.view(),
+        acquisition.attachment(),
+    ) {
+        let (sandbox, incarnation, assignment_epoch) = acquisition.runtime_fields();
+        if previous.sandbox != sandbox
+            || previous.incarnation != incarnation
+            || previous.assignment_epoch != assignment_epoch
+        {
+            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+        }
+        return Ok((previous.id(), Some(previous.clone())));
+    }
+    ledger
+        .next_pin_id()
+        .map(|id| (id, None))
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord.into())
 }

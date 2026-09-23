@@ -9,6 +9,7 @@ license.workspace = true
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 
 [dependencies]
+aos-filesystem-view-core.workspace = true
 aos-proto.workspace = true
 aos-sandbox-agent.workspace = true
 aos-sandbox-core.workspace = true

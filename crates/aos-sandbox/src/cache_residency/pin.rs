@@ -237,6 +237,46 @@ pub struct ReleasedCachePinV1 {
 }
 
 impl CachePinV1 {
+    // The authority issuer uses this same subject binding before the pin
+    // exists; `from_verified` independently checks it against the capability.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn logical_acquisition_scope(
+        id: CachePinId,
+        partition: PhysicalPartitionId,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+        sandbox: Option<SandboxId>,
+        incarnation: Option<IncarnationId>,
+        assignment_epoch: u64,
+        lease_valid_until: u64,
+    ) -> Result<CacheAuthorityScopeV1, PinError> {
+        let subject = pin_subject_fields(
+            id,
+            partition,
+            object,
+            project,
+            view,
+            attachment,
+            sandbox,
+            incarnation,
+            CachePinKindV1::LogicalLease,
+            assignment_epoch,
+            lease_valid_until,
+        );
+        CacheAuthorityScopeV1::new(
+            partition,
+            subject,
+            None,
+            subject,
+            partition.backing().root(),
+            assignment_epoch.max(1),
+            lease_valid_until,
+        )
+        .map_err(PinError::from)
+    }
+
     pub(crate) const fn authority_binding(&self) -> (CacheAuthorityScopeV1, ObjectDigest) {
         (self.authority_scope, self.evidence)
     }

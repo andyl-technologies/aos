@@ -1379,6 +1379,7 @@ enum CacheConsumerMutationV1 {
 /// residency evidence. It carries the consumer identity needed to select
 /// retained obligations and, for acquisition, the exact desired-state fence
 /// that a separately authenticated View source must match.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecheckedCacheConsumerV1 {
     object: ObjectDescriptor,
     project: ProjectId,
@@ -1391,6 +1392,7 @@ pub struct RecheckedCacheConsumerV1 {
 ///
 /// The revision and runtime fields must be joined to independent source and
 /// protected Cache authority before a pin can be installed.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecheckedCacheAcquisitionFenceV1 {
     view_revision: ObjectDescriptor,
     view_generation: u64,
@@ -1398,6 +1400,7 @@ pub struct RecheckedCacheAcquisitionFenceV1 {
 }
 
 /// Retains the attached runtime identity checked for cache pin acquisition.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecheckedCacheRuntimeFenceV1 {
     sandbox: SandboxId,
     incarnation: IncarnationId,

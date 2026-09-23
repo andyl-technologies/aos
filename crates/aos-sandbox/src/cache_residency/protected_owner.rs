@@ -46,6 +46,7 @@ use super::{
 mod pin_lookup;
 mod provisioning;
 
+pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 pub(crate) use provisioning::validate_genesis_checkpoint;
 
 const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";

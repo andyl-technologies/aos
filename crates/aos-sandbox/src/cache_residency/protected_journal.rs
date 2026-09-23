@@ -37,6 +37,7 @@ use super::{
 
 mod pin_effect;
 mod provisioning;
+pub(crate) use provisioning::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS;
 
 use pin_effect::{
     CurrentPhysicalPinActionV1, CurrentPhysicalPinEffectV1, current_physical_pin_effect,

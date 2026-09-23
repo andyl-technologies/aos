@@ -6,10 +6,10 @@
 
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::CachePinV1;
 use crate::cache_residency::protected_owner::{
     CACHE_MANIFEST_KEY_PREFIX, MAXIMUM_CACHE_MANIFESTS, encode_cache_replay_manifest,
 };
+use crate::cache_residency::{CachePinId, CachePinV1, ValidatedPublicLogicalPinAcquisitionV1};
 use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
@@ -19,10 +19,51 @@ use super::{
     PhysicalPartitionId, ProtectedCacheResidencyReplayAuthorityV1,
 };
 
+const LOGICAL_PIN_ACQUIRE_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-acquire.v1/";
+pub(crate) const LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS: u64 = 120;
 const LOGICAL_PIN_DRAIN_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-drain.v1/";
 const LOGICAL_PIN_DRAIN_LIFETIME_SECONDS: u64 = 120;
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    // Read the protected clock floor before classifying same-tick renewals.
+    pub(crate) fn current_unix_seconds(
+        &self,
+    ) -> Result<u64, CacheResidencyProtectedJournalErrorV1> {
+        self.current_time.current_unix_seconds()
+    }
+
+    /// Issues short-lived acquisition authority only for a joined public source proof.
+    ///
+    /// A partition-local key fences an earlier acquisition whenever a new pin
+    /// or renewal is selected. The protected Pin transaction must separately
+    /// replay the catalog and retained pin ledger before it can commit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale time, malformed pin scope, conflicting authority, or an
+    /// unconfirmed authority-journal append.
+    pub(crate) fn issue_logical_pin_acquire_record(
+        &self,
+        acquisition: &ValidatedPublicLogicalPinAcquisitionV1<'_, '_, '_, '_>,
+        pin: CachePinId,
+    ) -> Result<(Vec<u8>, u64), CacheResidencyProtectedJournalErrorV1> {
+        let now = self.current_time.current_unix_seconds()?;
+        let valid_until = now
+            .checked_add(LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS)
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let scope = acquisition
+            .authority_scope(pin, valid_until)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let record_key = self.issue_logical_pin_record(
+            CacheAuthorityPurposeV1::PinAcquire,
+            scope,
+            acquisition.partition(),
+            LOGICAL_PIN_ACQUIRE_KEY_PREFIX,
+            b"aos.sandbox.cache-residency.logical-pin-acquire-authority.v1\0",
+        )?;
+        Ok((record_key, valid_until))
+    }
+
     /// Issues one short-lived, partition-scoped drain record for a checked logical pin.
     ///
     /// The caller must first match the pin against both the rechecked public
@@ -45,10 +86,26 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         let scope = pin
             .logical_drain_scope(valid_until)
             .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        let mut record_key = Vec::with_capacity(LOGICAL_PIN_DRAIN_KEY_PREFIX.len() + 32);
-        record_key.extend_from_slice(LOGICAL_PIN_DRAIN_KEY_PREFIX);
-        record_key.extend_from_slice(pin.partition.digest().as_bytes());
+        self.issue_logical_pin_record(
+            CacheAuthorityPurposeV1::PinDrain,
+            scope,
+            pin.partition,
+            LOGICAL_PIN_DRAIN_KEY_PREFIX,
+            b"aos.sandbox.cache-residency.logical-pin-drain-authority.v1\0",
+        )
+    }
 
+    fn issue_logical_pin_record(
+        &self,
+        purpose: CacheAuthorityPurposeV1,
+        scope: super::CacheAuthorityScopeV1,
+        partition: PhysicalPartitionId,
+        key_prefix: &[u8],
+        transaction_domain: &[u8],
+    ) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {
+        let mut record_key = Vec::with_capacity(key_prefix.len() + 32);
+        record_key.extend_from_slice(key_prefix);
+        record_key.extend_from_slice(partition.digest().as_bytes());
         let mut journal = self
             .journal
             .lock()
@@ -57,21 +114,21 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         let owner =
             CacheAuthorityOwner::new(&authority, self.owner_scope, self.maximum_record_bytes)
                 .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        let record = owner.canonical_record(CacheAuthorityPurposeV1::PinDrain, scope);
+        let record = owner.canonical_record(purpose, scope);
         let previous = authority.get(&record_key)?.map(ToOwned::to_owned);
         if previous.as_deref() == Some(record.as_slice()) {
             return Ok(record_key);
         }
         if previous.is_some()
             && owner
-                .verify_current_record_for_purpose(CacheAuthorityPurposeV1::PinDrain, &record_key)
+                .verify_current_record_for_purpose(purpose, &record_key)
                 .is_err()
         {
             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
         }
 
         let digest = Sha256::new()
-            .chain_update(b"aos.sandbox.cache-residency.logical-pin-drain-authority.v1\0")
+            .chain_update(transaction_domain)
             .chain_update(&record_key)
             .chain_update(previous.as_deref().unwrap_or_default())
             .chain_update(record)

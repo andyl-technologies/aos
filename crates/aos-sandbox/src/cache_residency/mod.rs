@@ -31,6 +31,7 @@ pub mod format;
 pub mod pin;
 mod protected_journal;
 mod protected_owner;
+mod public_pin;
 pub mod read_authority;
 pub mod recovery;
 pub mod scrub;
@@ -113,8 +114,9 @@ pub(crate) use protected_owner::CacheLifecycleBootInventoryV1;
 pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
-    CacheResidencyProtectedOwnerV1,
+    CacheResidencyProtectedOwnerV1, PublicLogicalPinAcquisitionCommitV1,
 };
+pub use public_pin::{PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};
 pub use read_authority::{
     CurrentReadAuthorityV1, DescriptorHandoffPlanV1, DescriptorHandoffReceiptV1,
     ReadAuthorityError, ReadBackingObservationV1, confirm_descriptor_handoff,

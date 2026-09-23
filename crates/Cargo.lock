@@ -828,6 +828,7 @@ dependencies = [
 name = "aos-sandbox"
 version = "0.1.0"
 dependencies = [
+ "aos-filesystem-view-core",
  "aos-proto",
  "aos-sandbox-agent",
  "aos-sandbox-core",
