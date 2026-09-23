@@ -25,6 +25,7 @@ pub struct CampaignSupervisor<P, E> {
     worker_slots: u32,
     next_worker_slot: u32,
     planner_pending: bool,
+    private_target_attempt: Option<AttemptId>,
 }
 
 impl<P, E> CampaignSupervisor<P, E> {
@@ -69,7 +70,16 @@ impl<P, E> CampaignSupervisor<P, E> {
             worker_slots,
             next_worker_slot: 0,
             planner_pending: false,
+            private_target_attempt: None,
         })
+    }
+
+    /// Suppresses planner and discovery work for one private finding-branch attempt.
+    #[must_use]
+    pub fn for_private_target_attempt(mut self, target: AttemptId) -> Self {
+        self.executor = self.executor.for_private_target_attempt(target);
+        self.private_target_attempt = Some(target);
+        self
     }
 
     /// Advances the campaign by at most one checked component operation.
@@ -179,7 +189,7 @@ impl<P, E> CampaignSupervisor<P, E> {
         P: PlannerService,
         E: ExecutorControlService + ExecutorResumeService,
     {
-        if self.planner_pending {
+        if self.private_target_attempt.is_none() && self.planner_pending {
             self.planner_pending = false;
             let outcome = self
                 .planner
@@ -193,7 +203,9 @@ impl<P, E> CampaignSupervisor<P, E> {
             .executor
             .step(self.campaign.as_str(), worker_slot)
             .map_err(CampaignSupervisorError::Executor)?;
-        if matches!(outcome, CampaignExecutorStepOutcome::Idle { .. }) {
+        if self.private_target_attempt.is_none()
+            && matches!(outcome, CampaignExecutorStepOutcome::Idle { .. })
+        {
             if let Some(attempt) = self
                 .repository
                 .admit_initial_discovery_if_ready(self.campaign.as_str())?

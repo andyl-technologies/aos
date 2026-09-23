@@ -264,6 +264,43 @@ impl ClaimableAttemptPage {
 }
 
 impl CampaignRepository {
+    pub(crate) fn project_target_claimable_attempt(
+        &self,
+        name: &str,
+        target: AttemptId,
+    ) -> Result<ClaimableAttemptPage, CampaignRepositoryError> {
+        let head = self.head(name)?;
+        let roots = head.snapshot().roots();
+        let attempt = self.merkle.get(
+            roots.accounting,
+            map_key_content("accounting.attempt", target.content_id()),
+        )?;
+        let claimable = if let Some(content) = attempt {
+            if self.read_attempt(content)?.id()? != target {
+                return Err(integrity("target-attempt-accounting-mismatch"));
+            }
+            self.merkle
+                .get(
+                    roots.observations,
+                    map_key_content("observations.attempt", target.content_id()),
+                )?
+                .is_none()
+                && self
+                    .merkle
+                    .get(roots.accounting, non_modeled_attempt_key(target))?
+                    .is_none()
+        } else {
+            false
+        };
+
+        Ok(ClaimableAttemptPage {
+            snapshot: head.snapshot_id(),
+            attempts: if claimable { vec![target] } else { Vec::new() },
+            scanned_entries: usize::from(attempt.is_some()),
+            next: None,
+        })
+    }
+
     /// Projects one bounded page of admitted attempts lacking terminal results.
     ///
     /// The scan limit bounds accounting entries examined, rather than results,

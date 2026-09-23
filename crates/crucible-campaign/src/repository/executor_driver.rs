@@ -41,6 +41,7 @@ pub struct CampaignExecutorDriver<S> {
     resources: AttemptResourceLimits,
     retention: ExecutionRetentionIntent,
     scan_limit: usize,
+    private_target_attempt: Option<AttemptId>,
     cursor: Option<AttemptQueueCursor>,
     settled_snapshot: Option<CampaignSnapshotId>,
     active_executions: BTreeMap<WorkerSlotId, ActiveExecutionPoll>,
@@ -106,6 +107,7 @@ impl<S> CampaignExecutorDriver<S> {
             resources,
             retention,
             scan_limit,
+            private_target_attempt: None,
             cursor: None,
             settled_snapshot: None,
             active_executions: BTreeMap::new(),
@@ -119,6 +121,13 @@ impl<S> CampaignExecutorDriver<S> {
             capture_by_slot: BTreeMap::new(),
             active_captures: BTreeMap::new(),
         })
+    }
+
+    /// Restricts a private finding-branch executor to one admitted attempt.
+    #[must_use]
+    pub fn for_private_target_attempt(mut self, target: AttemptId) -> Self {
+        self.private_target_attempt = Some(target);
+        self
     }
 
     fn incorporate_completed_observation(
@@ -199,7 +208,9 @@ impl<S> CampaignExecutorDriver<S> {
         // An already-owned semantic attempt keeps polling priority. A capture
         // reservation also stays with its slot until it resolves. New capture
         // and semantic admissions alternate after transient capture failures.
-        if self.queue.reservation_for_slot(worker_slot).is_none() {
+        if self.private_target_attempt.is_none()
+            && self.queue.reservation_for_slot(worker_slot).is_none()
+        {
             if let Some(reservation) = self.capture_reservation_for_slot(worker_slot) {
                 return self.step_savepoint_capture(campaign, reservation);
             }
@@ -279,11 +290,16 @@ impl<S> CampaignExecutorDriver<S> {
                 {
                     self.cursor = None;
                 }
-                let page = self.repository.project_claimable_attempts(
-                    campaign,
-                    self.cursor,
-                    self.scan_limit,
-                )?;
+                let page = match self.private_target_attempt {
+                    Some(target) => self
+                        .repository
+                        .project_target_claimable_attempt(campaign, target)?,
+                    None => self.repository.project_claimable_attempts(
+                        campaign,
+                        self.cursor,
+                        self.scan_limit,
+                    )?,
+                };
                 if page.snapshot() != head.snapshot_id() {
                     self.cursor = None;
                     self.settled_snapshot = None;

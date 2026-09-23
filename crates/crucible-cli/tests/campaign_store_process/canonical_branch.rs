@@ -3,11 +3,11 @@
 use std::io::Write;
 
 use crucible_campaign::{
-    AttemptId, CampaignArchiveManifestId, CampaignPrincipalAuthorizer, CampaignRepository,
-    CampaignServiceOperation, ChoiceDomain, ChoiceValue, FindingId, ObservationId, StopCondition,
-    StopOutcome,
+    AttemptId, CampaignArchiveManifestId, CampaignFact, CampaignPrincipalAuthorizer,
+    CampaignRecordKind, CampaignRepository, CampaignServiceOperation, ChoiceDomain, ChoiceValue,
+    FindingId, ObjectEnvelope, ObservationId, StopCondition, StopOutcome,
 };
-use crucible_cas::content_store::DirectoryRefBackend;
+use crucible_cas::content_store::{DirectoryRefBackend, ImmutableBlobBackend};
 use crucible_session::engine::Decision;
 
 use super::*;
@@ -146,10 +146,67 @@ pub(super) fn run_imported_canonical_branch(
         observed.stop(),
         &StopOutcome::Reached(StopCondition::NextChoice)
     );
+    let inherited_claimable = executed.project_claimable_attempts(SOURCE_NAME, None, 10_000)?;
+    let final_claimable = executed.project_claimable_attempts(BRANCH_NAME, None, 10_000)?;
+    assert!(inherited_claimable.next().is_none());
+    assert!(final_claimable.next().is_none());
+    assert!(
+        inherited_claimable
+            .attempts()
+            .iter()
+            .all(|inherited| final_claimable.attempts().contains(inherited))
+    );
+    assert!(!final_claimable.attempts().contains(&attempt));
+    assert_private_branch_transitions(&executed, &output, observation)?;
     assert!(output.join("branch-report.json").is_file());
     println!("finding_bundle_canonical_branch_executed=true");
     println!("finding_bundle_source_owner_absent=true");
     println!("finding_bundle_original_archive_unchanged=true");
+    Ok(())
+}
+
+fn assert_private_branch_transitions(
+    repository: &CampaignRepository,
+    output: &Path,
+    expected_observation: ObservationId,
+) -> Result<(), Box<dyn Error>> {
+    let objects =
+        DirectoryBlobBackend::new("branch-transition-audit", output.join("state/objects"));
+    let mut snapshot = repository.head(BRANCH_NAME)?.snapshot_id();
+    let mut reached_derivation = false;
+    let mut credited_observations = 0;
+    for _ in 0..256 {
+        let current = repository.snapshot_in_campaign(BRANCH_NAME, snapshot)?;
+        let transition = current
+            .transition()
+            .ok_or("private branch has no transition")?;
+        let blob = objects.read(transition.content_id(), None)?;
+        let bytes = blob.read_all(1024 * 1024)?;
+        let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
+        assert_eq!(envelope.record_kind(), CampaignRecordKind::Fact);
+        match CampaignFact::from_canonical_bytes(envelope.body())? {
+            CampaignFact::CampaignDerived(_) => {
+                reached_derivation = true;
+                break;
+            }
+            CampaignFact::ObservationCredited(observation) => {
+                assert_eq!(observation, expected_observation);
+                credited_observations += 1;
+            }
+            CampaignFact::ObjectiveEvaluationPublished(_) => {
+                return Err("private branch published inherited objective work".into());
+            }
+            _ => {}
+        }
+        snapshot = current
+            .parent()
+            .ok_or("private branch transition has no parent")?;
+    }
+    assert!(
+        reached_derivation,
+        "private branch derivation was not reached"
+    );
+    assert_eq!(credited_observations, 1);
     Ok(())
 }
 

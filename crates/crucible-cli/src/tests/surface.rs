@@ -2042,7 +2042,7 @@ schedule = {:?}
     invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
     invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
     fs::write(&component_authority, invalid_authority_bytes).expect("replace component authority");
-    let error = match open_local_campaign_service(args, None, None) {
+    let error = match open_local_campaign_service(args, None, None, None) {
         Ok(_) => panic!("equal component authorities must fail before bind"),
         Err(error) => error,
     };
@@ -2110,7 +2110,7 @@ principal = "operator"
     let Commands::Serve(args) = &cli.command else {
         panic!("expected serve command");
     };
-    let error = match open_local_campaign_service(args, None, None) {
+    let error = match open_local_campaign_service(args, None, None, None) {
         Ok(_) => panic!("malformed campaign import must fail"),
         Err(error) => error,
     };

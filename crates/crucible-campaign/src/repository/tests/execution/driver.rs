@@ -235,6 +235,97 @@ fn claimable_attempt_pages_are_bounded_snapshot_bound_and_restart_rebuildable() 
 }
 
 #[test]
+fn private_target_executor_ignores_inherited_claimable_attempts() {
+    let (repository, lineage, policy) = fixture();
+    let (_, inherited, _) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "private-source");
+    let source = repository.head("private-source").expect("source head");
+    let derived = repository
+        .derive_campaign(
+            "private-source",
+            source.snapshot_id(),
+            "private-target",
+            None,
+        )
+        .expect("derive private campaign");
+
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "private-target-choice",
+    );
+    let requested = repository
+        .submit_known_branch_request("private-target", derived.new_snapshot, &request)
+        .expect("submit private request");
+    let proposal = finite_proposal(
+        &request,
+        &policy,
+        &repository.head("private-target").expect("requested head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal("private-target", requested.new_snapshot, &proposal)
+        .expect("issue private proposal");
+    let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+    let admitted = repository
+        .admit_proposal(
+            "private-target",
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit private attempt");
+    repository
+        .apply_control(
+            "private-target",
+            &command(
+                "private-target-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("run private campaign");
+
+    let claimable = repository
+        .project_claimable_attempts("private-target", None, 10_000)
+        .expect("inherited and private attempts");
+    assert!(claimable.attempts().contains(&inherited.attempt));
+    assert!(claimable.attempts().contains(&admitted.attempt));
+    let target = repository
+        .project_target_claimable_attempt("private-target", admitted.attempt)
+        .expect("target projection");
+    assert_eq!(target.attempts(), &[admitted.attempt]);
+
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(DeferringExecutor {
+            requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0xa2; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver")
+    .for_private_target_attempt(admitted.attempt);
+    driver
+        .step("private-target", WorkerSlotId::new(0))
+        .expect("submit private target");
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.requests[0].attempt(), admitted.attempt);
+}
+
+#[test]
 fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, observation) =

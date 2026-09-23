@@ -1443,7 +1443,7 @@ campaign = "*"
             panic!("expected serve command");
         };
         validate_serve_invocation(args).expect("valid composed-store serve profile");
-        let service = open_local_campaign_service(args, None, None)
+        let service = open_local_campaign_service(args, None, None, None)
             .expect("open composed-store service")
             .expect("configured campaign service");
         assert!(!state.join("objects").exists());
