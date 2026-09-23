@@ -200,6 +200,30 @@ impl PreparedAttachmentMountOperation {
             Self::Release(prepared) => prepared.recheck(journal, clock),
         }
     }
+
+    fn bind_signed_plan<T>(
+        self,
+        journal: &mut Journal,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedAttachmentMountDispatch, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        match self {
+            Self::Catalog(catalog) => Ok(PreparedAttachmentMountDispatch::Catalog(
+                mount_preparation::bind_signed_mount_plan(journal, catalog, signed_plan, clock)?,
+            )),
+            Self::Release(release) => Ok(PreparedAttachmentMountDispatch::Release(
+                mount_preparation::bind_signed_mount_release_plan(
+                    journal,
+                    release,
+                    signed_plan,
+                    clock,
+                )?,
+            )),
+        }
+    }
 }
 
 impl PreparedCurrentAttachmentMountV1 {
@@ -913,26 +937,7 @@ where
         evidence,
         operation,
     } = prepared;
-    let operation = match operation {
-        PreparedAttachmentMountOperation::Catalog(catalog) => {
-            PreparedAttachmentMountDispatch::Catalog(mount_preparation::bind_signed_mount_plan(
-                journal,
-                catalog,
-                signed_plan,
-                clock,
-            )?)
-        }
-        PreparedAttachmentMountOperation::Release(release) => {
-            PreparedAttachmentMountDispatch::Release(
-                mount_preparation::bind_signed_mount_release_plan(
-                    journal,
-                    release,
-                    signed_plan,
-                    clock,
-                )?,
-            )
-        }
-    };
+    let operation = operation.bind_signed_plan(journal, signed_plan, clock)?;
     let prepared = PreparedCurrentAttachmentMountDispatchV1 {
         evidence,
         operation,
@@ -957,26 +962,7 @@ where
         mount_action,
         operation,
     } = prepared;
-    let operation = match operation {
-        PreparedAttachmentMountOperation::Catalog(catalog) => {
-            PreparedAttachmentMountDispatch::Catalog(mount_preparation::bind_signed_mount_plan(
-                journal,
-                catalog,
-                signed_plan,
-                clock,
-            )?)
-        }
-        PreparedAttachmentMountOperation::Release(release) => {
-            PreparedAttachmentMountDispatch::Release(
-                mount_preparation::bind_signed_mount_release_plan(
-                    journal,
-                    release,
-                    signed_plan,
-                    clock,
-                )?,
-            )
-        }
-    };
+    let operation = operation.bind_signed_plan(journal, signed_plan, clock)?;
     let prepared = PreparedCurrentAttachmentMountResumeDispatchV1 {
         evidence,
         record,
