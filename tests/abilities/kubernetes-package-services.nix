@@ -266,6 +266,9 @@ in
   assert portableOptionTree cilium.options.cilium;
   assert portableOptionTree longhorn.options.longhorn;
   assert packageRequests disabledK3sWorker "k3s-worker" == {};
+  assert !disabledK3sWorker.config.aos.services."k3s.service".enable;
+  assert k3sWorker.config.aos.services."k3s.service".enable;
+  assert k3sControlPlane.config.aos.services."k3s.service".enable;
   assert disabledK3sWorker.config.aos.abilities.requirementTemplates == k3sWorker.config.aos.abilities.requirementTemplates;
   assert packageRequests disabledCilium "cilium" == {};
   assert packageRequests disabledLonghorn "longhorn-manager" == {};
