@@ -305,6 +305,59 @@ impl CacheResidencyProtectedOwnerV1 {
             Ok(retained)
         })
     }
+
+    /// Finds every retained release tombstone for a public consumer and object.
+    ///
+    /// A protected release removes the active logical pin before its physical
+    /// owner effect necessarily settles. Public unpin recovery must inspect
+    /// these tombstones across all partitions before reporting completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protected replay or currentness fails, or a release
+    /// tombstone escapes its reconstructed partition.
+    pub fn released_consumer_logical_pins(
+        &mut self,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+    ) -> Result<Vec<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let projection =
+                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
+            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+            let mut released = Vec::new();
+            for inventory in inventories {
+                for payload in inventory.reconstructed {
+                    if &payload.plan.descriptor != object || payload.plan.project != project {
+                        continue;
+                    }
+                    for tombstone in payload.released_pins {
+                        let pin = tombstone.pin;
+                        if pin.partition != payload.plan.partition {
+                            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+                        }
+                        if &pin.object == object
+                            && pin.project == project
+                            && pin.view == view
+                            && pin.attachment == attachment
+                            && pin.kind == CachePinKindV1::LogicalLease
+                        {
+                            released.push(pin);
+                        }
+                    }
+                }
+            }
+            refresh()?;
+            Ok(released)
+        })
+    }
 }
 
 fn select_public_logical_pin_id(

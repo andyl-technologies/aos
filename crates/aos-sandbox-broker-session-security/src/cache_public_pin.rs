@@ -111,6 +111,60 @@ pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
     Physical(#[from] CacheOwnerErrorV1),
 }
 
+/// Reports failure while confirming every public unpin obligation is gone.
+#[derive(Debug, thiserror::Error)]
+pub enum PublicCacheUnpinObservationErrorV1 {
+    /// The protected logical-pin projection could not be replayed as current.
+    #[error(transparent)]
+    Protected(#[from] CacheResidencyProtectedJournalErrorV1),
+    /// The durable physical owner could not confirm an exact pin's absence.
+    #[error(transparent)]
+    Physical(#[from] CacheOwnerErrorV1),
+}
+
+/// Confirms that no matching logical or physical public pin remains.
+///
+/// A release can be protected-committed before its physical effect settles.
+/// Therefore an empty active-pin lookup alone cannot complete UnpinObject.
+/// Released tombstones remain until compaction proves physical absence, and
+/// every still-retained tombstone is checked against the owner manifest.
+///
+/// # Errors
+///
+/// Returns an error when either protected replay or physical observation
+/// cannot establish the exact consumer/object state.
+pub fn observe_public_cache_unpin_completion_v1(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    consumer: &RecheckedCacheConsumerV1,
+) -> Result<bool, PublicCacheUnpinObservationErrorV1> {
+    let retained = protected.retained_consumer_logical_pins(
+        consumer.object(),
+        consumer.project(),
+        consumer.view(),
+        consumer.attachment(),
+    )?;
+    if !retained.is_empty() {
+        return Ok(false);
+    }
+
+    let released = protected.released_consumer_logical_pins(
+        consumer.object(),
+        consumer.project(),
+        consumer.view(),
+        consumer.attachment(),
+    )?;
+    for pin in released {
+        let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id())?;
+        if physical.observe_pin(id, pin.partition(), pin.object())?
+            != CacheOwnerPinPresenceV1::Absent
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Executes one source-proven public pin against both protected Cache owners.
 ///
 /// A repeated pin does not acquire a second logical or physical pin. It may

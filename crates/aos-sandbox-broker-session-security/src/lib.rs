@@ -83,7 +83,8 @@ mod self_execution;
 
 pub use cache_public_pin::{
     ConfirmedPublicCachePinV1, PublicCachePinExecutionErrorV1, PublicCachePinExecutionV1,
-    PublicCacheUnpinExecutionV1, execute_public_cache_pin_v1, execute_public_cache_unpin_v1,
+    PublicCacheUnpinExecutionV1, PublicCacheUnpinObservationErrorV1, execute_public_cache_pin_v1,
+    execute_public_cache_unpin_v1, observe_public_cache_unpin_completion_v1,
 };
 pub use cache_source_membership::{
     CacheCompiledSourceLimitsV1, CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
