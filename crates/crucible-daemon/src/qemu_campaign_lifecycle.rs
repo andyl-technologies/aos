@@ -952,11 +952,25 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
                 )));
             }
         };
-        let evidence = self
-            .driver
-            .build_finding_candidate_boundary_evidence(pending, candidate, final_events)
-            .map_err(AttemptWorkerFailure::Terminal)
-            .map_err(map_fresh_driver_failure)?;
+        let evidence = match self.driver.build_finding_candidate_boundary_evidence(
+            pending,
+            candidate,
+            final_events,
+        ) {
+            Ok(evidence) => evidence,
+            Err(crate::QemuFreshModeledDriverError::FindingCandidateSelectionContinued) => {
+                return Ok(
+                    QemuFindingCandidateReplayOutcome::DeterministicallyIncompatible(
+                        QemuFindingCandidateIncompatibility::SelectionMismatch,
+                    ),
+                );
+            }
+            Err(error) => {
+                return Err(Box::new(map_fresh_driver_failure(
+                    AttemptWorkerFailure::Terminal(error),
+                )));
+            }
+        };
         let evidence = match expected_replay {
             Some(expected) => evidence.compare_against_expected_replay(expected),
             None => evidence,
