@@ -1,6 +1,6 @@
 ##! Synthetic package-owned initrd consumer for stage-isolation checks.
 {lib, ...}: let
-  contribution = lib.abilities.interfaces.serviceManagement.forProducer {
+  producerDefinition = lib.abilities.interfaces.serviceManagement.forProducer {
     consumerInstance = "preparation-consumer";
     key = "fixture-preparation";
     interface = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
@@ -17,6 +17,6 @@
 in {
   config.aos.abilities = lib.mkMerge [
     {instances.preparation-consumer = {};}
-    contribution
+    producerDefinition
   ];
 }

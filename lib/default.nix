@@ -65,7 +65,7 @@
       then moduleArgs
       else [moduleArgs];
 
-    # Each definition contributes a `config = def.value` module, so the
+    # Each definition becomes a `config = def.value` module, so the
     # submodule's option declarations (defaults, types, mkIf/mkMerge)
     # process it as a normal module input.
     applyInheritedPriority = priority: value:
@@ -157,7 +157,7 @@
     then (evalSubmoduleResult optionType._submodule loc []).options
     else throw "submoduleOptions requires a submodule option type";
 
-  # Declaration-derived extensible-surface helpers.
+  # Declaration-derived option extension helpers.
   namespacing = import ./namespacing.nix {};
 
   abilityCore = import ./abilities {
@@ -322,7 +322,7 @@
       # Check composition helper (pure data, no deps) for use in modules
       inherit (checks) composeChecks;
 
-      # Declaration-derived extensible-surface helpers.
+      # Declaration-derived option extension helpers.
       inherit
         (namespacing)
         optionSurface

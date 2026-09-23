@@ -1,7 +1,7 @@
 ##! Canonical ability options for the AOS module fixed point.
 ##!
 ##! This module owns the shared containers and canonical core interfaces.
-##! Packages contribute implementations and package-specific declarations
+##! Packages define implementations and package-specific declarations
 ##! through ordinary modules, and semantic validation resolves references
 ##! after the complete fixed point evaluates.
 {
