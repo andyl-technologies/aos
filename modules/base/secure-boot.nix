@@ -507,7 +507,10 @@ in {
             ];
           };
 
-      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey = "${pcrKeyForInitrd}/pcr.pem";
+      aos.boot.secureBoot.measuredBoot._effectivePcrPublicKey =
+        if cfg.measuredBoot.enable
+        then "${pcrKeyForInitrd}/pcr.pem"
+        else null;
 
       assertions = [
         {
