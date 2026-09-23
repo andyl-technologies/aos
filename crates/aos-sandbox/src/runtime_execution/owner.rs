@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use aos_sandbox_agent::{
-    AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentHandshakeRequestV1,
+    AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentFeatureV1, AgentHandshakeRequestV1,
     AgentHandshakeResponseV1, AgentOperationRequestV1, AgentRuntimeBindingV1,
 };
 use aos_sandbox_core::runtime_backend::{
@@ -57,15 +57,15 @@ use aos_sandbox_core::runtime_backend::{
     BackendOperationIdV1, BackendOperationSequenceV1, BackendProbeCurrentnessV1,
     BackendRuntimeInspectionV1, BackendRuntimePhaseV1, BackendStopDeadlineV1,
     DurableExecutionEffectV1, EffectCommitError, EffectCompletionV1, EffectIssueV1,
-    EffectStoreTransitionV1, ExecutionAdmissionDraftV1, ExecutionAdmissionStore,
-    ExecutionEffectStore, RequiredBackendCapabilitiesV1, ResolvedRuntimePlanV1,
-    RuntimeCurrentnessV1, RuntimeHandleCommitmentV1, backend_evidence_authority_binding_v1,
-    backend_execution_inspection_binding_v1,
+    EffectOperationV1, EffectPhaseV1, EffectStoreTransitionV1, ExecutionAdmissionDraftV1,
+    ExecutionAdmissionStore, ExecutionEffectStore, RequiredBackendCapabilitiesV1,
+    ResolvedRuntimePlanV1, RuntimeCurrentnessV1, RuntimeHandleCommitmentV1,
+    backend_evidence_authority_binding_v1, backend_execution_inspection_binding_v1,
 };
 use aos_sandbox_core::{
     AssignmentEpoch, DecodeLimits, DesiredGeneration, ExecutionId, IncarnationId,
     NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, PayloadBootId, Revision,
-    SandboxId, decode_execution_spec_v1,
+    SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -1618,6 +1618,9 @@ impl DormantRuntimeExecutionClaimV1<'_> {
 
     /// Verifies a fixed-peer handshake and binds one exact AOSAGE request to an effect.
     ///
+    /// Authorization and control requests must match the issued effect's closed
+    /// operation and the capabilities signed into this agent session.
+    ///
     /// # Errors
     ///
     /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] for stale fixed state,
@@ -1663,13 +1666,14 @@ impl DormantRuntimeExecutionClaimV1<'_> {
                 &Signature::from_bytes(response.challenge_signature()),
             )
             .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
-        let backend_request = effect
-            .backend_execution_request()
-            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let admission = effect.admission();
+        if effect.phase() != EffectPhaseV1::Issued || admission.currentness() != &self.currentness {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
         let specification = decode_execution_spec_v1(
-            backend_request.specification_bytes(),
+            admission.specification_bytes(),
             DecodeLimits {
-                maximum_bytes: backend_request.specification_bytes().len(),
+                maximum_bytes: admission.specification_bytes().len(),
                 maximum_collection_items: 65_536,
                 maximum_total_items: 262_144,
                 maximum_byte_string_bytes: 15 * 1_048_576,
@@ -1678,25 +1682,65 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             },
         )
         .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        if specification.execution() != admission.execution()
+            || execution_spec_digest_v1(&specification) != admission.specification_digest()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
         let inspection = BackendExecutionInspectionRequestV1::new(
             self.agent_peer.authority_binding,
-            backend_request.operation(),
-            backend_request.sequence(),
-            backend_request.effect_request_digest(),
-            specification.execution(),
-            backend_request.specification_digest(),
-            backend_request.admission_commitment(),
+            effect.issue().idempotency().operation(),
+            effect.issue().sequence(),
+            effect.issue().idempotency().request_digest(),
+            admission.execution(),
+            admission.specification_digest(),
+            admission.admission_commitment(),
             *self.currentness.runtime(),
             self.currentness.payload_boot_id(),
         )
         .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
-        let expected_operation = AgentExecutionOperationV1::Authorize {
-            execution: specification.execution(),
-            specification_bytes: backend_request.specification_bytes().to_vec(),
-            specification_digest: backend_request.specification_digest(),
-            admission_commitment: backend_request.admission_commitment(),
-            principal: specification.principal(),
-            audit: specification.audit(),
+        let features = response.features();
+        let expected_operation = match effect.issue().operation() {
+            EffectOperationV1::AuthorizeExecution
+                if features.contains(AgentFeatureV1::ExecutionHandoff) =>
+            {
+                AgentExecutionOperationV1::Authorize {
+                    execution: admission.execution(),
+                    specification_bytes: admission.specification_bytes().to_vec(),
+                    specification_digest: admission.specification_digest(),
+                    admission_commitment: admission.admission_commitment(),
+                    principal: specification.principal(),
+                    audit: specification.audit(),
+                }
+            }
+            EffectOperationV1::ResizeTerminal { rows, columns }
+                if features.contains(AgentFeatureV1::TerminalResize) =>
+            {
+                AgentExecutionOperationV1::ResizeTerminal {
+                    execution: admission.execution(),
+                    rows,
+                    columns,
+                }
+            }
+            EffectOperationV1::Signal { signal_code }
+                if features.contains(AgentFeatureV1::ExecutionSignal) =>
+            {
+                AgentExecutionOperationV1::Signal {
+                    execution: admission.execution(),
+                    signal_code,
+                }
+            }
+            EffectOperationV1::Cancel => AgentExecutionOperationV1::Cancel {
+                execution: admission.execution(),
+            },
+            EffectOperationV1::Observe
+                if features.contains(AgentFeatureV1::ExecutionObservation) =>
+            {
+                AgentExecutionOperationV1::Observe {
+                    execution: admission.execution(),
+                }
+            }
+            _ => return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness),
         };
         if agent_request.operation_id().as_bytes()
             != effect.issue().idempotency().operation().as_bytes()
@@ -1762,7 +1806,7 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         Ok(())
     }
 
-    /// Atomically validates an AOSAGE route and consumes its fresh dispatch.
+    /// Validates an AOSAGE authorization or control route and consumes fresh dispatch.
     ///
     /// The intermediate reservation and store dispatch permit remain private
     /// to this fixed-owner method, so neither can be redirected or consumed by

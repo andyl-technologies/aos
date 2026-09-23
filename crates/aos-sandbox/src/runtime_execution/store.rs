@@ -350,7 +350,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
     /// # Errors
     ///
     /// Returns [`JournalRuntimeExecutionError`] unless current protected bytes
-    /// exactly match `effect`, it is an Issued authorization, and no permit was
+    /// exactly match `effect`, it is Issued, and no permit was
     /// previously minted by this store instance.
     pub(crate) fn prepare_dispatch(
         &mut self,
