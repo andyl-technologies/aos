@@ -112,6 +112,7 @@ use aos_sandbox::{
     public_operation_resource_from_journal_v1,
 };
 
+mod cache_unpin;
 mod public_api;
 mod public_hierarchy;
 mod public_services;
@@ -1534,6 +1535,7 @@ struct ProductionEffectExecutor {
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
     cache_physical_limits: Option<CacheOwnerLimitsV1>,
+    pending_cache_unpin: Option<cache_unpin::PendingControllerCacheUnpinV1>,
     controller_uid: u32,
     transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
     node: NodeId,
@@ -1579,6 +1581,7 @@ impl ProductionEffectExecutor {
             cache_inventory: None,
             cache_physical: None,
             cache_physical_limits: None,
+            pending_cache_unpin: None,
             controller_uid,
             transfer_inventory: None,
             node,
@@ -3457,6 +3460,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 )),
             };
         }
+        if self.pending_cache_unpin.is_some() {
+            self.ensure_cache_physical_owner()?;
+            self.recover_pending_cache_unpin(operation_id)?;
+        }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
@@ -3533,23 +3540,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let consumer = cache_consumer.as_ref().ok_or_else(|| {
                 EffectFailure::Permanent("cache unpin consumer is unavailable".to_owned())
             })?;
-            self.ensure_cache_physical_owner()?;
-            let cache = self.cache_inventory.as_mut().ok_or_else(|| {
-                EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
-            })?;
-            let physical = self.cache_physical.as_ref().ok_or_else(|| {
-                EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
-            })?;
-            let complete =
-                crate::observe_public_cache_unpin_completion_v1(cache, physical, consumer)
-                    .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
-            if complete {
-                let mut receipt = Vec::with_capacity(24);
-                receipt.extend_from_slice(b"AOSCUN01");
-                receipt.extend_from_slice(operation_id.as_bytes());
-                return EffectReceipt::new(receipt)
-                    .map_err(|error| EffectFailure::Permanent(error.to_string()));
-            }
+            return self.apply_public_cache_unpin(operation_id, consumer, journal, &request);
         }
         if is_lifecycle_mutation(&request) {
             let operation =
