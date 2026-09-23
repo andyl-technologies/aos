@@ -367,7 +367,7 @@ fn build_one_node_raw_checkpoint(
     let checkpoint = ProductionVmExactCheckpointSet {
         identity: ContentHash::default(),
         configuration,
-        scheduler: scheduler_checkpoint,
+        scheduler: Arc::new(scheduler_checkpoint),
         event_log_objects: Arc::new(BTreeMap::new()),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),

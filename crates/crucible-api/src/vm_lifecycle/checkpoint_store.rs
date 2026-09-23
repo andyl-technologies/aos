@@ -1206,7 +1206,7 @@ fn load_exact_checkpoint_set_with_boundary(
     let restored = ProductionVmExactCheckpointSet {
         identity,
         configuration,
-        scheduler,
+        scheduler: Arc::new(scheduler),
         event_log_objects: Arc::new(event_log_objects),
         signal_artifact_objects: Arc::new(signal_artifact_objects),
         trigger_state,

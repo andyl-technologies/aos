@@ -623,7 +623,7 @@ fn build_production_checkpoint_codec_fixture(
     let mut checkpoint = ProductionVmExactCheckpointSet {
         identity: ContentHash::default(),
         configuration: configuration.clone(),
-        scheduler: scheduler_checkpoint,
+        scheduler: Arc::new(scheduler_checkpoint),
         event_log_objects: Arc::new(BTreeMap::new()),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),

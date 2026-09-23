@@ -662,7 +662,7 @@ struct RetainedCheckpointObject {
 struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
-    scheduler: SingleSchedulerCheckpoint,
+    scheduler: Arc<SingleSchedulerCheckpoint>,
     event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,

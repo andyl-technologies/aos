@@ -2083,7 +2083,7 @@ impl ProductionVmLifecycleLoop {
             let mut checkpoint_set = ProductionVmExactCheckpointSet {
                 identity: ContentHash::default(),
                 configuration: configuration.clone(),
-                scheduler,
+                scheduler: Arc::new(scheduler),
                 event_log_objects,
                 signal_artifact_objects,
                 trigger_state,

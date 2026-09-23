@@ -237,7 +237,7 @@ pub fn decode_authenticated_production_exact_checkpoint(
     checkpoint.repository_restore = Some(RepositoryExactRestoreAuthority {
         targets,
         configuration: Arc::new(checkpoint.configuration.clone()),
-        scheduler: Arc::new(checkpoint.scheduler.clone()),
+        scheduler: Arc::clone(&checkpoint.scheduler),
         open,
     });
     Ok(DecodedProductionExactCheckpoint {
@@ -582,7 +582,7 @@ fn decode_semantic_checkpoint(
     let checkpoint = ProductionVmExactCheckpointSet {
         identity,
         configuration: configuration.as_ref().clone(),
-        scheduler,
+        scheduler: Arc::new(scheduler),
         event_log_objects: Arc::new(event_log_objects),
         signal_artifact_objects: Arc::new(objects.signal_artifact_objects),
         trigger_state,
