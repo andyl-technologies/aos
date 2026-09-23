@@ -115,200 +115,172 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "runtime_conditions";
-        requirementAlias = "service-runtime-conditions";
-        description = "Requires the selected service-management provider to evaluate declared capability conditions.";
-        interface = "aos.service.runtime-conditions";
-        abi = 1;
-        parameters.privileges = [
-          {
-            privilege = "adjust-host-clock";
-            available = true;
-          }
-        ];
-      })
-      (serviceManagement.featureRequest {
-        key = "device_policy";
-        requirementAlias = "service-device-policy";
-        description = "Requires the selected service-management provider to enforce the declared device access policy.";
-        interface = "aos.service.device-policy";
-        abi = 1;
-        parameters = {
-          baseline_access = "standard-runtime-devices";
-          rules =
-            builtins.map
-            (class: {
-              selector = {
-                kind = "class";
-                device_type = "character";
-                inherit class;
-              };
-              read = true;
-              write = true;
-              create = false;
-            })
-            ["precision-time" "pulse-per-second" "real-time-clock"];
-        };
-      })
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [
-              "change-file-ownership"
-              "bypass-file-access"
-              "bind-privileged-network-port"
-              "change-group-identity"
-              "change-user-identity"
-              "administer-resource-limits"
-              "adjust-host-clock"
-            ];
-          };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = true;
-          writable_executable_memory = false;
-          remove_interprocess_communication = true;
-          isolation_domains = ["filesystem"];
-          network_families = ["ipv4" "ipv6" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "self";
-          operation_architectures = ["native"];
-          operation_allow = ["change-file-ownership" "clock" "change-process-identity" "set-process-privileges"];
-          operation_deny = ["cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "resource-control"];
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
+  service = {
+    policy.runtimeConditions.privileges = [
+      {
+        privilege = "adjust-host-clock";
+        available = true;
+      }
     ];
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      service = "chronyd";
-      enabled = true;
-      lifecycle = {
-        description = "NTP Time Synchronization (${packageName} ${packageVersion})";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command ["-n" "-u" principalName "-f" (resultOf "chrony-configuration" "planned-path")])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 5000;
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [(resultOf "chrony-network-readiness" "resource")];
-        before = [];
-        requires = [];
-        wants = [(resultOf "chrony-network-readiness" "resource")];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "main-process";
-        timeout_millis = 90000;
-      };
-      reload = {
-        strategy = "signal";
-        commands = [];
-        signal = "HUP";
-        completion = "command-exit";
-      };
-      directories.managed = [
-        {
-          path = "chrony";
-          purpose = "state";
-          mode = "0750";
-          retention = "persistent";
-          owner = resultOf "chrony-principal" "principal-name";
-          group = resultOf "chrony-group" "group-name";
-        }
-        {
-          path = "chrony";
-          purpose = "logs";
-          mode = "0750";
-          retention = "persistent";
-          owner = resultOf "chrony-principal" "principal-name";
-          group = resultOf "chrony-group" "group-name";
-        }
-        {
-          path = "chrony";
-          purpose = "runtime";
-          mode = "0750";
-          retention = "restart";
-          owner = resultOf "chrony-principal" "principal-name";
-          group = resultOf "chrony-group" "group-name";
-        }
-      ];
-      configuration.views = [
-        {
-          name = "chrony";
-          source = resultOf "chrony-configuration" "planned-path";
-          optional = false;
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = ["chrony"];
-        directory_mode = "0750";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0027";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "read-only-software";
-        network = "host";
-        process_visibility = "private";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [
-          {
-            source = statePath;
-            mode = "read-write";
-          }
-          {
-            source = logPath;
-            mode = "read-write";
-          }
+    policy.devicePolicy = {
+      baseline_access = "standard-runtime-devices";
+      rules =
+        builtins.map
+        (class: {
+          selector = {
+            kind = "class";
+            device_type = "character";
+            inherit class;
+          };
+          read = true;
+          write = true;
+          create = false;
+        })
+        ["precision-time" "pulse-per-second" "real-time-clock"];
+    };
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [
+          "change-file-ownership"
+          "bypass-file-access"
+          "bind-privileged-network-port"
+          "change-group-identity"
+          "change-user-identity"
+          "administer-resource-limits"
+          "adjust-host-clock"
         ];
-        permit_core_dumps = false;
       };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      remove_interprocess_communication = true;
+      isolation_domains = ["filesystem"];
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "self";
+      operation_architectures = ["native"];
+      operation_allow = ["change-file-ownership" "clock" "change-process-identity" "set-process-privileges"];
+      operation_deny = ["cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "resource-control"];
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
+    consumerInstance = "service";
+    service = "chronyd";
+    lifecycle = {
+      description = "NTP Time Synchronization (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command ["-n" "-u" principalName "-f" (resultOf "chrony-configuration" "planned-path")])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [(resultOf "chrony-network-readiness" "resource")];
+      before = [];
+      requires = [];
+      wants = [(resultOf "chrony-network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    reload = {
+      strategy = "signal";
+      commands = [];
+      signal = "HUP";
+      completion = "command-exit";
+    };
+    directories.managed = [
+      {
+        path = "chrony";
+        purpose = "state";
+        mode = "0750";
+        retention = "persistent";
+        owner = resultOf "chrony-principal" "principal-name";
+        group = resultOf "chrony-group" "group-name";
+      }
+      {
+        path = "chrony";
+        purpose = "logs";
+        mode = "0750";
+        retention = "persistent";
+        owner = resultOf "chrony-principal" "principal-name";
+        group = resultOf "chrony-group" "group-name";
+      }
+      {
+        path = "chrony";
+        purpose = "runtime";
+        mode = "0750";
+        retention = "restart";
+        owner = resultOf "chrony-principal" "principal-name";
+        group = resultOf "chrony-group" "group-name";
+      }
+    ];
+    configuration.views = [
+      {
+        name = "chrony";
+        source = resultOf "chrony-configuration" "planned-path";
+        optional = false;
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = ["chrony"];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0027";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "read-only-software";
+      network = "host";
+      process_visibility = "private";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [
+        {
+          source = statePath;
+          mode = "read-write";
+        }
+        {
+          source = logPath;
+          mode = "read-write";
+        }
+      ];
+      permit_core_dumps = false;
     };
   };
-  abilityFragments = [group principal networkReadiness configuration service];
-  definitions = builtins.map serviceManagement.splitDefinition abilityFragments;
+  producers = [group principal networkReadiness configuration];
   boundedString = abilityTypes.refined {
     name = "non-empty chrony value";
     description = "a non-empty chrony configuration value";
@@ -421,48 +393,41 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.chrony = {};}
-    (lib.mkMerge (builtins.map
-      (definition: {aos.abilities = definition.declarations;})
-      definitions))
-    (lib.mkIf cfg.enable (lib.mkMerge (
-      [
-        {
-          aos.abilities.instances.service = {};
-          aos.abilities.runtimeChecks.chrony = {
-            description = "NTP time sync checks";
-            checks =
-              [
-                {
-                  name = "chronyd-responsive";
-                  description = "chronyd accepts control queries";
-                  script = ''
-                    vm.wait_until_succeeds("chronyc tracking", timeout=30)
-                  '';
-                }
-                {
-                  name = "chrony-sources";
-                  description = "chronyd exposes its configured time sources";
-                  script = ''
-                    vm.succeed("chronyc sources")
-                  '';
-                }
-              ]
-              ++ lib.optionals cfg.nts.enable [
-                {
-                  name = "chrony-authentication-data";
-                  description = "chronyd exposes source authentication state";
-                  script = ''
-                    vm.succeed("chronyc authdata")
-                  '';
-                }
-              ];
-          };
-        }
-      ]
-      ++ builtins.map
-      (definition: {aos.abilities = definition.configured;})
-      definitions
-    )))
+    {aos.services.chrony = service;}
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
+    (lib.mkIf cfg.enable {
+      aos.abilities.runtimeChecks.chrony = {
+        description = "NTP time sync checks";
+        checks =
+          [
+            {
+              name = "chronyd-responsive";
+              description = "chronyd accepts control queries";
+              script = ''
+                vm.wait_until_succeeds("chronyc tracking", timeout=30)
+              '';
+            }
+            {
+              name = "chrony-sources";
+              description = "chronyd exposes its configured time sources";
+              script = ''
+                vm.succeed("chronyc sources")
+              '';
+            }
+          ]
+          ++ lib.optionals cfg.nts.enable [
+            {
+              name = "chrony-authentication-data";
+              description = "chronyd exposes source authentication state";
+              script = ''
+                vm.succeed("chronyc authdata")
+              '';
+            }
+          ];
+      };
+    })
   ];
 }
