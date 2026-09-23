@@ -631,7 +631,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         verification_selected.id()?,
     );
     let observation =
-        content_id::<ObservationId>(ObjectKind::Observation, 12, b"portable finding observation")?;
+        content_id::<ObservationId>(ObjectKind::Observation, 13, b"portable finding observation")?;
     let bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observation,
@@ -664,7 +664,7 @@ fn disabled_finding_exact_retention() -> Result<FindingExactRetention, Box<dyn E
         3,
         b"portable-replay-retention-snapshot",
     );
-    let policy = ContentId::for_bytes(ObjectKind::Policy, 4, b"portable-replay-retention-policy");
+    let policy = ContentId::for_bytes(ObjectKind::Policy, 5, b"portable-replay-retention-policy");
     let admission = ContentId::for_bytes(
         ObjectKind::CampaignFact,
         3,
