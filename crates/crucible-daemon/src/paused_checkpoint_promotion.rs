@@ -798,6 +798,8 @@ where
                 operation: "admit production replay-oracle target",
                 message: String::from("node executor does not match the requested target"),
             };
+            drop(executor);
+            drop(realization_store);
             return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
         }
         let baked = match realization_store
@@ -805,6 +807,8 @@ where
         {
             Ok(baked) => baked,
             Err(error) => {
+                drop(executor);
+                drop(realization_store);
                 return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
             }
         };
@@ -832,6 +836,11 @@ where
             node.name,
             cleanup.is_ok()
         );
+        // The executor retains pinned launch files after its node is reaped.
+        // Close them before the aggregate guard releases the project quota.
+        drop(baked);
+        drop(executor);
+        drop(realization_store);
         let matched = match (comparison, cleanup) {
             (Err(comparison), Err(cleanup)) => {
                 return Err(PausedCheckpointPromotionPreparationError::Realization(
