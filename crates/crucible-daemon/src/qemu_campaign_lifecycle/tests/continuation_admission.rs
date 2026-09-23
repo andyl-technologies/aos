@@ -211,6 +211,7 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
         final_events: Vec::new(),
         replay_decisions: VecDeque::new(),
         terminal_failure: false,
+        terminal_marker: None,
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
@@ -235,6 +236,7 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
             final_events: Vec::new(),
             replay_decisions: VecDeque::new(),
             terminal_failure: false,
+            terminal_marker: None,
         },
         evidence.clone(),
     );

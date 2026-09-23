@@ -1652,6 +1652,46 @@ fn lifecycle_wire_restores_terminal_branch_and_controls() {
     assert_eq!(decoded.recorded_controls[0].control[0].sequence, 1);
 }
 
+#[test]
+fn lifecycle_wire_reopens_passed_trigger_with_matching_checkpoint_cause() {
+    let scenario = crucible::happy_path_scenario()
+        .expect("build lifecycle wire scenario")
+        .scenario
+        .scenario_def();
+    let wire = LifecycleWire {
+        terminal: Some(TerminalWire::Passed),
+        terminal_cause: Some(TerminalCauseWire::Passed),
+        initial_lifecycle_observations_pending: false,
+        branch: None,
+        recorded_controls: Vec::new(),
+        selectable_catalog_plans: Vec::new(),
+    };
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&wire, &mut bytes).expect("encode passed lifecycle");
+
+    let reopened = decode_lifecycle(&bytes, &scenario, FaultResourceLimits::default())
+        .expect("reopen matching passed checkpoint cause");
+    assert_eq!(reopened.terminal, Some(QuantumTerminalVerdict::Passed));
+    assert_eq!(
+        reopened.terminal_cause,
+        Some(CheckpointTerminalCause::Passed)
+    );
+
+    let forged = LifecycleWire {
+        terminal: Some(TerminalWire::Passed),
+        terminal_cause: Some(TerminalCauseWire::Failed(vec![wire_string(
+            "property failure",
+        )])),
+        initial_lifecycle_observations_pending: false,
+        branch: None,
+        recorded_controls: Vec::new(),
+        selectable_catalog_plans: Vec::new(),
+    };
+    let mut forged_bytes = Vec::new();
+    ciborium::ser::into_writer(&forged, &mut forged_bytes).expect("encode mismatched lifecycle");
+    assert!(decode_lifecycle(&forged_bytes, &scenario, FaultResourceLimits::default()).is_err());
+}
+
 #[cfg(feature = "test-support")]
 #[test]
 fn v9_exact_ram_fixture_retains_the_complete_layer_chain() {

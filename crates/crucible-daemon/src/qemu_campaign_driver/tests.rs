@@ -3198,6 +3198,11 @@ fn terminal_only_never_reached_failure_is_not_an_observation_match() {
             .expect("terminal before observation transition"),
     );
     assert!(matches!(pending.stop, ModeledStop::TerminalPassed));
+    assert!(
+        driver
+            .has_terminal_assertion_failure(&pending)
+            .expect("checked terminal assertion failure")
+    );
 
     let candidate = prepared_semantic_observation(
         driver

@@ -677,6 +677,18 @@ pub trait QemuFreshAttemptDriver {
         None
     }
 
+    /// Checks whether the pending modeled stop has a declared property failure.
+    ///
+    /// Drivers without an authenticated offline property projection leave
+    /// property-derived terminal capture unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver error when the retained event prefix cannot be checked.
+    fn has_terminal_assertion_failure(&self, _pending: &Self::Pending) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
     /// Drives the lifecycle to a modeled stop without returning an accepted product.
     ///
     /// `materialization` contains the bounded event history, terminal state,

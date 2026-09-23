@@ -27,17 +27,30 @@ where
     {
         return None;
     }
-    let QuantumTerminalVerdict::Failed(violations) = lifecycle.terminal_verdict_for_stop()? else {
-        return None;
+    let modeled_assertion_failure = driver
+        .has_terminal_assertion_failure(pending)
+        .ok()
+        .unwrap_or(false);
+    // The checkpoint cause describes the trigger verdict. A separately
+    // checked property can fail even when that trigger passed or never fired.
+    let terminal_cause = match lifecycle.terminal_verdict_for_stop() {
+        Some(QuantumTerminalVerdict::Failed(violations)) => {
+            Some(CheckpointTerminalCause::Failed(violations))
+        }
+        Some(QuantumTerminalVerdict::Passed) if modeled_assertion_failure => {
+            Some(CheckpointTerminalCause::Passed)
+        }
+        None if modeled_assertion_failure => None,
+        _ => return None,
     };
     let (choices, event_count) = driver.terminal_checkpoint_choices(pending)?;
     if !lifecycle.exact_checkpoint_ready().ok()? {
         return None;
     }
 
-    lifecycle
-        .prepare_terminal_checkpoint(CheckpointTerminalCause::Failed(violations))
-        .ok()?;
+    if let Some(cause) = terminal_cause {
+        lifecycle.prepare_terminal_checkpoint(cause).ok()?;
+    }
     let capture = lifecycle.capture_attempt_checkpoint(context).ok()?;
     let identity = FindingTerminalCheckpointIdentity {
         scenario: input.lineage().scenario(),
