@@ -8,7 +8,8 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{ContentId, RefInventoryFence, RefInventorySummary, StoreError};
 
-use crate::{ExactPinRetentionError, ExactPinRetentionFence};
+use crate::exact_pin_retention::load_checkpoint_for_configuration;
+use crate::{ExactCheckpointStore, ExactPinRetentionError, ExactPinRetentionFence};
 
 use super::MAX_CAMPAIGN_GC_MANIFEST_ENTRIES;
 
@@ -138,8 +139,33 @@ pub(super) fn inventory_authoritative_refs(
                         && selection.configuration() == configuration
                         && selection.pin_fact() == pin.fact() =>
                 {
-                    if roots.insert(selection.checkpoint().content_id()).is_err() {
-                        semantic_error = Some(CampaignGcRootInventoryError::Limit);
+                    let closure = (|| -> Result<_, ExactPinRetentionError> {
+                        // GC must retain checkpoints published under any owner's byte policy.
+                        // The loader's format bounds still cap metadata and object count.
+                        let checkpoints =
+                            ExactCheckpointStore::new(repository.blob_backend(), u64::MAX)?;
+                        // The fenced ref inventory already authenticated the current pin.
+                        // Re-reading it here would wait on the same ref fence.
+                        load_checkpoint_for_configuration(
+                            &checkpoints,
+                            selection.checkpoint(),
+                            configuration,
+                        )?;
+                        Ok(checkpoints
+                            .authenticated_production_closure_ids(selection.checkpoint())?)
+                    })();
+                    match closure {
+                        Ok(ids) => {
+                            for id in ids {
+                                if roots.insert_direct(id).is_err() {
+                                    semantic_error = Some(CampaignGcRootInventoryError::Limit);
+                                    break;
+                                }
+                            }
+                        }
+                        Err(source) => {
+                            semantic_error = Some(CampaignGcRootInventoryError::ExactPin(source));
+                        }
                     }
                 }
                 _ => {

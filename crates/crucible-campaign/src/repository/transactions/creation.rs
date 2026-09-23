@@ -33,6 +33,12 @@ impl CampaignRepository {
         }
     }
 
+    /// Returns the immutable backend shared with other process-local owners.
+    #[must_use]
+    pub fn blob_backend(&self) -> Arc<dyn ImmutableBlobBackend> {
+        Arc::clone(&self.blobs)
+    }
+
     /// Builds a repository with distinct trusted planner and debugger authorities.
     ///
     /// Direct and RPC adapters authenticate the same canonical submission

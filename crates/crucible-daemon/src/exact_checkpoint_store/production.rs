@@ -319,6 +319,21 @@ impl LoadedProductionExactCheckpoint {
             })
     }
 
+    /// Returns the root, its named children, and every indexed production object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the already loaded root envelope cannot be decoded.
+    pub(crate) fn retained_content_ids(
+        &self,
+    ) -> Result<BTreeSet<ContentId>, ExactCheckpointStoreError> {
+        let envelope = ContentEnvelope::from_canonical_bytes(&self.root_envelope)?;
+        let mut retained = BTreeSet::from([self.root.content_id()]);
+        retained.extend(envelope.children().iter().map(ContentChild::id));
+        retained.extend(self.placements.iter().copied());
+        Ok(retained)
+    }
+
     fn authenticate_repository(
         &self,
     ) -> Result<
@@ -826,6 +841,45 @@ impl ExactCheckpointStore {
         root: ExactCheckpointId,
     ) -> Result<LoadedProductionExactCheckpoint, ExactCheckpointStoreError> {
         self.load_production_closure_inner(root, None)
+    }
+
+    /// Authenticates checkpoint metadata and inventories every retained object.
+    ///
+    /// Replay-oracle promotion can name an earlier root, so the inventory also
+    /// follows that source chain while enforcing a finite depth bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any root is incomplete or malformed, or the
+    /// promotion chain exceeds its bound.
+    pub(crate) fn authenticated_production_closure_ids(
+        &self,
+        root: ExactCheckpointId,
+    ) -> Result<BTreeSet<ContentId>, ExactCheckpointStoreError> {
+        const MAX_PROMOTION_ROOTS: usize = 1024;
+
+        let mut pending = vec![root];
+        let mut visited = BTreeSet::new();
+        let mut retained = BTreeSet::new();
+
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if visited.len() > MAX_PROMOTION_ROOTS {
+                return Err(invalid_root(
+                    "production promotion source chain is too deep",
+                ));
+            }
+
+            let loaded = self.load_production_closure(current)?;
+            retained.extend(loaded.retained_content_ids()?);
+            if let Some(source) = loaded.promotion_source() {
+                pending.push(source);
+            }
+        }
+
+        Ok(retained)
     }
 
     /// Loads one complete production root under an execution cancellation signal.

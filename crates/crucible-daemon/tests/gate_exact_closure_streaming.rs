@@ -507,7 +507,11 @@ fn build_mirrored_graph(root: &Path) -> (StoreGraph, StoreGraphAdmin) {
     let routed = node("routed");
     let metrics = node("metrics");
     let durability = node("durability");
-    let admitted = BTreeSet::from([ObjectKind::DeviceState, ObjectKind::ExactManifest]);
+    let admitted = BTreeSet::from([
+        ObjectKind::DeviceState,
+        ObjectKind::ExactManifest,
+        ObjectKind::Observation,
+    ]);
     let config = StoreGraphConfig {
         root: durability.clone(),
         admitted_kinds: admitted.clone(),
