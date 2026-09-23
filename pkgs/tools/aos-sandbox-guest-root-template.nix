@@ -26,6 +26,12 @@ in
     ];
     buildDeps = [rootBuilder coreutils grep sed];
     runtimeDeps = [guestAgent openssh systemd];
+    # The output deliberately embeds the complete reference graph, including
+    # transitive ELF runtime paths. Generic fixup/scrub would mutate copied
+    # package bytes after their digests and package binding were measured.
+    dontStrip = true;
+    dontPatchELF = true;
+    dontNukeRefs = true;
 
     phases = [
       {
