@@ -11,6 +11,7 @@ use crucible::{
     Configuration, ContentHash, EventLog, Icount, NodeId, RuntimeState, SimulationBackend,
     VirtualTime,
 };
+use crucible_shmem::FingerprintSample;
 use std::error::Error as _;
 use std::sync::Arc;
 
@@ -37,6 +38,7 @@ struct QemuReplayObservationAuthority;
 /// Opaque exact-leg observation produced by a guarded replay-oracle executor.
 pub struct QemuReplayOracleExactObservation {
     runtime: RuntimeState,
+    components: String,
     authority: Arc<QemuReplayObservationAuthority>,
     generation: u64,
 }
@@ -46,6 +48,53 @@ pub struct QemuReplayOracleThinObservation {
     runtime: RuntimeState,
     authority: Arc<QemuReplayObservationAuthority>,
     generation: u64,
+}
+
+fn oracle_component_details(sample: &FingerprintSample) -> String {
+    let vcpus = sample
+        .vcpus
+        .iter()
+        .take(sample.vcpu_count as usize)
+        .enumerate()
+        .map(|(index, vcpu)| {
+            format!(
+                "{index}:bytes={},retired={},digest={}",
+                vcpu.register_file_bytes,
+                vcpu.retired_instruction_count,
+                ContentHash {
+                    bytes: vcpu.register_digest,
+                }
+                .to_hex()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        "icount={} rr={}/{}/{} failures={} ram={}:{} device={}:{} sections={} schema={} vcpus={}/[{}]",
+        sample.sample_icount,
+        sample.rr_current_vcpu,
+        sample.rr_position_in_quantum,
+        sample.rr_switch_quantum,
+        sample.component_failures,
+        sample.ram_bytes,
+        ContentHash {
+            bytes: sample.ram_digest,
+        }
+        .to_hex(),
+        sample.device_state_bytes,
+        ContentHash {
+            bytes: sample.device_state_digest,
+        }
+        .to_hex(),
+        sample.device_state_sections,
+        ContentHash {
+            bytes: sample.device_state_schema_digest,
+        }
+        .to_hex(),
+        sample.vcpu_count,
+        vcpus,
+    )
 }
 
 /// Backend operations required after a QEMU node has been restored.
@@ -433,6 +482,12 @@ impl QemuReplayValidationExecutor {
             .map_err(|source| {
                 node_backend_error("fingerprint guarded exact-root QEMU snapshot probe", source)
             })?;
+        // The fat process is replaced before comparison, so retain its bounded
+        // component digests while the exact sample is still available.
+        let components = match node.fingerprint_sample() {
+            Ok(sample) => oracle_component_details(&sample),
+            Err(error) => format!("unavailable ({error})"),
+        };
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
         self.retain_runtime_basis(&runtime, config);
@@ -440,6 +495,7 @@ impl QemuReplayValidationExecutor {
         self.exact_observation_generation = Some(generation);
         Ok(QemuReplayOracleExactObservation {
             runtime,
+            components,
             authority: Arc::clone(&self.authority),
             generation,
         })
@@ -561,9 +617,21 @@ impl QemuReplayValidationExecutor {
         self.exact_observation_generation = None;
         self.thin_observation_generation = None;
         if fat.runtime.id != thin.runtime.id {
+            let thin_components = match self.active_node.as_mut() {
+                Some(node) => match node.fingerprint_sample() {
+                    Ok(sample) => oracle_component_details(&sample),
+                    Err(error) => format!("unavailable ({error})"),
+                },
+                None => String::from("unavailable (no active QEMU node)"),
+            };
             return Err(QemuVmRealizationError::ReplayOracleMismatch {
                 fat_hash: fat.runtime.id,
                 thin_hash: thin.runtime.id,
+                detail: format!(
+                    "node={} fat_components={} thin_components={thin_components}",
+                    self.node.name, fat.components,
+                )
+                .into_boxed_str(),
             });
         }
         let source = self.launcher.take_exact_target().ok_or_else(|| {
