@@ -207,11 +207,13 @@ where
         snapshot: &QemuVmSnapshot,
         baked: &QemuBakedGenesisSnapshot,
     ) -> Result<QemuReplayOracleMatch, QemuVmRealizationError> {
+        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=exact-load-start");
         self.guard.check_operational_boundary()?;
         let result = self
             .executor
             .load_materialized_exact_snapshot_probe_guarded(configuration, snapshot);
         let fat = self.observe_realization(result)?;
+        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=exact-load-complete");
 
         let genesis = Configuration::genesis(configuration.def.clone());
         self.guard.check_operational_boundary()?;
@@ -223,9 +225,15 @@ where
             baked,
         );
         let mut thin = self.observe_realization(result)?;
+        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=genesis-load-complete");
 
         let mut current = genesis;
-        for decision in configuration.schedule.decisions() {
+        for (decision_index, decision) in configuration.schedule.decisions().iter().enumerate() {
+            if decision_index < 4 {
+                eprintln!(
+                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=quantum-start index={decision_index}"
+                );
+            }
             let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
                 QemuVmRealizationError::InvalidCheckpoint {
                     role: "baked-genesis replay target",
@@ -239,6 +247,11 @@ where
                 QemuVmReplayRequest::new(current, decision.clone())?,
             );
             thin = self.observe_realization(result)?;
+            if decision_index < 4 {
+                eprintln!(
+                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=quantum-complete index={decision_index}"
+                );
+            }
             current = next;
         }
         if &current != configuration {
@@ -247,6 +260,7 @@ where
             });
         }
 
+        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=compare-start");
         self.executor
             .finish_replay_oracle_comparison(snapshot, configuration, fat, thin)
     }
