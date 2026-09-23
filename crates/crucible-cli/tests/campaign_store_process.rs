@@ -40,6 +40,8 @@ use tempfile::{NamedTempFile, TempDir};
 const CAMPAIGN: &str = "worked-network";
 const PRINCIPAL: &str = "operator";
 const START_COMMAND: &str = "4242424242424242424242424242424242424242424242424242424242424242";
+const PAUSE_COMMAND: &str = "4343434343434343434343434343434343434343434343434343434343434343";
+const RESUME_COMMAND: &str = "4444444444444444444444444444444444444444444444444444444444444444";
 const MAX_CAMPAIGN_SERVICE_STDERR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_LOGICAL_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_PENDING_OBJECTS: u64 = 65_536;
@@ -239,6 +241,87 @@ fn public_campaign_store_flight_survives_gc_and_service_restart() -> Result<(), 
         reopened_report["estimator_endpoints"],
         live_report["estimator_endpoints"]
     );
+    restarted.stop()?;
+
+    Ok(())
+}
+
+#[test]
+fn public_checkpoint_pause_survives_stopped_service_gc_and_cold_resume()
+-> Result<(), Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let generated = run_json(
+        command(&[
+            "--format",
+            "jsonl",
+            "campaign",
+            "fixture",
+            "worked-network",
+            "--output",
+        ])
+        .arg(&fixture.fixture),
+        "generate checkpoint-pause fixture",
+    )?;
+    let manifest = json_path(&generated, "manifest")?;
+    let lineage = json_path(&generated, "lineage")?;
+    let policy = json_path(&generated, "policy")?;
+
+    let mut service = fixture.start_service(Some(&manifest))?;
+    run_json(
+        connected_campaign(&fixture)
+            .args(["create", CAMPAIGN, "--lineage"])
+            .arg(&lineage)
+            .arg("--policy")
+            .arg(&policy)
+            .args(["--start-command", START_COMMAND]),
+        "start checkpoint-pause campaign",
+    )?;
+    let running = campaign_status(&fixture)?;
+    assert_eq!(running["state"], "running");
+    let running_snapshot = json_string(&running, "snapshot")?;
+
+    run_json(
+        connected_campaign(&fixture).args([
+            "pause",
+            CAMPAIGN,
+            "--expected",
+            &running_snapshot,
+            "--command",
+            PAUSE_COMMAND,
+            "--active",
+            "checkpoint",
+        ]),
+        "request exact checkpoint pause",
+    )?;
+    let paused = campaign_status(&fixture)?;
+    assert_eq!(paused["state"], "paused");
+    let paused_snapshot = json_string(&paused, "snapshot")?;
+    assert_ne!(paused_snapshot, running_snapshot);
+    service.stop()?;
+
+    let planned = run_json(&mut fixture.gc_command("plan"), "plan paused-owner GC")?;
+    assert_eq!(planned["phase"], "planned");
+    let applied = run_json(&mut fixture.gc_command("apply"), "apply paused-owner GC")?;
+    assert_eq!(applied["apply_status"], "applied");
+
+    let mut restarted = fixture.start_service(None)?;
+    let reopened = campaign_status(&fixture)?;
+    assert_eq!(reopened["state"], "paused");
+    assert_eq!(reopened["snapshot"], paused_snapshot);
+    run_json(
+        connected_campaign(&fixture).args([
+            "resume",
+            CAMPAIGN,
+            "--expected",
+            &paused_snapshot,
+            "--command",
+            RESUME_COMMAND,
+        ]),
+        "resume cold checkpoint-paused campaign",
+    )?;
+    let resumed = campaign_status(&fixture)?;
+    assert_eq!(resumed["state"], "running");
+    assert_ne!(resumed["snapshot"], paused_snapshot);
     restarted.stop()?;
 
     Ok(())

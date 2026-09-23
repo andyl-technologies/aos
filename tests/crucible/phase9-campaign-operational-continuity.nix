@@ -163,6 +163,9 @@ in
 
           mkdir -p "$out/evidence"
           run_exact_process_test \
+            public_checkpoint_pause_survives_stopped_service_gc_and_cold_resume \
+            checkpoint-pause-cold-resume
+          run_exact_process_test \
             public_composed_store_flight_evicts_cache_and_flushes_write_back \
             composed-store-maintenance
           run_exact_process_test \
@@ -190,7 +193,7 @@ in
               evidence_sha256=$(sha256sum "$evidence_file" | cut -d ' ' -f 1)
               printf '%s  %s\n' "$evidence_sha256" "$evidence_name"
             done > "$out/evidence.sha256"
-          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 11
+          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 13
           evidence_digest=$(sha256sum "$out/evidence.sha256" | cut -d ' ' -f 1)
 
           cat > "$out/result" <<RESULT
@@ -200,6 +203,7 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           coordinator_executor_restart=true
           exact_pause=true
+          public_checkpoint_pause_restart_resume=true
           backend_neutral_archival=true
           offline_maintenance_transfer=true
           fast_midpoint_debug=true
