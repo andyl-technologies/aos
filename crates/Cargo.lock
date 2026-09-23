@@ -966,6 +966,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-guest"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-agent",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-host"
 version = "0.1.0"
 dependencies = [
