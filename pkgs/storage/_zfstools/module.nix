@@ -274,7 +274,9 @@ in {
   config = lib.mkMerge [
     {
       aos.services =
-        {"zfs-auto-snapshot.prepare" = prepareService // {enable = cfg.enable && cfg.datasets != [];};}
+        lib.optionalAttrs (cfg.datasets != []) {
+          "zfs-auto-snapshot.prepare" = prepareService // {enable = cfg.enable;};
+        }
         // builtins.listToAttrs (builtins.map (name: {
             name = "zfs-auto-snapshot.${name}";
             value = (intervalService name) // {enable = cfg.enable;};
