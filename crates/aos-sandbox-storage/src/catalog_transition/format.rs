@@ -26,12 +26,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AuthenticatedRecord, CatalogReservation, FORMAT_VERSION, HEAD_MAGIC, HeadPayload,
-    HeadPayloadV1, MAXIMUM_JSON_BYTE_EXPANSION, MAXIMUM_RECORD_BYTES, PhysicalCatalogState,
-    RECORD_MAC_DOMAIN, RESERVATION_MAGIC, ReservationPayload, ReservationPayloadV1,
-    SNAPSHOT_VARIABLE_ARRAY_BYTES, TRANSITION_DIGEST_DOMAIN, TRANSITION_MAGIC, TransitionPayload,
-    TransitionPayloadV1, VARIABLE_TRANSITION_ARRAY_BYTES, capture_guid,
-    maximum_snapshot_metadata_record,
+    AuthenticatedRecord, CatalogReservation, FORMAT_VERSION, GroupReservationPayloadV2,
+    GroupTransitionEvidence, GroupTransitionPayloadV2, HEAD_MAGIC, HeadPayload, HeadPayloadV1,
+    MAXIMUM_JSON_BYTE_EXPANSION, MAXIMUM_RECORD_BYTES, PhysicalCatalogState, RECORD_MAC_DOMAIN,
+    RESERVATION_MAGIC, ReservationPayload, ReservationPayloadV1, SNAPSHOT_VARIABLE_ARRAY_BYTES,
+    TRANSITION_DIGEST_DOMAIN, TRANSITION_MAGIC, TransitionPayload, TransitionPayloadV1,
+    VARIABLE_TRANSITION_ARRAY_BYTES, capture_guid, maximum_snapshot_metadata_record,
 };
 use crate::snapshot_metadata::snapshot_commit_observation_digest;
 use crate::{CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageStateError};
@@ -55,6 +55,7 @@ pub(super) fn transition_payload(
         result: result_state.binding.into(),
         observation_digest: *observation_digest.as_bytes(),
         object_guid,
+        group: None,
         result_state: result_state.clone(),
     })
 }
@@ -64,7 +65,26 @@ pub(super) fn encode_transition_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
-    encode_authenticated(&transition_wire(payload)?, key_id, secret)
+    match payload.group.as_ref() {
+        Some(group) => encode_authenticated(
+            &GroupTransitionPayloadV2 {
+                magic: TRANSITION_MAGIC.to_owned(),
+                version: 2,
+                operation_id: payload.operation_id,
+                mutation_digest: payload.mutation_digest,
+                catalog: payload.catalog,
+                predecessor: payload.predecessor,
+                result: payload.result,
+                observation_digest: payload.observation_digest,
+                group_program: group.program,
+                member_guids: group.member_guids.clone(),
+                result_state: payload.result_state.persistent_wire()?,
+            },
+            key_id,
+            secret,
+        ),
+        None => encode_authenticated(&transition_wire(payload)?, key_id, secret),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -160,8 +180,24 @@ pub(super) fn validate_reserved_transition_bound(
 pub(super) fn transition_digest(
     payload: &TransitionPayload,
 ) -> Result<ObjectDigest, StorageStateError> {
-    let bytes = serde_json::to_vec(&transition_wire(payload)?)
-        .map_err(|_| StorageStateError::CorruptRecord)?;
+    let bytes = if let Some(group) = payload.group.as_ref() {
+        serde_json::to_vec(&GroupTransitionPayloadV2 {
+            magic: TRANSITION_MAGIC.to_owned(),
+            version: 2,
+            operation_id: payload.operation_id,
+            mutation_digest: payload.mutation_digest,
+            catalog: payload.catalog,
+            predecessor: payload.predecessor,
+            result: payload.result,
+            observation_digest: payload.observation_digest,
+            group_program: group.program,
+            member_guids: group.member_guids.clone(),
+            result_state: payload.result_state.persistent_wire()?,
+        })
+    } else {
+        serde_json::to_vec(&transition_wire(payload)?)
+    }
+    .map_err(|_| StorageStateError::CorruptRecord)?;
     let mut hash = Sha256::new();
     hash.update(TRANSITION_DIGEST_DOMAIN);
     hash.update(bytes);
@@ -180,6 +216,11 @@ pub(super) fn validate_reservation_payload(
         || payload.maximum_transition_bytes == 0
         || payload.maximum_transition_bytes as usize > MAXIMUM_RECORD_BYTES
         || predecessor.generation().checked_add(1) != Some(catalog.generation())
+        || payload.group_program.is_some_and(|program| {
+            program == [0; 32]
+                || payload.mutation_digest != program
+                || payload.catalog.digest != program
+        })
     {
         Err(StorageStateError::CorruptRecord)
     } else {
@@ -200,8 +241,21 @@ pub(super) fn validate_transition_payload(
     if payload.result_state.binding != payload.result.binding()?
         || payload.result_state.wire.predecessor_state != Some(predecessor.into())
         || payload.result_state.wire.resolution != Some(payload.catalog)
-        || payload.catalog.generation.checked_add(1)
-            != Some(payload.result_state.binding.generation())
+        || match payload.group.as_ref() {
+            Some(group) => {
+                group.program == [0; 32]
+                    || group.program != payload.mutation_digest
+                    || group.program != payload.catalog.digest
+                    || group.member_guids.is_empty()
+                    || group.member_guids.iter().any(|guid| *guid == 0)
+                    || predecessor.generation().checked_add(1)
+                        != Some(payload.result_state.binding.generation())
+            }
+            None => {
+                payload.catalog.generation.checked_add(1)
+                    != Some(payload.result_state.binding.generation())
+            }
+        }
     {
         return Err(StorageStateError::CorruptRecord);
     }
@@ -332,6 +386,8 @@ pub(super) fn validate_catalog_chain(
             || transition.catalog != reservation.payload.catalog
             || transition.predecessor != reservation.payload.predecessor
             || transition.result != result.binding.into()
+            || transition.group.as_ref().map(|group| group.program)
+                != reservation.payload.group_program
         {
             return Err(StorageStateError::CorruptRecord);
         }
@@ -376,23 +432,48 @@ pub(super) fn decode_reservation_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<(ReservationPayload, PhysicalCatalogState), StorageStateError> {
-    if payload_version(bytes)? != FORMAT_VERSION {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    let wire: ReservationPayloadV1 = decode_authenticated(bytes, key_id, secret)?;
-    if wire.magic != RESERVATION_MAGIC || wire.version != FORMAT_VERSION {
-        return Err(StorageStateError::CorruptRecord);
+    let (payload, predecessor_wire) = match payload_version(bytes)? {
+        FORMAT_VERSION => {
+            let wire: ReservationPayloadV1 = decode_authenticated(bytes, key_id, secret)?;
+            if wire.magic != RESERVATION_MAGIC || wire.version != FORMAT_VERSION {
+                return Err(StorageStateError::CorruptRecord);
+            }
+            (
+                ReservationPayload {
+                    operation_id: wire.operation_id,
+                    request_digest: wire.request_digest,
+                    mutation_digest: wire.mutation_digest,
+                    catalog: wire.catalog,
+                    catalog_bytes_digest: wire.catalog_bytes_digest,
+                    predecessor: wire.predecessor,
+                    maximum_transition_bytes: wire.maximum_transition_bytes,
+                    group_program: None,
+                },
+                wire.predecessor_state,
+            )
+        }
+        2 => {
+            let wire: GroupReservationPayloadV2 = decode_authenticated(bytes, key_id, secret)?;
+            if wire.magic != RESERVATION_MAGIC || wire.version != 2 {
+                return Err(StorageStateError::CorruptRecord);
+            }
+            (
+                ReservationPayload {
+                    operation_id: wire.operation_id,
+                    request_digest: wire.request_digest,
+                    mutation_digest: wire.mutation_digest,
+                    catalog: wire.catalog,
+                    catalog_bytes_digest: wire.catalog_bytes_digest,
+                    predecessor: wire.predecessor,
+                    maximum_transition_bytes: wire.maximum_transition_bytes,
+                    group_program: Some(wire.group_program),
+                },
+                wire.predecessor_state,
+            )
+        }
+        _ => return Err(StorageStateError::CorruptRecord),
     };
-    let predecessor = PhysicalCatalogState::from_wire(wire.predecessor_state)?;
-    let payload = ReservationPayload {
-        operation_id: wire.operation_id,
-        request_digest: wire.request_digest,
-        mutation_digest: wire.mutation_digest,
-        catalog: wire.catalog,
-        catalog_bytes_digest: wire.catalog_bytes_digest,
-        predecessor: wire.predecessor,
-        maximum_transition_bytes: wire.maximum_transition_bytes,
-    };
+    let predecessor = PhysicalCatalogState::from_wire(predecessor_wire)?;
     validate_reservation_payload(&payload)?;
     if predecessor.binding != payload.predecessor.binding()? {
         return Err(StorageStateError::CorruptRecord);
@@ -406,6 +487,25 @@ pub(super) fn encode_reservation_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
+    if let Some(program) = payload.group_program {
+        return encode_authenticated(
+            &GroupReservationPayloadV2 {
+                magic: RESERVATION_MAGIC.to_owned(),
+                version: 2,
+                operation_id: payload.operation_id,
+                request_digest: payload.request_digest,
+                mutation_digest: payload.mutation_digest,
+                catalog: payload.catalog,
+                catalog_bytes_digest: payload.catalog_bytes_digest,
+                predecessor: payload.predecessor,
+                predecessor_state: predecessor.persistent_wire()?,
+                maximum_transition_bytes: payload.maximum_transition_bytes,
+                group_program: program,
+            },
+            key_id,
+            secret,
+        );
+    }
     encode_authenticated(
         &ReservationPayloadV1 {
             magic: RESERVATION_MAGIC.to_owned(),
@@ -429,22 +529,45 @@ pub(super) fn decode_transition_payload(
     key_id: [u8; 16],
     secret: &[u8; 32],
 ) -> Result<TransitionPayload, StorageStateError> {
-    if payload_version(bytes)? != FORMAT_VERSION {
-        return Err(StorageStateError::CorruptRecord);
-    }
-    let wire: TransitionPayloadV1 = decode_authenticated(bytes, key_id, secret)?;
-    if wire.magic != TRANSITION_MAGIC || wire.version != FORMAT_VERSION {
-        return Err(StorageStateError::CorruptRecord);
-    };
-    let payload = TransitionPayload {
-        operation_id: wire.operation_id,
-        mutation_digest: wire.mutation_digest,
-        catalog: wire.catalog,
-        predecessor: wire.predecessor,
-        result: wire.result,
-        observation_digest: wire.observation_digest,
-        object_guid: wire.object_guid,
-        result_state: PhysicalCatalogState::from_wire(wire.result_state)?,
+    let payload = match payload_version(bytes)? {
+        FORMAT_VERSION => {
+            let wire: TransitionPayloadV1 = decode_authenticated(bytes, key_id, secret)?;
+            if wire.magic != TRANSITION_MAGIC || wire.version != FORMAT_VERSION {
+                return Err(StorageStateError::CorruptRecord);
+            }
+            TransitionPayload {
+                operation_id: wire.operation_id,
+                mutation_digest: wire.mutation_digest,
+                catalog: wire.catalog,
+                predecessor: wire.predecessor,
+                result: wire.result,
+                observation_digest: wire.observation_digest,
+                object_guid: wire.object_guid,
+                group: None,
+                result_state: PhysicalCatalogState::from_wire(wire.result_state)?,
+            }
+        }
+        2 => {
+            let wire: GroupTransitionPayloadV2 = decode_authenticated(bytes, key_id, secret)?;
+            if wire.magic != TRANSITION_MAGIC || wire.version != 2 {
+                return Err(StorageStateError::CorruptRecord);
+            }
+            TransitionPayload {
+                operation_id: wire.operation_id,
+                mutation_digest: wire.mutation_digest,
+                catalog: wire.catalog,
+                predecessor: wire.predecessor,
+                result: wire.result,
+                observation_digest: wire.observation_digest,
+                object_guid: None,
+                group: Some(GroupTransitionEvidence {
+                    program: wire.group_program,
+                    member_guids: wire.member_guids,
+                }),
+                result_state: PhysicalCatalogState::from_wire(wire.result_state)?,
+            }
+        }
+        _ => return Err(StorageStateError::CorruptRecord),
     };
     validate_transition_payload(&payload)?;
     Ok(payload)

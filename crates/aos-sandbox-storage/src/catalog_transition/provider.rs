@@ -125,6 +125,13 @@ impl StorageCatalogTransitionProvider {
         self.head.as_ref().map(PhysicalCatalogState::binding)
     }
 
+    pub(crate) fn atomic_group_member_guids(&self, operation: [u8; 16]) -> Option<&[u64]> {
+        self.transitions
+            .get(&operation)
+            .and_then(|transition| transition.group.as_ref())
+            .map(|group| group.member_guids.as_slice())
+    }
+
     pub(crate) fn workspace_projection(
         &self,
     ) -> Result<Vec<PhysicalWorkspaceProjection>, StorageStateError> {
@@ -242,6 +249,7 @@ impl StorageCatalogTransitionProvider {
             predecessor: predecessor.binding.into(),
             maximum_transition_bytes: u32::try_from(maximum_transition_bytes)
                 .map_err(|_| StorageStateError::InvalidValue)?,
+            group_program: None,
         };
         let bytes = encode_reservation_payload(&payload, &predecessor, key_id, secret)?;
         if bytes.len() > MAXIMUM_RECORD_BYTES {
@@ -260,6 +268,186 @@ impl StorageCatalogTransitionProvider {
             reservation.payload.operation_id.to_vec(),
             reservation.bytes.clone(),
         )
+    }
+
+    pub(crate) fn group_effect_capacity_records(operation_id: [u8; 16]) -> Vec<JournalRecord> {
+        vec![
+            JournalRecord::put(
+                RecordNamespace::StorageCatalogTransition,
+                operation_id.to_vec(),
+                vec![0; MAXIMUM_RECORD_BYTES],
+            ),
+            JournalRecord::put(
+                RecordNamespace::StorageCatalogHead,
+                HEAD_KEY.to_vec(),
+                vec![0; MAXIMUM_HEAD_BYTES],
+            ),
+        ]
+    }
+
+    pub(crate) fn reserve_atomic_group(
+        &self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        request_digest: ObjectDigest,
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+    ) -> Result<CatalogReservation, StorageStateError> {
+        let operation_id = program.operation();
+        if request_digest.as_bytes() == &[0; 32]
+            || self.reservations.contains_key(&operation_id)
+            || self
+                .reservations
+                .keys()
+                .any(|reserved| !self.transitions.contains_key(reserved))
+            || self.genesis_binding().map(CatalogBindingV1::digest)
+                != Some(program.catalog_source())
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let predecessor = self
+            .head
+            .as_ref()
+            .filter(|head| {
+                head.binding.generation() == program.catalog_generation()
+                    && head.binding.digest() == program.catalog_head()
+            })
+            .cloned()
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let next_generation = predecessor
+            .binding
+            .generation()
+            .checked_add(1)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let catalog = CatalogBindingV1::from_publisher(next_generation, program.commitment())
+            .map_err(|_| StorageStateError::InvalidTransition)?;
+        let program_bytes = program
+            .canonical_bytes()
+            .map_err(|_| StorageStateError::InvalidValue)?;
+        let occupied = predecessor
+            .wire
+            .roots
+            .iter()
+            .map(|root| root.guid)
+            .chain(predecessor.wire.datasets.iter().map(|dataset| dataset.guid))
+            .chain(
+                predecessor
+                    .wire
+                    .snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.guid),
+            )
+            .chain(
+                predecessor
+                    .wire
+                    .tombstones
+                    .iter()
+                    .map(|tombstone| tombstone.guid),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        let worst_case_guids = (1..=u64::MAX)
+            .rev()
+            .filter(|guid| !occupied.contains(guid))
+            .take(program.member_count())
+            .collect::<Vec<_>>();
+        let worst_case_result =
+            predecessor.apply_atomic_snapshot_group(program, &worst_case_guids)?;
+        let worst_case = group_transition_payload(
+            program,
+            &predecessor,
+            &worst_case_result,
+            ObjectDigest::from_bytes([u8::MAX; 32]),
+            &worst_case_guids,
+        );
+        // Remaining digest/MAC JSON width varies with the actual GUIDs; leave
+        // a conservative fixed margin before crossing the backend boundary.
+        if encode_transition_payload(&worst_case, key_id, secret)?.len()
+            > MAXIMUM_RECORD_BYTES - 4096
+        {
+            return Err(StorageStateError::InvalidValue);
+        }
+        let payload = ReservationPayload {
+            operation_id,
+            request_digest: *request_digest.as_bytes(),
+            mutation_digest: *program.commitment().as_bytes(),
+            catalog: catalog.into(),
+            catalog_bytes_digest: digest_bytes(&program_bytes),
+            predecessor: predecessor.binding.into(),
+            maximum_transition_bytes: MAXIMUM_RECORD_BYTES as u32,
+            group_program: Some(*program.commitment().as_bytes()),
+        };
+        let bytes = encode_reservation_payload(&payload, &predecessor, key_id, secret)?;
+        Ok(CatalogReservation {
+            payload,
+            bytes,
+            predecessor,
+        })
+    }
+
+    pub(crate) fn prepare_atomic_group_transition(
+        &self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        request_digest: ObjectDigest,
+        observation: ObjectDigest,
+        member_guids: &[u64],
+        key_id: [u8; 16],
+        secret: &[u8; 32],
+    ) -> Result<PreparedCatalogTransition, StorageStateError> {
+        let reservation = self
+            .reservations
+            .get(&program.operation())
+            .ok_or(StorageStateError::InvalidTransition)?;
+        if self.transitions.contains_key(&program.operation())
+            || reservation.payload.group_program != Some(*program.commitment().as_bytes())
+            || reservation.payload.request_digest != *request_digest.as_bytes()
+            || reservation.payload.catalog_bytes_digest
+                != digest_bytes(
+                    &program
+                        .canonical_bytes()
+                        .map_err(|_| StorageStateError::InvalidValue)?,
+                )
+            || self.head_binding() != Some(reservation.predecessor.binding)
+            || crate::lifecycle_atomic_snapshot::atomic_snapshot_observation_digest(
+                program,
+                member_guids,
+            )
+            .map_err(|_| StorageStateError::InvalidValue)?
+                != observation
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let result_state = reservation
+            .predecessor
+            .apply_atomic_snapshot_group(program, member_guids)?;
+        let transition = group_transition_payload(
+            program,
+            &reservation.predecessor,
+            &result_state,
+            observation,
+            member_guids,
+        );
+        let transition_bytes = encode_transition_payload(&transition, key_id, secret)?;
+        let digest = transition_digest(&transition)?;
+        let head_bytes = encode_head_payload(
+            &HeadPayload {
+                binding: result_state.binding.into(),
+                operation_id: Some(program.operation()),
+                transition_digest: Some(*digest.as_bytes()),
+                genesis_state: None,
+            },
+            key_id,
+            secret,
+        )?;
+        if head_bytes.len() > MAXIMUM_HEAD_BYTES {
+            return Err(StorageStateError::InvalidValue);
+        }
+        Ok(PreparedCatalogTransition {
+            operation_id: program.operation(),
+            snapshot_metadata: None,
+            transition,
+            transition_bytes,
+            head_bytes,
+            result_state,
+        })
     }
 
     pub(crate) fn effect_capacity_records(
@@ -560,6 +748,7 @@ impl StorageCatalogTransitionProvider {
             || reservation.payload.mutation_digest != *mutation_digest.as_bytes()
             || reservation.payload.catalog != catalog.binding().into()
             || reservation.payload.catalog_bytes_digest != digest_bytes(catalog.canonical_bytes())
+            || reservation.payload.group_program.is_some()
         {
             return Err(StorageStateError::CorruptRecord);
         }
@@ -609,6 +798,7 @@ impl StorageCatalogTransitionProvider {
                     None => ObjectDigest::from_bytes(transition.observation_digest),
                 };
                 if transition.operation_id != operation_id
+                    || transition.group.is_some()
                     || transition.mutation_digest != *mutation_digest.as_bytes()
                     || transition.catalog != catalog.binding().into()
                     || transition.predecessor != reservation.payload.predecessor
@@ -646,6 +836,68 @@ impl StorageCatalogTransitionProvider {
             Ok(())
         }
     }
+
+    pub(crate) fn validate_atomic_group_record(
+        &self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        request_digest: ObjectDigest,
+        committed: Option<(ObjectDigest, CatalogBindingV1)>,
+    ) -> Result<(), StorageStateError> {
+        let reservation = self.reservations.get(&program.operation());
+        let transition = self.transitions.get(&program.operation());
+        if program.format_version() == 1 {
+            return if reservation.is_none() && transition.is_none() {
+                Ok(())
+            } else {
+                Err(StorageStateError::CorruptRecord)
+            };
+        }
+        let reservation = reservation.ok_or(StorageStateError::CorruptRecord)?;
+        let program_bytes = program
+            .canonical_bytes()
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        if self.genesis_binding().map(CatalogBindingV1::digest) != Some(program.catalog_source())
+            || reservation.payload.group_program != Some(*program.commitment().as_bytes())
+            || reservation.payload.request_digest != *request_digest.as_bytes()
+            || reservation.payload.mutation_digest != *program.commitment().as_bytes()
+            || reservation.payload.catalog_bytes_digest != digest_bytes(&program_bytes)
+            || reservation.payload.predecessor != reservation.predecessor.binding.into()
+            || reservation.predecessor.binding.generation() != program.catalog_generation()
+            || reservation.predecessor.binding.digest() != program.catalog_head()
+        {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        match (committed, transition) {
+            (None, None) => Ok(()),
+            (Some((observation, post_head)), Some(transition)) => {
+                let group = transition
+                    .group
+                    .as_ref()
+                    .ok_or(StorageStateError::CorruptRecord)?;
+                let expected_observation =
+                    crate::lifecycle_atomic_snapshot::atomic_snapshot_observation_digest(
+                        program,
+                        &group.member_guids,
+                    )
+                    .map_err(|_| StorageStateError::CorruptRecord)?;
+                let result = reservation
+                    .predecessor
+                    .apply_atomic_snapshot_group(program, &group.member_guids)?;
+                if group.program != *program.commitment().as_bytes()
+                    || transition.operation_id != program.operation()
+                    || transition.observation_digest != *observation.as_bytes()
+                    || expected_observation != observation
+                    || transition.result_state != result
+                    || transition.result != result.binding.into()
+                    || post_head != result.binding
+                {
+                    return Err(StorageStateError::CorruptRecord);
+                }
+                Ok(())
+            }
+            _ => Err(StorageStateError::CorruptRecord),
+        }
+    }
 }
 
 fn genesis_binding(
@@ -674,4 +926,30 @@ fn genesis_binding(
         return Err(StorageStateError::CorruptRecord);
     }
     Ok(Some(root))
+}
+
+fn group_transition_payload(
+    program: &crate::DormantAtomicDatasetSnapshotV1,
+    predecessor: &PhysicalCatalogState,
+    result_state: &PhysicalCatalogState,
+    observation: ObjectDigest,
+    member_guids: &[u64],
+) -> TransitionPayload {
+    TransitionPayload {
+        operation_id: program.operation(),
+        mutation_digest: *program.commitment().as_bytes(),
+        catalog: BindingWire {
+            generation: result_state.binding.generation(),
+            digest: *program.commitment().as_bytes(),
+        },
+        predecessor: predecessor.binding.into(),
+        result: result_state.binding.into(),
+        observation_digest: *observation.as_bytes(),
+        object_guid: None,
+        group: Some(GroupTransitionEvidence {
+            program: *program.commitment().as_bytes(),
+            member_guids: member_guids.to_vec(),
+        }),
+        result_state: result_state.clone(),
+    }
 }

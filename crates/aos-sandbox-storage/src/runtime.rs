@@ -331,8 +331,8 @@ impl StorageBrokerRuntime {
         let program =
             self.finish_live_transaction_mutation(marked, StorageRuntimeError::Admission)?;
         self.latch_recovery_required();
-        let observation = match self.helper.atomic_snapshot_once(&program, true) {
-            Ok(evidence) => evidence.digest(),
+        let evidence = match self.helper.atomic_snapshot_once(&program, true) {
+            Ok(evidence) => evidence,
             Err(_) => {
                 return Ok(
                     AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
@@ -341,9 +341,15 @@ impl StorageBrokerRuntime {
                 );
             }
         };
+        let observation = evidence.digest();
         if self
             .coordinator
-            .commit_atomic_dataset_snapshot(operation, commitment, observation)
+            .commit_atomic_dataset_snapshot_with_evidence(
+                operation,
+                commitment,
+                observation,
+                evidence.member_guids(),
+            )
             .is_err()
         {
             if self.coordinator.transaction_journal_requires_reopen() {
@@ -388,8 +394,8 @@ impl StorageBrokerRuntime {
                 })
             }
             crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
-                let observation = match self.helper.atomic_snapshot_once(&program, false) {
-                    Ok(evidence) => evidence.digest(),
+                let evidence = match self.helper.atomic_snapshot_once(&program, false) {
+                    Ok(evidence) => evidence,
                     Err(_) => {
                         return Ok(
                             AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
@@ -398,11 +404,23 @@ impl StorageBrokerRuntime {
                         );
                     }
                 };
-                if self
-                    .coordinator
-                    .commit_atomic_dataset_snapshot(operation, commitment, observation)
-                    .is_err()
-                {
+                let observation = evidence.digest();
+                let committed = if program.format_version() == 1 {
+                    self.coordinator.commit_atomic_dataset_snapshot(
+                        operation,
+                        commitment,
+                        observation,
+                    )
+                } else {
+                    self.coordinator
+                        .commit_atomic_dataset_snapshot_with_evidence(
+                            operation,
+                            commitment,
+                            observation,
+                            evidence.member_guids(),
+                        )
+                };
+                if committed.is_err() {
                     if self.coordinator.transaction_journal_requires_reopen() {
                         self.readiness = StorageRuntimeReadiness::ReopenRequired;
                         return Err(StorageRuntimeError::ReopenRequired);
@@ -1955,20 +1973,28 @@ pub(crate) fn reconcile_transaction_recovery<B: crate::helper::ZfsProcessBackend
             crate::state::AtomicDatasetSnapshotPhaseV1::Committed => {}
             crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
                 let program = record.program();
-                let observation = match helper.atomic_snapshot_once(program, false) {
-                    Ok(evidence) => evidence.digest(),
+                let evidence = match helper.atomic_snapshot_once(program, false) {
+                    Ok(evidence) => evidence,
                     Err(_) => {
                         pending += 1;
                         continue;
                     }
                 };
-                coordinator
-                    .commit_atomic_dataset_snapshot(
+                let committed = if program.format_version() == 1 {
+                    coordinator.commit_atomic_dataset_snapshot(
                         program.operation(),
                         program.commitment(),
-                        observation,
+                        evidence.digest(),
                     )
-                    .map_err(|_| StorageRuntimeError::Recovery)?;
+                } else {
+                    coordinator.commit_atomic_dataset_snapshot_with_evidence(
+                        program.operation(),
+                        program.commitment(),
+                        evidence.digest(),
+                        evidence.member_guids(),
+                    )
+                };
+                committed.map_err(|_| StorageRuntimeError::Recovery)?;
             }
         }
     }

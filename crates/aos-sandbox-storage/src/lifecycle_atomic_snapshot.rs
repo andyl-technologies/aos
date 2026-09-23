@@ -405,6 +405,36 @@ fn grouped_program_commitment_fields(
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
+pub(crate) fn atomic_snapshot_observation_digest(
+    program: &DormantAtomicDatasetSnapshotV1,
+    member_guids: &[u64],
+) -> Result<ObjectDigest, LifecyclePhase6ErrorV1> {
+    if member_guids.len() != program.member_count() || member_guids.contains(&0) {
+        return Err(LifecyclePhase6ErrorV1::InvalidInput);
+    }
+    let mut observed = program
+        .members()
+        .iter()
+        .zip(member_guids)
+        .map(|(member, guid)| (member.destination_name(), *guid))
+        .collect::<Vec<_>>();
+    observed.sort_unstable();
+    if !observed.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+        return Err(LifecyclePhase6ErrorV1::InvalidInput);
+    }
+    let mut hasher = Sha256::new()
+        .chain_update(b"aos.sandbox.storage.atomic-snapshot-observation.v1\0")
+        .chain_update(program.commitment().as_bytes())
+        .chain_update((observed.len() as u32).to_be_bytes());
+    for (name, guid) in observed {
+        hasher = hasher
+            .chain_update(name.as_bytes())
+            .chain_update([0])
+            .chain_update(guid.to_be_bytes());
+    }
+    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
+}
+
 #[cfg(test)]
 pub(crate) fn sample_atomic_snapshot_program_for_test() -> DormantAtomicDatasetSnapshotV1 {
     let plan = ObjectDigest::from_bytes([3; 32]);
@@ -434,6 +464,46 @@ pub(crate) fn sample_atomic_snapshot_program_for_test() -> DormantAtomicDatasetS
         plan,
         effect,
         catalog_generation: 9,
+        catalog_source,
+        catalog_head,
+        members,
+        commitment,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn atomic_snapshot_program_for_catalog_test(
+    generation: u64,
+    catalog_source: ObjectDigest,
+    catalog_head: ObjectDigest,
+    source_name: &str,
+    source_guid: u64,
+) -> DormantAtomicDatasetSnapshotV1 {
+    let plan = ObjectDigest::from_bytes([71; 32]);
+    let effect = ObjectDigest::from_bytes([72; 32]);
+    let members = vec![ProtectedAtomicDatasetSnapshotMemberV1 {
+        source_name: source_name.to_owned(),
+        source_guid,
+        destination_name: format!("{source_name}@aos-{}", "02".repeat(16)),
+        storage_handle: ObjectDigest::from_bytes([73; 32]),
+        physical_identity: ObjectDigest::from_bytes([74; 32]),
+    }];
+    let commitment = grouped_program_commitment_fields(
+        2,
+        plan,
+        effect,
+        generation,
+        catalog_source,
+        catalog_head,
+        &members,
+    );
+    DormantAtomicDatasetSnapshotV1 {
+        format_version: 2,
+        operation: [71; 16],
+        snapshot: [2; 16],
+        plan,
+        effect,
+        catalog_generation: generation,
         catalog_source,
         catalog_head,
         members,

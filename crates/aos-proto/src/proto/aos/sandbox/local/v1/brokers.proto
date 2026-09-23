@@ -627,6 +627,7 @@ message InventoryStorageResourcesResponse {
   repeated StorageLifecycleTransitionRecord lifecycle_transitions = 8; // At most 16384, canonical order.
   uint32 lifecycle_source_version = 9; // Zero for legacy V2; exactly 3 for root/head split.
   bytes lifecycle_catalog_head = 10; // V3 protected physical head digest, 32 bytes.
+  uint64 lifecycle_catalog_generation = 11; // V3 protected physical head generation.
 }
 
 service StorageBroker {

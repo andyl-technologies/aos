@@ -766,6 +766,23 @@ impl StorageAdmissionCoordinator {
             .map_err(Into::into)
     }
 
+    pub(crate) fn commit_atomic_dataset_snapshot_with_evidence(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        member_guids: &[u64],
+    ) -> Result<(), StorageBrokerError> {
+        self.transactions
+            .commit_atomic_dataset_snapshot_with_evidence(
+                operation,
+                program,
+                observation,
+                member_guids,
+            )
+            .map_err(Into::into)
+    }
+
     pub(crate) fn admit_trusted_resolver_policy(
         &mut self,
         binding: StorageResolverPolicyCatalogBindingV1,

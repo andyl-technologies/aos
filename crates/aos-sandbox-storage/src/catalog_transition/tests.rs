@@ -127,6 +127,137 @@ fn authenticated_codec_round_trips_each_v1_record() {
 }
 
 #[test]
+fn grouped_transition_replays_exact_guid_observation_at_one_generation() {
+    let source_catalog = catalog(7, "tank/aos/project/work");
+    let key_id = [81; 16];
+    let secret = [82; 32];
+    let request = ObjectDigest::from_bytes([83; 32]);
+    let directory = TempDir::new().unwrap();
+    let (mut journal, _) = Journal::open(
+        directory.path().join("group-catalog.journal"),
+        JournalLimits::default(),
+    )
+    .unwrap();
+
+    let empty = StorageCatalogTransitionProvider::load(&journal, key_id, &secret).unwrap();
+    let bootstrap = empty
+        .prepare_bootstrap(6, std::slice::from_ref(&source_catalog), key_id, &secret)
+        .unwrap();
+    journal
+        .commit(&transaction(81, vec![bootstrap.record()]))
+        .unwrap();
+    let mut provider = StorageCatalogTransitionProvider::load(&journal, key_id, &secret).unwrap();
+    let source = provider.genesis_binding().unwrap().digest();
+    let head = provider.head_binding().unwrap().digest();
+    let program = crate::lifecycle_atomic_snapshot::atomic_snapshot_program_for_catalog_test(
+        6,
+        source,
+        head,
+        "tank/aos/project",
+        15,
+    );
+
+    let reservation = provider
+        .reserve_atomic_group(&program, request, key_id, &secret)
+        .unwrap();
+    journal
+        .commit(&transaction(
+            82,
+            vec![StorageCatalogTransitionProvider::reservation_record(
+                &reservation,
+            )],
+        ))
+        .unwrap();
+    provider.install_reservation(reservation);
+    provider
+        .validate_atomic_group_record(&program, request, None)
+        .unwrap();
+    let guids = [84];
+    let observation =
+        crate::lifecycle_atomic_snapshot::atomic_snapshot_observation_digest(&program, &guids)
+            .unwrap();
+    let transition = provider
+        .prepare_atomic_group_transition(&program, request, observation, &guids, key_id, &secret)
+        .unwrap();
+    let post_head = transition.result_binding();
+    assert_eq!(post_head.generation(), 7);
+    journal
+        .commit(&transaction(83, transition.records()))
+        .unwrap();
+
+    let recovered = StorageCatalogTransitionProvider::load(&journal, key_id, &secret).unwrap();
+    let physical =
+        StorageCatalogTransitionProvider::load_resolver_snapshot(&journal, key_id, &secret)
+            .unwrap();
+    assert_eq!(physical.snapshots().len(), 1);
+    assert_eq!(physical.snapshots()[0].guid(), guids[0]);
+    recovered
+        .validate_atomic_group_record(&program, request, Some((observation, post_head)))
+        .unwrap();
+    assert!(recovered
+        .validate_atomic_group_record(&program, request, None)
+        .is_err());
+    assert_eq!(
+        recovered.atomic_group_member_guids(program.operation()),
+        Some(guids.as_slice())
+    );
+    assert!(
+        recovered
+            .validate_atomic_group_record(
+                &program,
+                request,
+                Some((ObjectDigest::from_bytes([85; 32]), post_head)),
+            )
+            .is_err()
+    );
+
+    let later_catalog = catalog(8, "tank/aos/project/later");
+    let later_operation = [86; 16];
+    let later_request = ObjectDigest::from_bytes([87; 32]);
+    let later_mutation = ObjectDigest::from_bytes([88; 32]);
+    let later_reservation = recovered
+        .reserve(
+            later_operation,
+            later_request,
+            later_mutation,
+            &later_catalog,
+            key_id,
+            &secret,
+        )
+        .unwrap();
+    journal
+        .commit(&transaction(
+            84,
+            vec![StorageCatalogTransitionProvider::reservation_record(
+                &later_reservation,
+            )],
+        ))
+        .unwrap();
+    let mut later_provider = recovered;
+    later_provider.install_reservation(later_reservation);
+    let later_transition = later_provider
+        .prepare_transition(
+            later_operation,
+            later_mutation,
+            &later_catalog,
+            Some(89),
+            ObjectDigest::from_bytes([90; 32]),
+            key_id,
+            &secret,
+        )
+        .unwrap();
+    journal
+        .commit(&transaction(85, later_transition.records()))
+        .unwrap();
+    let recovered_later =
+        StorageCatalogTransitionProvider::load(&journal, key_id, &secret).unwrap();
+    assert_ne!(recovered_later.head_binding(), Some(post_head));
+    recovered_later
+        .validate_atomic_group_record(&program, request, Some((observation, post_head)))
+        .unwrap();
+}
+
+#[test]
 fn v1_chain_authenticates_snapshot_metadata_and_rejects_unknown_versions() {
     let create_catalog = catalog(7, "tank/aos/project/work");
     let key_id = [71; 16];

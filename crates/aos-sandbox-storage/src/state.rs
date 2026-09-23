@@ -233,6 +233,7 @@ pub(crate) struct AtomicDatasetSnapshotInventoryV1 {
     semantic_digest: ObjectDigest,
     transport_digest: ObjectDigest,
     post_head: Option<CatalogBindingV1>,
+    member_guids: Option<Vec<u64>>,
 }
 
 impl AtomicDatasetSnapshotInventoryV1 {
@@ -267,6 +268,10 @@ impl AtomicDatasetSnapshotInventoryV1 {
     /// Returns the protected post-catalog head committed with the group result.
     pub(crate) const fn post_head(&self) -> Option<CatalogBindingV1> {
         self.post_head
+    }
+
+    pub(crate) fn member_guids(&self) -> Option<&[u64]> {
+        self.member_guids.as_deref()
     }
 }
 
@@ -687,6 +692,10 @@ impl StorageTransactionStore {
                 semantic_digest: record.semantic_digest,
                 transport_digest: record.transport_digest,
                 post_head: record.post_head,
+                member_guids: self
+                    .catalog_transitions
+                    .atomic_group_member_guids(record.program.operation())
+                    .map(<[u64]>::to_vec),
             })
             .collect())
     }
@@ -726,6 +735,12 @@ impl StorageTransactionStore {
         {
             return Err(StorageStateError::Equivocation);
         }
+        let reservation = self.catalog_transitions.reserve_atomic_group(
+            &program,
+            semantic_digest,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
         let record = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Prepared,
             program,
@@ -780,6 +795,7 @@ impl StorageTransactionStore {
                     atomic_snapshot_record_key(operation),
                     encode_atomic_snapshot_record(&record, &self.key)?,
                 ),
+                StorageCatalogTransitionProvider::reservation_record(&reservation),
             ],
         )?;
         if prepared.records().iter().any(|record| {
@@ -789,12 +805,24 @@ impl StorageTransactionStore {
         }) {
             return Err(StorageStateError::InvalidValue);
         }
+        let mut committed_capacity_records = vec![JournalRecord::put(
+            RecordNamespace::Effect,
+            atomic_snapshot_record_key(operation),
+            encode_atomic_snapshot_record(&committed, &self.key)?,
+        )];
+        committed_capacity_records
+            .extend(StorageCatalogTransitionProvider::group_effect_capacity_records(operation));
+        let committed_capacity = JournalTransaction::new(
+            atomic_snapshot_transaction_id(operation, AtomicDatasetSnapshotPhaseV1::Committed),
+            committed_capacity_records,
+        )?;
         self.journal.preflight_transactions(&[
             prepared.clone(),
             atomic_snapshot_transaction(&ambiguous, &self.key)?,
-            atomic_snapshot_transaction(&committed, &self.key)?,
+            committed_capacity,
         ])?;
         self.commit_journal(&prepared)?;
+        self.catalog_transitions.install_reservation(reservation);
         self.atomic_snapshots.insert(operation, record);
         Ok(())
     }
@@ -867,29 +895,65 @@ impl StorageTransactionStore {
         program: ObjectDigest,
         observation: ObjectDigest,
     ) -> Result<(), StorageStateError> {
-        self.commit_atomic_dataset_snapshot_inner(operation, program, observation, None)
+        self.commit_legacy_atomic_dataset_snapshot(operation, program, observation)
     }
 
-    /// Commits the original result and an authenticated post-catalog head together.
-    ///
-    /// The caller must first install a verified grouped physical transition.
-    /// No unobserved or inferred head is accepted from the worker digest alone.
-    pub(crate) fn commit_atomic_dataset_snapshot_with_post_head(
+    /// Commits the original result and observed grouped physical transition atomically.
+    pub(crate) fn commit_atomic_dataset_snapshot_with_evidence(
         &mut self,
         operation: [u8; 16],
         program: ObjectDigest,
         observation: ObjectDigest,
-        post_head: CatalogBindingV1,
+        member_guids: &[u64],
     ) -> Result<(), StorageStateError> {
-        self.commit_atomic_dataset_snapshot_inner(operation, program, observation, Some(post_head))
+        self.ensure_authority_readable()?;
+        let current = self
+            .atomic_snapshots
+            .get(&operation)
+            .filter(|record| {
+                record.phase == AtomicDatasetSnapshotPhaseV1::Ambiguous
+                    && record.program.commitment() == program
+                    && record.program.format_version() == 2
+                    && record.observation.is_none()
+            })
+            .cloned()
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let transition = self.catalog_transitions.prepare_atomic_group_transition(
+            &current.program,
+            current.semantic_digest,
+            observation,
+            member_guids,
+            self.key.key_id,
+            &self.key.secret,
+        )?;
+        let post_head = transition.result_binding();
+        let record = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Committed,
+            observation: Some(observation),
+            post_head: Some(post_head),
+            ..current
+        };
+        let mut records = vec![JournalRecord::put(
+            RecordNamespace::Effect,
+            atomic_snapshot_record_key(operation),
+            encode_atomic_snapshot_record(&record, &self.key)?,
+        )];
+        records.extend(transition.records());
+        let journal = JournalTransaction::new(
+            atomic_snapshot_transaction_id(operation, AtomicDatasetSnapshotPhaseV1::Committed),
+            records,
+        )?;
+        self.commit_journal(&journal)?;
+        self.catalog_transitions.install_transition(transition);
+        self.atomic_snapshots.insert(operation, record);
+        Ok(())
     }
 
-    fn commit_atomic_dataset_snapshot_inner(
+    fn commit_legacy_atomic_dataset_snapshot(
         &mut self,
         operation: [u8; 16],
         program: ObjectDigest,
         observation: ObjectDigest,
-        post_head: Option<CatalogBindingV1>,
     ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if observation.as_bytes() == &[0; 32] {
@@ -905,26 +969,13 @@ impl StorageTransactionStore {
             })
             .cloned()
             .ok_or(StorageStateError::InvalidTransition)?;
-        if let Some(post_head) = post_head {
-            let expected = current
-                .program
-                .catalog_generation()
-                .checked_add(1)
-                .ok_or(StorageStateError::InvalidTransition)?;
-            let physical = self.verified_resolver_journal()?.physical().binding();
-            if current.program.format_version() != 2
-                || post_head.generation() != expected
-                || post_head.digest() == current.program.catalog_head()
-                || self.catalog_transitions.head_binding() != Some(post_head)
-                || physical != post_head
-            {
-                return Err(StorageStateError::InvalidTransition);
-            }
+        if current.program.format_version() != 1 {
+            return Err(StorageStateError::InvalidTransition);
         }
         let record = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Committed,
             observation: Some(observation),
-            post_head,
+            post_head: None,
             ..current
         };
         self.publish_atomic_snapshot(&record)?;
@@ -1070,7 +1121,15 @@ impl StorageTransactionStore {
             return Err(StorageStateError::Rollback);
         }
         validate_durable_records(&records, &catalog_transitions, &key)?;
-        catalog_transitions.validate_operation_set(records.keys().copied())?;
+        if records
+            .keys()
+            .any(|operation| atomic_snapshots.contains_key(operation))
+        {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        validate_atomic_snapshot_catalog_join(&atomic_snapshots, &catalog_transitions)?;
+        catalog_transitions
+            .validate_operation_set(records.keys().chain(atomic_snapshots.keys()).copied())?;
         validate_publication_intent_set(&records, &publication_intents)?;
         validate_repair_intent_set(
             &journal,
@@ -2769,8 +2828,16 @@ impl StorageTransactionStore {
             .genesis_binding()
             .ok_or(StorageStateError::CorruptRecord)?;
         let durable = load_durable_records(&self.journal, &self.key)?;
+        let atomic = load_atomic_snapshot_records(&self.journal, &self.key)?;
         validate_durable_records(&durable, &provider, &self.key)?;
-        provider.validate_operation_set(durable.keys().copied())?;
+        if durable
+            .keys()
+            .any(|operation| atomic.contains_key(operation))
+        {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        validate_atomic_snapshot_catalog_join(&atomic, &provider)?;
+        provider.validate_operation_set(durable.keys().chain(atomic.keys()).copied())?;
         let mut records = BTreeMap::new();
         for record in durable.into_values() {
             let Some(result) = record.result else {
@@ -4144,6 +4211,29 @@ fn load_atomic_snapshot_records(
         }
     }
     Ok(records)
+}
+
+fn validate_atomic_snapshot_catalog_join(
+    records: &BTreeMap<[u8; 16], AtomicDatasetSnapshotRecordV1>,
+    catalog: &StorageCatalogTransitionProvider,
+) -> Result<(), StorageStateError> {
+    for (operation, record) in records {
+        if *operation != record.program.operation() {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        let committed = match record.phase {
+            AtomicDatasetSnapshotPhaseV1::Prepared | AtomicDatasetSnapshotPhaseV1::Ambiguous => {
+                None
+            }
+            AtomicDatasetSnapshotPhaseV1::Committed if record.program.format_version() == 1 => None,
+            AtomicDatasetSnapshotPhaseV1::Committed => Some((
+                record.observation.ok_or(StorageStateError::CorruptRecord)?,
+                record.post_head.ok_or(StorageStateError::CorruptRecord)?,
+            )),
+        };
+        catalog.validate_atomic_group_record(&record.program, record.semantic_digest, committed)?;
+    }
+    Ok(())
 }
 
 fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Result<&'a [u8], StorageStateError> {

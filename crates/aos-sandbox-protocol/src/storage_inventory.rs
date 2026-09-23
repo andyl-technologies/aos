@@ -248,15 +248,22 @@ fn validate_lifecycle_inventory(
         && response.lifecycle_resources.is_empty()
         && response.lifecycle_transitions.is_empty()
         && response.lifecycle_source_version == 0
-        && response.lifecycle_catalog_head.is_empty();
+        && response.lifecycle_catalog_head.is_empty()
+        && response.lifecycle_catalog_generation == 0;
     if absent {
         return Ok(());
     }
     exact_nonzero::<32>(&response.lifecycle_source, "storage lifecycle source")?;
     match response.lifecycle_source_version {
-        0 if response.lifecycle_catalog_head.is_empty() => {}
+        0 if response.lifecycle_catalog_head.is_empty()
+            && response.lifecycle_catalog_generation == 0 => {}
         3 => {
             exact_nonzero::<32>(&response.lifecycle_catalog_head, "storage lifecycle head")?;
+            if response.lifecycle_catalog_generation == 0 {
+                return Err(ProtocolValidationError::InvalidField(
+                    "storage lifecycle catalog generation",
+                ));
+            }
         }
         _ => {
             return Err(ProtocolValidationError::InvalidField(
@@ -663,6 +670,7 @@ mod tests {
         );
 
         response.lifecycle_catalog_head = vec![14; 32];
+        response.lifecycle_catalog_generation = 15;
         assert!(
             decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_ok()
         );

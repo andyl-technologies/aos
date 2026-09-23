@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
-use sha2::{Digest as _, Sha256};
 
 use crate::broker::FreshStorageEffectAuthority;
 use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
@@ -480,27 +479,12 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
                     .ok_or(ZfsHelperError::PostconditionMismatch)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut observed = program
-            .members()
-            .iter()
-            .zip(&member_guids)
-            .map(|(member, guid)| (member.destination_name(), *guid))
-            .collect::<Vec<_>>();
-        observed.sort_unstable();
-        if !observed.windows(2).all(|pair| pair[0].0 < pair[1].0) {
-            return Err(ZfsHelperError::PostconditionMismatch);
-        }
-        let mut expected = Sha256::new()
-            .chain_update(b"aos.sandbox.storage.atomic-snapshot-observation.v1\0")
-            .chain_update(program.commitment().as_bytes())
-            .chain_update((observed.len() as u32).to_be_bytes());
-        for (name, guid) in observed {
-            expected = expected
-                .chain_update(name.as_bytes())
-                .chain_update([0])
-                .chain_update(guid.to_be_bytes());
-        }
-        if expected.finalize().as_slice() != digest {
+        let expected = crate::lifecycle_atomic_snapshot::atomic_snapshot_observation_digest(
+            program,
+            &member_guids,
+        )
+        .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
+        if expected.as_bytes() != &digest {
             return Err(ZfsHelperError::PostconditionMismatch);
         }
         Ok(ObservedAtomicSnapshotGroupV1 {

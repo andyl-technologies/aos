@@ -1340,12 +1340,19 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
         if inventory.encode_to_vec().as_slice() != exact_body.as_slice() {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
-        let generation = inventory.catalog_generation;
         let source = exact_digest(&inventory.lifecycle_source)?;
         let source_version = inventory.lifecycle_source_version;
+        let generation = if source_version == 3 {
+            inventory.lifecycle_catalog_generation
+        } else {
+            inventory.catalog_generation
+        };
         let head = if source_version == 3 {
             exact_digest(&inventory.lifecycle_catalog_head)?
-        } else if source_version == 0 && inventory.lifecycle_catalog_head.is_empty() {
+        } else if source_version == 0
+            && inventory.lifecycle_catalog_head.is_empty()
+            && inventory.lifecycle_catalog_generation == 0
+        {
             source
         } else {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);

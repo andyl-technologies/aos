@@ -41,6 +41,7 @@ pub(crate) fn attach_complete_lifecycle_inventory(
         || !response.lifecycle_transitions.is_empty()
         || response.lifecycle_source_version != 0
         || !response.lifecycle_catalog_head.is_empty()
+        || response.lifecycle_catalog_generation != 0
     {
         return Err(LifecyclePhase6ErrorV1::InvalidInput);
     }
@@ -48,15 +49,13 @@ pub(crate) fn attach_complete_lifecycle_inventory(
     let journal = coordinator
         .lifecycle_inventory_journal()
         .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-    if response.catalog_generation != journal.physical().binding().generation() {
-        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-    }
     let atomic = coordinator
         .atomic_dataset_snapshot_inventory()
         .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
     response.lifecycle_source = journal.genesis().digest().as_bytes().to_vec();
     response.lifecycle_source_version = 3;
     response.lifecycle_catalog_head = journal.physical().binding().digest().as_bytes().to_vec();
+    response.lifecycle_catalog_generation = journal.physical().binding().generation();
     response.lifecycle_resources = project_complete_rows(&journal, &atomic)?;
     response.lifecycle_transitions = project_transitions(&journal, &atomic)?;
 
@@ -134,10 +133,19 @@ fn project_complete_rows(
         let atomic_authority = atomic.iter().find_map(|record| {
             (record.phase() == crate::state::AtomicDatasetSnapshotPhaseV1::Committed)
                 .then(|| {
-                    record.program().members().iter().find(|member| {
-                        member.destination_name() == snapshot.name()
-                            && member.source_guid() == snapshot.source_guid()
-                    })
+                    record
+                        .program()
+                        .members()
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, member)| {
+                            (member.destination_name() == snapshot.name()
+                                && member.source_guid() == snapshot.source_guid()
+                                && record
+                                    .member_guids()
+                                    .is_none_or(|guids| guids.get(index) == Some(&snapshot.guid())))
+                            .then_some(member)
+                        })
                 })
                 .flatten()
                 .map(|member| (record, member))
@@ -179,6 +187,11 @@ fn project_complete_rows(
         .filter(|record| record.phase() == crate::state::AtomicDatasetSnapshotPhaseV1::Committed)
     {
         let program = record.program();
+        if program.format_version() == 2 {
+            // V3 groups live in the protected physical catalog; never invent
+            // a current row from an old committed result after later removal.
+            continue;
+        }
         let observation = record
             .observation()
             .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;

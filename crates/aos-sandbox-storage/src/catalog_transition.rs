@@ -653,6 +653,51 @@ impl PhysicalCatalogState {
         Self::canonicalize(wire, metadata)
     }
 
+    fn apply_atomic_snapshot_group(
+        &self,
+        program: &crate::DormantAtomicDatasetSnapshotV1,
+        member_guids: &[u64],
+    ) -> Result<Self, StorageStateError> {
+        if program.format_version() != 2
+            || self.binding.generation() != program.catalog_generation()
+            || self.binding.digest() != program.catalog_head()
+            || member_guids.len() != program.member_count()
+            || member_guids.contains(&0)
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let next_generation = self
+            .binding
+            .generation()
+            .checked_add(1)
+            .ok_or(StorageStateError::InvalidTransition)?;
+        let resolution = CatalogBindingV1::from_publisher(next_generation, program.commitment())
+            .map_err(|_| StorageStateError::InvalidTransition)?;
+        let mut wire = self.wire.clone();
+        for (member, guid) in program.members().iter().zip(member_guids) {
+            if !wire.datasets.iter().any(|dataset| {
+                dataset.name == member.source_name() && dataset.guid == member.source_guid()
+            }) || wire.snapshots.iter().any(|snapshot| {
+                snapshot.name == member.destination_name() || snapshot.guid == *guid
+            }) {
+                return Err(StorageStateError::InvalidTransition);
+            }
+            wire.snapshots.push(SnapshotWire {
+                name: member.destination_name().to_owned(),
+                guid: *guid,
+                source_name: member.source_name().to_owned(),
+                source_guid: member.source_guid(),
+                // Group ownership is proved by the protected atomic record;
+                // the singular catalog creator index is one-to-one.
+                created_by: None,
+            });
+        }
+        wire.generation = next_generation;
+        wire.predecessor_state = Some(self.binding.into());
+        wire.resolution = Some(resolution.into());
+        Self::canonicalize(wire, self.snapshot_metadata.clone())
+    }
+
     pub(crate) const fn binding(&self) -> CatalogBindingV1 {
         self.binding
     }
@@ -886,6 +931,22 @@ struct ReservationPayloadV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+struct GroupReservationPayloadV2 {
+    magic: String,
+    version: u16,
+    operation_id: [u8; 16],
+    request_digest: [u8; 32],
+    mutation_digest: [u8; 32],
+    catalog: BindingWire,
+    catalog_bytes_digest: [u8; 32],
+    predecessor: BindingWire,
+    predecessor_state: PhysicalStateWireV1,
+    maximum_transition_bytes: u32,
+    group_program: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct TransitionPayloadV1 {
     magic: String,
     version: u16,
@@ -896,6 +957,22 @@ struct TransitionPayloadV1 {
     result: BindingWire,
     observation_digest: [u8; 32],
     object_guid: Option<u64>,
+    result_state: PhysicalStateWireV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GroupTransitionPayloadV2 {
+    magic: String,
+    version: u16,
+    operation_id: [u8; 16],
+    mutation_digest: [u8; 32],
+    catalog: BindingWire,
+    predecessor: BindingWire,
+    result: BindingWire,
+    observation_digest: [u8; 32],
+    group_program: [u8; 32],
+    member_guids: Vec<u64>,
     result_state: PhysicalStateWireV1,
 }
 
@@ -919,6 +996,13 @@ struct ReservationPayload {
     catalog_bytes_digest: [u8; 32],
     predecessor: BindingWire,
     maximum_transition_bytes: u32,
+    group_program: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GroupTransitionEvidence {
+    program: [u8; 32],
+    member_guids: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -930,6 +1014,7 @@ struct TransitionPayload {
     result: BindingWire,
     observation_digest: [u8; 32],
     object_guid: Option<u64>,
+    group: Option<GroupTransitionEvidence>,
     result_state: PhysicalCatalogState,
 }
 
