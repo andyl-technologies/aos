@@ -53,6 +53,8 @@ pub mod dispatch;
 pub mod environment;
 pub mod filesystem_view_state;
 pub mod git;
+#[cfg(target_os = "linux")]
+pub mod guest_root_publication;
 pub mod hierarchy;
 #[cfg(target_os = "linux")]
 pub mod host_catalog_publication;

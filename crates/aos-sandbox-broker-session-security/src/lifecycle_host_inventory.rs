@@ -1129,6 +1129,23 @@ impl DormantAtomicStorageInventoryCompletionV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Borrows the retained Storage session for one separate guest-root effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unresolved inventory or authority-effect exchange, preserving
+    /// sole session custody and exact packet ordering.
+    pub(crate) fn guest_root_session(
+        &mut self,
+    ) -> Result<&mut DormantAuthenticatedBrokerSessionV1, EffectFailure> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
+            return Err(EffectFailure::Retryable(
+                "Storage session retains another exact exchange".to_owned(),
+            ));
+        }
+        Ok(&mut self.0.session)
+    }
+
     /// Returns the signed-hello/context checkpoint bound to this Storage session.
     pub(crate) fn historical_checkpoint_digest(
         &self,

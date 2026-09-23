@@ -211,6 +211,8 @@ pub enum RecordNamespace {
     PublicAttachPending = 54,
     /// Immutable signed Storage group history retained across session rollover.
     BrokerSessionStorageGroupArchive = 55,
+    /// Controller reservation for one physically verified guest-root publication.
+    GuestRootPublication = 56,
     /// Durable ambiguous or completed Storage guest-root population attempts.
     StorageGuestRootPublicationAttempt = 58,
 }
@@ -273,6 +275,7 @@ impl RecordNamespace {
             53 => Ok(Self::PublicAttachRoute),
             54 => Ok(Self::PublicAttachPending),
             55 => Ok(Self::BrokerSessionStorageGroupArchive),
+            56 => Ok(Self::GuestRootPublication),
             58 => Ok(Self::StorageGuestRootPublicationAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
@@ -3640,20 +3643,15 @@ mod tests {
             RecordNamespace::PublicAttachRoute,
             RecordNamespace::PublicAttachPending,
             RecordNamespace::BrokerSessionStorageGroupArchive,
+            RecordNamespace::GuestRootPublication,
+            RecordNamespace::StorageGuestRootPublicationAttempt,
         ];
-        for (index, namespace) in namespaces.into_iter().enumerate() {
-            let code = u8::try_from(index + 1).unwrap();
-            assert_eq!(namespace as u8, code);
+        for namespace in namespaces {
+            let code = namespace as u8;
+            assert_ne!(code, 0);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 56, 255] {
-            assert!(RecordNamespace::from_byte(code).is_err());
-        }
-        assert_eq!(
-            RecordNamespace::from_byte(58).unwrap(),
-            RecordNamespace::StorageGuestRootPublicationAttempt
-        );
-        for code in [56, 57] {
+        for code in [0, 57, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

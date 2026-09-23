@@ -4146,6 +4146,75 @@ where
         )
     }
 
+    /// Reserves one current workspace's separate guest-root publication.
+    ///
+    /// The operation is durable before method 31 can be sent. A repeated call
+    /// reuses the exact prior operation, while already published roots require
+    /// a matching physical proof in fresh authenticated Storage inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale inventory, changed assignment, foreign proof, malformed
+    /// prior reservation, or protected journal failure.
+    #[cfg(target_os = "linux")]
+    pub fn reserve_guest_root_publication(
+        &mut self,
+        snapshot: &crate::DurableStorageResourceInventorySnapshotV1,
+        node: aos_sandbox_core::NodeId,
+        pins: crate::guest_root_publication::GuestRootTemplatePinsV1,
+    ) -> Result<
+        Option<crate::guest_root_publication::GuestRootPublicationReservationV1>,
+        crate::guest_root_publication::GuestRootPublicationErrorV1,
+    > {
+        crate::guest_root_publication::reserve_first_guest_root_v1(
+            self.reconciler.journal_mut(),
+            snapshot,
+            node,
+            pins,
+        )
+    }
+
+    /// Builds a new method-31 plan from the current assignment and lease.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed reservation, stale lease, or missing Storage template.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_guest_root_publication_plan(
+        &mut self,
+        reservation: &crate::guest_root_publication::GuestRootPublicationReservationV1,
+        node: aos_sandbox_core::NodeId,
+        now_seconds: i64,
+    ) -> Result<
+        crate::guest_root_publication::GuestRootPublicationPlanDraftV1,
+        crate::guest_root_publication::GuestRootPublicationErrorV1,
+    > {
+        crate::guest_root_publication::prepare_guest_root_plan_v1(
+            self.reconciler.journal_mut(),
+            reservation,
+            node,
+            now_seconds,
+        )
+    }
+
+    /// Verifies a reserved root against a new authenticated Storage readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale snapshot, changed workspace, or foreign proof.
+    #[cfg(target_os = "linux")]
+    pub fn verify_guest_root_publication_readback(
+        &mut self,
+        snapshot: &crate::DurableStorageResourceInventorySnapshotV1,
+        reservation: &crate::guest_root_publication::GuestRootPublicationReservationV1,
+    ) -> Result<bool, crate::guest_root_publication::GuestRootPublicationErrorV1> {
+        crate::guest_root_publication::verify_guest_root_readback_v1(
+            self.reconciler.journal_mut(),
+            snapshot,
+            reservation,
+        )
+    }
+
     /// Queries and durably records Storage's complete workspace inventory.
     ///
     /// The one-shot client validates kernel-nominated subjects, not proof of the

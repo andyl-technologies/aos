@@ -66,6 +66,7 @@ use rustix::net::{
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
+use crate::controller_guest_root_credentials::load_guest_root_template_pins_optional;
 use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
@@ -120,6 +121,7 @@ mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
 pub(crate) mod execution;
+mod guest_root;
 mod public_api;
 mod public_attach;
 mod public_hierarchy;
@@ -153,6 +155,7 @@ struct ControllerBrokerSessions {
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
+    storage_root: guest_root::ControllerGuestRootExchangeV1,
     network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,
 }
 
@@ -308,6 +311,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .map_err(|_| ControllerRuntimeError::InvalidAttachCredential)?;
     let attach_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
         .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
+    let guest_root_pins = load_guest_root_template_pins_optional()
+        .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -358,6 +363,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 ownership,
                 attach_credentials,
                 attach_plan_signer,
+                guest_root_pins,
                 worker_capabilities,
                 sessions,
                 commands_rx,
@@ -506,6 +512,7 @@ fn controller_worker(
     ownership: Option<ControllerOwnershipConfigurationV1>,
     attach_credentials: Option<ControllerAttachCredentialsV1>,
     attach_plan_signer: Option<ControllerBrokerPlanSignerV1>,
+    guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
     commands: mpsc::Receiver<ControllerCommand>,
@@ -515,7 +522,14 @@ fn controller_worker(
     let mut next_cycle = Instant::now();
     loop {
         if Instant::now() >= next_cycle {
-            match run_controller_cycle(&mut controller, node_id, &sessions, !ready) {
+            match run_controller_cycle(
+                &mut controller,
+                node_id,
+                &sessions,
+                !ready,
+                guest_root_pins,
+                attach_plan_signer.as_ref(),
+            ) {
                 Ok(catalog) => {
                     let update = capabilities
                         .lock()
@@ -604,6 +618,35 @@ fn handle_controller_command(
     sessions: &SharedControllerBrokerSessions,
     command: ControllerCommand,
 ) -> Result<(), String> {
+    let effect_command = matches!(
+        &command,
+        ControllerCommand::AdmitPublicMutation { .. }
+            | ControllerCommand::AdmitPublicAttach { .. }
+            | ControllerCommand::AdmitPublicOperatorRecovery { .. }
+    );
+    if effect_command
+        && sessions
+            .lock()
+            .map_err(|_| "broker session lock is poisoned".to_owned())?
+            .storage_root
+            .has_pending()
+    {
+        // A retained method-31 packet owns the sole Storage session until the
+        // next cycle recovers it and completes a fresh physical readback.
+        match command {
+            ControllerCommand::AdmitPublicMutation { reply, .. } => {
+                let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+            }
+            ControllerCommand::AdmitPublicAttach { reply, .. } => {
+                let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+            }
+            ControllerCommand::AdmitPublicOperatorRecovery { reply, .. } => {
+                let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+            }
+            _ => return Err("guest-root command guard lost its method".to_owned()),
+        }
+        return Ok(());
+    }
     match command {
         ControllerCommand::GetOperation {
             operation_id,
@@ -972,12 +1015,25 @@ fn run_controller_cycle(
     node_id: [u8; 16],
     sessions: &SharedControllerBrokerSessions,
     cold_start: bool,
+    guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    guest_root_signer: Option<&ControllerBrokerPlanSignerV1>,
 ) -> Result<CatalogStatus, CycleFailure> {
     {
         let mut sessions = sessions
             .lock()
             .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
         ensure_controller_broker_sessions(node_id, &mut sessions)?;
+        if let Some(reservation) = resume_pending_guest_root(&mut sessions)? {
+            let storage = authenticated_storage_inventory(controller, node_id, &mut sessions)?;
+            if !controller
+                .verify_guest_root_publication_readback(&storage, &reservation)
+                .map_err(classify_guest_root_publication)?
+            {
+                return Err(CycleFailure::Retryable(
+                    "Storage guest-root effect lacks fresh physical readback".to_owned(),
+                ));
+            }
+        }
         if cold_start {
             audit_pending_atomic_snapshot_sources(controller, &mut sessions, true)?;
         }
@@ -1007,7 +1063,13 @@ fn run_controller_cycle(
                 .lock()
                 .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
             audit_pending_atomic_snapshot_sources(controller, &mut sessions, false)?;
-            refresh_catalog(controller, node_id, &mut sessions)
+            refresh_catalog(
+                controller,
+                node_id,
+                &mut sessions,
+                guest_root_pins,
+                guest_root_signer,
+            )
         },
     )
 }
@@ -1111,6 +1173,10 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    if sessions.storage_root.requires_reconnect() {
+        sessions.storage = None;
+        sessions.storage_root = guest_root::ControllerGuestRootExchangeV1::default();
+    }
     if sessions
         .host
         .as_ref()
@@ -1178,11 +1244,21 @@ fn refresh_catalog(
     controller: &mut ProductionController,
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
+    guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    guest_root_signer: Option<&ControllerBrokerPlanSignerV1>,
 ) -> Result<CatalogStatus, CycleFailure> {
     // Mount and destination state participate in the controller-state digest
     // captured by Storage and Network, so acquire them first.
     let (mounts, destinations) = authenticated_mount_inventories(controller, node_id, sessions)?;
     let storage = authenticated_storage_inventory(controller, node_id, sessions)?;
+    let storage = publish_guest_roots(
+        controller,
+        node_id,
+        sessions,
+        storage,
+        guest_root_pins,
+        guest_root_signer,
+    )?;
     let network = authenticated_network_inventory(controller, node_id, sessions)?;
 
     match controller
@@ -1196,6 +1272,118 @@ fn refresh_catalog(
         HostCatalogReconciliationV1::Publish(pending) => {
             publish_pending(controller, pending, node_id, sessions)
         }
+    }
+}
+
+fn resume_pending_guest_root(
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<
+    Option<aos_sandbox::guest_root_publication::GuestRootPublicationReservationV1>,
+    CycleFailure,
+> {
+    let Some(reservation) = sessions.storage_root.pending_reservation() else {
+        return Ok(None);
+    };
+    let owner = sessions.storage.as_mut().ok_or_else(|| {
+        CycleFailure::Retryable("retained Storage session is unavailable".to_owned())
+    })?;
+    let session = owner
+        .guest_root_session()
+        .map_err(classify_guest_root_effect)?;
+    sessions
+        .storage_root
+        .resume(session)
+        .map_err(classify_guest_root_effect)?
+        .ok_or_else(|| {
+            CycleFailure::Fatal("guest-root exchange lost retained effect".to_owned())
+        })?;
+    Ok(Some(reservation))
+}
+
+fn publish_guest_roots(
+    controller: &mut ProductionController,
+    node_id: [u8; 16],
+    sessions: &mut ControllerBrokerSessions,
+    storage: aos_sandbox::DurableStorageResourceInventorySnapshotV1,
+    pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    signer: Option<&ControllerBrokerPlanSignerV1>,
+) -> Result<aos_sandbox::DurableStorageResourceInventorySnapshotV1, CycleFailure> {
+    let Some(pins) = pins else {
+        if storage.inventory().workspaces().is_empty() {
+            return Ok(storage);
+        }
+        return Err(CycleFailure::Retryable(
+            "pinned guest-root template credentials are unavailable".to_owned(),
+        ));
+    };
+    let Some(reservation) = controller
+        .reserve_guest_root_publication(&storage, NodeId::from_bytes(node_id), pins)
+        .map_err(classify_guest_root_publication)?
+    else {
+        return Ok(storage);
+    };
+    let signer = signer.ok_or_else(|| {
+        CycleFailure::Retryable("Storage guest-root plan signer is unavailable".to_owned())
+    })?;
+    let now = sample_ownership_clock()
+        .map_err(|_| CycleFailure::Retryable("guest-root clock is unavailable".to_owned()))?
+        .wall_seconds();
+    let (plan, lease, lease_signature) = controller
+        .prepare_guest_root_publication_plan(&reservation, NodeId::from_bytes(node_id), now)
+        .map_err(classify_guest_root_publication)?
+        .into_parts();
+    let signed_plan = signer.sign_plan(plan, now).map_err(|_| {
+        CycleFailure::Retryable("fresh Storage guest-root plan could not be signed".to_owned())
+    })?;
+    let owner = sessions.storage.as_mut().ok_or_else(|| {
+        CycleFailure::Retryable("retained Storage session is unavailable".to_owned())
+    })?;
+    let session = owner
+        .guest_root_session()
+        .map_err(classify_guest_root_effect)?;
+    sessions
+        .storage_root
+        .apply(session, reservation, &signed_plan, lease, lease_signature)
+        .map_err(classify_guest_root_effect)?;
+
+    // The response is not a readiness claim. Storage must independently
+    // read back its workspace and report the exact physical proof again.
+    let observed = authenticated_storage_inventory(controller, node_id, sessions)?;
+    if !controller
+        .verify_guest_root_publication_readback(&observed, &reservation)
+        .map_err(classify_guest_root_publication)?
+    {
+        return Err(CycleFailure::Retryable(
+            "Storage guest-root effect lacks fresh physical readback".to_owned(),
+        ));
+    }
+    if controller
+        .reserve_guest_root_publication(&observed, NodeId::from_bytes(node_id), pins)
+        .map_err(classify_guest_root_publication)?
+        .is_some()
+    {
+        return Err(CycleFailure::Retryable(
+            "another workspace still needs guest-root publication".to_owned(),
+        ));
+    }
+    Ok(observed)
+}
+
+fn classify_guest_root_effect(error: EffectFailure) -> CycleFailure {
+    match error {
+        EffectFailure::Retryable(message) => CycleFailure::Retryable(message),
+        EffectFailure::Permanent(message) => CycleFailure::Fatal(message),
+    }
+}
+
+fn classify_guest_root_publication(
+    error: aos_sandbox::guest_root_publication::GuestRootPublicationErrorV1,
+) -> CycleFailure {
+    match error {
+        aos_sandbox::guest_root_publication::GuestRootPublicationErrorV1::Unavailable => {
+            CycleFailure::Retryable(error.to_string())
+        }
+        _ => CycleFailure::Fatal(error.to_string()),
     }
 }
 
@@ -4977,6 +5165,9 @@ pub enum ControllerRuntimeError {
     /// The optional dedicated OpenSSH attach credential set is invalid.
     #[error("protected controller OpenSSH attach credentials are invalid")]
     InvalidAttachCredential,
+    /// The optional guest-root template pin set is partial or malformed.
+    #[error("protected controller guest-root template credentials are invalid")]
+    InvalidGuestRootCredential,
     /// Controller journal identity or assignment validation failed.
     #[error(transparent)]
     ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),
