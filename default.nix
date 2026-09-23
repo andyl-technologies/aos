@@ -410,10 +410,14 @@
         name = lib.removeSuffix ".nix" name;
         value = let
           variant = ./systems + "/${name}";
-          evaluated = mkSystem {
-            modules = [variant];
-            systemName = lib.removeSuffix ".nix" name;
-          };
+          evaluated =
+            if name == "server"
+            then serverSystem
+            else
+              mkSystem {
+                modules = [variant];
+                systemName = lib.removeSuffix ".nix" name;
+              };
         in {
           config = evaluated.config;
           options = evaluated.options;
