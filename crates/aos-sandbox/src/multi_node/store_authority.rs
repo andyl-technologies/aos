@@ -2320,64 +2320,6 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
         })
     }
 
-    /// Stages one authenticated dependency range and advances its durable prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] for a range not equal to the
-    /// exact next protected offset, corrupted complete bytes, or store failure.
-    fn commit_snapshot_dependency_range(
-        &mut self,
-        request: &ProtectedOutboundNodeRequestV1,
-        response: &NodeResponseEnvelopeV1,
-    ) -> Result<ProtectedSnapshotDependencyCommitOutcomeV1, ProtectedMultiNodeUpdateErrorV1> {
-        self.require_destination_snapshot_role()?;
-        let verified_at_unix_seconds = self.observe_current_time()?;
-        self.validate_response_context(response, verified_at_unix_seconds)?;
-        let state = self.current_snapshot_projection()?;
-        let authenticated = response.validated_snapshot_dependency_range(request.envelope())?;
-        let range = authenticated.request();
-        let (dependency_index, current_dependency) = state
-            .dependencies()
-            .iter()
-            .enumerate()
-            .find(|(_, dependency)| dependency.descriptor == *range.dependency())
-            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
-        if range.identity() != state.manifest().identity()
-            || range.offset() != current_dependency.next_offset
-        {
-            return Err(InvalidSnapshotTransfer::ChunkIntegrityMismatch.into());
-        }
-        let subject = protected_snapshot_dependency_subject(
-            state.manifest().identity().manifest_digest(),
-            range.dependency().digest(),
-        );
-        let effect = snapshot_dependency_effect(subject, range.offset(), authenticated.bytes())?;
-        match self
-            .artifacts
-            .store_snapshot_effect(effect, authenticated.bytes())?
-        {
-            ProtectedArtifactStoreOutcomeV1::Stored(receipt) => self
-                .commit_staged_dependency_boundary(
-                    state,
-                    dependency_index,
-                    authenticated.bytes().len(),
-                    receipt,
-                    response.canonical_frame_digest(),
-                    verified_at_unix_seconds,
-                )
-                .map(ProtectedSnapshotDependencyCommitOutcomeV1::Store),
-            ProtectedArtifactStoreOutcomeV1::RecoveryRequired(recovery) => Ok(
-                ProtectedSnapshotDependencyCommitOutcomeV1::ArtifactRecoveryRequired(
-                    ProtectedSnapshotDependencyRecoveryV1 {
-                        recovery,
-                        response_frame_digest: response.canonical_frame_digest(),
-                    },
-                ),
-            ),
-        }
-    }
-
     /// Authenticates one source-served dependency range without storing it.
     ///
     /// # Errors
@@ -2454,56 +2396,6 @@ impl ProtectedMultiNodeAuthorityOwnerV1 {
                     ProtectedSnapshotDependencyRecoveryV1 {
                         recovery: recovery_again,
                         response_frame_digest: recovery.response_frame_digest,
-                    },
-                ),
-            ),
-        }
-    }
-
-    /// Stages an authenticated chunk and durably advances its exact boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedMultiNodeUpdateErrorV1`] for request substitution,
-    /// stale carrier evidence, chunk corruption, or protected store failure.
-    fn commit_snapshot_chunk(
-        &mut self,
-        request: &ProtectedOutboundNodeRequestV1,
-        response: &NodeResponseEnvelopeV1,
-    ) -> Result<ProtectedSnapshotChunkCommitOutcomeV1, ProtectedMultiNodeUpdateErrorV1> {
-        self.require_destination_snapshot_role()?;
-        let verified_at_unix_seconds = self.observe_current_time()?;
-        self.validate_response_context(response, verified_at_unix_seconds)?;
-        let state = self.current_snapshot_projection()?;
-        let authenticated = response.validated_snapshot_chunk(request.envelope())?;
-        let chunk_request = authenticated.request();
-        if chunk_request.identity() != state.manifest().identity()
-            || chunk_request.chunk().index() != state.resume().next_chunk()
-        {
-            return Err(InvalidSnapshotTransfer::InvalidResumeCheckpoint.into());
-        }
-        let effect = snapshot_chunk_effect(
-            state.manifest().identity().manifest_digest(),
-            chunk_request.chunk().index(),
-            authenticated.bytes(),
-        )?;
-        let outcome = self
-            .artifacts
-            .store_snapshot_effect(effect, authenticated.bytes())?;
-        match outcome {
-            ProtectedArtifactStoreOutcomeV1::Stored(receipt) => self
-                .commit_staged_snapshot_boundary(
-                    state,
-                    receipt,
-                    response.canonical_frame_digest(),
-                    verified_at_unix_seconds,
-                )
-                .map(ProtectedSnapshotChunkCommitOutcomeV1::Store),
-            ProtectedArtifactStoreOutcomeV1::RecoveryRequired(recovery) => Ok(
-                ProtectedSnapshotChunkCommitOutcomeV1::ArtifactRecoveryRequired(
-                    ProtectedSnapshotArtifactRecoveryV1 {
-                        recovery,
-                        response_frame_digest: response.canonical_frame_digest(),
                     },
                 ),
             ),
