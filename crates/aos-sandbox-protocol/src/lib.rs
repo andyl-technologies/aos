@@ -18,6 +18,7 @@ pub mod authenticated_session;
 pub mod fencing;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
+pub mod host_execution;
 pub mod host_observation;
 pub mod inventory;
 pub mod mount_catalog;
@@ -54,6 +55,11 @@ pub use host_observation::{
     ValidatedObserveRuntimeRequestV1, ValidatedQueryRuntimeEffectRequestV1,
     decode_inventory_runtime_request_v1, decode_observe_runtime_request_v1,
     decode_query_runtime_effect_request_v1,
+};
+pub use host_execution::{
+    ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
+    decode_host_execution_apply_v1, decode_host_execution_outcome_v1,
+    decode_host_execution_query_v1,
 };
 pub use inventory::{
     MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,

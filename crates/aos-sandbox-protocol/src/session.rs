@@ -1290,6 +1290,8 @@ fn validate_outbound_carriers(
             )
         }),
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
@@ -1797,6 +1799,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
+                | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY

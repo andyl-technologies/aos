@@ -88,6 +88,68 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION = 23;
   BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS = 24;
   BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
+  BROKER_METHOD_HOST_APPLY_EXECUTION = 26;
+  BROKER_METHOD_HOST_QUERY_EXECUTION = 27;
+}
+
+// An exact controller intent handed to the root-owned Host execution owner.
+// The source commitment is the stable canonical controller operation request
+// digest; the signed broker record separately authenticates this transport.
+enum HostExecutionActionV1 {
+  HOST_EXECUTION_ACTION_UNSPECIFIED = 0;
+  HOST_EXECUTION_ACTION_AUTHORIZE = 1;
+  HOST_EXECUTION_ACTION_RESIZE = 2;
+  HOST_EXECUTION_ACTION_SIGNAL = 3;
+  HOST_EXECUTION_ACTION_CANCEL = 4;
+  HOST_EXECUTION_ACTION_OBSERVE = 5;
+}
+
+message ApplyHostExecutionRequestV1 {
+  RequestHeader header = 1;
+  bytes operation_id = 2; // Exactly 16 nonzero bytes.
+  bytes execution_id = 3; // Exactly 16 nonzero bytes.
+  HostExecutionActionV1 action = 4;
+  bytes source_operation_commitment = 5; // Exactly 32 nonzero bytes.
+  uint32 terminal_rows = 6;
+  uint32 terminal_columns = 7;
+  uint32 signal_number = 8;
+  bytes canonical_execution_spec = 9; // Required only for AUTHORIZE.
+  reserved 10; // Host derives effect sequence from its protected journal.
+}
+
+message QueryHostExecutionRequestV1 {
+  RequestHeader header = 1;
+  bytes operation_id = 2;
+  bytes execution_id = 3;
+  bytes source_operation_commitment = 4;
+}
+
+enum HostExecutionPhaseV1 {
+  HOST_EXECUTION_PHASE_UNSPECIFIED = 0;
+  HOST_EXECUTION_PHASE_ABSENT = 1;
+  HOST_EXECUTION_PHASE_PENDING = 2;
+  HOST_EXECUTION_PHASE_ISSUED = 3;
+  HOST_EXECUTION_PHASE_INDETERMINATE = 4;
+  HOST_EXECUTION_PHASE_COMPLETE = 5;
+}
+
+enum HostExecutionCompletionStatusV1 {
+  HOST_EXECUTION_COMPLETION_STATUS_UNSPECIFIED = 0;
+  HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED = 1;
+  HOST_EXECUTION_COMPLETION_STATUS_REJECTED_BEFORE_EFFECT = 2;
+  HOST_EXECUTION_COMPLETION_STATUS_FAILED_PERMANENT = 3;
+}
+
+message HostExecutionOutcomeV1 {
+  bytes operation_id = 1;
+  bytes execution_id = 2;
+  bytes source_operation_commitment = 3;
+  HostExecutionPhaseV1 phase = 4;
+  bytes effect_commitment = 5; // Empty only for ABSENT.
+  bytes completion_digest = 6; // Present only for COMPLETE.
+  bytes completion_bytes = 7; // Present only for COMPLETE.
+  HostExecutionCompletionStatusV1 completion_status = 8;
+  uint64 observation_sequence = 9;
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.

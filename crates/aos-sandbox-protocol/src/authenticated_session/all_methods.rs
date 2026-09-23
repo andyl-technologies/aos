@@ -2,7 +2,7 @@
 //!
 //! The established authenticated bootstrap owns a specialized Network
 //! inventory path. This module supplies the dormant uniform path for every
-//! method in the same closed 22-method profile. It composes canonical signed
+//! method in the same closed authenticated profile. It composes canonical signed
 //! packet verification with the existing method decoders and retains exact
 //! body bytes plus a method-separated semantic commitment. It does not invoke
 //! a service, consume descriptors, authorize an effect, or write durable state.
@@ -239,6 +239,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     MountInventoryDestinationSlots,
     /// Host catalog publication.
     HostPublishCatalog,
+    /// Host execution intent handoff.
+    HostApplyExecution,
+    /// Host protected execution outcome readback.
+    HostQueryExecution,
     /// Storage resource inventory.
     StorageInventoryResources,
     /// Network resource inventory.
@@ -348,6 +352,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             AuthenticatedBrokerMethodSemanticsV1::HostPublishCatalog
+        }
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
+            AuthenticatedBrokerMethodSemanticsV1::HostApplyExecution
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryExecution
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             AuthenticatedBrokerMethodSemanticsV1::StorageInventoryResources
@@ -1027,6 +1037,8 @@ enum RequestOutcomeContextV1 {
     MountPrepareCatalog(crate::mount_catalog::ValidatedMountCatalogPreparation),
     MountDestinationSlot(crate::ValidatedDestinationSlotRequest),
     HostPublishCatalog(crate::host_catalog::ValidatedHostCatalogPublication),
+    HostExecutionApply(crate::ValidatedHostExecutionApplyV1),
+    HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1160,6 +1172,22 @@ fn validate_request_semantics(
             let request = decode_host_catalog_publication_request(body, peer, policy, now)?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostPublishCatalog,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
+            let request = crate::decode_host_execution_apply_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostApplyExecution,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
+            let request = crate::decode_host_execution_query_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryExecution,
                 *request.header(),
                 None,
             )
@@ -1309,6 +1337,16 @@ fn validate_request_semantics(
                 body, peer, policy, now,
             )?)
         }
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
+            RequestOutcomeContextV1::HostExecutionApply(crate::decode_host_execution_apply_v1(
+                body, peer, policy, now,
+            )?)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
+            RequestOutcomeContextV1::HostExecutionQuery(crate::decode_host_execution_query_v1(
+                body, peer, policy, now,
+            )?)
+        }
         _ => RequestOutcomeContextV1::None,
     };
     Ok(ValidatedRequestSemanticV1 {
@@ -1441,6 +1479,30 @@ fn validate_success_semantics(
             {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             }
+        }
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
+            let RequestOutcomeContextV1::HostExecutionApply(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::decode_host_execution_outcome_v1(
+                body,
+                original.operation_id(),
+                original.execution_id(),
+                original.source_commitment(),
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
+            let RequestOutcomeContextV1::HostExecutionQuery(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::decode_host_execution_outcome_v1(
+                body,
+                original.operation_id(),
+                original.execution_id(),
+                original.source_commitment(),
+            )?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             decode_storage_resource_inventory_response(body, maximum)?;

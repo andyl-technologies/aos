@@ -27,6 +27,19 @@ RuntimeEffectStatus status = 1;
 bytes receipt = 2;
 rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectResponse);
 BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
+BROKER_METHOD_HOST_APPLY_EXECUTION = 26;
+BROKER_METHOD_HOST_QUERY_EXECUTION = 27;
+message ApplyHostExecutionRequestV1 {
+bytes source_operation_commitment = 5;
+message QueryHostExecutionRequestV1 {
+bytes source_operation_commitment = 4;
+message HostExecutionOutcomeV1 {
+HostExecutionPhaseV1 phase = 4;
+bytes effect_commitment = 5;
+bytes completion_digest = 6;
+bytes completion_bytes = 7;
+HostExecutionCompletionStatusV1 completion_status = 8;
+uint64 observation_sequence = 9;
 message ApplyAtomicStorageSnapshotRequest {
 RequestHeader header = 1;
 bytes canonical_plan = 2;
