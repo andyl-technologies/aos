@@ -4,6 +4,7 @@
 mod common;
 
 use std::os::fd::AsFd as _;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use aos_systemd::{
@@ -67,6 +68,42 @@ async fn subscribe_called_before_signal_streams() {
         Some("subscribe"),
         "Subscribe must be the first manager call; got {calls:?}"
     );
+}
+
+#[tokio::test]
+async fn service_cgroup_observation_checks_exact_unit_and_live_main_pid() {
+    let h = Harness::new().await;
+    let name = "aos-sandbox-hostd.service";
+    let observed = with_timeout(h.client.observe_service_control_group(name))
+        .await
+        .unwrap();
+    assert_eq!(observed.main_pid.get(), 4242);
+    assert_eq!(observed.invocation_id, [9; 16]);
+    assert_eq!(
+        observed.control_group,
+        "/aos.slice/aos-sandboxes.slice/aos-sandbox-hostd.service"
+    );
+
+    h.set_unit_id_override("substituted.service");
+    assert!(matches!(
+        with_timeout(h.client.observe_service_control_group(name)).await,
+        Err(Error::InvalidSandboxUnit(_))
+    ));
+}
+
+#[tokio::test]
+async fn service_cgroup_observation_rejects_missing_main_pid() {
+    let h = Harness::new().await;
+    h.state.main_pid.store(0, Ordering::SeqCst);
+
+    assert!(matches!(
+        with_timeout(
+            h.client
+                .observe_service_control_group("aos-sandbox-hostd.service")
+        )
+        .await,
+        Err(Error::InvalidSandboxUnit(_))
+    ));
 }
 
 #[tokio::test]

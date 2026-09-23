@@ -31,7 +31,7 @@ const POLICY_CREDENTIAL: &str = "ownership-lease-policy.cbor";
 const PUBLIC_KEY_CREDENTIAL: &str = "ownership-lease-public-key";
 const MAXIMUM_POLICY_BYTES: usize = 64 * 1024;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(10);
-const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
+pub(crate) const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
 
 /// Reports an absent, unsafe, or inconsistent protected ownership configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -118,6 +118,10 @@ impl ControllerOwnershipConfigurationV1 {
 
     pub(crate) const fn verifier(&self) -> &OwnershipAuthorityVerifier {
         &self.verifier
+    }
+
+    pub(crate) fn into_verifier(self) -> OwnershipAuthorityVerifier {
+        self.verifier
     }
 
     pub(crate) fn connect(

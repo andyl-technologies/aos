@@ -14,8 +14,8 @@ mod manager_proxy;
 mod sandbox;
 
 pub use client::{
-    FailedUnit, FailedUnitsReport, JobOutcome, JobResult, RestartPolicy, SettleOutcome,
-    SystemdClient,
+    FailedUnit, FailedUnitsReport, JobOutcome, JobResult, RestartPolicy,
+    ServiceControlGroupObservation, SettleOutcome, SystemdClient,
 };
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;

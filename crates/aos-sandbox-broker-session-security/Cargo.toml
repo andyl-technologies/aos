@@ -21,6 +21,7 @@ aos-sandbox-network.workspace = true
 aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-storage.workspace = true
+aos-systemd.workspace = true
 aos-sandbox-source-provider.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-sandbox-source-provider-security.workspace = true

@@ -60,6 +60,8 @@
     "broker-plan-policy.cbor:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPolicy}"
     ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPublicKey != null)
     "broker-plan-public-key:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPublicKey}"
+    ++ lib.optional (brokers.hostBroker.credentials.brokerRevocationScope != null)
+    "broker-revocation-scope:/run/credentials/@system/${brokers.hostBroker.credentials.brokerRevocationScope}"
   );
   ownershipCredentials = lib.optionals ownershipAuthority.enable (
     lib.optional (ownershipAuthority.credentials.sessionKey != null)
@@ -139,8 +141,9 @@ in {
               brokers.hostBroker.credentials.brokerPlanPolicy
               != null
               && brokers.hostBroker.credentials.brokerPlanPublicKey != null
+              && brokers.hostBroker.credentials.brokerRevocationScope != null
             );
-          message = "aos.sandbox.controllerService broker-plan signing requires the Host broker's public plan policy and key";
+          message = "aos.sandbox.controllerService broker-plan signing requires the Host broker's public plan policy, key, and revocation scope";
         }
         {
           assertion = brokers.storageBroker.enable;
