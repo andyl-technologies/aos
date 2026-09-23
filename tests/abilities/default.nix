@@ -239,6 +239,9 @@
   dbusService = import ./dbus-service.nix {
     inherit lib;
   };
+  bindService = import ./bind-service.nix {
+    inherit lib;
+  };
   serviceFeatures = import ./service-features.nix {
     inherit lib pkgs;
   };
@@ -646,6 +649,7 @@ in
   assert zfstoolsService;
   assert serviceManagement;
   assert dbusService;
+  assert bindService;
   assert managedIdentityAllocation;
   assert compositionDriver;
   assert systemdPackagedUnit;
