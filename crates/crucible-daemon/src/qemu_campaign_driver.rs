@@ -1061,35 +1061,6 @@ pub(crate) fn drive_modeled_attempt(
     drive_modeled_attempt_inner(lifecycle, input, context, materialization, None)
 }
 
-/// Seals the exact materialized start as a private replay boundary.
-pub(crate) fn finding_candidate_boundary_pending(
-    input: &CrucibleAttemptExecution,
-    configuration: Configuration,
-    materialization: QemuFreshStartMaterialization,
-) -> Result<QemuFreshPendingObservation, QemuFreshModeledDriverError> {
-    let crate::qemu_campaign_lifecycle::QemuFreshCandidateMaterializationParts {
-        event_log,
-        event_log_bytes,
-        completed_quanta,
-        frontier: terminal_at,
-        terminal_quiescence,
-        replayed_discoveries,
-    } = materialization.into_candidate_parts();
-    let discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)?;
-    Ok(QemuFreshPendingObservation {
-        input: input.clone(),
-        configuration,
-        stop: ModeledStop::ReplayBoundary,
-        event_log,
-        event_log_bytes,
-        discoveries: discoveries.discoveries,
-        terminal_quiescence,
-        terminal_at,
-        completed_quanta,
-        attempt_event_count: 0,
-    })
-}
-
 /// Replays one attempt to a private authenticated checkpoint boundary.
 pub(crate) fn replay_modeled_attempt_to_boundary(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
@@ -1108,7 +1079,7 @@ fn drive_modeled_attempt_inner(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
-    materialization: QemuFreshStartMaterialization,
+    mut materialization: QemuFreshStartMaterialization,
     replay_target: Option<&QemuSelectedResumeBoundary>,
 ) -> Result<
     QemuFreshDriveOutcome<QemuFreshPendingObservation>,
@@ -1116,6 +1087,7 @@ fn drive_modeled_attempt_inner(
 > {
     let scenario = input.scenario().scenario_def();
     let mut observed_event_count = materialization.attempt_event_count();
+    let replayed_discoveries = materialization.take_replayed_discoveries();
     let mut configuration = materialization
         .restored_configuration()
         .unwrap_or_else(|| input.start().configuration())
@@ -1147,7 +1119,8 @@ fn drive_modeled_attempt_inner(
         .set_attempt_stop_frontier(None)
         .map_err(classify_scheduler_error)?;
     let mut terminal_at = frontier;
-    let mut discoveries = RetainedChoiceDiscoveries::default();
+    let mut discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)
+        .map_err(AttemptWorkerFailure::Terminal)?;
     check_cancellation(context)?;
     if let Some(verdict) = terminal_verdict {
         let stop = modeled_terminal_stop(verdict).map_err(AttemptWorkerFailure::Terminal)?;
