@@ -25,6 +25,12 @@ use crate::{AttemptExecutionContext, CrucibleAttemptExecution, ExactCheckpointSt
 const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS: usize = 65_536;
 
+struct FindingExactBoundary {
+    failure_events: u64,
+    measurement_events: Option<u64>,
+    assertion: Option<(FindingAssertionFailureBoundary, Vec<u8>)>,
+}
+
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum FindingExactCandidateInventoryError {
     #[error("exact finding candidate inventory is unavailable")]
@@ -266,27 +272,20 @@ pub(super) fn prepare_finding_exact_retention(
         .map_err(|_| CampaignCodecError::InvalidValue {
             reason: "finding retention policy basis failed executor authentication",
         })?;
-    let (boundary, assertion_boundary) = match observation.observation().stop() {
-        StopOutcome::ObservationReached(proof) => (
-            Some((
-                proof.event_log().events(),
-                Some(proof.boundary().start_events()),
-            )),
-            None,
-        ),
-        StopOutcome::AssertionFailure(property) => {
-            let witness = execution.and_then(|execution| {
-                assertion_failure_boundary(input, result, execution, property)
-            });
-            let boundary = witness.as_ref().map(|(witness, _)| {
-                (
-                    witness.terminal_events(),
-                    Some(witness.quantum_start_events()),
-                )
-            });
-            (boundary, witness)
-        }
-        _ => (None, None),
+    let boundary = match observation.observation().stop() {
+        StopOutcome::ObservationReached(proof) => Some(FindingExactBoundary {
+            failure_events: proof.event_log().events(),
+            measurement_events: Some(proof.boundary().start_events()),
+            assertion: None,
+        }),
+        StopOutcome::AssertionFailure(property) => execution
+            .and_then(|execution| assertion_failure_boundary(input, result, execution, property))
+            .map(|(witness, bytes)| FindingExactBoundary {
+                failure_events: witness.terminal_events(),
+                measurement_events: Some(witness.quantum_start_events()),
+                assertion: Some((witness, bytes)),
+            }),
+        _ => None,
     };
     select_finding_exact_retention(
         basis,
@@ -296,7 +295,6 @@ pub(super) fn prepare_finding_exact_retention(
         input.lineage().scenario_content(),
         observation.child().configuration(),
         boundary,
-        assertion_boundary,
     )
 }
 
@@ -366,8 +364,7 @@ fn select_finding_exact_retention(
     scenario: ScenarioDefId,
     scenario_artifact: ScenarioArtifactId,
     configuration: ConfigurationId,
-    boundary: Option<(u64, Option<u64>)>,
-    assertion_boundary: Option<(FindingAssertionFailureBoundary, Vec<u8>)>,
+    boundary: Option<FindingExactBoundary>,
 ) -> Result<(FindingExactPins, PreparedFindingExactRetention), CampaignCodecError> {
     if !exact_findings {
         let retention = FindingExactRetention::new(
@@ -417,10 +414,12 @@ fn select_finding_exact_retention(
             return incomplete(FindingExactRetentionIncomplete::CandidateLimitExceeded);
         }
     };
-    let (failure_events, measurement_events) = match boundary {
+    let boundary = match boundary {
         Some(boundary) => boundary,
         None => return incomplete(FindingExactRetentionIncomplete::MissingSafeBoundaryCapture),
     };
+    let failure_events = boundary.failure_events;
+    let measurement_events = boundary.measurement_events;
 
     let mut candidates = Vec::with_capacity(roots.len());
     let mut remaining_metadata = MAX_FINDING_EXACT_METADATA_BYTES;
@@ -449,7 +448,7 @@ fn select_finding_exact_retention(
         ));
     }
     candidates.sort_by_key(|candidate| candidate.checkpoint());
-    if let Some((boundary, trace_bytes)) = assertion_boundary.as_ref() {
+    if let Some((boundary, trace_bytes)) = boundary.assertion.as_ref() {
         candidates.retain(|candidate| {
             source
                 .authenticate_finding_assertion_boundary(
@@ -480,7 +479,7 @@ fn select_finding_exact_retention(
         Ok(evidence) => evidence,
         Err(_) => return incomplete(FindingExactRetentionIncomplete::SelectionFailed),
     };
-    let evidence = match assertion_boundary {
+    let evidence = match boundary.assertion {
         Some((boundary, _)) => match evidence.with_assertion_boundary(boundary) {
             Ok(evidence) => evidence,
             Err(_) => return incomplete(FindingExactRetentionIncomplete::SelectionFailed),
@@ -843,8 +842,11 @@ mod tests {
             scenario,
             scenario_artifact,
             configuration,
-            Some((5, Some(2))),
-            Some((boundary.clone(), b"matching".to_vec())),
+            Some(FindingExactBoundary {
+                failure_events: 5,
+                measurement_events: Some(2),
+                assertion: Some((boundary.clone(), b"matching".to_vec())),
+            }),
         )?;
 
         assert_eq!(
@@ -863,8 +865,11 @@ mod tests {
             scenario,
             scenario_artifact,
             configuration,
-            Some((5, Some(2))),
-            Some((boundary, b"forged".to_vec())),
+            Some(FindingExactBoundary {
+                failure_events: 5,
+                measurement_events: Some(2),
+                assertion: Some((boundary, b"forged".to_vec())),
+            }),
         )?;
         assert_eq!(invalid_pins, FindingExactPins::default());
         assert_eq!(
@@ -894,8 +899,11 @@ mod tests {
             scenario,
             scenario_artifact,
             configuration,
-            Some((5, Some(4))),
-            None,
+            Some(FindingExactBoundary {
+                failure_events: 5,
+                measurement_events: Some(4),
+                assertion: None,
+            }),
         )?;
 
         assert_eq!(
@@ -985,8 +993,11 @@ mod tests {
             scenario_id,
             scenario_artifact,
             configuration,
-            Some((authenticated.event_count(), None)),
-            None,
+            Some(FindingExactBoundary {
+                failure_events: authenticated.event_count(),
+                measurement_events: None,
+                assertion: None,
+            }),
         )?;
 
         assert_eq!(
@@ -1088,8 +1099,13 @@ mod tests {
                 scenario,
                 scenario_artifact,
                 configuration,
-                boundary,
-                None,
+                boundary.map(
+                    |(failure_events, measurement_events)| FindingExactBoundary {
+                        failure_events,
+                        measurement_events,
+                        assertion: None,
+                    },
+                ),
             )?;
             assert_eq!(disposition(&prepared)?, expected);
         }
