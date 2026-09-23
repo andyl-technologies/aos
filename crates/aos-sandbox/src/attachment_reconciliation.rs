@@ -668,7 +668,10 @@ fn decide(
     }
 
     if release_requested {
-        decide_release(resources, lease_expired)
+        decide_release(
+            resources,
+            lease_expired && presence == AttachmentDesiredPresenceV1::Present,
+        )
     } else {
         decide_present(intent, resources, verification)
     }
@@ -1522,6 +1525,18 @@ mod tests {
                 AttachmentDesiredPresenceV1::Released,
                 &intent(2),
                 15,
+                target(),
+                &[],
+                &[],
+                None,
+            ),
+            AttachmentReconciliationActionV1::Released
+        );
+        assert_eq!(
+            decide(
+                AttachmentDesiredPresenceV1::Released,
+                &intent(2),
+                20,
                 target(),
                 &[],
                 &[],
