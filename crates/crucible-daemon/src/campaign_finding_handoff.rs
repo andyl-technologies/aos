@@ -6,14 +6,16 @@
 
 use crucible::{Checkpoint, Configuration, ReproductionArtifact, ScenarioDefForm};
 use crucible_api::{
-    InProcessLifecycleClient, LifecycleApiError, LifecycleControlPlane, LifecycleLoopFactory,
-    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, SessionLifetimeRetention, SessionRef,
+    DestroySessionRequest, InProcessLifecycleClient, LifecycleApiError, LifecycleControlPlane,
+    LifecycleLoopFactory, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
+    SessionLifetimeRetention, SessionRef,
 };
 use crucible_campaign::{
     AttemptResourceLimits, CampaignArchiveManifestId, CampaignFindingTriageReplayRole,
     CampaignRepository, CampaignRepositoryError, CampaignServiceFailure, ExactCheckpointId,
     FindingId,
 };
+use crucible_session::{DebugControllerLease, DebugRole};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -51,6 +53,7 @@ use crate::{
 /// Its production closure and semantic checkpoint are retained in memory. A
 /// caller may admit them through the existing guarded QEMU lifecycle and debug
 /// relay; no campaign ref or retained checkpoint is rewritten by preparation.
+#[derive(Clone)]
 pub struct ArchivedFindingDebugMidpoint {
     source: ScenarioDefForm,
     configuration: Configuration,
@@ -71,6 +74,102 @@ pub type ArchivedFindingDebugControlPlane = LifecycleControlPlane<
 pub struct ArchivedFindingDebugSession {
     control_plane: Arc<tokio::sync::Mutex<ArchivedFindingDebugControlPlane>>,
     session: SessionRef,
+}
+
+/// Two private restorations of one authenticated midpoint with separate QEMU runs.
+///
+/// Both sessions begin read-only. Only `branch` may receive the explicit
+/// non-canonical fork report and become writable; `canonical` remains a
+/// separate, unmodified process and lifecycle actor.
+pub struct ArchivedFindingDebugSessionPair {
+    control_plane: Arc<tokio::sync::Mutex<ArchivedFindingDebugControlPlane>>,
+    canonical: SessionRef,
+    branch: SessionRef,
+}
+
+impl ArchivedFindingDebugSessionPair {
+    /// Returns the original read-only session.
+    #[must_use]
+    pub const fn canonical(&self) -> SessionRef {
+        self.canonical
+    }
+
+    /// Returns the independent session reserved for debugger mutation.
+    #[must_use]
+    pub const fn branch(&self) -> SessionRef {
+        self.branch
+    }
+
+    /// Returns the shared control plane for the existing local debug relay.
+    #[must_use]
+    pub fn shared_control_plane(
+        &self,
+    ) -> Arc<tokio::sync::Mutex<ArchivedFindingDebugControlPlane>> {
+        Arc::clone(&self.control_plane)
+    }
+
+    /// Returns an in-process client for exact lifecycle teardown.
+    #[must_use]
+    pub fn in_process_client(
+        &self,
+    ) -> InProcessLifecycleClient<
+        ProductionVmLifecycleLoop,
+        LifecycleLoopFactory<ProductionVmLifecycleLoop>,
+    > {
+        InProcessLifecycleClient::from_shared_control_plane(Arc::clone(&self.control_plane))
+    }
+
+    /// Records a branch-local register edit intent before its GDB write.
+    ///
+    /// The caller must write the same bytes through the branch's writable
+    /// relay and verify a register readback before publishing success. The
+    /// original session is checked for unchanged read-only classification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] if attachment, actor fork, provenance
+    /// admission, or canonical isolation fails.
+    pub async fn fork_branch_for_register_write(
+        &self,
+        lease: &DebugControllerLease,
+        role: &DebugRole,
+        node: crucible::NodeId,
+        register: String,
+        bytes: Vec<u8>,
+    ) -> Result<crucible::DebugNonCanonicalBranchReport, LifecycleApiError> {
+        if register.is_empty() || bytes.is_empty() || bytes.len() > 4096 {
+            return Err(LifecycleApiError::SessionCommandRejected {
+                message: String::from("debug register edit has invalid target or byte length"),
+            });
+        }
+        let dispatch = {
+            let plane = self.control_plane.lock().await;
+            plane.authorize_debug_branch_fork(self.branch, lease, role)?;
+            let (attached, _) = plane.debug_operator_target(self.branch).await?;
+            if attached != node {
+                return Err(LifecycleApiError::SessionCommandRejected {
+                    message: String::from("debug register edit targets another attached node"),
+                });
+            }
+            plane.debug_branch_fork_dispatch(self.branch)?
+        };
+        let report = dispatch
+            .fork_guest_edit(
+                node,
+                crucible::DebugGuestEditKind::RegisterWrite,
+                register,
+                bytes,
+            )
+            .await?;
+        let mut plane = self.control_plane.lock().await;
+        plane.commit_writable_debug_branch(self.branch, &report)?;
+        if plane.writable_debug_branch(self.canonical)?.is_some() {
+            return Err(LifecycleApiError::SessionCommandRejected {
+                message: String::from("canonical finding midpoint became writable"),
+            });
+        }
+        Ok(report)
+    }
 }
 
 impl ArchivedFindingDebugSession {
@@ -252,6 +351,90 @@ impl ArchivedFindingDebugMidpoint {
         Ok(ArchivedFindingDebugSession {
             control_plane,
             session: admitted.session,
+        })
+    }
+
+    /// Restores the same authenticated midpoint into two independent QEMU runs.
+    ///
+    /// The guarded host allocator gives each admission its own process,
+    /// writable overlay, cgroup, and run directory. The immutable checkpoint
+    /// closure remains shared by content address and is reauthenticated before
+    /// either process starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignFindingHandoffError`] for checkpoint drift, guarded
+    /// host admission, or either independent lifecycle restore failure.
+    pub async fn admit_guarded_debug_session_pair(
+        self,
+        checkpoints: Arc<ExactCheckpointStore>,
+        lifecycle: ProductionVmLifecycleConfig,
+        host: LinuxQemuAttemptHostConfig,
+        resources: AttemptResourceLimits,
+    ) -> Result<ArchivedFindingDebugSessionPair, CampaignFindingHandoffError> {
+        let reloaded = checkpoints.load_attempt_checkpoint(self.checkpoint)?;
+        if reloaded.production_identity() != self.loaded_checkpoint.production_identity()
+            || reloaded.configuration() != self.configuration.id()
+        {
+            return Err(CampaignFindingHandoffError::CheckpointStoreMismatch);
+        }
+
+        let host = LinuxQemuAttemptHostResourceFactory::open(host)?;
+        let shared_host = SharedQemuAttemptHostResourceFactory::new(host);
+        let run_root = lifecycle.run_state_root().to_path_buf();
+        let canonical_qemu = CampaignDebugQemuCapability::new(
+            Arc::clone(&checkpoints),
+            lifecycle
+                .clone()
+                .with_run_state_root(run_root.join("canonical")),
+            shared_host.clone(),
+            resources,
+        );
+        let branch_qemu = CampaignDebugQemuCapability::new(
+            checkpoints,
+            lifecycle.with_run_state_root(run_root.join("branch")),
+            shared_host,
+            resources,
+        );
+        let canonical = self.clone().prepare_read_only_lifecycle(&canonical_qemu);
+        let branch = self.prepare_read_only_lifecycle(&branch_qemu);
+        let control_plane = ArchivedFindingDebugControlPlane::new_with_fallible_source_factory(
+            "crucible-finding-bundle-debug-pair",
+            Vec::new(),
+            |_scenario, _source, _seed| {
+                Err(LifecycleApiError::LoopFactory {
+                    message: String::from("finding bundle admits only its authenticated midpoint"),
+                })
+            },
+        )
+        .with_max_sessions(2);
+        let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
+        let client =
+            InProcessLifecycleClient::from_shared_control_plane(Arc::clone(&control_plane));
+        let canonical = canonical.admit(&client).await?;
+        let branch = match branch.admit(&client).await {
+            Ok(branch) => branch,
+            Err(restore_error) => {
+                let cleanup = control_plane
+                    .lock()
+                    .await
+                    .destroy_session(DestroySessionRequest::new(canonical.session))
+                    .await;
+                if let Err(cleanup_error) = cleanup {
+                    return Err(LifecycleApiError::ActorFailed {
+                        message: format!(
+                            "branch restore failed: {restore_error}; canonical cleanup failed: {cleanup_error}"
+                        ),
+                    }
+                    .into());
+                }
+                return Err(restore_error.into());
+            }
+        };
+        Ok(ArchivedFindingDebugSessionPair {
+            control_plane,
+            canonical: canonical.session,
+            branch: branch.session,
         })
     }
 }

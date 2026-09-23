@@ -25,6 +25,7 @@ crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-s3-store = { workspace = true }
+crucible-session = { path = "../crucible-session" }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "time"] }
@@ -39,7 +40,6 @@ toml = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double"] }
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
-crucible-session = { path = "../crucible-session" }
 
 [[test]]
 name = "gate_campaign_component_contract"
