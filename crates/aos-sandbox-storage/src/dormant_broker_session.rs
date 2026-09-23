@@ -8,11 +8,12 @@
 use std::path::{Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::{
-    AtomicStorageSnapshotResponse, BrokerMethod, StorageResult,
+    AtomicStorageSnapshotResponse, BrokerMethod, PopulateStorageGuestRootResponseV1, StorageResult,
 };
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::semantics::CanonicalStorageRepairSemanticsV1;
+use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 use buffa::Message as _;
@@ -390,6 +391,41 @@ impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
             Ok(sample)
         };
         match method {
+            BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
+                let sample = clock().map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?;
+                let semantics = CanonicalStorageGuestRootSemanticsV1::decode(
+                    request_body,
+                    peer,
+                    policy,
+                    sample.boottime_nanoseconds(),
+                )
+                .map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?;
+                if semantics.header().request_id() != &request_id
+                    || semantics.header().protocol_version() != protocol_version
+                {
+                    return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+                }
+                let template = self
+                    .guest_root_template
+                    .as_ref()
+                    .ok_or(DormantStorageBrokerCallErrorV1::StaleKernel)?;
+                let proof = self.runtime.populate_guest_root(
+                    request_body,
+                    artifacts,
+                    protocol_version,
+                    peer,
+                    policy,
+                    template,
+                )?;
+                Ok(PopulateStorageGuestRootResponseV1 {
+                    publication_proof: proof
+                        .encode()
+                        .map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?
+                        .to_vec(),
+                    ..Default::default()
+                }
+                .encode_to_vec())
+            }
             BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
                 let request = aos_sandbox_protocol::decode_atomic_storage_snapshot_request(
                     request_body,

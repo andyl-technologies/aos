@@ -98,7 +98,10 @@ impl ProtectedGuestRootTemplateV1 {
         &self.root
     }
 
-    fn expected_proof(&self, workspace: &ValidatedStorageWorkspace) -> GuestRootPublicationProofV1 {
+    pub(crate) fn expected_proof(
+        &self,
+        workspace: &ValidatedStorageWorkspace,
+    ) -> GuestRootPublicationProofV1 {
         GuestRootPublicationProofV1 {
             sandbox: *workspace.fence().sandbox_id(),
             incarnation: *workspace.fence().incarnation_id(),

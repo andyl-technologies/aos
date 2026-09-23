@@ -17,6 +17,7 @@ use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
+use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec, UnmappableIdentityPolicy};
 use aos_sandbox_core::{
     CanonicalAssignmentManifestV1, ObjectDigest, ProtocolVersion, RawClockProvenance,
@@ -24,8 +25,11 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::semantics::storage::{CanonicalStorageSemanticsV1, StorageOperation};
+use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
-use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+use aos_sandbox_protocol::{
+    MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, decode_storage_resource_inventory_response,
+};
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -35,6 +39,10 @@ use crate::broker::{
     AuthenticatedWorkspaceCatalogPhysicalPlanV1, AuthorizedWorkspacePinRepairAttemptV1,
     WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1,
 };
+use crate::guest_root_inventory::{
+    ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
+};
+use crate::guest_root_worker::SystemdGuestRootPublisherClientV1;
 use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
@@ -73,9 +81,24 @@ const MAXIMUM_BOOTSTRAP_CATALOGS: usize = 256;
 const RUNTIME_BINDING_DOMAIN: &[u8] = b"aos.sandbox.storage.runtime-composition.v1\0";
 const WORKSPACE_PIN_WORKER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-worker/control.sock";
 const WORKSPACE_PIN_OBSERVER_SOCKET: &str = "/run/aos/sandbox-workspace-pin-observer/control.sock";
+const GUEST_ROOT_PUBLISHER_SOCKET: &str = "/run/aos/sandbox-guest-root-publisher/control.sock";
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+
+fn guest_root_inventory_cutoff(now: u64, deadline: u64) -> Result<u64, StorageRuntimeError> {
+    let latest = deadline
+        .checked_sub(1)
+        .ok_or(StorageRuntimeError::Recovery)?;
+    let cutoff = now
+        .checked_add(9_000_000_000)
+        .ok_or(StorageRuntimeError::Recovery)?
+        .min(latest);
+    if cutoff <= now {
+        return Err(StorageRuntimeError::Recovery);
+    }
+    Ok(cutoff)
+}
 
 /// Reports protected Storage runtime construction or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -596,6 +619,11 @@ impl StorageBrokerRuntime {
         // reserved pin-worker cgroup scope empty before opening or observing
         // workspace state and before generic mutation recovery.
         pin_io.recover_quiescence()?;
+        let mut guest_root_publisher = SystemdGuestRootPublisherClientV1::new(
+            PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
+            open_cgroup_root()?,
+        )?;
+        guest_root_publisher.recover_quiescence()?;
 
         transactions.validate_runtime_restart(
             configuration_binding,
@@ -911,6 +939,104 @@ impl StorageBrokerRuntime {
                 Err(StorageRuntimeError::ReopenRequired)
             }
         }
+    }
+
+    /// Publishes one populated guest root under a distinct durable signed effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the current physical workspace, signed method-31
+    /// plan, satisfied pin, protected template, one-shot worker, and fresh
+    /// post-effect complete-tree readback all agree. An uncertain dispatch
+    /// leaves the runtime closed for observation-only recovery.
+    #[allow(clippy::too_many_arguments)]
+    pub fn populate_guest_root(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        template: &ProtectedGuestRootTemplateV1,
+    ) -> Result<GuestRootPublicationProofV1, StorageRuntimeError> {
+        let clock = trusted_paired_clock_sample()?;
+        let semantics = CanonicalStorageGuestRootSemanticsV1::decode(
+            request_body,
+            peer,
+            policy,
+            clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        if semantics.header().protocol_version() != protocol_version || !self.is_inventory_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let request_deadline = semantics.header().deadline_boottime_nanoseconds();
+        let cutoff = guest_root_inventory_cutoff(clock.boottime_nanoseconds(), request_deadline)?;
+        let inventory_bytes = self.inventory_resources(request_deadline, cutoff)?;
+        let inventory =
+            decode_storage_resource_inventory_response(&inventory_bytes, MAXIMUM_RESPONSE_BYTES)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+        let workspace = inventory
+            .workspaces()
+            .iter()
+            .find(|workspace| {
+                workspace.workspace_handle() == &semantics.workspace_handle()
+                    && workspace.creation_operation_id() == &semantics.creation_operation_id()
+            })
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let expected_proof = template.expected_proof(workspace);
+
+        // A prior marker is an observation, never a fresh mutation grant.
+        let before = attach_guest_root_publication_readback_v1(&inventory_bytes, template)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let before = decode_storage_resource_inventory_response(&before, MAXIMUM_RESPONSE_BYTES)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if before.workspaces().iter().any(|row| {
+            row.workspace_handle() == &semantics.workspace_handle()
+                && row.guest_root_publication_proof().is_some()
+        }) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let admitted = self.coordinator.begin_guest_root_publication(
+            &semantics,
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            &clock,
+            workspace,
+            expected_proof,
+        );
+        let (worker_request, effect_deadline) =
+            self.finish_live_transaction_mutation(admitted, StorageRuntimeError::Admission)?;
+        let publication = (|| {
+            let mut publisher = SystemdGuestRootPublisherClientV1::new(
+                PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
+                open_cgroup_root()?,
+            )?;
+            let proof = publisher.publish(&worker_request, expected_proof, effect_deadline)?;
+            let now = boottime_now_nanoseconds()?;
+            let cutoff = guest_root_inventory_cutoff(now, request_deadline)?;
+            let inventory_bytes = self.inventory_resources(request_deadline, cutoff)?;
+            let readback = attach_guest_root_publication_readback_v1(&inventory_bytes, template)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            let inventory =
+                decode_storage_resource_inventory_response(&readback, MAXIMUM_RESPONSE_BYTES)
+                    .map_err(|_| StorageRuntimeError::Recovery)?;
+            if !inventory.workspaces().iter().any(|row| {
+                row.workspace_handle() == &semantics.workspace_handle()
+                    && row.guest_root_publication_proof() == Some(proof)
+            }) {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            Ok(proof)
+        })();
+        if publication.is_err() {
+            self.latch_recovery_required();
+        }
+        publication
     }
 
     /// Encodes the additive complete lifecycle inventory for dormant composition.
