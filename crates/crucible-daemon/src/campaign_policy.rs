@@ -144,6 +144,22 @@ pub struct UnixPeerCampaignPolicy {
 }
 
 impl UnixPeerCampaignPolicy {
+    /// Resolves one exact Unix identity against this immutable deployment policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignAuthorizationError::Unauthorized`] when no binding
+    /// exists for the identity.
+    pub(crate) fn principal_for_identity(
+        &self,
+        identity: UnixPeerCampaignIdentity,
+    ) -> Result<CampaignPrincipal, CampaignAuthorizationError> {
+        self.principals
+            .get(&identity)
+            .cloned()
+            .ok_or(CampaignAuthorizationError::Unauthorized)
+    }
+
     /// Builds one closed policy from bounded binding and grant iterators.
     ///
     /// Empty inputs form an explicit deny-all policy. Every configured grant
@@ -395,13 +411,10 @@ impl UnixPeerCampaignPrincipalResolver for UnixPeerCampaignPolicy {
         &self,
         credentials: UnixPeerCampaignCredentials,
     ) -> Result<CampaignPrincipal, CampaignAuthorizationError> {
-        self.principals
-            .get(&UnixPeerCampaignIdentity::new(
-                credentials.user_id(),
-                credentials.group_id(),
-            ))
-            .cloned()
-            .ok_or(CampaignAuthorizationError::Unauthorized)
+        self.principal_for_identity(UnixPeerCampaignIdentity::new(
+            credentials.user_id(),
+            credentials.group_id(),
+        ))
     }
 }
 
