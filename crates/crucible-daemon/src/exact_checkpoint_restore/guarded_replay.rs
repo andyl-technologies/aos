@@ -6,7 +6,7 @@
 
 use std::fmt::{self, Write as _};
 
-use crucible::{Configuration, Icount, ScenarioDefForm};
+use crucible::{AdvanceOutcome, Configuration, Icount, ScenarioDefForm};
 use crucible_campaign::{CampaignHash, ConfigurationId, ScenarioDefId, SelectionOrigin};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -183,8 +183,7 @@ where
             });
         }
 
-        let mut previous_ceiling = None;
-        let mut stalled_reissues = 0;
+        let mut progress = ReplayPhysicalProgress::new(self.current_icount(&thin)?);
         loop {
             let at = self.current_icount(&thin)?;
             if at == target_icount {
@@ -197,10 +196,15 @@ where
                 break;
             }
             reject_unrecorded_local_request(self)?;
-            let ceiling =
-                next_replay_ceiling(at, target_icount, previous_ceiling, &mut stalled_reissues)?;
-            thin = self.advance_to_ceiling(thin, ceiling)?;
-            previous_ceiling = Some(ceiling);
+            let ceiling = progress.next_ceiling(target_icount)?;
+            let advance = self.advance_to_ceiling(thin, ceiling)?;
+            thin = advance.state;
+            progress.observe(
+                self.current_icount(&thin)?,
+                ceiling,
+                advance.outcome,
+                advance.idle_deadline,
+            )?;
         }
 
         self.executor
@@ -265,7 +269,7 @@ trait GuardedReplayPhysicalNode {
         &mut self,
         state: Self::Observation,
         ceiling: Icount,
-    ) -> Result<Self::Observation, QemuVmRealizationError>;
+    ) -> Result<ReplayPhysicalAdvance<Self::Observation>, QemuVmRealizationError>;
 
     fn drain_pending(
         &mut self,
@@ -276,6 +280,12 @@ trait GuardedReplayPhysicalNode {
         pending: &SelectablePlanPendingRequest,
         reply: &SelectionReply,
     ) -> Result<(), QemuVmRealizationError>;
+}
+
+struct ReplayPhysicalAdvance<T> {
+    state: T,
+    outcome: AdvanceOutcome,
+    idle_deadline: Option<Icount>,
 }
 
 impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
@@ -299,13 +309,18 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         &mut self,
         state: Self::Observation,
         ceiling: Icount,
-    ) -> Result<Self::Observation, QemuVmRealizationError> {
+    ) -> Result<ReplayPhysicalAdvance<Self::Observation>, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
         self.guard.charge_execution_quantum()?;
         let result = self
             .executor
             .advance_materialized_replay_to_ceiling(state, ceiling);
-        self.observe_realization(result).map(|(state, _)| state)
+        self.observe_realization(result)
+            .map(|(state, outcome, idle_deadline)| ReplayPhysicalAdvance {
+                state,
+                outcome,
+                idle_deadline,
+            })
     }
 
     fn drain_pending(
@@ -337,8 +352,7 @@ fn replay_one_local_guest_choice<T: GuardedReplayPhysicalNode>(
     current: &Configuration,
     recorded: &GuardedCampaignReplaySelection,
 ) -> Result<T::Observation, QemuVmRealizationError> {
-    let mut previous_ceiling = None;
-    let mut stalled_reissues = 0;
+    let mut progress = ReplayPhysicalProgress::new(node.current_icount(&state)?);
     loop {
         let pending = node.drain_pending()?;
         match pending.as_slice() {
@@ -357,11 +371,15 @@ fn replay_one_local_guest_choice<T: GuardedReplayPhysicalNode>(
             }
         }
 
-        let at = node.current_icount(&state)?;
-        let ceiling =
-            next_replay_ceiling(at, target_icount, previous_ceiling, &mut stalled_reissues)?;
-        state = node.advance_to_ceiling(state, ceiling)?;
-        previous_ceiling = Some(ceiling);
+        let ceiling = progress.next_ceiling(target_icount)?;
+        let advance = node.advance_to_ceiling(state, ceiling)?;
+        state = advance.state;
+        progress.observe(
+            node.current_icount(&state)?,
+            ceiling,
+            advance.outcome,
+            advance.idle_deadline,
+        )?;
     }
 }
 
@@ -382,7 +400,7 @@ fn replay_one_nonselection_boundary<T: GuardedReplayPhysicalNode>(
         ));
     }
 
-    let state = node.advance_to_ceiling(state, Icount { retired })?;
+    let state = node.advance_to_ceiling(state, Icount { retired })?.state;
     if node.current_icount(&state)?.retired != retired {
         return Err(invalid_replay_selection(
             "non-selection replay paused before its one-instruction boundary",
@@ -392,46 +410,89 @@ fn replay_one_nonselection_boundary<T: GuardedReplayPhysicalNode>(
     Ok(state)
 }
 
-fn next_replay_ceiling(
-    at: Icount,
-    target: Icount,
-    previous: Option<Icount>,
-    stalled_reissues: &mut u8,
-) -> Result<Icount, QemuVmRealizationError> {
-    if at.retired >= target.retired {
-        return Err(QemuVmRealizationError::InvalidCheckpoint {
-            role: "guarded replay physical target",
-            message: String::from("recorded guest choice was absent by the exact target count"),
-        });
+// This cursor only chooses the next bounded QEMU ceiling. It never changes
+// the observed physical count, checkpoint state, or authoritative event log.
+struct ReplayPhysicalProgress {
+    physical_at: Icount,
+    scheduler_frontier: Icount,
+    stalled_reissues: u8,
+}
+
+impl ReplayPhysicalProgress {
+    fn new(at: Icount) -> Self {
+        Self {
+            physical_at: at,
+            scheduler_frontier: at,
+            stalled_reissues: 0,
+        }
     }
-    // Full quanta restart at the new count. An idle pause can instead leave
-    // the count below its ceiling, so reissue briefly without extending one
-    // request beyond the charged span or the exact target.
-    let maximum = at
-        .retired
-        .saturating_add(MAX_GUARDED_REPLAY_ADVANCE_ICOUNT)
-        .min(target.retired);
-    let requested = match previous {
-        Some(previous) if at.retired < previous.retired => previous.retired.saturating_add(1),
-        _ => maximum,
-    };
-    let ceiling = requested.min(maximum);
-    if let Some(previous) = previous {
-        if ceiling < previous.retired
-            || (ceiling == previous.retired && *stalled_reissues >= MAX_REPLAY_STALLED_REISSUES)
+
+    fn next_ceiling(&self, target: Icount) -> Result<Icount, QemuVmRealizationError> {
+        if self.scheduler_frontier.retired >= target.retired {
+            return Err(invalid_replay_selection(
+                "recorded physical boundary was absent by the exact target count",
+            ));
+        }
+        Ok(Icount {
+            retired: self
+                .scheduler_frontier
+                .retired
+                .saturating_add(MAX_GUARDED_REPLAY_ADVANCE_ICOUNT)
+                .min(target.retired),
+        })
+    }
+
+    fn observe(
+        &mut self,
+        at: Icount,
+        ceiling: Icount,
+        outcome: AdvanceOutcome,
+        idle_deadline: Option<Icount>,
+    ) -> Result<(), QemuVmRealizationError> {
+        if at.retired < self.physical_at.retired || at.retired > ceiling.retired {
+            return Err(invalid_replay_selection(
+                "QEMU physical count regressed or crossed the bounded replay ceiling",
+            ));
+        }
+        match outcome {
+            AdvanceOutcome::ReachedHorizon if at != ceiling => {
+                return Err(invalid_replay_selection(
+                    "QEMU reported a reached replay ceiling before its physical count",
+                ));
+            }
+            AdvanceOutcome::Paused { at: paused } if paused != at => {
+                return Err(invalid_replay_selection(
+                    "QEMU pause count differs from the physical replay count",
+                ));
+            }
+            _ => {}
+        }
+        if at == ceiling {
+            self.scheduler_frontier = ceiling;
+            self.stalled_reissues = 0;
+        } else if matches!(outcome, AdvanceOutcome::Paused { at: paused } if paused == at)
+            && idle_deadline.is_some_and(|deadline| deadline.retired > ceiling.retired)
         {
-            return Err(QemuVmRealizationError::InvalidCheckpoint {
-                role: "guarded replay physical target",
-                message: String::from("QEMU remained paused below a bounded replay ceiling"),
-            });
-        }
-        if ceiling == previous.retired {
-            *stalled_reissues += 1;
+            // The live node-set scheduler also completes a quantum when an
+            // authenticated idle deadline lies beyond its selected ceiling.
+            // Only its virtual frontier moves; QEMU stays parked until a later
+            // bounded ceiling reaches the timer.
+            self.scheduler_frontier = ceiling;
+            self.stalled_reissues = 0;
+        } else if at.retired > self.physical_at.retired {
+            self.scheduler_frontier.retired = self.scheduler_frontier.retired.max(at.retired);
+            self.stalled_reissues = 0;
         } else {
-            *stalled_reissues = 0;
+            self.stalled_reissues += 1;
+            if self.stalled_reissues > MAX_REPLAY_STALLED_REISSUES {
+                return Err(invalid_replay_selection(
+                    "QEMU remained paused without physical or scheduler frontier progress",
+                ));
+            }
         }
+        self.physical_at = at;
+        Ok(())
     }
-    Ok(Icount { retired: ceiling })
 }
 
 fn reject_unrecorded_local_request<T: GuardedReplayPhysicalNode>(

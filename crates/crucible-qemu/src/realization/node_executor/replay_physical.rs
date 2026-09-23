@@ -94,7 +94,9 @@ impl QemuReplayValidationExecutor {
     ///
     /// The caller bounds `ceiling` by the exact checkpoint and charges the
     /// aggregate guard for each physical step. A paused result can then be
-    /// inspected for an authenticated guest-selectable request.
+    /// inspected for an authenticated guest-selectable request. The returned
+    /// idle deadline is the completed plugin boundary's own observation; it
+    /// lets the caller advance only its scheduler ceiling across an idle park.
     ///
     /// # Errors
     ///
@@ -104,7 +106,14 @@ impl QemuReplayValidationExecutor {
         &mut self,
         thin: QemuReplayOracleThinObservation,
         ceiling: Icount,
-    ) -> Result<(QemuReplayOracleThinObservation, AdvanceOutcome), QemuVmRealizationError> {
+    ) -> Result<
+        (
+            QemuReplayOracleThinObservation,
+            AdvanceOutcome,
+            Option<Icount>,
+        ),
+        QemuVmRealizationError,
+    > {
         self.validate_observation(
             &thin.authority,
             thin.generation,
@@ -140,6 +149,11 @@ impl QemuReplayValidationExecutor {
         let current_icount = QemuRealizedNodeBackend::current_icount(node).map_err(|source| {
             node_backend_error("sample guarded replay instruction count", source)
         })?;
+        let idle_deadline = node.last_step_final_state().and_then(|state| {
+            (state.current_icount == current_icount)
+                .then_some(state.next_deadline)
+                .flatten()
+        });
         if current_icount.retired > ceiling.retired {
             return Err(QemuVmRealizationError::Executor {
                 operation: "advance guarded replay to physical boundary",
@@ -180,6 +194,7 @@ impl QemuReplayValidationExecutor {
                 generation,
             },
             outcome,
+            idle_deadline,
         ))
     }
 

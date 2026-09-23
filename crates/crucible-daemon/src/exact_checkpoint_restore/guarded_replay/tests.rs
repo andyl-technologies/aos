@@ -41,7 +41,7 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         &mut self,
         state: Self::Observation,
         ceiling: Icount,
-    ) -> Result<Self::Observation, QemuVmRealizationError> {
+    ) -> Result<ReplayPhysicalAdvance<Self::Observation>, QemuVmRealizationError> {
         if ceiling.retired <= state.retired || self.pending.is_some() {
             return Err(invalid_replay_selection(
                 "scripted physical advance is invalid",
@@ -52,10 +52,20 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
             let paused = request.icount().saturating_add(1);
             if paused <= ceiling.retired {
                 self.pending = self.upcoming.pop_front();
-                return Ok(Icount { retired: paused });
+                return Ok(ReplayPhysicalAdvance {
+                    state: Icount { retired: paused },
+                    outcome: AdvanceOutcome::Paused {
+                        at: Icount { retired: paused },
+                    },
+                    idle_deadline: None,
+                });
             }
         }
-        Ok(ceiling)
+        Ok(ReplayPhysicalAdvance {
+            state: ceiling,
+            outcome: AdvanceOutcome::ReachedHorizon,
+            idle_deadline: None,
+        })
     }
 
     fn drain_pending(
@@ -304,65 +314,107 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         verify_target_pending_request(&mut extra_replay, Icount { retired: 82 }, Some(&first))
             .is_err()
     );
-    let mut stalled_reissues = 0;
+    let mut progress = ReplayPhysicalProgress::new(Icount { retired: 5 });
     assert_eq!(
-        next_replay_ceiling(
-            Icount {
-                retired: 10_000_005,
-            },
-            Icount {
-                retired: 30_000_000,
-            },
-            Some(Icount {
-                retired: 10_000_005,
-            }),
-            &mut stalled_reissues,
-        )?
-        .retired,
-        20_000_005
+        progress.next_ceiling(Icount {
+            retired: 30_000_000
+        })?,
+        Icount {
+            retired: 10_000_005
+        }
     );
+    let first = Icount {
+        retired: 10_000_005,
+    };
+    progress.observe(
+        Icount { retired: 5 },
+        first,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 5 },
+        },
+        Some(Icount {
+            retired: 25_000_000,
+        }),
+    )?;
+    assert_eq!(
+        progress.next_ceiling(Icount {
+            retired: 30_000_000
+        })?,
+        Icount {
+            retired: 20_000_005
+        }
+    );
+    progress.observe(
+        Icount { retired: 5 },
+        Icount {
+            retired: 20_000_005,
+        },
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 5 },
+        },
+        Some(Icount {
+            retired: 25_000_000,
+        }),
+    )?;
+    assert_eq!(
+        progress.next_ceiling(Icount {
+            retired: 30_000_000
+        })?,
+        Icount {
+            retired: 30_000_000
+        }
+    );
+    progress.observe(
+        Icount {
+            retired: 30_000_000,
+        },
+        Icount {
+            retired: 30_000_000,
+        },
+        AdvanceOutcome::ReachedHorizon,
+        None,
+    )?;
     assert!(
-        next_replay_ceiling(
-            Icount { retired: 5 },
-            Icount {
-                retired: 30_000_000,
-            },
-            Some(Icount {
-                retired: 20_000_000,
-            }),
-            &mut stalled_reissues,
-        )
-        .is_err()
+        progress
+            .next_ceiling(Icount {
+                retired: 30_000_000
+            })
+            .is_err()
     );
-    for reissue in 1..=MAX_REPLAY_STALLED_REISSUES {
+    let mut stalled = ReplayPhysicalProgress::new(Icount { retired: 5 });
+    for _ in 0..MAX_REPLAY_STALLED_REISSUES {
+        let ceiling = stalled.next_ceiling(Icount {
+            retired: 30_000_000,
+        })?;
         assert_eq!(
-            next_replay_ceiling(
-                Icount { retired: 5 },
-                Icount {
-                    retired: 30_000_000,
-                },
-                Some(Icount {
-                    retired: 10_000_005,
-                }),
-                &mut stalled_reissues,
-            )?
-            .retired,
-            10_000_005
-        );
-        assert_eq!(stalled_reissues, reissue);
-    }
-    assert!(
-        next_replay_ceiling(
-            Icount { retired: 5 },
+            ceiling,
             Icount {
-                retired: 30_000_000,
+                retired: 10_000_005
+            }
+        );
+        stalled.observe(
+            Icount { retired: 5 },
+            ceiling,
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 5 },
             },
-            Some(Icount {
-                retired: 10_000_005,
-            }),
-            &mut stalled_reissues,
-        )
-        .is_err()
+            Some(ceiling),
+        )?;
+    }
+    let ceiling = stalled.next_ceiling(Icount {
+        retired: 30_000_000,
+    })?;
+    assert!(
+        stalled
+            .observe(
+                Icount { retired: 5 },
+                ceiling,
+                AdvanceOutcome::Paused {
+                    at: Icount { retired: 5 },
+                },
+                Some(ceiling),
+            )
+            .is_err()
     );
     Ok(())
 }
