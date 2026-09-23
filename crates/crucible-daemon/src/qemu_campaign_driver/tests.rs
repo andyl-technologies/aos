@@ -1465,6 +1465,174 @@ fn absolute_stop_at_resume_boundary_does_not_drive_another_quantum() {
 }
 
 #[test]
+fn restored_start_at_intrinsic_choice_fallback_seals_exact_timeout() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        }),
+        virtual_time_nanoseconds: None,
+        execution_quanta: Some(12),
+    };
+    let input = input(stop);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: None,
+        initial_quanta: 7,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::from_resume_parts(
+                    input.start().configuration().clone(),
+                    Vec::new(),
+                    0,
+                    7,
+                    VirtualTime::default(),
+                    SchedulerQuiescence::default(),
+                    None,
+                ),
+            )
+            .expect("exact intrinsic fallback at restored start"),
+    );
+
+    assert_eq!(owner.drives, 0);
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::BoundedPrimaryTimeout { proof, .. }
+            if proof.completed_quanta() == 7
+    ));
+}
+
+#[test]
+fn restored_start_past_intrinsic_choice_fallback_fails_before_sealing() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        }),
+        virtual_time_nanoseconds: None,
+        execution_quanta: Some(12),
+    };
+    let input = input(stop);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: None,
+        initial_quanta: 10,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let result = QemuFreshModeledDriver::new().drive(
+        &mut lifecycle,
+        &input,
+        &context(),
+        QemuFreshStartMaterialization::from_resume_parts(
+            input.start().configuration().clone(),
+            Vec::new(),
+            0,
+            10,
+            VirtualTime::default(),
+            SchedulerQuiescence::default(),
+            None,
+        ),
+    );
+
+    assert!(matches!(
+        result,
+        Err(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop
+        ))
+    ));
+    assert_eq!(owner.drives, 0);
+}
+
+#[test]
+fn continued_origin_past_intrinsic_choice_fallback_fails_before_sealing() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        }),
+        virtual_time_nanoseconds: None,
+        execution_quanta: Some(12),
+    };
+    let input = input(stop);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: None,
+        initial_quanta: 10,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let result = QemuFreshModeledDriver::new().drive(
+        &mut lifecycle,
+        &input,
+        &context(),
+        QemuFreshStartMaterialization::from_origin_parts(
+            Vec::new(),
+            0,
+            10,
+            VirtualTime::default(),
+            Some(SchedulerQuiescence::default()),
+        ),
+    );
+
+    assert!(matches!(
+        result,
+        Err(AttemptWorkerFailure::Terminal(
+            QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop
+        ))
+    ));
+    assert_eq!(owner.drives, 0);
+}
+
+#[test]
+fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        }),
+        virtual_time_nanoseconds: None,
+        execution_quanta: Some(12),
+    };
+    let input = input(stop);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: Some(QuantumTerminalVerdict::Passed),
+        initial_quanta: 10,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::from_resume_parts(
+                    input.start().configuration().clone(),
+                    Vec::new(),
+                    0,
+                    10,
+                    VirtualTime::default(),
+                    SchedulerQuiescence::default(),
+                    Some(QuantumTerminalVerdict::Passed),
+                ),
+            )
+            .expect("restored terminal verdict wins"),
+    );
+
+    assert!(matches!(pending.stop, ModeledStop::TerminalPassed));
+    assert_eq!(owner.drives, 0);
+}
+
+#[test]
 fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlier() {
     let deadline = 8;
     let input = input(StopCondition::VirtualTimeNanoseconds(deadline));
