@@ -15,7 +15,7 @@ use aos_sandbox::filesystem_view_state::{
     FilesystemViewRevisionPresenceV1, protected_current_filesystem_view_revision_v1,
 };
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
-use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
+use aos_sandbox::runtime_scope::{CurrentNamespaceTarget, NamespaceTargetOutcome};
 use aos_sandbox_core::model::{
     AttachmentConsistency, AttachmentIntent, MountAttributes, ViewConsistency, ViewMutation,
     ViewSource,
@@ -112,24 +112,7 @@ pub(super) fn advance_immutable_attach(
         return Err(retryable("live attachment source currentness is pending"));
     }
 
-    let host = executor
-        .attachment_host
-        .as_ref()
-        .ok_or_else(|| retryable("exact Host attachment identity is unavailable"))?;
-    let inputs =
-        ControllerAttachmentTargetInputsV1::from_protected_configuration(host, executor.node)
-            .map_err(|error| retryable(error.to_string()))?;
-    let target = match inputs
-        .acquire(journal, sandbox)
-        .map_err(|error| retryable(error.to_string()))?
-    {
-        NamespaceTargetOutcome::Current(target) => *target,
-        NamespaceTargetOutcome::AdvanceRequired(_) => {
-            return Err(retryable(
-                "attachment namespace assignment successor is pending",
-            ));
-        }
-    };
+    let target = acquire_current_target(executor, journal, sandbox)?;
     let manifest = target
         .runtime_generation()
         .scope()
@@ -287,24 +270,7 @@ pub(super) fn advance_existing(
         (AttachmentConsistency::ImmutableRevision, None)
     };
 
-    let host = executor
-        .attachment_host
-        .as_ref()
-        .ok_or_else(|| retryable("exact Host attachment identity is unavailable"))?;
-    let inputs =
-        ControllerAttachmentTargetInputsV1::from_protected_configuration(host, executor.node)
-            .map_err(|error| retryable(error.to_string()))?;
-    let target = match inputs
-        .acquire(journal, sandbox)
-        .map_err(|error| retryable(error.to_string()))?
-    {
-        NamespaceTargetOutcome::Current(target) => *target,
-        NamespaceTargetOutcome::AdvanceRequired(_) => {
-            return Err(retryable(
-                "attachment namespace assignment successor is pending",
-            ));
-        }
-    };
+    let target = acquire_current_target(executor, journal, sandbox)?;
     let manifest = target
         .runtime_generation()
         .scope()
@@ -355,6 +321,29 @@ pub(super) fn advance_existing(
         .commit_current(target, mutation, &mut clock)
         .map_err(|error| retryable(error.to_string()))?;
     Ok(())
+}
+
+fn acquire_current_target(
+    executor: &ProductionEffectExecutor,
+    journal: &mut Journal,
+    sandbox: SandboxId,
+) -> Result<CurrentNamespaceTarget, EffectFailure> {
+    let host = executor
+        .attachment_host
+        .as_ref()
+        .ok_or_else(|| retryable("exact Host attachment identity is unavailable"))?;
+    let inputs =
+        ControllerAttachmentTargetInputsV1::from_protected_configuration(host, executor.node)
+            .map_err(|error| retryable(error.to_string()))?;
+    match inputs
+        .acquire(journal, sandbox)
+        .map_err(|error| retryable(error.to_string()))?
+    {
+        NamespaceTargetOutcome::Current(target) => Ok(*target),
+        NamespaceTargetOutcome::AdvanceRequired(_) => Err(retryable(
+            "attachment namespace assignment successor is pending",
+        )),
+    }
 }
 
 fn attachment_id(projection: &Attachment) -> Result<AttachmentId, EffectFailure> {
