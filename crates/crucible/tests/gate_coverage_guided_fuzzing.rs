@@ -42,6 +42,12 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
     );
 
     for iteration in &first.iterations {
+        let (sample_index, pinned, energy) =
+            family.sample_coverage_guided(config, iteration.sequence, &feedback)?;
+        assert_eq!(sample_index, iteration.sample_index);
+        assert_eq!(pinned, iteration.scenario);
+        assert_eq!(energy, iteration.energy);
+
         assert!(family.space().contains(iteration.params));
         assert_eq!(iteration.scenario.params(), iteration.params);
         assert_eq!(

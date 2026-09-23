@@ -71,7 +71,7 @@
       }
       {
         label = "T-CLI-13 local-double fuzz runner progress";
-        needle = "executes local `--backend double fuzz` through\n  `ScenarioFamily::fuzz_coverage_guided`";
+        needle = "executes local\n  `--backend double fuzz` through\n  `ScenarioFamily::fuzz_coverage_guided`";
       }
       {
         label = "T-CLI-13 local-double fuzz corpus progress";
@@ -500,6 +500,22 @@
       {
         label = "fuzz executes live QEMU iterations";
         needle = "fn run_local_qemu_fuzz_workflow";
+      }
+      {
+        label = "live fuzz samples from accepted coverage";
+        needle = "sample_coverage_guided(context.plan.config, sequence, &execution.feedback)";
+      }
+      {
+        label = "live fuzz explores authenticated typed choices";
+        needle = ".with_exploration(exploration)";
+      }
+      {
+        label = "live fuzz authenticates selected scheduler actions";
+        needle = "authenticate_qemu_fuzz_campaign(&form, &campaign, parent_id, sample_index, energy)";
+      }
+      {
+        label = "live fuzz retains replayed production corpus";
+        needle = "persist_qemu_fuzz_corpus(corpus, &execution.corpus_candidates)";
       }
       {
         label = "stored fuzz family loader";
@@ -1099,7 +1115,8 @@ in
               "$TMPDIR/crucible-cli-search-artifacts" \
               "$TMPDIR/crucible-cli-search-store" \
               "$TMPDIR/crucible-cli-fuzz-artifacts" \
-              "$TMPDIR/crucible-cli-fuzz-store"
+              "$TMPDIR/crucible-cli-fuzz-store" \
+              "$TMPDIR/crucible-cli-fuzz-corpus"
             CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
               CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-cli-search-state" \
               "${pkgs.crucible}/bin/crucible" \
@@ -1125,6 +1142,7 @@ in
                 fuzz \
                 ../tests/crucible/fixtures/live-qemu-fuzz.family.toml \
                 --runs 1 \
+                --corpus "$TMPDIR/crucible-cli-fuzz-corpus" \
                 > "$TMPDIR/production-fuzz.jsonl"
 
             test -n "$(
@@ -1150,6 +1168,16 @@ in
             test -n "$(
               sed -n \
                 '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*/p' \
+                "$TMPDIR/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"fuzz_campaign_execution".*branch_requests=[1-9][0-9]* override_observations=[1-9][0-9]*/p' \
+                "$TMPDIR/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/retained_entries=[1-9][0-9]*.*replay_oracle_validations=[1-9][0-9]*.*generated_mutants=[1-9][0-9]*.*store_puts=[1-9][0-9]*/p' \
                 "$TMPDIR/production-fuzz.jsonl"
             )"
             test -n "$(
