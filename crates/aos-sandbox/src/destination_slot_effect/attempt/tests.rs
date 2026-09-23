@@ -646,6 +646,21 @@ fn pending_resume_preserves_every_immutable_field() {
 }
 
 #[test]
+fn pending_resume_reads_only_the_original_signed_plan() {
+    let original = record(DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE);
+    let (plan, signature) = original.original_plan_artifacts().unwrap();
+    let envelope = decode_request_envelope(&original.packet, ProtocolId::MountBroker, 0).unwrap();
+    let artifacts = envelope.authorization().unwrap();
+
+    assert_eq!(plan, artifacts.broker_plan());
+    assert_eq!(signature, artifacts.broker_plan_signature());
+
+    let mut changed = original;
+    changed.packet[0] ^= 1;
+    assert!(changed.original_plan_artifacts().is_err());
+}
+
+#[test]
 fn retained_reap_crosslinks_an_exact_local_materialization() {
     let materialization = record(DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE);
     let reap = record(DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP);

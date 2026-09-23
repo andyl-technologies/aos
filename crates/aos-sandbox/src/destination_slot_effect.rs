@@ -372,6 +372,22 @@ impl PreparedCurrentDestinationSlotResumeV1 {
         &self.operation.body_without_deadline
     }
 
+    /// Recovers the original canonical Mount plan and signature bytes.
+    ///
+    /// These bytes are durable correlation evidence, not yet current signing
+    /// authority. The caller must verify them under independently pinned Mount
+    /// policy and bind the resulting plan through the protected resume path
+    /// before dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or inconsistent original durable packet.
+    pub fn original_plan_artifacts(
+        &self,
+    ) -> Result<(Vec<u8>, Vec<u8>), DestinationSlotEffectError> {
+        self.record.original_plan_artifacts()
+    }
+
     pub(crate) fn recheck<T>(
         &self,
         journal: &mut Journal,

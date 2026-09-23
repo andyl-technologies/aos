@@ -31,6 +31,13 @@ pub(super) fn advance(
     slot_id: AttachmentSlotId,
     journal: &mut Journal,
 ) -> Result<(), EffectFailure> {
+    if executor.pending_attachment_slot_attempt.is_some() {
+        drain_pending(executor, journal)?;
+        return Err(retryable(
+            "fresh authenticated destination-slot inventory is pending",
+        ));
+    }
+
     let host = executor
         .attachment_host
         .as_ref()
@@ -117,56 +124,110 @@ pub(super) fn advance(
     let reconciliation = owner
         .reconcile_current_slot(slot, snapshot)
         .map_err(|error| retryable(error.to_string()))?;
-    match reconciliation.action() {
+    let attempt = match reconciliation.action() {
         DestinationSlotReconciliationActionV1::Ready { .. } => return Ok(()),
         DestinationSlotReconciliationActionV1::Materialize { .. }
         | DestinationSlotReconciliationActionV1::Rematerialize { .. }
-        | DestinationSlotReconciliationActionV1::Reap { .. } => {}
-        // Pending work needs its original signed plan and attempt bytes. A
-        // successor plan would equivocate under the same operation identity.
-        _ => return Err(retryable("exact destination-slot recovery is pending")),
-    }
-
-    let prepared = owner
-        .prepare_current_slot_effect(reconciliation, assignment, &mut clock)
-        .map_err(|error| retryable(error.to_string()))?;
-    let deadline = prepared.valid_until_boottime_nanoseconds();
-    let scope = ControllerBrokerPlanSignerV1::mount_revocation_scope_from_process_credentials()
-        .map_err(|error| retryable(error.to_string()))?;
-    let plan = owner
-        .current_slot_plan(&prepared, scope, &mut clock)
-        .map_err(|error| retryable(error.to_string()))?;
-    let issued = plan.issued_seconds();
-    let signed = signer
-        .sign_mount_plan(plan, issued)
-        .map_err(|error| retryable(error.to_string()))?;
-    let bound = owner
-        .bind_current_slot_plan(prepared, signed, &mut clock)
-        .map_err(|error| retryable(error.to_string()))?;
-    let attempt = owner
-        .admit_current_slot_effect(bound, deadline, &mut clock)
-        .map_err(|error| retryable(error.to_string()))?;
-
-    let outcome = {
-        let mut sessions = executor
-            .sessions
-            .lock()
-            .map_err(|_| retryable("broker session lock is poisoned"))?;
-        sessions
-            .mount
-            .as_mut()
-            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
-            .authenticated_destination_slot_effect(&attempt)
-            .map_err(|error| retryable(error.to_string()))?
+        | DestinationSlotReconciliationActionV1::Reap { .. } => {
+            let prepared = owner
+                .prepare_current_slot_effect(reconciliation, assignment, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let deadline = prepared.valid_until_boottime_nanoseconds();
+            let scope =
+                ControllerBrokerPlanSignerV1::mount_revocation_scope_from_process_credentials()
+                    .map_err(|error| retryable(error.to_string()))?;
+            let plan = owner
+                .current_slot_plan(&prepared, scope, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let issued = plan.issued_seconds();
+            let signed = signer
+                .sign_mount_plan(plan, issued)
+                .map_err(|error| retryable(error.to_string()))?;
+            let bound = owner
+                .bind_current_slot_plan(prepared, signed, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            owner
+                .admit_current_slot_effect(bound, deadline, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?
+        }
+        DestinationSlotReconciliationActionV1::ResumeMaterialize { .. }
+        | DestinationSlotReconciliationActionV1::ResumeRematerialize { .. }
+        | DestinationSlotReconciliationActionV1::ResumeMaterializeForReap { .. }
+        | DestinationSlotReconciliationActionV1::ResumeRematerializeForReap { .. }
+        | DestinationSlotReconciliationActionV1::ResumeReap { .. } => {
+            let prepared = owner
+                .prepare_current_slot_resume(reconciliation, assignment, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let (canonical_plan, canonical_signature) = prepared
+                .original_plan_artifacts()
+                .map_err(|error| retryable(error.to_string()))?;
+            let signed = signer
+                .recover_mount_plan(&canonical_plan, &canonical_signature)
+                .map_err(|error| retryable(error.to_string()))?;
+            let bound = owner
+                .bind_current_slot_resume_plan(prepared, signed, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            owner
+                .resume_current_slot_effect(bound, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?
+        }
+        DestinationSlotReconciliationActionV1::Released => {
+            return Err(EffectFailure::Permanent(
+                "admitted attachment destination slot was released".to_owned(),
+            ));
+        }
     };
-    owner
-        .complete_authenticated_slot_effect(attempt, &outcome, &mut clock)
-        .map_err(|error| retryable(error.to_string()))?;
+
+    executor.pending_attachment_slot_attempt = Some(attempt);
+    drop(owner);
+    drain_pending(executor, journal)?;
 
     // Completion proves the operation receipt, not the current physical row.
     Err(retryable(
         "fresh authenticated destination-slot inventory is pending",
     ))
+}
+
+fn drain_pending(
+    executor: &mut ProductionEffectExecutor,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    let attempt = executor
+        .pending_attachment_slot_attempt
+        .take()
+        .ok_or_else(|| retryable("retained destination-slot attempt is unavailable"))?;
+    let mut owner = match ProtectedAttachmentEffectOwnerV1::claim(journal) {
+        Ok(owner) => owner,
+        Err(error) => {
+            executor.pending_attachment_slot_attempt = Some(attempt);
+            return Err(retryable(error.to_string()));
+        }
+    };
+    let outcome = (|| {
+        let mut sessions = executor
+            .sessions
+            .lock()
+            .map_err(|_| retryable("broker session lock is poisoned"))?;
+        let mount = sessions
+            .mount
+            .as_mut()
+            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?;
+        mount
+            .authenticated_destination_slot_effect(&attempt)
+            .map_err(|error| retryable(error.to_string()))
+    })();
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            executor.pending_attachment_slot_attempt = Some(attempt);
+            return Err(error);
+        }
+    };
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    owner
+        .complete_authenticated_slot_effect(attempt, &outcome, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    Ok(())
 }
 
 fn request_digest(context: &PublicMutationEffectV1) -> ObjectDigest {

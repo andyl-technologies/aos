@@ -10,7 +10,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_sandbox::{BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority};
-use aos_sandbox_core::format::decode_trust_policy;
+use aos_sandbox_core::format::{decode_broker_authorization_plan, decode_trust_policy};
 use aos_sandbox_core::model::{KeyUsage, SignaturePurpose};
 use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerPlanTrustAnchor, DecodeLimits, MediaType,
@@ -219,6 +219,32 @@ impl ControllerBrokerPlanSignerV1 {
             return Err(ControllerBrokerPlanSignerError::Completion);
         }
         self.sign_with_authority(plan, now_seconds, &self.mount_authority)
+    }
+
+    /// Verifies the exact original Mount plan retained in a durable attempt.
+    ///
+    /// Recovery never signs a replacement under the same operation identity.
+    /// Current assignment and ownership authority are checked separately when
+    /// the recovered plan is rebound to the protected attempt.
+    pub(crate) fn recover_mount_plan(
+        &self,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
+    ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError> {
+        let plan = decode_broker_authorization_plan(canonical_plan, DecodeLimits::default())
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        if plan.audience() != BrokerAudience::Mount || plan.protocol() != ProtocolId::MountBroker {
+            return Err(ControllerBrokerPlanSignerError::Completion);
+        }
+        let issued = plan.issued_seconds();
+        let preparation = BrokerPlanPreparation::new(plan, self.mount_authority.clone())
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        if preparation.canonical_plan() != canonical_plan {
+            return Err(ControllerBrokerPlanSignerError::Completion);
+        }
+        preparation
+            .complete(ReturnedSignature::Envelope(canonical_signature), issued)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)
     }
 
     fn sign_with_authority(

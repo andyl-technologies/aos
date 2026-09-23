@@ -1687,6 +1687,8 @@ struct ProductionEffectExecutor {
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
+    pending_attachment_slot_attempt:
+        Option<aos_sandbox::destination_slot_effect::DurableCurrentDestinationSlotAttemptV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
@@ -1739,6 +1741,7 @@ impl ProductionEffectExecutor {
             broker_plan_signer,
             attachment_host,
             attachment_mount,
+            pending_attachment_slot_attempt: None,
             source_domains,
             cache_inventory: None,
             cache_physical: None,

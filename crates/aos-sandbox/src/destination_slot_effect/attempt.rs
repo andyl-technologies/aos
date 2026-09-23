@@ -220,6 +220,22 @@ pub(super) struct Record {
 }
 
 impl Record {
+    pub(super) fn original_plan_artifacts(
+        &self,
+    ) -> Result<(Vec<u8>, Vec<u8>), DestinationSlotEffectError> {
+        self.validate_contents()?;
+        let envelope =
+            decode_request_envelope(&self.packet, aos_sandbox_core::ProtocolId::MountBroker, 0)
+                .map_err(|_| DestinationSlotEffectError::CorruptState)?;
+        let artifacts = envelope
+            .authorization()
+            .ok_or(DestinationSlotEffectError::CorruptState)?;
+        Ok((
+            artifacts.broker_plan().to_vec(),
+            artifacts.broker_plan_signature().to_vec(),
+        ))
+    }
+
     fn from_attempt(
         live: &LiveDispatch,
         ready: Option<ReadyResourceExpectation>,
