@@ -5,13 +5,14 @@
   guestChoice ? false,
   campaignMidpoint ? false,
   findingExactBundle ? false,
+  findingSignalBundle ? false,
   maintenanceTransfer ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle) " --features packaged-midpoint-flight";
+  campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle) " --features packaged-midpoint-flight";
   campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}";
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
@@ -91,7 +92,7 @@
     maximum_slots = 1
     maximum_vcpus = 2
     maximum_resident_bytes = ${toString (
-      if guestChoice || campaignMidpoint || findingExactBundle
+      if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle
       then 1073741824
       else 536870912
     )}
@@ -131,15 +132,17 @@
       then "crucible-packaged-campaign-choice"
       else if findingExactBundle
       then "crucible-campaign-finding-exact-bundle"
+      else if findingSignalBundle
+      then "crucible-campaign-finding-signal-bundle"
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
     memory = 2048;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
-      ++ (lib.optional findingExactBundle pkgs.crucible)
+      ++ (lib.optional (findingExactBundle || findingSignalBundle) pkgs.crucible)
       ++ (
-        if guestChoice || campaignMidpoint || findingExactBundle
+        if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle
         then [choiceInitramfs]
         else []
       );
@@ -186,7 +189,7 @@
       echo 'campaign-host-setup-complete=true'
       ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
       export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
-      ${lib.optionalString findingExactBundle "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
+      ${lib.optionalString (findingExactBundle || findingSignalBundle) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
       export CRUCIBLE_FLIGHT_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
       export CRUCIBLE_FLIGHT_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
       export CRUCIBLE_FLIGHT_DEPLOYMENT=/tmp/executor.toml
@@ -194,7 +197,7 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
-      ${lib.optionalString (guestChoice || campaignMidpoint || findingExactBundle || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
@@ -321,6 +324,22 @@
           ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_tamper_rejected=true' "$bundle_log"
           ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$bundle_log"
           printf '%s\n' 'gate=gate:campaign-finding-exact-read-only'
+        ''
+        else if findingSignalBundle
+        then ''
+          signal_selector=finding_exact_vm::packaged_finding_bundle_retains_selected_fault_and_guest_response
+          signal_log=/tmp/campaign-finding-signal-bundle.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --exact \
+            "$signal_selector" --nocapture > "$signal_log" 2>&1; then
+            cat "$signal_log"
+            exit 1
+          fi
+          cat "$signal_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_selected_fault_and_guest_response=true' "$signal_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_signal_archive_unchanged=true' "$signal_log"
+          ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$signal_log"
+          printf '%s\n' 'gate=gate:campaign-finding-signal-bundle'
         ''
         else if campaignMidpoint
         then ''
