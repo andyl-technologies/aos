@@ -20,13 +20,12 @@ use crucible::{
     FailureSignaturePreservingMinimizationRun, FailureTimeoutBudgetKind, FailureTimeoutRecord,
     FailureTriageReplayEvidence, FailureTriageResult, FailureTriageResultIdentity,
     FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
-    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MemoryDagStore,
-    MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
-    OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
-    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy,
-    SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    FindingReproductionArtifact, Icount, MarkerId, MemoryDagStore, MinimizationConfig,
+    MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
+    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, ScenarioDefForm, Schedule,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
+    SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -84,7 +83,13 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         VirtualTime { ticks: 100 },
         SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
     );
-    let entries = vec![boundary.clone(), observed_marker];
+    let transition = SchedulerEventLogEntry::assertion_state_observation(
+        2,
+        VirtualTime { ticks: 100 },
+        assertion_id("no-forbidden-marker"),
+        AssertionPhase::Violated,
+    );
+    let entries = vec![boundary.clone(), observed_marker, transition.clone()];
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
         .check_run(&properties, &entries)?;
@@ -112,6 +117,35 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
             FailureSignature::from_recorded_property_violation(&finding, &log, &record)?;
         assert!(signature.causal_slice_hash.is_some());
     }
+
+    let mut terminal_transition_entries = entries.clone();
+    terminal_transition_entries.push(SchedulerEventLogEntry::assertion_state_observation(
+        3,
+        VirtualTime { ticks: 100 },
+        assertion_id("eventually-present"),
+        AssertionPhase::Violated,
+    ));
+    let terminal_transition_report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &terminal_transition_entries)?;
+    let mut terminal_transition_record = terminal_transition_report
+        .violations()
+        .iter()
+        .find(|violation| violation.assertion == assertion_id("eventually-present"))
+        .ok_or("missing terminal transition violation")?
+        .clone();
+    terminal_transition_record.reproduction_artifact = finding.artifact.id();
+    let terminal_transition_log =
+        recorded_event_log_for_finding(&finding, &terminal_transition_entries)?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(
+            &finding,
+            &terminal_transition_log,
+            &FailurePropertyViolationRecord::new(terminal_transition_record),
+        )?
+        .causal_slice_hash
+        .is_some()
+    );
 
     let mut marker_record = marker_record;
     marker_record.violation.reproduction_artifact = finding.artifact.id();
@@ -143,6 +177,7 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
             VirtualTime { ticks: 100 },
             SchedulerEventLogPayload::Observable(wrong_marker.payload().clone()),
         ),
+        transition.clone(),
     ];
     let wrong_log = recorded_event_log_for_finding(&finding, &wrong_entries)?;
     assert!(
@@ -161,6 +196,7 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
                 VirtualTime { ticks: 100 },
                 SchedulerEventLogPayload::Observable(wrong_icount.payload().clone()),
             ),
+            transition.clone(),
         ],
     )?;
     assert!(
@@ -172,6 +208,177 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         .is_err()
     );
 
+    let wrong_state = SchedulerEventLogEntry::assertion_state_observation(
+        2,
+        VirtualTime { ticks: 100 },
+        assertion_id("no-forbidden-marker"),
+        AssertionPhase::Satisfied,
+    );
+    let wrong_state_log = recorded_event_log_for_finding(
+        &finding,
+        &[entries[0].clone(), entries[1].clone(), wrong_state],
+    )?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(
+            &finding,
+            &wrong_state_log,
+            &marker_record,
+        )
+        .is_err()
+    );
+
+    let duplicate_transition = SchedulerEventLogEntry::assertion_state_observation(
+        3,
+        VirtualTime { ticks: 100 },
+        assertion_id("no-forbidden-marker"),
+        AssertionPhase::Violated,
+    );
+    let duplicate_log = recorded_event_log_for_finding(
+        &finding,
+        &[
+            entries[0].clone(),
+            entries[1].clone(),
+            transition,
+            duplicate_transition,
+        ],
+    )?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(
+            &finding,
+            &duplicate_log,
+            &marker_record,
+        )
+        .is_err()
+    );
+
+    let earlier_boundary = crucible::test_support::condition_boundary_entry_for_test(
+        0,
+        VirtualTime { ticks: 50 },
+        SchedulerEvaluationBoundaryKind::Quantum,
+    );
+    let earlier_marker = crucible::test_support::condition_payload_entry_for_test(
+        1,
+        VirtualTime { ticks: 50 },
+        SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
+    );
+    let later_boundary = crucible::test_support::condition_boundary_entry_for_test(
+        2,
+        VirtualTime { ticks: 100 },
+        SchedulerEvaluationBoundaryKind::Quantum,
+    );
+    let later_transition = SchedulerEventLogEntry::assertion_state_observation(
+        3,
+        VirtualTime { ticks: 100 },
+        assertion_id("no-forbidden-marker"),
+        AssertionPhase::Violated,
+    );
+    let earlier_marker_log = recorded_event_log_for_finding(
+        &finding,
+        &[
+            earlier_boundary,
+            earlier_marker,
+            later_boundary,
+            later_transition,
+        ],
+    )?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(
+            &finding,
+            &earlier_marker_log,
+            &marker_record,
+        )
+        .is_err()
+    );
+
+    let reversed_transition = SchedulerEventLogEntry::assertion_state_observation(
+        1,
+        VirtualTime { ticks: 100 },
+        assertion_id("no-forbidden-marker"),
+        AssertionPhase::Violated,
+    );
+    let reversed_marker = crucible::test_support::condition_payload_entry_for_test(
+        2,
+        VirtualTime { ticks: 100 },
+        SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
+    );
+    let reversed_entries = vec![entries[0].clone(), reversed_transition, reversed_marker];
+    let reversed_report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &reversed_entries)?;
+    assert!(
+        reversed_report
+            .violations()
+            .iter()
+            .any(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
+    );
+    let reversed_log = recorded_event_log_for_finding(&finding, &reversed_entries)?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(&finding, &reversed_log, &marker_record)
+            .is_err()
+    );
+
+    // The marker's physical count can equal the scheduler boundary by chance.
+    // The signature still has to bind the guest witness through host replay.
+    let coincident_marker =
+        ObservableEvent::guest_marker(icount(100), node("triage-node"), marker("forbidden"));
+    let coincident_entries = vec![
+        entries[0].clone(),
+        crucible::test_support::condition_payload_entry_for_test(
+            1,
+            VirtualTime { ticks: 100 },
+            SchedulerEventLogPayload::Observable(coincident_marker.payload().clone()),
+        ),
+        entries[2].clone(),
+    ];
+    let coincident_report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &coincident_entries)?;
+    let mut coincident_record = coincident_report
+        .violations()
+        .iter()
+        .find(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
+        .ok_or("missing coincident marker violation")?
+        .clone();
+    assert_eq!(coincident_record.at_icount, Some(icount(100)));
+    coincident_record.reproduction_artifact = finding.artifact.id();
+    let coincident_log = recorded_event_log_for_finding(&finding, &coincident_entries)?;
+    let coincident_signature = FailureSignature::from_recorded_property_violation(
+        &finding,
+        &coincident_log,
+        &FailurePropertyViolationRecord::new(coincident_record),
+    )?;
+    assert!(
+        coincident_signature
+            .causal_cone
+            .as_ref()
+            .ok_or("missing coincident causal cone")?
+            .canonical_material()
+            .contains("guest_marker_witness=")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn forged_transition_cannot_substitute_for_an_undeclared_property() -> Result<(), Box<dyn Error>> {
+    let source = scenario_form()?;
+    let empty = ScenarioDefForm::from_components(
+        source.world(),
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::default(),
+    )?;
+    let finding = finding_artifact(
+        &empty,
+        Schedule::empty(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("undeclared-property"),
+    )?;
+    let entries = recorded_event_log(override_decision("fixture-decision", "fixture-choice"));
+    let log = recorded_event_log_for_finding(&finding, &entries)?;
+    let forged = property_violation_record(finding.artifact.id());
+
+    assert!(FailureSignature::from_recorded_property_violation(&finding, &log, &forged).is_err());
     Ok(())
 }
 
@@ -405,8 +612,8 @@ fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), 
         "assertion_state_changed"
     );
     assert_eq!(
-        first_signature.first_failing_point.faulting_node.as_ref(),
-        Some(&node("triage-node"))
+        first_signature.first_failing_point.faulting_node,
+        Some(node("triage-node"))
     );
     assert!(
         first_signature
@@ -414,21 +621,36 @@ fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), 
             .contains("property_quantifier=always")
     );
 
-    let mut noisy_entries = coverage_entries.clone();
-    noisy_entries.insert(
-        1,
+    let noisy_entries = vec![
+        coverage_entries[0].clone(),
         condition_observation_entry_for_test(
-            99,
+            1,
             &ObservableEvent::console_output(
                 VirtualTime { ticks: 2 },
                 node("triage-node"),
                 b"operator-visible noise".to_vec(),
             ),
         ),
-    );
+        crucible::test_support::condition_payload_entry_for_test(
+            2,
+            VirtualTime { ticks: 8 },
+            SchedulerEventLogPayload::Observable(
+                ObservableEvent::guest_marker(icount(8), node("triage-node"), marker("forbidden"))
+                    .payload()
+                    .clone(),
+            ),
+        ),
+        SchedulerEventLogEntry::assertion_state_observation(
+            3,
+            VirtualTime { ticks: 8 },
+            assertion_id("no-forbidden-marker"),
+            AssertionPhase::Violated,
+        ),
+    ];
     let noisy_log = recorded_event_log_for_finding(&first, &noisy_entries)?;
+    let noisy_record = property_violation_record_for_entries(first.artifact.id(), &noisy_entries);
     let noisy_signature =
-        FailureSignature::from_recorded_property_violation(&first, &noisy_log, &first_record)?;
+        FailureSignature::from_recorded_property_violation(&first, &noisy_log, &noisy_record)?;
     assert_eq!(
         noisy_signature.causal_slice_hash,
         first_signature.causal_slice_hash
@@ -637,7 +859,8 @@ fn timeout_signature_validates_boundary_and_normalizes_symmetric_nodes()
 }
 
 #[test]
-fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Error>> {
+fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
+-> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
     let finding = finding_artifact(
@@ -648,64 +871,33 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
     )?;
     let base_entries = recorded_event_log(schedule.decisions()[0].clone());
     let base_log = recorded_event_log_for_finding(&finding, &base_entries)?;
-    let replica_class = SymmetryClassId {
-        name: "replicas".to_owned(),
-    };
-    let normalization = FailureSignatureNormalization::identity().with_symmetry_classes(
-        SymmetryReductionClasses::new()
-            .with_node_class(node("replica-a"), replica_class.clone())
-            .with_node_class(node("replica-b"), replica_class),
+    let normalization = FailureSignatureNormalization::identity();
+    let base_record = property_violation_record(finding.artifact.id());
+    let base_signature = FailureSignature::from_recorded_property_violation_with_normalization(
+        &finding,
+        &base_log,
+        &base_record,
+        &normalization,
+    )?;
+    assert_eq!(
+        base_signature.first_failing_point.faulting_node,
+        Some(node("triage-node"))
     );
 
-    let replica_a = property_violation_record_for_node(finding.artifact.id(), node("replica-a"));
-    let replica_b = property_violation_record_for_node(finding.artifact.id(), node("replica-b"));
-    let replica_a_signature =
-        FailureSignature::from_recorded_property_violation_with_normalization(
-            &finding,
-            &base_log,
-            &replica_a,
-            &normalization,
-        )?;
-    let replica_b_signature =
-        FailureSignature::from_recorded_property_violation_with_normalization(
-            &finding,
-            &base_log,
-            &replica_b,
-            &normalization,
-        )?;
-
-    assert_eq!(
-        replica_a_signature.first_failing_point.faulting_node,
-        replica_b_signature.first_failing_point.faulting_node
-    );
-    assert_eq!(
-        replica_a_signature.first_failing_point.faulting_node,
-        Some(NodeId {
-            name: "symmetry-class:8:replicas".to_owned(),
-        })
-    );
-    assert_eq!(
-        replica_a_signature.content_hash(),
-        replica_b_signature.content_hash()
-    );
-
-    let mut shifted_icount = replica_a_signature.clone();
+    let mut shifted_icount = base_signature.clone();
     shifted_icount.at_icount_report_only = Some(icount(9000));
     assert_ne!(
         shifted_icount.at_icount_report_only,
-        replica_a_signature.at_icount_report_only
+        base_signature.at_icount_report_only
     );
-    assert_eq!(
-        shifted_icount.content_hash(),
-        replica_a_signature.content_hash()
-    );
+    assert_eq!(shifted_icount.content_hash(), base_signature.content_hash());
     assert!(
-        !replica_a_signature
+        !base_signature
             .canonical_material()
             .contains("at_icount_report_only")
     );
     assert!(
-        replica_a_signature
+        base_signature
             .report_material()
             .contains("at_icount_report_only=8")
     );
@@ -713,8 +905,7 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
     let shifted_entries =
         recorded_event_log_with_assertion_time(schedule.decisions()[0].clone(), 88);
     let shifted_log = recorded_event_log_for_finding(&finding, &shifted_entries)?;
-    let shifted_record =
-        property_violation_record_for_node_at(finding.artifact.id(), node("replica-a"), 88);
+    let shifted_record = property_violation_record_at(finding.artifact.id(), 88);
     let shifted_log_signature =
         FailureSignature::from_recorded_property_violation_with_normalization(
             &finding,
@@ -724,33 +915,51 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
         )?;
     assert_ne!(
         shifted_log_signature.at_icount_report_only,
-        replica_a_signature.at_icount_report_only
+        base_signature.at_icount_report_only
     );
-    assert_eq!(
+    assert_ne!(
         shifted_log_signature.causal_slice_hash,
-        replica_a_signature.causal_slice_hash
+        base_signature.causal_slice_hash
     );
-    assert_eq!(
+    assert_ne!(
         shifted_log_signature.content_hash(),
-        replica_a_signature.content_hash()
+        base_signature.content_hash()
     );
 
-    let mut prefailure_out_of_cone_entries = base_entries.clone();
-    prefailure_out_of_cone_entries.insert(
-        2,
+    let prefailure_out_of_cone_entries = vec![
+        base_entries[0].clone(),
         crucible::test_support::condition_boundary_entry_for_test(
-            77,
+            1,
             VirtualTime { ticks: 5 },
             SchedulerEvaluationBoundaryKind::Quantum,
         ),
-    );
+        crucible::test_support::condition_payload_entry_for_test(
+            2,
+            VirtualTime { ticks: 8 },
+            SchedulerEventLogPayload::Observable(
+                ObservableEvent::guest_marker(icount(8), node("triage-node"), marker("forbidden"))
+                    .payload()
+                    .clone(),
+            ),
+        ),
+        SchedulerEventLogEntry::assertion_state_observation(
+            3,
+            VirtualTime { ticks: 8 },
+            assertion_id("no-forbidden-marker"),
+            AssertionPhase::Violated,
+        ),
+    ];
     let prefailure_out_of_cone_log =
         recorded_event_log_for_finding(&finding, &prefailure_out_of_cone_entries)?;
+    let prefailure_out_of_cone_record = property_violation_record_for_entries(
+        finding.artifact.id(),
+        &prefailure_out_of_cone_entries,
+    );
     let prefailure_out_of_cone_signature =
         FailureSignature::from_recorded_property_violation_with_normalization(
             &finding,
             &prefailure_out_of_cone_log,
-            &replica_a,
+            &prefailure_out_of_cone_record,
             &normalization,
         )?;
     assert_ne!(
@@ -759,11 +968,11 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
     );
     assert_eq!(
         prefailure_out_of_cone_signature.causal_slice_hash,
-        replica_a_signature.causal_slice_hash
+        base_signature.causal_slice_hash
     );
     assert_eq!(
         prefailure_out_of_cone_signature.content_hash(),
-        replica_a_signature.content_hash()
+        base_signature.content_hash()
     );
 
     let mut trailing_causal_entries = base_entries.clone();
@@ -773,10 +982,12 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
         SchedulerEvaluationBoundaryKind::Quantum,
     ));
     let trailing_log = recorded_event_log_for_finding(&finding, &trailing_causal_entries)?;
+    let trailing_record =
+        property_violation_record_for_entries(finding.artifact.id(), &trailing_causal_entries);
     let trailing_signature = FailureSignature::from_recorded_property_violation_with_normalization(
         &finding,
         &trailing_log,
-        &replica_a,
+        &trailing_record,
         &normalization,
     )?;
     assert_ne!(
@@ -785,11 +996,11 @@ fn failure_signature_applies_t_tri_2_normalizations() -> Result<(), Box<dyn Erro
     );
     assert_eq!(
         trailing_signature.causal_slice_hash,
-        replica_a_signature.causal_slice_hash
+        base_signature.causal_slice_hash
     );
     assert_eq!(
         trailing_signature.content_hash(),
-        replica_a_signature.content_hash()
+        base_signature.content_hash()
     );
 
     Ok(())

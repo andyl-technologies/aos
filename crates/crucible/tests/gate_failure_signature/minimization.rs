@@ -270,11 +270,10 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
             .canonical_material()
             .contains("failure.property_message=forbidden marker must stay absent")
     );
-    assert!(
-        property_report
-            .canonical_material()
-            .contains("failure.detail=observed forbidden marker")
-    );
+    assert!(property_report.canonical_material().contains(&format!(
+        "failure.detail={}",
+        property_record.violation.detail
+    )));
     assert!(
         property_report
             .canonical_material()
