@@ -12,14 +12,14 @@
 use aos_proto::aos::sandbox::local::v1::{
     HostAttachGateEvidenceV1, InstallHostAttachGateRequestV1,
 };
-use aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES;
 use aos_sandbox_core::ProtocolId;
+use aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    exact_nonzero, validate_request_header, PeerCredentials, PeerPolicy, ProtocolValidationError,
-    ValidatedHeader,
+    PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader, exact_nonzero,
+    validate_request_header,
 };
 
 const MAXIMUM_REQUEST_BODY_BYTES: usize = 1024;
@@ -201,22 +201,41 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         Audience, HostAttachGateEvidenceV1, InstallHostAttachGateRequestV1, RequestHeader,
     };
+    use aos_sandbox_core::public_attach_grant::{
+        PublicAttachPendingGrantV1, sign_public_attach_pending_grant_v1,
+    };
     use buffa::Message as _;
+    use ed25519_dalek::SigningKey;
     use sha2::{Digest as _, Sha256};
 
     use super::{decode_host_attach_gate_evidence_v1, decode_host_attach_gate_request_v1};
     use crate::{PeerCredentials, PeerPolicy};
 
     fn request() -> InstallHostAttachGateRequestV1 {
-        let mut grant = vec![0; 416];
-        grant[..8].copy_from_slice(b"AOSAPG01");
-        grant[8..24].copy_from_slice(&[1; 16]);
-        grant[24..40].copy_from_slice(&[2; 16]);
-        grant[56..72].copy_from_slice(&[3; 16]);
-        grant[88..96].copy_from_slice(&4u64.to_be_bytes());
-        grant[184..200].copy_from_slice(&[5; 16]);
-        grant[200..216].copy_from_slice(&[6; 16]);
-        grant[216..224].copy_from_slice(&7i64.to_be_bytes());
+        let grant = sign_public_attach_pending_grant_v1(
+            &PublicAttachPendingGrantV1 {
+                operation_id: [1; 16],
+                execution_id: [2; 16],
+                sandbox_id: [10; 16],
+                incarnation_id: [3; 16],
+                node_id: [11; 16],
+                assignment_epoch: 4,
+                desired_generation: 1,
+                namespace_generation: 1,
+                assignment_digest: [12; 32],
+                lease_generation: 1,
+                lease_digest: [13; 32],
+                principal_id: [5; 16],
+                audit_id: [6; 16],
+                expires_at: 7,
+                request_digest: [14; 32],
+                pending_digest: [15; 32],
+                trust_digest: [16; 32],
+                gate_config_digest: [17; 32],
+            },
+            &SigningKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
 
         InstallHostAttachGateRequestV1 {
             header: Some(RequestHeader {
@@ -229,7 +248,7 @@ mod tests {
                 ..Default::default()
             })
             .into(),
-            pending_grant: grant,
+            pending_grant: grant.to_vec(),
             ..Default::default()
         }
     }
@@ -281,11 +300,10 @@ mod tests {
 
         let mut different_operation = evidence.clone();
         different_operation.operation_id[0] ^= 1;
-        assert!(decode_host_attach_gate_evidence_v1(
-            &different_operation.encode_to_vec(),
-            &request
-        )
-        .is_err());
+        assert!(
+            decode_host_attach_gate_evidence_v1(&different_operation.encode_to_vec(), &request)
+                .is_err()
+        );
 
         let mut changed_readback = evidence;
         changed_readback.signed_gate_readback[12] ^= 1;

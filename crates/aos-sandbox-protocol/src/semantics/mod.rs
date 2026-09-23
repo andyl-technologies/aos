@@ -9,6 +9,7 @@
 
 pub mod destination_slot;
 pub mod host;
+pub mod host_attach_gate;
 pub mod host_execution;
 pub mod mount;
 pub mod mount_scope;
@@ -26,6 +27,10 @@ pub use destination_slot::{
 pub use host::{
     CanonicalHostSemanticsV1, HostSemanticError, canonical_host_semantics_v1, runtime_handle_v1,
     runtime_resource_handle,
+};
+pub use host_attach_gate::{
+    CanonicalHostAttachGateSemanticsV1, HostAttachGateSemanticErrorV1,
+    canonical_host_attach_gate_semantics_v1,
 };
 pub use host_execution::{
     CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1,

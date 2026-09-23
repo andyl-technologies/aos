@@ -452,7 +452,7 @@ impl HostState {
     ) -> Result<Admission> {
         if !matches!(
             action,
-            HostAction::ApplyExecution | HostAction::QueryExecution
+            HostAction::ApplyExecution | HostAction::QueryExecution | HostAction::InstallAttachGate
         ) || admitted.fence.assignment() != assignment
             || admitted.effect.request_id() != &request_id
             || admitted.effect.transport_request_digest().as_bytes() != &request_digest
@@ -542,7 +542,7 @@ impl HostState {
             || current_runtime.fence.sandbox_id != *assignment.sandbox().as_bytes()
             || current_runtime.fence.incarnation_id != *assignment.incarnation().as_bytes()
             || current_runtime.fence.assignment_epoch != assignment.epoch().get()
-            || matches!(current_runtime.action, 2 | 5 | 6 | 7)
+            || matches!(current_runtime.action, 2 | 5 | 6 | 7 | 8)
         {
             return Err(HostError::Fence("Host runtime witness is not current"));
         }
@@ -783,7 +783,8 @@ impl HostState {
             HostAction::Stop
             | HostAction::Kill
             | HostAction::ApplyExecution
-            | HostAction::QueryExecution => return Ok(GuardianLineage::Shadowed),
+            | HostAction::QueryExecution
+            | HostAction::InstallAttachGate => return Ok(GuardianLineage::Shadowed),
             HostAction::Launch | HostAction::Freeze | HostAction::Thaw => {}
         }
 
@@ -1068,7 +1069,7 @@ impl HostState {
                     || witness.fence.sandbox_id != request.fence.sandbox_id
                     || witness.fence.incarnation_id != request.fence.incarnation_id
                     || witness.fence.assignment_epoch != request.fence.assignment_epoch
-                    || matches!(witness.action, 2 | 5 | 6 | 7)
+                    || matches!(witness.action, 2 | 5 | 6 | 7 | 8)
                 {
                     return Err(HostError::State(
                         "Host execution runtime witness is invalid".to_owned(),
@@ -1833,6 +1834,7 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
         5 => Some(aos_sandbox_core::BrokerVerb::HostKill),
         6 => Some(aos_sandbox_core::BrokerVerb::HostApplyExecution),
         7 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecution),
+        8 => Some(aos_sandbox_core::BrokerVerb::HostInstallAttachGate),
         _ => None,
     }
 }
@@ -1936,6 +1938,7 @@ fn host_verb_code(verb: BrokerVerb) -> Option<u8> {
         BrokerVerb::HostKill => Some(5),
         BrokerVerb::HostApplyExecution => Some(6),
         BrokerVerb::HostQueryExecution => Some(7),
+        BrokerVerb::HostInstallAttachGate => Some(8),
         _ => None,
     }
 }

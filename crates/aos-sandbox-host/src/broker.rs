@@ -19,19 +19,23 @@ use aos_sandbox_broker::{
 };
 use aos_sandbox_core::{
     BrokerAssignment, ObjectDigest, ProtocolVersion, RawClockProvenance, RawPairedClockSample,
+    VerifiedOwnershipLease,
 };
 use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_protocol::semantics::{
-    canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
+    CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionSemanticsV1,
+    canonical_host_attach_gate_semantics_v1, canonical_host_execution_apply_semantics_v1,
+    canonical_host_execution_query_semantics_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     HistoricalRuntimeRequestCandidateV1, PeerCredentials, PeerPolicy,
-    ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
+    ValidatedHostAttachGateRequestV1, ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
     ValidatedQueryRuntimeEffectRequestV1, ValidatedRuntimeRequest,
     classify_historical_runtime_request_v1, decode_grandfathered_runtime_request_replay_v1,
-    decode_host_execution_apply_v1, decode_host_execution_query_v1, decode_runtime_request,
+    decode_host_attach_gate_request_v1, decode_host_execution_apply_v1,
+    decode_host_execution_query_v1, decode_runtime_request,
 };
 use aos_systemd::{
     GuardianCredentialDescriptors, GuardianCredentialRole, GuardianUnitSpec,
@@ -41,6 +45,7 @@ use buffa::Message as _;
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
+use crate::attach_route::HostOpenSshAttachRouteOwnerV1;
 use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::plan::{
@@ -101,6 +106,22 @@ pub struct HostExecutionGrantReservationV1 {
     runtime_handle: ObjectDigest,
     request: HostExecutionGrantRequestV1,
     effect: BrokerEffectIntentV1,
+    verified_lease: VerifiedOwnershipLease,
+}
+
+#[derive(Clone, Copy)]
+enum HostExactGrantSemanticsV1 {
+    Execution(CanonicalHostExecutionSemanticsV1),
+    AttachGate(CanonicalHostAttachGateSemanticsV1),
+}
+
+impl HostExactGrantSemanticsV1 {
+    fn commitment(&self) -> aos_sandbox_core::BrokerArgumentCommitment {
+        match self {
+            Self::Execution(semantics) => semantics.commitment(),
+            Self::AttachGate(semantics) => semantics.commitment(),
+        }
+    }
 }
 
 /// Retains the exact decoded request associated with a verified Host grant.
@@ -109,6 +130,8 @@ pub enum HostExecutionGrantRequestV1 {
     Apply(ValidatedHostExecutionApplyV1),
     /// Reads one exact protected execution outcome.
     Query(ValidatedHostExecutionQueryV1),
+    /// Installs one exact signed pending OpenSSH gate and reads it back.
+    AttachGate(ValidatedHostAttachGateRequestV1),
 }
 
 impl HostExecutionGrantReservationV1 {
@@ -129,6 +152,9 @@ impl HostExecutionGrantReservationV1 {
             ) | (
                 HostExecutionGrantRequestV1::Query(_),
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            ) | (
+                HostExecutionGrantRequestV1::AttachGate(_),
+                BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             )
         ) && self.request_id == request_id
             && self.request_body_digest.as_bytes() == Sha256::digest(body).as_slice()
@@ -141,6 +167,12 @@ impl HostExecutionGrantReservationV1 {
     #[must_use]
     pub const fn request(&self) -> &HostExecutionGrantRequestV1 {
         &self.request
+    }
+
+    /// Returns the freshly verified ownership lease retained by admission.
+    #[must_use]
+    pub const fn verified_lease(&self) -> &VerifiedOwnershipLease {
+        &self.verified_lease
     }
 }
 
@@ -298,7 +330,7 @@ where
                         request.operation_id(),
                         request.execution_id(),
                         request.source_commitment(),
-                        semantics,
+                        HostExactGrantSemanticsV1::Execution(semantics),
                         HostAction::ApplyExecution,
                         HostExecutionGrantRequestV1::Apply(request),
                     )
@@ -319,9 +351,35 @@ where
                         request.operation_id(),
                         request.execution_id(),
                         request.source_commitment(),
-                        semantics,
+                        HostExactGrantSemanticsV1::Execution(semantics),
                         HostAction::QueryExecution,
                         HostExecutionGrantRequestV1::Query(request),
+                    )
+                }
+                BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
+                    let request = decode_host_attach_gate_request_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let grant = HostOpenSshAttachRouteOwnerV1::verify_pending_grant(
+                        request.pending_grant(),
+                    )
+                    .map_err(|_| HostError::Fence("Host attach pending grant is invalid"))?;
+                    let semantics = canonical_host_attach_gate_semantics_v1(
+                        assignment,
+                        request.pending_grant(),
+                    )
+                    .map_err(|_| HostError::Fence("Host attach semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        grant.operation_id,
+                        aos_sandbox_core::ExecutionId::from_bytes(grant.execution_id),
+                        ObjectDigest::from_bytes(grant.pending_digest),
+                        HostExactGrantSemanticsV1::AttachGate(semantics),
+                        HostAction::InstallAttachGate,
+                        HostExecutionGrantRequestV1::AttachGate(request),
                     )
                 }
                 _ => return Err(HostError::Fence("Host execution method is invalid")),
@@ -351,16 +409,28 @@ where
                 |_| self.state.request_base_authorization(&request_id),
             )
             .ok_or(HostError::Fence("Host execution base fence is absent"))?;
-        let admitted = self.authority.admit_execution(
-            artifacts,
-            assignment,
-            request_id,
-            request_body,
-            semantics,
-            header.deadline_boottime_nanoseconds(),
-            &admission_clock,
-            prior_fence,
-        )?;
+        let admitted = match semantics {
+            HostExactGrantSemanticsV1::Execution(semantics) => self.authority.admit_execution(
+                artifacts,
+                assignment,
+                request_id,
+                request_body,
+                semantics,
+                header.deadline_boottime_nanoseconds(),
+                &admission_clock,
+                prior_fence,
+            )?,
+            HostExactGrantSemanticsV1::AttachGate(semantics) => self.authority.admit_attach_gate(
+                artifacts,
+                assignment,
+                request_id,
+                request_body,
+                semantics,
+                header.deadline_boottime_nanoseconds(),
+                &admission_clock,
+                prior_fence,
+            )?,
+        };
         let sealed_base_fence = self.authority.advance_base_execution_fence(
             assignment.sandbox().as_bytes(),
             prior_fence,
@@ -380,7 +450,7 @@ where
             semantic_commitment: *semantics.commitment().digest().as_bytes(),
         };
         let mut proposed = self.state.clone();
-        proposed.admit_execution_handoff(
+        let admission = proposed.admit_execution_handoff(
             assignment,
             request_id,
             *request_body_digest.as_bytes(),
@@ -392,6 +462,13 @@ where
             sealed_effect,
             &self.authority,
         )?;
+        if action == HostAction::InstallAttachGate
+            && matches!(admission, crate::state::Admission::Complete(_))
+        {
+            return Err(HostError::Fence(
+                "Host attach gate request is already terminal",
+            ));
+        }
         if proposed != self.state {
             self.commit_state(&proposed)?;
         }
@@ -410,6 +487,7 @@ where
             runtime_handle: claim.currentness().runtime().handle(),
             request,
             effect: admitted.effect,
+            verified_lease: admitted.verified_lease,
         })
     }
 

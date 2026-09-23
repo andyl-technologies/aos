@@ -23,6 +23,9 @@ use aos_sandbox_core::runtime_backend::{
 };
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 use aos_sandbox_host::DormantHostBrokerCallsiteV1;
+use aos_sandbox_host::attach_route::{
+    HostOpenSshAttachRouteErrorV1, HostOpenSshAttachRouteOwnerV1,
+};
 use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
 use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -60,6 +63,9 @@ pub enum HostExecutionHandoffErrorV1 {
     /// The authenticated guest session failed or requires protected recovery.
     #[error(transparent)]
     Agent(#[from] HostAgentLiveErrorV1),
+    /// Protected OpenSSH route installation or signed readback failed.
+    #[error(transparent)]
+    AttachGate(#[from] HostOpenSshAttachRouteErrorV1),
     /// The broker request deadline expired before guest dispatch.
     #[error("Host execution guest dispatch deadline expired")]
     Deadline,
@@ -92,6 +98,12 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     let mut claim = owner.claim()?;
     if claim.host_verifier().boot_id() != protected_boot_id {
         return Err(HostExecutionHandoffErrorV1::KernelBoot);
+    }
+    if method == BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE {
+        agent
+            .as_ref()
+            .ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?
+            .validate_claim(&claim)?;
     }
     let reservation = host.reserve_authenticated_execution(
         &claim,
@@ -161,6 +173,44 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                 request.source_commitment(),
                 effect.as_ref(),
             )
+        }
+        HostExecutionGrantRequestV1::AttachGate(request) => {
+            let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+            let result = (|| -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
+                agent.validate_claim(&claim)?;
+                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                routes.reserve_from_pending_grant(
+                    request.pending_grant(),
+                    reservation.verified_lease(),
+                )?;
+                let grant =
+                    HostOpenSshAttachRouteOwnerV1::verify_pending_grant(request.pending_grant())?;
+                let binding = *agent.session_binding().digest().as_bytes();
+                let evidence = routes.observe_active_on_session(
+                    grant.execution_id,
+                    grant.incarnation_id,
+                    grant.assignment_epoch,
+                    binding,
+                    agent,
+                )?;
+                agent.validate_claim(&claim)?;
+                Ok(evidence.encode_wire())
+            })();
+            let encoded = match result {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    // No certificate is issued after a failed readback. Close
+                    // this Host request so an exact grant can be retried with
+                    // a new broker request after channel recovery.
+                    claim.revalidate()?;
+                    host.complete_authenticated_execution(&reservation, &claim, b"AOSHAF01")?;
+                    return Err(error);
+                }
+            };
+            claim.revalidate()?;
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
         }
     };
     claim.revalidate()?;

@@ -113,6 +113,8 @@ pub enum BrokerVerb {
     HostApplyExecution,
     /// Reads one exact guest execution outcome for a protected runtime.
     HostQueryExecution,
+    /// Installs one exact pending public OpenSSH attach gate.
+    HostInstallAttachGate,
     /// Creates a detached mount and mints its handle.
     MountCreate,
     /// Installs an existing detached mount.
@@ -223,6 +225,7 @@ impl BrokerVerb {
             37 => Ok(Self::StorageAtomicSnapshot),
             38 => Ok(Self::HostApplyExecution),
             39 => Ok(Self::HostQueryExecution),
+            40 => Ok(Self::HostInstallAttachGate),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -270,6 +273,7 @@ impl BrokerVerb {
             Self::StorageAtomicSnapshot => 37,
             Self::HostApplyExecution => 38,
             Self::HostQueryExecution => 39,
+            Self::HostInstallAttachGate => 40,
         }
     }
 
@@ -285,7 +289,8 @@ impl BrokerVerb {
             | Self::HostObserve
             | Self::HostInventory
             | Self::HostApplyExecution
-            | Self::HostQueryExecution => BrokerAudience::Host,
+            | Self::HostQueryExecution
+            | Self::HostInstallAttachGate => BrokerAudience::Host,
             Self::MountCreate
             | Self::MountInstall
             | Self::MountReplace
@@ -325,6 +330,7 @@ impl BrokerVerb {
             | Self::HostInventory
             | Self::HostApplyExecution
             | Self::HostQueryExecution
+            | Self::HostInstallAttachGate
             | Self::MountCreate
             | Self::MountInventorySummary
             | Self::MountInventoryResources
@@ -1489,6 +1495,7 @@ mod tests {
             (37, BrokerVerb::StorageAtomicSnapshot),
             (38, BrokerVerb::HostApplyExecution),
             (39, BrokerVerb::HostQueryExecution),
+            (40, BrokerVerb::HostInstallAttachGate),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)

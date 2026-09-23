@@ -47,6 +47,7 @@ pub(crate) enum HostAction {
     Kill,
     ApplyExecution,
     QueryExecution,
+    InstallAttachGate,
 }
 
 impl HostAction {
@@ -59,6 +60,7 @@ impl HostAction {
             5 => Some(Self::Kill),
             6 => Some(Self::ApplyExecution),
             7 => Some(Self::QueryExecution),
+            8 => Some(Self::InstallAttachGate),
             _ => None,
         }
     }
@@ -72,6 +74,7 @@ impl HostAction {
             Self::Kill => 5,
             Self::ApplyExecution => 6,
             Self::QueryExecution => 7,
+            Self::InstallAttachGate => 8,
         }
     }
 }
@@ -110,7 +113,8 @@ impl DurableExecution {
             HostAction::Launch
             | HostAction::Stop
             | HostAction::ApplyExecution
-            | HostAction::QueryExecution => None,
+            | HostAction::QueryExecution
+            | HostAction::InstallAttachGate => None,
         }
     }
 
@@ -129,7 +133,9 @@ impl DurableExecution {
             Self::HostExecutionHandoff(record) => {
                 matches!(
                     context.action,
-                    HostAction::ApplyExecution | HostAction::QueryExecution
+                    HostAction::ApplyExecution
+                        | HostAction::QueryExecution
+                        | HostAction::InstallAttachGate
                 ) && record.runtime_witness_request_id != [0; 16]
                     && record.runtime_handle != [0; 32]
                     && record.operation_id != [0; 16]

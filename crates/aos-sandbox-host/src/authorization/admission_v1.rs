@@ -18,6 +18,7 @@ use aos_sandbox_core::{
     RawPairedClockSample, SandboxId,
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
+use aos_sandbox_protocol::semantics::CanonicalHostAttachGateSemanticsV1;
 use aos_sandbox_protocol::semantics::CanonicalHostExecutionSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
@@ -219,6 +220,44 @@ impl HostAuthorityV1 {
         prior_fence: &[u8],
     ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
         self.authority.admit_host_execution(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment,
+                request_id,
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
+    /// Verifies one exact ATTACH plan and lease against the shared Host fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a wrong semantic verb, signer, current assignment, lease, or
+    /// protected base fence.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_attach_gate(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        semantics: CanonicalHostAttachGateSemanticsV1,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.authority.admit_host_attach_gate(
             artifacts,
             AdmissionRequest {
                 audience: BrokerAudience::Host,

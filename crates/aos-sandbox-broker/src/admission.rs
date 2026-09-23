@@ -12,7 +12,7 @@ use aos_sandbox_core::{
     BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, BrokerVerb,
     CLOCK_PAIR_TOLERANCE_NANOSECONDS, DecodeLimits, NodeId, ObjectDigest,
     OwnershipLeaseExpectation, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
-    RawPairedClockSample, intersect_broker_admission, negotiate_protocol,
+    RawPairedClockSample, VerifiedOwnershipLease, intersect_broker_admission, negotiate_protocol,
     prepare_local_lease_record, verify_broker_plan, verify_ownership_lease,
 };
 use aos_sandbox_protocol::session::{
@@ -164,6 +164,25 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Admits a distinct Host ATTACH grant on the shared runtime lease.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the wrong domain or verb, invalid signatures, a mismatched
+    /// semantic plan grant, or a stale durable lease fence.
+    pub fn admit_host_attach_gate(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host || request.verb != BrokerVerb::HostInstallAttachGate {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
     fn admit_with_plan_rotation(
         &self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
@@ -288,7 +307,11 @@ impl BrokerAuthority {
             effect_deadline,
         )
         .map_err(|_| BrokerAdmissionError::FenceRejected)?;
-        Ok(VerifiedBrokerAdmission { fence, effect })
+        Ok(VerifiedBrokerAdmission {
+            fence,
+            effect,
+            verified_lease,
+        })
     }
 
     /// Authenticates and opens one exact effect-record location.
@@ -584,6 +607,8 @@ pub struct VerifiedBrokerAdmission {
     pub fence: BrokerAuthorizationFenceV1,
     /// Pending non-authorizing effect intent.
     pub effect: BrokerEffectIntentV1,
+    /// Fresh signature-verified lease used for the committed local fence.
+    pub verified_lease: VerifiedOwnershipLease,
 }
 
 const fn artifact_limits(maximum_bytes: usize) -> DecodeLimits {

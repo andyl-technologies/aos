@@ -465,7 +465,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
             BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => self
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => self
                 .execute_host_execution_and_commit(
                     request,
                     host,

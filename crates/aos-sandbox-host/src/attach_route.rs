@@ -35,18 +35,18 @@ use aos_sandbox::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_agent::openssh_gate::{
-    verify_openssh_gate_readback_v1, OpenSshGateBindingV1, OpenSshGateObserveRequestV1,
-    OpenSshGateReadbackErrorV1, OpenSshGateReadbackV1,
+    OpenSshGateBindingV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackErrorV1,
+    OpenSshGateReadbackV1, verify_openssh_gate_readback_v1,
 };
 use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
-use aos_sandbox_agent::{decode_frame_v1, encode_frame_v1, AgentFrameV1, AgentProtocolError};
+use aos_sandbox_agent::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
 use aos_sandbox_core::public_attach_grant::{
-    verify_public_attach_pending_grant_v1, PublicAttachGrantErrorV1, PublicAttachPendingGrantV1,
+    PublicAttachGrantErrorV1, PublicAttachPendingGrantV1, verify_public_attach_pending_grant_v1,
 };
 use aos_sandbox_core::{ExecutionId, VerifiedOwnershipLease};
 use buffa::Message as _;
 use ed25519_dalek::VerifyingKey;
-use rand::{rngs::OsRng, TryRngCore as _};
+use rand::{TryRngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PublicKey};
@@ -89,6 +89,24 @@ pub trait OpenSshGateAgentExchangeV1 {
 }
 
 impl HostOpenSshAttachRouteOwnerV1 {
+    /// Verifies the exact pending receipt under the dedicated protected key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent or insecure verifier credential, malformed packet,
+    /// invalid signature, or sentinel grant field.
+    pub fn verify_pending_grant(
+        packet: &[u8],
+    ) -> Result<PublicAttachPendingGrantV1, HostOpenSshAttachRouteErrorV1> {
+        let verifier_bytes = read_fixed_credential(GRANT_KEY_CREDENTIAL_PATH, 32)?;
+        let verifier: [u8; 32] = verifier_bytes
+            .try_into()
+            .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+        let verifier = VerifyingKey::from_bytes(&verifier)
+            .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+        verify_public_attach_pending_grant_v1(packet, &verifier).map_err(Into::into)
+    }
+
     /// Opens and exclusively claims the fixed Host route journal.
     ///
     /// # Errors
@@ -123,13 +141,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
         packet: &[u8],
         lease: &VerifiedOwnershipLease,
     ) -> Result<(), HostOpenSshAttachRouteErrorV1> {
-        let verifier_bytes = read_fixed_credential(GRANT_KEY_CREDENTIAL_PATH, 32)?;
-        let verifier: [u8; 32] = verifier_bytes
-            .try_into()
-            .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-        let verifier = VerifyingKey::from_bytes(&verifier)
-            .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-        let grant = verify_public_attach_pending_grant_v1(packet, &verifier)?;
+        let grant = Self::verify_pending_grant(packet)?;
         let (trust, trust_digest) = read_deployment_trust()?;
         if grant.trust_digest != trust_digest || grant.expires_at <= current_unix_seconds()? {
             return Err(HostOpenSshAttachRouteErrorV1::TrustMismatch);
@@ -143,8 +155,37 @@ impl HostOpenSshAttachRouteOwnerV1 {
         let mut authority = self
             .journal
             .claim_protected_authority(RecordNamespace::HostExecution)?;
-        if authority.get(&reservation_key)?.is_some() {
-            return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
+        let grant_digest = Sha256::digest(packet);
+        if let Some(previous_digest) = authority.get(&reservation_key)? {
+            let previous_route = authority
+                .get(&key)?
+                .ok_or(HostOpenSshAttachRouteErrorV1::Stale)
+                .and_then(decode_route_record)?;
+            if previous_route.execution_id != grant.execution_id
+                || previous_route.attach_operation_id != grant.operation_id
+                || previous_route.incarnation_id != grant.incarnation_id
+                || previous_route.assignment_epoch != grant.assignment_epoch
+                || previous_route.principal_id != grant.principal_id
+                || previous_route.audit_id != grant.audit_id
+                || !route_matches_trust(&previous_route, &trust)
+            {
+                return Err(HostOpenSshAttachRouteErrorV1::Stale);
+            }
+            if previous_digest == grant_digest.as_slice() {
+                if previous_route.expires_at != grant.expires_at
+                    || previous_route.gate_config_digest != grant.gate_config_digest
+                {
+                    return Err(HostOpenSshAttachRouteErrorV1::Stale);
+                }
+                return Ok(());
+            }
+            // An expired pending reservation can be renewed under the same
+            // controller operation, but never while the old grant is live.
+            if previous_route.expires_at >= current_unix_seconds()?
+                || grant.expires_at <= previous_route.expires_at
+            {
+                return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
+            }
         }
         let route_generation = match authority.get(&key)? {
             Some(previous) => decode_route_record(previous)?
@@ -173,14 +214,15 @@ impl HostOpenSshAttachRouteOwnerV1 {
         let bytes =
             serde_json::to_vec(&route).map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
         decode_route_record(&bytes)?;
+        let transaction_id = route_transaction_id_v1(grant.operation_id, grant_digest.as_slice())?;
         let transaction = JournalTransaction::new(
-            grant.operation_id,
+            transaction_id,
             vec![
                 JournalRecord::put(RecordNamespace::HostExecution, key, bytes),
                 JournalRecord::put(
                     RecordNamespace::HostExecution,
                     reservation_key,
-                    Sha256::digest(packet).to_vec(),
+                    grant_digest.to_vec(),
                 ),
             ],
         )?;
@@ -296,6 +338,24 @@ impl HostOpenSshAttachRouteOwnerV1 {
             route_digest: digest.finalize().into(),
         })
     }
+}
+
+fn route_transaction_id_v1(
+    operation_id: [u8; 16],
+    grant_digest: &[u8],
+) -> Result<[u8; 16], HostOpenSshAttachRouteErrorV1> {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.host.openssh-attach-route-transaction.v1\0");
+    hash.update(operation_id);
+    hash.update(grant_digest);
+    let digest = hash.finalize();
+    let transaction_id: [u8; 16] = digest[..16]
+        .try_into()
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
+    if transaction_id == [0; 16] {
+        return Err(HostOpenSshAttachRouteErrorV1::Malformed);
+    }
+    Ok(transaction_id)
 }
 
 /// Retains a protected route while its fresh challenge is measured by the guest.
@@ -863,15 +923,15 @@ pub enum HostOpenSshAttachRouteErrorV1 {
 mod tests {
     use ed25519_dalek::SigningKey;
     use sha2::{Digest as _, Sha256};
-    use ssh_key::{public::Ed25519PublicKey, PublicKey};
+    use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
     use aos_sandbox_agent::openssh_gate::{OpenSshGatePhysicalStateV1, OpenSshGateReadbackV1};
     use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
 
     use super::{
-        decode_deployment_trust, decode_route_record, route_matches_trust, verify_readback_binding,
-        DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, RouteRecordV1,
-        ROUTE_MAGIC, TRUST_MAGIC,
+        DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC,
+        RouteRecordV1, TRUST_MAGIC, decode_deployment_trust, decode_route_record,
+        route_matches_trust, verify_readback_binding,
     };
 
     fn route_record() -> RouteRecordV1 {
