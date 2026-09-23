@@ -1597,13 +1597,19 @@ in
               cp -a "${nativeRust}/lib/." "$rust_native_repo/lib/"
               chmod -R u+w "$rust_native_repo/lib"
 
-              # No executable from the fetched rules_rust archives may remain
-              # usable. Required compiler tools above are AOS shell launchers.
-              # Turn every other top-level tool into a failing sentinel and
-              # remove the unregistered rust-analyzer helper so an unexpected
-              # request cannot silently cross the source-build boundary.
+              # Only the selected native and target compiler repositories may
+              # retain executable tools. Disable tools in every unused fetched
+              # repository so they cannot cross the source-build boundary.
               for rust_repo in "$TMPDIR/repo-overrides"/rust_*__*_tools; do
                 [ -d "$rust_repo" ] || continue
+                required_rust_repo=false
+                if [ "$rust_repo" = "$rust_native_repo" ]; then
+                  required_rust_repo=true
+                fi
+                if [ -n "''${rust_cross_repo:-}" ] && [ "$rust_repo" = "$rust_cross_repo" ]; then
+                  required_rust_repo=true
+                fi
+
                 # Current Rust ships standard-library metadata beside its rlibs.
                 # Include those files in Bazel's declared sandbox inputs.
                 test "$(grep -Fc 'lib/*.rlib"' "$rust_repo/BUILD.bazel")" -eq 1
@@ -1613,11 +1619,13 @@ in
                   while read tool; do
                     case "''${tool##*/}" in
                       rustc|rustdoc|cargo)
-                        if ! head -n 1 "$tool" | grep -Fqx '#!${buildBash}/bin/bash'; then
-                          echo "required rules_rust tool is not an AOS launcher: $tool" >&2
-                          exit 1
+                        if [ "$required_rust_repo" = true ]; then
+                          if ! head -n 1 "$tool" | grep -Fqx '#!${buildBash}/bin/bash'; then
+                            echo "required rules_rust tool is not an AOS launcher: $tool" >&2
+                            exit 1
+                          fi
+                          continue
                         fi
-                        continue
                         ;;
                     esac
                     rm -f "$tool"
