@@ -168,6 +168,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying QMP error.
         source: QmpError,
     },
+    /// QEMU did not authenticate and adopt the pinned startup block roots.
+    #[error("adopt pinned QEMU launch block roots failed")]
+    QmpLaunchFdsetAdoption {
+        /// Underlying QMP error.
+        source: QmpError,
+    },
     /// QEMU could not resume after stopped-state control authentication.
     #[error("start QEMU after stopped-state control authentication failed")]
     QmpStart {

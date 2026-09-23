@@ -1328,6 +1328,12 @@ fn build_live_node_with_authority(
         )
         .map_err(|source| QemuLiveNodeStepGateError::QmpConnect { source })
     );
+    // QMP startup means QEMU has opened the pinned block roots. Retire the
+    // fdset records before guest work, leaving block-owned descriptors live.
+    launch_try!(
+        qmp.adopt_guarded_launch_fdsets(command.resource_requirements().has_root_overlay())
+            .map_err(|source| QemuLiveNodeStepGateError::QmpLaunchFdsetAdoption { source })
+    );
     let realized_projection_manifest = launch_try!(
         qmp.query_fingerprint_projection_manifest()
             .map_err(|source| QemuLiveNodeStepGateError::FingerprintProjectionManifest { source })
