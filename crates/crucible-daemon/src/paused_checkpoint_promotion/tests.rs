@@ -302,7 +302,7 @@ pub(crate) fn prepare_repository_promotion_fixture(
         ))
         .expect("lineage identity"),
         crucible_campaign::AttemptId::parse(&format!(
-            "crucible.campaign.attempt@campaign-fact.8.{}",
+            "crucible.campaign.attempt@campaign-fact.9.{}",
             "62".repeat(32)
         ))
         .expect("attempt identity"),

@@ -1,7 +1,7 @@
 //! Automatic signature-preserving finding reduction around production runners.
 //!
 //! The outer runner executes the admitted attempt through its complete
-//! production router first. Property failures and execution-quanta timeouts are
+//! production router first. Property failures and modeled campaign timeouts are
 //! reduced directly. An explicitly enabled determinism policy privately runs
 //! an ordinary candidate twice before originating a divergence finding.
 //! Candidate execution shares cancellation and the physical quantum budget
@@ -34,6 +34,7 @@ use crate::{
 
 const ASSERTION_FAILURE_CLASS: &str = "qemu.assertion-violation";
 const EXECUTION_QUANTA_TIMEOUT_CLASS: &str = "qemu.execution-quanta-timeout";
+const VIRTUAL_TIME_TIMEOUT_CLASS: &str = "qemu.virtual-time-timeout";
 const DIVERGENCE_FAILURE_CLASS: &str = "qemu.causal-log-divergence";
 mod exact_retention;
 use exact_retention::prepare_finding_exact_retention;

@@ -248,7 +248,7 @@ pub(crate) fn test_disabled_finding_exact_retention()
     let snapshot =
         CampaignSnapshotId::parse(&format!("crucible.campaign.snapshot@{snapshot_content}"))?;
     let policy_content =
-        ContentId::for_bytes(ObjectKind::Policy, 4, b"test finding retention policy");
+        ContentId::for_bytes(ObjectKind::Policy, 5, b"test finding retention policy");
     let policy = CampaignPolicyId::parse(&format!("crucible.campaign.policy@{policy_content}"))?;
     let admission_content = ContentId::for_bytes(
         ObjectKind::CampaignFact,

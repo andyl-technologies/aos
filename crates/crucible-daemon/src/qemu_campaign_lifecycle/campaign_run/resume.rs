@@ -431,7 +431,10 @@ where
             }
             if terminal.id() != proof.source_observation
                 || terminal_evidence != &proof.source_evidence
-                || matches!(terminal.observation().stop(), StopOutcome::Reached(_))
+                || matches!(
+                    terminal.observation().stop(),
+                    StopOutcome::Reached(_) | StopOutcome::BoundedPrimaryReached { .. }
+                )
             {
                 return Err(GuardedDefaultCampaignInvariantError::MissingResumeProof.into());
             }

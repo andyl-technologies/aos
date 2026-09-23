@@ -47,6 +47,7 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
         | QemuAttemptProductionVmLifecycleError::ResourceRefusal(_)
+        | QemuAttemptProductionVmLifecycleError::HostWatchdogExpired
         | QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary
         | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(_)

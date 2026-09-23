@@ -529,7 +529,7 @@ mod tests {
             3,
             b"exact-retention-test-admission",
         );
-        let policy = ContentId::for_bytes(ObjectKind::Policy, 4, b"exact-retention-test-policy");
+        let policy = ContentId::for_bytes(ObjectKind::Policy, 5, b"exact-retention-test-policy");
         Ok(AttemptRetentionPolicyBasis::new(
             CampaignSnapshotId::parse(&format!("crucible.campaign.snapshot@{snapshot}"))?,
             AttemptAdmissionId::parse(&format!("crucible.campaign.attempt-admission@{admission}"))?,

@@ -1226,6 +1226,218 @@ fn combined_stop_uses_the_first_absolute_bound() {
 }
 
 #[test]
+fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NamedBoundary(String::from("later"))),
+        virtual_time_nanoseconds: Some(10),
+        execution_quanta: Some(2),
+    };
+    let input = input(StopCondition::Terminal);
+    let configuration = starting_configuration(&input);
+    let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 10);
+    let discoveries = BTreeMap::new();
+    let evidence = QuantumStopEvidence {
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 1,
+        completed_quanta: 2,
+        discoveries: &discoveries,
+        prior_entries: &[],
+    };
+
+    assert!(matches!(
+        reached_requested_stop(&stop, &evidence).expect("policy stop"),
+        Some(ModeledStop::PolicyTimeout {
+            kind: PolicyTimeoutKind::VirtualTime,
+            proof,
+            ..
+        }) if proof.frontier_nanoseconds() == 10 && proof.completed_quanta() == 2
+    ));
+}
+
+#[test]
+fn policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::Terminal),
+        virtual_time_nanoseconds: Some(1),
+        execution_quanta: Some(2),
+    };
+    let input = input(stop.clone());
+    let configuration = starting_configuration(&input);
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(outcome(
+            configuration,
+            Vec::new(),
+            EventLogOffset::default(),
+            1,
+        ))]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut pending = expect_observation(
+        drive_modeled_attempt(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+        .expect("policy timeout"),
+    );
+
+    let timeout = retain_modeled_timeout(&mut pending)
+        .expect("retained modeled timeout")
+        .expect("virtual timeout record");
+    assert_eq!(timeout.budget_kind, FailureTimeoutBudgetKind::VirtualTime);
+    assert_eq!(timeout.configured_limit, Some(1));
+    assert_eq!(timeout.at_virtual_time.ticks, 1);
+    assert!(pending.event_log.iter().any(|entry| {
+        entry.event_payload().kind() == "execution_budget_exhausted"
+            && entry.event_payload().string("budget_kind") == Some("virtual-time")
+    }));
+
+    let candidate = prepared_semantic_observation(
+        QemuFreshModeledDriver::new()
+            .seal(pending, Vec::new())
+            .expect("typed timeout candidate"),
+    );
+    assert!(matches!(
+        candidate.observation().stop(),
+        StopOutcome::PolicyTimeout {
+            stop: reached,
+            kind: PolicyTimeoutKind::VirtualTime,
+            proof,
+        } if *reached == stop && proof.frontier_nanoseconds() == 1 && proof.completed_quanta() == 1
+    ));
+}
+
+#[test]
+fn bounded_primary_retains_its_exact_predeadline_coordinate() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::VirtualTimeNanoseconds(4)),
+        virtual_time_nanoseconds: Some(10),
+        execution_quanta: Some(2),
+    };
+    let input = input(StopCondition::Terminal);
+    let configuration = starting_configuration(&input);
+    let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
+    let discoveries = BTreeMap::new();
+    let evidence = QuantumStopEvidence {
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 0,
+        completed_quanta: 1,
+        discoveries: &discoveries,
+        prior_entries: &[],
+    };
+
+    assert!(matches!(
+        reached_requested_stop(&stop, &evidence).expect("primary stop"),
+        Some(ModeledStop::BoundedPrimaryReached { proof, .. })
+            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 1
+    ));
+}
+
+#[test]
+fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 1,
+        }),
+        virtual_time_nanoseconds: Some(10),
+        execution_quanta: Some(2),
+    };
+    let input = input(stop.clone());
+    let configuration = starting_configuration(&input);
+    let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
+    let discoveries = BTreeMap::new();
+    let evidence = QuantumStopEvidence {
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 0,
+        completed_quanta: 1,
+        discoveries: &discoveries,
+        prior_entries: &[],
+    };
+
+    assert!(matches!(
+        reached_requested_stop(&stop, &evidence).expect("intrinsic fallback"),
+        Some(ModeledStop::BoundedPrimaryTimeout { proof, .. })
+            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 1
+    ));
+}
+
+#[test]
+fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 2,
+        }),
+        virtual_time_nanoseconds: Some(10),
+        execution_quanta: Some(3),
+    };
+    let input = input(stop.clone());
+    let configuration = starting_configuration(&input);
+    let mut outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
+    outcome
+        .discovered_choices
+        .push(choice_discovery(input.lineage().scenario()));
+    let discoveries = BTreeMap::new();
+    let evidence = QuantumStopEvidence {
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 0,
+        completed_quanta: 1,
+        discoveries: &discoveries,
+        prior_entries: &[],
+    };
+
+    assert!(matches!(
+        reached_requested_stop(&stop, &evidence).expect("actual choice"),
+        Some(ModeledStop::BoundedPrimaryReached { proof, .. })
+            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 1
+    ));
+}
+
+#[test]
+fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 2,
+        }),
+        virtual_time_nanoseconds: Some(10),
+        execution_quanta: Some(3),
+    };
+    let input = input(stop.clone());
+    let configuration = starting_configuration(&input);
+    let mut outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
+    outcome
+        .discovered_choices
+        .push(choice_discovery(input.lineage().scenario()));
+    let discoveries = BTreeMap::new();
+    let evidence = QuantumStopEvidence {
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 1,
+        completed_quanta: 2,
+        discoveries: &discoveries,
+        prior_entries: &[],
+    };
+
+    assert!(matches!(
+        reached_requested_stop(&stop, &evidence).expect("same-quantum fallback"),
+        Some(ModeledStop::BoundedPrimaryTimeout { proof, .. })
+            if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 2
+    ));
+}
+
+#[test]
 fn absolute_stop_at_resume_boundary_does_not_drive_another_quantum() {
     let stop = StopCondition::ExecutionQuanta(3);
     let input = input(stop.clone());

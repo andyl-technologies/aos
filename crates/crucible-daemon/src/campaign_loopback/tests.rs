@@ -84,11 +84,11 @@ fn lineage(label: &str) -> crucible_campaign::CampaignLineageId {
 }
 
 fn policy(label: &str) -> crucible_campaign::CampaignPolicyId {
-    crucible_campaign::CampaignPolicyId::parse(&format!(
-        "crucible.campaign.policy@{}",
-        ContentId::for_bytes(ObjectKind::Policy, 4, label.as_bytes()).encode()
-    ))
-    .expect("policy id")
+    policy_body(label).id().expect("policy id")
+}
+
+fn policy_body(label: &str) -> CampaignPolicy {
+    creation_policy(ScenarioDefId::from_hash(hash(label)))
 }
 
 fn fixed_query_snapshot() -> (CampaignSnapshot, MerkleMap, ContentId) {

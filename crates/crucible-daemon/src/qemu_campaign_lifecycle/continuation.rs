@@ -395,6 +395,16 @@ fn validated_attempt_continuation<'a>(
             StopCondition::Observation(condition),
             Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
         ) if proof.condition() == condition => proof.boundary().frontier_nanoseconds(),
+        (
+            requested @ StopCondition::Bounded { .. },
+            Some(crucible_campaign::StopOutcome::BoundedPrimaryReached { stop, proof }),
+        ) if requested == stop => proof.frontier_nanoseconds(),
+        (
+            StopCondition::Bounded { primary, .. },
+            Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
+        ) if matches!(primary.as_ref(), StopCondition::Observation(condition) if proof.condition() == condition) => {
+            proof.boundary().frontier_nanoseconds()
+        }
         _ => return Err(()),
     };
     if source_frontier_ticks != continuation_input.source_frontier_ticks() {

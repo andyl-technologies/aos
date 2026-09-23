@@ -2311,7 +2311,10 @@ where
                 resume_progress = Some(DefaultRunResumeProgress::Capturing);
                 continue;
             }
-            if matches!(observation.stop(), StopOutcome::Reached(_)) {
+            if matches!(
+                observation.stop(),
+                StopOutcome::Reached(_) | StopOutcome::BoundedPrimaryReached { .. }
+            ) {
                 return Err(
                     GuardedDefaultCampaignInvariantError::ResumeSourceStopNotReached.into(),
                 );
@@ -2396,9 +2399,7 @@ where
                 resume: None,
             });
         }
-        if matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
-            && !resume_final_stop_reached
-        {
+        if observation.stop().reached_next_choice() && !resume_final_stop_reached {
             if let Some(exploration) = context.exploration {
                 let all_candidates = context
                     .all_candidates

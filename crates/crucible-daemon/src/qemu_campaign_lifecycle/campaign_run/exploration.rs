@@ -272,7 +272,7 @@ pub(super) fn local_campaign_policy<E>(
 where
     E: Error + 'static,
 {
-    let mut stop_conditions = match discovery_stop {
+    let mut stop_conditions = match discovery_stop.primary() {
         StopCondition::NamedBoundary(name) => BTreeSet::from([name.clone()]),
         StopCondition::NextChoice
         | StopCondition::VirtualTimeNanoseconds(_)
@@ -281,7 +281,8 @@ where
         | StopCondition::ExecutionQuanta(_)
         | StopCondition::VirtualTimeOrExecutionQuanta { .. }
         | StopCondition::Observation(_)
-        | StopCondition::NextChoiceOrExecutionQuanta { .. } => BTreeSet::new(),
+        | StopCondition::NextChoiceOrExecutionQuanta { .. }
+        | StopCondition::Bounded { .. } => BTreeSet::new(),
     };
     if let Some(source) = supplemental_finding_source {
         stop_conditions.insert(format!("supplemental-{}", source.to_hex()));

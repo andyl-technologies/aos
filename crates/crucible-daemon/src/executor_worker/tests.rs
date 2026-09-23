@@ -12,11 +12,204 @@ use crucible_campaign::{
 };
 
 use super::*;
-use crate::executor_supervisor::AllowAllAttemptAdmission;
+use crate::executor_supervisor::{AllowAllAttemptAdmission, ExecutionCancellationHook};
 use crate::{
     AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState,
     ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
+
+#[test]
+fn assignment_host_watchdog_interrupts_the_same_execution_incarnation() {
+    let cancellation = ExecutionCancellation::default();
+    let mut watchdog = AssignmentHostWatchdogGuard::start(10, cancellation.clone())
+        .expect("start assignment watchdog");
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        cancellation.clone(),
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    )
+    .with_host_watchdog(watchdog.state.clone());
+    let replay = context.for_origin_replay();
+
+    std::thread::sleep(Duration::from_millis(30));
+
+    assert!(watchdog.stop());
+    assert!(cancellation.is_canceled());
+    assert!(
+        context
+            .remaining_host_watchdog()
+            .is_some_and(|remaining| remaining.is_zero())
+    );
+    assert!(
+        replay
+            .remaining_host_watchdog()
+            .is_some_and(|remaining| remaining.is_zero())
+    );
+}
+
+#[test]
+fn completed_assignment_disarms_host_watchdog_before_deadline() {
+    let cancellation = ExecutionCancellation::default();
+    let mut watchdog = AssignmentHostWatchdogGuard::start(500, cancellation.clone())
+        .expect("start assignment watchdog");
+
+    assert!(!watchdog.stop());
+    assert!(!cancellation.is_canceled());
+    assert!(!watchdog.state.expired());
+}
+
+#[test]
+fn maximum_encoded_host_watchdog_does_not_overflow_monotonic_time() {
+    let cancellation = ExecutionCancellation::default();
+    let mut watchdog = AssignmentHostWatchdogGuard::start(u64::MAX, cancellation.clone())
+        .expect("start maximum encoded watchdog");
+
+    assert!(watchdog.state.remaining() > Duration::from_secs(3600));
+    assert!(!watchdog.stop());
+    assert!(!cancellation.is_canceled());
+}
+
+#[test]
+fn explicit_assignment_watchdog_supersedes_default_qemu_operation_timeout() {
+    let cancellation = ExecutionCancellation::default();
+    let mut watchdog = AssignmentHostWatchdogGuard::start(600_000, cancellation.clone())
+        .expect("start assignment watchdog");
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        cancellation,
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    )
+    .with_host_watchdog(watchdog.state.clone());
+    let default = crucible_api::ProductionVmLifecycleConfig::new(
+        "qemu",
+        "plugin",
+        "kernel",
+        "root",
+        "run-state",
+    );
+    assert_eq!(default.completion_timeout(), Duration::from_secs(240));
+
+    let configured =
+        crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context)
+            .expect("policy-keyed lifecycle timeout");
+
+    assert!(configured.completion_timeout() > Duration::from_secs(240));
+    assert!(configured.completion_timeout() <= Duration::from_secs(600));
+    assert!(!watchdog.stop());
+}
+
+#[derive(Debug)]
+struct TestChildCancellationHook {
+    child: Arc<Mutex<std::process::Child>>,
+    signaled: Arc<AtomicBool>,
+}
+
+impl ExecutionCancellationHook for TestChildCancellationHook {
+    fn signal(&self) {
+        self.signaled.store(true, Ordering::Release);
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+        }
+    }
+}
+
+#[test]
+#[ignore = "subprocess fixture for the assignment watchdog regression"]
+fn host_watchdog_child_fixture() {
+    std::thread::sleep(Duration::from_secs(30));
+}
+
+#[test]
+// Host time only bounds this subprocess regression; no modeled value uses it.
+// crucible-lint: allow clippy-disallowed-method -- host time bounds only the test process wait.
+#[allow(clippy::disallowed_methods)]
+fn host_watchdog_kills_live_child_and_reconciles_infrastructure_failure() {
+    let epoch = DaemonEpoch::from_bytes([0x61; 16]).expect("epoch");
+    let mut supervisor = supervisor(epoch);
+    let request = request(epoch, 0x62);
+    let response = supervisor
+        .submit_attempt(&request)
+        .expect("accept assignment");
+    let SubmitAttemptDisposition::Accepted { execution } = response.disposition() else {
+        panic!("assignment should be accepted")
+    };
+    let queued = supervisor.next_queued().expect("queued attempt");
+    let child = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .arg("host_watchdog_child_fixture")
+        .arg("--ignored")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("launch supervised child");
+    let child = Arc::new(Mutex::new(child));
+    let signaled = Arc::new(AtomicBool::new(false));
+    let hook: Arc<dyn ExecutionCancellationHook> = Arc::new(TestChildCancellationHook {
+        child: Arc::clone(&child),
+        signaled: Arc::clone(&signaled),
+    });
+    let _registration = queued
+        .cancellation()
+        .register_hook(hook)
+        .expect("register process cancellation");
+    let mut watchdog = AssignmentHostWatchdogGuard::start(25, queued.cancellation().clone())
+        .expect("start assignment watchdog");
+
+    std::thread::sleep(Duration::from_millis(60));
+
+    assert!(watchdog.stop());
+    assert!(signaled.load(Ordering::Acquire));
+    let reap_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if child
+            .lock()
+            .expect("child lock")
+            .try_wait()
+            .expect("poll child")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < reap_deadline,
+            "watchdog did not reap child"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let failure = complete_host_watchdog::<_, std::io::Error>(
+        Ok("candidate that must not publish"),
+        Some(&mut watchdog),
+        Some(25),
+    )
+    .expect_err("expired host watchdog must suppress candidate publication");
+    assert!(matches!(
+        &failure,
+        AttemptWorkerFailure::Terminal(RepositoryAttemptWorkerError::HostWatchdogExpired {
+            milliseconds: 25,
+        })
+    ));
+    let diagnostic =
+        crate::packaged_qemu_executor::packaged_attempt_failure_diagnostic(execution, &failure);
+    assert!(diagnostic.contains("host watchdog expired after 25 ms"));
+    assert!(matches!(
+        reconcile_attempt_failure(&mut supervisor, queued, failure),
+        Err(AttemptWorkerReconcileError::TerminalStopped {
+            terminal_failure: TerminalFailureOutcome::Failed,
+            ..
+        })
+    ));
+    let status = GetAttemptExecutionRequest::new(&request, execution).expect("status query");
+    assert_eq!(
+        supervisor
+            .get_attempt_execution(&status)
+            .expect("terminal status")
+            .disposition(),
+        GetAttemptExecutionDisposition::TerminalFailure
+    );
+}
 
 #[test]
 fn execution_quantum_budget_is_shared_and_refuses_the_exact_exhausted_boundary() {
@@ -329,7 +522,7 @@ fn request(epoch: DaemonEpoch, byte: u8) -> SubmitAttemptRequest {
         AttemptId::parse(&typed_content_id(
             "crucible.campaign.attempt",
             "campaign-fact",
-            8,
+            9,
             byte,
         ))
         .expect("attempt"),

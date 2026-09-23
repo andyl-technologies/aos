@@ -1250,7 +1250,7 @@ fn request(assignment_byte: u8) -> SubmitAttemptRequest {
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
-            8,
+            9,
             0x51,
         ))
         .expect("attempt"),

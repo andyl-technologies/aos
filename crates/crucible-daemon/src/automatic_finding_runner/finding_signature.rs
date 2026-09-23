@@ -3,22 +3,25 @@
 use std::collections::BTreeSet;
 
 use crucible::{
-    ContentHash, EngineError, FailureClusterReportFailure, FailureKind,
+    ContentHash, EngineError, FailureClusterReportFailure, FailureKind, FailureTimeoutBudgetKind,
     FailureTriageReplayEvidence, FindingDiscoveryPath, FindingReproductionArtifact,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, ConfigurationArtifact, FindingKind,
     FindingSignature, FindingTarget, ObservationCandidate, ObservationStopSatisfaction,
-    PropertyVerdict, PropertyVerdictSet, StopOutcome,
+    PolicyTimeoutKind, PropertyVerdict, PropertyVerdictSet, StopOutcome,
 };
 
-use super::{ASSERTION_FAILURE_CLASS, EXECUTION_QUANTA_TIMEOUT_CLASS, divergence_fingerprint};
+use super::{
+    ASSERTION_FAILURE_CLASS, EXECUTION_QUANTA_TIMEOUT_CLASS, VIRTUAL_TIME_TIMEOUT_CLASS,
+    divergence_fingerprint,
+};
 use crate::crucible_artifact::decode_crucible_configuration_artifact_with_owned_candidate;
 use crate::{CrucibleArtifactError, CrucibleAttemptExecution, encode_crucible_scenario_artifact};
 
 /// Selects the highest-priority authenticated failure represented by an observation.
 ///
-/// Property failures take precedence over an execution-quanta timeout reached
+/// Property failures take precedence over a modeled timeout reached
 /// at the same boundary.
 ///
 /// # Errors
@@ -32,42 +35,66 @@ pub(crate) fn automatic_finding_signature(
     if let Some(signature) = property_violation_signature(input, candidate)? {
         return Ok(Some(signature));
     }
-    if !observation_exhausted_execution_quanta(candidate.observation().stop()) {
+    let Some(timeout_kind) = observation_timeout_kind(candidate.observation().stop()) else {
         return Ok(None);
-    }
+    };
 
-    let fingerprint = execution_quanta_timeout_fingerprint(input)?;
+    let failure_class = timeout_failure_class(timeout_kind);
+    let fingerprint = timeout_fingerprint(input, failure_class)?;
     let coverage = candidate.coverage().id()?.content_id();
     FindingSignature::new(
         FindingKind::Timeout,
         fingerprint,
         None,
-        String::from(EXECUTION_QUANTA_TIMEOUT_CLASS),
+        String::from(failure_class),
         Some(FindingTarget::Configuration(candidate.child().id()?)),
         BTreeSet::from([coverage]),
     )
     .map(Some)
 }
 
-fn observation_exhausted_execution_quanta(stop: &StopOutcome) -> bool {
+fn observation_timeout_kind(stop: &StopOutcome) -> Option<FailureTimeoutBudgetKind> {
     match stop {
-        StopOutcome::Reached(crucible_campaign::StopCondition::ExecutionQuanta(_)) => true,
-        StopOutcome::ObservationReached(proof) => {
-            proof.satisfaction() == ObservationStopSatisfaction::ExecutionQuanta
+        StopOutcome::Reached(crucible_campaign::StopCondition::ExecutionQuanta(_)) => {
+            Some(FailureTimeoutBudgetKind::ExecutionQuanta)
         }
-        StopOutcome::Reached(_)
+        StopOutcome::PolicyTimeout {
+            kind: PolicyTimeoutKind::VirtualTime,
+            ..
+        } => Some(FailureTimeoutBudgetKind::VirtualTime),
+        StopOutcome::PolicyTimeout {
+            kind: PolicyTimeoutKind::ExecutionQuanta,
+            ..
+        } => Some(FailureTimeoutBudgetKind::ExecutionQuanta),
+        StopOutcome::ObservationReached(proof)
+            if proof.satisfaction() == ObservationStopSatisfaction::ExecutionQuanta =>
+        {
+            Some(FailureTimeoutBudgetKind::ExecutionQuanta)
+        }
+        StopOutcome::BoundedPrimaryReached { .. }
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::ObservationReached(_)
+        | StopOutcome::Reached(_)
         | StopOutcome::TerminalSuccess
         | StopOutcome::ModeledTimeout(_)
         | StopOutcome::GuestCrash(_)
         | StopOutcome::AssertionFailure(_)
-        | StopOutcome::ScenarioFailure(_) => false,
+        | StopOutcome::ScenarioFailure(_) => None,
     }
 }
 
-fn execution_quanta_timeout_fingerprint(
+fn timeout_failure_class(kind: FailureTimeoutBudgetKind) -> &'static str {
+    match kind {
+        FailureTimeoutBudgetKind::ExecutionQuanta => EXECUTION_QUANTA_TIMEOUT_CLASS,
+        FailureTimeoutBudgetKind::VirtualTime => VIRTUAL_TIME_TIMEOUT_CLASS,
+    }
+}
+
+fn timeout_fingerprint(
     input: &CrucibleAttemptExecution,
+    failure_class: &str,
 ) -> Result<CampaignHash, CampaignCodecError> {
-    let failure_class_bytes = u64::try_from(EXECUTION_QUANTA_TIMEOUT_CLASS.len())
+    let failure_class_bytes = u64::try_from(failure_class.len())
         .map_err(|_| CampaignCodecError::LimitExceeded {
             limit: "automatic-finding-failure-class-bytes",
         })?
@@ -75,11 +102,11 @@ fn execution_quanta_timeout_fingerprint(
     let mut material = Vec::with_capacity(
         input.lineage().scenario().as_hash().as_bytes().len()
             + failure_class_bytes.len()
-            + EXECUTION_QUANTA_TIMEOUT_CLASS.len(),
+            + failure_class.len(),
     );
     material.extend_from_slice(&input.lineage().scenario().as_hash().as_bytes());
     material.extend_from_slice(&failure_class_bytes);
-    material.extend_from_slice(EXECUTION_QUANTA_TIMEOUT_CLASS.as_bytes());
+    material.extend_from_slice(failure_class.as_bytes());
     Ok(CampaignHash::derive(
         "crucible.daemon.qemu-execution-quanta-timeout-fingerprint.v1",
         &material,
@@ -145,8 +172,10 @@ pub(super) fn replay_finding_signature(
         (FindingKind::Divergence, FailureClusterReportFailure::Divergence(divergence)) => {
             divergence_fingerprint(input, divergence)
         }
-        (FindingKind::Timeout, FailureClusterReportFailure::Timeout(_)) => {
-            execution_quanta_timeout_fingerprint(input)?
+        (FindingKind::Timeout, FailureClusterReportFailure::Timeout(timeout))
+            if timeout_failure_class(timeout.budget_kind) == target_signature.failure_class() =>
+        {
+            timeout_fingerprint(input, target_signature.failure_class())?
         }
         _ => return Ok(None),
     };
@@ -383,4 +412,39 @@ pub(super) fn original_finding(
         artifact: "automatic finding reproduction",
         source: Box::new(source),
     })
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use crucible_campaign::{BoundedStopProof, StopCondition};
+
+    #[test]
+    fn policy_timeout_classes_keep_virtual_and_quantum_causes_distinct() {
+        let stop = StopCondition::Bounded {
+            primary: Box::new(StopCondition::Terminal),
+            virtual_time_nanoseconds: Some(10),
+            execution_quanta: Some(2),
+        };
+        let proof = BoundedStopProof::new(10, 2);
+        let virtual_timeout = StopOutcome::PolicyTimeout {
+            stop: stop.clone(),
+            kind: PolicyTimeoutKind::VirtualTime,
+            proof,
+        };
+        let quantum_timeout = StopOutcome::PolicyTimeout {
+            stop,
+            kind: PolicyTimeoutKind::ExecutionQuanta,
+            proof,
+        };
+
+        assert_eq!(
+            observation_timeout_kind(&virtual_timeout).map(timeout_failure_class),
+            Some(VIRTUAL_TIME_TIMEOUT_CLASS),
+        );
+        assert_eq!(
+            observation_timeout_kind(&quantum_timeout).map(timeout_failure_class),
+            Some(EXECUTION_QUANTA_TIMEOUT_CLASS),
+        );
+    }
 }

@@ -92,6 +92,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// No physical execution quantum remains before process installation.
     #[error("refuse production VM resources: {0}")]
     ResourceRefusal(#[source] crate::executor_worker::ExecutionQuantumBudgetError),
+    /// The assignment's policy-keyed host safety deadline expired before launch.
+    #[error("production VM assignment host watchdog expired before lifecycle construction")]
+    HostWatchdogExpired,
     /// The authenticated checkpoint did not expose a complete dense replay boundary.
     #[error("production VM checkpoint has no complete replay boundary")]
     InvalidResumeBoundary,
@@ -1515,6 +1518,25 @@ enum QemuFreshRunnerResult<P> {
     Checkpoint(AttemptCheckpointResult),
 }
 
+/// Applies the remaining assignment deadline to one newly constructed QEMU lifecycle.
+pub(crate) fn config_for_assignment_host_watchdog(
+    config: ProductionVmLifecycleConfig,
+    context: &AttemptExecutionContext,
+) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
+    let Some(remaining) = context.remaining_host_watchdog() else {
+        // The fixed per-operation ceiling remains transport/lifecycle safety,
+        // independent of any optional campaign assignment watchdog.
+        return Ok(config);
+    };
+    if remaining.is_zero() {
+        return Err(QemuAttemptProductionVmLifecycleError::HostWatchdogExpired);
+    }
+    // The campaign's explicit assignment watchdog supersedes the fixed
+    // transport fallback. Its separate timer interrupts a child even when
+    // many short QEMU awaits would each finish within this initial remainder.
+    Ok(config.with_completion_timeout(remaining))
+}
+
 impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
     /// Creates a factory from trusted lifecycle configuration and host resources.
     #[must_use]
@@ -1593,6 +1615,7 @@ where
             installed.configuration(),
             None,
         )?;
+        let config = config_for_assignment_host_watchdog(config, context)?;
         let decoded = installed.into_decoded();
         self.with_attempt_launcher(context, maximum_nodes, |launcher| {
             build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
@@ -1687,6 +1710,7 @@ where
             ));
         }
 
+        let config = config_for_assignment_host_watchdog(config, context)?;
         self.with_attempt_launcher(context, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
         })

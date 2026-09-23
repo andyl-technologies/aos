@@ -2397,7 +2397,7 @@ fn attempt(byte: u8) -> AttemptId {
     AttemptId::parse(&typed_content_id(
         "crucible.campaign.attempt",
         "campaign-fact",
-        8,
+        9,
         byte,
     ))
     .expect("attempt")
@@ -2434,7 +2434,7 @@ fn observation(byte: u8) -> ObservationId {
     ObservationId::parse(&typed_content_id(
         "crucible.campaign.observation",
         "observation",
-        12,
+        13,
         byte,
     ))
     .expect("observation")

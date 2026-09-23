@@ -429,7 +429,7 @@ where
             ));
         }
         if matches!(
-            input.attempt().stop(),
+            input.attempt().stop().primary(),
             crucible_campaign::StopCondition::EventCount(_)
         ) {
             return Err(AttemptWorkerFailure::Terminal(

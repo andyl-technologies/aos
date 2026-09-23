@@ -1435,7 +1435,7 @@ fn controlled_submit_request(epoch: DaemonEpoch) -> SubmitAttemptRequest {
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
-            8,
+            9,
             0x92,
         ))
         .expect("attempt"),

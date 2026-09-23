@@ -1218,7 +1218,7 @@ impl QemuFreshAttemptLifecycleFactory for SequencedBoundaryCaptureLifecycleFacto
         // A selected candidate needs its decision while reconstructing the
         // start. An empty candidate must not acquire that decision during its
         // subsequent declared-stop quantum.
-        let replay_decisions = if start.schedule.len() == 0 {
+        let replay_decisions = if start.schedule.is_empty() {
             VecDeque::new()
         } else {
             self.replay_decisions.clone()
