@@ -151,6 +151,12 @@ in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
       options = lib.optionalAttrs (name == "tailscale") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Run the Tailscale mesh VPN daemon.";
+        };
+
         port = lib.mkOption {
           type = abilityTypes.integer {
             minimum = 0;
