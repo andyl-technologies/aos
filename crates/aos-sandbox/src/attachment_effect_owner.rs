@@ -42,6 +42,13 @@ use crate::mount_attempt::{
     CurrentMountInventoryReconciliationV1, DurableMountInventorySnapshotV1, MountAttemptError,
     MountInventoryObservationFenceV1,
 };
+use crate::mount_observation_state::{
+    CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError,
+};
+use crate::mount_source_acquisition_inventory::{
+    self, DurableMountSourceAcquisitionInventorySnapshotV1, MountSourceAcquisitionInventoryError,
+    MountSourceAcquisitionInventoryObservationFenceV1,
+};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     self, CurrentAssignmentTarget, CurrentNamespaceTarget, CurrentRuntimeScopeError,
@@ -280,6 +287,55 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             fence,
             outcome,
         )
+    }
+
+    /// Captures protected state before an authenticated Mount source query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody or invalid prior source inventory.
+    pub fn begin_authenticated_source_inventory(
+        &mut self,
+    ) -> Result<
+        MountSourceAcquisitionInventoryObservationFenceV1,
+        MountSourceAcquisitionInventoryError,
+    > {
+        mount_source_acquisition_inventory::authenticated::begin_observation(self.journal)
+    }
+
+    /// Commits one complete authenticated Mount source-acquisition inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected state, wrong signed outcome, invalid or
+    /// regressing source rows, and failed durability.
+    pub fn complete_authenticated_source_inventory(
+        &mut self,
+        fence: MountSourceAcquisitionInventoryObservationFenceV1,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<
+        DurableMountSourceAcquisitionInventorySnapshotV1,
+        MountSourceAcquisitionInventoryError,
+    > {
+        mount_source_acquisition_inventory::authenticated::complete_observation(
+            self.journal,
+            fence,
+            outcome,
+        )
+    }
+
+    /// Joins fresh resource and source inventories at one Mount journal boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected snapshots or any differing controller, boot,
+    /// Mount process, or broker-journal identity.
+    pub fn join_current_mount_filesystem_inventory(
+        &mut self,
+        resources: DurableMountInventorySnapshotV1,
+        sources: DurableMountSourceAcquisitionInventorySnapshotV1,
+    ) -> Result<CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError> {
+        CurrentMountFilesystemInventoryV1::join(self.journal, resources, sources)
     }
 
     /// Joins a fresh Mount resource inventory to one current namespace target.

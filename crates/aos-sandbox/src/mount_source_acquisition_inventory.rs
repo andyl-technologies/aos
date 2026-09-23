@@ -40,7 +40,9 @@ use crate::mount_preparation::{
 };
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+pub(crate) mod authenticated;
 mod format;
+pub use authenticated::MountSourceAcquisitionInventoryObservationFenceV1;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::MountSourceAcquisitionInventory;
 const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);

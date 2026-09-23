@@ -7,8 +7,8 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, BrokerRequestEnvelope, InventoryDestinationSlotsRequest,
-    InventoryMountsRequest, InventoryNetworksRequest, InventoryRuntimeRequest,
-    InventoryStorageRequest, RequestHeader,
+    InventoryMountSourceAcquisitionsRequest, InventoryMountsRequest, InventoryNetworksRequest,
+    InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
 };
 use aos_sandbox::lifecycle::{
     CurrentLifecycleBootInventoryV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
@@ -52,6 +52,7 @@ use crate::{
 enum LifecycleInventoryMethodV1 {
     Host,
     Mount,
+    MountSources,
     DestinationSlots,
     Network,
     Storage,
@@ -62,6 +63,7 @@ impl LifecycleInventoryMethodV1 {
         match self {
             Self::Host => BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
             Self::Mount => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            Self::MountSources => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
             Self::DestinationSlots => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS,
             Self::Network => BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
             Self::Storage => BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
@@ -87,6 +89,11 @@ impl LifecycleInventoryMethodV1 {
             }
             .encode_to_vec(),
             Self::Mount => InventoryMountsRequest {
+                header,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::MountSources => InventoryMountSourceAcquisitionsRequest {
                 header,
                 ..Default::default()
             }
@@ -122,6 +129,7 @@ fn endpoint_for_inventory_method(
         LifecycleInventoryMethodV1::Mount => Ok(LifecycleBootBootstrapEndpointV1::Mount),
         LifecycleInventoryMethodV1::Network => Ok(LifecycleBootBootstrapEndpointV1::Network),
         LifecycleInventoryMethodV1::Host
+        | LifecycleInventoryMethodV1::MountSources
         | LifecycleInventoryMethodV1::Storage
         | LifecycleInventoryMethodV1::DestinationSlots => Err(LifecyclePhase6ErrorV1::InvalidInput),
     }
@@ -304,6 +312,17 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         &mut self,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
         let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Mount)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
+    /// Issues a fresh signed source-acquisition inventory query on retained Mount.
+    pub(crate) fn current_source_inventory_observation(
+        &mut self,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self
+            .0
+            .query_complete(LifecycleInventoryMethodV1::MountSources)?;
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
