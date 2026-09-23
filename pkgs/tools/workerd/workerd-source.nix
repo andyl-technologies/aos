@@ -1300,6 +1300,15 @@ in
     ];
     preBazelBuild =
       ''
+              # LLVM's generated outputs can become zero-filled on some build
+              # filesystems. Keep Bazel's action output tree on Linux tmpfs.
+              ${lib.optionalString stdenv.buildPlatform.isLinux ''
+          bazel_output_tmpfs=$(mktemp -d /dev/shm/aos-workerd-bazel.XXXXXXXX)
+          mv "$TMPDIR/output" "$bazel_output_tmpfs/output"
+          ln -s "$bazel_output_tmpfs/output" "$TMPDIR/output"
+          trap 'chmod -R u+w "$bazel_output_tmpfs"; rm -rf "$bazel_output_tmpfs"' EXIT
+        ''}
+
               # The build phase re-unpacks pristine src, so re-apply the source
               # mutations (clang wrappers, .bazelversion removal, shebangs) here. The
               # FOD already applied them at fetch time for dependency resolution.
@@ -1663,7 +1672,7 @@ in
     installPhase = ''
       mkdir -p $out/bin
 
-      WORKERD_BIN=$(find $TMPDIR/output -path '*/bin/src/workerd/server/workerd' -type f 2>/dev/null | head -1)
+      WORKERD_BIN=$(find -L $TMPDIR/output -path '*/bin/src/workerd/server/workerd' -type f 2>/dev/null | head -1)
       if [ -z "$WORKERD_BIN" ] || [ ! -f "$WORKERD_BIN" ]; then
         echo "ERROR: bazel did not produce workerd binary" >&2
         find $TMPDIR/output -name 'workerd' -type f 2>&1 | head || true
