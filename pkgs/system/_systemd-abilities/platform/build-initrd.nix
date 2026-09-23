@@ -44,13 +44,10 @@
     type = "initrd";
     inherit (plan) etc jobScripts;
   };
-  renderProviderPlan = providerPlan:
-    buildContext.runCommand providerPlan.name {
-      realization = providerPlan.input;
-      passAsFile = ["realization"];
-    } ''
-      ${providerPackage}/bin/aos-systemd-provider render
-    '';
+  renderProviderPlan = import ./render-provider-plan.nix {
+    inherit providerPackage;
+    runCommand = buildContext.runCommand;
+  };
   providerArtifacts = builtins.map renderProviderPlan plan.providerPlans;
   providerArtifactsJson = builtins.toJSON providerArtifacts;
   initrdUnits =

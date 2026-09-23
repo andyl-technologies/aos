@@ -1147,6 +1147,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-ability-model",
+ "aos-ability-validate",
  "aos-contract",
  "aos-net",
  "aos-provider-protocol",

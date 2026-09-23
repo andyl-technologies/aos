@@ -973,6 +973,11 @@
                           then {inherit (packageIdentity) packageArtifactFor packageFor;}
                           else {}
                         )
+                        // (
+                          if packageIdentity ? packageArtifactForRequest
+                          then {inherit (packageIdentity) packageArtifactForRequest;}
+                          else {}
+                        )
                     );
                 }
                 mod;
@@ -1068,7 +1073,12 @@
         or (
           if selectsOwnDefault
           then outputs.self
-          else throw "evalModules: package '${package}' requested artifact ${builtins.toJSON selected} outside its authenticated dependency view"
+          else let
+            available = builtins.filter (name:
+              (builtins.fromJSON name).package == selected.package)
+            (builtins.attrNames outputs.dependencies);
+          in
+            throw "evalModules: package '${package}' requested artifact ${builtins.toJSON selected} outside its authenticated dependency view; available outputs for '${selected.package}': ${builtins.toJSON available}"
         );
 
       packageFor = package: outputs: selector: let
@@ -1179,6 +1189,18 @@
         then throw "evalModules: artifact request has no authenticated package owner"
         else packageArtifactFor owner (packageOutputsForOwner owner) selector;
 
+      packageArtifactForRequest = requestName: selector: let
+        abilities = finalConfig.aos.abilities;
+        request =
+          abilities.requests.${requestName}
+          or abilities.compositionRequests.${requestName}
+          or (throw "evalModules: artifact request has no authenticated ability request '${requestName}'");
+        owner = moduleLib.abilities.packageForDeclarationAuthority request.authority;
+      in
+        if owner == null
+        then throw "evalModules: ability request '${requestName}' has no authenticated package owner"
+        else packageArtifactForOwner owner selector;
+
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
         (builtins.filter
@@ -1206,6 +1228,7 @@
           inherit (record) name version;
           packageArtifactFor = packageArtifactFor record.name record.outputs;
           packageFor = packageFor record.name record.outputs;
+          inherit packageArtifactForRequest;
         }
         true
         [record.module])
