@@ -35,6 +35,30 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         let crate::Commands::Campaign(campaign) = &cli.command else {
             return Err(std::io::Error::other("missing parsed campaign command").into());
         };
+        let crate::CampaignCommand::FindingBundle(bundle) = &campaign.command else {
+            return Err(std::io::Error::other("missing finding bundle command").into());
+        };
+        let crate::CampaignFindingBundleCommand::Verify(verify) = &bundle.command else {
+            return Err(std::io::Error::other("missing finding bundle verification").into());
+        };
+        let report = crate::cli_campaign::finding_bundle::verify_exported_finding(
+            &cli,
+            verify,
+            cli.output_format(),
+        )?;
+        let report: serde_json::Value = serde_json::from_str(&report)?;
+        let minimization = &report["minimization"];
+        assert_eq!(minimization["disposition"], "candidate-accepted");
+        assert_eq!(minimization["retained"]["policy_schema"], 3);
+        assert_eq!(minimization["retained"]["attempts"][0]["accepted"], true);
+        assert!(
+            minimization["retained"]["original_schedule_decisions"]
+                .as_u64()
+                .ok_or_else(|| std::io::Error::other("missing original schedule count"))?
+                > minimization["retained"]["minimized_schedule_decisions"]
+                    .as_u64()
+                    .ok_or_else(|| std::io::Error::other("missing minimized schedule count"))?
+        );
         crate::cli_campaign::run_campaign_invocation(&cli, campaign)?;
         return Ok(());
     }

@@ -42,6 +42,9 @@ pub(crate) use noncanonical::run_finding_bundle_fork_write;
 #[path = "finding_bundle/branch.rs"]
 mod branch;
 pub(crate) use branch::run_finding_bundle_branch;
+#[path = "finding_bundle/minimization.rs"]
+mod minimization;
+use minimization::{FindingBundleMinimizationReport, finding_bundle_minimization_report};
 
 const MANIFEST_HEADER: &str = "crucible.campaign.finding-bundle.v2";
 const MAX_LEDGER_BYTES: usize = 1024 * 1024 * 1024;
@@ -59,7 +62,7 @@ struct FindingBundleExportReport {
     snapshot: String,
     finding: String,
     archive_manifest: String,
-    minimized: bool,
+    minimization: FindingBundleMinimizationReport,
     native_signature_verified: bool,
 }
 
@@ -70,6 +73,7 @@ struct FindingBundleVerificationReport {
     native_signature_verified: bool,
     occurrence_count: usize,
     model_replay: CampaignReplayReport,
+    minimization: FindingBundleMinimizationReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     exact_replay: Option<ExactFindingReplayReport>,
 }
@@ -134,6 +138,7 @@ pub(crate) fn verify_exported_finding(
         native_signature_verified: true,
         occurrence_count: finding.occurrence_proofs.len(),
         model_replay,
+        minimization: finding_bundle_minimization_report(finding)?,
         exact_replay,
     };
     render_verification(&report, format)
@@ -300,7 +305,7 @@ pub(crate) fn export_finding_bundle(
         snapshot: snapshot.to_string(),
         finding: finding.to_string(),
         archive_manifest: plan.manifest_id().to_string(),
-        minimized: evidence.minimized_reproduction.is_some(),
+        minimization: finding_bundle_minimization_report(&evidence)?,
         native_signature_verified: true,
     };
     render_export(&report, format)
@@ -412,22 +417,22 @@ fn render_export(
             })
         }
         OutputFormat::Table => Ok(format!(
-            "output={} campaign={} snapshot={} finding={} archive={} minimized={} native-signature-verified=true",
+            "output={} campaign={} snapshot={} finding={} archive={} {} native-signature-verified=true",
             report.output,
             report.campaign,
             report.snapshot,
             report.finding,
             report.archive_manifest,
-            report.minimized
+            report.minimization.table_summary()
         )),
         OutputFormat::Markdown => Ok(format!(
-            "| Field | Value |\n| --- | --- |\n| output | `{}` |\n| campaign | `{}` |\n| snapshot | `{}` |\n| finding | `{}` |\n| archive manifest | `{}` |\n| minimized | {} |\n| native signature verified | true |",
+            "| Field | Value |\n| --- | --- |\n| output | `{}` |\n| campaign | `{}` |\n| snapshot | `{}` |\n| finding | `{}` |\n| archive manifest | `{}` |{}\n| native signature verified | true |",
             report.output,
             report.campaign,
             report.snapshot,
             report.finding,
             report.archive_manifest,
-            report.minimized
+            report.minimization.markdown_rows()
         )),
     }
 }
@@ -445,18 +450,20 @@ fn render_verification(
             })
         }
         OutputFormat::Table => Ok(format!(
-            "native-signature-verified=true occurrence-count={} {}{}",
+            "native-signature-verified=true occurrence-count={} {} {}{}",
             report.occurrence_count,
             render_campaign_replay(&report.model_replay, format)?,
+            report.minimization.table_summary(),
             report.exact_replay.as_ref().map_or(String::new(), |exact| format!(
                 " exact-role={} exact-reproduced={} quanta={} frontier={}",
                 exact.role, exact.reproduced, exact.completed_quanta, exact.frontier_ticks
             ))
         )),
         OutputFormat::Markdown => Ok(format!(
-            "{}\n| native signature verified | true |\n| occurrence count | {} |{}",
+            "{}\n| native signature verified | true |\n| occurrence count | {} |{}{}",
             render_campaign_replay(&report.model_replay, format)?,
             report.occurrence_count,
+            report.minimization.markdown_rows(),
             report.exact_replay.as_ref().map_or(String::new(), |exact| format!(
                 "\n| exact role | `{}` |\n| exact reproduced | {} |\n| exact quanta | {} |\n| exact frontier | {} |",
                 exact.role, exact.reproduced, exact.completed_quanta, exact.frontier_ticks
