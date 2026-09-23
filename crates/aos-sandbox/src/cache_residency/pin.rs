@@ -159,7 +159,7 @@ pub(crate) fn decode_pin_compaction_floor_persisted(
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum CachePinKindV1 {
-    /// An authorized view or attachment logically depends on the object.
+    /// An authorized view or attached runtime logically depends on the object.
     LogicalLease = 1,
     /// The authoritative source revision must remain retrievable.
     SourceRetention = 2,
@@ -343,28 +343,31 @@ impl CachePinV1 {
     /// Returns [`PinError::InvalidPin`] for missing identity, evidence, or
     /// required consumer/assignment bindings.
     pub fn validate(self) -> Result<Self, PinError> {
-        let runtime_bound = matches!(
+        let view_only_logical = self.kind == CachePinKindV1::LogicalLease
+            && self.attachment.is_none()
+            && self.sandbox.is_none()
+            && self.incarnation.is_none()
+            && self.assignment_epoch == 0;
+        let attached_runtime = matches!(
             self.kind,
             CachePinKindV1::LogicalLease
                 | CachePinKindV1::KernelReference
                 | CachePinKindV1::BackingRegistration
-        );
+        ) && self.attachment.is_some()
+            && self.sandbox.is_some()
+            && self.incarnation.is_some()
+            && self.assignment_epoch != 0;
+        let source_retention = self.kind == CachePinKindV1::SourceRetention
+            && self.attachment.is_none()
+            && self.sandbox.is_none()
+            && self.incarnation.is_none()
+            && self.assignment_epoch == 0;
         if validate_object_descriptor(&self.object).is_err()
             || self.project.as_bytes() == &[0; 16]
             || self.view.as_bytes() == &[0; 16]
             || self.evidence.as_bytes() == &[0; 32]
-            || (runtime_bound
-                && (self.attachment.is_none()
-                    || self.sandbox.is_none()
-                    || self.incarnation.is_none()
-                    || self.assignment_epoch == 0
-                    || self.lease_valid_until == 0))
-            || (!runtime_bound
-                && (self.attachment.is_some()
-                    || self.sandbox.is_some()
-                    || self.incarnation.is_some()
-                    || self.assignment_epoch != 0
-                    || self.lease_valid_until == 0))
+            || self.lease_valid_until == 0
+            || !(view_only_logical || attached_runtime || source_retention)
             || pin_acquisition_scope(&self).is_err()
             || pin_acquisition_scope(&self).is_ok_and(|scope| scope != self.authority_scope)
         {
