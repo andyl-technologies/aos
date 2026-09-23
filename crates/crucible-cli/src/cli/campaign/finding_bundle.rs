@@ -36,6 +36,9 @@ use exact::{ExactFindingReplayReport, replay_exact_finding};
 #[path = "finding_bundle/midpoint.rs"]
 mod midpoint;
 pub(crate) use midpoint::run_finding_bundle_midpoint;
+#[path = "finding_bundle/noncanonical.rs"]
+mod noncanonical;
+pub(crate) use noncanonical::run_finding_bundle_fork_write;
 
 const MANIFEST_HEADER: &str = "crucible.campaign.finding-bundle.v2";
 const MAX_LEDGER_BYTES: usize = 1024 * 1024 * 1024;

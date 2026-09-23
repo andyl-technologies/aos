@@ -429,6 +429,8 @@ enum CampaignFindingBundleCommand {
     Verify(CampaignFindingBundleVerifyArgs),
     /// Open an archived exact checkpoint in a private read-only QEMU session.
     Midpoint(CampaignFindingBundleMidpointArgs),
+    /// Fork a second private midpoint and prove one non-canonical register write.
+    ForkWrite(CampaignFindingBundleForkWriteArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -486,6 +488,21 @@ struct CampaignFindingBundleMidpointArgs {
     /// Maximum authenticated bytes admitted for one exact checkpoint closure.
     #[arg(long, default_value_t = 1_073_741_824, value_name = "BYTES")]
     maximum_checkpoint_bytes: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleForkWriteArgs {
+    #[command(flatten)]
+    midpoint: CampaignFindingBundleMidpointArgs,
+    /// GDB register number whose low byte is changed on the private branch.
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    register: u32,
+    /// Bit mask applied to the low register byte before the write.
+    #[arg(long, default_value_t = 1, value_name = "MASK")]
+    xor_mask: u8,
+    /// Keep serving the proven writable branch to a local GDB client.
+    #[arg(long, action = ArgAction::SetTrue)]
+    serve: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
