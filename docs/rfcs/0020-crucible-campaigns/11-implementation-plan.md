@@ -2000,7 +2000,7 @@ the public protocol. The spike is not a production feature.
   and any rejected subsystem.
 - [ ] **T-CAM-6.7** Stress at least 10,000 child lifecycles, deep template
   promotion, and resource-pressure fallback without unbounded growth.
-- [ ] **T-CAM-6.8** Produce QEMU patch license/source-ledger updates and public
+- [x] **T-CAM-6.8** Produce QEMU patch license/source-ledger updates and public
   protocol documentation.
 - [ ] **T-CAM-6.9** Complete the §14 Phase 6 lab audit of quiescence, memory
   mappings, descriptors, private rings/disks, dirty-page growth, resource leaks,
@@ -2059,6 +2059,12 @@ The atomic patch is reproducible from the pinned upstream base and is retained a
 one deterministic DCO-signed-off QEMU commit, patch, and thin bundle. QEMU file
 creation/removal is checked against `LICENSES.md`; the public QMP, control, and
 shared-memory protocols remain the only Apache/GPL integration surfaces.
+`checks.crucible.phase6.qemuPatchLicenseLedger` verifies that the atomic patch's
+75 created files have exactly 75 current license-ledger rows. The
+`qemu-crucible-source` output retains the pinned upstream source, patch, bundle,
+build inputs, plugin source and vendor tree, protocol header, license texts,
+and source manifest. The versioned public fork commands and resource protocol
+are documented in §05.5 and RFC-0010 §11.
 
 T-CAM-6.9 remains a manual representative-product lab audit. Hot fork remains
 non-default until that evidence and the Phase 7 dogfood gate are accepted.
