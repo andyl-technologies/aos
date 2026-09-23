@@ -1517,7 +1517,7 @@ in
 
             # Bazel exec actions clear the environment before running C++ tools
             # such as protoc, so their runtime library must be linked. Bazel 8
-            # selects gold, which emits zero-filled executables with this
+            # and 9 select gold, which emits zero-filled executables with this
             # toolchain; use BFD for both target and execution-tool links.
             export EXTRA_BAZEL_ARGS="
               --verbose_failures
@@ -1529,7 +1529,7 @@ in
               --linkopt=-fuse-ld=bfd
               --host_linkopt=-fuse-ld=bfd
             ''}
-              ${lib.optionalString (version == "8.6.0") ''
+              ${lib.optionalString (version == "8.6.0" || version == "9.2.0") ''
               --nouse_ijars
               --nostart_end_lib
               --linkopt=-fuse-ld=bfd
