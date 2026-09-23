@@ -1055,12 +1055,29 @@ pub(crate) fn wait_for_new_completed_attempt(
     known: &BTreeSet<AttemptExecutionKey>,
     request: &str,
 ) -> Result<AttemptExecutionKey, Box<dyn Error>> {
+    wait_for_new_completed_attempt_with_timeout(
+        fixture,
+        service,
+        known,
+        request,
+        Duration::from_secs(120),
+    )
+}
+
+pub(crate) fn wait_for_new_completed_attempt_with_timeout(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+    known: &BTreeSet<AttemptExecutionKey>,
+    request: &str,
+    timeout: Duration,
+) -> Result<AttemptExecutionKey, Box<dyn Error>> {
     wait_for_new_attempt(
         fixture,
         service,
         known,
         "completed",
         Some(request),
+        timeout,
         |state| matches!(state, AttemptRuntimeState::Completed { .. }),
     )
 }
@@ -1446,9 +1463,15 @@ fn wait_for_new_running_attempt(
     known: &BTreeSet<AttemptExecutionKey>,
     request: &str,
 ) -> Result<AttemptExecutionKey, Box<dyn Error>> {
-    wait_for_new_attempt(fixture, service, known, "running", Some(request), |state| {
-        matches!(state, AttemptRuntimeState::Running { .. })
-    })
+    wait_for_new_attempt(
+        fixture,
+        service,
+        known,
+        "running",
+        Some(request),
+        Duration::from_secs(120),
+        |state| matches!(state, AttemptRuntimeState::Running { .. }),
+    )
 }
 
 fn wait_for_new_attempt(
@@ -1457,9 +1480,10 @@ fn wait_for_new_attempt(
     known: &BTreeSet<AttemptExecutionKey>,
     expected_state: &str,
     request: Option<&str>,
+    timeout: Duration,
     predicate: impl Fn(AttemptRuntimeState) -> bool,
 ) -> Result<AttemptExecutionKey, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + timeout;
     let attempt = wait_for_process_observation(deadline, || {
         let states = attempt_states(fixture)?;
         if let Some((key, _)) = states

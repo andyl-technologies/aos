@@ -526,11 +526,16 @@ fn drive_fast_q7_failure(
         0x64,
     )?;
     let q7_request = guest_choice::accepted_branch_request(&q7_submission)?;
-    let q7_attempt = guest_choice::wait_for_new_completed_attempt(
+    // The q7 branch runs 3.3 billion guest instructions before its retained
+    // observation is published. Two packaged runs reached the publication
+    // handoff near the generic 120-second host wait, so give this flight its
+    // own bounded observation window without changing executor deadlines.
+    let q7_attempt = guest_choice::wait_for_new_completed_attempt_with_timeout(
         fixture,
         service,
         &known_attempts,
         &q7_request,
+        Duration::from_secs(300),
     )?;
     let q7 = guest_choice::wait_for_attempt_observation(fixture, q7_attempt)?;
     if q7["proposal"]["request"] != q7_request
@@ -562,10 +567,9 @@ fn drive_fast_q7_failure(
         .map(|evidence| evidence.verdict())
         != Some(PropertyVerdict::Failed)
     {
-        return Err(format!(
-            "q7 observation did not fail the expected property: {verdicts:?}"
-        )
-        .into());
+        return Err(
+            format!("q7 observation did not fail the expected property: {verdicts:?}").into(),
+        );
     }
 
     println!("midpoint_attempt={attempt}");
