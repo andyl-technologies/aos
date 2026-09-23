@@ -304,7 +304,10 @@ the outstanding work concrete:
   The worker registers a caller of this entry point and dispatches method-typed
   effects. The lifecycle, ownership retry, and cancellation paths have
   production handlers; `ExecutionControl`, `CachePin`, and `CacheUnpin`
-  currently admit but fall through to a retry-only controller effect. Other
+  currently admit but fall through to a retry-only controller effect. Cache
+  pin/unpin admission and effect retry both fence the named view or attachment
+  to its project and current resource version; this is not a protected pin
+  transaction or proof that the object belongs to that consumer. Other
   operator recovery actions other than ownership-gate Retry lack a completing
   effect path and are rejected before new admission; Retry is admitted only for
   an operation with a validated ownership gate. Connect the remaining methods

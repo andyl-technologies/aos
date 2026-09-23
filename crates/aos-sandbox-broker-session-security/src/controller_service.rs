@@ -3381,6 +3381,17 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         let request = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if matches!(
+            &request,
+            DormantSandboxRequestKindV1::CachePin(_) | DormantSandboxRequestKindV1::CacheUnpin(_)
+        ) {
+            aos_sandbox::production_operation_compiler::recheck_cache_consumer_projection_v1(
+                journal,
+                context.project(),
+                &request,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        }
         if is_lifecycle_mutation(&request) {
             let operation =
                 self.validate_lifecycle_admission(operation_id, &context, &request, journal)?;

@@ -1375,6 +1375,51 @@ fn cache_consumer_mutation_intent(
     attachment_id: &[u8],
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    validate_cache_consumer_projection(journal, project, view_id, attachment_id, mutation)?;
+    Ok(mutation_intent(operation, method, canonical_request))
+}
+
+/// Rechecks the projected consumer and resource-version fence before a cache effect.
+///
+/// This is a desired-state currentness check, not physical cache authority or
+/// proof that an object belongs to the view. The protected Cache owner must
+/// independently establish those facts when it performs the effect.
+///
+/// # Errors
+///
+/// Rejects a non-cache request, a missing or cross-project consumer, a
+/// mismatched attachment-to-view binding, or a stale resource version.
+pub fn recheck_cache_consumer_projection_v1(
+    journal: &Journal,
+    project: ProjectId,
+    request: &crate::cli_model::DormantSandboxRequestKindV1,
+) -> Result<(), OperationCompilationError> {
+    match request {
+        Request::CachePin(value) => validate_cache_consumer_projection(
+            journal,
+            project,
+            &value.view_id,
+            &value.attachment_id,
+            value.mutation.as_option(),
+        ),
+        Request::CacheUnpin(value) => validate_cache_consumer_projection(
+            journal,
+            project,
+            &value.view_id,
+            &value.attachment_id,
+            value.mutation.as_option(),
+        ),
+        _ => Err(OperationCompilationError::Rejected),
+    }
+}
+
+fn validate_cache_consumer_projection(
+    journal: &Journal,
+    project: ProjectId,
+    view_id: &[u8],
+    attachment_id: &[u8],
+    mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+) -> Result<(), OperationCompilationError> {
     let view = load_view(journal, exact_id(view_id)?)?;
     ensure_view_project(&view, project)?;
 
@@ -1390,7 +1435,7 @@ fn cache_consumer_mutation_intent(
         validate_resource_mutation(&attachment.resource_version, mutation)?;
     }
 
-    Ok(mutation_intent(operation, method, canonical_request))
+    Ok(())
 }
 
 fn cancel_operation_intent(
