@@ -22,6 +22,7 @@
 //! - [`broker`] orders validation, durability, effects, and replies.
 
 pub mod activation;
+pub mod attach_route;
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
