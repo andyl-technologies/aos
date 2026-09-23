@@ -25,10 +25,11 @@ use aos_sandbox_core::runtime_backend::{
     BackendOperationSequenceV1, BackendProbeReportV1, BackendRecoveryOutcome,
     BackendRuntimeInspectionV1, BackendRuntimePhaseV1, BackendStartObservationV1,
     BackendStopDeadlineV1, BackendStopObservationV1, DestroyableRuntime, DestroyedRuntime,
-    FrozenRuntime, PreparedRuntime, ResolvedRuntimePlanV1, RunningRuntime, RuntimeBackend,
-    RuntimeBackendError, RuntimeHandleCommitmentV1, RuntimeRecoveryToken,
-    SignedBackendExecutionInspectionV1, SignedBackendRuntimeInspectionV1, StoppableRuntime,
-    StoppedRuntime, backend_execution_inspection_binding_v1,
+    DurableExecutionEffectV1, EffectOperationV1, EffectPhaseV1, FrozenRuntime, PreparedRuntime,
+    ResolvedRuntimePlanV1, RunningRuntime, RuntimeBackend, RuntimeBackendError,
+    RuntimeHandleCommitmentV1, RuntimeRecoveryToken, SignedBackendExecutionInspectionV1,
+    SignedBackendRuntimeInspectionV1, StoppableRuntime, StoppedRuntime,
+    backend_execution_inspection_binding_v1,
 };
 use aos_sandbox_core::{
     DecodeLimits, ExecutionId, ObjectDigest, ObservationSequence, decode_execution_spec_v1,
@@ -274,6 +275,7 @@ struct CoownedAgentSessionV1 {
     features: AgentFeatureSetV1,
     next_operation_sequence: AgentOperationSequenceV1,
     outstanding: Option<CoownedAgentOutstandingV1>,
+    control_outstanding: Option<CoownedAgentControlOutstandingV1>,
 }
 
 struct CoownedAgentOutstandingV1 {
@@ -281,6 +283,11 @@ struct CoownedAgentOutstandingV1 {
     agent_request: AgentOperationRequestV1,
     execution: ExecutionId,
     runtime: RuntimeHandleCommitmentV1,
+}
+
+struct CoownedAgentControlOutstandingV1 {
+    inspection: BackendExecutionInspectionRequestV1,
+    agent_request: AgentOperationRequestV1,
 }
 
 impl DormantExecutionRecoveryHandleV1 {
@@ -545,6 +552,7 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             features,
             next_operation_sequence,
             outstanding: None,
+            control_outstanding: None,
         });
         Ok(())
     }
@@ -570,6 +578,7 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             .as_ref()
             .ok_or(DormantBackendHandoffErrorV1::MissingAgentSession)?;
         if live_session.outstanding.is_some()
+            || live_session.control_outstanding.is_some()
             || !live_session
                 .features
                 .contains(AgentFeatureV1::ExecutionHandoff)
@@ -639,6 +648,112 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             agent_request: agent_request.clone(),
             execution: specification.execution(),
             runtime,
+        });
+        Ok(DormantAgentExecutionHandoffV1 {
+            request: agent_request,
+        })
+    }
+
+    /// Consumes one freshly issued control effect into the retained agent session.
+    ///
+    /// Control outcomes remain authenticated observations; this handoff does
+    /// not relabel an agent reply as a durable semantic completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantBackendHandoffErrorV1`] for stale ownership, a missing
+    /// capability, a foreign effect, or an occupied stop-and-wait session.
+    pub fn prepare_execution_control_handoff(
+        &mut self,
+        effect: &DurableExecutionEffectV1,
+    ) -> Result<DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1> {
+        self.revalidate()
+            .map_err(|_| DormantBackendHandoffErrorV1::StaleCurrentness)?;
+        let admission = effect.admission();
+        if effect.phase() != EffectPhaseV1::Issued
+            || admission.currentness() != self.authority.currentness()
+        {
+            return Err(DormantBackendHandoffErrorV1::InvalidRoute);
+        }
+        let live_session = self
+            .agent_session
+            .as_ref()
+            .ok_or(DormantBackendHandoffErrorV1::MissingAgentSession)?;
+        if live_session.outstanding.is_some() || live_session.control_outstanding.is_some() {
+            return Err(DormantBackendHandoffErrorV1::AlreadyStaged);
+        }
+
+        let operation = match effect.issue().operation() {
+            EffectOperationV1::ResizeTerminal { rows, columns }
+                if live_session
+                    .features
+                    .contains(AgentFeatureV1::TerminalResize) =>
+            {
+                AgentExecutionOperationV1::ResizeTerminal {
+                    execution: admission.execution(),
+                    rows,
+                    columns,
+                }
+            }
+            EffectOperationV1::Signal { signal_code }
+                if live_session
+                    .features
+                    .contains(AgentFeatureV1::ExecutionSignal) =>
+            {
+                AgentExecutionOperationV1::Signal {
+                    execution: admission.execution(),
+                    signal_code,
+                }
+            }
+            EffectOperationV1::Cancel => AgentExecutionOperationV1::Cancel {
+                execution: admission.execution(),
+            },
+            EffectOperationV1::Observe
+                if live_session
+                    .features
+                    .contains(AgentFeatureV1::ExecutionObservation) =>
+            {
+                AgentExecutionOperationV1::Observe {
+                    execution: admission.execution(),
+                }
+            }
+            _ => return Err(DormantBackendHandoffErrorV1::InvalidRoute),
+        };
+        let inspection = BackendExecutionInspectionRequestV1::new(
+            self.agent_evidence_authority(),
+            effect.issue().idempotency().operation(),
+            effect.issue().sequence(),
+            effect.issue().idempotency().request_digest(),
+            admission.execution(),
+            admission.specification_digest(),
+            admission.admission_commitment(),
+            *self.authority.currentness().runtime(),
+            self.authority.currentness().payload_boot_id(),
+        )
+        .map_err(|_| DormantBackendHandoffErrorV1::InvalidRoute)?;
+        let session = self
+            .agent_session
+            .as_mut()
+            .ok_or(DormantBackendHandoffErrorV1::MissingAgentSession)?;
+        let agent_request = AgentOperationRequestV1::new(
+            session.binding,
+            session.next_operation_sequence,
+            AgentOperationIdV1::new(*effect.issue().idempotency().operation().as_bytes())
+                .map_err(|_| DormantBackendHandoffErrorV1::InvalidRoute)?,
+            backend_execution_inspection_binding_v1(&inspection),
+            operation,
+        )
+        .map_err(|_| DormantBackendHandoffErrorV1::InvalidRoute)?;
+        self.authority
+            .consume_fresh_execution_for_authenticated_agent_route(
+                &session.handshake,
+                &session.response,
+                &agent_request,
+                effect,
+            )?;
+        session.control_outstanding = Some(CoownedAgentControlOutstandingV1 {
+            inspection,
+            agent_request: agent_request.clone(),
         });
         Ok(DormantAgentExecutionHandoffV1 {
             request: agent_request,
@@ -1281,6 +1396,98 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             .insert(request_binding, recovery);
         self.execution_observations.push_back(observation);
         Ok(outstanding.backend_request)
+    }
+
+    /// Authenticates a control reply and queues its exact execution observation.
+    ///
+    /// The protected execution owner must still verify and commit the semantic
+    /// effect completion; accepting an agent reply alone does not complete it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeBackendError`] for stale ownership, an unsolicited or
+    /// substituted reply, invalid signature, invalid phase, or inbox overflow.
+    pub fn accept_agent_execution_control_outcome(
+        &mut self,
+        signed: SignedAgentOutcomeV1,
+    ) -> Result<(), RuntimeBackendError> {
+        self.revalidate()?;
+        if !self.execution_observations.is_empty() || !self.runtime_observations.is_empty() {
+            return Err(RuntimeBackendError::ResourceExhausted);
+        }
+        let peer = *self.authority.agent_peer();
+        let session = self
+            .agent_session
+            .as_mut()
+            .ok_or(RuntimeBackendError::AgentUnavailable)?;
+        let outstanding = session
+            .control_outstanding
+            .as_ref()
+            .ok_or(RuntimeBackendError::StateConflict)?;
+        let (outcome, signature) = signed.into_parts();
+        if outcome.session() != session.binding
+            || outcome.sequence() != outstanding.agent_request.sequence()
+            || outcome.operation_id() != outstanding.agent_request.operation_id()
+            || outcome.request_commitment() != outstanding.agent_request.request_commitment()
+        {
+            return Err(RuntimeBackendError::IntegrityFailure);
+        }
+        let message = agent_outcome_signing_message_v1(
+            peer.channel_binding(),
+            &outstanding.agent_request,
+            &outcome,
+        );
+        verify_peer_signature(peer.public_key(), &message, &signature)?;
+        let phase = core_execution_phase(outcome.phase())?;
+        let next_observation = self
+            .last_observation_sequence
+            .checked_add(1)
+            .filter(|value| *value != u64::MAX)
+            .ok_or(RuntimeBackendError::InvalidSequence)?;
+        let observation_sequence = ObservationSequence::new(next_observation);
+        let expected = &outstanding.inspection;
+        if outstanding.agent_request.backend_request_binding()
+            != backend_execution_inspection_binding_v1(expected)
+        {
+            return Err(RuntimeBackendError::IntegrityFailure);
+        }
+        let input = aos_sandbox_core::runtime_backend::BackendExecutionInspectionInputV1 {
+            authority_binding: ObjectDigest::from_bytes([0; 32]),
+            operation: expected.operation(),
+            operation_sequence: expected.operation_sequence(),
+            effect_request_digest: expected.effect_request_digest(),
+            execution: expected.execution(),
+            specification_digest: expected.specification_digest(),
+            admission_commitment: expected.admission_commitment(),
+            runtime: *expected.runtime(),
+            payload_boot_id: expected.payload_boot_id(),
+            phase,
+            sequence: observation_sequence,
+            observation_commitment: ObjectDigest::from_bytes([0; 32]),
+        };
+        let envelope = SignedBackendExecutionInspectionV1::new(
+            input,
+            outcome.session().digest(),
+            outcome.sequence().get(),
+            *outcome.operation_id().as_bytes(),
+            outcome.request_commitment(),
+            outcome.outcome_commitment(),
+            outcome.result_bytes().to_vec(),
+            outcome.result_digest(),
+            signature,
+        );
+        let observation = self
+            .agent_evidence_verifier
+            .verify_execution_inspection(expected, observation_sequence, envelope)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        let next_operation_sequence = session
+            .next_operation_sequence
+            .checked_next()
+            .map_err(|_| RuntimeBackendError::InvalidSequence)?;
+        session.control_outstanding = None;
+        session.next_operation_sequence = next_operation_sequence;
+        self.execution_observations.push_back(observation);
+        Ok(())
     }
 
     /// Verifies and submits one signed response for an ambiguous exec handoff.
