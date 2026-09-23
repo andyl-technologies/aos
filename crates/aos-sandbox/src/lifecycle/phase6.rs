@@ -1237,6 +1237,62 @@ impl CurrentLifecycleEffectV1<'_> {
         Ok(())
     }
 
+    /// Validates the exact signed Storage Create Apply against protected inputs.
+    ///
+    /// Storage must have retained a separately authorized Prepare for the same
+    /// operation and catalog. This check prevents a lifecycle Create handoff
+    /// from being used for another Storage action or a different assignment,
+    /// policy quota, manifest, specification, or prepared catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] for any substituted action, identity,
+    /// catalog, metadata, quota, or noncanonical authenticated request.
+    #[allow(clippy::too_many_arguments)]
+    pub fn validate_authenticated_storage_create_request(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        fence: LiveRuntimeFenceV1,
+        catalog: aos_sandbox_protocol::semantics::CatalogBindingV1,
+        quota_bytes: u64,
+        assignment_manifest: &[u8],
+        sandbox_spec: &[u8],
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        let authenticated = self.authenticated_broker_effect(request)?;
+        let LifecycleCompiledBrokerRequestV1::Storage(body) = &authenticated.compiled else {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        };
+        let wire_fence = body
+            .fence
+            .as_option()
+            .ok_or(LifecyclePhase6ErrorV1::InvalidInput)?;
+        let desired = fence.desired();
+        if self.domain() != LifecycleEffectDomainV1::Storage
+            || fence.sandbox().as_bytes() != &self.target()
+            || body.action.as_known() != Some(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE)
+            || body.operation_id.as_slice() != self.operation().as_bytes()
+            || !body.storage_handle.is_empty()
+            || !body.source_version_handle.is_empty()
+            || quota_bytes == 0
+            || body.quota_bytes != quota_bytes
+            || body.assignment_manifest != assignment_manifest
+            || body.sandbox_spec != sandbox_spec
+            || assignment_manifest.is_empty()
+            || sandbox_spec.is_empty()
+            || request.catalog_binding() != Some(*catalog.digest().as_bytes())
+            || request.authorization().is_none()
+            || wire_fence.sandbox_id.as_slice() != fence.sandbox().as_bytes()
+            || wire_fence.incarnation_id.as_slice() != fence.incarnation().as_bytes()
+            || wire_fence.assignment_epoch != fence.assignment_epoch().get()
+            || wire_fence.desired_generation != desired.expected_generation().get()
+            || wire_fence.assignment_digest.as_slice()
+                != desired.resource_state().digest().as_bytes()
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        Ok(())
+    }
+
     /// Checks one authenticated grouped Storage request against the reserved lifecycle effect.
     ///
     /// The complete plan comes from the protected predecessor inventory. A

@@ -17,6 +17,7 @@ use aos_sandbox::lifecycle::{
     LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
+use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use buffa::Message as _;
 
 use crate::{
@@ -280,6 +281,57 @@ impl DormantLifecycleDomainEffectOwnerV1 {
             effect,
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
             build,
+        )
+    }
+
+    /// Sends an exact signed Create Apply and inventories complete Storage state.
+    ///
+    /// The caller supplies inputs from protected policy and the authenticated
+    /// Prepare result. The broker independently checks the signed Apply grant
+    /// against its retained preparation; this endpoint keeps the lifecycle
+    /// handoff and immediate physical inventory under one retained session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before dispatch for any mismatch in the Create action,
+    /// current fence, prepared catalog, quota, or portable workspace metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_storage_create<'lifecycle>(
+        &mut self,
+        challenge: LifecycleBootInventoryBootstrapChallengeV1,
+        effect: CurrentLifecycleEffectV1<'lifecycle>,
+        fence: LiveRuntimeFenceV1,
+        catalog: CatalogBindingV1,
+        quota_bytes: u64,
+        assignment_manifest: &[u8],
+        sandbox_spec: &[u8],
+        authority: &PreparedAuthorityEffectV1,
+    ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
+        let exchange = ExchangeStageV1::Effect {
+            challenge,
+            endpoint: LifecycleBootBootstrapEndpointV1::Storage,
+            effect,
+        };
+        let prepared = self
+            .session
+            .prepare_authenticated_authority_effect_checked(authority, |request| {
+                exchange
+                    .effect()
+                    .validate_authenticated_storage_create_request(
+                        request,
+                        fence,
+                        catalog,
+                        quota_bytes,
+                        assignment_manifest,
+                        sandbox_spec,
+                    )
+                    .is_ok()
+            })
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        self.continue_prepared(
+            exchange,
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
+            prepared,
         )
     }
 
