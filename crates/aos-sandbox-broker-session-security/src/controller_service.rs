@@ -4301,6 +4301,24 @@ impl DiscoveryService for CapabilityService {
 }
 
 impl CapabilityService {
+    fn registered_public_peer<'a>(
+        &self,
+        context: &'a RequestContext,
+        diagnostic_message: &'static str,
+        unauthenticated_message: &'static str,
+    ) -> Result<&'a aos_sandbox::public_api_session::PublicApiPeer, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                diagnostic_message,
+            ));
+        }
+        context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| ConnectError::new(ErrorCode::Unauthenticated, unauthenticated_message))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn read_public_projection(
         &self,
@@ -4312,21 +4330,11 @@ impl CapabilityService {
         protobuf_body: &[u8],
         query: PublicProjectionQueryV1,
     ) -> Result<AuthorizedPublicProjectionReadV1, ConnectError> {
-        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
-            return Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "public resource reads are unavailable on the diagnostic endpoint",
-            ));
-        }
-        let peer = context
-            .extensions()
-            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
-            .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "public resource read requires registered TLS peer evidence",
-                )
-            })?;
+        let peer = self.registered_public_peer(
+            context,
+            "public resource reads are unavailable on the diagnostic endpoint",
+            "public resource read requires registered TLS peer evidence",
+        )?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.commands
             .try_send(ControllerCommand::ReadPublicProjection {
@@ -4381,21 +4389,11 @@ impl CapabilityService {
         selector: Selector,
         protobuf_body: &[u8],
     ) -> Result<AuditAuthorizationV1, ConnectError> {
-        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
-            return Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "public read authorization is unavailable on the diagnostic endpoint",
-            ));
-        }
-        let peer = context
-            .extensions()
-            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
-            .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "public read requires registered TLS peer evidence",
-                )
-            })?;
+        let peer = self.registered_public_peer(
+            context,
+            "public read authorization is unavailable on the diagnostic endpoint",
+            "public read requires registered TLS peer evidence",
+        )?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.commands
             .try_send(ControllerCommand::AuthorizePublicRead {
@@ -4447,21 +4445,11 @@ impl CapabilityService {
         method: PublicApiAuditMethodV1,
         protobuf_body: &[u8],
     ) -> Result<PolicyPlan, ConnectError> {
-        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
-            return Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "public policy planning is unavailable on the diagnostic endpoint",
-            ));
-        }
-        let peer = context
-            .extensions()
-            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
-            .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "public policy planning requires registered TLS peer evidence",
-                )
-            })?;
+        let peer = self.registered_public_peer(
+            context,
+            "public policy planning is unavailable on the diagnostic endpoint",
+            "public policy planning requires registered TLS peer evidence",
+        )?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.commands
             .try_send(ControllerCommand::PlanPublicPolicy {
@@ -4503,21 +4491,11 @@ impl CapabilityService {
         context: &RequestContext,
         canonical_request: Vec<u8>,
     ) -> Result<Operation, ConnectError> {
-        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
-            return Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "operator recovery is unavailable on the diagnostic endpoint",
-            ));
-        }
-        let peer = context
-            .extensions()
-            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
-            .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "operator recovery requires registered TLS peer evidence",
-                )
-            })?;
+        let peer = self.registered_public_peer(
+            context,
+            "operator recovery is unavailable on the diagnostic endpoint",
+            "operator recovery requires registered TLS peer evidence",
+        )?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.commands
             .try_send(ControllerCommand::AdmitPublicOperatorRecovery {
@@ -4560,21 +4538,11 @@ impl CapabilityService {
         context: &RequestContext,
         canonical_request: Vec<u8>,
     ) -> Result<AdmittedPublicMutationV1, ConnectError> {
-        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
-            return Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "public mutations are unavailable on the diagnostic endpoint",
-            ));
-        }
-        let peer = context
-            .extensions()
-            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
-            .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "public mutation requires registered TLS peer evidence",
-                )
-            })?;
+        let peer = self.registered_public_peer(
+            context,
+            "public mutations are unavailable on the diagnostic endpoint",
+            "public mutation requires registered TLS peer evidence",
+        )?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.commands
             .try_send(ControllerCommand::AdmitPublicMutation {
@@ -4617,21 +4585,11 @@ impl CapabilityService {
         context: &RequestContext,
         canonical_request: Vec<u8>,
     ) -> Result<AdmittedPublicAttachV1, ConnectError> {
-        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
-            return Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
-                "public attachment is unavailable on the diagnostic endpoint",
-            ));
-        }
-        let peer = context
-            .extensions()
-            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
-            .ok_or_else(|| {
-                ConnectError::new(
-                    ErrorCode::Unauthenticated,
-                    "public attachment requires registered TLS peer evidence",
-                )
-            })?;
+        let peer = self.registered_public_peer(
+            context,
+            "public attachment is unavailable on the diagnostic endpoint",
+            "public attachment requires registered TLS peer evidence",
+        )?;
         let (reply, response) = tokio::sync::oneshot::channel();
         self.commands
             .try_send(ControllerCommand::AdmitPublicAttach {
