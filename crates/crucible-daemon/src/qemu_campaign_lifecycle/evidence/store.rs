@@ -102,6 +102,14 @@ impl QemuAttemptExecutionEvidence {
         )
     }
 
+    pub(super) fn record_appended_entries(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SchedulerError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        append_event_entries(&mut snapshot, entries)
+    }
+
     fn record_with_event_limits(
         &self,
         quanta: u64,
@@ -356,6 +364,34 @@ mod tests {
     use crucible::{ContentHash, ExecutionFingerprint, NodeId, VirtualTime};
 
     use super::*;
+
+    #[test]
+    fn post_quantum_entries_extend_evidence_without_advancing_frontier() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let quantum_entry = SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            frontier,
+            "quantum-boundary-fixture",
+        );
+        let reply_entry = SchedulerEventLogEntry::execution_budget_exhausted(
+            1,
+            frontier,
+            "selectable-reply-fixture",
+        );
+
+        evidence
+            .record(7, frontier, std::slice::from_ref(&quantum_entry))
+            .expect("record quantum evidence");
+        evidence
+            .record_appended_entries(std::slice::from_ref(&reply_entry))
+            .expect("record same-boundary reply evidence");
+
+        let snapshot = evidence.snapshot().expect("complete event prefix");
+        assert_eq!(snapshot.quanta(), 7);
+        assert_eq!(snapshot.frontier(), frontier);
+        assert_eq!(snapshot.event_log_entries(), &[quantum_entry, reply_entry]);
+    }
 
     #[test]
     fn event_byte_limit_refusal_preserves_the_complete_snapshot() {

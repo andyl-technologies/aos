@@ -157,8 +157,14 @@ where
         pending: &QemuNodeSelectablePendingRequest,
         reply: &SelectionReply,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        self.lifecycle
-            .apply_selectable_reply(parent, decision, selected, pending, reply)
+        let entries = self
+            .lifecycle
+            .apply_selectable_reply(parent, decision, selected, pending, reply)?;
+
+        // Selectable replies append scheduler entries after the quantum result
+        // has been recorded. They belong to the same exact evidence prefix.
+        self.evidence.record_appended_entries(&entries)?;
+        Ok(entries)
     }
 
     fn capture_attempt_checkpoint(
