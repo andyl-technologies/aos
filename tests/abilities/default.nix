@@ -236,6 +236,9 @@
   libvirtService = import ./libvirt-service.nix {
     inherit lib pkgs;
   };
+  nginxService = import ./nginx-service.nix {
+    inherit lib pkgs;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -654,6 +657,7 @@ in
   assert abilityBoundaryObserverService;
   assert zfstoolsService;
   assert libvirtService;
+  assert nginxService;
   assert serviceManagement;
   assert dbusService;
   assert bindService;

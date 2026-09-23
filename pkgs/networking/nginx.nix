@@ -263,7 +263,7 @@ in
           modules = [
             {
               environment.systemPackages = [self];
-              nginx = nginxConfig;
+              aos.services.nginx = nginxConfig;
             }
           ];
         };
@@ -299,14 +299,15 @@ in
       tlsRequests = builtins.attrNames tlsAbilities.requests;
       source = cleartextAbilities.requests."nginx:server-configuration".parameters.source;
       mainStorage = cleartextAbilities.requests."nginx:main-storage".parameters.mounts;
+      nginxOptions = lib.submoduleOptions cleartext.options.aos.services.type._elementType ["aos" "services" "nginx"];
       publicOptionSchemas =
         builtins.map
         (option: option.type._abilitySchema)
         [
-          cleartext.options.nginx.upstreams
-          cleartext.options.nginx.virtualHosts
-          cleartext.options.nginx.tlsCredentials.certificate
-          cleartext.options.nginx.tlsCredentials.privateKey
+          nginxOptions.upstreams
+          nginxOptions.virtualHosts
+          nginxOptions.tlsCredentials.certificate
+          nginxOptions.tlsCredentials.privateKey
         ];
       expectedRequestOutput = localKey: output: {
         authority = {

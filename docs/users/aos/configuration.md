@@ -102,7 +102,7 @@ registry, cache, or network connection:
 
 ```sh
 apm docs show nginx
-apm options show nginx.enable --package nginx
+apm options show aos.services.nginx.enable --package nginx
 apm docs man nginx --install
 apm docs serve
 ```
@@ -181,7 +181,7 @@ For a package installed through `apm`, put only its configuration in a module:
 
 ```nix
 {
-  nginx = {
+  aos.services.nginx = {
     enable = true;
     virtualHosts.health = {
       listen = [8080];
