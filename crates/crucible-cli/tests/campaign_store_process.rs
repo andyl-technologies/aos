@@ -99,6 +99,7 @@ fn packaged_guest_choice_policy_grants_only_the_required_graph_query() -> Result
 fn public_campaign_debug_opens_authenticated_finding_at_fast_midpoint() -> Result<(), Box<dyn Error>>
 {
     midpoint_debug::run_public_campaign_debug_flight_with_stopped_finding(
+        midpoint_debug::FindingScenario::MarkerOnly,
         canonical_branch::run_imported_canonical_branch,
     )
 }

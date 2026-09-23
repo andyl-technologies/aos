@@ -17,17 +17,29 @@ use crucible_session::engine::{
 
 use super::*;
 
+#[path = "midpoint_signal.rs"]
+pub(super) mod signal;
+
 const MIDPOINT_TIMEOUT: Duration = Duration::from_secs(60);
 const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "100000000";
 const FAILURE_MARKER: &str = "selected-fast-q7";
 
+#[derive(Clone, Copy)]
+pub(super) enum FindingScenario {
+    /// Existing q7 marker finding without an authored fault program.
+    MarkerOnly,
+    /// The same guest finding with a QEMU-applied CPU-service fault.
+    CpuServiceFault,
+}
+
 pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
+    scenario: FindingScenario,
     handoff: impl FnOnce(&FlightFixture, &str, &str) -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     grant_midpoint_debug_operations(&fixture.peer_policy)?;
-    let compiled = compile_failing_scenario(&fixture)?;
+    let compiled = compile_failing_scenario(&fixture, scenario)?;
     let manifest = json_path(&compiled, "manifest")?;
     let lineage = compile_lineage(&fixture, &compiled)?;
     let policy = compile_policy(&fixture, &compiled)?;
@@ -210,7 +222,10 @@ fn grant_midpoint_debug_operations(policy: &Path) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-fn compile_failing_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
+fn compile_failing_scenario(
+    fixture: &FlightFixture,
+    scenario: FindingScenario,
+) -> Result<Value, Box<dyn Error>> {
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
     let initrd = required_path("CRUCIBLE_INITRD")?;
@@ -263,7 +278,10 @@ fn compile_failing_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Er
         ))
         .action(Action::Pass)
         .build_for_world(&world)?;
-    let plan = Plan::from_event_graph_for_world(&world, graph)?;
+    let mut plan = Plan::from_event_graph_for_world(&world, graph)?;
+    if matches!(scenario, FindingScenario::CpuServiceFault) {
+        plan = plan.with_fault_signals_for_world(&world, signal::cpu_service_fault(&world)?)?;
+    }
     let properties = Properties::from_assertions_for_world(
         &world,
         vec![AssertionDef {

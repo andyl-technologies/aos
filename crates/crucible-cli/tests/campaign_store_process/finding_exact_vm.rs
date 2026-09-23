@@ -20,7 +20,27 @@ fn midpoint_socket_denies_other_uid() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn packaged_finding_bundle_replays_without_source_owner() -> Result<(), Box<dyn Error>> {
+    with_copied_bundle(
+        midpoint_debug::FindingScenario::MarkerOnly,
+        inspect_exact_read_only,
+    )
+}
+
+#[test]
+fn packaged_finding_bundle_retains_selected_fault_and_guest_response() -> Result<(), Box<dyn Error>>
+{
+    with_copied_bundle(
+        midpoint_debug::FindingScenario::CpuServiceFault,
+        inspect_signal_rich_bundle,
+    )
+}
+
+fn with_copied_bundle(
+    scenario: midpoint_debug::FindingScenario,
+    inspect: impl FnOnce(&Path, &Path, &Value) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
     midpoint_debug::run_public_campaign_debug_flight_with_stopped_finding(
+        scenario,
         |fixture, snapshot, finding| {
             grant_export_reads(&fixture.peer_policy)?;
             let source_bundle = fixture._temporary.path().join("exported-finding");
@@ -59,55 +79,91 @@ fn packaged_finding_bundle_replays_without_source_owner() -> Result<(), Box<dyn 
             // Only the copied bundle and the immutable package closure survive
             // the handoff. A stale source path must be unusable by the verifier.
             fs::remove_dir_all(fixture._temporary.path())?;
-            let verified = run_json(
-                &mut verify_command(&bundle, investigator.path())?,
-                "verify exact finding in a fresh packaged process",
-            )?;
-            assert_eq!(
-                verified["schema"],
-                "crucible.cli.campaign-finding-bundle-verification.v2"
-            );
-            assert_eq!(verified["native_signature_verified"], true);
-            assert_eq!(verified["model_replay"]["authenticated"], true);
-            assert_eq!(verified["exact_replay"]["role"], "verification-original");
-            assert_eq!(verified["exact_replay"]["reproduced"], true);
-            assert!(json_u64(&verified["exact_replay"], "completed_quanta")? > 0);
-            assert!(json_u64(&verified["exact_replay"], "frontier_ticks")? > 0);
-
-            let pristine_bundle = bundle_fingerprints(&bundle)?;
-            inspect_read_only_midpoint(&bundle, investigator.path())?;
-            for packet in ["G00", "M0,1:00", "c"] {
-                reject_midpoint_mutation(&bundle, investigator.path(), packet)?;
-            }
-            assert_eq!(
-                bundle_fingerprints(&bundle)?,
-                pristine_bundle,
-                "midpoint inspection changed the handed-off bundle"
-            );
-
-            let ledger = bundle.join("ledger");
-            let original_ledger = fs::read(&ledger)?;
-            corrupt_file(&ledger)?;
-            reject_bundle(&bundle, investigator.path(), "altered ledger")?;
-            fs::write(ledger, original_ledger)?;
-
-            let object = archive_manifest_object(&bundle)?;
-            assert!(
-                object.is_file(),
-                "export omitted its archive manifest object"
-            );
-            fs::remove_file(object)?;
-            reject_bundle(&bundle, investigator.path(), "missing archive object")?;
-
-            println!("finding_bundle_fresh_process_exact_qemu=true");
-            println!("finding_bundle_source_owner_absent=true");
-            println!("finding_bundle_signature_and_terminal_reproduced=true");
-            println!("finding_bundle_live_midpoint_read_only=true");
-            println!("finding_bundle_mutation_rejected_and_checkpoint_unchanged=true");
-            println!("finding_bundle_tamper_rejected=true");
-            Ok(())
+            inspect(&bundle, investigator.path(), &exported)
         },
     )
+}
+
+fn inspect_exact_read_only(
+    bundle: &Path,
+    working_directory: &Path,
+    _exported: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let verified = run_json(
+        &mut verify_command(bundle, working_directory)?,
+        "verify exact finding in a fresh packaged process",
+    )?;
+    assert_eq!(
+        verified["schema"],
+        "crucible.cli.campaign-finding-bundle-verification.v2"
+    );
+    assert_eq!(verified["native_signature_verified"], true);
+    assert_eq!(verified["model_replay"]["authenticated"], true);
+    assert_eq!(verified["exact_replay"]["role"], "verification-original");
+    assert_eq!(verified["exact_replay"]["reproduced"], true);
+    assert!(json_u64(&verified["exact_replay"], "completed_quanta")? > 0);
+    assert!(json_u64(&verified["exact_replay"], "frontier_ticks")? > 0);
+
+    let pristine_bundle = bundle_fingerprints(bundle)?;
+    inspect_read_only_midpoint(bundle, working_directory, false)?;
+    for packet in ["G00", "M0,1:00", "c"] {
+        reject_midpoint_mutation(bundle, working_directory, packet)?;
+    }
+    assert_eq!(
+        bundle_fingerprints(bundle)?,
+        pristine_bundle,
+        "midpoint inspection changed the handed-off bundle"
+    );
+
+    let ledger = bundle.join("ledger");
+    let original_ledger = fs::read(&ledger)?;
+    corrupt_file(&ledger)?;
+    reject_bundle(bundle, working_directory, "altered ledger")?;
+    fs::write(ledger, original_ledger)?;
+
+    let object = archive_manifest_object(bundle)?;
+    assert!(
+        object.is_file(),
+        "export omitted its archive manifest object"
+    );
+    fs::remove_file(object)?;
+    reject_bundle(bundle, working_directory, "missing archive object")?;
+
+    println!("finding_bundle_fresh_process_exact_qemu=true");
+    println!("finding_bundle_source_owner_absent=true");
+    println!("finding_bundle_signature_and_terminal_reproduced=true");
+    println!("finding_bundle_live_midpoint_read_only=true");
+    println!("finding_bundle_mutation_rejected_and_checkpoint_unchanged=true");
+    println!("finding_bundle_tamper_rejected=true");
+    Ok(())
+}
+
+fn inspect_signal_rich_bundle(
+    bundle: &Path,
+    working_directory: &Path,
+    _exported: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let pristine_bundle = bundle_fingerprints(bundle)?;
+    let verified = run_json(
+        &mut verify_command(bundle, working_directory)?,
+        "verify selected-fault finding in a fresh packaged process",
+    )?;
+    assert_eq!(verified["native_signature_verified"], true);
+    assert_eq!(verified["model_replay"]["authenticated"], true);
+    assert_eq!(verified["exact_replay"]["role"], "verification-original");
+    assert_eq!(verified["exact_replay"]["reproduced"], true);
+    assert!(json_u64(&verified["exact_replay"], "completed_quanta")? > 0);
+    assert!(json_u64(&verified["exact_replay"], "frontier_ticks")? > 0);
+
+    inspect_read_only_midpoint(bundle, working_directory, true)?;
+    assert_eq!(
+        bundle_fingerprints(bundle)?,
+        pristine_bundle,
+        "signal-rich inspection changed the handed-off bundle"
+    );
+    println!("finding_bundle_selected_fault_and_guest_response=true");
+    println!("finding_bundle_signal_archive_unchanged=true");
+    Ok(())
 }
 
 fn grant_export_reads(policy: &Path) -> Result<(), Box<dyn Error>> {
@@ -226,9 +282,14 @@ impl MidpointProcess {
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         assert_eq!(metadata.uid(), fs::metadata(working_directory)?.uid());
         process.socket = socket;
-        let stream = UnixStream::connect(&process.socket)?;
+        let mut stream = UnixStream::connect(&process.socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         stream.set_write_timeout(Some(Duration::from_secs(15)))?;
+        let initial_stop = read_rsp_packet(&mut stream)?;
+        assert!(
+            initial_stop.starts_with('T') || initial_stop.starts_with('S'),
+            "midpoint relay omitted its initial QEMU stop: {initial_stop}"
+        );
         Ok((process, report, stream))
     }
 
@@ -268,6 +329,7 @@ impl Drop for MidpointProcess {
 fn inspect_read_only_midpoint(
     bundle: &Path,
     working_directory: &Path,
+    signal_rich: bool,
 ) -> Result<(), Box<dyn Error>> {
     let (mut process, report, mut stream) = MidpointProcess::start(bundle, working_directory)?;
     assert_socket_denies_other_uid(&process.socket)?;
@@ -291,8 +353,12 @@ fn inspect_read_only_midpoint(
             .ok_or("midpoint event log is missing")?
             .is_empty()
     );
-    assert!(report["metrics"]["payload_schema"].as_str().is_some());
-    assert!(report.get("signal_effects").is_some());
+    assert!(json_u64(&report["metrics"], "payload_schema")? > 0);
+    if signal_rich {
+        assert_selected_cpu_fault_and_guest_response(&report)?;
+    } else {
+        assert!(report["signal_effects"].is_null());
+    }
 
     let stop = rsp_request(&mut stream, "?")?;
     assert!(
@@ -330,6 +396,51 @@ fn inspect_read_only_midpoint(
         "private relay socket survived exit"
     );
     assert_no_packaged_qemu()?;
+    Ok(())
+}
+
+fn assert_selected_cpu_fault_and_guest_response(report: &Value) -> Result<(), Box<dyn Error>> {
+    let work_items = report["signal_effects"]["work_items"]
+        .as_array()
+        .ok_or("copied finding omitted its resolved signal-effect trace")?;
+    let effect = work_items
+        .iter()
+        .flat_map(|item| item["records"].as_array().into_iter().flatten())
+        .find(|record| {
+            record["binding"] == midpoint_debug::signal::BINDING
+                && record["effect"] == "CpuService"
+                && record["action_kind"] == "upsert_persistent"
+        })
+        .ok_or("copied finding has no committed QEMU CPU-service fault")?;
+    assert_eq!(effect["capability"], "qemu.cpu.service.v1");
+    assert_eq!(effect["phase"], "run");
+    assert!(
+        effect["coordinate"]["retired_instructions"]
+            .as_u64()
+            .is_some()
+    );
+    let fault_time = json_u64(&effect["coordinate"], "virtual_nanos")?;
+
+    let guest_marker = report["events"]
+        .as_array()
+        .ok_or("copied finding omitted its guest event log")?
+        .iter()
+        .find(|event| {
+            event["event_payload"]["kind"] == "guest_marker"
+                && event.to_string().contains("selected-fast-q7")
+        })
+        .ok_or("selected fault has no retained guest response marker")?;
+    let guest_time = json_u64(&guest_marker["at"]["virtual_time"], "ticks")?;
+    assert!(
+        fault_time <= guest_time,
+        "fault was applied after the guest response"
+    );
+    assert!(
+        report["failure_detail"].as_str().is_some_and(
+            |detail| detail.contains("inner guest marker marker=selected-fast-q7 matched")
+        ),
+        "finding did not explain the selected guest response"
+    );
     Ok(())
 }
 
@@ -417,6 +528,10 @@ fn assert_socket_denies_other_uid(socket: &Path) -> Result<(), Box<dyn Error>> {
 
 fn rsp_request(stream: &mut UnixStream, packet: &str) -> Result<String, Box<dyn Error>> {
     write_rsp_packet(stream, packet)?;
+    read_rsp_packet(stream)
+}
+
+fn read_rsp_packet(stream: &mut UnixStream) -> Result<String, Box<dyn Error>> {
     let mut byte = [0_u8; 1];
     loop {
         stream.read_exact(&mut byte)?;
