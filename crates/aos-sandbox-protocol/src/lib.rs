@@ -56,9 +56,10 @@ pub use host_attach_gate::{
 };
 pub use host_catalog_snapshot::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
-    CatalogIdentityAllocation, HostCatalogHandle, HostCatalogSnapshot, HostCatalogSnapshotError,
-    MAXIMUM_HOST_CATALOG_ATTACHMENTS, MAXIMUM_HOST_CATALOG_ENTRIES, MINIMUM_HOST_IDENTITY_RANGE,
-    NETWORK_PIN_PREFIX, NetworkCatalogEntry, WORKSPACE_PIN_PREFIX, WorkspaceCatalogEntry,
+    CatalogIdentityAllocation, GuestRootCatalogPublicationV1, HostCatalogHandle,
+    HostCatalogSnapshot, HostCatalogSnapshotError, MAXIMUM_HOST_CATALOG_ATTACHMENTS,
+    MAXIMUM_HOST_CATALOG_ENTRIES, MINIMUM_HOST_IDENTITY_RANGE, NETWORK_PIN_PREFIX,
+    NetworkCatalogEntry, WORKSPACE_PIN_PREFIX, WorkspaceCatalogEntry,
 };
 pub use host_execution::{
     ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1, decode_host_execution_apply_v1,

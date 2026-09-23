@@ -24,9 +24,10 @@ use aos_proto::aos::sandbox::local::v1::DestinationSlotLifecycle;
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest};
 use aos_sandbox_protocol::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
-    CatalogIdentityAllocation, HostCatalogSnapshot, HostCatalogSnapshotError, NetworkCatalogEntry,
-    ValidatedAssignmentFence, ValidatedDestinationSlotInventory, ValidatedMountInventory,
-    ValidatedNetworkInventory, ValidatedStorageInventory, WorkspaceCatalogEntry,
+    CatalogIdentityAllocation, GuestRootCatalogPublicationV1, HostCatalogSnapshot,
+    HostCatalogSnapshotError, NetworkCatalogEntry, ValidatedAssignmentFence,
+    ValidatedDestinationSlotInventory, ValidatedMountInventory, ValidatedNetworkInventory,
+    ValidatedStorageInventory, WorkspaceCatalogEntry,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -471,6 +472,7 @@ struct ProjectedWorkspace {
     uid_range_start: u32,
     uid_range_size: u32,
     attachment_handles: Vec<[u8; 32]>,
+    guest_root_publication: Option<GuestRootCatalogPublicationV1>,
 }
 
 struct ProjectedNetwork {
@@ -725,6 +727,16 @@ fn collect_rows(
             uid_range_start: workspace.uid_range_start(),
             uid_range_size: workspace.uid_range_size(),
             attachment_handles,
+            guest_root_publication: workspace
+                .guest_root_publication_proof()
+                .map(|proof| {
+                    GuestRootCatalogPublicationV1::new(
+                        *workspace.creation_operation_id(),
+                        workspace.dataset_guid(),
+                        proof,
+                    )
+                })
+                .transpose()?,
         });
         rows.networks.push(ProjectedNetwork {
             handle: *network_row.network_handle(),
@@ -785,7 +797,7 @@ fn materialize_catalog(
         .workspaces
         .iter()
         .map(|row| {
-            Ok(WorkspaceCatalogEntry::new(
+            let mut entry = WorkspaceCatalogEntry::new(
                 row.handle,
                 row.assignment,
                 row.root_image.clone(),
@@ -798,7 +810,11 @@ fn materialize_catalog(
                     generation,
                 )?,
                 row.attachment_handles.clone(),
-            )?)
+            )?;
+            if let Some(publication) = &row.guest_root_publication {
+                entry = entry.with_guest_root_publication(publication.clone())?;
+            }
+            Ok(entry)
         })
         .collect::<Result<Vec<_>, HostCatalogReconciliationError>>()?;
     let networks = rows

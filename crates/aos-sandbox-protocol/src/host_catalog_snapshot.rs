@@ -18,6 +18,7 @@
 //! and [`HostCatalogSnapshot::decode_canonical`] validate the complete bounded,
 //! strictly ordered snapshot and are the only supported wire encoders.
 
+use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::ObjectDescriptor;
 use serde::{Deserialize, Serialize};
 
@@ -234,6 +235,63 @@ pub struct WorkspaceCatalogEntry {
     inode: u64,
     identity: CatalogIdentityAllocation,
     attachment_handles: Vec<HostCatalogHandle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    guest_root_publication: Option<GuestRootCatalogPublicationV1>,
+}
+
+/// Carries Storage-authenticated physical guest-root evidence into Host's catalog.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuestRootCatalogPublicationV1 {
+    creation_operation_id: [u8; 16],
+    dataset_guid: u64,
+    proof: Vec<u8>,
+}
+
+impl GuestRootCatalogPublicationV1 {
+    /// Constructs evidence copied from one validated Storage inventory row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record is malformed or its physical identities differ.
+    pub fn new(
+        creation_operation_id: [u8; 16],
+        dataset_guid: u64,
+        proof: GuestRootPublicationProofV1,
+    ) -> Result<Self, HostCatalogSnapshotError> {
+        if creation_operation_id != proof.creation_operation || dataset_guid != proof.dataset_guid {
+            return Err(HostCatalogSnapshotError::new(
+                "guest-root proof differs from Storage physical identity",
+            ));
+        }
+        let proof = proof
+            .encode()
+            .map_err(|error| HostCatalogSnapshotError::new(error.to_string()))?
+            .to_vec();
+        Ok(Self {
+            creation_operation_id,
+            dataset_guid,
+            proof,
+        })
+    }
+
+    /// Decodes the canonical physical publication proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record was corrupted or substituted.
+    pub fn proof(&self) -> Result<GuestRootPublicationProofV1, HostCatalogSnapshotError> {
+        let proof = GuestRootPublicationProofV1::decode(&self.proof)
+            .map_err(|error| HostCatalogSnapshotError::new(error.to_string()))?;
+        if proof.creation_operation != self.creation_operation_id
+            || proof.dataset_guid != self.dataset_guid
+        {
+            return Err(HostCatalogSnapshotError::new(
+                "guest-root proof differs from catalog physical identity",
+            ));
+        }
+        Ok(proof)
+    }
 }
 
 impl WorkspaceCatalogEntry {
@@ -266,6 +324,7 @@ impl WorkspaceCatalogEntry {
             inode,
             identity,
             attachment_handles,
+            guest_root_publication: None,
         };
         value.validate()?;
 
@@ -320,6 +379,26 @@ impl WorkspaceCatalogEntry {
         &self.attachment_handles
     }
 
+    /// Adds Storage-authenticated physical publication evidence to this workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the proof does not bind this exact catalog row.
+    pub fn with_guest_root_publication(
+        mut self,
+        publication: GuestRootCatalogPublicationV1,
+    ) -> Result<Self, HostCatalogSnapshotError> {
+        self.guest_root_publication = Some(publication);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Returns physical guest-root evidence, if Storage has published it.
+    #[must_use]
+    pub const fn guest_root_publication(&self) -> Option<&GuestRootCatalogPublicationV1> {
+        self.guest_root_publication.as_ref()
+    }
+
     fn validate(&self) -> Result<(), HostCatalogSnapshotError> {
         self.assignment.validate()?;
         validate_handle(self.handle, "workspace")?;
@@ -337,6 +416,21 @@ impl WorkspaceCatalogEntry {
             return Err(HostCatalogSnapshotError::new(
                 "workspace attachment handles are not canonical",
             ));
+        }
+
+        if let Some(publication) = &self.guest_root_publication {
+            let proof = publication.proof()?;
+            if proof.sandbox != *self.assignment.sandbox_id()
+                || proof.incarnation != *self.assignment.incarnation_id()
+                || proof.assignment_epoch != self.assignment.assignment_epoch()
+                || proof.assignment_digest != *self.assignment.assignment_digest()
+                || proof.workspace_handle != self.handle
+                || proof.root_image_digest != *self.root_image.digest().as_bytes()
+            {
+                return Err(HostCatalogSnapshotError::new(
+                    "guest-root proof does not bind the exact workspace assignment",
+                ));
+            }
         }
 
         Ok(())
@@ -975,5 +1069,48 @@ mod tests {
         );
 
         assert!(wrong.validate().is_err());
+    }
+
+    #[test]
+    fn guest_root_publication_binds_storage_identity_and_catalog_assignment() {
+        let proof = GuestRootPublicationProofV1 {
+            sandbox: [1; 16],
+            incarnation: [2; 16],
+            assignment_epoch: 3,
+            assignment_digest: [5; 32],
+            creation_operation: [21; 16],
+            workspace_handle: [8; 32],
+            dataset_guid: 22,
+            root_image_digest: [6; 32],
+            package_binding: [23; 32],
+            root_tree_digest: [24; 32],
+            feature_mask: aos_sandbox_agent::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1,
+        };
+        let publication = GuestRootCatalogPublicationV1::new([21; 16], 22, proof).unwrap();
+        let entry = workspace(1)
+            .with_guest_root_publication(publication.clone())
+            .unwrap();
+        let snapshot = HostCatalogSnapshot::new(1, vec![entry], Vec::new()).unwrap();
+
+        assert_eq!(
+            HostCatalogSnapshot::decode_canonical(&snapshot.encode().unwrap()).unwrap(),
+            snapshot
+        );
+        assert_eq!(publication.proof().unwrap(), proof);
+        assert!(GuestRootCatalogPublicationV1::new([25; 16], 22, proof).is_err());
+
+        let mut wrong_assignment = proof;
+        wrong_assignment.assignment_digest = [26; 32];
+        let wrong_publication =
+            GuestRootCatalogPublicationV1::new([21; 16], 22, wrong_assignment).unwrap();
+        assert!(
+            workspace(1)
+                .with_guest_root_publication(wrong_publication)
+                .is_err()
+        );
+
+        let mut corrupted = publication;
+        corrupted.proof[150] ^= 1;
+        assert!(workspace(1).with_guest_root_publication(corrupted).is_err());
     }
 }

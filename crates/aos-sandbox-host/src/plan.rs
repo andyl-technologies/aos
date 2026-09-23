@@ -30,6 +30,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
+use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use aos_systemd::{
@@ -85,6 +86,7 @@ pub struct ResolvedWorkspace {
     pub device: u64,
     /// Inode identity verified against the publisher record.
     pub inode: u64,
+    guest_root_publication: Option<GuestRootPublicationProofV1>,
     pin: OwnedFd,
 }
 
@@ -117,8 +119,23 @@ impl ResolvedWorkspace {
             root_directory,
             device,
             inode,
+            guest_root_publication: None,
             pin,
         })
+    }
+
+    /// Returns the Storage-authenticated guest-root proof retained for launch.
+    #[must_use]
+    pub const fn guest_root_publication(&self) -> Option<GuestRootPublicationProofV1> {
+        self.guest_root_publication
+    }
+
+    pub(crate) fn with_guest_root_publication(
+        mut self,
+        proof: GuestRootPublicationProofV1,
+    ) -> Self {
+        self.guest_root_publication = Some(proof);
+        self
     }
 }
 

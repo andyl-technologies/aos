@@ -228,6 +228,15 @@ impl HostCatalog for FileHostCatalog {
                 "catalog resources do not bind the exact launch assignment".to_owned(),
             ));
         }
+        let publication = workspace.guest_root_publication().ok_or_else(|| {
+            HostError::Catalog(
+                "workspace lacks Storage-authenticated guest-root publication".to_owned(),
+            )
+        })?;
+        let guest_root_proof = publication
+            .proof()
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+
         let workspace_pin = verify_workspace_pin(
             workspace.root_directory(),
             workspace.device(),
@@ -265,7 +274,8 @@ impl HostCatalog for FileHostCatalog {
                 workspace.device(),
                 workspace.inode(),
                 workspace_pin,
-            )?,
+            )?
+            .with_guest_root_publication(guest_root_proof),
             network: ResolvedNetwork::from_pinned(
                 network.namespace_path().to_owned(),
                 network.device(),
