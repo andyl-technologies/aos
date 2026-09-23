@@ -22,7 +22,10 @@ use aos_sandbox::lifecycle::{
     LifecycleAuthenticatedStorageReadbackV1, LifecycleBootBootstrapEndpointV1,
     LifecycleBootInventoryBootstrapChallengeV1, LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
-use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
+use aos_sandbox::{
+    DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
+    ValidatedAuthorityEffectReceiptV1,
+};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -300,6 +303,20 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
+
+    /// Sends or resumes one exact durable slot attempt on the retained Mount session.
+    ///
+    /// The returned outcome has passed terminal session-currentness recheck.
+    /// The controller must still compare it with the durable attempt and commit
+    /// its validated completion before querying fresh physical slot inventory.
+    pub(crate) fn authenticated_destination_slot_effect(
+        &mut self,
+        attempt: &DurableCurrentDestinationSlotAttemptV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.slot_effect_complete(attempt)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
 }
 
 impl DormantNetworkLifecycleInventoryOwnerV1 {
@@ -316,7 +333,7 @@ impl DormantNetworkLifecycleInventoryOwnerV1 {
 /// Retains an exact lifecycle inventory exchange at its resumable boundary.
 #[must_use = "resume the exact exchange or retain its protected custody"]
 pub struct DormantLifecycleInventoryQueryRecoveryV1 {
-    method: LifecycleInventoryMethodV1,
+    method: BrokerMethod,
     stage: DormantLifecycleInventoryQueryStageV1,
 }
 
@@ -366,6 +383,7 @@ impl DormantLifecycleInventorySessionV1 {
                 method.envelope(coordinates)
             })
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let method = method.method();
         let prepared = match prepared {
             DormantBrokerRequestPreparationV1::Prepared(prepared) => prepared,
             DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
@@ -435,7 +453,7 @@ impl DormantLifecycleInventorySessionV1 {
 
     fn send_query(
         &mut self,
-        method: LifecycleInventoryMethodV1,
+        method: BrokerMethod,
         prepared: DormantPreparedBrokerRequestV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
         match self
@@ -459,7 +477,7 @@ impl DormantLifecycleInventorySessionV1 {
 
     fn receive_query(
         &mut self,
-        method: LifecycleInventoryMethodV1,
+        method: BrokerMethod,
         outstanding: DormantOutstandingBrokerRequestV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
         match self
@@ -612,7 +630,77 @@ impl DormantLifecycleInventorySessionV1 {
         if self.pending.is_some() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        let mut progress = self.query(method)?;
+        let progress = self.query(method)?;
+        self.drive_complete(progress)
+    }
+
+    fn slot_effect_complete(
+        &mut self,
+        attempt: &DurableCurrentDestinationSlotAttemptV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        if self.authority_effects.has_pending() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
+        if let Some(recovery) = self.pending.take() {
+            if recovery.method != method {
+                self.pending = Some(recovery);
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+            let progress = self.resume_query(recovery)?;
+            return self.drive_complete(progress);
+        }
+        let prepared = self
+            .session
+            .prepare_authenticated_destination_slot_effect(attempt)
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let progress = match prepared {
+            DormantBrokerRequestPreparationV1::Prepared(prepared) => {
+                self.send_query(method, prepared)?
+            }
+            DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                recovery,
+                request,
+                ..
+            } => DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                DormantLifecycleInventoryQueryRecoveryV1 {
+                    method,
+                    stage: DormantLifecycleInventoryQueryStageV1::Initialization {
+                        recovery,
+                        request,
+                    },
+                },
+            ),
+            DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                recovery,
+                request,
+                ..
+            } => DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                DormantLifecycleInventoryQueryRecoveryV1 {
+                    method,
+                    stage: DormantLifecycleInventoryQueryStageV1::Successor { recovery, request },
+                },
+            ),
+        };
+        self.drive_complete(progress)
+    }
+
+    fn drive_complete(
+        &mut self,
+        mut progress: DormantLifecycleInventoryQueryProgressV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
         loop {
             match progress {
                 DormantLifecycleInventoryQueryProgressV1::Complete {
