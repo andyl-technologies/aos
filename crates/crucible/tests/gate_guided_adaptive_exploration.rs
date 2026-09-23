@@ -467,6 +467,57 @@ fn gate_preemption_branching_keeps_parent_bound_typed_selections_distinct()
 }
 
 #[test]
+fn gate_preemption_branching_reordering_requires_fresh_parent_bound_selection()
+-> Result<(), Box<dyn Error>> {
+    let world = two_single_vcpu_node_world("preemption-selection-parent")?;
+    let root = Configuration::genesis(world.scenario_def());
+    let config_a = single_vcpu_preemption_config("guest-a");
+    let config_b = single_vcpu_preemption_config("guest-b");
+
+    let branch_a = preemption_branch_choices(&root, &config_a)?
+        .1
+        .into_iter()
+        .next()
+        .ok_or("guest-a should produce a preemption branch")?;
+    let after_a = branch_a
+        .decisions()
+        .iter()
+        .cloned()
+        .try_fold(root.clone(), |parent, decision| try_step(&parent, decision))?;
+    let branch_b_at_root = preemption_branch_choices(&root, &config_b)?
+        .1
+        .into_iter()
+        .next()
+        .ok_or("guest-b should produce a root branch")?;
+    let branch_b_after_a = preemption_branch_choices(&after_a, &config_b)?
+        .1
+        .into_iter()
+        .next()
+        .ok_or("guest-b should produce a branch after guest-a")?;
+
+    let [Decision::Selection(at_root), Decision::Preemption(root_preemption)] =
+        branch_b_at_root.decisions()
+    else {
+        return Err("expected typed root preemption branch".into());
+    };
+    let [Decision::Selection(after_a), Decision::Preemption(after_a_preemption)] =
+        branch_b_after_a.decisions()
+    else {
+        return Err("expected typed nested preemption branch".into());
+    };
+    let root_selection = at_root.selection()?;
+    let nested_selection = after_a.selection()?;
+
+    assert_eq!(root_preemption, after_a_preemption);
+    assert_eq!(root_selection.value(), nested_selection.value());
+    assert_eq!(root_selection.domain(), nested_selection.domain());
+    assert_ne!(root_selection.opportunity(), nested_selection.opportunity());
+    assert_ne!(root_selection.origin(), nested_selection.origin());
+
+    Ok(())
+}
+
+#[test]
 fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn Error>> {
     let world = single_node_world("app-random-branching")?;
     let scenario = world.scenario_def();
