@@ -8,6 +8,7 @@
   findingSignalBundle ? false,
   findingForkWrite ? false,
   maintenanceTransfer ? false,
+  policyTimeout ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -127,7 +128,9 @@
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
-      if maintenanceTransfer
+      if policyTimeout
+      then "crucible-packaged-campaign-policy-timeout"
+      else if maintenanceTransfer
       then "crucible-campaign-exact-maintenance-transfer"
       else if guestChoice
       then "crucible-packaged-campaign-choice"
@@ -204,7 +207,35 @@
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
-        if maintenanceTransfer
+        if policyTimeout
+        then ''
+          timeout_selector=packaged::public_packaged_executor_retains_policy_timeout_causal_evidence
+          timeout_log=/tmp/campaign-policy-timeout.log
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-policy-timeout-list.log 2>&1; then
+            cat /tmp/campaign-policy-timeout-list.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$timeout_selector: test" /tmp/campaign-policy-timeout-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$timeout_selector" --nocapture > "$timeout_log" 2>&1; then
+            cat "$timeout_log"
+            exit 1
+          fi
+          cat "$timeout_log"
+          ${pkgs.grep}/bin/grep -Fxq 'packaged_policy_timeout_observation_authenticated=true' "$timeout_log"
+          ${pkgs.grep}/bin/grep -Fxq 'packaged_policy_timeout_marker_authenticated=true' "$timeout_log"
+          ${pkgs.grep}/bin/grep -Fxq 'public_packaged_policy_timeout_causal_evidence=true' "$timeout_log"
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$timeout_log"
+          printf '%s\n' \
+            'gate=gate:campaign-policy-timeout-real-qemu' \
+            'proven=typed-policy-timeout,retained-causal-marker'
+        ''
+        else if maintenanceTransfer
         then ''
           maintenance_selector=packaged::guest_choice::maintenance_transfer::public_active_pause_restart_and_executable_transfer_rejects_incompatible_provenance
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \

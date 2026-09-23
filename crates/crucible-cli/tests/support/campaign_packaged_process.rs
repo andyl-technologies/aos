@@ -16,6 +16,8 @@ const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 
 #[path = "campaign_packaged_process/guest_choice.rs"]
 pub(super) mod guest_choice;
+#[path = "campaign_packaged_process/policy_timeout.rs"]
+mod policy_timeout;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
@@ -54,6 +56,12 @@ fn public_packaged_executor_observes_zero_and_early_logical_deadlines() -> Resul
     packaged_campaign_flight(PackagedFlight::EarlyExactTime)
 }
 
+#[test]
+#[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
+fn public_packaged_executor_retains_policy_timeout_causal_evidence() -> Result<(), Box<dyn Error>> {
+    packaged_campaign_flight(PackagedFlight::PolicyTimeout)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PackagedFlight {
     Restart,
@@ -62,10 +70,14 @@ enum PackagedFlight {
     ExactTime,
     ExactTimeMultiVm,
     EarlyExactTime,
+    PolicyTimeout,
 }
 
 fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
+    if mode == PackagedFlight::PolicyTimeout {
+        policy_timeout::grant_finding_queries(&fixture)?;
+    }
     let root = fixture._temporary.path();
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
@@ -151,6 +163,15 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
             })
             .action(Action::Pass)
             .build_for_world(&world)?
+    } else if mode == PackagedFlight::PolicyTimeout {
+        EventGraph::builder()
+            .event("begin-flight")
+            .entrypoint()
+            .action(Action::Group(Vec::new()))
+            .event("complete-flight")
+            .when(Predicate::at(VirtualTime { ticks: 20_000_000 }))
+            .action(Action::Pass)
+            .build_for_world(&world)?
     } else if mode == PackagedFlight::GuestQuantum {
         EventGraph::builder()
             .event("begin-flight")
@@ -223,8 +244,14 @@ retain_all_findings = true
 survivor_limit = 1
 exact_findings = true
 exact_user_pins = true
+{}
 "#,
-            json_string(&compiled, "scenario")?
+            json_string(&compiled, "scenario")?,
+            if mode == PackagedFlight::PolicyTimeout {
+                "[attempt_timeout]\nvirtual_time_nanoseconds = 2000000"
+            } else {
+                ""
+            }
         ),
     )?;
     run_json(
@@ -291,6 +318,7 @@ exact_user_pins = true
                 &fixture,
                 &head,
                 &json_string(&compiled, "genesis_artifact")?,
+                mode,
             )
         };
         if let Err(error) = flight_result {
@@ -311,6 +339,9 @@ exact_user_pins = true
         PackagedFlight::EarlyExactTime => {
             println!("public_packaged_early_exact_trigger_deadlines=true")
         }
+        PackagedFlight::PolicyTimeout => {
+            println!("public_packaged_policy_timeout_causal_evidence=true")
+        }
     }
     Ok(())
 }
@@ -319,8 +350,9 @@ fn execute_initial_discovery(
     fixture: &FlightFixture,
     head: &Value,
     genesis: &str,
+    mode: PackagedFlight,
 ) -> Result<(), Box<dyn Error>> {
-    let (attempt, before) = begin_initial_discovery(fixture, head, genesis)?;
+    let (attempt, before) = begin_initial_discovery(fixture, head, genesis, mode)?;
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut last_head = None;
@@ -357,11 +389,14 @@ fn execute_initial_discovery(
                 parse_json_output(output, "authenticate initial discovery completion")?;
             assert_eq!(explanation["attempt"]["id"], attempt);
             assert_eq!(explanation["admission"]["admission_ordinal"], 1);
-            assert_eq!(explanation["observation"]["stop"], "terminal-success");
+            if mode == PackagedFlight::PolicyTimeout {
+                policy_timeout::validate(fixture, &explanation)?;
+            } else {
+                assert_eq!(explanation["observation"]["stop"], "terminal-success");
+            }
             // These scenarios add no decisions, so their configuration stays
-            // at genesis even after guest execution. In the delayed fixture,
-            // only the exact-time event can produce this terminal result; the
-            // backend loop verifies reaching its selected RUN ceiling first.
+            // at genesis even after guest execution. The delayed terminal
+            // fixtures require their exact-time event before completion.
             assert_eq!(explanation["observation"]["child_artifact"], genesis);
             assert_eq!(
                 explanation["observation"]["discovered_choices"],
@@ -395,14 +430,24 @@ fn begin_initial_discovery(
     fixture: &FlightFixture,
     head: &Value,
     genesis: &str,
+    mode: PackagedFlight,
 ) -> Result<(String, Value), Box<dyn Error>> {
     let path = crucible_campaign::BranchPath::new(Vec::new())?;
+    let stop = if mode == PackagedFlight::PolicyTimeout {
+        crucible_campaign::StopCondition::Bounded {
+            primary: Box::new(crucible_campaign::StopCondition::NextChoice),
+            virtual_time_nanoseconds: Some(2_000_000),
+            execution_quanta: None,
+        }
+    } else {
+        crucible_campaign::StopCondition::NextChoice
+    };
     let attempt = crucible_campaign::Attempt::new(
         crucible_campaign::AttemptStart::Discover {
             configuration: crucible_campaign::ConfigurationArtifactId::parse(genesis)?,
         },
         path.id()?,
-        crucible_campaign::StopCondition::NextChoice,
+        stop,
     )?
     .id()?
     .to_string();
