@@ -159,6 +159,14 @@ fn gate_coverage_guided_fuzzing_pins_bounded_fault_plan_variants() -> Result<(),
     );
     assert_ne!(empty.scenario_def().id(), faulted.scenario_def().id());
     assert_eq!(faulted, family.instantiate_sample(1)?);
+    let authored = faulted.form().plan().to_canonical_toml()?;
+    let decoded_family = ScenarioFamily::new(
+        family.space().clone(),
+        NodeTemplate::fixed_icount(icount(50)),
+    )
+    .with_canonical_fault_plan_toml(&authored)?;
+    assert_eq!(decoded_family.instantiate_sample(1)?, faulted);
+
     let artifact = ReproductionArtifact::capture(faulted.form(), &Schedule::empty())?;
     let replay = artifact.replay()?;
     assert_eq!(replay.scenario, faulted.scenario_def().id());

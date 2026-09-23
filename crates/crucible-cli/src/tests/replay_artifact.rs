@@ -1543,7 +1543,7 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
 
     let corrupt_family = store.put(
         valid_fuzz_family_toml()
-            .replace("crucible.scenario-family.v2", "wrong.schema")
+            .replace("crucible.scenario-family.v3", "wrong.schema")
             .as_bytes(),
     )?;
     let corrupt_reference = format_content_hash_ref(corrupt_family);

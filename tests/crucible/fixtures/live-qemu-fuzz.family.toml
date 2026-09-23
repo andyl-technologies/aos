@@ -1,5 +1,6 @@
-schema = "crucible.scenario-family.v2"
+schema = "crucible.scenario-family.v3"
 topology_shapes = ["ring"]
+fault_densities = [0]
 
 [seed_space]
 kind = "generated"

@@ -516,8 +516,9 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 }
 
 fn valid_fuzz_family_toml() -> &'static str {
-    r#"schema = "crucible.scenario-family.v2"
+    r#"schema = "crucible.scenario-family.v3"
 topology_shapes = ["ring"]
+fault_densities = [0]
 
 [seed_space]
 kind = "generated"
