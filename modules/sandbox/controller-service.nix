@@ -220,6 +220,7 @@ in {
           "aos/sandbox/cache-residency"
           "aos/sandbox/cache-residency/objects"
           "aos/sandboxd/cache-residency-authority"
+          "aos/sandboxd/view-sources"
         ];
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandboxd";

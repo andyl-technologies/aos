@@ -16,6 +16,9 @@ use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};
 use sha2::{Digest as _, Sha256};
 
+use crate::cache_directory_source::{
+    ProjectSealedViewObjectSourceV1, ProjectSealedViewSourceErrorV1,
+};
 use crate::cache_source_membership::{
     CacheCompiledSourceLimitsV1, CompiledCacheSourceMembershipErrorV1,
     with_compiled_cache_source_membership_v1,
@@ -100,6 +103,9 @@ impl PublicCacheUnpinExecutionV1 {
 /// Reports failure before a public Cache pin has a complete execution result.
 #[derive(Debug, thiserror::Error)]
 pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
+    /// The protected source root belongs to a different project.
+    #[error("public Cache pin source project differs from the consumer")]
+    SourceProjectMismatch,
     /// The exact View source did not prove this object's membership.
     #[error(transparent)]
     Source(#[from] CompiledCacheSourceMembershipErrorV1<E>),
@@ -115,6 +121,48 @@ pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
     /// A retained logical pin lacked its exact physical counterpart.
     #[error(transparent)]
     Physical(#[from] CacheOwnerErrorV1),
+}
+
+/// Acquires a public logical pin from one project-bound sealed source root.
+///
+/// The root's project binding is checked before any portable object is read.
+/// Exact source membership, current desired state, protected Cache authority,
+/// and physical pin settlement are still checked by the generic execution.
+///
+/// # Errors
+///
+/// Returns an error for a cross-project source root or any ordinary public
+/// Cache pin source, authority, or physical-owner failure.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_public_cache_pin_from_project_source_v1(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    source: &mut ProjectSealedViewObjectSourceV1,
+    consumer: &RecheckedCacheConsumerV1,
+    source_journal: &Journal,
+    request: &DormantSandboxRequestKindV1,
+    operation: OperationId,
+    controller_node: NodeId,
+    compiler_abi: [u8; 32],
+    compilation_limits: CacheCompiledSourceLimitsV1,
+) -> Result<PublicCachePinExecutionV1, PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1>>
+{
+    if source.project() != consumer.project() {
+        return Err(PublicCachePinExecutionErrorV1::SourceProjectMismatch);
+    }
+
+    execute_public_cache_pin_v1(
+        protected,
+        physical,
+        source,
+        consumer,
+        source_journal,
+        request,
+        operation,
+        controller_node,
+        compiler_abi,
+        compilation_limits,
+    )
 }
 
 /// Classifies a cold public pin acquisition without selecting a new partition.

@@ -83,16 +83,20 @@ mod recovery;
 )]
 mod self_execution;
 
-pub use cache_directory_source::{DirectoryPortableObjectSource, PortableObjectReader};
+pub use cache_directory_source::{
+    DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
+    ProjectSealedViewSourceErrorV1,
+};
 pub use cache_public_pin::{
     ConfirmedPublicCachePinV1, PublicCachePinExecutionErrorV1, PublicCachePinExecutionV1,
     PublicCachePinRecoveryErrorV1, PublicCachePinRecoveryV1, PublicCacheUnpinExecutionV1,
     PublicCacheUnpinObservationErrorV1, PublicCacheUnpinProgressErrorV1,
     PublicCacheUnpinProgressV1, PublicCacheUnpinRecoveryErrorV1, PublicCacheUnpinRecoveryV1,
-    execute_public_cache_pin_v1, execute_public_cache_unpin_consumer_v1,
-    execute_public_cache_unpin_v1, observe_public_cache_unpin_completion_v1,
-    public_cache_pin_transaction_id_v1, public_cache_unpin_transaction_id_v1,
-    recover_public_cache_pin_v1, recover_public_cache_unpin_v1,
+    execute_public_cache_pin_from_project_source_v1, execute_public_cache_pin_v1,
+    execute_public_cache_unpin_consumer_v1, execute_public_cache_unpin_v1,
+    observe_public_cache_unpin_completion_v1, public_cache_pin_transaction_id_v1,
+    public_cache_unpin_transaction_id_v1, recover_public_cache_pin_v1,
+    recover_public_cache_unpin_v1,
 };
 pub use cache_source_membership::{
     CacheCompiledSourceLimitsV1, CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
