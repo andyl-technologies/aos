@@ -142,7 +142,6 @@ shape-review|crates/crucible-session/src/session/engine.rs|sha256:733e2ccff54f38
 shape-review|crates/crucible-session/src/tests/engine_state.rs|sha256:cfc0c30c8e7e9cdfc7230c57b0089419bff7a46d45d2477bb45ac31a8bd0895f|tests|2457|Session lifecycle, command-boundary, checkpoint, resume, fork, and failure regressions.|Lifecycle, control, checkpoint, resume, fork, replay, and failure cases exercise one session-engine state-transition fixture.
 shape-review|crates/crucible/src/model/binary_state.rs|sha256:b851de33ecef446f946a68d1703a5d69890378adb29e604500ed85ea7f959e21|implementation|1653|Canonical binary encoding for scenarios, checkpoints, and materialized scheduler state.|Primitive writers and state codecs share one canonical byte layout and version-compatibility contract.
 shape-review|crates/crucible/src/model/engine.rs|sha256:f9e2d5b797f1aad1229824b9851d4698b83f2f17143d12a6b7a67a1f6cc33a8d|implementation|2219|Engine replay reconstruction, checkpoint validation, reduction, and symmetry helpers.|Replay reconstruction, checkpoint validation, reduction, and symmetry helpers operate on one engine state-transition model.
-shape-review|crates/crucible/src/model/failure/material.rs|sha256:d2bd5e42027bf236e53208eeb9d4bd7b6589268deb854245582d730374fe1c68|implementation|1424|Canonical failure-signature material, retained minimization policy, and replay diagnostics.|threshold-not-reached
 shape-review|crates/crucible/src/model/failure/replay_evidence.rs|sha256:c88316680160db2048fac054cbc9f7ec61963a336607f7974ae03a2bc657dc54|implementation|1035|Replay-oracle evidence, sampled mismatch reports, divergence bisection, and artifact authentication.|threshold-not-reached
 shape-review|crates/crucible/src/model/fault_signal/binding_runtime_test.rs|sha256:1e6298ee09a0da08e3e5365f913ac56af22d63c5be640bc6fa48e4a2672c07cb|tests|1490|Tests deterministic binding evaluation, checkpointing, replay, and search overrides.|threshold-not-reached
 shape-review|crates/crucible/src/model/fault_signal/evaluator.rs|sha256:952f0d03b3bc25da20ee71103dd305f83da9f9652ced0e289c1f5384b562fd91|implementation|1988|Typed evaluation of fault-signal sources, transforms, temporal operators, and compositions.|Domain validation, recursive dependency evaluation, typed operators, and stateful node semantics share one memoized signal-evaluation context.
@@ -586,7 +585,6 @@ shape-line|crates/crucible/src/model/configuration.rs|723
 shape-line|crates/crucible/src/model/debug.rs|2923
 shape-line|crates/crucible/src/model/engine.rs|2159
 shape-line|crates/crucible/src/model/exploration.rs|2472
-shape-line|crates/crucible/src/model/failure/material.rs|1398
 shape-line|crates/crucible/src/model/family.rs|1319
 shape-line|crates/crucible/src/model/fault_signal/authoring/signal_codec.rs|935
 shape-line|crates/crucible/src/model/fault_signal/authoring/target_resolution.rs|695
