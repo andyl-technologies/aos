@@ -898,15 +898,26 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
                     .map_err(Box::new)
             });
 
+        // Matching the candidate schedule reconstructs the attempt start;
+        // the failure may occur later, at the original declared stop.
         let pending = materialization.and_then(|materialization| {
-            crate::qemu_campaign_driver::finding_candidate_boundary_pending(
+            let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
+            let outcome = crate::qemu_campaign_driver::drive_modeled_attempt(
+                &mut facade,
                 input,
-                target.clone(),
+                context,
                 materialization,
             )
-            .map_err(AttemptWorkerFailure::Terminal)
             .map_err(map_fresh_driver_failure)
-            .map_err(Box::new)
+            .map_err(Box::new)?;
+            match outcome {
+                QemuFreshDriveOutcome::Observation(pending) => Ok(pending),
+                QemuFreshDriveOutcome::CheckpointRequested => {
+                    Err(Box::new(AttemptWorkerFailure::Terminal(
+                        QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
+                    )))
+                }
+            }
         });
         let pending = pending.and_then(|pending| {
             lifecycle
@@ -1172,15 +1183,11 @@ impl QemuFreshStartMaterialization {
         )
     }
 
-    pub(crate) fn into_candidate_parts(self) -> QemuFreshCandidateMaterializationParts {
-        QemuFreshCandidateMaterializationParts {
-            event_log: self.event_log,
-            event_log_bytes: self.event_log_bytes,
-            completed_quanta: self.completed_quanta,
-            frontier: self.frontier,
-            terminal_quiescence: self.terminal_quiescence,
-            replayed_discoveries: self.replayed_discoveries,
-        }
+    /// Moves bounded prefix discoveries into the modeled attempt driver.
+    pub(crate) fn take_replayed_discoveries(
+        &mut self,
+    ) -> BTreeMap<ChoiceOpportunityId, ChoiceDiscovery> {
+        std::mem::take(&mut self.replayed_discoveries)
     }
 
     pub(crate) fn from_resume_parts(
@@ -1281,15 +1288,6 @@ impl QemuFreshStartMaterialization {
             retain_replayed_discoveries: false,
         }
     }
-}
-
-pub(crate) struct QemuFreshCandidateMaterializationParts {
-    pub(crate) event_log: Vec<SchedulerEventLogEntry>,
-    pub(crate) event_log_bytes: usize,
-    pub(crate) completed_quanta: u64,
-    pub(crate) frontier: crucible::VirtualTime,
-    pub(crate) terminal_quiescence: Option<SchedulerQuiescence>,
-    pub(crate) replayed_discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
 }
 
 /// Failure while reconstructing one exact fresh-QEMU start configuration.

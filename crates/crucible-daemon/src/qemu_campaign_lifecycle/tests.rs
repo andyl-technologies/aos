@@ -1215,6 +1215,14 @@ impl QemuFreshAttemptLifecycleFactory for SequencedBoundaryCaptureLifecycleFacto
             .final_events
             .pop_front()
             .expect("sequenced boundary fixture has one event log per replay");
+        // A selected candidate needs its decision while reconstructing the
+        // start. An empty candidate must not acquire that decision during its
+        // subsequent declared-stop quantum.
+        let replay_decisions = if start.schedule.len() == 0 {
+            VecDeque::new()
+        } else {
+            self.replay_decisions.clone()
+        };
         Ok(BoundaryCaptureLifecycle {
             configuration: start.clone(),
             quanta: 0,
@@ -1222,7 +1230,7 @@ impl QemuFreshAttemptLifecycleFactory for SequencedBoundaryCaptureLifecycleFacto
             events: Vec::new(),
             captured: Arc::clone(&self.captured),
             final_events,
-            replay_decisions: self.replay_decisions.clone(),
+            replay_decisions,
         })
     }
 }
@@ -2009,7 +2017,7 @@ fn finding_candidate_input_with_configuration(
     finding_candidate_input_with_configuration_and_stop(
         base,
         configuration,
-        StopCondition::Terminal,
+        StopCondition::ExecutionQuanta(1),
     )
 }
 
@@ -2138,7 +2146,9 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         },
         QemuFreshModeledDriver::new(),
     );
-    let context = fresh_runner_context();
+    // Initial reproduction and two original-plus-candidate minimization passes
+    // each consume one quantum at their declared stop.
+    let context = context(resources(5), ExecutionCancellation::default());
     let target_signature =
         crate::automatic_finding_runner::automatic_finding_signature(&input, &owned)
             .expect("candidate target signature")
@@ -2224,15 +2234,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                     .iter()
                     .cloned()
                     .collect::<VecDeque<_>>();
-                let event_sequence = u64::try_from(
-                    decisions
-                        .iter()
-                        .filter(|decision| matches!(decision, Decision::Selection(_)))
-                        .count(),
-                )
-                .expect("candidate event sequence");
                 let final_event = SchedulerEventLogEntry::assertion_state_observation(
-                    event_sequence,
+                    1,
                     VirtualTime { ticks: 1 },
                     assertion.clone(),
                     AssertionPhase::Satisfied,
@@ -2258,6 +2261,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
             },
         )
         .expect("prepare production rich finding closure");
+    assert_eq!(context.consumed_execution_quanta(), 5);
     let durable_bytes = prepared
         .canonical_bytes()
         .expect("encode rich prepared result");
@@ -2297,6 +2301,11 @@ impl GuardedCampaignFindingOracle for NamedSupplementalFindingOracle {
         configuration: &Configuration,
     ) -> Result<Option<GuardedCampaignFindingOracleEvaluation>, GuardedCampaignFindingOracleError>
     {
+        // This fixture's supplemental source applies after its RNG draw. The
+        // empty minimization candidate has no such source-bound finding.
+        if configuration.schedule.is_empty() {
+            return Ok(None);
+        }
         crucible::SearchFailureOracle::evaluate_configuration_with_named_predicates(
             &self.scenario,
             configuration,
@@ -2469,9 +2478,9 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         },
         QemuFreshSupplementalModeledDriver::new(Some(Arc::clone(&oracle))),
     );
-    // Each pass replays the one-decision original and then the empty selected
-    // schedule, so the retained assertion follows prefixes of length one and zero.
-    let replay_final_events = [1, 0, 1, 0]
+    // Each pass reaches its declared one-quantum stop before final assertion
+    // drain, including the empty selected schedule.
+    let replay_final_events = [1; 4]
         .into_iter()
         .map(|sequence| {
             vec![SchedulerEventLogEntry::assertion_state_observation(
@@ -2564,9 +2573,10 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
 }
 
 #[test]
-fn finding_candidate_replay_evaluates_the_exact_materialized_boundary() {
+fn finding_candidate_replay_evaluates_the_declared_stop_after_materialization() {
     let input = modeled_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(4));
     let candidate = finding_candidate_artifact(&input);
+    let context = fresh_runner_context();
     let mut runner = QemuFreshExecutionRunner::new(
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
@@ -2577,7 +2587,7 @@ fn finding_candidate_replay_evaluates_the_exact_materialized_boundary() {
     );
 
     let outcome = runner
-        .replay_finding_candidate_boundary(&input, &candidate, None, &fresh_runner_context())
+        .replay_finding_candidate_boundary(&input, &candidate, None, &context)
         .expect("candidate boundary replay");
     let QemuFindingCandidateReplayOutcome::Observed(evidence) = outcome else {
         panic!("genesis candidate must be observable")
@@ -2587,11 +2597,12 @@ fn finding_candidate_replay_evaluates_the_exact_materialized_boundary() {
     assert_eq!(replay.configuration(), &candidate);
     assert_eq!(measurements.len(), 1);
     assert!(final_events.is_empty());
+    assert_eq!(context.consumed_execution_quanta(), 4);
 }
 
 #[test]
-fn finding_candidate_replay_stops_after_reaching_a_nonempty_schedule() {
-    let input = modeled_non_genesis_fresh_runner_input();
+fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
+    let input = modeled_non_genesis_fresh_runner_input_for_stop(StopCondition::ExecutionQuanta(2));
     let candidate = finding_candidate_artifact(&input);
     let context = fresh_runner_context();
     let mut runner = QemuFreshExecutionRunner::new(
@@ -2617,8 +2628,8 @@ fn finding_candidate_replay_stops_after_reaching_a_nonempty_schedule() {
     assert_eq!(replay.configuration(), &candidate);
     assert_eq!(
         context.consumed_execution_quanta(),
-        1,
-        "candidate evaluation must not run a continuation quantum"
+        2,
+        "candidate evaluation must reach the declared stop after reconstructing the schedule"
     );
 }
 
@@ -2668,7 +2679,9 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         crucible::FailureTimeoutBudgetKind::ExecutionQuanta
     );
     assert_eq!(timeout.configured_limit, Some(1));
-    assert_eq!(timeout.observed_quanta, 1);
+    // One quantum reconstructs the candidate, then the declared one-quantum
+    // attempt budget expires at the next absolute quantum.
+    assert_eq!(timeout.observed_quanta, 2);
     assert!(causal_entries.iter().any(|entry| {
         entry.event_payload().kind() == "execution_budget_exhausted"
             && entry.event_payload().string("budget_kind") == Some("execution-quanta")
@@ -2762,10 +2775,11 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
         Seed::from_u64(0xa2b0_c0d0),
     )
     .expect("paired replay scenario");
-    let input = modeled_fresh_runner_input_for_scenario(scenario, StopCondition::NextChoice);
+    let input =
+        modeled_fresh_runner_input_for_scenario(scenario, StopCondition::VirtualTimeNanoseconds(1));
     let candidate = finding_candidate_artifact(&input);
     let expected_event = condition_observation_entry_for_test(
-        0,
+        1,
         &ObservableEvent::coverage_marker(
             Icount { retired: 1 },
             NodeId {
@@ -2775,7 +2789,7 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
         ),
     );
     let reproduced_event = condition_observation_entry_for_test(
-        0,
+        1,
         &ObservableEvent::coverage_marker(
             Icount { retired: 1 },
             NodeId {
@@ -2784,8 +2798,8 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
             MarkerId::from_name("reproduced-path"),
         ),
     );
-    let expected_boundary = fork_entry(1, b"expected-fork");
-    let reproduced_boundary = fork_entry(1, b"reproduced-fork");
+    let expected_boundary = fork_entry(2, b"expected-fork");
+    let reproduced_boundary = fork_entry(2, b"reproduced-fork");
     let mut runner = QemuFreshExecutionRunner::new(
         SequencedBoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
@@ -2829,7 +2843,10 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
     assert_ne!(expected_coverage, reproduced_coverage);
     assert_eq!(selected_replay.coverage(), &expected_coverage);
     assert_eq!(selected_events.len(), 2);
-    assert_eq!(causal_entries, selected_events);
+    // Reaching the declared stop records a quantum boundary before the
+    // selected coverage and fork entries drained at that boundary.
+    assert_eq!(causal_entries.len(), 3);
+    assert_eq!(&causal_entries[1..], selected_events.as_slice());
     assert_eq!(
         coverage_fingerprint,
         crucible::coverage_fingerprint_from_event_log(&selected_events)
@@ -3022,7 +3039,7 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
         let input = modeled_assertion_candidate_input(assertion.clone(), predicate_at);
         let candidate = finding_candidate_artifact(&input);
         let final_event = SchedulerEventLogEntry::assertion_state_observation(
-            0,
+            1,
             VirtualTime { ticks: 1 },
             assertion.clone(),
             AssertionPhase::Satisfied,
@@ -3315,7 +3332,7 @@ fn modeled_assertion_candidate_input(
         Seed::from_u64(0x51a7_5afe),
     )
     .expect("candidate assertion scenario");
-    modeled_fresh_runner_input_for_scenario(scenario, StopCondition::Terminal)
+    modeled_fresh_runner_input_for_scenario(scenario, StopCondition::ExecutionQuanta(1))
 }
 
 fn modeled_fresh_runner_input_for_scenario(
@@ -3678,10 +3695,6 @@ fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
         stream: RngStreamId::from_name("fresh-runner-non-genesis"),
         value: 7,
     }))
-}
-
-fn modeled_non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
-    modeled_non_genesis_fresh_runner_input_for_stop(StopCondition::Terminal)
 }
 
 fn modeled_non_genesis_fresh_runner_input_for_stop(
