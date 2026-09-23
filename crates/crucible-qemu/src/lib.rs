@@ -14,9 +14,7 @@
 //! owns host-side plugin coverage observation bridging; `host_setup` owns the
 //! real Linux descriptor handoff and setup lifecycle driver; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
-//! `gdbstub_proxy` owns the mediated debug gdbstub bridge
-//! between QEMU and the operator-facing `--gdb-listen` endpoint; `async_driver`
-//! owns the bounded host-I/O bridge between
+//! `async_driver` owns the bounded host-I/O bridge between
 //! synchronous scheduler node steps and real-time child I/O; `crash_detection`
 //! owns typed crashed-node status classification; `node` owns the
 //! scheduler-facing one-child/three-channel QEMU wrapper; `node_factory` owns
@@ -50,7 +48,6 @@ mod exact_checkpoint_input;
 mod fault_action_sink;
 mod fault_capability;
 mod fault_implementation;
-mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
 mod host_setup;
 mod inertness;
@@ -127,10 +124,6 @@ pub(crate) use exact_checkpoint_input::QemuExactCheckpointInputMaterialization;
 pub use fault_action_sink::QemuFaultActionSink;
 pub use fault_capability::{QemuFaultCapabilityRequirement, QemuTargetManifestRequirement};
 pub use fault_implementation::node_effect_implementation_registry;
-pub use gdbstub_proxy::{
-    QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
-    QemuGdbstubProxyServer, QemuGdbstubProxySessionReport,
-};
 #[cfg(target_os = "linux")]
 pub use host_setup::{
     QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,

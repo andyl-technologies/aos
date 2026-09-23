@@ -363,14 +363,16 @@ pub fn classify_rsp_packet(packet: &[u8]) -> RspDisposition {
         return RspDisposition::SchedulerRunControl;
     }
     if matches!(packet.first(), Some(b'G' | b'P' | b'M' | b'X' | b'A'))
-        || packet.starts_with(b"Z0,")
-        || packet.starts_with(b"z0,")
         || packet.starts_with(b"qRcmd,")
         || packet.starts_with(b"vFlash")
     {
         return RspDisposition::RejectReadOnly;
     }
-    if packet.starts_with(b"Z1,") || packet.starts_with(b"z1,") {
+    if packet.starts_with(b"Z0,")
+        || packet.starts_with(b"z0,")
+        || packet.starts_with(b"Z1,")
+        || packet.starts_with(b"z1,")
+    {
         return RspDisposition::ForwardToQemu;
     }
     if packet == b"?"
@@ -528,14 +530,13 @@ mod tests {
                 RspDisposition::SchedulerRunControl
             );
         }
-        for packet in [
-            b"M1000,1:00".as_slice(),
-            b"P0=00",
-            b"Z0,4000,1",
-            b"qRcmd,6964",
-        ] {
+        for packet in [b"M1000,1:00".as_slice(), b"P0=00", b"qRcmd,6964"] {
             assert_eq!(classify_rsp_packet(packet), RspDisposition::RejectReadOnly);
         }
+        assert_eq!(
+            classify_rsp_packet(b"Z0,4000,1"),
+            RspDisposition::ForwardToQemu
+        );
         assert_eq!(
             classify_rsp_packet(b"Z1,4000,1"),
             RspDisposition::ForwardToQemu

@@ -46,7 +46,7 @@ impl QemuHotForkNodeStateContinuation {
                 "source node is not in its running lifecycle state",
             ));
         }
-        if source.gdbstub.is_some() || source.active_gdbstub.is_some() {
+        if source.gdbstub.is_some() {
             return Err(invalid_node_continuation(
                 "source node retains an operator debug endpoint",
             ));
@@ -310,7 +310,6 @@ impl QemuHotForkSchedulerNodeContinuation {
             last_step_inbound_frames_consumed: state.last_step_inbound_frames_consumed,
             console_observation_boundary: state.console_observation_boundary,
             gdbstub: None,
-            active_gdbstub: None,
             pending_preemption: state.pending_preemption,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,

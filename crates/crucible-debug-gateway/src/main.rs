@@ -832,6 +832,9 @@ fn handle_operator_rsp_unit(
         RspUnit::Interrupt => write_rsp_rejection(process, b"E22", false),
         RspUnit::Packet(packet) => match classify_rsp_packet(&packet) {
             RspDisposition::ForwardToQemu => {
+                // A canonical software-breakpoint request may use hardware only.
+                // QEMU's reply still determines whether that mechanism exists.
+                let packet = canonical_breakpoint_packet(&packet);
                 if !admit_operator_request(process, &packet)? {
                     return write_rsp_rejection(process, b"E20", true);
                 }
@@ -849,6 +852,26 @@ fn handle_operator_rsp_unit(
             RspDisposition::RejectReadOnly => write_rsp_rejection(process, b"E22", true),
             RspDisposition::RejectUnsupported => write_rsp_rejection(process, b"E01", true),
         },
+    }
+}
+
+fn canonical_breakpoint_packet(packet: &[u8]) -> Vec<u8> {
+    let payload = rsp_payload(packet);
+    let hardware = if let Some(address) = payload.strip_prefix(b"Z0,") {
+        Some((b"Z1,".as_slice(), address))
+    } else {
+        payload
+            .strip_prefix(b"z0,")
+            .map(|address| (b"z1,".as_slice(), address))
+    };
+
+    if let Some((prefix, address)) = hardware {
+        let mut payload = Vec::with_capacity(prefix.len() + address.len());
+        payload.extend_from_slice(prefix);
+        payload.extend_from_slice(address);
+        encode_rsp_packet(&payload)
+    } else {
+        packet.to_vec()
     }
 }
 

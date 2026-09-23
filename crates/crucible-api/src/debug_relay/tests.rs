@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::*;
 
 #[test]
-fn read_only_relay_allows_fragmented_queries_and_transport_acknowledgements() {
+fn read_only_relay_allows_queries_breakpoints_and_transport_acknowledgements() {
     let mut filter = ReadOnlyGdbFilter::default();
     let packet = rsp_packet(b"m1000,20");
     let split = packet.len() / 2;
@@ -18,6 +18,15 @@ fn read_only_relay_allows_fragmented_queries_and_transport_acknowledgements() {
         filter.accept(&rsp_packet(b"QStartNoAckMode")),
         Ok(rsp_packet(b"QStartNoAckMode"))
     );
+    for command in [
+        b"Z0,1000,1".as_slice(),
+        b"z0,1000,1",
+        b"Z1,1000,1",
+        b"z1,1000,1",
+    ] {
+        let packet = rsp_packet(command);
+        assert_eq!(filter.accept(&packet), Ok(packet));
+    }
 }
 
 #[test]
@@ -35,8 +44,7 @@ fn read_only_relay_rejects_every_state_changing_command_family() {
         b"k",
         b"D",
         b"R00",
-        b"Z0,1000,1",
-        b"z0,1000,1",
+        b"Z2,1000,1",
         b"qRcmd,7265736574",
         b"QNonStop:1",
     ];

@@ -187,7 +187,7 @@ impl DebugInvocationPlan {
     fn proves_thin_wrapper(&self) -> bool {
         !self.owns_debug_state
             && self.surface_contract.delegates_to_session_commands
-            && self.surface_contract.delegates_to_gdbstub_proxy
+            && self.surface_contract.delegates_to_debug_gateway
             && self
                 .engine_operations
                 .contains(&DebugEngineOperation::ResolveTarget)

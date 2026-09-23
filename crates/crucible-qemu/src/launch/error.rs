@@ -103,6 +103,12 @@ pub enum QemuLaunchCommandError {
         /// Invalid command-line field.
         field: &'static str,
     },
+    /// A debug gdbstub would listen outside the guarded QEMU run directory.
+    #[error("QEMU gdbstub endpoint must be a relative private Unix listener, got `{endpoint}`")]
+    InvalidGdbstubEndpoint {
+        /// Rejected QEMU `-gdb` endpoint.
+        endpoint: String,
+    },
     /// An immutable launch input was not resolved to an AOS store path.
     #[error("{field} must be an AOS store path, got `{path}`")]
     InvalidStorePath {
