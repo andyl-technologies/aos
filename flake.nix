@@ -378,6 +378,7 @@
           rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
           rust-crucible-guest = aos.checks.rust.crucible-guest;
         }
+        // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
         // flattenAttrs "build" aos.checks.build
         // flattenAttrs "container" aos.checks.container
         // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
