@@ -863,7 +863,10 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                 "Storage inventory recovery must settle before group dispatch".to_owned(),
             ));
         }
-        if plan.inventory() != previous.inventory.commitment() {
+        if plan.inventory() != previous.inventory.commitment()
+            || plan.inventory_generation() != previous.inventory.generation()
+            || plan.inventory_source() != previous.inventory.source()
+        {
             return Err(EffectFailure::Permanent(
                 "Storage group plan differs from its retained predecessor inventory".to_owned(),
             ));
