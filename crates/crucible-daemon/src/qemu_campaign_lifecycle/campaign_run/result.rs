@@ -291,16 +291,27 @@ pub(super) fn authenticated_timeout_evidence<E>(
 where
     E: Error + 'static,
 {
-    let StopOutcome::ModeledTimeout(name) = observation.stop() else {
-        return Ok(None);
+    let bounded_proof = match observation.stop() {
+        StopOutcome::BoundedPrimaryTimeout { proof, .. } => Some(proof),
+        StopOutcome::ModeledTimeout(name) if name == "execution-quanta" => None,
+        StopOutcome::ModeledTimeout(_) => {
+            return Err(GuardedDefaultCampaignInvariantError::TimeoutEvidenceMismatch.into());
+        }
+        _ => return Ok(None),
     };
     let attempt = repository
         .load_attempt(observation.attempt())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } = attempt.stop() else {
+    let StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } = attempt.stop().primary()
+    else {
         return Err(GuardedDefaultCampaignInvariantError::TimeoutEvidenceMismatch.into());
     };
-    if name != "execution-quanta" || evidence.quanta() < *execution_quanta {
+    if evidence.quanta() < *execution_quanta
+        || bounded_proof.is_some_and(|proof| {
+            proof.completed_quanta() != evidence.quanta()
+                || proof.frontier_nanoseconds() != evidence.frontier().ticks
+        })
+    {
         return Err(GuardedDefaultCampaignInvariantError::TimeoutEvidenceMismatch.into());
     }
     Ok(Some(GuardedCampaignTimeoutEvidence {
@@ -316,6 +327,15 @@ pub(super) fn capture_evidence_reaches_stop(
     stop: &StopCondition,
 ) -> bool {
     match stop {
+        StopCondition::Bounded {
+            primary,
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => {
+            virtual_time_nanoseconds.is_some_and(|deadline| evidence.frontier().ticks >= deadline)
+                || execution_quanta.is_some_and(|deadline| evidence.quanta() >= deadline)
+                || capture_evidence_reaches_stop(evidence, primary)
+        }
         StopCondition::VirtualTimeNanoseconds(deadline) => evidence.frontier().ticks >= *deadline,
         StopCondition::ExecutionQuanta(bound) => evidence.quanta() >= *bound,
         StopCondition::VirtualTimeOrExecutionQuanta {

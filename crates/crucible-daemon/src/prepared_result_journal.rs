@@ -1568,12 +1568,12 @@ mod tests {
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "4b7ab0776cae523fddb038c156802925bb15045abd9726f90354055beb63c76e"
+            "16b9ffe08dad5e55a0cb76bdbaebd86c76590965fce09ab8a664a717b80202d9"
         );
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "50fd207cf03f4def72a72a8c216dac33739e45632f0cb835ec49c899d7a8506a"
+            "c57a59b16211e78ed9738f61e37c99d338dba5acc06e722f0b9942a84ddf8389"
         );
         journal.remove().expect("remove v2 journal");
     }
@@ -1615,7 +1615,7 @@ mod tests {
         let request = CampaignFactId::parse(&typed_content_text(
             "crucible.campaign.fact",
             ObjectKind::CampaignFact,
-            14,
+            15,
             b"savepoint-capture-request",
         ))
         .expect("capture request ID");
@@ -1869,7 +1869,7 @@ mod tests {
         let attempt = AttemptId::parse(&typed_content_text(
             "crucible.campaign.attempt",
             ObjectKind::CampaignFact,
-            8,
+            9,
             marker,
         ))
         .expect("attempt ID");

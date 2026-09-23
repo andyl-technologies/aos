@@ -350,6 +350,7 @@ fn campaign_loopback_rejects_concurrent_exchange_without_waiting() {
         snapshot("current"),
         lineage("lineage"),
         policy("policy"),
+        policy_body("policy"),
         CampaignState::Running,
     )
     .expect("first response");
@@ -601,6 +602,7 @@ fn campaign_loopback_server_rejects_cross_request_responses() {
             snapshot("current"),
             lineage("lineage"),
             policy("policy"),
+            policy_body("policy"),
             CampaignState::Running,
         )
         .expect("wrong response"),
@@ -641,6 +643,7 @@ fn campaign_loopback_client_closes_after_a_cross_request_response() {
         snapshot("current"),
         lineage("lineage"),
         policy("policy"),
+        policy_body("policy"),
         CampaignState::Running,
     )
     .expect("wrong response");

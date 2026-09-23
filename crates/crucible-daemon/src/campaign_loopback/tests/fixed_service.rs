@@ -58,6 +58,7 @@ impl CampaignService for FixedCampaignService {
             snapshot("current"),
             lineage("lineage"),
             policy("policy"),
+            policy_body("policy"),
             CampaignState::Running,
         )
         .expect("get response"))

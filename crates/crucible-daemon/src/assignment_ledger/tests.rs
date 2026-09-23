@@ -1090,7 +1090,7 @@ fn request(assignment_byte: u8, attempt_byte: u8, vcpus: u32) -> SubmitAttemptRe
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
-            8,
+            9,
             attempt_byte,
         ))
         .expect("attempt"),
@@ -1120,7 +1120,7 @@ fn capture_request(
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
-            8,
+            9,
             attempt_byte,
         ))
         .expect("attempt"),
@@ -1154,7 +1154,7 @@ fn savepoint_capture_request(
         AttemptId::parse(&typed_id(
             "crucible.campaign.attempt",
             "campaign-fact",
-            8,
+            9,
             attempt_byte,
         ))
         .expect("attempt"),
@@ -1170,7 +1170,7 @@ fn savepoint_capture_request(
 
 fn campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::parse(&format!(
-        "crucible.campaign.fact@campaign-fact.14.{}",
+        "crucible.campaign.fact@campaign-fact.15.{}",
         encode_hex(&[byte; 32])
     ))
     .expect("campaign fact")
@@ -1190,7 +1190,7 @@ fn observation(byte: u8) -> ObservationId {
     ObservationId::parse(&typed_id(
         "crucible.campaign.observation",
         "observation",
-        12,
+        13,
         byte,
     ))
     .expect("observation")
