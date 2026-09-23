@@ -10,7 +10,6 @@
   settings = import ./settings.nix;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
   forwardEndpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
   forwardEndpointRequirement = {
@@ -58,101 +57,97 @@
     };
     ignore_failure = false;
   };
-  controllerService = serviceManagement.forService {
-    inherit serviceTypes;
+  controllerService = {
     consumerInstance = "boundary-observer";
-    declaration = {
-      service = "controller";
-      enabled = true;
-      lifecycle = {
-        description = "AOS fleet ability boundary observer (${packageName} ${packageVersion})";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [controllerCommand];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 1000;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
+    service = "controller";
+    lifecycle = {
+      description = "AOS fleet ability boundary observer (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [controllerCommand];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 1000;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      prerequisites =
+        [
+          (resultOf "runtime-storage" "resource")
+          (resultOf "state-storage" "resource")
+        ]
+        ++ lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
+      after = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
+      before = [];
+      requires = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
+      wants = [];
+    };
+    environment = {
+      variables = lib.optionalAttrs cfg.forwardToSelectedEndpoint {
+        AOS_ABILITY_FORWARD_SOCKET = resultOf "forward-endpoint" "socket-path";
       };
-      dependencies = {
-        prerequisites =
-          [
-            (resultOf "runtime-storage" "resource")
-            (resultOf "state-storage" "resource")
-          ]
-          ++ lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
-        after = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
-        before = [];
-        requires = lib.optional cfg.forwardToSelectedEndpoint (resultOf "forward-endpoint" "resource");
-        wants = [];
-      };
-      environment = {
-        variables = lib.optionalAttrs cfg.forwardToSelectedEndpoint {
-          AOS_ABILITY_FORWARD_SOCKET = resultOf "forward-endpoint" "socket-path";
-        };
-        search_path = [];
-      };
-      storage.mounts = [
-        {
-          name = "runtime";
-          source = resultOf "runtime-storage" "planned-path";
-          access = "read-write";
-        }
-        {
-          name = "state";
-          source = resultOf "state-storage" "planned-path";
-          access = "read-write";
-        }
-      ];
-      socket_activation.sockets = [
-        {
-          name = "observer";
-          manager_name = "aos-ability-boundary-controller";
-          enabled = true;
-          endpoints = [
-            {
-              kind = "unix";
-              path = settings.socketPath;
-            }
-          ];
-          mode = "0600";
-          remove_on_stop = true;
-          prerequisites = [(resultOf "runtime-storage" "resource")];
-        }
-      ];
-      manager_identity = {
-        name = "aos-ability-boundary-controller";
-        aliases = [];
-      };
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0700";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0077";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
-      };
+      search_path = [];
+    };
+    storage.mounts = [
+      {
+        name = "runtime";
+        source = resultOf "runtime-storage" "planned-path";
+        access = "read-write";
+      }
+      {
+        name = "state";
+        source = resultOf "state-storage" "planned-path";
+        access = "read-write";
+      }
+    ];
+    socket_activation.sockets = [
+      {
+        name = "observer";
+        manager_name = "aos-ability-boundary-controller";
+        enabled = true;
+        endpoints = [
+          {
+            kind = "unix";
+            path = settings.socketPath;
+          }
+        ];
+        mode = "0600";
+        remove_on_stop = true;
+        prerequisites = [(resultOf "runtime-storage" "resource")];
+      }
+    ];
+    manager_identity = {
+      name = "aos-ability-boundary-controller";
+      aliases = [];
+    };
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0700";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0077";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
     };
   };
   endpointInterface = {
@@ -167,15 +162,6 @@
       else null;
     socket_path = settings.socketPath;
   };
-  fragments = [runtimeStorage stateStorage controllerService endpoint];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
-  configuredFragments =
-    [endpoint]
-    ++ lib.optionals (cfg.mode == "managed-service") [
-      runtimeStorage
-      stateStorage
-      controllerService
-    ];
 in {
   imports = [
     ./endpoint-interface.nix
@@ -202,27 +188,25 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        [
-          {requirementTemplates.forward-endpoint = forwardEndpointRequirement;}
-        ]
-        ++ builtins.map (definition: definition.declarations) definitions
-      );
+      aos.abilities.requirementTemplates.forward-endpoint = forwardEndpointRequirement;
+      aos.services."boundary-observer.controller" =
+        controllerService
+        // {
+          enable = cfg.enable && cfg.mode == "managed-service";
+        };
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [
-          {
-            instances.boundary-observer = {};
-          }
-          (lib.optionalAttrs cfg.forwardToSelectedEndpoint {
-            requests.forward-endpoint = forwardEndpointRequest;
-          })
-        ]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        configuredFragments
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [endpoint];
+      enabled = cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [runtimeStorage stateStorage];
+      enabled = cfg.enable && cfg.mode == "managed-service";
+    })
+    (lib.mkIf (cfg.enable && cfg.forwardToSelectedEndpoint) {
+      aos.abilities.requests.forward-endpoint = forwardEndpointRequest;
     })
   ];
 }
