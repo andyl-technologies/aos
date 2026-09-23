@@ -16,6 +16,8 @@ use crate::{
 
 const POST_CHOICE_QUANTA: u64 = 512;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const CHILD_READY_SAMPLE_COUNT: usize = 20;
+const CHILD_READY_P95_LIMIT_NANOSECONDS: u64 = 100_000_000;
 
 struct ExactResume<'a> {
     store: &'a ExactCheckpointStore,
@@ -487,6 +489,88 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     println!("hot_fork_equivalence=true");
     println!("topology=single-node");
     println!("state=block,ninep,guest-choice,measurement");
+}
+
+#[test]
+#[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
+fn production_single_vm_child_ready_p95_is_below_100_milliseconds() {
+    let paths = NativeGatePaths::from_environment();
+    let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
+    let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
+    let (source, artifacts) =
+        scenario::build_single_node_equivalence_with_memory(&fixture, artifacts, 64)
+            .expect("build 64 MiB single-VM reference scenario");
+    let input = execution_input_for_scenario(source.clone());
+    let source_context = execution_context(&input, 0xb0);
+    let mut source_lifecycle = begin_fresh(
+        &paths,
+        "child-ready-source",
+        12_000,
+        &source,
+        artifacts,
+        &source_context,
+    );
+    let boundary = drive_to_pending_boundary(
+        &mut source_lifecycle,
+        &source,
+        EquivalenceTopology::SingleNode,
+    );
+    let mut world = source_lifecycle
+        .prepare_hot_fork_source_world()
+        .expect("prepare reference hot-fork source");
+    let mut samples = Vec::with_capacity(CHILD_READY_SAMPLE_COUNT);
+
+    for _ in 0..CHILD_READY_SAMPLE_COUNT {
+        let child = start_hot_child(NativeHotChildStart {
+            paths: &paths,
+            lane: "child-ready-target",
+            project_id_start: 12_100,
+            source: source.clone(),
+            expected_boundary: &boundary,
+            checkpoint: None,
+            execution_byte: 0xb1,
+            world,
+            topology: EquivalenceTopology::SingleNode,
+        });
+        let measurement = child.measurement();
+        assert_eq!(measurement.processes, 1, "reference child is one VM");
+        samples.push(measurement.child_ready_nanoseconds);
+        world = child.finish_without_continuation_and_recover();
+    }
+    world.retire().expect("retire reference source");
+
+    let p95 = nearest_rank_p95(&samples);
+    let raw_samples = samples
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    // Libtest writes the test name before the first line captured by the gate.
+    println!();
+    println!("child_ready_reference=single-vm-64mib-1vcpu");
+    println!("child_ready_sample_count={CHILD_READY_SAMPLE_COUNT}");
+    println!("child_ready_samples_ns={raw_samples}");
+    println!("child_ready_p95_ns={p95}");
+    println!("child_ready_p95_limit_ns={CHILD_READY_P95_LIMIT_NANOSECONDS}");
+    assert!(
+        p95 < CHILD_READY_P95_LIMIT_NANOSECONDS,
+        "single-VM child-ready p95 is {p95} ns, limit is strictly below {CHILD_READY_P95_LIMIT_NANOSECONDS} ns"
+    );
+}
+
+fn nearest_rank_p95(samples: &[u64]) -> u64 {
+    assert!(!samples.is_empty(), "p95 requires measured samples");
+    let mut ordered = samples.to_vec();
+    ordered.sort_unstable();
+    let rank = (ordered.len() * 95).div_ceil(100);
+    ordered[rank - 1]
+}
+
+#[test]
+fn nearest_rank_p95_uses_the_nineteenth_of_twenty_samples() {
+    let descending = (1..=20).rev().collect::<Vec<_>>();
+    assert_eq!(nearest_rank_p95(&descending), 19);
+    assert_eq!(nearest_rank_p95(&[42]), 42);
 }
 
 #[test]
