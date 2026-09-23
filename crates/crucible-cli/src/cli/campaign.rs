@@ -1009,6 +1009,15 @@ fn prepare_campaign_command(
             })?;
             Ok(None)
         }
+        CampaignCommand::Debug(debug) => {
+            campaign_name(&debug.name)?;
+            CampaignSnapshotId::parse(&debug.snapshot).map_err(|error| {
+                usage_error(format!("invalid campaign debug snapshot: {error}"))
+            })?;
+            crucible_campaign::FindingId::parse(&debug.finding)
+                .map_err(|error| usage_error(format!("invalid campaign debug finding: {error}")))?;
+            Ok(None)
+        }
         CampaignCommand::Pin(_) | CampaignCommand::Unpin(_) => {
             let (basis, _, _) = campaign_pin_spec(command)?;
             campaign_name(basis.name)?;
