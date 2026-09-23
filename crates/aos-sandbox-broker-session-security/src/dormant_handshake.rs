@@ -9,12 +9,16 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry, BrokerDescriptorEntry,
-    BrokerDescriptorRole, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
-    BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
-    QueryRuntimeEffectRequest, RequestHeader,
+    ApplyDestinationSlotRequest, Audience, BrokerDescriptorDisposition,
+    BrokerDescriptorDispositionEntry, BrokerDescriptorEntry, BrokerDescriptorRole, BrokerError,
+    BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
+    HostCatalogPublicationStatus, PublishHostCatalogResponse, QueryRuntimeEffectRequest,
+    RequestHeader,
 };
-use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
+use aos_sandbox::{
+    DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
+    ValidatedAuthorityEffectReceiptV1,
+};
 use aos_sandbox_broker_session_protocol::{
     AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, ProtectedBrokerSessionVerificationContextV1,
     decode_canonical_response_v1,
@@ -4936,6 +4940,89 @@ impl DormantAuthenticatedBrokerSessionV1 {
             ));
         }
 
+        self.reserve_exact_authenticated_request(authenticated, initialize)
+    }
+
+    /// Signs and reserves one exact durable destination-slot attempt on Mount.
+    ///
+    /// The session may add only its authenticated record carrier. The Mount
+    /// method body, authorization quartet, operation ID, and deadline must be
+    /// byte-identical to the controller's durable-before-I/O attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or substituted attempt, expired or incompatible
+    /// session coordinates, failed semantic validation, or protected custody.
+    pub fn prepare_authenticated_destination_slot_effect(
+        &mut self,
+        attempt: &DurableCurrentDestinationSlotAttemptV1,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let dispatch = attempt.dispatch_attempt();
+        let envelope = BrokerRequestEnvelope::decode_from_slice(dispatch.packet())
+            .map_err(|_| BrokerSessionSecurityError::manifest("durable slot packet"))?;
+        let request = ApplyDestinationSlotRequest::decode_from_slice(dispatch.body())
+            .map_err(|_| BrokerSessionSecurityError::manifest("durable slot body"))?;
+        let header = request
+            .header
+            .as_option()
+            .ok_or_else(|| BrokerSessionSecurityError::manifest("durable slot header"))?;
+        let request_id: [u8; 16] = header
+            .request_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::manifest("durable slot request ID"))?;
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
+        if !envelope.__buffa_unknown_fields.is_empty()
+            || envelope.encode_to_vec() != dispatch.packet()
+            || envelope.method.as_known() != Some(method)
+            || envelope.body != dispatch.body()
+            || envelope.authorization.as_option().is_none()
+            || !envelope.descriptors.is_empty()
+            || !envelope.signed_session_request.is_empty()
+            || request_id != attempt.request_id()
+            || header.deadline_boottime_nanoseconds != dispatch.deadline_boottime_nanoseconds()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable slot request binding",
+            ));
+        }
+        let (maximum_deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_limits()?;
+        if header.deadline_boottime_nanoseconds > maximum_deadline
+            || header.maximum_response_bytes > maximum_response_bytes
+            || header.protocol_major != u32::from(protocol_version.major())
+            || header.protocol_minor != u32::from(protocol_version.minor())
+            || header.audience.as_known() != Some(audience)
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "durable slot session coordinates",
+            ));
+        }
+        let (authenticated, initialize) = self.0.prepare_client_request(
+            envelope,
+            method,
+            0,
+            request_id,
+            header.deadline_boottime_nanoseconds,
+            header.maximum_response_bytes,
+        )?;
+        if authenticated.canonical_packet() != dispatch.packet()
+            || authenticated.exact_body() != dispatch.body()
+            || authenticated.authorization().is_none()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "authenticated slot attempt binding",
+            ));
+        }
+
+        self.reserve_exact_authenticated_request(authenticated, initialize)
+    }
+
+    fn reserve_exact_authenticated_request(
+        &mut self,
+        authenticated: AuthenticatedBrokerMethodRequestV1,
+        initialize: bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
         let prepared = DormantPreparedBrokerRequestV1(authenticated.clone());
         if initialize {
             return Ok(
