@@ -137,7 +137,6 @@ let
     "treecc"
     "unzip"
     "which"
-    "xxhash"
     "xz"
     "zip"
     "zlib"
