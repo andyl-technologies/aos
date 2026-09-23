@@ -542,16 +542,8 @@ where
         .scope()
         .deadline_boottime_nanoseconds();
     let request_id = request_id()?;
-    let mut mount_request = intent.request.clone();
-    mount_request.header = Some(request_header(
-        MOUNT_VERSION,
-        Audience::AUDIENCE_NODE_CONTROLLER,
-        request_id,
-        deadline,
-    ))
-    .into();
-    mount_request.fence = Some(current_fence(&target)).into();
-    mount_request.namespace_generation = target.target_generation();
+    let mount_request =
+        request_with_current_context(intent.request.clone(), &target, request_id, deadline);
 
     prepare_catalog_request(journal, target, mount_request, client, clock)
 }
@@ -640,16 +632,8 @@ where
         .min(session_deadline_boottime_nanoseconds);
     transport::check_deadline(deadline)?;
 
-    let mut mount_request = intent.request.clone();
-    mount_request.header = Some(request_header(
-        MOUNT_VERSION,
-        Audience::AUDIENCE_NODE_CONTROLLER,
-        request_id,
-        deadline,
-    ))
-    .into();
-    mount_request.fence = Some(current_fence(&target)).into();
-    mount_request.namespace_generation = target.target_generation();
+    let mount_request =
+        request_with_current_context(intent.request.clone(), &target, request_id, deadline);
     build_catalog_query(journal, target, mount_request, clock)
 }
 
@@ -810,16 +794,7 @@ where
         .scope()
         .deadline_boottime_nanoseconds();
     let request_id = request_id()?;
-    let mut request = request;
-    request.header = Some(request_header(
-        MOUNT_VERSION,
-        Audience::AUDIENCE_NODE_CONTROLLER,
-        request_id,
-        deadline,
-    ))
-    .into();
-    request.fence = Some(current_fence(&target)).into();
-    request.namespace_generation = target.target_generation();
+    let request = request_with_current_context(request, &target, request_id, deadline);
 
     prepare_release_request(journal, target, request, deadline, None, clock)
 }
@@ -1051,16 +1026,8 @@ where
         .runtime_generation()
         .scope()
         .deadline_boottime_nanoseconds();
-    let mut request = intent.request.clone();
-    request.header = Some(request_header(
-        MOUNT_VERSION,
-        Audience::AUDIENCE_NODE_CONTROLLER,
-        request_id,
-        deadline,
-    ))
-    .into();
-    request.fence = Some(current_fence(&target)).into();
-    request.namespace_generation = target.target_generation();
+    let request =
+        request_with_current_context(intent.request.clone(), &target, request_id, deadline);
     prepared_catalog_from_exact_request_for_test(
         journal,
         target,
@@ -1143,6 +1110,24 @@ pub(crate) fn check_mount_deadline(
     deadline_boottime_nanoseconds: u64,
 ) -> Result<(), MountCatalogPreparationError> {
     transport::check_deadline(deadline_boottime_nanoseconds)
+}
+
+fn request_with_current_context(
+    mut request: ApplyMountRequest,
+    target: &CurrentNamespaceTarget,
+    request_id: [u8; 16],
+    deadline: u64,
+) -> ApplyMountRequest {
+    request.header = Some(request_header(
+        MOUNT_VERSION,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        request_id,
+        deadline,
+    ))
+    .into();
+    request.fence = Some(current_fence(target)).into();
+    request.namespace_generation = target.target_generation();
+    request
 }
 
 fn request_header(
