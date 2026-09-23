@@ -18,12 +18,16 @@ fn incomplete() -> FindingReplayCaptureInput {
 }
 
 fn executor_store(root: &std::path::Path) -> CampaignExecutorStore {
+    CampaignExecutorStore::new(Arc::new(repository(root)))
+}
+
+fn repository(root: &std::path::Path) -> CampaignRepository {
     let blobs: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "finding-replay-captures",
         root.join("objects"),
     ));
     let refs: Arc<dyn MutableRefBackend> = Arc::new(DirectoryRefBackend::new(root.join("refs")));
-    CampaignExecutorStore::new(Arc::new(CampaignRepository::new(blobs, refs)))
+    CampaignRepository::new(blobs, refs)
 }
 
 #[test]
@@ -68,6 +72,13 @@ fn shared_chunks_are_deduplicated_across_capture_roles() {
         }
     );
     assert_eq!(loaded[0], loaded[1]);
+
+    drop(guard);
+    let reopened = repository(temporary.path());
+    let imported =
+        FindingReplayCaptureStore::load_set_from_repository(&reopened, prepared.references())
+            .expect("load retained capture set without publication authority");
+    assert_eq!(imported, loaded);
 }
 
 #[test]

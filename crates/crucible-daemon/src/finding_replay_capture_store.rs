@@ -14,9 +14,9 @@
 
 use crucible::ContentHash;
 use crucible_campaign::{
-    CampaignExecutorPublicationGuard, FindingReplayCaptureEvidenceId,
-    FindingReplayCaptureIncomplete, FindingReplayCaptureReference, FindingReplayCaptureSet,
-    MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
+    CampaignExecutorPublicationGuard, CampaignRepository, CampaignRepositoryError,
+    FindingReplayCaptureEvidenceId, FindingReplayCaptureIncomplete, FindingReplayCaptureReference,
+    FindingReplayCaptureSet, MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
 use crucible_cas::content_store::{BlobHandle, ContentId, ObjectKind, PutReceipt, StoreError};
@@ -224,13 +224,46 @@ impl FindingReplayCaptureStore {
         guard: &CampaignExecutorPublicationGuard<'_>,
         references: FindingReplayCaptureSet,
     ) -> Result<[LoadedFindingReplayCapture; 4], FindingReplayCaptureStoreError> {
-        Self::preflight_set(guard, references)?;
+        Self::load_set_with_reader(
+            &|id| guard.read_finding_replay_capture_object(id),
+            references,
+        )
+    }
+
+    /// Loads a retained capture set from an authenticated imported repository.
+    ///
+    /// The caller must first prove the finding's membership in a complete
+    /// archive. This reader uses the same bounded manifest and chunk checks as
+    /// live publication, without requiring write or GC-exclusion authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent, corrupt, oversized, or inconsistent
+    /// capture object or four-role set.
+    pub fn load_set_from_repository(
+        repository: &CampaignRepository,
+        references: FindingReplayCaptureSet,
+    ) -> Result<[LoadedFindingReplayCapture; 4], FindingReplayCaptureStoreError> {
+        Self::load_set_with_reader(
+            &|id| repository.read_finding_replay_capture_object(id),
+            references,
+        )
+    }
+
+    fn load_set_with_reader<F>(
+        read: &F,
+        references: FindingReplayCaptureSet,
+    ) -> Result<[LoadedFindingReplayCapture; 4], FindingReplayCaptureStoreError>
+    where
+        F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
+    {
+        Self::preflight_set(read, references)?;
 
         let mut loaded = Vec::with_capacity(4);
         for reference in references.references() {
             match reference {
                 FindingReplayCaptureReference::Complete(root) => {
-                    loaded.push(Self::load_capture(guard, root)?);
+                    loaded.push(Self::load_capture(read, root)?);
                 }
                 FindingReplayCaptureReference::Incomplete(reason) => {
                     loaded.push(LoadedFindingReplayCapture::Incomplete(reason));
@@ -244,10 +277,13 @@ impl FindingReplayCaptureStore {
             })
     }
 
-    fn preflight_set(
-        guard: &CampaignExecutorPublicationGuard<'_>,
+    fn preflight_set<F>(
+        read: &F,
         references: FindingReplayCaptureSet,
-    ) -> Result<(), FindingReplayCaptureStoreError> {
+    ) -> Result<(), FindingReplayCaptureStoreError>
+    where
+        F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
+    {
         let mut unique_chunks = BTreeMap::new();
         let mut unique_chunk_bytes = 0_u64;
 
@@ -256,7 +292,7 @@ impl FindingReplayCaptureStore {
             .into_iter()
             .filter_map(FindingReplayCaptureReference::evidence)
         {
-            let (manifest, descriptor) = Self::load_manifest(guard, root)?;
+            let (manifest, descriptor) = Self::load_manifest(read, root)?;
             for (index, child) in manifest.children().iter().enumerate() {
                 validate_chunk_child(index, child)?;
                 let consumed = (index as u64)
@@ -300,7 +336,7 @@ impl FindingReplayCaptureStore {
         // inventory before any role-specific reconstruction allocates its
         // capture-sized output buffer. Full reads below authenticate bytes.
         for (id, expected) in unique_chunks {
-            let source = guard.read_finding_replay_capture_object(id)?;
+            let source = read(id)?;
             if source.logical_length() != expected {
                 return Err(FindingReplayCaptureStoreError::InvalidManifest {
                     reason: "chunk declared length",
@@ -310,14 +346,15 @@ impl FindingReplayCaptureStore {
         Ok(())
     }
 
-    fn load_manifest(
-        guard: &CampaignExecutorPublicationGuard<'_>,
+    fn load_manifest<F>(
+        read: &F,
         root: FindingReplayCaptureEvidenceId,
-    ) -> Result<(ContentEnvelope, CaptureManifestDescriptor), FindingReplayCaptureStoreError> {
+    ) -> Result<(ContentEnvelope, CaptureManifestDescriptor), FindingReplayCaptureStoreError>
+    where
+        F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
+    {
         let root_id = root.content_id();
-        let manifest_bytes = guard
-            .read_finding_replay_capture_object(root_id)?
-            .read_all(MAX_CAPTURE_MANIFEST_BYTES as u64)?;
+        let manifest_bytes = read(root_id)?.read_all(MAX_CAPTURE_MANIFEST_BYTES as u64)?;
         let manifest = ContentEnvelope::from_canonical_bytes(&manifest_bytes)?;
         if manifest.content_id(ObjectKind::ExactManifest) != root_id
             || manifest.schema_name() != CAPTURE_MANIFEST_SCHEMA
@@ -331,11 +368,14 @@ impl FindingReplayCaptureStore {
         Ok((manifest, descriptor))
     }
 
-    fn load_capture(
-        guard: &CampaignExecutorPublicationGuard<'_>,
+    fn load_capture<F>(
+        read: &F,
         root: FindingReplayCaptureEvidenceId,
-    ) -> Result<LoadedFindingReplayCapture, FindingReplayCaptureStoreError> {
-        let (manifest, descriptor) = Self::load_manifest(guard, root)?;
+    ) -> Result<LoadedFindingReplayCapture, FindingReplayCaptureStoreError>
+    where
+        F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
+    {
+        let (manifest, descriptor) = Self::load_manifest(read, root)?;
         let capacity = usize::try_from(descriptor.total_length).map_err(|_| {
             FindingReplayCaptureStoreError::LimitExceeded {
                 limit: "finding-replay-capture-bytes",
@@ -350,9 +390,7 @@ impl FindingReplayCaptureStore {
             validate_chunk_child(index, child)?;
             let remaining = descriptor.total_length.saturating_sub(bytes.len() as u64);
             let expected = remaining.min(MAX_CAPTURE_CHUNK_BYTES as u64);
-            let chunk = guard
-                .read_finding_replay_capture_object(child.id())?
-                .read_all(expected)?;
+            let chunk = read(child.id())?.read_all(expected)?;
             if chunk.len() as u64 != expected {
                 return Err(FindingReplayCaptureStoreError::InvalidManifest {
                     reason: "chunk length",
