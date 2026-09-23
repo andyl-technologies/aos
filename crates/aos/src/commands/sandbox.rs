@@ -65,31 +65,40 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
     } else {
         DormantSandboxOutputV1::Human
     };
-    let (request, expected_capability_id) = match crate::cli::sandbox::routed_request(args, output)
-    {
-        Ok(request) => (request, None),
-        Err(original_error) if args.public_api => {
-            let credentials = args
-                .public_credentials
-                .as_deref()
-                .context("--public-api requires --public-credentials")?;
-            let capability_id = public_transport::load_capability_id(credentials)?;
-            let authorization =
-                DormantPublicApiAuthorizationV1::new(capability_id.to_string().into_bytes())
-                    .context("invalid public capability authorization context")?;
-            let request =
-                crate::cli::sandbox::routed_request_with_authorization(args, output, authorization)
-                    .with_context(|| {
-                        format!(
-                            "authenticated public route was rejected after initial routing failed: \
-                     {original_error}"
-                        )
-                    })?;
-            (request, Some(capability_id))
-        }
-        Err(error) => return Err(error),
-    };
     use public_client::PublicClientRouteV1 as Route;
+
+    let parsed = crate::cli::sandbox::routed_request(args, output);
+    let needs_public_authorization = match &parsed {
+        Ok(request) => {
+            args.public_api
+                && matches!(
+                    public_client::route(request.kind()),
+                    Route::OperationRead | Route::Read | Route::Watch
+                )
+        }
+        Err(error) => {
+            args.public_api
+                && matches!(
+                    error.downcast_ref::<DormantSandboxRoutingErrorV1>(),
+                    Some(DormantSandboxRoutingErrorV1::AuthorizationRequired)
+                )
+        }
+    };
+    let (request, expected_capability_id) = if needs_public_authorization {
+        let credentials = args
+            .public_credentials
+            .as_deref()
+            .context("--public-api requires --public-credentials")?;
+        let capability_id = public_transport::load_capability_id(credentials)?;
+        let authorization =
+            DormantPublicApiAuthorizationV1::new(capability_id.to_string().into_bytes())
+                .context("invalid public capability authorization context")?;
+        let request =
+            crate::cli::sandbox::routed_request_with_authorization(args, output, authorization)?;
+        (request, Some(capability_id))
+    } else {
+        (parsed?, None)
+    };
 
     match (public_client::route(request.kind()), request.kind()) {
         (Route::Local, DormantSandboxRequestKindV1::Completions(shell)) => {
