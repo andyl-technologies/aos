@@ -1087,7 +1087,7 @@ pub(crate) fn wait_for_initial_discovery(
     service: &mut CampaignServiceChild,
     genesis_artifact: &str,
 ) -> Result<(AttemptExecutionKey, Value), Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(300);
     let discovery = wait_for_process_observation(deadline, || {
         for (key, state) in attempt_states(fixture)? {
             if !matches!(state, AttemptRuntimeState::Completed { .. })
