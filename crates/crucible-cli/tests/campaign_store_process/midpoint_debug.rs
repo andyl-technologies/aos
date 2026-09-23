@@ -22,7 +22,9 @@ const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "100000000";
 const FAILURE_MARKER: &str = "selected-fast-q7";
 
-pub(super) fn run_public_campaign_debug_flight() -> Result<(), Box<dyn Error>> {
+pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
+    handoff: impl FnOnce(&FlightFixture, &str, &str) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     grant_midpoint_debug_operations(&fixture.peer_policy)?;
     let compiled = compile_failing_scenario(&fixture)?;
@@ -93,6 +95,8 @@ pub(super) fn run_public_campaign_debug_flight() -> Result<(), Box<dyn Error>> {
         &mut service,
         &failure_attempt.pinnable_configuration,
     )?;
+    validate_imported_production_capture_handoff(&fixture, &finding)?;
+    handoff(&fixture, &snapshot, &finding)?;
 
     println!("public_finding_midpoint_debug=true");
     println!("authenticated_exact_checkpoint=true");
@@ -122,7 +126,71 @@ pub(super) fn run_public_campaign_debug_flight() -> Result<(), Box<dyn Error>> {
     println!("retry_session_identity_stable=true");
     println!("campaign_finding_immutable=true");
     println!("public_exact_pin_gc_flow=true");
+    println!("imported_production_capture_handoff=true");
     println!("production_qemu=true");
+    Ok(())
+}
+
+fn validate_imported_production_capture_handoff(
+    fixture: &FlightFixture,
+    finding: &str,
+) -> Result<(), Box<dyn Error>> {
+    use crucible_campaign::{CampaignArchivePolicy, CampaignFindingTriageReplayRole, FindingId};
+    use crucible_cas::content_store::{DirectoryRefBackend, DurabilityRequirement};
+
+    let source = crucible_campaign::CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "midpoint-debug-handoff-source",
+            &fixture.objects,
+        )),
+        Arc::new(DirectoryRefBackend::new(
+            fixture._temporary.path().join("refs"),
+        )),
+    );
+    let head = source.head(CAMPAIGN)?;
+    let plan = source.plan_campaign_archive(
+        head.snapshot_id(),
+        CampaignArchivePolicy::Executable,
+        [],
+        None,
+    )?;
+    source.stage_campaign_archive_metadata(&plan)?;
+
+    let private = tempfile::tempdir()?;
+    let imported = crucible_campaign::CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "midpoint-debug-handoff-private",
+            private.path().join("objects"),
+        )),
+        Arc::new(DirectoryRefBackend::new(private.path().join("refs"))),
+    );
+    source.transfer_campaign_archive_objects(
+        &imported,
+        &plan,
+        DurabilityRequirement::new(1, false)?,
+    )?;
+    imported.publish_transferred_campaign("private-midpoint-handoff", None, plan.manifest_id())?;
+    drop(source);
+
+    let capture = crucible_daemon::load_archived_finding_production_capture(
+        &imported,
+        plan.manifest_id(),
+        FindingId::parse(finding)?,
+        CampaignFindingTriageReplayRole::MinimizationOriginal,
+    )?;
+    let assets = crucible_daemon::materialize_finding_replay_guest_assets(
+        capture.deployment(),
+        &required_path("CRUCIBLE_FLIGHT_QEMU")?,
+        &required_path("CRUCIBLE_FLIGHT_PLUGIN")?,
+        private.path(),
+    )?;
+    let guest = assets
+        .guest_assets()
+        .first()
+        .ok_or("imported capture has no guest assets")?;
+    if fs::metadata(guest.kernel())?.len() == 0 || fs::metadata(guest.root_image())?.len() == 0 {
+        return Err("imported capture materialized empty guest assets".into());
+    }
     Ok(())
 }
 
