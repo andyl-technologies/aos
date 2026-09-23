@@ -221,9 +221,10 @@ pub use campaign_endpoint::{
     ManagedCampaignLoopbackListener, ManagedExecutorLoopbackListener,
 };
 pub use campaign_finding_handoff::{
+    ArchivedFindingDebugControlPlane, ArchivedFindingDebugMidpoint, ArchivedFindingDebugSession,
     CampaignFindingHandoffError, MaterializedFindingReplayGuest,
     MaterializedFindingReplayGuestAssets, load_archived_finding_production_capture,
-    materialize_finding_replay_guest_assets,
+    materialize_finding_replay_guest_assets, prepare_archived_finding_debug_midpoint,
 };
 pub use campaign_gc::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,

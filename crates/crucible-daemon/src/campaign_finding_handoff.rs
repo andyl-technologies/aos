@@ -4,21 +4,32 @@
 //! and replay capture closure. This module reuses the live capture decoder and
 //! keeps the imported store read-only while preparing a fresh private replay.
 
-use crucible::ReproductionArtifact;
+use crucible::{Checkpoint, Configuration, ReproductionArtifact, ScenarioDefForm};
+use crucible_api::{
+    InProcessLifecycleClient, LifecycleApiError, LifecycleControlPlane, LifecycleLoopFactory,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, SessionLifetimeRetention, SessionRef,
+};
 use crucible_campaign::{
-    CampaignArchiveManifestId, CampaignFindingTriageReplayRole, CampaignRepository,
-    CampaignRepositoryError, FindingId,
+    AttemptResourceLimits, CampaignArchiveManifestId, CampaignFindingTriageReplayRole,
+    CampaignRepository, CampaignRepositoryError, CampaignServiceFailure, ExactCheckpointId,
+    FindingId,
 };
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thiserror::Error;
 
 use crucible::{ContentHash, VmArchitecture};
 use crucible_qemu::{QemuLaunchArtifactIdentity, QemuLaunchArtifactIdentityError};
 
+use crate::campaign_debug_session::select_finding_debug_checkpoint;
+use crate::crucible_artifact::{
+    campaign_configuration_id, campaign_scenario_id,
+    decode_crucible_configuration_artifact_from_repository,
+};
 use crate::finding_production_replay::{
     FindingProductionReplayAsset, FindingProductionReplayCapture,
     FindingProductionReplayCaptureError, FindingProductionReplayCaptureLimits,
@@ -27,6 +38,277 @@ use crate::finding_production_replay::{
 use crate::finding_replay_capture_store::{
     FindingReplayCaptureStore, FindingReplayCaptureStoreError, LoadedFindingReplayCapture,
 };
+use crate::{
+    CampaignDebugCheckpointRole, CampaignDebugQemuCapability, CrucibleArtifactError,
+    ExactCheckpointStore, ExactCheckpointStoreError, LinuxQemuAttemptHostConfig,
+    LinuxQemuAttemptHostResourceFactory, LoadedProductionExactCheckpoint,
+    PreparedCampaignDebugLifecycle, SharedQemuAttemptHostResourceFactory,
+    decode_crucible_scenario_artifact,
+};
+
+/// Authenticated, read-only exact midpoint from one executable finding archive.
+///
+/// Its production closure and semantic checkpoint are retained in memory. A
+/// caller may admit them through the existing guarded QEMU lifecycle and debug
+/// relay; no campaign ref or retained checkpoint is rewritten by preparation.
+pub struct ArchivedFindingDebugMidpoint {
+    source: ScenarioDefForm,
+    configuration: Configuration,
+    modeled_checkpoint: Checkpoint,
+    loaded_checkpoint: Arc<LoadedProductionExactCheckpoint>,
+    checkpoint: ExactCheckpointId,
+    role: CampaignDebugCheckpointRole,
+    restore_bytes: u64,
+}
+
+/// One private control plane owning an imported finding's read-only QEMU session.
+pub type ArchivedFindingDebugControlPlane = LifecycleControlPlane<
+    ProductionVmLifecycleLoop,
+    LifecycleLoopFactory<ProductionVmLifecycleLoop>,
+>;
+
+/// An admitted, paused exact-midpoint session independent of a campaign daemon.
+pub struct ArchivedFindingDebugSession {
+    control_plane: Arc<tokio::sync::Mutex<ArchivedFindingDebugControlPlane>>,
+    session: SessionRef,
+}
+
+impl ArchivedFindingDebugSession {
+    /// Returns the admitted read-only lifecycle session identity.
+    #[must_use]
+    pub const fn session(&self) -> SessionRef {
+        self.session
+    }
+
+    /// Returns the shared control plane used by the local debug relay server.
+    #[must_use]
+    pub fn shared_control_plane(
+        &self,
+    ) -> Arc<tokio::sync::Mutex<ArchivedFindingDebugControlPlane>> {
+        Arc::clone(&self.control_plane)
+    }
+
+    /// Returns an in-process client for session queries and lifecycle teardown.
+    #[must_use]
+    pub fn in_process_client(
+        &self,
+    ) -> InProcessLifecycleClient<
+        ProductionVmLifecycleLoop,
+        LifecycleLoopFactory<ProductionVmLifecycleLoop>,
+    > {
+        InProcessLifecycleClient::from_shared_control_plane(Arc::clone(&self.control_plane))
+    }
+}
+
+impl ArchivedFindingDebugMidpoint {
+    /// Returns the selected exact checkpoint root.
+    #[must_use]
+    pub const fn checkpoint(&self) -> ExactCheckpointId {
+        self.checkpoint
+    }
+
+    /// Returns the finding role of the selected checkpoint.
+    #[must_use]
+    pub const fn role(&self) -> CampaignDebugCheckpointRole {
+        self.role
+    }
+
+    /// Returns the authenticated size of the selected complete restore closure.
+    #[must_use]
+    pub const fn restore_bytes(&self) -> u64 {
+        self.restore_bytes
+    }
+
+    /// Returns the authenticated scenario source used to decode the midpoint.
+    #[must_use]
+    pub const fn source(&self) -> &ScenarioDefForm {
+        &self.source
+    }
+
+    /// Returns the exact semantic configuration at the midpoint.
+    #[must_use]
+    pub const fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the modeled checkpoint passed to read-only lifecycle admission.
+    #[must_use]
+    pub const fn modeled_checkpoint(&self) -> &Checkpoint {
+        &self.modeled_checkpoint
+    }
+
+    /// Returns the authenticated production closure retained for guarded restore.
+    #[must_use]
+    pub fn loaded_checkpoint(&self) -> &LoadedProductionExactCheckpoint {
+        &self.loaded_checkpoint
+    }
+
+    fn prepare_read_only_lifecycle(
+        self,
+        qemu: &CampaignDebugQemuCapability,
+    ) -> PreparedCampaignDebugLifecycle {
+        let Self {
+            source,
+            configuration,
+            modeled_checkpoint,
+            loaded_checkpoint,
+            checkpoint,
+            ..
+        } = self;
+        let build_resume = Arc::clone(&qemu.build_resume);
+        let build_source = source.clone();
+        let build_configuration = configuration.clone();
+        let build_scenario = source.scenario_def();
+        let retention = SessionLifetimeRetention::new(loaded_checkpoint);
+
+        PreparedCampaignDebugLifecycle {
+            source,
+            configuration,
+            checkpoint: modeled_checkpoint,
+            retention,
+            build_loop: Box::new(move || {
+                build_resume(
+                    &build_scenario,
+                    &build_source,
+                    &build_configuration,
+                    checkpoint,
+                )
+            }),
+        }
+    }
+
+    /// Opens private Linux resources and prepares guarded QEMU exact restore.
+    ///
+    /// The checkpoint store must be the same imported archive store used to
+    /// select this midpoint. Its root and production identity are checked again
+    /// before the guarded lifecycle is returned. The caller supplies packaged
+    /// QEMU/plugin paths and authenticated guest assets in `lifecycle`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignFindingHandoffError`] if the private exact store
+    /// differs from the selected archive closure or Linux resource admission
+    /// fails.
+    pub fn prepare_guarded_read_only_lifecycle(
+        self,
+        checkpoints: Arc<ExactCheckpointStore>,
+        lifecycle: ProductionVmLifecycleConfig,
+        host: LinuxQemuAttemptHostConfig,
+        resources: AttemptResourceLimits,
+    ) -> Result<PreparedCampaignDebugLifecycle, CampaignFindingHandoffError> {
+        let reloaded = checkpoints.load_attempt_checkpoint(self.checkpoint)?;
+        if reloaded.production_identity() != self.loaded_checkpoint.production_identity()
+            || reloaded.configuration() != self.configuration.id()
+        {
+            return Err(CampaignFindingHandoffError::CheckpointStoreMismatch);
+        }
+
+        let host = LinuxQemuAttemptHostResourceFactory::open(host)?;
+        let qemu = CampaignDebugQemuCapability::new(
+            checkpoints,
+            lifecycle,
+            SharedQemuAttemptHostResourceFactory::new(host),
+            resources,
+        );
+        Ok(self.prepare_read_only_lifecycle(&qemu))
+    }
+
+    /// Admits the imported midpoint into a private paused QEMU debug session.
+    ///
+    /// This is the daemon-free owner composition for a bundle consumer. It
+    /// reuses the ordinary guarded exact resume and shared lifecycle registry,
+    /// whose `ReadOnlyDebug` access forbids canonical mutation. The returned
+    /// control plane may be served by the existing local debug relay server.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignFindingHandoffError`] when archive checkpoint
+    /// reauthentication, private host admission, guarded QEMU restore, or
+    /// read-only lifecycle admission fails.
+    pub async fn admit_guarded_read_only_session(
+        self,
+        checkpoints: Arc<ExactCheckpointStore>,
+        lifecycle: ProductionVmLifecycleConfig,
+        host: LinuxQemuAttemptHostConfig,
+        resources: AttemptResourceLimits,
+    ) -> Result<ArchivedFindingDebugSession, CampaignFindingHandoffError> {
+        let prepared =
+            self.prepare_guarded_read_only_lifecycle(checkpoints, lifecycle, host, resources)?;
+        let control_plane = ArchivedFindingDebugControlPlane::new_with_fallible_source_factory(
+            "crucible-finding-bundle-debug",
+            Vec::new(),
+            |_scenario, _source, _seed| {
+                Err(LifecycleApiError::LoopFactory {
+                    message: String::from("finding bundle admits only its authenticated midpoint"),
+                })
+            },
+        )
+        .with_max_sessions(1);
+        let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
+        let client =
+            InProcessLifecycleClient::from_shared_control_plane(Arc::clone(&control_plane));
+        let admitted = prepared.admit(&client).await?;
+
+        Ok(ArchivedFindingDebugSession {
+            control_plane,
+            session: admitted.session,
+        })
+    }
+}
+
+/// Selects the live controller's exact midpoint from an imported finding archive.
+///
+/// The archive inspection authenticates the complete executable snapshot and
+/// every finding-retained pin. Scenario and configuration artifacts are then
+/// decoded from that repository, and every candidate checkpoint is validated
+/// before the lowest restore-byte cost and role tie break are applied.
+///
+/// # Errors
+///
+/// Returns [`CampaignFindingHandoffError`] for partial or corrupt archives,
+/// missing exact pins, invalid artifacts, inconsistent schedule prefixes, or
+/// any candidate production closure that cannot be authenticated.
+pub fn prepare_archived_finding_debug_midpoint(
+    repository: &CampaignRepository,
+    archive: CampaignArchiveManifestId,
+    finding_id: FindingId,
+    checkpoints: &ExactCheckpointStore,
+) -> Result<ArchivedFindingDebugMidpoint, CampaignFindingHandoffError> {
+    let finding = repository.inspect_archived_exact_finding(archive, finding_id)?;
+    let reproduction = repository.load_reproduction_artifact(finding.reproduction())?;
+    let scenario_artifact = repository.load_scenario_artifact(reproduction.scenario_artifact())?;
+    let source = decode_crucible_scenario_artifact(&scenario_artifact)?;
+    let configuration_artifact =
+        repository.load_configuration_artifact(reproduction.configuration_artifact())?;
+    let reproduction_configuration = decode_crucible_configuration_artifact_from_repository(
+        &source,
+        &scenario_artifact,
+        &configuration_artifact,
+        repository,
+    )?;
+    if reproduction.scenario() != campaign_scenario_id(source.id())
+        || reproduction.configuration()
+            != campaign_configuration_id(reproduction_configuration.id())
+    {
+        return Err(CampaignFindingHandoffError::ReproductionArtifactMismatch);
+    }
+
+    let selected = select_finding_debug_checkpoint(
+        &source,
+        &reproduction_configuration,
+        finding.exact_pin_retention(),
+        checkpoints,
+    )?;
+    Ok(ArchivedFindingDebugMidpoint {
+        source,
+        configuration: selected.configuration,
+        modeled_checkpoint: selected.modeled_checkpoint,
+        loaded_checkpoint: selected.loaded,
+        checkpoint: selected.checkpoint,
+        role: selected.role,
+        restore_bytes: selected.restore_bytes,
+    })
+}
 
 /// Loads one fully authenticated production capture from an imported archive.
 ///
@@ -237,6 +519,27 @@ fn materialize_asset(
 /// Failure to authenticate or reconstruct one imported finding capture.
 #[derive(Debug, Error)]
 pub enum CampaignFindingHandoffError {
+    /// The private exact store differs from the selected archive closure.
+    #[error("private exact checkpoint store differs from selected archive midpoint")]
+    CheckpointStoreMismatch,
+    /// The private exact checkpoint store failed root authentication.
+    #[error(transparent)]
+    CheckpointStore(#[from] ExactCheckpointStoreError),
+    /// Private Linux process or storage resource admission failed.
+    #[error(transparent)]
+    HostResources(#[from] crucible_qemu::QemuVmRealizationError),
+    /// Guarded QEMU restore or read-only lifecycle admission failed.
+    #[error(transparent)]
+    Lifecycle(#[from] LifecycleApiError),
+    /// The retained reproduction disagrees with its decoded source artifacts.
+    #[error("archived finding reproduction disagrees with source artifacts")]
+    ReproductionArtifactMismatch,
+    /// No valid exact midpoint could be selected from the authenticated pins.
+    #[error("archived finding exact midpoint selection failed: {0}")]
+    DebugSelection(#[from] CampaignServiceFailure),
+    /// A retained execution-model artifact failed semantic decoding.
+    #[error(transparent)]
+    Artifact(#[from] CrucibleArtifactError),
     /// The selected finding has no retained candidate bundle.
     #[error("archived finding has no candidate bundle")]
     MissingCandidateBundle,
