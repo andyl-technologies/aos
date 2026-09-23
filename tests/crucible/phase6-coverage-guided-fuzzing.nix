@@ -447,7 +447,8 @@ in
             tasks=${taskList}
             gate=gate:coverage-guided-fuzzing
             family_execution=pinned-scenario-only
-            schedule_mutation=Decision::Override
+            family_sampler_decision=Decision::Selection
+            live_override_gate=checks.crucible.phase5.cliSearchFuzzWorkflow
             coverage_feedback=event-log-projection
             corpus_storage=deferred-to-T-ADV-13
             RESULT
