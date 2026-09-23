@@ -11,7 +11,6 @@
   cfg = config.aos.services.getty.autologin;
   isInitrd = cfg.stage == "initrd";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "getty";
@@ -46,56 +45,51 @@
     arguments,
     deallocate,
     sessionIdentifier ? null,
-  }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = {
-        inherit service;
-        enabled = true;
-        lifecycle = {
-          inherit description;
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command arguments)];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "always";
-          restart_delay_millis = 0;
-          configuration_change_action = "restart";
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        };
-        dependencies = {
-          after = lib.optional (!isInitrd) userSessionsReadiness;
-          before = [];
-          requires = [];
-          wants = [];
-          wanted_by = [startupReadiness];
-          implicit_dependencies = !isInitrd;
-        };
-        readiness = {
-          mechanism = "process-running";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-        terminal =
-          {
-            device = "/dev/${terminal}";
-            reset = true;
-            hangup = true;
-            inherit deallocate;
-            send_hangup_on_stop = !isInitrd;
-            start_when_idle = !isInitrd;
-          }
-          // lib.optionalAttrs (sessionIdentifier != null) {
-            session_identifier = sessionIdentifier;
-          };
-      };
+  }: {
+    inherit consumerInstance service;
+    lifecycle = {
+      inherit description;
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command arguments)];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
+    dependencies = {
+      after = lib.optional (!isInitrd) userSessionsReadiness;
+      before = [];
+      requires = [];
+      wants = [];
+      wanted_by = [startupReadiness];
+      implicit_dependencies = !isInitrd;
+    };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    terminal =
+      {
+        device = "/dev/${terminal}";
+        reset = true;
+        hangup = true;
+        inherit deallocate;
+        send_hangup_on_stop = !isInitrd;
+        start_when_idle = !isInitrd;
+      }
+      // lib.optionalAttrs (sessionIdentifier != null) {
+        session_identifier = sessionIdentifier;
+      };
+  };
 
   virtualConsole = consoleService {
     service = "virtual-console";
@@ -132,14 +126,6 @@
     arguments = ["-s" "ttyS0" "115200" "vt100"];
     deallocate = false;
   };
-
-  fragments = [
-    startupMilestone
-    userSessionsMilestone
-    virtualConsole
-    serialConsole
-  ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
@@ -163,26 +149,22 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.getty = {};}
     {
-      aos.abilities = lib.mkMerge (
-        builtins.map (definition: definition.declarations) definitions
-      );
+      aos.services = {
+        getty = {};
+        "getty.virtual-console" = virtualConsole // {enable = cfg.enable;};
+        "getty.serial-console" = serialConsole // {enable = cfg.enable;};
+      };
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [
-          {instances.${consumerInstance} = {};}
-          (serviceManagement.splitDefinition startupMilestone).configured
-        ]
-        ++ lib.optional (!isInitrd) (
-          (serviceManagement.splitDefinition userSessionsMilestone).configured
-        )
-        ++ [
-          (serviceManagement.splitDefinition virtualConsole).configured
-          (serviceManagement.splitDefinition serialConsole).configured
-        ]
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [startupMilestone];
+      enabled = cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [userSessionsMilestone];
+      enabled = cfg.enable && !isInitrd;
     })
   ];
 }
