@@ -515,7 +515,9 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
     /// The protected checkpoint must already contain this result. The supplied
     /// request is checked against the completed outcome before its Host-bound
     /// transcript is signed, and the signature must verify against the fixed
-    /// protected agent peer key. This method does not redispatch an effect.
+    /// protected agent peer key. The complete signed packet is committed and
+    /// read back before it is returned for send. This method does not
+    /// redispatch an effect.
     ///
     /// # Errors
     ///
@@ -538,6 +540,16 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         {
             return Err(DormantProtectedGuestExecutionErrorV1::InvalidObservation);
         }
+        if let Some(committed) = self
+            .owner
+            .load_signed_guest_outcome_packet(request.session(), request.sequence())?
+        {
+            return if committed.outcome() == &outcome {
+                Ok(committed)
+            } else {
+                Err(DormantProtectedGuestExecutionErrorV1::InvalidObservation)
+            };
+        }
 
         let peer = self.owner.agent_peer();
         let message = super::agent_reducer::agent_outcome_signing_message_v1(
@@ -551,8 +563,42 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
         public_key
             .verify_strict(&message, &Signature::from_bytes(&signature))
             .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)?;
-        SignedAgentOutcomePacketV1::new(outcome, signature)
-            .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)
+        let packet = SignedAgentOutcomePacketV1::new(outcome, signature)
+            .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)?;
+        self.owner.commit_signed_guest_outcome_packet(&packet)?;
+        Ok(packet)
+    }
+
+    /// Recovers the exact committed signed packet without invoking the signer.
+    ///
+    /// A missing packet is not evidence that an earlier append failed; the
+    /// caller must retain the completed outcome and use the signing path only
+    /// after cold protected replay has classified the prior attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantProtectedGuestExecutionErrorV1`] for stale currentness,
+    /// unresolved checkpoint durability, corrupt signed custody, or a packet
+    /// unrelated to the supplied request and completed reducer history.
+    pub fn recover_committed_signed_outcome_packet(
+        &mut self,
+        request: &AgentOperationRequestV1,
+    ) -> Result<Option<SignedAgentOutcomePacketV1>, DormantProtectedGuestExecutionErrorV1> {
+        self.require_current_checkpoint()?;
+        let packet = self
+            .owner
+            .load_signed_guest_outcome_packet(request.session(), request.sequence())?;
+        let Some(packet) = packet else {
+            return Ok(None);
+        };
+        let outcome = packet.outcome();
+        if outcome.operation_id() != request.operation_id()
+            || outcome.request_commitment() != request.request_commitment()
+            || !self.reducer.contains_completed_outcome(outcome)
+        {
+            return Err(DormantProtectedGuestExecutionErrorV1::InvalidObservation);
+        }
+        Ok(Some(packet))
     }
 
     /// Reconciles a reservation ambiguity through a newly opened owner claim.

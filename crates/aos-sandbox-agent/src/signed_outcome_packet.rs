@@ -47,6 +47,18 @@ impl SignedAgentOutcomePacketV1 {
         Ok(Self { outcome, signature })
     }
 
+    /// Borrows the exact outcome carried by this packet.
+    #[must_use]
+    pub const fn outcome(&self) -> &AgentExecutionOutcomeV1 {
+        &self.outcome
+    }
+
+    /// Borrows the untrusted detached signature.
+    #[must_use]
+    pub const fn signature(&self) -> &[u8; SIGNATURE_BYTES] {
+        &self.signature
+    }
+
     /// Splits the untrusted packet for exact protected-peer verification.
     #[must_use]
     pub fn into_parts(self) -> (AgentExecutionOutcomeV1, [u8; SIGNATURE_BYTES]) {

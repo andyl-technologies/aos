@@ -13,12 +13,16 @@
 //!
 //! AOSAGS01 || request_frame_length:u32be || AOSAGE01_handshake_request
 //! || response_frame_length:u32be || AOSAGE01_handshake_response
+//!
+//! signed-outcome key = 's' || session[32] || sequence:u64be
+//! signed-outcome value = AOSAGW01 signed outcome packet
 //! ```
 
 use aos_sandbox_agent::{
     AgentExecutionOutcomeV1, AgentFrameV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1,
     AgentOperationIdV1, AgentOperationRequestV1, AgentOperationSequenceV1, AgentSessionBindingV1,
-    decode_frame_v1, encode_frame_v1,
+    SignedAgentOutcomePacketV1, decode_frame_v1, decode_signed_agent_outcome_packet_v1,
+    encode_frame_v1, encode_signed_agent_outcome_packet_v1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +37,8 @@ use super::agent_reducer::{
     AgentRecoveredOperationV1, AgentRecoveredOutcomeCommitV1, AgentRecoveredReservationV1,
     AgentReducerError, AgentReservationDispositionV1, AgentReservationRecoveryTokenV1,
     AgentReservationStoreTransitionV1, AuthenticatedRecoveredAgentOutcomeV1, GuestAgentReducerV1,
-    agent_handshake_signing_message_v1, validate_agent_checkpoint_history_v1,
+    agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
+    validate_agent_checkpoint_history_v1,
 };
 
 use aos_sandbox_core::ObjectDigest;
@@ -49,6 +54,7 @@ const CHECKPOINT_KEY: &[u8] = b"agent-checkpoint-current-v1";
 const SESSION_KEY: &[u8] = b"agent-session-current-v1";
 const OPERATION_PREFIX: u8 = b'o';
 const HEAD_PREFIX: u8 = b'h';
+const SIGNED_OUTCOME_PREFIX: u8 = b's';
 const OPERATION_MAGIC: &[u8; 8] = b"AOSAGO02";
 const SESSION_MAGIC: &[u8; 8] = b"AOSAGS01";
 const MAXIMUM_AGENT_STORE_RECORDS: usize = 16_384;
@@ -59,6 +65,7 @@ pub(crate) struct DormantJournalAgentStoreV1<'journal> {
     store_binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
     agent_public_key: [u8; 32],
+    agent_channel_binding: ObjectDigest,
 }
 
 /// Owns one canonical checkpoint authenticated by the concrete protected journal.
@@ -121,10 +128,12 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         store_binding: ObjectDigest,
         recovery_authority_binding: ObjectDigest,
         agent_public_key: [u8; 32],
+        agent_channel_binding: ObjectDigest,
     ) -> Result<Self, JournalAgentStoreError> {
         if store_binding.as_bytes() == &[0; 32]
             || recovery_authority_binding.as_bytes() == &[0; 32]
             || agent_public_key == [0; 32]
+            || agent_channel_binding.as_bytes() == &[0; 32]
         {
             return Err(JournalAgentStoreError::InvalidBinding);
         }
@@ -148,6 +157,7 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
             store_binding,
             recovery_authority_binding,
             agent_public_key,
+            agent_channel_binding,
         })
     }
 
@@ -163,10 +173,12 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
         store_binding: ObjectDigest,
         recovery_authority_binding: ObjectDigest,
         agent_public_key: [u8; 32],
+        agent_channel_binding: ObjectDigest,
     ) -> Result<Self, JournalAgentStoreError> {
         if store_binding.as_bytes() == &[0; 32]
             || recovery_authority_binding.as_bytes() == &[0; 32]
             || agent_public_key == [0; 32]
+            || agent_channel_binding.as_bytes() == &[0; 32]
         {
             return Err(JournalAgentStoreError::InvalidBinding);
         }
@@ -178,12 +190,14 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
             store_binding,
             recovery_authority_binding,
             agent_public_key,
+            agent_channel_binding,
         )?;
         Ok(Self {
             authority,
             store_binding,
             recovery_authority_binding,
             agent_public_key,
+            agent_channel_binding,
         })
     }
 
@@ -230,6 +244,97 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
             .map_err(map_cas_journal_error)?
             .map(decode_operation)
             .transpose()
+    }
+
+    /// Commits one signed terminal artifact before it may cross the channel.
+    ///
+    /// Exact retry reads back the same bytes. A failed append cannot authorize
+    /// send; cold reopen must classify the record before the packet is exposed.
+    pub(super) fn commit_signed_outcome_packet(
+        &mut self,
+        packet: &SignedAgentOutcomePacketV1,
+    ) -> Result<(), JournalAgentStoreError> {
+        let outcome = packet.outcome();
+        let operation = self
+            .load_operation(outcome.session(), outcome.sequence())
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?
+            .ok_or(JournalAgentStoreError::CorruptRecord)?;
+        validate_signed_outcome_packet(
+            &operation,
+            packet,
+            &self.agent_public_key,
+            self.agent_channel_binding,
+        )?;
+        let bytes = encode_signed_agent_outcome_packet_v1(packet)
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+        let key = signed_outcome_key(outcome.session(), outcome.sequence());
+        if let Some(previous) = self.authority.get(&key)? {
+            return if previous == bytes {
+                Ok(())
+            } else {
+                Err(JournalAgentStoreError::CorruptRecord)
+            };
+        }
+
+        let checkpoint_bytes = self
+            .authority
+            .get(CHECKPOINT_KEY)?
+            .ok_or(JournalAgentStoreError::CorruptRecord)?;
+        let checkpoint = decode_checkpoint_v1(checkpoint_bytes)
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+        if validate_checkpoint_projection(
+            &self.authority,
+            &checkpoint,
+            self.store_binding,
+            self.recovery_authority_binding,
+            None,
+        )? != AgentCheckpointProjectionV1::Exact
+        {
+            return Err(JournalAgentStoreError::CorruptRecord);
+        }
+
+        let digest = ObjectDigest::from_bytes(Sha256::digest(&bytes).into());
+        let transaction = JournalTransaction::new(
+            transaction_id(b"agent-signed-outcome", digest),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                key.clone(),
+                bytes.clone(),
+            )],
+        )?;
+        self.commit_records(transaction)?;
+        if self.authority.get(&key)? != Some(bytes.as_slice()) {
+            return Err(JournalAgentStoreError::CorruptRecord);
+        }
+        Ok(())
+    }
+
+    /// Reads one exact signed terminal artifact for retry without re-signing.
+    pub(super) fn load_signed_outcome_packet(
+        &self,
+        session: AgentSessionBindingV1,
+        sequence: AgentOperationSequenceV1,
+    ) -> Result<Option<SignedAgentOutcomePacketV1>, JournalAgentStoreError> {
+        let key = signed_outcome_key(session, sequence);
+        let Some(bytes) = self.authority.get(&key)? else {
+            return Ok(None);
+        };
+        let packet = decode_signed_agent_outcome_packet_v1(bytes)
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+        if packet.outcome().session() != session || packet.outcome().sequence() != sequence {
+            return Err(JournalAgentStoreError::CorruptRecord);
+        }
+        let operation = self
+            .load_operation(session, sequence)
+            .map_err(|_| JournalAgentStoreError::CorruptRecord)?
+            .ok_or(JournalAgentStoreError::CorruptRecord)?;
+        validate_signed_outcome_packet(
+            &operation,
+            &packet,
+            &self.agent_public_key,
+            self.agent_channel_binding,
+        )?;
+        Ok(Some(packet))
     }
 
     pub(super) fn load_uncheckpointed_reservation(
@@ -758,6 +863,9 @@ impl DormantJournalAgentStoreV1<'_> {
         };
         validate_session_record(&session, &self.agent_public_key)
             .map_err(|_| AgentCheckpointError::Unauthenticated)?;
+        if session.request.host_channel_binding() != self.agent_channel_binding {
+            return Err(AgentCheckpointError::Unauthenticated);
+        }
         validate_checkpoint_projection(
             &self.authority,
             candidate.checkpoint(),
@@ -1191,6 +1299,35 @@ fn operation_key(session: AgentSessionBindingV1, sequence: AgentOperationSequenc
     key
 }
 
+fn signed_outcome_key(
+    session: AgentSessionBindingV1,
+    sequence: AgentOperationSequenceV1,
+) -> Vec<u8> {
+    let mut key = operation_key(session, sequence);
+    key[0] = SIGNED_OUTCOME_PREFIX;
+    key
+}
+
+fn validate_signed_outcome_packet(
+    operation: &StoredAgentOperationV1,
+    packet: &SignedAgentOutcomePacketV1,
+    public_key: &[u8; 32],
+    channel_binding: ObjectDigest,
+) -> Result<(), JournalAgentStoreError> {
+    let outcome = packet.outcome();
+    if operation.phase != StoredOperationPhase::Complete
+        || operation.outcome.as_ref() != Some(outcome)
+        || operation.request.session() != outcome.session()
+    {
+        return Err(JournalAgentStoreError::CorruptRecord);
+    }
+    let message = agent_outcome_signing_message_v1(channel_binding, &operation.request, outcome);
+    VerifyingKey::from_bytes(public_key)
+        .map_err(|_| JournalAgentStoreError::CorruptRecord)?
+        .verify_strict(&message, &Signature::from_bytes(packet.signature()))
+        .map_err(|_| JournalAgentStoreError::CorruptRecord)
+}
+
 fn head_key(session: AgentSessionBindingV1) -> Vec<u8> {
     let mut key = Vec::with_capacity(33);
     key.push(HEAD_PREFIX);
@@ -1215,6 +1352,7 @@ fn owned_key(key: &[u8]) -> bool {
         || key == CHECKPOINT_KEY
         || key == SESSION_KEY
         || matches!(key, [OPERATION_PREFIX, ..] if key.len() == 41)
+        || matches!(key, [SIGNED_OUTCOME_PREFIX, ..] if key.len() == 41)
         || matches!(key, [HEAD_PREFIX, ..] if key.len() == 33)
 }
 
@@ -1224,12 +1362,14 @@ fn validate_agent_store_replay(
     store_binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
     agent_public_key: [u8; 32],
+    agent_channel_binding: ObjectDigest,
 ) -> Result<(), JournalAgentStoreError> {
     let protected_sequence = authority.snapshot()?.sequence();
     let mut owner_seen = false;
     let mut checkpoint = None;
     let mut session = None;
     let mut operations = BTreeMap::new();
+    let mut signed_outcomes = BTreeMap::new();
     let mut heads = BTreeMap::new();
     let mut operation_ids = BTreeSet::new();
     let mut store_commitments = BTreeSet::new();
@@ -1272,6 +1412,9 @@ fn validate_agent_store_replay(
             }
             let decoded = decode_session_record(value)?;
             validate_session_record(&decoded, &agent_public_key)?;
+            if decoded.request.host_channel_binding() != agent_channel_binding {
+                return Err(JournalAgentStoreError::CorruptRecord);
+            }
             session = Some(decoded);
             continue;
         }
@@ -1321,11 +1464,44 @@ fn validate_agent_store_replay(
                     return Err(JournalAgentStoreError::CorruptRecord);
                 }
             }
+            Some(SIGNED_OUTCOME_PREFIX) if key.len() == 41 => {
+                let packet = decode_signed_agent_outcome_packet_v1(value)
+                    .map_err(|_| JournalAgentStoreError::CorruptRecord)?;
+                let outcome = packet.outcome();
+                if signed_outcome_key(outcome.session(), outcome.sequence()) != key
+                    || encode_signed_agent_outcome_packet_v1(&packet)
+                        .map_err(|_| JournalAgentStoreError::CorruptRecord)?
+                        != value
+                    || signed_outcomes
+                        .insert(
+                            (
+                                *outcome.session().digest().as_bytes(),
+                                outcome.sequence().get(),
+                            ),
+                            packet,
+                        )
+                        .is_some()
+                {
+                    return Err(JournalAgentStoreError::CorruptRecord);
+                }
+            }
             _ => return Err(JournalAgentStoreError::ForeignStore),
         }
     }
     if !owner_seen {
         return Err(JournalAgentStoreError::ForeignStore);
+    }
+
+    for (identity, packet) in &signed_outcomes {
+        let operation = operations
+            .get(identity)
+            .ok_or(JournalAgentStoreError::CorruptRecord)?;
+        validate_signed_outcome_packet(
+            operation,
+            packet,
+            &agent_public_key,
+            agent_channel_binding,
+        )?;
     }
 
     let mut operations_by_session: BTreeMap<[u8; 32], Vec<&StoredAgentOperationV1>> =

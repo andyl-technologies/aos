@@ -600,6 +600,7 @@ impl DormantRuntimeExecutionOwnerV1 {
             resolved.agent_store_binding,
             resolved.recovery_authority_binding,
             resolved.agent_peer.public_key,
+            resolved.agent_peer.channel_binding,
         )?;
         let (lifecycle_authority, lifecycle_head, lifecycle_issue, lifecycle_terminals) =
             open_lifecycle_store(
@@ -801,6 +802,29 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         self.agent
             .load_uncheckpointed_reservation()
             .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness)
+    }
+
+    pub(super) fn commit_signed_guest_outcome_packet(
+        &mut self,
+        packet: &aos_sandbox_agent::SignedAgentOutcomePacketV1,
+    ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.agent.commit_signed_outcome_packet(packet)?;
+        Ok(())
+    }
+
+    pub(super) fn load_signed_guest_outcome_packet(
+        &mut self,
+        session: aos_sandbox_agent::AgentSessionBindingV1,
+        sequence: aos_sandbox_agent::AgentOperationSequenceV1,
+    ) -> Result<
+        Option<aos_sandbox_agent::SignedAgentOutcomePacketV1>,
+        DormantRuntimeExecutionOwnerErrorV1,
+    > {
+        self.validate_current()?;
+        self.agent
+            .load_signed_outcome_packet(session, sequence)
+            .map_err(Into::into)
     }
 
     /// Borrows the exact currentness admitted by this protected claim.
@@ -2667,6 +2691,7 @@ fn open_agent_store<'journal>(
     store_binding: ObjectDigest,
     recovery_authority_binding: ObjectDigest,
     agent_public_key: [u8; 32],
+    agent_channel_binding: ObjectDigest,
 ) -> Result<DormantJournalAgentStoreV1<'journal>, JournalAgentStoreError> {
     let empty = {
         let authority = journal.claim_protected_authority(RecordNamespace::Effect)?;
@@ -2678,6 +2703,7 @@ fn open_agent_store<'journal>(
             store_binding,
             recovery_authority_binding,
             agent_public_key,
+            agent_channel_binding,
         )
     } else {
         DormantJournalAgentStoreV1::claim(
@@ -2685,6 +2711,7 @@ fn open_agent_store<'journal>(
             store_binding,
             recovery_authority_binding,
             agent_public_key,
+            agent_channel_binding,
         )
     }
 }
