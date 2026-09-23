@@ -43,6 +43,9 @@
     "gate:control-responsiveness"
     "gate:campaign-mutation-scaling"
     "gate:campaign-rfc-traceability"
+    "gate:campaign-exact-maintenance-transfer"
+    "gate:campaign-finding-exact-read-only"
+    "gate:campaign-finding-signal-bundle"
   ];
   expectedManualGates = [
     "gate:campaign-operator-acceptance"
@@ -251,7 +254,7 @@ in
             cat > "$test_root/required-gates/result" <<RESULT
             PASS
             gate=gate:campaign-required-gates
-            required_claim_count=24
+            required_claim_count=27
             all_required_claims_authenticated=true
             manifest_sha256=$required_gates_manifest_sha
             required_claim_gates_sha256=$required_claim_gates_sha
@@ -261,7 +264,7 @@ in
             ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
               --probe-required-gates "$test_root/required-gates" \
               "$test_root/required-claim-gates.txt"
-            sed -i 's/^required_claim_count=24$/required_claim_count=23/' \
+            sed -i 's/^required_claim_count=27$/required_claim_count=26/' \
               "$test_root/required-gates/result"
             if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
               --probe-required-gates "$test_root/required-gates" \
@@ -369,7 +372,7 @@ in
             detached_signatures=required
             external_trusted_signers=required
             dogfood_scale_measurements=required
-            required_claim_count=24
+            required_claim_count=27
             required_claim_gates_sha256=$(sha256sum "$out/required-claim-gates.txt" | cut -d ' ' -f 1)
             acceptance=not-evaluated
             RESULT

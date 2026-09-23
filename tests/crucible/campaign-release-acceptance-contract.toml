@@ -36,6 +36,9 @@ required_claim_gates = [
   "gate:control-responsiveness",
   "gate:campaign-mutation-scaling",
   "gate:campaign-rfc-traceability",
+  "gate:campaign-exact-maintenance-transfer",
+  "gate:campaign-finding-exact-read-only",
+  "gate:campaign-finding-signal-bundle",
 ]
 
 [manual_evidence]

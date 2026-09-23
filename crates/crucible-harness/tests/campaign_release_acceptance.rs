@@ -42,6 +42,7 @@ const REQUIRED_CLAIM_GATES: &[&str] = &[
     "gate:hot-fork-equivalence",
     "gate:hot-fork-isolation",
     "gate:hot-fork-scaling",
+    "gate:host-clone-cost",
     "gate:world-fork-atomicity",
     "gate:exact-closure-streaming",
     "gate:campaign-store-equivalence",
@@ -54,6 +55,9 @@ const REQUIRED_CLAIM_GATES: &[&str] = &[
     "gate:control-responsiveness",
     "gate:campaign-mutation-scaling",
     "gate:campaign-rfc-traceability",
+    "gate:campaign-exact-maintenance-transfer",
+    "gate:campaign-finding-exact-read-only",
+    "gate:campaign-finding-signal-bundle",
 ];
 const MANUAL_GATES: &[&str] = &[
     "gate:campaign-operator-acceptance",
@@ -379,6 +383,9 @@ fn release_acceptance_is_explicitly_wired_and_fails_closed() {
     for wiring in [
         "campaignReleaseEvidence ? null,",
         "campaignFindingPortability = import ./phase9-campaign-finding-portability.nix",
+        "campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix",
+        "campaignFindingExactVm = import ./phase9-campaign-finding-exact-vm.nix",
+        "campaignFindingSignalVm = import ./phase9-campaign-finding-signal-vm.nix",
         "packagedReplay = phase4.gates.campaignReplay.rawGate;",
         "campaignReleaseAcceptanceContract = import ./phase9-campaign-release-acceptance-contract.nix",
         "campaignReleaseAcceptance =",
