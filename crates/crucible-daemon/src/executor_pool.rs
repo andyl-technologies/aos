@@ -597,6 +597,7 @@ where
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolShutdownError> {
         self.request_shutdown();
         if !self.service.shared.completion.wait_for_cleanup(timeout) {
+            self.service.shared.report_pending_cleanup();
             return Err(LocalExecutorPoolShutdownError::CleanupPending);
         }
         let mut outer_panic = false;
@@ -1228,6 +1229,28 @@ impl<L, V> SharedExecutor<L, V> {
             Ok(mut last) => *last = Some((key, phase)),
             Err(poisoned) => *poisoned.into_inner() = Some((key, phase)),
         }
+    }
+
+    fn report_pending_cleanup(&self) {
+        let last_activity = match self.last_promotion_activity.lock() {
+            Ok(activity) => *activity,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+        let (phase, attempt) = match last_activity {
+            Some((key, phase)) => (format!("{phase:?}"), key.attempt().to_string()),
+            None => (String::from("none"), String::from("none")),
+        };
+        eprintln!(
+            "CRUCIBLE-EXECUTOR-CLEANUP-PENDING-V1 finished_workers={} total_workers={} promotion_active={} promotion_queued={} promotion_last_phase={} promotion_last_attempt={} checkpoints_paused={} publication_retries={}",
+            self.completion.finished_worker_count(),
+            self.worker_count + self.promotion_worker_count,
+            self.promotions.active_count(),
+            self.promotions.pending_count(),
+            phase,
+            attempt,
+            self.counters.checkpoints_paused.load(Ordering::Relaxed),
+            self.counters.publication_retries.load(Ordering::Relaxed),
+        );
     }
 
     fn record_promotion_failure(
