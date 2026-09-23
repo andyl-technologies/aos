@@ -308,6 +308,19 @@ the outstanding work concrete:
   operator recovery actions also lack a completing effect path. Connect these
   methods to their protected owners before claiming the public mutation family
   is complete.
+- Execution control is not a same-process owner call. Public admission now
+  separates OpenSSH attach from checked resize and signal effects, and the
+  dormant Host backend can bind issued authorize, resize, signal, cancel, and
+  observe effects to one authenticated agent session. The controller owns an
+  unprivileged source-domain journal, while
+  `DormantRuntimeExecutionOwnerV1::open` claims separate root-owned Host
+  journals; the Host service does not activate that execution backend and the
+  packaged guest-agent entry point still fails closed without a protected
+  inherited transport. Production completion needs a versioned, authenticated
+  controller-to-Host execution handoff with durable replay and outcome
+  recovery, fixed-owner provisioning and guest-agent activation, then a
+  completing controller effect and public projection. Attach requires its
+  separately authorized OpenSSH data route; it is not an agent control effect.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
