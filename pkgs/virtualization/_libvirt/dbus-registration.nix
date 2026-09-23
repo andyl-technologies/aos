@@ -4,7 +4,7 @@
   lib,
   ...
 }: let
-  cfg = config.aos.services.libvirt;
+  cfg = config.aos.virtualization.libvirt;
   contributionInterface = {
     name = "aos.dbus.system-registration-contribution";
     abi = 1;

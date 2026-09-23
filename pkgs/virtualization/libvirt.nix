@@ -469,7 +469,7 @@ in
           ../../systems/_system-manager.nix
           {
             aos.kernel.packageRoot = pkgs.linux;
-            aos.services.libvirt = {
+            aos.virtualization.libvirt = {
               enable = true;
               allowedUsers = ["operator"];
             };

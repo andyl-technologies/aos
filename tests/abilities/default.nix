@@ -233,6 +233,9 @@
   zfstoolsService = import ./zfstools-service.nix {
     inherit lib pkgs;
   };
+  libvirtService = import ./libvirt-service.nix {
+    inherit lib pkgs;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -650,6 +653,7 @@ in
   assert abilityCrucibleService;
   assert abilityBoundaryObserverService;
   assert zfstoolsService;
+  assert libvirtService;
   assert serviceManagement;
   assert dbusService;
   assert bindService;
