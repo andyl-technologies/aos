@@ -7,9 +7,9 @@
 //! privileged broker request.
 
 use aos_proto::aos::sandbox::v1::{
-    Attachment, AttachmentPhase, DesiredLifecycle, Execution, ExecutionPhase, FilesystemView,
-    Sandbox, SandboxDesiredState, SandboxObservedState, SandboxPhase, Snapshot, SnapshotPhase,
-    Timestamp, ViewPhase,
+    Attachment, AttachmentPhase, DesiredLifecycle, Execution, ExecutionControlAction,
+    ExecutionIoMode, ExecutionPhase, FilesystemView, Sandbox, SandboxDesiredState,
+    SandboxObservedState, SandboxPhase, Snapshot, SnapshotPhase, Timestamp, ViewPhase,
 };
 use aos_sandbox_core::{
     AttachmentId, ExecutionId, OperationId, ProjectId, SandboxId, SnapshotId, ViewId,
@@ -133,14 +133,12 @@ pub(super) fn compile_public_mutation(
             request_digest,
             value,
         )?,
-        Request::ExecutionControl(value) => execution_mutation_intent(
+        Request::ExecutionControl(value) => control_execution_projection(
             journal,
             peer.project(),
             operation_id,
-            request.operation_method(),
-            canonical_request,
-            &value.execution_id,
-            value.mutation.as_option(),
+            request_digest,
+            value,
         )?,
         Request::CancelExec(value) => execution_mutation_intent(
             journal,
@@ -653,6 +651,40 @@ fn execution_mutation_intent(
     execution_id: &[u8],
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    load_execution_for_mutation(journal, project, execution_id, mutation)?;
+
+    Ok(mutation_intent(operation, method, canonical_request))
+}
+
+fn control_execution_projection(
+    journal: &Journal,
+    project: ProjectId,
+    operation: OperationId,
+    request_digest: [u8; 32],
+    request: &aos_proto::aos::sandbox::v1::ExecutionControlRequest,
+) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    let execution = load_execution_for_mutation(
+        journal,
+        project,
+        &request.execution_id,
+        request.mutation.as_option(),
+    )?;
+    validate_execution_control(&execution, request)?;
+    let execution = next_controlled_execution(execution, operation, request_digest)?;
+
+    projection(
+        project,
+        operation,
+        PublicProjectionResourceV1::Execution(execution),
+    )
+}
+
+fn load_execution_for_mutation(
+    journal: &Journal,
+    project: ProjectId,
+    execution_id: &[u8],
+    mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+) -> Result<Execution, OperationCompilationError> {
     let record = PublicProjectionStoreV1::new(journal)
         .get(PublicProjectionKindV1::Execution, exact_id(execution_id)?)
         .map_err(|_| OperationCompilationError::Rejected)?
@@ -665,7 +697,7 @@ fn execution_mutation_intent(
     };
     validate_execution_mutation(execution, mutation)?;
 
-    Ok(mutation_intent(operation, method, canonical_request))
+    Ok(execution.clone())
 }
 
 fn validate_execution_mutation(
@@ -678,6 +710,58 @@ fn validate_execution_mutation(
         return Err(OperationCompilationError::Rejected);
     }
     Ok(())
+}
+
+fn validate_execution_control(
+    execution: &Execution,
+    request: &aos_proto::aos::sandbox::v1::ExecutionControlRequest,
+) -> Result<(), OperationCompilationError> {
+    if matches!(
+        execution.phase.as_known(),
+        Some(
+            ExecutionPhase::EXECUTION_PHASE_EXITED
+                | ExecutionPhase::EXECUTION_PHASE_CANCELED
+                | ExecutionPhase::EXECUTION_PHASE_FAILED
+                | ExecutionPhase::EXECUTION_PHASE_LOST
+        )
+    ) {
+        return Err(OperationCompilationError::Rejected);
+    }
+
+    match request.action.as_known() {
+        Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
+        | Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_SIGNAL) => {}
+        Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_RESIZE) => {
+            let command = execution
+                .command
+                .as_option()
+                .ok_or(OperationCompilationError::Rejected)?;
+            if command.io_mode.as_known() != Some(ExecutionIoMode::EXECUTION_IO_MODE_PTY) {
+                return Err(OperationCompilationError::Rejected);
+            }
+        }
+        Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_UNSPECIFIED) | None => {
+            return Err(OperationCompilationError::Malformed);
+        }
+    }
+    Ok(())
+}
+
+fn next_controlled_execution(
+    mut execution: Execution,
+    operation: OperationId,
+    request_digest: [u8; 32],
+) -> Result<Execution, OperationCompilationError> {
+    // The admitted command and observed phase stay unchanged until the effect settles.
+    let generation = next_generation(execution.desired_generation)?;
+    execution.desired_generation = generation;
+    execution.resource_version = resource_version(
+        operation,
+        PublicOperationMethodV1::ControlExecution,
+        generation,
+        request_digest,
+    );
+    Ok(execution)
 }
 
 fn create_view_projection(
@@ -1356,9 +1440,16 @@ fn timestamp(seconds: i64) -> Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use aos_proto::aos::sandbox::v1::{Execution, MutationContext};
+    use aos_proto::aos::sandbox::v1::{
+        Command, Execution, ExecutionControlAction, ExecutionControlRequest, ExecutionIoMode,
+        ExecutionPhase, MutationContext,
+    };
+    use aos_sandbox_core::OperationId;
 
-    use super::{OperationCompilationError, validate_execution_mutation};
+    use super::{
+        OperationCompilationError, next_controlled_execution, validate_execution_control,
+        validate_execution_mutation,
+    };
 
     #[test]
     fn execution_mutation_requires_current_version_and_incarnation() {
@@ -1393,6 +1484,62 @@ mod tests {
         stale_incarnation.expected_incarnation_id[0] ^= 1;
         assert_eq!(
             validate_execution_mutation(&execution, Some(&stale_incarnation)),
+            Err(OperationCompilationError::Rejected)
+        );
+    }
+
+    #[test]
+    fn execution_control_advances_only_desired_identity() {
+        let command = Command {
+            io_mode: ExecutionIoMode::EXECUTION_IO_MODE_PTY.into(),
+            allocate_terminal: true,
+            terminal_rows: 24,
+            terminal_columns: 80,
+            ..Default::default()
+        };
+        let execution = Execution {
+            resource_version: vec![0x31; 32],
+            desired_generation: 7,
+            observation_sequence: 5,
+            phase: ExecutionPhase::EXECUTION_PHASE_RUNNING.into(),
+            command: Some(command.clone()).into(),
+            ..Default::default()
+        };
+        let request = ExecutionControlRequest {
+            action: ExecutionControlAction::EXECUTION_CONTROL_ACTION_RESIZE.into(),
+            terminal_rows: 40,
+            terminal_columns: 120,
+            ..Default::default()
+        };
+
+        assert_eq!(validate_execution_control(&execution, &request), Ok(()));
+        let next = next_controlled_execution(
+            execution.clone(),
+            OperationId::from_bytes([0x44; 16]),
+            [0x55; 32],
+        )
+        .unwrap();
+        assert_eq!(next.desired_generation, 8);
+        assert_ne!(next.resource_version, execution.resource_version);
+        assert_eq!(next.observation_sequence, execution.observation_sequence);
+        assert_eq!(next.phase, execution.phase);
+        assert_eq!(next.command.as_option(), Some(&command));
+
+        let mut stream_execution = execution.clone();
+        stream_execution.command = Some(Command {
+            io_mode: ExecutionIoMode::EXECUTION_IO_MODE_STREAM.into(),
+            ..Default::default()
+        })
+        .into();
+        assert_eq!(
+            validate_execution_control(&stream_execution, &request),
+            Err(OperationCompilationError::Rejected)
+        );
+
+        let mut terminal_execution = execution;
+        terminal_execution.phase = ExecutionPhase::EXECUTION_PHASE_EXITED.into();
+        assert_eq!(
+            validate_execution_control(&terminal_execution, &request),
             Err(OperationCompilationError::Rejected)
         );
     }
