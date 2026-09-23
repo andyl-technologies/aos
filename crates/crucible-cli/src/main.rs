@@ -431,6 +431,8 @@ enum CampaignFindingBundleCommand {
     Midpoint(CampaignFindingBundleMidpointArgs),
     /// Fork a second private midpoint and prove one non-canonical register write.
     ForkWrite(CampaignFindingBundleForkWriteArgs),
+    /// Execute a declared alternate choice from the imported executable archive.
+    Branch(CampaignFindingBundleBranchArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -503,6 +505,22 @@ struct CampaignFindingBundleForkWriteArgs {
     /// Keep serving the proven writable branch to a local GDB client.
     #[arg(long, action = ArgAction::SetTrue)]
     serve: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleBranchArgs {
+    /// Exported finding bundle directory.
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Alternate label or typed value for the first retained declared choice.
+    #[arg(long, value_name = "VALUE", required = true)]
+    value: String,
+    /// New owner-only directory for the executed branch and provenance.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+    /// Maximum time allowed for the packaged QEMU branch to complete.
+    #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+    timeout_seconds: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]

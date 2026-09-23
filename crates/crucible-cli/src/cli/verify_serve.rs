@@ -908,6 +908,92 @@ pub(super) fn open_local_campaign_service(
     }))
 }
 
+/// Private packaged campaign execution without an unrelated TCP control listener.
+pub(crate) struct PrivatePackagedCampaignRun<'a> {
+    pub(crate) state: &'a Path,
+    pub(crate) policy: &'a Path,
+    pub(crate) authority: &'a Path,
+    pub(crate) campaign_socket: &'a Path,
+    pub(crate) executor_socket: &'a Path,
+    pub(crate) deployment: &'a Path,
+    pub(crate) campaign: &'a str,
+    pub(crate) lifecycle: &'a crucible_api::ProductionVmLifecycleConfig,
+    pub(crate) timeout: Duration,
+}
+
+/// Runs one imported campaign until its authenticated completion becomes visible.
+///
+/// # Errors
+///
+/// Returns an error if the private service fails, the completion check fails,
+/// or the bounded execution deadline expires.
+pub(crate) fn run_private_packaged_campaign_until<F>(
+    run: PrivatePackagedCampaignRun<'_>,
+    mut completed: F,
+) -> Result<(), CliError>
+where
+    F: FnMut() -> Result<bool, CliError>,
+{
+    let args = ServeArgs {
+        listen: String::from("127.0.0.1:0"),
+        max_sessions: None,
+        production_qemu: true,
+        qemu_rendezvous_icount: None,
+        read_only: false,
+        tls_cert: None,
+        tls_key: None,
+        client_ca: None,
+        trusted_unauthenticated_bind: false,
+        debug_role: Vec::new(),
+        campaign_socket: Some(run.campaign_socket.to_path_buf()),
+        campaign_state: Some(run.state.to_path_buf()),
+        campaign_policy: Some(run.policy.to_path_buf()),
+        campaign_store: None,
+        campaign_maintenance_interval_ms: None,
+        campaign_maintenance_write_back_transfers: None,
+        campaign_maintenance_s3_nodes: None,
+        campaign_maintenance_s3_uploads: None,
+        campaign_component_authority: Some(run.authority.to_path_buf()),
+        campaign_import_manifest: Vec::new(),
+        campaign_runtime: vec![run.campaign.to_owned()],
+        campaign_runtime_all: false,
+        campaign_executor_socket: vec![run.executor_socket.to_path_buf()],
+        campaign_packaged_executor: Some(run.deployment.to_path_buf()),
+        campaign_socket_mode: 0o600,
+    };
+    let prepared = open_local_campaign_service(&args, Some(run.lifecycle), None)?
+        .ok_or_else(|| serve_error("private packaged campaign service was not prepared"))?;
+    let shutdown = prepared.service.shutdown_handle();
+    let thread = std::thread::Builder::new()
+        .name(String::from("crucible-private-campaign"))
+        .spawn(move || prepared.service.serve())
+        .map_err(|error| serve_error(format!("private campaign service thread error: {error}")))?;
+    let deadline = std::time::Instant::now() + run.timeout;
+    let result = loop {
+        match completed() {
+            Ok(true) => break Ok(()),
+            Ok(false) if thread.is_finished() => {
+                break Err(serve_error(
+                    "private packaged campaign service stopped early",
+                ));
+            }
+            Ok(false) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(false) => break Err(serve_error("private packaged campaign execution timed out")),
+            Err(error) => break Err(error),
+        }
+    };
+    shutdown.shutdown();
+    let joined = thread
+        .join()
+        .map_err(|_| serve_error("private packaged campaign service thread panicked"))?
+        .map_err(|error| campaign_service_join_error(&error));
+    result?;
+    joined?;
+    Ok(())
+}
+
 pub(super) fn campaign_executor_endpoint(
     path: &Path,
 ) -> Result<crucible_daemon::ExecutorLoopbackEndpointConfig, CliError> {
