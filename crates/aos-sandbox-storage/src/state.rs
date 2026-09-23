@@ -2702,12 +2702,7 @@ impl StorageTransactionStore {
         hash.update(b"aos.sandbox.storage.catalog-bootstrap.v1\0");
         hash.update(binding.generation().to_be_bytes());
         hash.update(binding.digest().as_bytes());
-        let digest: [u8; 32] = hash.finalize().into();
-        let mut transaction_id = [0; 16];
-        transaction_id.copy_from_slice(&digest[..16]);
-        if transaction_id == [0; 16] {
-            transaction_id[15] = 1;
-        }
+        let transaction_id = finish_nonzero_transaction_id(hash);
         let mut journal_records = Vec::with_capacity(2);
         if let Some(configuration_binding) = configuration_binding {
             journal_records.push(runtime_configuration_record(
@@ -3998,18 +3993,11 @@ fn atomic_snapshot_transaction_id(
     operation: [u8; 16],
     phase: AtomicDatasetSnapshotPhaseV1,
 ) -> [u8; 16] {
-    let digest: [u8; 32] = Sha256::new()
+    let hash = Sha256::new()
         .chain_update(b"aos.sandbox.storage.atomic-snapshot-transaction.v1\0")
         .chain_update(operation)
-        .chain_update([phase as u8])
-        .finalize()
-        .into();
-    let mut transaction = [0; 16];
-    transaction.copy_from_slice(&digest[..16]);
-    if transaction == [0; 16] {
-        transaction[15] = 1;
-    }
-    transaction
+        .chain_update([phase as u8]);
+    finish_nonzero_transaction_id(hash)
 }
 
 fn atomic_snapshot_transaction(
@@ -5005,26 +4993,14 @@ fn transaction_id(operation_id: [u8; 16], phase: DurableStoragePhase) -> [u8; 16
     hash.update(RECORD_DOMAIN);
     hash.update(operation_id);
     hash.update([phase_code(phase)]);
-    let digest: [u8; 32] = hash.finalize().into();
-    let mut id = [0; 16];
-    id.copy_from_slice(&digest[..16]);
-    if id == [0; 16] {
-        id[15] = 1;
-    }
-    id
+    finish_nonzero_transaction_id(hash)
 }
 
 fn catalog_preparation_transaction_id(operation_id: [u8; 16]) -> [u8; 16] {
     let mut hash = Sha256::new();
     hash.update(b"aos.sandbox.storage.catalog-preparation-transaction.v1\0");
     hash.update(operation_id);
-    let digest: [u8; 32] = hash.finalize().into();
-    let mut id = [0; 16];
-    id.copy_from_slice(&digest[..16]);
-    if id == [0; 16] {
-        id[15] = 1;
-    }
-    id
+    finish_nonzero_transaction_id(hash)
 }
 
 fn resolver_policy_floor_transaction_id(floor: StorageResolverPolicyFloorV1) -> [u8; 16] {
@@ -5032,13 +5008,7 @@ fn resolver_policy_floor_transaction_id(floor: StorageResolverPolicyFloorV1) -> 
     hash.update(b"aos.sandbox.storage.resolver-policy-floor-transaction.v1\0");
     hash.update(floor.generation.to_be_bytes());
     hash.update(floor.catalog_digest.as_bytes());
-    let digest: [u8; 32] = hash.finalize().into();
-    let mut id = [0; 16];
-    id.copy_from_slice(&digest[..16]);
-    if id == [0; 16] {
-        id[15] = 1;
-    }
-    id
+    finish_nonzero_transaction_id(hash)
 }
 
 fn pin_attempt_transaction_id(attempt: &WorkspacePinAttemptV1) -> [u8; 16] {
@@ -5049,19 +5019,17 @@ fn pin_attempt_transaction_id(attempt: &WorkspacePinAttemptV1) -> [u8; 16] {
         WorkspacePinAttemptPhaseV1::Ambiguous => 1,
         WorkspacePinAttemptPhaseV1::Satisfied => 2,
     }]);
-    let digest: [u8; 32] = hash.finalize().into();
-    let mut id = [0; 16];
-    id.copy_from_slice(&digest[..16]);
-    if id == [0; 16] {
-        id[15] = 1;
-    }
-    id
+    finish_nonzero_transaction_id(hash)
 }
 
 fn workspace_pin_repair_transaction_id(repair_operation_id: [u8; 16]) -> [u8; 16] {
     let mut hash = Sha256::new();
     hash.update(b"aos.sandbox.storage.workspace-pin-repair-transaction.v1\0");
     hash.update(repair_operation_id);
+    finish_nonzero_transaction_id(hash)
+}
+
+fn finish_nonzero_transaction_id(hash: Sha256) -> [u8; 16] {
     let digest: [u8; 32] = hash.finalize().into();
     let mut id = [0; 16];
     id.copy_from_slice(&digest[..16]);
