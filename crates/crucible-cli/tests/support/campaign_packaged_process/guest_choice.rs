@@ -11,16 +11,18 @@ use crucible_campaign::{
     DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, IntegerDomain,
     IntegerRepresentation, IntegerValue, SelectableDeclaration,
 };
+use crucible_core::{FramePredicate, LinkId, RegexProgram};
 use crucible_daemon::{
     AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState, ExactCheckpointStore,
     visit_directory_attempt_states_bounded,
 };
-use crucible_session::engine::LinkDef;
+use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 
 pub(crate) const FAST_ALTERNATIVE: &str =
     "0101010101010101010101010101010101010101010101010101010101010101";
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
-const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "100000000";
+const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "250000000";
+const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(240);
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
 const MAX_DIAGNOSTIC_ENTRIES: usize = 256;
@@ -78,8 +80,13 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         0x61,
     )?;
     let fast_request = accepted_branch_request(&fast_submission)?;
-    let fast_attempt =
-        wait_for_new_completed_attempt(&fixture, &mut service, &known_attempts, &fast_request)?;
+    let fast_attempt = wait_for_new_completed_attempt_with_timeout(
+        &fixture,
+        &mut service,
+        &known_attempts,
+        &fast_request,
+        GUEST_CHOICE_ATTEMPT_WAIT,
+    )?;
     known_attempts.insert(fast_attempt);
     let fast_explanation = wait_for_attempt_observation(&fixture, fast_attempt)?;
     assert_eq!(fast_explanation["proposal"]["request"], fast_request);
@@ -115,8 +122,13 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         0x63,
     )?;
     let safe_request = accepted_branch_request(&safe_submission)?;
-    let safe_attempt =
-        wait_for_new_completed_attempt(&fixture, &mut service, &known_attempts, &safe_request)?;
+    let safe_attempt = wait_for_new_completed_attempt_with_timeout(
+        &fixture,
+        &mut service,
+        &known_attempts,
+        &safe_request,
+        GUEST_CHOICE_ATTEMPT_WAIT,
+    )?;
     known_attempts.insert(safe_attempt);
     let safe_explanation = wait_for_attempt_observation(&fixture, safe_attempt)?;
     assert_eq!(safe_explanation["proposal"]["request"], safe_request);
@@ -138,19 +150,14 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     attest_guest_choice_immutable_inputs("safe-retry-replay", &immutable_inputs, &authority)?;
     require_empty_guest_choice_run_root("safe-retry-replay")?;
 
-    let safe_retry_submission = submit_choice(
-        &fixture,
-        &safe_retry,
-        "u64:1",
-        "boundary:network-observed-selected-safe-q1",
-        0x64,
-    )?;
+    let safe_retry_submission = submit_choice(&fixture, &safe_retry, "u64:1", "terminal", 0x64)?;
     let safe_retry_request = accepted_branch_request(&safe_retry_submission)?;
-    let safe_retry_attempt = wait_for_new_completed_attempt(
+    let safe_retry_attempt = wait_for_new_completed_attempt_with_timeout(
         &fixture,
         &mut service,
         &known_attempts,
         &safe_retry_request,
+        GUEST_CHOICE_ATTEMPT_WAIT,
     )?;
     known_attempts.insert(safe_retry_attempt);
     let safe_retry_explanation = wait_for_attempt_observation(&fixture, safe_retry_attempt)?;
@@ -161,7 +168,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     assert_eq!(safe_retry_explanation["selection"]["value"], "u64:1");
     assert_eq!(
         safe_retry_explanation["observation"]["stop"],
-        "reached:boundary:network-observed-selected-safe-q1"
+        "terminal-success"
     );
 
     // The integer request belongs to the exact child state published by the
@@ -280,7 +287,6 @@ fn compile_guest_choice_campaign(
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
     let initrd = required_path("CRUCIBLE_INITRD")?;
-    let peer_initrd = required_path("CRUCIBLE_PEER_INITRD")?;
     let node = WorldNode {
         id: NodeId {
             name: "choice-node".into(),
@@ -308,18 +314,43 @@ fn compile_guest_choice_campaign(
         id: NodeId {
             name: "choice-peer".into(),
         },
-        initrd: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
-            &fs::read(peer_initrd)?,
-        ))),
+        cmdline: format!("{} -- crucible-campaign-peer", node.cmdline),
         ..node.clone()
     };
-    let link = LinkDef::new(node.id.clone(), peer.id.clone())?;
+    // The 250 ms modeled one-way link gives the conservative scheduler the
+    // same lookahead as this flight's 250M-icount rendezvous interval.
+    let link = LinkDef::with_transport(
+        node.id.clone(),
+        peer.id.clone(),
+        SimDuration { nanos: 250_000_000 },
+        SimDuration { nanos: 0 },
+        LinkLossProbability::ZERO,
+        None,
+    )?;
+    let peer_id = peer.id.clone();
+    let link_id = LinkId::for_endpoints(&node.id, &peer_id);
     let world = World::from_nodes_and_links(vec![node, peer], vec![link])?;
     let selectables = guest_choice_selectables_with_prefix(&world, "network")?;
+    // The pass requires modeled delivery and a receive marker from the peer's
+    // own console, so it cannot complete on a sender-only event or early
+    // scheduler quiescence with an uncommitted frame.
     let graph = EventGraph::builder()
-        .event("keep-selected-guest-running")
+        .event("network-observed-selected-safe-q1")
         .entrypoint()
-        .action(Action::Group(Vec::new()))
+        .when(Predicate::all_of(vec![
+            Predicate::once(Predicate::network_match(
+                Some(link_id),
+                FramePredicate::contains(b"crucible-selected-safe-q1".to_vec()),
+            )),
+            Predicate::once(Predicate::console_match(
+                peer_id,
+                RegexProgram::from_pattern("CRUCIBLE-CAMPAIGN-PEER-RECEIVED:selected-safe-q1"),
+            )),
+            Predicate::once(Predicate::guest_marker(MarkerId::from_name(
+                "network-observed-selected-safe-q1",
+            ))),
+        ]))
+        .action(Action::Pass)
         .build_for_world(&world)?;
     let plan = Plan::from_event_graph_for_world(&world, graph)?;
     let scenario =
@@ -338,6 +369,7 @@ fn compile_guest_choice_campaign(
     Ok((compiled, scenario))
 }
 
+#[cfg(feature = "packaged-midpoint-flight")]
 pub(crate) fn guest_choice_selectables(
     world: &World,
 ) -> Result<ScenarioSelectables, Box<dyn Error>> {
@@ -503,7 +535,6 @@ fn guest_choice_immutable_inputs(
         ("plugin", required_path("CRUCIBLE_FLIGHT_PLUGIN")?),
         ("kernel", required_path("CRUCIBLE_KERNEL")?),
         ("initrd", required_path("CRUCIBLE_INITRD")?),
-        ("peer-initrd", required_path("CRUCIBLE_PEER_INITRD")?),
         ("root-image", required_path("CRUCIBLE_ROOT_IMAGE")?),
         (
             "executor-deployment",
@@ -1490,7 +1521,7 @@ fn wait_for_new_running_attempt(
         known,
         "running",
         Some(request),
-        Duration::from_secs(120),
+        GUEST_CHOICE_ATTEMPT_WAIT,
         |state| matches!(state, AttemptRuntimeState::Running { .. }),
     )
 }
