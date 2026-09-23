@@ -146,19 +146,10 @@
     stop_timeout_millis = 90000;
   };
   service = declaration:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["hardening"];
-      featureRequests = lib.optional (declaration ? hardening) (
-        serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = declaration.hardening;
-        }
-      );
+    (builtins.removeAttrs declaration ["hardening" "enabled"])
+    // {inherit consumerInstance;}
+    // lib.optionalAttrs (declaration ? hardening) {
+      policy.hardening = declaration.hardening;
     };
 
   activationPreflight = service {
@@ -255,8 +246,7 @@
     };
   };
 
-  fragments = [hostStageReceived configGroup activationPreflight activate];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
+  producers = [hostStageReceived configGroup];
 in {
   options.aos.config.unitGraph = {
     enable = lib.mkOption {
@@ -272,12 +262,15 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
-    (lib.mkIf (cfg.enable && hostStage) {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
+    {
+      aos.services = {
+        "control-plane.aos-graph-compile" = activationPreflight // {enable = cfg.enable && hostStage;};
+        "control-plane.aos-activate" = activate // {enable = cfg.enable && hostStage;};
+      };
+    }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable && hostStage;
     })
   ];
 }
