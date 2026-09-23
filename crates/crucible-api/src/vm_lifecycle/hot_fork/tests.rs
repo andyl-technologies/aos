@@ -71,6 +71,42 @@ fn permanently_failed_continuation() -> (ScenarioDefForm, ProductionVmHotForkWor
     (source, continuation)
 }
 
+fn active_multi_node_continuation() -> (ScenarioDefForm, ProductionVmHotForkWorldContinuation) {
+    let (source, mut continuation) = permanently_failed_continuation();
+    assert!(continuation.nodes.len() >= 2);
+
+    // The host continuation is captured through the production path. Test process
+    // identities stand in for paused QEMU sources; no process is launched here.
+    for (index, boundary) in continuation.nodes.iter_mut().enumerate() {
+        let node = boundary.node.clone();
+        let failed = continuation
+            .failed_host_io
+            .remove(&node)
+            .unwrap_or_else(|| panic!("captured node should own failed host I/O"));
+        continuation
+            .active_host_io
+            .insert(node.clone(), failed.host_io);
+        continuation
+            .node_service_states
+            .insert(node, ProductionNodeServiceState::Running);
+        boundary.service_state = ProductionVmHotForkNodeServiceState::Running;
+        boundary.physical_time = Some(boundary.scheduler_time);
+        boundary.process = Some(QemuProcessIdentity {
+            process_id: 10_000 + index as u32,
+            start_time_ticks: 20_000 + index as u64,
+            executable: PathBuf::from("qemu-system-test"),
+        });
+    }
+
+    continuation
+        .validate_complete_internal_state()
+        .unwrap_or_else(|error| panic!("active multi-node continuation should validate: {error}"));
+    continuation
+        .validate_world_io(source.world())
+        .unwrap_or_else(|error| panic!("active multi-node host I/O should validate: {error}"));
+    (source, continuation)
+}
+
 fn exact_boundary_from_continuation(
     continuation: &ProductionVmHotForkWorldContinuation,
 ) -> ProductionVmExactHotForkSourceBoundary {
@@ -176,7 +212,7 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
     const OBJECT_BYTES: usize = 16 * 1024 * 1024;
     const MAX_PRIVATE_GROWTH_KIB: u64 = 64 * 1024;
 
-    let (_source, mut captured) = permanently_failed_continuation();
+    let (source, mut captured) = active_multi_node_continuation();
     let event_bytes = vec![3; OBJECT_BYTES];
     let event = ContentHash::from_bytes(&event_bytes);
     Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
@@ -197,6 +233,12 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
     let private_growth_kib = host_private_dirty_kib().saturating_sub(baseline_kib);
 
     for sibling in &siblings {
+        sibling
+            .validate_complete_internal_state()
+            .unwrap_or_else(|error| panic!("active sibling should remain complete: {error}"));
+        sibling
+            .validate_world_io(source.world())
+            .unwrap_or_else(|error| panic!("active sibling host I/O should validate: {error}"));
         assert!(Arc::ptr_eq(&captured.scheduler, &sibling.scheduler));
         assert!(Arc::ptr_eq(
             &captured.event_log_objects,
@@ -208,6 +250,8 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
         ));
         assert_eq!(sibling.event_log_objects[&event].len(), OBJECT_BYTES);
         assert_eq!(sibling.signal_artifact_objects[&signal].len(), OBJECT_BYTES);
+        assert_eq!(sibling.active_host_io, captured.active_host_io);
+        assert!(sibling.failed_host_io.is_empty());
     }
     assert_eq!(Arc::strong_count(&captured.scheduler), SIBLINGS + 1);
     assert_eq!(Arc::strong_count(&captured.event_log_objects), SIBLINGS + 1);
@@ -220,7 +264,32 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
         "{SIBLINGS} host clones consumed {private_growth_kib} KiB private memory"
     );
 
+    let mut siblings = siblings;
+    let changed_node = captured.nodes[0].node.clone();
+    let original_host_io = captured.active_host_io[&changed_node].clone();
+    let replacement_host_io =
+        QemuHostIoCheckpoint::without_devices(ContentHash::from_bytes(b"child-only-host-io"));
+    siblings[0]
+        .active_host_io
+        .insert(changed_node.clone(), replacement_host_io.clone());
+    siblings[0].node_generations.insert(changed_node.clone(), 2);
+    siblings[0].nodes[0].generation = 2;
+
+    assert_eq!(
+        siblings[0].active_host_io[&changed_node],
+        replacement_host_io
+    );
+    assert_eq!(siblings[0].node_generations[&changed_node], 2);
+    assert_eq!(captured.active_host_io[&changed_node], original_host_io);
+    assert_eq!(siblings[1].active_host_io[&changed_node], original_host_io);
+    assert_eq!(captured.node_generations[&changed_node], 1);
+    assert_eq!(siblings[1].node_generations[&changed_node], 1);
+    siblings[0]
+        .validate_complete_internal_state()
+        .unwrap_or_else(|error| panic!("mutated active sibling should remain complete: {error}"));
+
     println!("host_continuation_siblings={SIBLINGS}");
+    println!("host_active_nodes={}", captured.nodes.len());
     println!("host_immutable_object_bytes={}", 2 * OBJECT_BYTES);
     println!("host_shared_backing_copies=1");
     println!("host_clone_private_growth_kib={private_growth_kib}");
