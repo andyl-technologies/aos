@@ -1098,6 +1098,29 @@ where
     Ok(CompletedCurrentAttachmentMountAttemptV1 { guard, completion })
 }
 
+pub(crate) fn complete_authenticated_current<T>(
+    journal: &mut Journal,
+    attempt: DurableCurrentAttachmentMountAttemptV1,
+    outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    clock: &mut T,
+) -> Result<CompletedCurrentAttachmentMountAttemptV1, AttachmentMountError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    attempt.recheck(journal, clock)?;
+    let DurableCurrentAttachmentMountAttemptV1 {
+        guard,
+        resume_evidence: _,
+        attempt,
+    } = attempt;
+    let completion =
+        crate::mount_attempt::complete_authenticated_current(journal, attempt, outcome, clock)?;
+
+    // The signed result is durable even if desired state changed during I/O.
+    guard.recheck(journal, clock)?;
+    Ok(CompletedCurrentAttachmentMountAttemptV1 { guard, completion })
+}
+
 fn wait_identity(
     action: AttachmentReconciliationActionV1,
 ) -> Result<([u8; 16], [u8; 32]), AttachmentMountError> {

@@ -70,7 +70,8 @@ pub use completion::{
     CompletedCurrentMountAttemptV1, MountCompletionOutcomeV1, MountDispatchClient,
 };
 pub(crate) use completion::{
-    contains_completions, dispatch_current, validate_namespace as validate_completion_namespace,
+    complete_authenticated_current, contains_completions, dispatch_current,
+    validate_namespace as validate_completion_namespace,
 };
 pub(crate) use inventory::authenticated as authenticated_inventory;
 pub use inventory::authenticated::MountInventoryObservationFenceV1;

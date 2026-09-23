@@ -13,8 +13,9 @@ use aos_sandbox_core::{
 };
 
 use crate::attachment_mount::{
-    self, AttachmentMountError, PreparedCurrentAttachmentMountCatalogQueryV1,
-    PreparedCurrentAttachmentMountV1,
+    self, AttachmentMountError, CompletedCurrentAttachmentMountAttemptV1,
+    DurableCurrentAttachmentMountAttemptV1, PreparedCurrentAttachmentMountCatalogQueryV1,
+    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountV1,
 };
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
@@ -605,5 +606,66 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         prepared.plan_at(self.journal, mount_revocation_scope, clock)
+    }
+
+    /// Binds a separately signed Mount plan to the exact prepared Apply body.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed authority, stale reconciliation, or a mismatched plan.
+    pub fn bind_current_mount_plan<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentMountV1,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentMountDispatchV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::bind_signed_plan(self.journal, prepared, signed_plan, clock)
+    }
+
+    /// Durably admits the exact signed Apply packet before external I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale authority, changed desired state, invalid packet bounds,
+    /// conflicting attempt history, or failed protected durability.
+    pub fn admit_current_mount_effect<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentMountDispatchV1,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentMountAttemptV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::admit_current(
+            self.journal,
+            prepared,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+    }
+
+    /// Commits one exact authenticated Mount Apply success receipt.
+    ///
+    /// Completion does not itself prove installed presence or post-attach
+    /// verification; a later fresh authenticated inventory remains mandatory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unrelated or failed signed outcomes, changed authority, invalid
+    /// receipts, conflicting replay, or failed protected durability.
+    pub fn complete_authenticated_mount_effect<T>(
+        &mut self,
+        attempt: DurableCurrentAttachmentMountAttemptV1,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        clock: &mut T,
+    ) -> Result<CompletedCurrentAttachmentMountAttemptV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::complete_authenticated_current(self.journal, attempt, outcome, clock)
     }
 }

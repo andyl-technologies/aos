@@ -437,8 +437,65 @@ where
 {
     attempt.recheck(journal, clock)?;
     let success = client.dispatch(&attempt)?;
-    let (record, result) = CompletionRecord::from_attempt(&attempt.record, success.receipt)?;
-    if result != success.result {
+    commit_success(
+        journal,
+        attempt,
+        success.receipt,
+        Some(&success.result),
+        clock,
+    )
+}
+
+pub(crate) fn complete_authenticated_current<T>(
+    journal: &mut Journal,
+    attempt: DurableCurrentMountAttemptV1,
+    outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    clock: &mut T,
+) -> Result<CompletedCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    use aos_sandbox_protocol::authenticated_session::all_methods::{
+        AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerOutcomeDirectionV1,
+    };
+
+    attempt.recheck(journal, clock)?;
+    let dispatch = attempt.dispatch_attempt();
+    let request = outcome.request();
+    if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        || outcome.method() != METHOD
+        || request.canonical_packet() != dispatch.packet()
+        || request.exact_body() != dispatch.body()
+        || request.request_id() != attempt.request_id()
+        || request.deadline_boottime_nanoseconds() != dispatch.deadline_boottime_nanoseconds()
+        || request.authorization().is_none()
+    {
+        return Err(MountAttemptError::Conflict);
+    }
+    let receipt = match outcome.result() {
+        AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } => exact_body.clone(),
+        AuthenticatedBrokerMethodResultV1::Error(error) => {
+            return Err(MountAttemptError::BrokerRejected {
+                code: error.code(),
+                retryable: error.retryable(),
+            });
+        }
+    };
+    commit_success(journal, attempt, receipt, None, clock)
+}
+
+fn commit_success<T>(
+    journal: &mut Journal,
+    attempt: DurableCurrentMountAttemptV1,
+    receipt: Vec<u8>,
+    expected_result: Option<&ValidatedMountResult>,
+    clock: &mut T,
+) -> Result<CompletedCurrentMountAttemptV1, MountAttemptError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let (record, result) = CompletionRecord::from_attempt(&attempt.record, receipt)?;
+    if expected_result.is_some_and(|expected| expected != &result) {
         return Err(MountAttemptError::CorruptState);
     }
 

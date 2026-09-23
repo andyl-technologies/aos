@@ -22,6 +22,7 @@ use aos_sandbox::lifecycle::{
     LifecycleAuthenticatedStorageReadbackV1, LifecycleBootBootstrapEndpointV1,
     LifecycleBootInventoryBootstrapChallengeV1, LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
+use aos_sandbox::mount_attempt::DurableCurrentMountAttemptV1;
 use aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1;
 use aos_sandbox::{
     DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
@@ -341,6 +342,16 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         query: &PreparedCurrentMountCatalogQueryV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
         let (outcome, currentness) = self.0.catalog_query_complete(query)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
+    /// Sends or drains one exact durable Mount Apply on the retained session.
+    pub(crate) fn authenticated_mount_apply(
+        &mut self,
+        attempt: &DurableCurrentMountAttemptV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.mount_apply_complete(attempt)?;
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
@@ -691,6 +702,21 @@ impl DormantLifecycleInventorySessionV1 {
             BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
             |session| session.prepare_authenticated_mount_catalog_query(query),
         )
+    }
+
+    fn mount_apply_complete(
+        &mut self,
+        attempt: &DurableCurrentMountAttemptV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        self.exact_request_complete(BrokerMethod::BROKER_METHOD_MOUNT_APPLY, |session| {
+            session.prepare_authenticated_mount_apply(attempt)
+        })
     }
 
     fn exact_request_complete(
