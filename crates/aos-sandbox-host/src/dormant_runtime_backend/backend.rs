@@ -599,6 +599,7 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         if !self.execution_observations.is_empty() || !self.runtime_observations.is_empty() {
             return Err(DormantBackendHandoffErrorV1::ObservationPending);
         }
+        self.ensure_next_agent_observation_available()?;
         let live_session = self
             .agent_session
             .as_ref()
@@ -699,6 +700,7 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         if !self.execution_observations.is_empty() || !self.runtime_observations.is_empty() {
             return Err(DormantBackendHandoffErrorV1::ObservationPending);
         }
+        self.ensure_next_agent_observation_available()?;
         let admission = effect.admission();
         if effect.phase() != EffectPhaseV1::Issued
             || admission.currentness() != self.authority.currentness()
@@ -788,6 +790,23 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         Ok(DormantAgentExecutionHandoffV1 {
             request: agent_request,
         })
+    }
+
+    // A reply committed before a crash still owns its sequence after inbox loss.
+    fn ensure_next_agent_observation_available(&self) -> Result<(), DormantBackendHandoffErrorV1> {
+        let next = self
+            .last_observation_sequence
+            .checked_add(1)
+            .filter(|sequence| *sequence != u64::MAX)
+            .ok_or(DormantBackendHandoffErrorV1::InvalidRoute)?;
+        let sequence = ObservationSequence::new(next);
+        if self
+            .authority
+            .committed_host_agent_outcome_at_observation_sequence(sequence)?
+        {
+            return Err(DormantBackendHandoffErrorV1::ObservationPending);
+        }
+        Ok(())
     }
 
     /// Stages one protected Prepare handoff for exact one-shot consumption.
@@ -1591,11 +1610,13 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         Ok(())
     }
 
-    /// Settles one control effect from the queued authenticated agent observation.
+    /// Settles one control effect from its authenticated agent observation.
     ///
     /// The observation sequence is durably consumed before effect completion.
     /// Ambiguous completion retains both exact evidence and the journal token
-    /// for commit-only recovery without redispatching the guest operation.
+    /// for commit-only recovery without redispatching the guest operation. A
+    /// Host-committed reply can be reconstructed after cold reopen at its
+    /// original observation sequence before the effect is settled.
     ///
     /// # Errors
     ///
@@ -1802,17 +1823,18 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         &mut self,
         effect: &DurableExecutionEffectV1,
         expected: &BackendExecutionInspectionRequestV1,
-    ) -> Result<bool, RuntimeBackendError> {
+    ) -> Result<(), RuntimeBackendError> {
         let operation = effect.issue().idempotency().operation();
         let Some(recovered) = self
             .authority
             .recover_committed_host_agent_outcome(operation.as_bytes())
             .map_err(|_| RuntimeBackendError::IntegrityFailure)?
         else {
-            return Ok(false);
+            return Ok(());
         };
 
-        self.submit_committed_agent_observation(expected, &recovered)
+        self.submit_committed_agent_observation(expected, &recovered)?;
+        Ok(())
     }
 
     fn submit_committed_agent_observation(

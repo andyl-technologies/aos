@@ -1865,6 +1865,22 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             .transpose()
     }
 
+    /// Reports whether a committed guest reply already owns a Host sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] when fixed ownership is
+    /// stale or protected outcome custody cannot be read canonically.
+    pub fn committed_host_agent_outcome_at_observation_sequence(
+        &self,
+        sequence: ObservationSequence,
+    ) -> Result<bool, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .committed_agent_outcome_at_observation_sequence(sequence)
+            .map_err(Into::into)
+    }
+
     /// Verifies a fixed-peer handshake and binds one exact AOSAGE request to an effect.
     ///
     /// Authorization and control requests must match the issued effect's closed

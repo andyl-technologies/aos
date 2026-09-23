@@ -503,6 +503,9 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
                 Err(JournalRuntimeExecutionError::RecordConflict)
             };
         }
+        if self.committed_agent_outcome_at_observation_sequence(observation_sequence)? {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
 
         let effect = self
             .load_effect(operation)?
@@ -532,6 +535,22 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
         Ok(())
+    }
+
+    /// Checks whether durable guest custody already owns a Host sequence.
+    pub(crate) fn committed_agent_outcome_at_observation_sequence(
+        &self,
+        sequence: ObservationSequence,
+    ) -> Result<bool, JournalRuntimeExecutionError> {
+        for (key, bytes) in self.authority.records()? {
+            if key.first() != Some(&AGENT_OUTCOME_KEY_PREFIX) || key.len() != 17 {
+                continue;
+            }
+            if HostAgentOutcomeRecordV1::decode(bytes)?.observation_sequence() == sequence {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Reads one exact signed packet from protected Host custody after restart.
@@ -1592,11 +1611,15 @@ fn validate_runtime_execution_replay(
         route.validate_effect(effect, false)?;
         route.validate_peer(agent_peer)?;
     }
+    let mut outcome_observation_sequences = BTreeSet::new();
     for (operation, record) in &agent_outcomes {
         let route = routes
             .get(operation)
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
         route.validate_signed_outcome(record.packet(), agent_peer)?;
+        if !outcome_observation_sequences.insert(record.observation_sequence().get()) {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
     }
     if effects_by_runtime.len() != sequence_heads.len()
         || terminal_effect_by_execution.len() != terminals.len()
