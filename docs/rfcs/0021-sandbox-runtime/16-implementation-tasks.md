@@ -323,6 +323,16 @@ the outstanding work concrete:
   recovery, fixed-owner provisioning and guest-agent activation, then a
   completing controller effect and public projection. Attach requires its
   separately authorized OpenSSH data route; it is not an agent control effect.
+- Grouped Storage snapshots are not production-dispatchable yet. Method 25 is
+  deliberately absent from the authenticated broker profile even though the
+  Storage owner, session adapter, lifecycle plan codec, and predecessor/successor
+  inventory verifier exist. A pure compiler now constructs an exact
+  `ApplyAtomicStorageSnapshotRequest` template for an inventory-derived plan
+  and signed assignment, but no production publication producer calls it. The
+  controller also does not retain a durable group attempt spanning the signed
+  request and adjacent inventory observations. Implement those source-domain
+  obligations before advertising the method or advancing a Snapshot/Hibernate
+  lifecycle effect through it.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end

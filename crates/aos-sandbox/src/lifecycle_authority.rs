@@ -6,21 +6,115 @@
 //! and returns the request consumed by the authenticated session owner.
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyAtomicStorageSnapshotRequest, BrokerMethod, RuntimeAction,
+    ApplyAtomicStorageSnapshotRequest, AssignmentFence, Audience, BrokerMethod, RequestHeader,
+    RuntimeAction,
 };
 use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerAudience, BrokerGrantTarget, BrokerVerb, NodeId,
+    ProtocolVersion,
 };
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use crate::lifecycle::{LifecycleAtomicDatasetSnapshotPlanV1, LiveRuntimeFenceV1};
 use crate::runtime_authority::{
     RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
 };
 use crate::{
-    AuthorityEffectAttemptTimingV1, AuthorityPublicationStore, Journal, PreparedAuthorityEffectV1,
-    ReconcilerError,
+    AuthorityEffectAttemptTimingV1, AuthorityPublicationStore, BrokerDispatchSemanticIdentityV1,
+    BrokerDispatchTemplateV1, Journal, PreparedAuthorityEffectV1, ReconcilerError,
+    SignedBrokerPlan,
 };
+
+/// Compiles one exact grouped Storage request into a signed publication template.
+///
+/// The request ID is stable for the inventory-derived plan and exact signed
+/// authority. A changed predecessor or grant selects a different ID rather
+/// than aliasing an earlier attempt. This compiler does not publish or dispatch
+/// the template; the source-domain controller must durably retain and recover
+/// its exact attempt before the Storage method can be activated.
+///
+/// # Errors
+///
+/// Returns [`ReconcilerError`] when the plan cannot be encoded, its root target
+/// differs from the live fence, or the signed Storage grant does not bind the
+/// same assignment, protocol, and complete plan commitment.
+pub fn compile_atomic_storage_lifecycle_template_v1(
+    plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+    fence: LiveRuntimeFenceV1,
+    signed_plan: SignedBrokerPlan,
+) -> Result<BrokerDispatchTemplateV1, ReconcilerError> {
+    let assignment = signed_plan.plan().assignment();
+    let desired = fence.desired();
+    if plan.target_sandbox() != fence.sandbox()
+        || signed_plan.plan().audience() != BrokerAudience::Storage
+        || signed_plan.plan().protocol_version() != ProtocolVersion::new(1, 0)
+        || assignment.sandbox() != fence.sandbox()
+        || assignment.incarnation() != fence.incarnation()
+        || assignment.epoch() != fence.assignment_epoch()
+        || assignment.desired_generation() != desired.expected_generation()
+        || assignment.digest().as_bytes() != desired.resource_state().digest().as_bytes()
+    {
+        return Err(ReconcilerError::InvalidPlan(
+            "atomic Storage template differs from its signed assignment",
+        ));
+    }
+
+    let canonical_plan = plan
+        .canonical_wire_bytes()
+        .map_err(|_| ReconcilerError::InvalidPlan("atomic Storage plan is invalid"))?;
+    let request_digest = Sha256::new()
+        .chain_update(b"aos.sandbox.storage.atomic-snapshot-request-id.v1\0")
+        .chain_update(plan.commitment().as_bytes())
+        .chain_update(signed_plan.digest().as_bytes())
+        .chain_update((signed_plan.canonical_signature().len() as u64).to_be_bytes())
+        .chain_update(signed_plan.canonical_signature())
+        .finalize();
+    let mut request_id = [0; 16];
+    request_id.copy_from_slice(&request_digest[..16]);
+    if request_id == [0; 16] {
+        return Err(ReconcilerError::InvalidPlan(
+            "atomic Storage request ID is invalid",
+        ));
+    }
+
+    let semantics = BrokerDispatchSemanticIdentityV1::new(
+        BrokerVerb::StorageAtomicSnapshot,
+        BrokerGrantTarget::Assignment,
+        BrokerArgumentCommitment::for_canonical_bytes(&canonical_plan),
+    );
+    let body = ApplyAtomicStorageSnapshotRequest {
+        header: Some(RequestHeader {
+            protocol_major: 1,
+            protocol_minor: 0,
+            request_id: request_id.to_vec(),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 0,
+            maximum_response_bytes: 4096,
+            ..Default::default()
+        })
+        .into(),
+        canonical_plan,
+        fence: Some(AssignmentFence {
+            sandbox_id: fence.sandbox().as_bytes().to_vec(),
+            incarnation_id: fence.incarnation().as_bytes().to_vec(),
+            assignment_epoch: fence.assignment_epoch().get(),
+            desired_generation: desired.expected_generation().get(),
+            assignment_digest: desired.resource_state().digest().as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        ..Default::default()
+    };
+    BrokerDispatchTemplateV1::new(
+        signed_plan,
+        BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT,
+        body.encode_to_vec(),
+        Vec::new(),
+        semantics,
+    )
+    .map_err(|_| ReconcilerError::InvalidPlan("atomic Storage template grant is invalid"))
+}
 
 /// Selects and attenuates the current Host authority for one lifecycle effect.
 ///

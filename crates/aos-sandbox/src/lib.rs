@@ -189,6 +189,7 @@ pub use journal::{
     ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
+    compile_atomic_storage_lifecycle_template_v1,
     prepare_atomic_storage_lifecycle_authority_effect_v1,
     prepare_runtime_lifecycle_authority_effect_v1,
 };
