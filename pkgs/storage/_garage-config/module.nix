@@ -229,165 +229,150 @@
         mode = "0640";
       };
     };
-    serviceRequest = serviceManagement.forService {
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = {
-            allow_privilege_escalation = false;
-            ambient_privileges = [];
-            privilege_bounds = {
-              kind = "restricted";
-              privileges = [];
-            };
-            resource_control_delegation = false;
-            resource_control_access = "read-only";
-            device_access_scope = "shared";
-            host_clock_mutation = false;
-            host_name_mutation = false;
-            operating_system_log_access = false;
-            operating_system_extension_access = false;
-            operating_system_tunable_access = false;
-            lock_execution_personality = true;
-            writable_executable_memory = false;
-            isolation_domains = [];
-            network_families = ["ipv4" "ipv6" "local"];
-            memory_pressure_adjustment = 0;
-            permit_realtime = false;
-            permit_elevated_file_identity = false;
-            process_visibility = "all";
-            security_label = "aos-pkg-garage";
-            operation_architectures = [];
-            operation_allow = [];
-            operation_deny = [];
-            operation_profile = "system-service";
-            isolated_identity_mapping = "none";
-          };
-        })
-      ];
-      inherit serviceTypes;
+    serviceRequest = {
+      policy.hardening = {
+        allow_privilege_escalation = false;
+        ambient_privileges = [];
+        privilege_bounds = {
+          kind = "restricted";
+          privileges = [];
+        };
+        resource_control_delegation = false;
+        resource_control_access = "read-only";
+        device_access_scope = "shared";
+        host_clock_mutation = false;
+        host_name_mutation = false;
+        operating_system_log_access = false;
+        operating_system_extension_access = false;
+        operating_system_tunable_access = false;
+        lock_execution_personality = true;
+        writable_executable_memory = false;
+        isolation_domains = [];
+        network_families = ["ipv4" "ipv6" "local"];
+        memory_pressure_adjustment = 0;
+        permit_realtime = false;
+        permit_elevated_file_identity = false;
+        process_visibility = "all";
+        security_label = "aos-pkg-garage";
+        operation_architectures = [];
+        operation_allow = [];
+        operation_deny = [];
+        operation_profile = "system-service";
+        isolated_identity_mapping = "none";
+      };
       consumerInstance = "garage";
-      declaration = {
-        service = "main";
-        enabled = true;
-        lifecycle = {
-          description = "Garage object-storage server";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command ["-c" (resultOf "server-configuration" "planned-path") "server"])];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "on-failure";
-          restart_token = cfg.restartToken;
-          restart_delay_millis = 5000;
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 60000;
-        };
-        dependencies = {
-          after = [(resultOf "network-readiness" "resource")];
-          before = [];
-          requires = [];
-          wants = [(resultOf "network-readiness" "resource")];
-        };
-        readiness = {
-          mechanism = "process-running";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-        credentials.views =
-          builtins.map (credential: {
-            inherit (credential) name environment_variable;
-            inherit (credential.reference) encrypted;
-            reference = resultOf "credential-${credential.name}" "credential-path";
-            optional = false;
-          })
-          credentials;
-        configuration.views = [
-          {
-            name = "server";
-            source = resultOf "server-configuration" "planned-path";
-            optional = false;
-          }
-        ];
-        storage.mounts = [
-          {
-            name = "metadata";
-            source = resultOf "metadata-storage" "planned-path";
-            access = "read-write";
-          }
-          {
-            name = "data";
-            source = resultOf "data-storage" "planned-path";
-            access = "read-write";
-          }
-          {
-            name = "runtime";
-            source = resultOf "runtime-storage" "planned-path";
-            access = "read-write";
-          }
-        ];
-        logging = {
-          standard_output = "structured";
-          standard_error = "structured";
-          directories = ["garage"];
-          directory_mode = "0750";
-        };
-        identity = {
-          principal = resultOf "service-principal" "principal-name";
-          primary_group = resultOf "service-group" "group-name";
-          supplementary_groups = [];
-          ephemeral = false;
-          file_creation_mask = "0027";
-        };
-        isolation = {
-          privilege = "unprivileged";
-          filesystem = "read-only-system";
-          network = "host";
-          process_visibility = "host";
-          termination_scope = "all-processes";
-          temporary_directory = "private";
-          devices = [];
-          host_paths = [];
-          permit_core_dumps = false;
-        };
-        resources.open_files = {
-          kind = "maximum";
-          value = 65536;
-        };
+      service = "main";
+      lifecycle = {
+        description = "Garage object-storage server";
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command ["-c" (resultOf "server-configuration" "planned-path") "server"])];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_token = cfg.restartToken;
+        restart_delay_millis = 5000;
+        remain_after_exit = false;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 60000;
+      };
+      dependencies = {
+        after = [(resultOf "network-readiness" "resource")];
+        before = [];
+        requires = [];
+        wants = [(resultOf "network-readiness" "resource")];
+      };
+      readiness = {
+        mechanism = "process-running";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+      credentials.views =
+        builtins.map (credential: {
+          inherit (credential) name environment_variable;
+          inherit (credential.reference) encrypted;
+          reference = resultOf "credential-${credential.name}" "credential-path";
+          optional = false;
+        })
+        credentials;
+      configuration.views = [
+        {
+          name = "server";
+          source = resultOf "server-configuration" "planned-path";
+          optional = false;
+        }
+      ];
+      storage.mounts = [
+        {
+          name = "metadata";
+          source = resultOf "metadata-storage" "planned-path";
+          access = "read-write";
+        }
+        {
+          name = "data";
+          source = resultOf "data-storage" "planned-path";
+          access = "read-write";
+        }
+        {
+          name = "runtime";
+          source = resultOf "runtime-storage" "planned-path";
+          access = "read-write";
+        }
+      ];
+      logging = {
+        standard_output = "structured";
+        standard_error = "structured";
+        directories = ["garage"];
+        directory_mode = "0750";
+      };
+      identity = {
+        principal = resultOf "service-principal" "principal-name";
+        primary_group = resultOf "service-group" "group-name";
+        supplementary_groups = [];
+        ephemeral = false;
+        file_creation_mask = "0027";
+      };
+      isolation = {
+        privilege = "unprivileged";
+        filesystem = "read-only-system";
+        network = "host";
+        process_visibility = "host";
+        termination_scope = "all-processes";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [];
+        permit_core_dumps = false;
+      };
+      resources.open_files = {
+        kind = "maximum";
+        value = 65536;
       };
     };
-  in [
-    persistentStorage
-    runtimeStorage
-    group
-    principal
-    networkReadiness
-    configurationRequest
-    credentialRequests
-    serviceRequest
-  ];
-  staticAbilityFragments =
-    builtins.map
-    (fragment: (serviceManagement.splitDefinition fragment).declarations)
+  in {
+    service = serviceRequest;
+    inherit credentialRequests;
+    producers = [
+      persistentStorage
+      runtimeStorage
+      group
+      principal
+      networkReadiness
+      configurationRequest
+      credentialRequests
+    ];
+  };
+  configured = abilityFragmentsFor {
+    admin = cfg.admin.enable;
+    metrics = cfg.admin.enable && cfg.admin.metrics.requireToken;
+  };
+  allCredentials =
     (abilityFragmentsFor {
       admin = true;
       metrics = true;
-    });
-  configuredAbilityFragments =
-    builtins.map
-    (fragment: (serviceManagement.splitDefinition fragment).configured)
-    (abilityFragmentsFor {
-      admin = cfg.admin.enable;
-      metrics = cfg.admin.enable && cfg.admin.metrics.requireToken;
-    });
+    }).credentialRequests;
 in {
   options.garage = {
     enable = mkOption {
@@ -521,14 +506,18 @@ in {
         }
       ];
     }
-    (lib.mkMerge (builtins.map
-      (fragment: {aos.abilities = fragment;})
-      staticAbilityFragments))
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.garage = {};}]
-        ++ configuredAbilityFragments
-      );
+    {
+      aos.services."garage.main" = configured.service // {enable = cfg.enable;};
+    }
+    (serviceManagement.producerModule {
+      inherit config lib;
+      inherit (configured) producers;
+      enabled = cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [allCredentials];
+      enabled = false;
     })
   ];
 }
