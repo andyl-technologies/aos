@@ -4090,6 +4090,9 @@ fn guest_root_attempt_transaction_id(effect_operation: [u8; 16]) -> [u8; 16] {
     let digest = hash.finalize();
     let mut transaction_id = [0; 16];
     transaction_id.copy_from_slice(&digest[..16]);
+    if transaction_id == [0; 16] {
+        transaction_id[0] = 1;
+    }
     transaction_id
 }
 

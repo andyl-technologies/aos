@@ -36,15 +36,36 @@ pub fn publish_guest_root_marker_v1(
     workspace: &Path,
     proof: GuestRootPublicationProofV1,
 ) -> Result<(), GuestRootMarkerErrorV1> {
+    publish_guest_root_marker_before_v1(template, workspace, proof, || true)
+}
+
+/// Publishes the marker only while a protected effect deadline is live.
+///
+/// The callback is checked after the potentially long complete-tree scan and
+/// immediately before each marker mutation. An expired effect never creates
+/// launch authority, even if copying finished just before expiry.
+///
+/// # Errors
+///
+/// Returns an error for an expired deadline, mismatched physical tree, unsafe
+/// marker path, or filesystem failure.
+pub fn publish_guest_root_marker_before_v1(
+    template: &Path,
+    workspace: &Path,
+    proof: GuestRootPublicationProofV1,
+    mut before_deadline: impl FnMut() -> bool,
+) -> Result<(), GuestRootMarkerErrorV1> {
     let measured = compare_guest_root_template_v1(template, workspace)
         .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)?;
     if measured != proof.root_tree_digest {
         return Err(GuestRootMarkerErrorV1::InvalidPublication);
     }
+    check_deadline(&mut before_deadline)?;
     let encoded = proof
         .encode()
         .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)?;
     let directory = marker_directory(workspace);
+    check_deadline(&mut before_deadline)?;
     prepare_directory(workspace, &directory)?;
     let visible = directory.join(MARKER_FILE);
     match fs::symlink_metadata(&visible) {
@@ -57,11 +78,13 @@ pub fn publish_guest_root_marker_v1(
     match fs::symlink_metadata(&next) {
         Ok(metadata) => {
             verify_file(&metadata)?;
+            check_deadline(&mut before_deadline)?;
             fs::remove_file(&next)?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+    check_deadline(&mut before_deadline)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -70,8 +93,10 @@ pub fn publish_guest_root_marker_v1(
         .open(&next)?;
     file.write_all(&encoded)?;
     file.sync_all()?;
+    check_deadline(&mut before_deadline)?;
     fs::set_permissions(&next, fs::Permissions::from_mode(0o400))?;
     let directory_file = File::open(&directory)?;
+    check_deadline(&mut before_deadline)?;
     rustix::fs::renameat_with(
         &directory_file,
         NEXT_FILE,
@@ -83,6 +108,16 @@ pub fn publish_guest_root_marker_v1(
     directory_file.sync_all()?;
 
     read_guest_root_marker_v1(template, workspace, proof)
+}
+
+fn check_deadline(
+    before_deadline: &mut impl FnMut() -> bool,
+) -> Result<(), GuestRootMarkerErrorV1> {
+    if before_deadline() {
+        Ok(())
+    } else {
+        Err(GuestRootMarkerErrorV1::Deadline)
+    }
 }
 
 /// Reads the exact marker and remeasures every immutable template entry.
@@ -157,6 +192,9 @@ fn verify_file(metadata: &fs::Metadata) -> Result<(), GuestRootMarkerErrorV1> {
 /// Reports a guest-root marker or physical readback failure.
 #[derive(Debug, thiserror::Error)]
 pub enum GuestRootMarkerErrorV1 {
+    /// The admitted effect window ended before marker publication.
+    #[error("guest-root marker publication deadline expired")]
+    Deadline,
     /// Publication evidence, ownership, or the physical tree is not exact.
     #[error("guest-root publication is invalid")]
     InvalidPublication,

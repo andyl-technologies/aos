@@ -33,6 +33,7 @@ mod clone_identity;
 mod dormant_broker_session;
 mod guest_root_attempt;
 pub mod guest_root_inventory;
+pub mod guest_root_worker;
 #[allow(
     dead_code,
     reason = "sealed helper boundary is not wired until Apply readiness exists"

@@ -43,6 +43,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-zfs-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-pin-worker"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-pin-observer"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-guest-root-publisher"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage"
     ];
     buildDeps = [buildProtobuf];
@@ -64,6 +65,7 @@ in
       test -x "$out/bin/aos-sandbox-zfs-worker"
       test -x "$out/bin/aos-sandbox-workspace-pin-worker"
       test -x "$out/bin/aos-sandbox-workspace-pin-observer"
+      test -x "$out/bin/aos-sandbox-guest-root-publisher"
     '';
 
     passthru = {

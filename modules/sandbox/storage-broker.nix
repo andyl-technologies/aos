@@ -147,6 +147,7 @@ in {
         "aos-sandbox-zfs-worker.socket"
         "aos-sandbox-workspace-pin-worker.socket"
         "aos-sandbox-workspace-pin-observer.socket"
+        "aos-sandbox-guest-root-publisher.socket"
       ];
       after = [
         "aos-storaged.socket"
@@ -246,6 +247,97 @@ in {
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 32;
+      };
+    };
+
+    # Root population is separate from the long-lived broker and unqualified
+    # pin worker; neither receives ownership or mode-changing authority.
+    systemd.sockets.aos-sandbox-guest-root-publisher = {
+      description = "AOS protected guest-root publisher socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-guest-root-publisher/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
+      };
+    };
+
+    systemd.services."aos-sandbox-guest-root-publisher@" = {
+      description = "AOS one-shot protected guest-root population";
+      unitConfig.RequiresMountsFor = [
+        "/sys/fs/cgroup"
+        "/run/aos/sandbox-pins/workspaces"
+        cfg.authorityDirectory
+        cfg.guestRootTemplate
+      ];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = ''
+          ${worker.package}/bin/aos-sandbox-guest-root-publisher \
+            ${cfg.guestRootTemplate} \
+            ${cfg.authorityDirectory} \
+            /var/lib/aos-sandbox-guest-root-publisher
+        '';
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        StateDirectory = "aos-sandbox-guest-root-publisher";
+        StateDirectoryMode = "0700";
+        RuntimeMaxSec = "120s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = "";
+        DevicePolicy = "closed";
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "1G";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "all";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        ReadOnlyPaths = [cfg.authorityDirectory cfg.guestRootTemplate];
+        ReadWritePaths = ["/run/aos/sandbox-pins/workspaces"];
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = false;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "~@mount"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          "~socket"
+          "~socketpair"
+          "~connect"
+        ];
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 16;
       };
     };
   };

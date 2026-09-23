@@ -20,6 +20,10 @@ path = "src/bin/aos-sandbox-workspace-pin-observer.rs"
 name = "aos-storaged"
 path = "src/bin/aos-storaged.rs"
 
+[[bin]]
+name = "aos-sandbox-guest-root-publisher"
+path = "src/bin/aos-sandbox-guest-root-publisher.rs"
+
 [features]
 default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]

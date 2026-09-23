@@ -1979,12 +1979,12 @@ fn workspace_component(handle: &[u8; 32]) -> Result<String, ZfsWorkerError> {
         ))
 }
 
-struct ReplayLedger {
+pub(crate) struct ReplayLedger {
     directory: OwnedFd,
 }
 
 impl ReplayLedger {
-    fn open(path: &Path) -> Result<Self, ZfsWorkerError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, ZfsWorkerError> {
         if !normalized_absolute_path(path) {
             return Err(ZfsWorkerError::Protocol(
                 "unsafe workspace pin replay directory",
@@ -2026,7 +2026,7 @@ impl ReplayLedger {
         Ok(Self { directory })
     }
 
-    fn lock(&self, deadline: u64) -> Result<File, ZfsWorkerError> {
+    pub(crate) fn lock(&self, deadline: u64) -> Result<File, ZfsWorkerError> {
         ensure_before_deadline(deadline)?;
         let descriptor = rustix::fs::openat(
             self.directory.as_fd(),
@@ -2041,7 +2041,7 @@ impl ReplayLedger {
         Ok(file)
     }
 
-    fn claim(&self, attempt_id: [u8; 16]) -> Result<File, ZfsWorkerError> {
+    pub(crate) fn claim(&self, attempt_id: [u8; 16]) -> Result<File, ZfsWorkerError> {
         claim_replay_attempt(&self.directory, attempt_id, 0)
     }
 }
@@ -2139,7 +2139,7 @@ fn validate_owned_file(
     Ok(())
 }
 
-fn verify_systemd_peer(
+pub(crate) fn verify_systemd_peer(
     peer: &ConnectionPeerIdentity,
     manager: &RetainedCgroupAnchor,
 ) -> Result<(), ZfsWorkerError> {
@@ -2156,7 +2156,7 @@ fn verify_systemd_peer(
     Ok(())
 }
 
-fn verify_storaged_subject(
+pub(crate) fn verify_storaged_subject(
     subject: &KernelAuthorizedRecordSubject,
     storaged: &RetainedCgroupAnchor,
 ) -> Result<(), ZfsWorkerError> {
@@ -2256,7 +2256,7 @@ fn validate_worker_cgroup(path: &str, role: WorkspacePinServiceRole) -> Result<(
     Ok(())
 }
 
-fn current_cgroup() -> Result<String, ZfsWorkerError> {
+pub(crate) fn current_cgroup() -> Result<String, ZfsWorkerError> {
     let mut bytes = Vec::new();
     File::open("/proc/self/cgroup")?
         .take((MAXIMUM_CGROUP_BYTES + 1) as u64)
@@ -2274,7 +2274,7 @@ fn current_cgroup() -> Result<String, ZfsWorkerError> {
         .ok_or(ZfsWorkerError::PeerMismatch)
 }
 
-fn send_packet_before(
+pub(crate) fn send_packet_before(
     socket: &mut DescriptorSubjectSocket,
     payload: &[u8],
     deadline: u64,
@@ -2292,7 +2292,7 @@ fn send_packet_before(
     }
 }
 
-fn receive_packet_before(
+pub(crate) fn receive_packet_before(
     socket: &mut DescriptorSubjectSocket,
     maximum: usize,
     deadline: u64,
@@ -2316,7 +2316,7 @@ fn receive_packet_before(
     }
 }
 
-fn transfer_deadline() -> Result<u64, ZfsWorkerError> {
+pub(crate) fn transfer_deadline() -> Result<u64, ZfsWorkerError> {
     boottime_now_nanoseconds()?
         .checked_add(TRANSFER_TIMEOUT.as_nanos() as u64)
         .ok_or(ZfsWorkerError::Protocol(

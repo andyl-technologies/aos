@@ -26,6 +26,7 @@ const VERSION: u16 = 1;
 const DOMAIN: &[u8] = b"aos.sandbox.storage.guest-root-attempt.v1\0";
 const BODY_BYTES: usize = 429;
 const RECORD_BYTES: usize = BODY_BYTES + 32;
+pub(crate) const GUEST_ROOT_ATTEMPT_RECORD_BYTES: usize = RECORD_BYTES;
 
 /// Marks whether a publication claim is still ambiguous or physically read back.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
