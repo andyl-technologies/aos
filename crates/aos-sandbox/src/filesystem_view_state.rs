@@ -639,6 +639,19 @@ pub fn current_filesystem_view_revision_v1(
     get_current(journal, view_id)
 }
 
+/// Loads the validated current View revision from protected controller custody.
+///
+/// # Errors
+///
+/// Rejects unprotected or unhealthy custody and invalid revision history.
+pub fn protected_current_filesystem_view_revision_v1(
+    journal: &Journal,
+    view_id: ViewId,
+) -> Result<Option<DurableFilesystemViewRevisionV1>, FilesystemViewRevisionStateError> {
+    journal.ensure_protected_authority()?;
+    current_filesystem_view_revision_v1(journal, view_id)
+}
+
 /// Commits one filesystem-view revision through a protected controller journal.
 ///
 /// This entry point is for the production controller's source-verified View

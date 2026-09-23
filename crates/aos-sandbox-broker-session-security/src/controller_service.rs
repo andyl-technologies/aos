@@ -3467,6 +3467,12 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         {
             return view_mutations::observe_create_view(operation_id, &context, &request, journal);
         }
+        if let DormantSandboxRequestKindV1::ViewRelease(request) = context
+            .validated_request()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        {
+            return view_mutations::observe_release_view(operation_id, &context, &request, journal);
+        }
         Ok(EffectObservation::Absent)
     }
 
@@ -3566,6 +3572,9 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
         if let DormantSandboxRequestKindV1::ViewCreate(create) = &request {
             return view_mutations::apply_create_view(operation_id, &context, create, journal);
+        }
+        if let DormantSandboxRequestKindV1::ViewRelease(release) = &request {
+            return view_mutations::apply_release_view(operation_id, &context, release, journal);
         }
         let cache_consumer = if matches!(
             &request,
