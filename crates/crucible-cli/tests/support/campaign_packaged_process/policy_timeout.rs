@@ -60,10 +60,7 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
     {
         return Err(format!("packaged timeout finding has wrong signature: {signature:?}").into());
     }
-    let bundle_id = finding
-        .finding()
-        .latest_candidate_bundle()
-        .ok_or("packaged timeout finding has no retained candidate bundle")?;
+    let bundle_id = finding.finding().latest_candidate_bundle();
     let bundle = repository.load_finding_candidate_bundle(bundle_id)?;
     if bundle.signature() != signature {
         return Err("packaged timeout bundle changed the finding signature".into());
@@ -165,10 +162,7 @@ fn wait_for_timeout_finding(
         let service = crucible_daemon::LoopbackCampaignService::new(stream)?;
         let response = service.get_campaign_finding_object(&request)?;
         response.validate_for(&request)?;
-        Ok(response
-            .finding()
-            .latest_candidate_bundle()
-            .map(|_| response))
+        Ok(Some(response))
     })?;
     found.ok_or_else(|| {
         format!(

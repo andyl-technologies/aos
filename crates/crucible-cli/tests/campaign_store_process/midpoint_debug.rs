@@ -792,10 +792,7 @@ fn validate_replayed_failure_boundary(
             "campaign finding omitted its exact failure identity or causal evidence".into(),
         );
     }
-    let bundle_id = finding
-        .finding()
-        .latest_candidate_bundle()
-        .ok_or("campaign finding omitted its replay candidate bundle")?;
+    let bundle_id = finding.finding().latest_candidate_bundle();
     let repository = crucible_campaign::CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "midpoint-debug-replay-proof",
