@@ -481,6 +481,24 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         String::from_utf8_lossy(&child.stderr)
     );
 
+    let external_objects = portable_root.path().join("external-objects");
+    std::fs::rename(archive_root.join("objects"), &external_objects)?;
+    std::os::unix::fs::symlink(&external_objects, archive_root.join("objects"))?;
+    let cli = <crate::Cli as clap::Parser>::try_parse_from([
+        std::ffi::OsString::from("crucible"),
+        std::ffi::OsString::from("campaign"),
+        std::ffi::OsString::from("finding-bundle"),
+        std::ffi::OsString::from("verify"),
+        portable_bundle.as_os_str().to_owned(),
+    ])?;
+    let crate::Commands::Campaign(campaign) = &cli.command else {
+        return Err(std::io::Error::other("missing parsed campaign command").into());
+    };
+    let error = crate::cli_campaign::run_campaign_invocation(&cli, campaign)
+        .err()
+        .ok_or_else(|| std::io::Error::other("external archive unexpectedly verified"))?;
+    assert!(error.to_string().contains("symlink"));
+
     let plan = repository.plan_campaign_archive(
         published.new_snapshot,
         CampaignArchivePolicy::Findings,
