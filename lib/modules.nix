@@ -1526,6 +1526,10 @@
           then builtins.appendContext current markerContext
           else if builtins.isList current
           then builtins.map tag current
+          # Option declarations describe values; their prose and schemas are
+          # metadata, not runtime dependencies of a default value.
+          else if builtins.isAttrs current && (current._type or null) == "option"
+          then current
           else if builtins.isAttrs current && !(isPackageValue current)
           then
             builtins.mapAttrs (name: child:
