@@ -1362,6 +1362,12 @@ in
                 test -f "$yaml_emitter"
                 sed -i '1i#include <cstdint>' "$yaml_emitter"
 
+                # Both supported Linux targets are little-endian. The MaxMind
+                # CMake probe cannot link its test binary in this Bazel action.
+                maxmind_cmake="$TMPDIR/repo-overrides/com_github_maxmind_libmaxminddb/CMakeLists.txt"
+                test "$(grep -Fc 'TEST_BIG_ENDIAN(IS_BIG_ENDIAN)' "$maxmind_cmake")" = 1
+                sed -i 's/TEST_BIG_ENDIAN(IS_BIG_ENDIAN)/set(IS_BIG_ENDIAN 0)/' "$maxmind_cmake"
+
                 for integer_header in envoy/common/random_generator.h \
                     envoy/stream_info/stream_id_provider.h; do
                   test -f "$integer_header"
