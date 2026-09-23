@@ -2113,10 +2113,13 @@ manual Phase 6 and Phase 7 evidence recorded below.
   identity through the production whole-world factory. Every case proves an
   explicit no-child rejection before readiness, resume, or world publication,
   exact source-process identity preservation, target cleanup, and zero partial
-  adoption. The production owner now also contains the equivalence, three-size
-  RAM, concurrent multi-node latency, ten-thousand-lifecycle leak, and supported
-  profile scaling matrix. T-CAM-7.6 remains unchecked until those frozen-artifact
-  flights execute successfully.
+  adoption. The same gate also removes and aliases both child VMState
+  destinations against real prepared QEMU source processes and requires the
+  resulting no-child rejection and unchanged source identities. The production
+  owner now also contains the equivalence, three-size RAM, concurrent multi-node
+  latency, ten-thousand-lifecycle leak, and supported profile scaling matrix.
+  T-CAM-7.6 remains unchecked until those frozen-artifact flights execute
+  successfully.
 - [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,
   massive-parallelism, deep-template, pressure, operator-handoff, and 24-hour
   dogfood flight with a final process/descriptor/memory/disk/store audit.

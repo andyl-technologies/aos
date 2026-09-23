@@ -91,7 +91,9 @@
       fork-failure-source fork-failure-target \
       adoption-failure-source adoption-failure-target \
       cleanup-retry-source cleanup-retry-target \
-      publication-failure-source publication-failure-target; do
+      publication-failure-source publication-failure-target \
+      isolation-omission-source isolation-omission-target \
+      isolation-alias-source isolation-alias-target; do
       mkdir "${cgroupRoot}/$lane"
       echo '+cpu +memory +pids' \
         > "${cgroupRoot}/$lane/cgroup.subtree_control"
@@ -108,7 +110,9 @@
       fork-failure-source fork-failure-target \
       adoption-failure-source adoption-failure-target \
       cleanup-retry-source cleanup-retry-target \
-      publication-failure-source publication-failure-target; do
+      publication-failure-source publication-failure-target \
+      isolation-omission-source isolation-omission-target \
+      isolation-alias-source isolation-alias-target; do
       mkdir -m 700 "/tmp/attempts/run/$lane"
     done
     ${pkgs.crucible}/bin/crucible-e2e-determinism-scenario \
@@ -165,6 +169,32 @@
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness
+    run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source
+    run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_omission=child-vmstate-destination' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_omission_nodes=2' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_omission_rejected_before=child-readiness,world-publication' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_omission_source_unchanged=true' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_alias=child-vmstate-destination' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_alias_nodes=2' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_alias_rejected_before=child-readiness,world-publication' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
+    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_alias_source_unchanged=true' \
+      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
     ${pkgs.grep}/bin/grep -Fxq \
       'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
       /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
@@ -189,6 +219,14 @@
       'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
       'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
       'native_negative_isolation_source_unchanged=true' \
+      'native_real_resource_omission=child-vmstate-destination' \
+      'native_real_resource_omission_nodes=2' \
+      'native_real_resource_omission_rejected_before=child-readiness,world-publication' \
+      'native_real_resource_omission_source_unchanged=true' \
+      'native_real_resource_alias=child-vmstate-destination' \
+      'native_real_resource_alias_nodes=2' \
+      'native_real_resource_alias_rejected_before=child-readiness,world-publication' \
+      'native_real_resource_alias_source_unchanged=true' \
       'failures=fork,adoption,target-cleanup,repository-publication' \
       'check=${attrPath}' \
       'tasks=${builtins.concatStringsSep "," taskIds}' \

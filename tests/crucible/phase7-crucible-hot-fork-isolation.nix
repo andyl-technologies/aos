@@ -52,6 +52,30 @@ in
           grep -Fxq \
             'native_negative_isolation_source_unchanged=true' \
             ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_omission=child-vmstate-destination' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_omission_nodes=2' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_omission_rejected_before=child-readiness,world-publication' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_omission_source_unchanged=true' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_alias=child-vmstate-destination' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_alias_nodes=2' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_alias_rejected_before=child-readiness,world-publication' \
+            ${nativeIsolation}/result
+          grep -Fxq \
+            'native_real_resource_alias_source_unchanged=true' \
+            ${nativeIsolation}/result
 
           mkdir -p "$out/evidence"
           cp ${nativeIsolation}/result "$out/evidence/native-atomic-world.result"
@@ -71,6 +95,14 @@ in
           native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased
           native_negative_isolation_rejected_before=child-readiness,resume,world-publication
           native_negative_isolation_source_unchanged=true
+          native_real_resource_omission=child-vmstate-destination
+          native_real_resource_omission_nodes=2
+          native_real_resource_omission_rejected_before=child-readiness,world-publication
+          native_real_resource_omission_source_unchanged=true
+          native_real_resource_alias=child-vmstate-destination
+          native_real_resource_alias_nodes=2
+          native_real_resource_alias_rejected_before=child-readiness,world-publication
+          native_real_resource_alias_source_unchanged=true
           RESULT
         '';
       }
