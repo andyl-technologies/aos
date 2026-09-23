@@ -107,13 +107,11 @@ where
                 message: String::from("exact checkpoint has no count for the modeled node"),
             })?;
 
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=exact-load-start");
         self.guard.check_operational_boundary()?;
         let result = self
             .executor
             .load_materialized_exact_snapshot_probe_guarded(configuration, snapshot);
         let fat = self.observe_realization(result)?;
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=exact-load-complete");
         self.guard.check_operational_boundary()?;
         let result = self.executor.drain_replay_selectable_requests();
         let fat_pending = self.observe_realization(result)?;
@@ -133,15 +131,9 @@ where
             baked,
         );
         let mut thin = self.observe_realization(result)?;
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=genesis-load-complete");
 
         let mut current = genesis;
         for (decision_index, decision) in configuration.schedule.decisions().iter().enumerate() {
-            if decision_index < 4 {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=quantum-start index={decision_index}"
-                );
-            }
             let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
                 QemuVmRealizationError::InvalidCheckpoint {
                     role: "baked-genesis replay target",
@@ -183,11 +175,6 @@ where
                     thin = self.observe_realization(result)?;
                 }
             }
-            if decision_index < 4 {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=quantum-complete index={decision_index}"
-                );
-            }
             current = next;
         }
         if &current != configuration {
@@ -198,18 +185,9 @@ where
 
         let mut previous_ceiling = None;
         let mut stalled_reissues = 0;
-        let mut physical_steps = 0_u64;
-        eprintln!(
-            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-start target={}",
-            target_icount.retired
-        );
         loop {
             let at = self.current_icount(&thin)?;
             if at == target_icount {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-reached steps={physical_steps} at={}",
-                    at.retired
-                );
                 verify_target_pending_request(self, at, fat_pending.first())?;
                 if !self.executor.replay_selectable_reply_is_quiescent()? {
                     return Err(invalid_replay_selection(
@@ -221,25 +199,10 @@ where
             reject_unrecorded_local_request(self)?;
             let ceiling =
                 next_replay_ceiling(at, target_icount, previous_ceiling, &mut stalled_reissues)?;
-            let trace_step = physical_steps < 3 || physical_steps.is_multiple_of(64);
-            if trace_step {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-before step={physical_steps} at={} ceiling={} target={}",
-                    at.retired, ceiling.retired, target_icount.retired
-                );
-            }
             thin = self.advance_to_ceiling(thin, ceiling)?;
-            if trace_step {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-after step={physical_steps} at={}",
-                    self.current_icount(&thin)?.retired
-                );
-            }
             previous_ceiling = Some(ceiling);
-            physical_steps += 1;
         }
 
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=compare-start");
         self.executor
             .finish_replay_oracle_comparison(snapshot, configuration, fat, thin)
     }
