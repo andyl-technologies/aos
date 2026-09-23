@@ -526,16 +526,15 @@ fn drive_fast_q7_failure(
         0x64,
     )?;
     let q7_request = guest_choice::accepted_branch_request(&q7_submission)?;
-    // The q7 branch runs 3.3 billion guest instructions before its retained
-    // observation is published. Two packaged runs reached the publication
-    // handoff near the generic 120-second host wait, so give this flight its
-    // own bounded observation window without changing executor deadlines.
+    // The q7 branch and candidates in both finding replay passes run the guest.
+    // A packaged run was still in finding postprocessing at 300 seconds, so
+    // bound this host wait without changing any executor deadline.
     let q7_attempt = guest_choice::wait_for_new_completed_attempt_with_timeout(
         fixture,
         service,
         &known_attempts,
         &q7_request,
-        Duration::from_secs(300),
+        Duration::from_secs(600),
     )?;
     let q7 = guest_choice::wait_for_attempt_observation(fixture, q7_attempt)?;
     // The marker reaches the requested boundary; its failed property owns the stop outcome.
