@@ -4,7 +4,7 @@ use super::control::PendingControlBoundary;
 use super::*;
 
 #[cfg(target_os = "linux")]
-#[path = "host_io_runtime_tests/block_coordinator.rs"]
+#[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
 mod block_coordinator;
 
 #[test]
