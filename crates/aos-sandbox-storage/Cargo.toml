@@ -26,6 +26,7 @@ kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 
 [dependencies]
 aos-proto.workspace = true
+aos-sandbox-agent.workspace = true
 aos-sandbox.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true

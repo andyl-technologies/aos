@@ -1197,6 +1197,7 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox",
+ "aos-sandbox-agent",
  "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-linux",
