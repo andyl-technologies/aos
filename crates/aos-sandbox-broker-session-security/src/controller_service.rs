@@ -1184,18 +1184,10 @@ fn publish_pending(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<CatalogStatus, CycleFailure> {
     if sessions.host.is_none() {
-        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+        let session = connect_controller_session(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
-        )
-        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let deadline = crate::production_deadline_after(Duration::from_secs(10))
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let mut session = custody
-            .connect_production_client_session(deadline)
-            .map_err(classify_protected_handshake_error)?;
-        session
-            .require_current_node(node_id)
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            node_id,
+        )?;
         sessions.host = Some(ControllerHostPublication::new(session));
     }
     let publisher = sessions
@@ -1231,18 +1223,10 @@ fn authenticated_mount_inventories(
     CycleFailure,
 > {
     if sessions.mount.is_none() {
-        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+        let session = connect_controller_session(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
-        )
-        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let deadline = crate::production_deadline_after(Duration::from_secs(10))
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let mut session = custody
-            .connect_production_client_session(deadline)
-            .map_err(classify_protected_handshake_error)?;
-        session
-            .require_current_node(node_id)
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            node_id,
+        )?;
         sessions.mount =
             Some(crate::DormantMountLifecycleInventoryOwnerV1::from_protected_session(session));
     }
@@ -1278,18 +1262,10 @@ fn authenticated_storage_inventory(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<aos_sandbox::DurableStorageResourceInventorySnapshotV1, CycleFailure> {
     if sessions.storage.is_none() {
-        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+        let session = connect_controller_session(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
-        )
-        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let deadline = crate::production_deadline_after(Duration::from_secs(10))
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let mut session = custody
-            .connect_production_client_session(deadline)
-            .map_err(classify_protected_handshake_error)?;
-        session
-            .require_current_node(node_id)
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            node_id,
+        )?;
         sessions.storage =
             Some(crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session));
     }
@@ -1314,18 +1290,10 @@ fn authenticated_network_inventory(
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<aos_sandbox::DurableNetworkResourceInventorySnapshotV1, CycleFailure> {
     if sessions.network.is_none() {
-        let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+        let session = connect_controller_session(
             crate::ProtectedBrokerSessionFixedEndpointV1::ControllerNetworkClient,
-        )
-        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let deadline = crate::production_deadline_after(Duration::from_secs(10))
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-        let mut session = custody
-            .connect_production_client_session(deadline)
-            .map_err(classify_protected_handshake_error)?;
-        session
-            .require_current_node(node_id)
-            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            node_id,
+        )?;
         sessions.network =
             Some(crate::DormantNetworkLifecycleInventoryOwnerV1::from_protected_session(session));
     }
