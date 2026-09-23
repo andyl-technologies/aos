@@ -53,58 +53,52 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    inherit serviceTypes;
-    consumerInstance = "desired-config-test";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle = {
-        description = "AOS desired reconciliation config sequencing test";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/desired-config-test-start";
-              arguments = [
-                (resultOf "environment" "planned-path")
-                (resultOf "state" "planned-path")
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      configuration.views = [
+  serviceDefinition = {
+    lifecycle = {
+      description = "AOS desired reconciliation config sequencing test";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
         {
-          name = "environment";
-          source = resultOf "environment" "planned-path";
-          optional = false;
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/desired-config-test-start";
+            arguments = [
+              (resultOf "environment" "planned-path")
+              (resultOf "state" "planned-path")
+            ];
+          };
+          ignore_failure = false;
         }
       ];
-      storage.mounts = [
-        {
-          name = "state";
-          source = resultOf "state" "planned-path";
-          access = "read-write";
-        }
-      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
+    configuration.views = [
+      {
+        name = "environment";
+        source = resultOf "environment" "planned-path";
+        optional = false;
+      }
+    ];
+    storage.mounts = [
+      {
+        name = "state";
+        source = resultOf "state" "planned-path";
+        access = "read-write";
+      }
+    ];
   };
-  fragments = [state environment service];
+  fragments = [state environment];
 in {
   options.desired-config-test = {
     enable = lib.mkOption {
@@ -121,17 +115,15 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
-        fragments);
+      aos.services."desired-config-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.desired-config-test = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
-        fragments
-      );
+    (serviceManagement.projectService {
+      inherit config lib;
+      name = "desired-config-test.main";
+    })
+    (serviceManagement.projectContributions {
+      inherit config lib fragments;
+      enabled = cfg.enable;
     })
   ];
 }

@@ -445,14 +445,17 @@
       }
       {
         aos.serviceFeatureModules = [
-          {
+          ({config, ...}: {
             options.extensions.order.after = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [];
             };
-          }
+            config.extensions.order.after =
+              lib.mkIf
+              (config.extensions.start.command == "start")
+              ["first"];
+          })
         ];
-        aos.services.second.extensions.order.after = ["first"];
       }
     ];
   };
