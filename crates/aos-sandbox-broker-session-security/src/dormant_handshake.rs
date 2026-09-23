@@ -3609,7 +3609,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.finish_observed_success(request, response)
     }
 
-    /// Executes Storage catalog preparation, repair, or grouped snapshot
+    /// Executes Storage catalog preparation, repair, grouped snapshot, or
+    /// guest-root publication
     /// before signing success.
     ///
     /// # Errors
@@ -3629,6 +3630,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
         ) && adapter.matches_request(&request.0);
         let (request, context) = self.begin_execution(request, method_matches)?;
         let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());

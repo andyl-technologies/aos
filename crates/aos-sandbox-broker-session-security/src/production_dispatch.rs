@@ -524,7 +524,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Dispatches every Storage protocol method through its sealed production owner.
     ///
     /// The signed method selects Apply, catalog preparation, workspace-pin
-    /// repair, grouped snapshot, or authoritative inventory. Mutation artifacts
+    /// repair, grouped snapshot, guest-root publication, or authoritative
+    /// inventory. Mutation artifacts
     /// are copied from the already authenticated request only long enough to
     /// satisfy Rust's move discipline; the Storage adapter binds their exact
     /// commitment before entering the domain owner.
@@ -546,7 +547,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
-            | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
+            | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
                 let Some(artifacts) = request.authorization_artifacts().cloned() else {
                     return Err(before_effect_currentness(request));
                 };
