@@ -819,7 +819,7 @@ An optional positive u64-millisecond host completion watchdog is operational
 supervision; its expiry quarantines the attempt without an observation or
 modeled stop. A primary boundary reached before both deadlines carries proof
 of the virtual-time and quantum coordinates. A policy deadline produces a
-distinct, proof-bearing `PolicyTimeout` observation, never a reached primary
+distinct, proof-bearing `PolicyTimeout` outcome, never a reached primary
 boundary. Terminal and assertion outcomes win first. Virtual time wins a tie
 with quanta, and either policy deadline wins a tie with the primary boundary.
 Policy timeout cannot authorize a selected continuation or statistical
