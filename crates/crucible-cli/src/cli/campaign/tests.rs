@@ -1781,6 +1781,41 @@ fn campaign_mutation_actions_preserve_exact_operator_intent() {
 }
 
 #[test]
+fn campaign_debug_preflight_reaches_the_non_control_owner() {
+    let principal = CampaignPrincipal::new("debugger").expect("debugger principal");
+    let debug = CampaignDebugArgs {
+        name: "midpoint".to_owned(),
+        snapshot: snapshot("debug-preflight").to_string(),
+        finding: fixture_record_id(CampaignRecordKind::Finding, "debug-preflight"),
+        node: "choice-node".to_owned(),
+        gdb_listen: "127.0.0.1:0".to_owned(),
+        writable: false,
+    };
+
+    let mut command = CampaignCommand::Debug(debug);
+    assert!(matches!(
+        prepare_campaign_command(&command, &principal),
+        Ok(None)
+    ));
+    assert!(campaign_mutation_spec(&command).is_err());
+
+    let CampaignCommand::Debug(debug) = &mut command else {
+        unreachable!("the test constructs a debug command")
+    };
+    debug.writable = true;
+    assert!(matches!(
+        prepare_campaign_command(&command, &principal),
+        Ok(None)
+    ));
+
+    let CampaignCommand::Debug(debug) = &mut command else {
+        unreachable!("the test constructs a debug command")
+    };
+    debug.snapshot = "not-a-snapshot".to_owned();
+    assert!(validate_campaign_command(&command).is_err());
+}
+
+#[test]
 fn campaign_inputs_fail_before_transport_setup() {
     assert_eq!(
         parse_campaign_choice_value("i64:-7").expect("signed value"),
