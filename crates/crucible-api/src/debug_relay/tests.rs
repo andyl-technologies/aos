@@ -1,5 +1,6 @@
 //! Relay ownership, replacement, and transport regressions.
 
+// crucible-lint: allow panic-shortcut -- relay fixtures use expect for precise failure localization.
 #![allow(clippy::expect_used)]
 
 use std::os::unix::fs::PermissionsExt;

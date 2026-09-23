@@ -417,6 +417,7 @@ pub(super) fn print_midpoint_report(report: &Value, format: OutputFormat) -> Res
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- midpoint fixtures use expect for precise failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use std::time::Duration;

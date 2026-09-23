@@ -832,6 +832,7 @@ impl DebugGatewayClientError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- protocol fixtures use expect for precise failure localization.
 #[allow(clippy::expect_used)]
 mod tests {
     use std::os::unix::net::UnixListener;
