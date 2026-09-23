@@ -427,27 +427,6 @@ async fn build_normal_uki(
 )> {
     let operation = scratch.join(name);
     fs::create_dir(&operation)?;
-    let preliminary = operation.join("preliminary.efi");
-    build_uki(
-        ukify,
-        stub,
-        kernel,
-        initrd,
-        os_release,
-        cmdline,
-        sbat,
-        Some(pcr_public_key),
-        &preliminary,
-        maximum_bytes,
-    )
-    .await?;
-    verify_uki_sections(
-        objcopy,
-        &preliminary,
-        &[("sbat", expected_sbat)],
-        &operation.join("verify-sbat"),
-    )
-    .await?;
     let pcr = sign_pcr_policy(
         assembly,
         &PcrSections {
@@ -465,21 +444,34 @@ async fn build_normal_uki(
         authorizer,
     )
     .await?;
-    let with_pcr = operation.join("with-pcrsig.efi");
-    let join = vec![
-        OsString::from("build"),
-        option_path("--join-pcrsig=", &preliminary),
-        option_path("--pcrsig=@", &pcr.signed_policy),
-        option_path("--output=", &with_pcr),
-    ];
-    let _ = ukify.run(join, MAX_TOOL_STDOUT_BYTES).await?;
-    require_bounded_file(&with_pcr, maximum_bytes)?;
+    let unsigned = operation.join("unsigned.efi");
+    build_uki(
+        ukify,
+        stub,
+        kernel,
+        initrd,
+        os_release,
+        cmdline,
+        sbat,
+        Some(pcr_public_key),
+        Some(&pcr.signed_policy),
+        &unsigned,
+        maximum_bytes,
+    )
+    .await?;
+    verify_uki_sections(
+        objcopy,
+        &unsigned,
+        &[("sbat", expected_sbat), ("pcrsig", &pcr.signed_policy)],
+        &operation.join("verify-unsigned"),
+    )
+    .await?;
     let finalized = output.join(format!("{name}.efi"));
     let authenticode = sign_pe(
         assembly,
         "uki",
         assembly.sbat_generation,
-        &with_pcr,
+        &unsigned,
         &finalized,
         certificate,
         sbverify,
@@ -538,6 +530,7 @@ async fn build_recovery_uki(
         cmdline,
         sbat,
         None,
+        None,
         &unsigned,
         maximum_bytes,
     )
@@ -569,6 +562,7 @@ async fn build_uki(
     cmdline: &Path,
     sbat: &Path,
     pcr_public_key: Option<&Path>,
+    pcr_signature: Option<&Path>,
     output: &Path,
     maximum_bytes: u64,
 ) -> Result<()> {
@@ -583,6 +577,10 @@ async fn build_uki(
     ];
     if let Some(public_key) = pcr_public_key {
         command.push(option_path("--pcrpkey=", public_key));
+    }
+    if let Some(signature) = pcr_signature {
+        // ukify's join command only updates a .pcrsig section that already exists.
+        command.push(option_path("--section=.pcrsig:@", signature));
     }
     command.push(option_path("--output=", output));
     let _ = ukify.run(command, MAX_TOOL_STDOUT_BYTES).await?;
