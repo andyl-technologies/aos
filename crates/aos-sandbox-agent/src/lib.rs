@@ -14,6 +14,8 @@
 //! [`openssh_gate`] defines signed attach readback and the fixed bridge claim;
 //! Linux physical measurement and the forced-command binary own its guest
 //! enforcement path.
+//! [`guest_root_publication`], [`guest_root_tree`], and [`guest_root_marker`]
+//! define assignment-bound population evidence and physical tree readback.
 //! [`dormant_guest_agent`], [`dormant_root_builder`], and
 //! [`dormant_package`] provide independent, executable normal-source seams
 //! with an independently packaged but uninstalled binary. [`broker_adapter`]
@@ -27,6 +29,11 @@ pub mod dormant_package;
 pub mod guest_attach_trust;
 #[cfg(unix)]
 pub mod dormant_root_builder;
+pub mod guest_root_publication;
+#[cfg(target_os = "linux")]
+pub mod guest_root_marker;
+#[cfg(unix)]
+pub mod guest_root_tree;
 pub mod model;
 pub mod openssh_gate;
 #[cfg(target_os = "linux")]
