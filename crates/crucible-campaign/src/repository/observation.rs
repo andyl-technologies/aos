@@ -918,9 +918,7 @@ impl CampaignRepository {
             .iter()
             .copied()
             .collect::<Vec<_>>();
-        if !selection_ids.is_empty()
-            && matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
-        {
+        if !selection_ids.is_empty() && observation.stop().reached_next_choice() {
             return Err(integrity("next-choice-observation-has-produced-selection"));
         }
         let mut selected_opportunities = BTreeSet::new();
@@ -986,10 +984,9 @@ impl CampaignRepository {
             || attempt.path() != observation.path()
             || child.scenario() != start.scenario()
             || child.scenario_artifact() != start.scenario_artifact()
-            || (matches!(
-                observation.stop(),
-                StopOutcome::Reached(_) | StopOutcome::ObservationReached(_)
-            ) && !observation.stop().reaches(attempt.stop()))
+            || !observation
+                .stop()
+                .authenticates_requested_stop(attempt.stop())
         {
             return Err(integrity("observation-candidate-bundle-mismatch"));
         }
@@ -1040,9 +1037,7 @@ impl CampaignRepository {
         if produced_selection_ids != *observation.produced_selections() {
             return Err(integrity("observation-produced-selection-bundle-mismatch"));
         }
-        if matches!(observation.stop(), StopOutcome::Reached(stop) if stop.accepts_next_choice())
-            && observation.discovered_choices().is_empty()
-        {
+        if observation.stop().reached_next_choice() && observation.discovered_choices().is_empty() {
             return Err(integrity("next-choice-observation-has-no-choice"));
         }
         if let StopOutcome::AssertionFailure(property) = observation.stop()

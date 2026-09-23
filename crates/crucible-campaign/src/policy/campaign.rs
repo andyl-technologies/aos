@@ -179,6 +179,89 @@ impl Canonical for RetentionPolicy {
     }
 }
 
+/// Canonical modeled attempt deadline and optional operational host watchdog.
+///
+/// The virtual-time and quantum bounds are absolute coordinates from scenario
+/// genesis. The host watchdog is local supervision and cannot produce modeled
+/// evidence or a campaign finding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignAttemptTimeoutPolicy {
+    virtual_time_nanoseconds: Option<u64>,
+    execution_quanta: Option<u64>,
+    host_completion_watchdog_ms: Option<u64>,
+}
+
+impl CampaignAttemptTimeoutPolicy {
+    /// Builds a policy with at least one deterministic modeled deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] for absent or zero modeled
+    /// bounds, or a host watchdog outside 1 through 3,600,000 milliseconds.
+    pub fn new(
+        virtual_time_nanoseconds: Option<u64>,
+        execution_quanta: Option<u64>,
+        host_completion_watchdog_ms: Option<u64>,
+    ) -> Result<Self, CampaignCodecError> {
+        if virtual_time_nanoseconds.is_none() && execution_quanta.is_none() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "attempt timeout policy has no modeled bound",
+            });
+        }
+        if virtual_time_nanoseconds == Some(0) || execution_quanta == Some(0) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "attempt timeout policy has a zero modeled bound",
+            });
+        }
+        if host_completion_watchdog_ms
+            .is_some_and(|milliseconds| milliseconds == 0 || milliseconds > 3_600_000)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "attempt timeout host watchdog is outside 1..=3600000 milliseconds",
+            });
+        }
+        Ok(Self {
+            virtual_time_nanoseconds,
+            execution_quanta,
+            host_completion_watchdog_ms,
+        })
+    }
+
+    /// Returns the absolute deterministic virtual-time deadline.
+    #[must_use]
+    pub const fn virtual_time_nanoseconds(self) -> Option<u64> {
+        self.virtual_time_nanoseconds
+    }
+
+    /// Returns the absolute deterministic scheduler-quantum deadline.
+    #[must_use]
+    pub const fn execution_quanta(self) -> Option<u64> {
+        self.execution_quanta
+    }
+
+    /// Returns the operational host QEMU completion watchdog in milliseconds.
+    #[must_use]
+    pub const fn host_completion_watchdog_ms(self) -> Option<u64> {
+        self.host_completion_watchdog_ms
+    }
+}
+
+impl Canonical for CampaignAttemptTimeoutPolicy {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.virtual_time_nanoseconds.encode(encoder);
+        self.execution_quanta.encode(encoder);
+        self.host_completion_watchdog_ms.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            Option::decode(decoder)?,
+            Option::decode(decoder)?,
+            Option::decode(decoder)?,
+        )
+    }
+}
+
 /// Complete immutable campaign policy revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignPolicy {
@@ -194,6 +277,7 @@ pub struct CampaignPolicy {
     retention: RetentionPolicy,
     admit_scenario_defaults: bool,
     intervention_learning: InterventionLearningPolicy,
+    attempt_timeout_policy: Option<CampaignAttemptTimeoutPolicy>,
     pub(super) statistical_sampling: Option<StatisticalSamplingDesign>,
     sequential_monte_carlo: Option<SequentialMonteCarloDesign>,
 }
@@ -351,6 +435,7 @@ impl CampaignPolicy {
             InterventionLearningPolicy::Exclude,
             None,
             None,
+            None,
         )
     }
 
@@ -358,6 +443,7 @@ impl CampaignPolicy {
         identity: CampaignPolicyIdentity,
         rules: CampaignPolicyRules,
         intervention_learning: InterventionLearningPolicy,
+        attempt_timeout_policy: Option<CampaignAttemptTimeoutPolicy>,
         statistical_sampling: Option<StatisticalSamplingDesign>,
         sequential_monte_carlo: Option<SequentialMonteCarloDesign>,
     ) -> Result<Self, CampaignCodecError> {
@@ -463,6 +549,7 @@ impl CampaignPolicy {
             retention,
             admit_scenario_defaults,
             intervention_learning,
+            attempt_timeout_policy,
             statistical_sampling,
             sequential_monte_carlo,
         };
@@ -488,6 +575,28 @@ impl CampaignPolicy {
         intervention_learning: InterventionLearningPolicy,
     ) -> Result<Self, CampaignCodecError> {
         self.intervention_learning = intervention_learning;
+        codec::ensure_encoded_size(
+            &self,
+            MAX_CAMPAIGN_POLICY_BYTES,
+            "campaign-policy-encoded-bytes",
+        )?;
+        Ok(self)
+    }
+
+    /// Returns a current policy with an exact modeled attempt deadline.
+    ///
+    /// The optional host watchdog remains operational supervision and is not
+    /// incorporated into the modeled stop selected for an attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::LimitExceeded`] if the encoded policy
+    /// exceeds its size bound.
+    pub fn with_attempt_timeout_policy(
+        mut self,
+        attempt_timeout_policy: CampaignAttemptTimeoutPolicy,
+    ) -> Result<Self, CampaignCodecError> {
+        self.attempt_timeout_policy = Some(attempt_timeout_policy);
         codec::ensure_encoded_size(
             &self,
             MAX_CAMPAIGN_POLICY_BYTES,
@@ -559,6 +668,7 @@ impl CampaignPolicy {
                 self.admit_scenario_defaults,
             ),
             self.intervention_learning,
+            self.attempt_timeout_policy,
             self.statistical_sampling,
             self.sequential_monte_carlo,
         )
@@ -644,6 +754,35 @@ impl CampaignPolicy {
     #[must_use]
     pub const fn intervention_learning_policy(&self) -> InterventionLearningPolicy {
         self.intervention_learning
+    }
+
+    /// Returns the configured modeled deadline and optional host watchdog.
+    #[must_use]
+    pub const fn attempt_timeout_policy(&self) -> Option<CampaignAttemptTimeoutPolicy> {
+        self.attempt_timeout_policy
+    }
+
+    /// Composes the policy's modeled deadlines with an attempt's primary stop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError::InvalidValue`] for an invalid primary stop
+    /// or a nested policy-bound stop.
+    pub fn bound_stop(
+        &self,
+        primary: crate::StopCondition,
+    ) -> Result<crate::StopCondition, CampaignCodecError> {
+        match self.attempt_timeout_policy {
+            Some(timeout) => crate::StopCondition::bounded(
+                primary,
+                timeout.virtual_time_nanoseconds(),
+                timeout.execution_quanta(),
+            ),
+            None => {
+                primary.validate()?;
+                Ok(primary)
+            }
+        }
     }
 
     /// Returns the finite sampling design pinned for statistical execution.
@@ -735,6 +874,7 @@ impl Canonical for CampaignPolicy {
         self.retention.encode(encoder);
         self.admit_scenario_defaults.encode(encoder);
         self.intervention_learning.encode(encoder);
+        self.attempt_timeout_policy.encode(encoder);
         self.statistical_sampling.encode(encoder);
         self.sequential_monte_carlo.encode(encoder);
     }
@@ -777,6 +917,7 @@ impl Canonical for CampaignPolicy {
         let retention = RetentionPolicy::decode(decoder)?;
         let admit_scenario_defaults = bool::decode(decoder)?;
         let intervention_learning = InterventionLearningPolicy::decode(decoder)?;
+        let attempt_timeout_policy = Option::decode(decoder)?;
         let statistical_sampling = Option::decode(decoder)?;
         let sequential_monte_carlo = Option::decode(decoder)?;
         Self::new_current(
@@ -791,6 +932,7 @@ impl Canonical for CampaignPolicy {
                 admit_scenario_defaults,
             ),
             intervention_learning,
+            attempt_timeout_policy,
             statistical_sampling,
             sequential_monte_carlo,
         )

@@ -1087,9 +1087,9 @@ mod tests {
             u64::from(ordinal - 1),
             ProposalId::from_content_id(id("proposal", ObjectKind::CampaignFact, 2))
                 .expect("proposal ID"),
-            AttemptId::from_content_id(id("attempt", ObjectKind::CampaignFact, 8))
+            AttemptId::from_content_id(id("attempt", ObjectKind::CampaignFact, 9))
                 .expect("attempt ID"),
-            crate::ObservationId::from_content_id(id("observation", ObjectKind::Observation, 12))
+            crate::ObservationId::from_content_id(id("observation", ObjectKind::Observation, 13))
                 .expect("observation ID"),
             BranchPathId::from_content_id(id("path", ObjectKind::CampaignFact, 2))
                 .expect("path ID"),
@@ -1111,7 +1111,7 @@ mod tests {
             .expect("lineage ID"),
             CampaignPolicyId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Policy,
-                4,
+                5,
                 b"report-policy",
             ))
             .expect("policy ID"),

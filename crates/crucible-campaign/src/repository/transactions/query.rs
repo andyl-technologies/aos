@@ -403,6 +403,21 @@ impl CampaignRepository {
             .map(|(head, lifecycle)| (head, lifecycle.state()))
     }
 
+    /// Resolves one head, lifecycle state, and exact active policy together.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the named head, its lifecycle, or its referenced
+    /// immutable policy is unavailable or invalid.
+    pub fn head_with_state_and_policy(
+        &self,
+        name: &str,
+    ) -> Result<(CampaignHead, CampaignState, CampaignPolicy), CampaignRepositoryError> {
+        let (head, state) = self.head_with_state(name)?;
+        let policy = self.read_policy(head.snapshot().active_policy().content_id())?;
+        Ok((head, state, policy))
+    }
+
     /// Resolves one authenticated head and its active campaign policy.
     ///
     /// The policy is loaded through the exact identity carried by the returned

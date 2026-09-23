@@ -267,7 +267,7 @@ fn objective_evaluation_publication_is_snapshot_owned_replayable_and_failure_ato
         .snapshot
         .transition()
         .expect("objective publication transition");
-    assert_eq!(transition.content_id().schema_version(), 14);
+    assert_eq!(transition.content_id().schema_version(), 15);
     assert_eq!(
         repository
             .read_fact(transition.content_id())
@@ -1884,7 +1884,7 @@ fn head_rejects_a_snapshot_with_missing_parent_and_transition() {
     .expect("parent id");
     let missing_transition = crate::CampaignFactId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        14,
+        15,
         b"missing-transition",
     ))
     .expect("transition id");

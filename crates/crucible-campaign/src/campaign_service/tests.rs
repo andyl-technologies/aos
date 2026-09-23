@@ -13,9 +13,10 @@ use super::*;
 use crate::{
     AttemptAdmissionId, AttemptId, BranchAcceptanceCount, BranchAcceptanceSummary, BranchBudget,
     BranchPointId, BranchRequestCause, CampaignCommandId, CampaignControlAction,
-    CampaignDiscoveryResult, CampaignRoots, CandidateSource, ChoiceDomainId, ChoiceOpportunityId,
-    ChoiceValue, ConfigurationArtifactId, ConfigurationId, DaemonEpoch, DiscoveryRequest,
-    PinChange, PinRequest, PinRetention, StopCondition,
+    CampaignDiscoveryResult, CampaignMode, CampaignRoots, CampaignSeed, CandidateSource,
+    ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
+    DaemonEpoch, DiscoveryRequest, ExplorerPolicy, FairnessPolicy, PinChange, PinRequest,
+    PinRetention, RetentionPolicy, ScenarioDefId, StopCondition,
 };
 
 fn hash(label: &str) -> CampaignHash {
@@ -47,10 +48,33 @@ fn lineage(label: &str) -> CampaignLineageId {
 fn policy(label: &str) -> CampaignPolicyId {
     CampaignPolicyId::from_content_id(ContentId::for_bytes(
         ObjectKind::Policy,
-        4,
+        5,
         label.as_bytes(),
     ))
     .expect("policy id")
+}
+
+fn response_policy() -> CampaignPolicy {
+    CampaignPolicy::new(
+        CampaignPolicy::identity(
+            ScenarioDefId::from_hash(hash("response-scenario")),
+            CampaignSeed::from_bytes([0x42; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 4,
+            },
+        ),
+        CampaignPolicy::rules(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 4, true, true),
+            false,
+        ),
+    )
+    .expect("response policy")
 }
 
 fn branch_request(label: &str) -> BranchRequest {
@@ -171,6 +195,7 @@ fn list_campaign_messages_are_canonical_ordered_and_request_bound() {
 #[test]
 fn get_campaign_messages_are_canonical_and_request_bound() {
     let request = get_request("network-recovery");
+    let policy_body = response_policy();
     assert_eq!(
         GetCampaignRequest::from_canonical_bytes(&request.canonical_bytes())
             .expect("decode request"),
@@ -180,7 +205,8 @@ fn get_campaign_messages_are_canonical_and_request_bound() {
         &request,
         snapshot("snapshot"),
         lineage("lineage"),
-        policy("policy"),
+        policy_body.id().expect("policy ID"),
+        policy_body,
         CampaignState::Running,
     )
     .expect("response");
@@ -203,7 +229,7 @@ fn get_campaign_messages_are_canonical_and_request_bound() {
         ],
         [
             String::from("e25fd54be8cb0ea10f0dc695d3f7b029883e0f87269c692abe85f5ba9701a61d"),
-            String::from("2897207d1ac7ba38eb06008d56b90fa2442efa418c2532802563f0d2373270b8"),
+            String::from("ff252716410aec699e6468c8cdf91eed05d652a7f2ddb0f4917fd269f8ad9210"),
         ]
     );
 }
@@ -483,11 +509,13 @@ impl CampaignService for WrongGetService {
 #[test]
 fn checked_client_rejects_a_cross_request_response() {
     let original = get_request("original");
+    let policy_body = response_policy();
     let response = GetCampaignResponse::new(
         &original,
         snapshot("snapshot"),
         lineage("lineage"),
-        policy("policy"),
+        policy_body.id().expect("policy ID"),
+        policy_body,
         CampaignState::Running,
     )
     .expect("response");
@@ -1205,7 +1233,7 @@ fn discovery_messages_are_canonical_and_bind_the_exact_request() {
 
     let attempt = AttemptId::parse(&format!(
         "crucible.campaign.attempt@{}",
-        ContentId::for_bytes(ObjectKind::CampaignFact, 8, b"discovery-attempt").encode()
+        ContentId::for_bytes(ObjectKind::CampaignFact, 9, b"discovery-attempt").encode()
     ))
     .expect("attempt ID");
     let admission = AttemptAdmissionId::parse(&format!(

@@ -23,7 +23,7 @@ fn fixture_request() -> SubmitAttemptRequest {
         .expect("lineage"),
         AttemptId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            8,
+            9,
             b"executor-attempt",
         ))
         .expect("attempt"),
@@ -56,7 +56,7 @@ fn fixture_configuration(byte: u8) -> ConfigurationArtifactId {
 fn fixture_campaign_fact(byte: u8) -> CampaignFactId {
     CampaignFactId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
-        14,
+        15,
         &[byte; 32],
     ))
     .expect("campaign fact")
@@ -68,7 +68,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
     let execution = ExecutionId::from_bytes([0x71; 16]).expect("execution");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        12,
+        13,
         b"candidate-bearing-completion",
     ))
     .expect("observation");
@@ -606,7 +606,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        12,
+        13,
         b"executor-status-observation",
     ))
     .expect("observation");
@@ -1001,7 +1001,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        12,
+        13,
         b"executor-cancellation-observation",
     ))
     .expect("observation");
