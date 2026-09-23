@@ -1294,6 +1294,25 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
         partition: PhysicalPartitionId,
         checkpoint: &CacheTypedCheckpointV1,
     ) -> Result<PreparedCacheResidencyTransactionV1, CacheResidencyProtectedJournalErrorV1> {
+        // A release tombstone needs its original PinChange transaction until
+        // physical absence is proved and the tombstone is compacted. A
+        // checkpoint cannot replace that transaction with a baseline alone.
+        let projection = self.replay()?;
+        let inventories = reconstruct_cache_history(projection.records(), &self.validator)?;
+        let current_has_releases = inventories
+            .iter()
+            .filter(|inventory| inventory.global.node_quota.partition == partition)
+            .flat_map(|inventory| &inventory.reconstructed)
+            .any(|payload| !payload.released_pins.is_empty());
+        if current_has_releases
+            || checkpoint
+                .baselines
+                .iter()
+                .any(|baseline| !baseline.released_pins.is_empty())
+        {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
+        }
+
         let key = cache_residency_protected_key_v1(
             CacheResidencyProtectedRecordKindV1::Checkpoint,
             partition,

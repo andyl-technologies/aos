@@ -147,6 +147,43 @@ pub enum PublicCacheUnpinRecoveryErrorV1 {
     Protected(#[from] CacheResidencyProtectedJournalErrorV1),
 }
 
+/// Retains the exact point at which a consumer-wide unpin needs recovery.
+#[must_use = "the public operation is incomplete until every partition is drained"]
+pub enum PublicCacheUnpinProgressV1 {
+    /// No matching protected or physical pin obligation remains.
+    Complete,
+    /// A new protected release or its physical handoff is unresolved.
+    PendingCommit {
+        /// Exact pin being drained.
+        pin: CachePinV1,
+        /// Protected and physical outcomes, including opaque recovery custody.
+        execution: PublicCacheUnpinExecutionV1,
+    },
+    /// A released tombstone still needs exact cold physical recovery.
+    PendingRecovery {
+        /// Exact released pin and derived transaction identity.
+        pin: CachePinV1,
+        /// Cold replay or physical effect outcome requiring another pass.
+        recovery: PublicCacheUnpinRecoveryV1,
+    },
+    /// A concurrent protected change invalidated the final completion check.
+    RecheckRequired,
+}
+
+/// Reports failure before consumer-wide unpin returns complete recovery custody.
+#[derive(Debug, thiserror::Error)]
+pub enum PublicCacheUnpinProgressErrorV1 {
+    /// Protected replay or the new release commit failed closed.
+    #[error(transparent)]
+    Protected(#[from] CacheResidencyProtectedJournalErrorV1),
+    /// A released physical pin or owner manifest could not be observed.
+    #[error(transparent)]
+    Observation(#[from] PublicCacheUnpinObservationErrorV1),
+    /// A cold release no longer matched its exact protected tombstone.
+    #[error(transparent)]
+    Recovery(#[from] PublicCacheUnpinRecoveryErrorV1),
+}
+
 /// Derives the stable protected release transaction for one exact logical pin.
 ///
 /// A release tombstone retains the pin but not the public operation that first
@@ -261,6 +298,75 @@ pub fn observe_public_cache_unpin_completion_v1(
         }
     }
     Ok(true)
+}
+
+/// Drains and reconciles every partition pin for one public consumer/object.
+///
+/// The public request names no partition. This path checks all retained pins,
+/// then uses release tombstones to recover physical effects across restarts.
+/// The first unresolved effect returns its exact custody; a caller must retain
+/// it and must not complete the public operation until a later `Complete`.
+///
+/// # Errors
+///
+/// Returns an error when protected replay, release construction, or physical
+/// observation fails before a complete pending result can be returned.
+pub fn execute_public_cache_unpin_consumer_v1(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    consumer: &RecheckedCacheConsumerV1,
+    source_journal: &Journal,
+    request: &DormantSandboxRequestKindV1,
+    operation: OperationId,
+) -> Result<PublicCacheUnpinProgressV1, PublicCacheUnpinProgressErrorV1> {
+    let retained = protected.retained_consumer_logical_pins(
+        consumer.object(),
+        consumer.project(),
+        consumer.view(),
+        consumer.attachment(),
+    )?;
+    for pin in retained {
+        let execution = execute_public_cache_unpin_v1(
+            protected,
+            physical,
+            consumer,
+            source_journal,
+            request,
+            operation,
+            &pin,
+        )?;
+        if let Err(execution) = execution.into_confirmed() {
+            return Ok(PublicCacheUnpinProgressV1::PendingCommit { pin, execution });
+        }
+    }
+
+    let released = protected.released_consumer_logical_pins(
+        consumer.object(),
+        consumer.project(),
+        consumer.view(),
+        consumer.attachment(),
+    )?;
+    for pin in released {
+        let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id())
+            .map_err(PublicCacheUnpinObservationErrorV1::from)?;
+        if physical
+            .observe_pin(id, pin.partition(), pin.object())
+            .map_err(PublicCacheUnpinObservationErrorV1::from)?
+            == CacheOwnerPinPresenceV1::Absent
+        {
+            continue;
+        }
+        let recovery = recover_public_cache_unpin_v1(protected, physical, consumer, &pin)?;
+        if !matches!(&recovery, PublicCacheUnpinRecoveryV1::Released(_)) {
+            return Ok(PublicCacheUnpinProgressV1::PendingRecovery { pin, recovery });
+        }
+    }
+
+    if observe_public_cache_unpin_completion_v1(protected, physical, consumer)? {
+        Ok(PublicCacheUnpinProgressV1::Complete)
+    } else {
+        Ok(PublicCacheUnpinProgressV1::RecheckRequired)
+    }
 }
 
 /// Executes one source-proven public pin against both protected Cache owners.

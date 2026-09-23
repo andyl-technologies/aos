@@ -227,6 +227,11 @@ object without a caller-supplied pin ID. Each partition drains under its own
 current authority, so a migration cannot silently strand an old pin.
 An attachment replacement does not erase the old view's pin before its drain.
 View-scoped logical pins block eviction but do not grant runtime read access.
+The protected unpin transaction identity is derived from the exact partition
+and pin ID, so a release tombstone can recover the same physical effect after
+the initiating public operation is gone. A partition checkpoint cannot replace
+the original pin-change transaction while a release tombstone remains;
+compaction first proves the corresponding physical pin absent.
 
 Cache Replay bootstrap uses a controller-custodied, owner-checked journal of
 immutable partition manifests. A protected controller credential may supply a
