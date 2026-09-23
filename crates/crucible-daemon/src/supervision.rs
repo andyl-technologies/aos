@@ -79,7 +79,8 @@ impl AssignmentHostWatchdog {
         self.allowance.saturating_sub(self.started_at.elapsed())
     }
 
-    fn expired(&self) -> bool {
+    /// Reports whether the assignment budget elapsed or its watcher fired.
+    pub(super) fn expired(&self) -> bool {
         self.expired.load(Ordering::Acquire) || self.remaining().is_zero()
     }
 }
