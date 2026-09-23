@@ -28,7 +28,8 @@ use std::sync::Arc;
 use crucible::model::ResolvedEffectTrace;
 use crucible::{
     ContentHash, DagStore, FindingReproductionArtifact, FingerprintSample, MemoryDagStore, NodeId,
-    SchedulerEventLogEntry, VirtualTime, VmArchitecture, compare_event_log_determinism,
+    ReproductionArtifact, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
+    compare_event_log_determinism,
 };
 use crucible_campaign::{FindingKind, FindingSignature, ReproductionArtifactId};
 use serde::{Deserialize, Serialize};
@@ -113,8 +114,13 @@ impl FindingProductionReplayCaptureLimits {
     /// Derives capture bounds from the scenario's authored resource ceiling.
     #[must_use]
     pub fn for_finding(finding: &FindingReproductionArtifact) -> Self {
-        let lifecycle_bytes = finding
-            .artifact
+        Self::for_reproduction(&finding.artifact)
+    }
+
+    /// Derives the same capture bounds from an imported model reproduction.
+    #[must_use]
+    pub fn for_reproduction(artifact: &ReproductionArtifact) -> Self {
+        let lifecycle_bytes = artifact
             .scenario_form()
             .plan()
             .fault_signals()
@@ -123,8 +129,7 @@ impl FindingProductionReplayCaptureLimits {
         let event_bytes = u64::try_from(MAX_FINDING_PRODUCTION_REPLAY_EVENT_BYTES)
             .unwrap_or(u64::MAX)
             .saturating_mul(u64::try_from(MAX_FINDING_PRODUCTION_REPLAY_SIDES).unwrap_or(u64::MAX));
-        let model_bytes =
-            u64::try_from(finding.artifact.to_compact_binary().len()).unwrap_or(u64::MAX);
+        let model_bytes = u64::try_from(artifact.to_compact_binary().len()).unwrap_or(u64::MAX);
 
         Self {
             max_events_per_side: MAX_FINDING_PRODUCTION_REPLAY_EVENTS,
