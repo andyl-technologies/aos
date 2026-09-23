@@ -46,14 +46,21 @@
   nodeCredentials =
     lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
-  brokerPlanCredentials =
-    lib.optionals (cfg.credentials.brokerPlanSigningKey != null) (
-      ["broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}"]
-      ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPolicy != null)
-      "broker-plan-policy.cbor:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPolicy}"
-      ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPublicKey != null)
-      "broker-plan-public-key:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPublicKey}"
-    );
+  brokerPlanCredentials = lib.optionals (cfg.credentials.brokerPlanSigningKey != null) (
+    ["broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}"]
+    ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPolicy != null)
+    "broker-plan-policy.cbor:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPolicy}"
+    ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPublicKey != null)
+    "broker-plan-public-key:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPublicKey}"
+  );
+  ownershipCredentials = lib.optionals brokers.ownershipAuthority.enable (
+    lib.optional (brokers.ownershipAuthority.credentials.sessionKey != null)
+    "ownership-session-key:/run/credentials/@system/${brokers.ownershipAuthority.credentials.sessionKey}"
+    ++ lib.optional (brokers.hostBroker.credentials.ownershipLeasePolicy != null)
+    "ownership-lease-policy.cbor:/run/credentials/@system/${brokers.hostBroker.credentials.ownershipLeasePolicy}"
+    ++ lib.optional (brokers.hostBroker.credentials.ownershipLeasePublicKey != null)
+    "ownership-lease-public-key:/run/credentials/@system/${brokers.hostBroker.credentials.ownershipLeasePublicKey}"
+  );
   publicCredentialNames = {
     publicApiServerCert = "public-api-server-cert";
     publicApiServerKey = "public-api-server-key";
@@ -68,7 +75,7 @@ in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
 
-    publicApi.enable = lib.mkEnableOption "registered mutual-TLS discovery on /run/aos/sandboxd/public.sock (mutation RPCs remain unavailable)";
+    publicApi.enable = lib.mkEnableOption "the registered mutual-TLS controller API on /run/aos/sandboxd/public.sock";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -112,10 +119,14 @@ in {
           message = "aos.sandbox.controllerService requires aos.sandbox.hostBroker";
         }
         {
-          assertion = cfg.credentials.brokerPlanSigningKey == null || (
-            brokers.hostBroker.credentials.brokerPlanPolicy != null
-            && brokers.hostBroker.credentials.brokerPlanPublicKey != null
-          );
+          assertion =
+            cfg.credentials.brokerPlanSigningKey
+            == null
+            || (
+              brokers.hostBroker.credentials.brokerPlanPolicy
+              != null
+              && brokers.hostBroker.credentials.brokerPlanPublicKey != null
+            );
           message = "aos.sandbox.controllerService broker-plan signing requires the Host broker's public plan policy and key";
         }
         {
@@ -130,6 +141,20 @@ in {
           assertion = brokers.networkBroker.enable;
           message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
         }
+        {
+          assertion = !brokers.ownershipAuthority.enable || brokers.ownershipAuthority.credentials.sessionKey != null;
+          message = "aos.sandbox.controllerService ownership resumption requires the ownership session key";
+        }
+        {
+          assertion =
+            !brokers.ownershipAuthority.enable
+            || (
+              brokers.hostBroker.credentials.ownershipLeasePolicy
+              != null
+              && brokers.hostBroker.credentials.ownershipLeasePublicKey != null
+            );
+          message = "aos.sandbox.controllerService ownership resumption requires the Host broker's lease policy and public key";
+        }
       ]
       ++ brokerSessionConfiguration.assertions
       ++ lib.mapAttrsToList (option: _: {
@@ -141,19 +166,23 @@ in {
     systemd.services.aos-sandboxd = {
       description = "AOS unprivileged sandbox node controller";
       wantedBy = ["multi-user.target"];
-      requires = [
-        "aos-sandbox-hostd.service"
-        "aos-storaged.service"
-        "aos-sandbox-mountd.service"
-        "aos-netd.service"
-      ];
-      after = [
-        "aos-sandbox-hostd.service"
-        "aos-storaged.service"
-        "aos-sandbox-mountd.service"
-        "aos-netd.service"
-        "local-fs.target"
-      ];
+      requires =
+        [
+          "aos-sandbox-hostd.service"
+          "aos-storaged.service"
+          "aos-sandbox-mountd.service"
+          "aos-netd.service"
+        ]
+        ++ lib.optional brokers.ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
+      after =
+        [
+          "aos-sandbox-hostd.service"
+          "aos-storaged.service"
+          "aos-sandbox-mountd.service"
+          "aos-netd.service"
+          "local-fs.target"
+        ]
+        ++ lib.optional brokers.ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
       unitConfig = {
         RequiresMountsFor = ["/sys/fs/cgroup"];
         StartLimitIntervalSec = 60;
@@ -166,7 +195,7 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        LoadCredential = nodeCredentials ++ brokerPlanCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
+        LoadCredential = nodeCredentials ++ brokerPlanCredentials ++ ownershipCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

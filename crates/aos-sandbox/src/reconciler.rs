@@ -2917,6 +2917,112 @@ pub fn public_operation_resource_from_journal_v1(
     recovered_public_operation_resource_v1(journal, operation_id)
 }
 
+/// Reads the validated publication digest of one activated ownership gate.
+///
+/// The caller already holds the reconciler's journal through its executor
+/// hook. A pending or ungated operation returns `None`; an activated gate is
+/// not evidence until its immutable publication has been checked against the
+/// exact admitted draft and lease artifacts.
+///
+/// # Errors
+///
+/// Returns [`ReconcilerError`] for absent protected authority, inconsistent
+/// operation/gate state, or corrupt publication evidence.
+pub fn activated_ownership_gate_digest_from_journal_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<ObjectDigest>, ReconcilerError> {
+    match validated_ownership_gate_from_journal_v1(journal, operation_id)? {
+        Some(OwnershipGateStatusV1::Activated {
+            publication_digest, ..
+        }) => Ok(Some(publication_digest)),
+        Some(OwnershipGateStatusV1::Pending(_)) | None => Ok(None),
+    }
+}
+
+pub(crate) fn validated_ownership_gate_from_journal_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    let operation = journal
+        .get(RecordNamespace::Operation, operation_id.as_bytes())
+        .map(decode_operation)
+        .transpose()?;
+    let gate = journal
+        .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
+        .map(decode_ownership_gate)
+        .transpose()?;
+    let (operation, gate) = match (operation, gate) {
+        (None, None)
+        | (
+            Some(OperationRecord {
+                ownership_gated: false,
+                ..
+            }),
+            None,
+        ) => {
+            return Ok(None);
+        }
+        (Some(operation), Some(gate)) => (operation, gate),
+        _ => {
+            return Err(ReconcilerError::CorruptLedger(
+                "ownership gate does not match its operation",
+            ));
+        }
+    };
+    let plan = match &gate {
+        OwnershipGateStatusV1::Pending(plan) | OwnershipGateStatusV1::Activated { plan, .. } => {
+            plan
+        }
+    };
+    if !operation.ownership_gated
+        || plan.operation_id() != operation_id
+        || journal.check_idempotency(plan.idempotency_key(), plan.request_digest())
+            != IdempotencyOutcome::Replay(operation_id)
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "ownership gate does not match its operation",
+        ));
+    }
+    match &gate {
+        OwnershipGateStatusV1::Pending(_)
+            if operation.state == OperationState::OwnershipPending =>
+        {
+            Ok(Some(gate))
+        }
+        OwnershipGateStatusV1::Activated {
+            plan,
+            publication_digest,
+            lease_generation,
+            lease_digest,
+        } if matches!(
+            operation.state,
+            OperationState::Accepted
+                | OperationState::Applying
+                | OperationState::Succeeded
+                | OperationState::PermanentlyBlocked
+        ) =>
+        {
+            validate_durable_gate_publication(
+                journal,
+                *publication_digest,
+                plan.publication_draft(),
+                plan.claim(),
+                *lease_generation,
+                *lease_digest,
+            )
+            .map_err(|_| {
+                ReconcilerError::CorruptLedger("activated ownership publication is corrupt")
+            })?;
+            Ok(Some(gate))
+        }
+        _ => Err(ReconcilerError::CorruptLedger(
+            "ownership gate state does not match its operation",
+        )),
+    }
+}
+
 fn transition_operation(
     operation: OperationRecord,
     state: OperationState,
@@ -3588,6 +3694,12 @@ mod tests {
             sandbox_id: vec![0x92; 16],
             mutation: Some(MutationContext {
                 idempotency_key: b"cancelable-controller-operation".to_vec(),
+                expected_resource_version: vec![0x94],
+                operation_timeout: Some(aos_proto::aos::sandbox::v1::Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                })
+                .into(),
                 ..Default::default()
             })
             .into(),
@@ -4602,6 +4714,61 @@ mod tests {
             ReconcileOutcome::Progressed
         );
         assert_eq!(reconciler.executor.apply_calls, 0);
+    }
+
+    #[test]
+    fn protected_gate_read_requires_validated_activation_publication() {
+        let directory = TestDirectory::new();
+        let (plan, draft, prepared) = gated_operation_with_publication(1);
+        let plan = plan
+            .with_public_operation(
+                PublicOperationAdmissionV1::new(
+                    crate::controller_query::PublicOperationMethodV1::StartSandbox,
+                    1,
+                    [0x41; 16],
+                    100,
+                    public_operation_authorization(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        reconciler.accept(&plan).unwrap();
+        assert_eq!(
+            activated_ownership_gate_digest_from_journal_v1(
+                &reconciler.journal,
+                plan.operation_id(),
+            )
+            .unwrap(),
+            None,
+        );
+        let operation =
+            recovered_public_operation_resource_v1(&reconciler.journal, plan.operation_id())
+                .unwrap()
+                .unwrap();
+        let checked =
+            crate::controller_query::CheckedOperationResourceV1::try_from(operation).unwrap();
+        let recovery = crate::controller::prepare_operator_recovery_operation_current_v1(
+            &reconciler.journal,
+            &checked,
+        )
+        .unwrap()
+        .into_record();
+        assert_eq!(recovery.value().unwrap()[1] & 1, 1);
+
+        let activation = gate_activation(&mut reconciler, &draft, &prepared);
+        reconciler
+            .activate_ownership_gate_at(plan.operation_id(), activation, 101)
+            .unwrap();
+        assert_eq!(
+            activated_ownership_gate_digest_from_journal_v1(
+                &reconciler.journal,
+                plan.operation_id(),
+            )
+            .unwrap(),
+            Some(prepared.digest()),
+        );
     }
 
     #[test]
@@ -5630,7 +5797,7 @@ mod tests {
         };
 
         let directory = TestDirectory::new();
-        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let journal = protected_runtime_journal(&directory);
         let plan = operation()
             .with_public_operation(
                 PublicOperationAdmissionV1::new(
@@ -5720,7 +5887,7 @@ mod tests {
         assert_eq!(checked.observation_sequence(), 3);
 
         drop(reconciler);
-        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let journal = protected_runtime_journal(&directory);
         let mut reopened = Reconciler::new(journal, Executor::default());
         assert_eq!(
             reopened
@@ -5774,7 +5941,7 @@ mod tests {
         use crate::controller_query::{CheckedOperationObservationV1, CheckedOperationPhaseV1};
 
         let directory = TestDirectory::new();
-        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let journal = protected_runtime_journal(&directory);
         let plan = cancelable_controller_operation();
         let operation_id = plan.operation_id();
         let mut reconciler = Reconciler::new(journal, CanceledControllerExecutor);

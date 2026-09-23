@@ -415,7 +415,7 @@ impl DurablePublicOperationV1 {
             ),
             (OperationState::CanceledBeforeCommit, _) => (
                 OperationPhase::OPERATION_PHASE_CANCELED_BEFORE_COMMIT,
-                "canceled",
+                "complete",
                 RetryClass::RETRY_CLASS_NEVER,
             ),
             (OperationState::PermanentlyBlocked, _) => (

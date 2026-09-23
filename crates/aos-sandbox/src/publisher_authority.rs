@@ -1199,7 +1199,7 @@ pub(crate) mod tests {
             Err(PublisherAuthorityError::MalformedRecord)
         ));
 
-        for version in [b'0', b'2', b'3', b'4'] {
+        for version in [b'0', b'3', b'4'] {
             let mut unknown_version = canonical.clone();
             let position = unknown_version
                 .windows(b"\"version\":1".len())
@@ -1212,6 +1212,21 @@ pub(crate) mod tests {
                     if candidate == u16::from(version - b'0')
             ));
         }
+
+        let mut missing_v2_parent = canonical.clone();
+        let position = missing_v2_parent
+            .windows(b"\"version\":1".len())
+            .position(|window| window == b"\"version\":1")
+            .unwrap_or_else(|| panic!("version field absent"));
+        missing_v2_parent[position + b"\"version\":".len()] = b'2';
+        assert!(matches!(
+            decode_record(
+                &capability_key(id),
+                &missing_v2_parent,
+                MAXIMUM_RECORD_BYTES
+            ),
+            Err(PublisherAuthorityError::InvalidParentLink)
+        ));
 
         let mut unknown_state = canonical.clone();
         let position = unknown_state

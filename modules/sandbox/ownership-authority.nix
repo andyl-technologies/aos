@@ -45,7 +45,9 @@ in {
         SocketUser = "aos-sandboxd";
         SocketGroup = "aos-sandboxd";
         SocketMode = "0600";
-        DirectoryMode = "0710";
+        # The controller traverses this root-owned directory, but the socket
+        # itself remains accessible only to its configured service UID.
+        DirectoryMode = "0711";
         RemoveOnStop = true;
       };
     };
@@ -65,7 +67,7 @@ in {
         StateDirectory = "aos/sandbox/multi-node";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-ownership";
-        RuntimeDirectoryMode = "0710";
+        RuntimeDirectoryMode = "0711";
         UMask = "0077";
 
         # The fixed bootstrap, issuer inbox, and journal remain root-owned;

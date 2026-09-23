@@ -12,9 +12,10 @@
 //! `GetNodeCapabilities`, and restart-stable `GetOperation` observations. The
 //! operation query crosses a bounded command channel to the sole journal owner;
 //! the asynchronous server never opens or shares the journal. An opt-in public
-//! Unix endpoint offers discovery and capability-authorized operation reads to
-//! explicitly registered mutually authenticated TLS clients; socket credentials
-//! or request headers do not identify those clients or grant authority. UID 0
+//! Unix endpoint offers discovery, capability-authorized operation reads, and
+//! explicitly admitted mutations to registered mutually authenticated TLS
+//! clients; socket credentials or request headers do not identify those clients
+//! or grant authority. UID 0
 //! is trusted here as the local administrator, not as another node service
 //! role. Discovery responses contain no catalog rows, credentials, operation
 //! state, or mutation surface. The feature
@@ -41,8 +42,8 @@ use aos_proto::aos::sandbox::v1::{
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
     GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationPhase,
-    OperationService, OperationServiceExt, OperatorServiceExt, PolicyPlan, SandboxServiceExt,
-    SnapshotServiceExt, Timestamp, WatchRequest,
+    OperationService, OperationServiceExt, OperatorRecoveryAction, OperatorServiceExt, PolicyPlan,
+    SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
     CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
@@ -62,10 +63,12 @@ use rustix::net::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
 use aos_sandbox::cli_model::{
     AuditAuthorizationV1, DormantSandboxRequestKindV1, PublicApiAuditMethodV1,
+    PublicMutationRequestV1,
 };
 use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
@@ -96,9 +99,11 @@ use aos_sandbox::{
     EffectObservation, EffectPlan, EffectReceipt, GuardianPlanRequestV1,
     HostCatalogReconciliationError, HostCatalogReconciliationV1, Journal, JournalError,
     MountAttemptError, NodeController, NodeControllerLimits, OperationCompilationError,
-    PreparedAuthorityEffectV1, PublicMutationEffectV1, Reconciler, ResourceInventoryError,
-    SignedBrokerPlan, SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
-    prepare_runtime_lifecycle_authority_effect_v1, public_operation_resource_from_journal_v1,
+    OwnershipGateStatusV1, OwnershipResumeOutcomeV1, PreparedAuthorityEffectV1,
+    PublicMutationEffectV1, Reconciler, ResourceInventoryError, SignedBrokerPlan,
+    SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
+    activated_ownership_gate_digest_from_journal_v1, prepare_runtime_lifecycle_authority_effect_v1,
+    public_operation_resource_from_journal_v1,
 };
 
 mod public_api;
@@ -243,8 +248,8 @@ where
 ///
 /// Positional arguments are the fixed decimal controller UID and GID. The
 /// optional `--public-api` flag requires all four protected public TLS credentials
-/// and enables registered-client discovery and authorized operation reads at the
-/// fixed public socket. The node identity is read from
+/// and enables the registered-client public endpoint at the fixed socket.
+/// The node identity is read from
 /// `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
 /// production paths.
@@ -258,6 +263,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
     let node_id = read_node_id()?;
+    let ownership = ControllerOwnershipConfigurationV1::from_process_credentials_optional()
+        .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
     let controller = open_controller(&configuration, node_id, Arc::clone(&sessions))?;
@@ -282,6 +289,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
             controller_worker(
                 controller,
                 node_id,
+                ownership,
                 worker_capabilities,
                 sessions,
                 commands_rx,
@@ -427,6 +435,7 @@ impl axum::serve::Listener for AuthenticatedDiagnosticListener {
 fn controller_worker(
     mut controller: ProductionController,
     node_id: [u8; 16],
+    ownership: Option<ControllerOwnershipConfigurationV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
     commands: mpsc::Receiver<ControllerCommand>,
@@ -475,7 +484,9 @@ fn controller_worker(
         let wait = next_cycle.saturating_duration_since(Instant::now());
         match commands.recv_timeout(wait) {
             Ok(command) => {
-                if let Err(message) = handle_controller_command(&mut controller, command) {
+                if let Err(message) =
+                    handle_controller_command(&mut controller, ownership.as_ref(), command)
+                {
                     let _ = events.send(WorkerEvent::Fatal(message));
                     return;
                 }
@@ -493,6 +504,7 @@ fn controller_worker(
 
 fn handle_controller_command(
     controller: &mut ProductionController,
+    ownership: Option<&ControllerOwnershipConfigurationV1>,
     command: ControllerCommand,
 ) -> Result<(), String> {
     match command {
@@ -694,7 +706,7 @@ fn handle_controller_command(
             match controller.public_operation(operation_id) {
                 Ok(Some(operation)) => {
                     let _ = reply.send(Ok(operation));
-                    Ok(())
+                    resume_operator_ownership(controller, ownership, &canonical_request)
                 }
                 Ok(None) => {
                     let message = "accepted operator recovery has no public operation".to_owned();
@@ -772,6 +784,76 @@ fn handle_controller_command(
             Ok(())
         }
     }
+}
+
+fn resume_operator_ownership(
+    controller: &mut ProductionController,
+    ownership: Option<&ControllerOwnershipConfigurationV1>,
+    canonical_request: &[u8],
+) -> Result<(), String> {
+    let envelope = PublicMutationRequestV1::decode(canonical_request)
+        .map_err(|error| format!("admitted ownership recovery envelope is invalid: {error}"))?;
+    let DormantSandboxRequestKindV1::OperatorRecover(request) = envelope
+        .decode_validated_kind()
+        .map_err(|error| format!("admitted ownership recovery request is invalid: {error}"))?
+    else {
+        return Err("admitted ownership recovery has the wrong method".to_owned());
+    };
+    if request.action.as_known() != Some(OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY) {
+        return Ok(());
+    }
+    let target_bytes: [u8; 16] = request
+        .resource_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| "admitted ownership recovery target is invalid".to_owned())?;
+    let target = OperationId::from_bytes(target_bytes);
+    if controller
+        .public_operation(target)
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        return Ok(());
+    }
+    let Some(gate) = controller
+        .ownership_gate(target)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let OwnershipGateStatusV1::Pending(plan) = gate else {
+        return Ok(());
+    };
+    let Some(ownership) = ownership else {
+        eprintln!("aos-sandboxd: explicit ownership retry is pending protected configuration");
+        return Ok(());
+    };
+    if plan.expected_authority() != ownership.verifier().authority() {
+        return Err("ownership retry authority differs from the admitted gate".to_owned());
+    }
+    let mut client = match ownership.connect() {
+        Ok(client) => client,
+        Err(aos_sandbox::OwnershipSessionTransportError::Unavailable) => {
+            eprintln!("aos-sandboxd: explicit ownership retry could not reach the authority");
+            return Ok(());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let outcome = controller
+        .resume_ownership(
+            target,
+            &mut client,
+            ownership.verifier(),
+            &mut sample_ownership_clock,
+        )
+        .map_err(|error| error.to_string())?;
+    if !matches!(
+        outcome,
+        OwnershipResumeOutcomeV1::Activated | OwnershipResumeOutcomeV1::Replay
+    ) {
+        eprintln!("aos-sandboxd: explicit ownership retry remains pending: {outcome:?}");
+    }
+    Ok(())
 }
 
 fn wait_for_initial_readiness(
@@ -1501,6 +1583,51 @@ impl ProductionEffectExecutor {
         bytes.extend_from_slice(b"AOSCAN01");
         bytes.extend_from_slice(resolution.receipt().as_bytes());
         EffectReceipt::new(bytes).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+
+    fn ownership_recovery_receipt(
+        recovery_operation: OperationId,
+        context: &PublicMutationEffectV1,
+        journal: &Journal,
+    ) -> Result<Option<EffectReceipt>, EffectFailure> {
+        let DormantSandboxRequestKindV1::OperatorRecover(request) = context
+            .validated_request()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        else {
+            return Err(EffectFailure::Permanent(
+                "operator recovery effect has the wrong request method".to_owned(),
+            ));
+        };
+        if request.action.as_known() != Some(OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY)
+        {
+            return Ok(None);
+        }
+        let target_bytes: [u8; 16] = request.resource_id.as_slice().try_into().map_err(|_| {
+            EffectFailure::Permanent("operator recovery target is invalid".to_owned())
+        })?;
+        let target = OperationId::from_bytes(target_bytes);
+        if public_operation_resource_from_journal_v1(journal, target)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(publication_digest) =
+            activated_ownership_gate_digest_from_journal_v1(journal, target)
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let receipt = [
+            b"AOSORE01".as_slice(),
+            recovery_operation.as_bytes(),
+            target.as_bytes(),
+            publication_digest.as_bytes(),
+        ]
+        .concat();
+        EffectReceipt::new(receipt)
+            .map(Some)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
 
     fn terminal_public_operation_receipt(
@@ -3123,6 +3250,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
+        {
+            return Self::ownership_recovery_receipt(operation_id, &context, journal).map(
+                |receipt| receipt.map_or(EffectObservation::Absent, EffectObservation::Applied),
+            );
+        }
+        if plan.public_mutation_method()
             != Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
         {
             let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
@@ -3191,6 +3325,17 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             };
         }
         let context = self.public_mutation_context(plan)?;
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
+        {
+            return Self::ownership_recovery_receipt(operation_id, &context, journal)?.ok_or_else(
+                || {
+                    EffectFailure::Retryable(
+                        "operator recovery is awaiting explicit ownership activation".to_owned(),
+                    )
+                },
+            );
+        }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
         {
@@ -4358,6 +4503,9 @@ pub enum ControllerRuntimeError {
     /// The optional protected broker-plan signing credential is unsafe or malformed.
     #[error("protected controller broker-plan signing credential is invalid")]
     InvalidBrokerPlanCredential,
+    /// The optional ownership credential set is partial, unsafe, or inconsistent.
+    #[error("protected controller ownership credentials are invalid")]
+    InvalidOwnershipCredential,
     /// Controller journal identity or assignment validation failed.
     #[error(transparent)]
     ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),

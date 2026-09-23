@@ -48,9 +48,9 @@ use crate::publisher_authority::{
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
     AcceptOutcome, OperationPlan, OwnershipAuthoritySessionClient, OwnershipAuthorityVerifier,
-    OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
-    ReconcileOutcome, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
-    ValidatedUnfinishedOperationV1,
+    OwnershipClockObservationError, OwnershipGateStatusV1, OwnershipResumeError,
+    OwnershipResumeOutcomeV1, ReconcileOutcome, Reconciler, ReconcilerError,
+    SingleNodeEffectExecutor, ValidatedUnfinishedOperationV1,
 };
 
 #[cfg(target_os = "linux")]
@@ -1858,8 +1858,23 @@ pub(crate) fn prepare_operator_recovery_operation_current_v1(
     journal: &crate::Journal,
     resource: &CheckedOperationResourceV1,
 ) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
-    let retry = resource.phase() == CheckedOperationPhaseV1::FailedBeforeCommit
-        && resource.retry() != CheckedRetryClassV1::Never;
+    let ownership_retry = if resource.phase() == CheckedOperationPhaseV1::Committed
+        && resource.retry() == CheckedRetryClassV1::AfterStateChange
+    {
+        matches!(
+            crate::reconciler::validated_ownership_gate_from_journal_v1(
+                journal,
+                OperationId::from_bytes(resource.operation_id()),
+            )
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
+            Some(OwnershipGateStatusV1::Pending(_))
+        )
+    } else {
+        false
+    };
+    let retry = ownership_retry
+        || (resource.phase() == CheckedOperationPhaseV1::FailedBeforeCommit
+            && resource.retry() != CheckedRetryClassV1::Never);
     let abandon = matches!(
         resource.phase(),
         CheckedOperationPhaseV1::PermanentlyBlocked
@@ -1876,6 +1891,7 @@ pub(crate) fn prepare_operator_recovery_operation_current_v1(
             .conditions()
             .iter()
             .map(|condition| condition.as_proto().observation_sequence)
+            .chain(std::iter::once(resource.as_proto().observation_sequence))
             .max()
             .filter(|sequence| *sequence != 0)
             .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?,
@@ -5582,6 +5598,22 @@ where
             .map_err(ControllerServiceError::Reconciler)
     }
 
+    /// Returns one operation's validated durable ownership gate, when present.
+    ///
+    /// This query performs no authority I/O. A caller can use it to avoid
+    /// connecting to the authority for an ungated or already activated
+    /// operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReconcilerError`] for an absent operation or corrupt ledger.
+    pub fn ownership_gate(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
+        self.reconciler.ownership_gate(operation_id)
+    }
+
     /// Explicitly resumes one operation held behind durable ownership.
     ///
     /// An already activated gate is validated and replayed without consulting
@@ -5595,7 +5627,7 @@ where
     /// mismatched negotiated session, hostile response substitution, local
     /// clock-observation failure, invalid authority artifacts, publication
     /// conflict, or durable activation failure.
-    pub(crate) fn resume_ownership<A, T>(
+    pub fn resume_ownership<A, T>(
         &mut self,
         operation_id: OperationId,
         client: &mut A,

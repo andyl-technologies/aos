@@ -260,6 +260,18 @@ sandboxes are drained and removed. An attachment recorded `Ready` only after the
 kernel mount is observed at the expected slot; a database row alone is not
 readiness.
 
+An ownership-pending operation is not resumed by the ordinary reconciliation
+cycle. A capability-authorized `OperatorService/Recover` Retry for that exact
+operation, resource version, and recovery evidence explicitly triggers the
+controller's protected ownership path. The controller pins the configured
+authority policy and public key, authenticates the fixed local seqpacket
+service with a separately provisioned record key, and queries the original
+durable transaction before any begin or completion attempt. Its recovery
+operation records success only after the gate's exact authority publication is
+durably activated and independently validated. Missing configuration,
+transport loss, or unverified artifacts leave the original gate closed; none
+of those conditions permits a new authority claim or ordinary effect dispatch.
+
 ## View and lease recovery
 
 Every attachment lease binds sandbox and view identity, both incarnations where

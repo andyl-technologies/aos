@@ -1150,7 +1150,10 @@ mod tests {
                 Some(method)
             );
         }
-        assert_eq!(PublicOperationMethodV1::from_record_code(25), None);
+        assert_eq!(
+            PublicOperationMethodV1::from_record_code(PublicOperationMethodV1::ALL.len() as u8),
+            None
+        );
         assert_eq!(PublicOperationMethodV1::parse("sandbox.unknown"), None);
     }
 }
