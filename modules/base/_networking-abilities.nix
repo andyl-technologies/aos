@@ -126,18 +126,10 @@
       prerequisites = [];
     };
   };
-  definitions = builtins.map serviceManagement.splitDefinition [
-    kernelTunables
-    networkConfiguration
-  ];
 in {
-  config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
-    (lib.mkIf configured {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
-    })
-  ];
+  config = serviceManagement.producerModule {
+    inherit config lib;
+    producers = [kernelTunables networkConfiguration];
+    enabled = configured;
+  };
 }
