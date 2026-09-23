@@ -458,7 +458,6 @@ shape-line|crates/crucible-daemon/src/qemu_campaign_lifecycle/tests.rs|1897
 shape-line|crates/crucible-daemon/src/qemu_resource_guard.rs|1091
 shape-line|crates/crucible-daemon/src/qemu_resource_guard/tests.rs|608
 shape-line|crates/crucible-debug-gateway/src/lib.rs|632
-shape-line|crates/crucible-debug-gateway/src/main.rs|1114
 shape-line|crates/crucible-device/src/block/fault.rs|1960
 shape-line|crates/crucible-device/src/block/fault/state_admission.rs|2360
 shape-line|crates/crucible-device/src/block/fault/state_execution.rs|1920
