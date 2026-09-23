@@ -111,16 +111,32 @@ fn packaged_finding_bundle_replays_without_source_owner() -> Result<(), Box<dyn 
 }
 
 fn grant_export_reads(policy: &Path) -> Result<(), Box<dyn Error>> {
-    let mut policy = fs::OpenOptions::new().append(true).open(policy)?;
+    {
+        let mut file = fs::OpenOptions::new().append(true).open(policy)?;
+        for operation in [
+            "query-campaign-finding-occurrences",
+            "get-campaign-finding-occurrence-object",
+            "get-campaign-finding-triage-replay-segment",
+        ] {
+            writeln!(
+                file,
+                "\n[[grants]]\nprincipal = {PRINCIPAL:?}\noperation = {operation:?}\ncampaign = \"*\""
+            )?;
+        }
+    }
+
+    let policy = UnixPeerCampaignPolicy::from_toml_bytes(&fs::read(policy)?)?;
+    let principal = CampaignPrincipal::new(PRINCIPAL)?;
+    let campaign = CampaignName::new(CAMPAIGN)?;
+    let request = CampaignHash::derive("finding-exact-vm-export-grants", b"ledger");
     for operation in [
-        "query-campaign-finding-occurrences",
-        "get-campaign-finding-occurrence-object",
-        "get-campaign-finding-triage-replay-segment",
+        CampaignServiceOperation::QueryCampaignFindings,
+        CampaignServiceOperation::QueryCampaignFindingOccurrences,
+        CampaignServiceOperation::GetCampaignFindingObject,
+        CampaignServiceOperation::GetCampaignFindingOccurrenceObject,
+        CampaignServiceOperation::GetCampaignFindingTriageReplaySegment,
     ] {
-        writeln!(
-            policy,
-            "\n[[grants]]\nprincipal = {PRINCIPAL:?}\noperation = {operation:?}\ncampaign = \"*\""
-        )?;
+        policy.authorize(&principal, operation, &campaign, request)?;
     }
     Ok(())
 }
@@ -144,6 +160,17 @@ fn packaged_command(working_directory: &Path) -> Result<Command, Box<dyn Error>>
         .current_dir(working_directory)
         .env_remove("CRUCIBLE_QEMU")
         .env_remove("CRUCIBLE_PLUGIN")
+        .env_remove("CRUCIBLE_EXACT_BUNDLE_BINARY")
+        .env_remove("CRUCIBLE_PROCESS_FLIGHT_BINARY")
+        .env_remove("CRUCIBLE_FLIGHT_DEPLOYMENT")
+        .env_remove("CRUCIBLE_FLIGHT_QEMU")
+        .env_remove("CRUCIBLE_FLIGHT_PLUGIN")
+        .env_remove("CRUCIBLE_DEBUG_GATEWAY")
+        .env_remove("CRUCIBLE_KERNEL")
+        .env_remove("CRUCIBLE_INITRD")
+        .env_remove("CRUCIBLE_ROOT_IMAGE")
+        .env_remove("CRUCIBLE_RUN_STATE_ROOT")
+        .env_remove("CRUCIBLE_NATIVE_GUEST_ARCHITECTURE")
         .args(["--format", "jsonl", "--campaign-deployment"])
         .arg(deployment);
     Ok(process)
