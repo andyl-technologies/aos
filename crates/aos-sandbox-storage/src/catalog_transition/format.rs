@@ -66,25 +66,30 @@ pub(super) fn encode_transition_payload(
     secret: &[u8; 32],
 ) -> Result<Vec<u8>, StorageStateError> {
     match payload.group.as_ref() {
-        Some(group) => encode_authenticated(
-            &GroupTransitionPayloadV2 {
-                magic: TRANSITION_MAGIC.to_owned(),
-                version: 2,
-                operation_id: payload.operation_id,
-                mutation_digest: payload.mutation_digest,
-                catalog: payload.catalog,
-                predecessor: payload.predecessor,
-                result: payload.result,
-                observation_digest: payload.observation_digest,
-                group_program: group.program,
-                member_guids: group.member_guids.clone(),
-                result_state: payload.result_state.persistent_wire()?,
-            },
-            key_id,
-            secret,
-        ),
+        Some(group) => {
+            encode_authenticated(&group_transition_wire(payload, group)?, key_id, secret)
+        }
         None => encode_authenticated(&transition_wire(payload)?, key_id, secret),
     }
+}
+
+fn group_transition_wire(
+    payload: &TransitionPayload,
+    group: &GroupTransitionEvidence,
+) -> Result<GroupTransitionPayloadV2, StorageStateError> {
+    Ok(GroupTransitionPayloadV2 {
+        magic: TRANSITION_MAGIC.to_owned(),
+        version: 2,
+        operation_id: payload.operation_id,
+        mutation_digest: payload.mutation_digest,
+        catalog: payload.catalog,
+        predecessor: payload.predecessor,
+        result: payload.result,
+        observation_digest: payload.observation_digest,
+        group_program: group.program,
+        member_guids: group.member_guids.clone(),
+        result_state: payload.result_state.persistent_wire()?,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -181,19 +186,7 @@ pub(super) fn transition_digest(
     payload: &TransitionPayload,
 ) -> Result<ObjectDigest, StorageStateError> {
     let bytes = if let Some(group) = payload.group.as_ref() {
-        serde_json::to_vec(&GroupTransitionPayloadV2 {
-            magic: TRANSITION_MAGIC.to_owned(),
-            version: 2,
-            operation_id: payload.operation_id,
-            mutation_digest: payload.mutation_digest,
-            catalog: payload.catalog,
-            predecessor: payload.predecessor,
-            result: payload.result,
-            observation_digest: payload.observation_digest,
-            group_program: group.program,
-            member_guids: group.member_guids.clone(),
-            result_state: payload.result_state.persistent_wire()?,
-        })
+        serde_json::to_vec(&group_transition_wire(payload, group)?)
     } else {
         serde_json::to_vec(&transition_wire(payload)?)
     }
