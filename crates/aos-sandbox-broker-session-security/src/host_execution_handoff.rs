@@ -76,13 +76,7 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     policy: PeerPolicy,
     protected_boot_id: [u8; 16],
 ) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
-    if KernelBootId::current()
-        .map_err(|_| HostExecutionHandoffErrorV1::KernelBoot)?
-        .into_bytes()
-        != protected_boot_id
-    {
-        return Err(HostExecutionHandoffErrorV1::KernelBoot);
-    }
+    check_kernel_boot(protected_boot_id)?;
     let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
     let mut claim = owner.claim()?;
     if claim.host_verifier().boot_id() != protected_boot_id {
@@ -135,16 +129,20 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
         }
     };
     claim.revalidate()?;
-    if KernelBootId::current()
-        .map_err(|_| HostExecutionHandoffErrorV1::KernelBoot)?
-        .into_bytes()
-        != protected_boot_id
-    {
-        return Err(HostExecutionHandoffErrorV1::KernelBoot);
-    }
+    check_kernel_boot(protected_boot_id)?;
     let encoded = result.encode_to_vec();
     host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
     Ok(encoded)
+}
+
+fn check_kernel_boot(expected: [u8; 16]) -> Result<(), HostExecutionHandoffErrorV1> {
+    let current = KernelBootId::current()
+        .map_err(|_| HostExecutionHandoffErrorV1::KernelBoot)?
+        .into_bytes();
+    if current != expected {
+        return Err(HostExecutionHandoffErrorV1::KernelBoot);
+    }
+    Ok(())
 }
 
 fn apply_execution(
