@@ -8,6 +8,11 @@
   cfg = config.aos.sandbox.controllerService;
   controller = config.aos.sandbox.controller;
   brokers = config.aos.sandbox;
+  ownershipAuthority =
+    brokers.ownershipAuthority or {
+      enable = false;
+      credentials.sessionKey = null;
+    };
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = map (endpoint:
     endpoint
@@ -53,9 +58,9 @@
     ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPublicKey != null)
     "broker-plan-public-key:/run/credentials/@system/${brokers.hostBroker.credentials.brokerPlanPublicKey}"
   );
-  ownershipCredentials = lib.optionals brokers.ownershipAuthority.enable (
-    lib.optional (brokers.ownershipAuthority.credentials.sessionKey != null)
-    "ownership-session-key:/run/credentials/@system/${brokers.ownershipAuthority.credentials.sessionKey}"
+  ownershipCredentials = lib.optionals ownershipAuthority.enable (
+    lib.optional (ownershipAuthority.credentials.sessionKey != null)
+    "ownership-session-key:/run/credentials/@system/${ownershipAuthority.credentials.sessionKey}"
     ++ lib.optional (brokers.hostBroker.credentials.ownershipLeasePolicy != null)
     "ownership-lease-policy.cbor:/run/credentials/@system/${brokers.hostBroker.credentials.ownershipLeasePolicy}"
     ++ lib.optional (brokers.hostBroker.credentials.ownershipLeasePublicKey != null)
@@ -142,12 +147,12 @@ in {
           message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
         }
         {
-          assertion = !brokers.ownershipAuthority.enable || brokers.ownershipAuthority.credentials.sessionKey != null;
+          assertion = !ownershipAuthority.enable || ownershipAuthority.credentials.sessionKey != null;
           message = "aos.sandbox.controllerService ownership resumption requires the ownership session key";
         }
         {
           assertion =
-            !brokers.ownershipAuthority.enable
+            !ownershipAuthority.enable
             || (
               brokers.hostBroker.credentials.ownershipLeasePolicy
               != null
@@ -173,7 +178,7 @@ in {
           "aos-sandbox-mountd.service"
           "aos-netd.service"
         ]
-        ++ lib.optional brokers.ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
+        ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
       after =
         [
           "aos-sandbox-hostd.service"
@@ -182,7 +187,7 @@ in {
           "aos-netd.service"
           "local-fs.target"
         ]
-        ++ lib.optional brokers.ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
+        ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
       unitConfig = {
         RequiresMountsFor = ["/sys/fs/cgroup"];
         StartLimitIntervalSec = 60;

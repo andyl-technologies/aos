@@ -145,6 +145,7 @@ in
                 libgcrypt = null;
                 gnutls = null;
                 fuse3 = null;
+                gcc-libs = null;
                 bash = null;
                 stdenv = {isCross = false;};
                 buildPackages = null;

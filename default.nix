@@ -1486,7 +1486,11 @@ in {
       vm-rootfs-adapter = import ./lib/testing/vm-rootfs-adapter.nix {
         inherit pkgs lib mkSystem;
       };
-      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) discoverSystems;
+      # Externally finalized variants publish unsigned assemblies instead of
+      # final images; their assembly gate is checked separately above.
+      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) (
+        lib.filterAttrs (_: system: system.checks ? image-budget) discoverSystems
+      );
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary;

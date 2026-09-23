@@ -84,6 +84,22 @@
         options.aos.sandbox.controller.uid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.controller.gid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.hostBroker.enable = lib.mkOption {type = lib.types.bool;};
+        options.aos.sandbox.hostBroker.credentials.ownershipLeasePolicy = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+        };
+        options.aos.sandbox.hostBroker.credentials.ownershipLeasePublicKey = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+        };
+        options.aos.sandbox.ownershipAuthority.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+        options.aos.sandbox.ownershipAuthority.credentials.sessionKey = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+        };
         options.aos.sandbox.storageBroker.enable = lib.mkOption {type = lib.types.bool;};
         options.aos.sandbox.mountBroker.enable = lib.mkOption {type = lib.types.bool;};
         options.aos.sandbox.networkBroker.enable = lib.mkOption {type = lib.types.bool;};
@@ -124,6 +140,21 @@
     ];
   };
   publicServiceConfig = publicComplete.config.systemd.services.aos-sandboxd.serviceConfig;
+  ownershipMissing = controllerEvaluation.extendModules {
+    modules = [{aos.sandbox.ownershipAuthority.enable = true;}];
+  };
+  ownershipComplete = ownershipMissing.extendModules {
+    modules = [
+      {
+        aos.sandbox.ownershipAuthority.credentials.sessionKey = "test-ownership-session";
+        aos.sandbox.hostBroker.credentials = {
+          ownershipLeasePolicy = "test-ownership-policy";
+          ownershipLeasePublicKey = "test-ownership-key";
+        };
+      }
+    ];
+  };
+  ownershipService = ownershipComplete.config.systemd.services.aos-sandboxd;
 
   hostEvaluation = lib.evalModules {
     specialArgs = {inherit pkgs;};
@@ -170,6 +201,14 @@ in
   assert publicServiceConfig.RuntimeDirectoryMode == "0755";
   assert builtins.length publicServiceConfig.LoadCredential == 17;
   assert builtins.elem "public-api-server-key:/run/credentials/@system/test-public-key" publicServiceConfig.LoadCredential;
+  assert builtins.length (builtins.filter (check: !check.assertion) ownershipMissing.config.assertions) == 2;
+  assert lib.all (check: check.assertion) ownershipComplete.config.assertions;
+  assert builtins.length ownershipService.serviceConfig.LoadCredential == 16;
+  assert builtins.elem "ownership-session-key:/run/credentials/@system/test-ownership-session" ownershipService.serviceConfig.LoadCredential;
+  assert builtins.elem "ownership-lease-policy.cbor:/run/credentials/@system/test-ownership-policy" ownershipService.serviceConfig.LoadCredential;
+  assert builtins.elem "ownership-lease-public-key:/run/credentials/@system/test-ownership-key" ownershipService.serviceConfig.LoadCredential;
+  assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.requires;
+  assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.after;
   assert ! (hostServiceConfig ? Slice);
   assert requires ''LoadCredential = nodeCredentials'' moduleSource;
   assert requires ''required = true;'' moduleSource;
