@@ -2,14 +2,12 @@
   pkgs,
   selectable ? false,
   campaignFlight ? false,
-  campaignPeer ? false,
 }:
 # A diskless Linux initramfs whose PID 1 exchanges a raw Ethernet probe,
 # acknowledgement, and checkpoint-continuation stream. The guest creates all
 # application traffic; the host gate only routes guest-originated frames and
 # schedules deterministic responses.
 assert !campaignFlight || selectable;
-assert !campaignPeer || !selectable;
 pkgs.mkDerivation {
   pname = "crucible-live-network-io-initramfs";
   version = "0";
@@ -21,7 +19,7 @@ pkgs.mkDerivation {
       pkgs.cpio
       pkgs.pigz
     ]
-    ++ pkgs.lib.optional (selectable || campaignPeer) pkgs.crucible-guest;
+    ++ pkgs.lib.optional selectable pkgs.crucible-guest;
 
   phases = [
     {
@@ -59,7 +57,7 @@ pkgs.mkDerivation {
         static const uint8_t continuation_payload[] =
           "crucible-network-continuation-v1";
 
-        #if CRUCIBLE_SELECTABLE_PRODUCT || CRUCIBLE_CAMPAIGN_PEER
+        #if CRUCIBLE_SELECTABLE_PRODUCT
         static int run_crucible_guest(char *const argv[], char *output,
                                       size_t output_capacity) {
           int output_pipe[2];
@@ -125,7 +123,7 @@ pkgs.mkDerivation {
           return 0;
         }
 
-        #if CRUCIBLE_CAMPAIGN_FLIGHT || CRUCIBLE_CAMPAIGN_PEER
+        #if CRUCIBLE_CAMPAIGN_FLIGHT
         static int emit_campaign_event(const char *marker,
                                        const char *detail) {
           char empty[1];
@@ -321,7 +319,30 @@ pkgs.mkDerivation {
                         (struct sockaddr *)&destination, sizeof(destination));
         }
 
-        int main(void) {
+        int main(int argc, char **argv) {
+          #if CRUCIBLE_CAMPAIGN_FLIGHT
+          int campaign_peer = 0;
+          for (int arg = 1; arg < argc; ++arg) {
+            if (strcmp(argv[arg], "crucible-campaign-peer") == 0) {
+              campaign_peer = 1;
+            }
+          }
+          #else
+          (void)argc;
+          (void)argv;
+          int campaign_peer = 0;
+          #endif
+
+          #if CRUCIBLE_SELECTABLE_PRODUCT
+          int fast_recovery = 0;
+          uint64_t retry_quanta = 0;
+          int selectable_status = 0;
+          if (!campaign_peer) {
+            selectable_status =
+              configure_product_selectables(&fast_recovery, &retry_quanta);
+          }
+          #endif
+
           int fd = socket(AF_PACKET, SOCK_RAW, htons(CRUCIBLE_ETHERTYPE));
           if (fd < 0) {
             park_forever();
@@ -359,13 +380,15 @@ pkgs.mkDerivation {
             park_forever();
           }
 
-          #if CRUCIBLE_CAMPAIGN_PEER
-          char empty[1];
-          char *setup_complete[] = {
-            "/crucible-guest", "setup-complete", 0
-          };
-          if (run_crucible_guest(setup_complete, empty, sizeof(empty)) != 0) {
-            park_forever();
+          #if CRUCIBLE_CAMPAIGN_FLIGHT
+          if (campaign_peer) {
+            char empty[1];
+            char *setup_complete[] = {
+              "/crucible-guest", "setup-complete", 0
+            };
+            if (run_crucible_guest(setup_complete, empty, sizeof(empty)) != 0) {
+              park_forever();
+            }
           }
           #endif
 
@@ -374,11 +397,7 @@ pkgs.mkDerivation {
             {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
           #if CRUCIBLE_SELECTABLE_PRODUCT
-          int fast_recovery = 0;
-          uint64_t retry_quanta = 0;
-          int selectable_status =
-            configure_product_selectables(&fast_recovery, &retry_quanta);
-          if (selectable_status != 0) {
+          if (!campaign_peer && selectable_status != 0) {
             uint8_t error_payload[40];
             memset(error_payload, 0, sizeof(error_payload));
             int error_len = snprintf((char *)error_payload,
@@ -396,51 +415,55 @@ pkgs.mkDerivation {
           #endif
 
           #if CRUCIBLE_SELECTABLE_PRODUCT
-          uint8_t selected_payload[40];
-          memset(selected_payload, 0, sizeof(selected_payload));
-          const char *policy = fast_recovery ? "fast" : "safe";
-          int selected_len = snprintf((char *)selected_payload,
-                                      sizeof(selected_payload),
-                                      "crucible-selected-%s-q%llu",
-                                      policy,
-                                      (unsigned long long)retry_quanta);
-          if (selected_len <= 0 || selected_len >= (int)sizeof(selected_payload) ||
-              selected_len > FRAME_LEN - PAYLOAD_OFFSET) {
-            park_forever();
-          }
-          build_frame(frame, broadcast, guest_mac, selected_payload,
-                      (size_t)selected_len);
-          if (send_frame(fd, index_request.ifr_ifindex, frame) !=
-              (ssize_t)sizeof(frame)) {
-            park_forever();
-          }
+          if (!campaign_peer) {
+            uint8_t selected_payload[40];
+            memset(selected_payload, 0, sizeof(selected_payload));
+            const char *policy = fast_recovery ? "fast" : "safe";
+            int selected_len = snprintf((char *)selected_payload,
+                                        sizeof(selected_payload),
+                                        "crucible-selected-%s-q%llu",
+                                        policy,
+                                        (unsigned long long)retry_quanta);
+            if (selected_len <= 0 || selected_len >= (int)sizeof(selected_payload) ||
+                selected_len > FRAME_LEN - PAYLOAD_OFFSET) {
+              park_forever();
+            }
+            build_frame(frame, broadcast, guest_mac, selected_payload,
+                        (size_t)selected_len);
+            if (send_frame(fd, index_request.ifr_ifindex, frame) !=
+                (ssize_t)sizeof(frame)) {
+              park_forever();
+            }
 
-          #if CRUCIBLE_CAMPAIGN_FLIGHT
-          char selection[40];
-          int selection_len = snprintf(selection, sizeof(selection),
-                                       "selected-%s-q%llu", policy,
-                                       (unsigned long long)retry_quanta);
-          if (selection_len <= 0 || selection_len >= (int)sizeof(selection) ||
-              emit_campaign_event(selection, "network-frame=sent") != 0) {
-            park_forever();
-          }
+            #if CRUCIBLE_CAMPAIGN_FLIGHT
+            char selection[40];
+            int selection_len = snprintf(selection, sizeof(selection),
+                                         "selected-%s-q%llu", policy,
+                                         (unsigned long long)retry_quanta);
+            if (selection_len <= 0 || selection_len >= (int)sizeof(selection) ||
+                emit_campaign_event(selection, "network-frame=sent") != 0) {
+              park_forever();
+            }
 
-          pid_t progress = fork();
-          if (progress < 0) {
-            park_forever();
-          }
-          if (progress == 0) {
-            close(fd);
-            emit_campaign_progress(selection);
+            pid_t progress = fork();
+            if (progress < 0) {
+              park_forever();
+            }
+            if (progress == 0) {
+              close(fd);
+              emit_campaign_progress(selection);
+            }
+            #endif
           }
           #endif
-          #endif
-          #if !CRUCIBLE_CAMPAIGN_PEER
-          build_frame(frame, broadcast, guest_mac, probe_payload,
-                      sizeof(probe_payload) - 1);
-          if (send_frame(fd, index_request.ifr_ifindex, frame) !=
-              (ssize_t)sizeof(frame)) {
-            park_forever();
+          #if !CRUCIBLE_CAMPAIGN_FLIGHT
+          if (!campaign_peer) {
+            build_frame(frame, broadcast, guest_mac, probe_payload,
+                        sizeof(probe_payload) - 1);
+            if (send_frame(fd, index_request.ifr_ifindex, frame) !=
+                (ssize_t)sizeof(frame)) {
+              park_forever();
+            }
           }
           #endif
 
@@ -458,29 +481,41 @@ pkgs.mkDerivation {
               continue;
             }
 
-            #if CRUCIBLE_CAMPAIGN_PEER
-            static const char selected_prefix[] = "crucible-selected-";
-            const char *payload = (const char *)frame + PAYLOAD_OFFSET;
-            size_t payload_capacity = (size_t)received - PAYLOAD_OFFSET;
-            size_t payload_len = strnlen(payload, payload_capacity);
-            if (memcmp(frame, broadcast, sizeof(broadcast)) == 0 &&
-                memcmp(frame + 6, guest_mac, sizeof(guest_mac)) != 0 &&
-                payload_len < payload_capacity &&
-                payload_len > sizeof(selected_prefix) - 1 &&
-                memcmp(payload, selected_prefix,
-                       sizeof(selected_prefix) - 1) == 0) {
-              char marker[96];
-              int marker_len = snprintf(marker, sizeof(marker),
-                                        "network-observed-%s", payload + 9);
-              if (marker_len <= 0 || marker_len >= (int)sizeof(marker) ||
-                  emit_campaign_event(marker, "network-frame=received") != 0) {
-                park_forever();
+            #if CRUCIBLE_CAMPAIGN_FLIGHT
+            if (campaign_peer) {
+              static const char selected_prefix[] = "crucible-selected-";
+              const char *payload = (const char *)frame + PAYLOAD_OFFSET;
+              size_t payload_capacity = (size_t)received - PAYLOAD_OFFSET;
+              size_t payload_len = strnlen(payload, payload_capacity);
+              if (memcmp(frame, broadcast, sizeof(broadcast)) == 0 &&
+                  memcmp(frame + 6, guest_mac, sizeof(guest_mac)) != 0 &&
+                  payload_len < payload_capacity &&
+                  payload_len > sizeof(selected_prefix) - 1 &&
+                  memcmp(payload, selected_prefix,
+                         sizeof(selected_prefix) - 1) == 0) {
+                char console_marker[96];
+                int console_len = snprintf(console_marker, sizeof(console_marker),
+                                           "CRUCIBLE-CAMPAIGN-PEER-RECEIVED:%s\n",
+                                           payload + 9);
+                if (console_len <= 0 || console_len >= (int)sizeof(console_marker) ||
+                    write(STDOUT_FILENO, console_marker, (size_t)console_len) !=
+                      console_len) {
+                  park_forever();
+                }
+
+                char marker[96];
+                int marker_len = snprintf(marker, sizeof(marker),
+                                          "network-observed-%s", payload + 9);
+                if (marker_len <= 0 || marker_len >= (int)sizeof(marker) ||
+                    emit_campaign_event(marker, "network-frame=received") != 0) {
+                  park_forever();
+                }
+                continue;
               }
+
+              /* The campaign peer observes product output without adding traffic. */
               continue;
             }
-
-            /* The campaign peer observes product output without adding traffic. */
-            continue;
             #endif
 
             const uint8_t *response_payload = 0;
@@ -561,18 +596,13 @@ pkgs.mkDerivation {
           then "1"
           else "0"
         } \
-          -DCRUCIBLE_CAMPAIGN_PEER=${
-          if campaignPeer
-          then "1"
-          else "0"
-        } \
           -o init init.c
         strip --strip-all init
 
         mkdir -p root
         cp init root/init
         chmod 0755 root/init
-        ${pkgs.lib.optionalString (selectable || campaignPeer) ''
+        ${pkgs.lib.optionalString selectable ''
           cp ${pkgs.crucible-guest}/bin/crucible-guest root/crucible-guest
           chmod 0755 root/crucible-guest
         ''}
@@ -587,7 +617,7 @@ pkgs.mkDerivation {
             | LC_ALL=C sort -z \
             | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
             | ${
-          if selectable || campaignPeer
+          if selectable
           then "cat"
           else "pigz -9 -n"
         } > "$out/initrd.img"
@@ -619,13 +649,8 @@ pkgs.mkDerivation {
           then "true"
           else "false"
         }
-        campaign_peer=${
-          if campaignPeer
-          then "true"
-          else "false"
-        }
         initramfs_encoding=${
-          if selectable || campaignPeer
+          if selectable
           then "uncompressed-newc"
           else "gzip-newc"
         }

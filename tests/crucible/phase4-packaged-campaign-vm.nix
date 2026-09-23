@@ -130,10 +130,6 @@
     selectable = true;
     campaignFlight = true;
   };
-  networkPeerInitramfs = import ./phase2-qemu-live-network-io-guest.nix {
-    inherit pkgs;
-    campaignPeer = true;
-  };
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
@@ -158,7 +154,7 @@
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
       ++ (
         if guestChoice
-        then [networkChoiceInitramfs networkPeerInitramfs]
+        then [networkChoiceInitramfs]
         else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
         then [choiceInitramfs]
         else []
@@ -291,7 +287,6 @@
         else if guestChoice
         then ''
           export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
-          export CRUCIBLE_PEER_INITRD=${networkPeerInitramfs}/initrd.img
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/guest-choice-flight-list.log 2>&1; then
             cat /tmp/guest-choice-flight-list.log
@@ -306,7 +301,8 @@
             exit 1
           fi
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+          # One 300-second discovery and four 240-second replay waits fit this bound.
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 1800 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             packaged::guest_choice::public_guest_choices_survive_exact_checkpoint_and_daemon_restart \
             --nocapture > /tmp/guest-choice-flight.log 2>&1; then
@@ -335,7 +331,7 @@
             exit 1
           fi
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_discrete_and_integer=true' /tmp/guest-choice-flight.log
-          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_icount=100000000' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_rendezvous_icount=250000000' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_negative_result=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_initial_qemu_fingerprint_enabled=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_restarted_qemu_fingerprint_enabled=true' /tmp/guest-choice-flight.log
