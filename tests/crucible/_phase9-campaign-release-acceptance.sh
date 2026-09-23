@@ -508,8 +508,8 @@ verify_required_gates() {
     require_file "$declared_gates"
     require_file "$expected_gates"
 
-    test "$(field required_claim_count "$required_gates/result")" -eq 23 \
-        || fail "required-gates aggregate does not authenticate 23 claims"
+    test "$(field required_claim_count "$required_gates/result")" -eq 24 \
+        || fail "required-gates aggregate does not authenticate 24 claims"
     test "$(field all_required_claims_authenticated "$required_gates/result")" = true \
         || fail "required-gates aggregate did not authenticate every claim"
     test "$(field manifest_sha256 "$required_gates/result")" \
@@ -536,8 +536,8 @@ verify_required_gates() {
         || fail "required-gates aggregate results contain a symlink"
     test -z "$(find "$required_gates/results" -mindepth 1 ! -type f -print -quit)" \
         || fail "required-gates aggregate results contain a nonregular entry"
-    test "$(find "$required_gates/results" -mindepth 1 -type f | wc -l | tr -d ' ')" -eq 23 \
-        || fail "required-gates aggregate does not retain exactly 23 results"
+    test "$(find "$required_gates/results" -mindepth 1 -type f | wc -l | tr -d ' ')" -eq 24 \
+        || fail "required-gates aggregate does not retain exactly 24 results"
 
     : > "$observed_gates"
     sed -n '2,$p' "$manifest" |
@@ -556,8 +556,8 @@ verify_required_gates() {
                 = "$result_digest" \
                 || fail "$manifest result digest does not match: $gate"
         done
-    test "$(wc -l < "$observed_gates" | tr -d ' ')" -eq 23 \
-        || fail "$manifest does not contain exactly 23 required gates"
+    test "$(wc -l < "$observed_gates" | tr -d ' ')" -eq 24 \
+        || fail "$manifest does not contain exactly 24 required gates"
 
     printf '%s\n' "$result_sha256"
 }

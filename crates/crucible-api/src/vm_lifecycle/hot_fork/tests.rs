@@ -171,6 +171,84 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
 }
 
 #[test]
+fn host_continuation_clone_cost_is_bounded_across_siblings() {
+    const SIBLINGS: usize = 64;
+    const OBJECT_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_PRIVATE_GROWTH_KIB: u64 = 64 * 1024;
+
+    let (_source, mut captured) = permanently_failed_continuation();
+    let event_bytes = vec![3; OBJECT_BYTES];
+    let event = ContentHash::from_bytes(&event_bytes);
+    Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
+    let signal_bytes = vec![5; OBJECT_BYTES];
+    let signal = ContentHash::from_bytes(&signal_bytes);
+    Arc::make_mut(&mut captured.signal_artifact_objects).insert(signal, signal_bytes);
+
+    let baseline_kib = host_private_dirty_kib();
+    let (siblings, clone_elapsed_micros) = time_host_clone(|| {
+        (0..SIBLINGS)
+            .map(|_| {
+                captured
+                    .try_clone_for_branch()
+                    .unwrap_or_else(|error| panic!("clone host sibling: {error}"))
+            })
+            .collect::<Vec<_>>()
+    });
+    let private_growth_kib = host_private_dirty_kib().saturating_sub(baseline_kib);
+
+    for sibling in &siblings {
+        assert!(Arc::ptr_eq(&captured.scheduler, &sibling.scheduler));
+        assert!(Arc::ptr_eq(
+            &captured.event_log_objects,
+            &sibling.event_log_objects
+        ));
+        assert!(Arc::ptr_eq(
+            &captured.signal_artifact_objects,
+            &sibling.signal_artifact_objects
+        ));
+        assert_eq!(sibling.event_log_objects[&event].len(), OBJECT_BYTES);
+        assert_eq!(sibling.signal_artifact_objects[&signal].len(), OBJECT_BYTES);
+    }
+    assert_eq!(Arc::strong_count(&captured.scheduler), SIBLINGS + 1);
+    assert_eq!(Arc::strong_count(&captured.event_log_objects), SIBLINGS + 1);
+    assert_eq!(
+        Arc::strong_count(&captured.signal_artifact_objects),
+        SIBLINGS + 1
+    );
+    assert!(
+        private_growth_kib <= MAX_PRIVATE_GROWTH_KIB,
+        "{SIBLINGS} host clones consumed {private_growth_kib} KiB private memory"
+    );
+
+    println!("host_continuation_siblings={SIBLINGS}");
+    println!("host_immutable_object_bytes={}", 2 * OBJECT_BYTES);
+    println!("host_shared_backing_copies=1");
+    println!("host_clone_private_growth_kib={private_growth_kib}");
+    println!("host_clone_private_growth_limit_kib={MAX_PRIVATE_GROWTH_KIB}");
+    println!("host_clone_elapsed_micros={clone_elapsed_micros}");
+}
+
+fn host_private_dirty_kib() -> u64 {
+    let rollup = std::fs::read_to_string("/proc/self/smaps_rollup")
+        .unwrap_or_else(|error| panic!("read host memory rollup: {error}"));
+    rollup
+        .lines()
+        .find_map(|line| line.strip_prefix("Private_Dirty:"))
+        .and_then(|value| value.trim().strip_suffix(" kB"))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or_else(|| panic!("host memory rollup lacks Private_Dirty in KiB"))
+}
+
+// Host time is operational gate evidence and never enters deterministic state.
+// crucible-lint: allow clippy-disallowed-method -- this helper only times test cloning.
+#[allow(clippy::disallowed_methods)]
+fn time_host_clone<T>(clone: impl FnOnce() -> T) -> (T, u128) {
+    let started = std::time::Instant::now();
+    let result = clone();
+    (result, started.elapsed().as_micros())
+}
+
+#[test]
 fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
     let (_source, mut captured) = permanently_failed_continuation();
     let event_bytes = vec![3; 4 * 1024 * 1024];

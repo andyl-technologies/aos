@@ -712,6 +712,7 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
     assert!(final_private_dirty_kib.saturating_sub(midpoint_private_dirty_kib) <= 4 * 1024);
     world.retire().expect("retire production stress source");
     println!("production_whole_world_lifecycles={LIFECYCLES}");
+    println!("qemu_child_pairing=exact_source_boundary");
     println!("source_threads_leaked=0");
     println!("source_descriptors_leaked=0");
     println!("source_private_dirty_late_growth_limit_kib=4096");
