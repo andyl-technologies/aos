@@ -146,6 +146,67 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    /// Checks whether queued promotion work still names the exact durable phase.
+    ///
+    /// This short ledger read lets a worker discard superseded queue entries
+    /// before opening immutable input or launching QEMU. The staging and
+    /// completion operations still repeat their compare-and-swap checks, so a
+    /// state change after this preflight remains fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalExecutorError::Ledger`] when the durable record cannot be
+    /// read safely.
+    pub(crate) fn checkpoint_promotion_work_is_current(
+        &self,
+        work: &CheckpointPromotionRestartWork,
+    ) -> Result<bool, LocalExecutorError<L::Error>> {
+        let key = match work {
+            CheckpointPromotionRestartWork::Paused(recovery) => recovery.key,
+            CheckpointPromotionRestartWork::Staged(recovery) => recovery.key,
+        };
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+
+        Ok(match (work, state) {
+            (
+                CheckpointPromotionRestartWork::Paused(recovery),
+                Some(AttemptRuntimeState::Paused {
+                    execution_basis,
+                    execution,
+                    checkpoint,
+                    promotion_basis: Some(promotion_basis),
+                    ..
+                }),
+            ) => {
+                execution_basis == recovery.execution_basis
+                    && execution == recovery.execution
+                    && checkpoint == recovery.source
+                    && promotion_basis == recovery.promotion_basis
+            }
+            (
+                CheckpointPromotionRestartWork::Staged(recovery),
+                Some(AttemptRuntimeState::CheckpointPromoting {
+                    execution_basis,
+                    execution,
+                    source_checkpoint,
+                    promoted_checkpoint,
+                    promotion_basis,
+                    ..
+                }),
+            ) => {
+                execution_basis == recovery.execution_basis
+                    && execution == recovery.execution
+                    && source_checkpoint == recovery.source
+                    && promoted_checkpoint == recovery.promoted
+                    && promotion_basis == recovery.promotion_basis
+            }
+            _ => false,
+        })
+    }
+
     /// Loads one raw paused root ready for replay-oracle promotion.
     ///
     /// This is a short operational-ledger read used after checkpoint

@@ -3,10 +3,17 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
+use std::sync::Arc;
+
 use crucible::{
-    Configuration, ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler,
-    VirtualTime,
+    Configuration, ContentHash, ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant,
+    SingleScheduler, VirtualTime,
 };
+use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
+use crucible_campaign::{
+    AttemptRetentionPolicyDisposition, CampaignHash, ExecutionRetentionIntent,
+};
+use crucible_cas::content_store::DirectoryBlobBackend;
 
 use super::*;
 use crate::executor_supervisor::AllowAllAttemptAdmission;
@@ -14,6 +21,14 @@ use crate::{
     AttemptExecutionContext, AttemptRuntimeState, AttemptStateCas,
     CheckpointPromotionExecutionBasis, ExecutorCapacity, MemoryAssignmentLedger,
 };
+
+pub(crate) struct RepositoryPromotionFixture {
+    pub(crate) prepared: PreparedPausedCheckpointPromotion,
+    pub(crate) key: AttemptExecutionKey,
+    pub(crate) state: AttemptRuntimeState,
+    pub(crate) daemon_epoch: crucible_campaign::DaemonEpoch,
+    pub(crate) capacity: ExecutorCapacity,
+}
 
 impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
     fn from_test_recovery(
@@ -176,4 +191,149 @@ fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
         validate_savepoint_replay_boundary(replay, &configuration, &checkpoint),
         Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
     ));
+}
+
+#[test]
+fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
+    let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
+    let backend = Arc::new(DirectoryBlobBackend::new(
+        "promotion-lifecycle-test",
+        repository.path(),
+    ));
+    let checkpoints =
+        ExactCheckpointStore::new(backend, 64 * 1024 * 1024).expect("admit checkpoint store");
+    let fixture = prepare_repository_promotion_fixture(&checkpoints);
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(fixture.key, None, Some(fixture.state))
+            .expect("seed raw paused checkpoint"),
+        AttemptStateCas::Advanced
+    );
+    let mut supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        fixture.daemon_epoch,
+        fixture.capacity,
+    );
+    let staged = match stage_prepared_paused_checkpoint_promotion(&mut supervisor, fixture.prepared)
+        .expect("stage replay promotion")
+    {
+        PausedCheckpointPromotionStageOutcome::Publish(staged) => staged,
+        PausedCheckpointPromotionStageOutcome::Finished { outcome, .. } => {
+            panic!("fresh replay promotion finished before publication: {outcome:?}")
+        }
+    };
+    let published = publish_staged_paused_checkpoint_promotion(&checkpoints, *staged)
+        .expect("publish replay promotion");
+    let promoted = published.promoted();
+    assert_eq!(
+        reconcile_published_paused_checkpoint_promotion(&checkpoints, &mut supervisor, published,)
+            .expect("reconcile replay promotion"),
+        CheckpointPromotionCompletionOutcome::Promoted
+    );
+
+    let ledger = supervisor.into_ledger();
+    assert!(matches!(
+        ledger.load_attempt(fixture.key).expect("load promoted pause"),
+        Some(AttemptRuntimeState::Paused {
+            checkpoint,
+            promotion_basis: None,
+            ..
+        }) if checkpoint == promoted
+    ));
+}
+
+pub(crate) fn prepare_repository_promotion_fixture(
+    checkpoints: &ExactCheckpointStore,
+) -> RepositoryPromotionFixture {
+    let native = tempfile::tempdir().expect("create native checkpoint fixture");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(native.path())
+        .expect("build authenticated checkpoint fixture");
+    let source = fixture.source().clone();
+    let initial = Configuration::genesis(source.scenario_def());
+    let raw = checkpoints
+        .prepare_production_closure(fixture.closure().clone())
+        .expect("prepare raw closure");
+    let raw_root = raw.root();
+    checkpoints
+        .publish_production_closure(&raw)
+        .expect("publish raw closure");
+    raw.retire_native_source()
+        .expect("retire native checkpoint catalog");
+
+    let cancellation = ExecutionCancellation::default();
+    let mut installed = install_attempt_production_exact_checkpoint(
+        checkpoints,
+        raw_root,
+        &source,
+        &initial,
+        None,
+        &cancellation,
+    )
+    .expect("install repository-backed raw closure");
+    let mut admissions = installed
+        .take_node_restore_admissions()
+        .expect("take repository restore admissions");
+    let mut matches = BTreeMap::new();
+    while let Some(admission) = admissions.take_next().expect("take exact node admission") {
+        let node = admission.node().clone();
+        let matched = admission
+            .into_replay_oracle_match_for_test(ContentHash::from_bytes(b"matching replay runtime"));
+        assert!(matches.insert(node, matched).is_none());
+    }
+    let evidence = admissions
+        .prepare_replay_oracle_promotion_with_boundary(raw_root, matches, &mut || Ok(()))
+        .expect("seal repository replay evidence");
+    let promotion = prepare_attempt_production_replay_oracle_promotion(
+        checkpoints,
+        raw_root,
+        &installed,
+        evidence,
+        &cancellation,
+    )
+    .expect("prepare repository-backed promotion");
+
+    let key = AttemptExecutionKey::new(
+        crucible_campaign::CampaignLineageId::parse(&format!(
+            "crucible.campaign.lineage@campaign-fact.1.{}",
+            "61".repeat(32)
+        ))
+        .expect("lineage identity"),
+        crucible_campaign::AttemptId::parse(&format!(
+            "crucible.campaign.attempt@campaign-fact.8.{}",
+            "62".repeat(32)
+        ))
+        .expect("attempt identity"),
+    );
+    let execution = ExecutionId::from_bytes([0x63; 16]).expect("execution identity");
+    let daemon_epoch =
+        crucible_campaign::DaemonEpoch::from_bytes([0x64; 16]).expect("daemon epoch");
+    let resources =
+        AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000).expect("attempt resources");
+    let state = AttemptRuntimeState::Paused {
+        execution_basis: CampaignHash::derive(
+            "crucible.test.promotion-lifecycle.execution.v1",
+            b"execution",
+        ),
+        origin: crate::AttemptExecutionOrigin::Initial,
+        daemon_epoch,
+        execution,
+        checkpoint: raw_root,
+        promotion_basis: Some(CheckpointPromotionExecutionBasis::new(
+            resources,
+            ExecutionRetentionIntent::RetainOnFailure,
+            AttemptRetentionPolicyDisposition::Disabled,
+        )),
+    };
+    let capacity =
+        ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("executor capacity");
+    let prepared = PreparedPausedCheckpointPromotion::new(key, execution, promotion);
+    RepositoryPromotionFixture {
+        prepared,
+        key,
+        state,
+        daemon_epoch,
+        capacity,
+    }
 }

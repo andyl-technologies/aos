@@ -112,8 +112,8 @@ pub use vm_lifecycle::{
 pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
-    ProductionBakedSnapshotCatalog, ProductionBlockFaultEvidence, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
+    ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
+    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
     ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
     ProductionExactCheckpointRetirementReport, ProductionFaultEvidenceSnapshot,
     ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,

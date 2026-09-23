@@ -14,18 +14,19 @@ use std::sync::Arc;
 use crucible_campaign::{
     AttemptResourceLimits, AuthorizedPlannerService, AuthorizedPlannerServiceError,
     CampaignCodecError, CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignName,
-    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignRepository,
-    CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
+    CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
+    CampaignRepository, CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
     CampaignSupervisorError, CanonicalBeamPlanner, CanonicalFrontierPlanner, CanonicalPuctPlanner,
     ExecutionRetentionIntent, ExecutorClient, ExecutorClientError, ExplorerPolicy,
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, MAX_CAMPAIGN_SUPERVISOR_WORKER_SLOTS,
-    MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlannerRequest,
-    PlannerResponse, PlannerService, PlanningBudget, ScenarioArtifactId,
+    MAX_PLANNER_SCAN_PAGE_ITEMS, PlannerAuthorityKey, PlannerClient, PlannerClientError,
+    PlannerRequest, PlannerResponse, PlannerService, PlanningBudget, ScenarioArtifactId,
 };
 
 use crate::{
-    CampaignRuntime, CampaignRuntimeCompletion, CampaignRuntimeConfig, CampaignRuntimeJoinError,
-    CampaignRuntimeReport, CampaignRuntimeStartError, CanonicalPlannerProcessCancellation,
+    CampaignRuntime, CampaignRuntimeCompletion, CampaignRuntimeConfig, CampaignRuntimeDriver,
+    CampaignRuntimeJoinError, CampaignRuntimeReport, CampaignRuntimeStartError,
+    CampaignRuntimeStepDisposition, CanonicalPlannerProcessCancellation,
     CanonicalPlannerProcessConfig, CanonicalPlannerProcessError, CanonicalPlannerProcessSupervisor,
     ExecutorLoopbackEndpointConfig, LoopbackExecutorProtocolError, LoopbackExecutorService,
     ObjectivePublishingCampaignDriver, ObjectivePublishingCampaignDriverError,
@@ -272,9 +273,41 @@ impl PlannerService for CanonicalPlannerService {
 type CanonicalSupervisor = CampaignSupervisor<CanonicalPlannerService, LoopbackExecutorService>;
 type CanonicalSupervisorFailure =
     CampaignSupervisorError<CanonicalPlannerServiceError, LoopbackExecutorProtocolError>;
-type CanonicalRuntimeDriver = ObjectivePublishingCampaignDriver<CanonicalSupervisor>;
+type CanonicalRuntimeDriverInner = ObjectivePublishingCampaignDriver<CanonicalSupervisor>;
 type CanonicalRuntimeDriverFailure =
     ObjectivePublishingCampaignDriverError<CanonicalSupervisorFailure>;
+
+struct CanonicalRuntimeDriver {
+    inner: CanonicalRuntimeDriverInner,
+    planner_cancellation: CanonicalPlannerProcessCancellation,
+}
+
+impl CampaignRuntimeDriver for CanonicalRuntimeDriver {
+    type Error = CanonicalRuntimeDriverFailure;
+
+    fn step(&mut self) -> Result<CampaignRuntimeStepDisposition, Self::Error> {
+        match self.inner.step() {
+            Err(error)
+                if self.planner_cancellation.is_canceled()
+                    && is_canonical_planner_cancellation(&error) =>
+            {
+                Ok(CampaignRuntimeStepDisposition::Wait)
+            }
+            result => result,
+        }
+    }
+}
+
+fn is_canonical_planner_cancellation(error: &CanonicalRuntimeDriverFailure) -> bool {
+    matches!(
+        error,
+        ObjectivePublishingCampaignDriverError::Inner(CampaignSupervisorError::Planner(
+            CampaignPlannerDriverError::Planner(PlannerClientError::Service(
+                AuthorizedPlannerServiceError::Supervisor(CanonicalPlannerProcessError::Canceled)
+            ))
+        ))
+    )
+}
 
 /// Prepared coordinator that has not started its long-lived thread.
 #[must_use = "prepared campaign runtime must be started or explicitly dropped"]
@@ -282,7 +315,7 @@ pub struct PreparedCanonicalCampaignRuntime {
     repository_identity: Arc<CampaignRepository>,
     campaign: CampaignName,
     scenario: ScenarioArtifactId,
-    supervisor: CanonicalRuntimeDriver,
+    supervisor: CanonicalRuntimeDriverInner,
     planner_cancellation: CanonicalPlannerProcessCancellation,
     runtime: CampaignRuntimeConfig,
 }
@@ -309,7 +342,11 @@ impl PreparedCanonicalCampaignRuntime {
     /// Returns [`CanonicalCampaignRuntimeError::RuntimeStart`] when the host
     /// refuses to create the one fixed thread.
     pub fn start(self) -> Result<AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeError> {
-        let runtime = CampaignRuntime::start(self.supervisor, self.runtime)
+        let supervisor = CanonicalRuntimeDriver {
+            inner: self.supervisor,
+            planner_cancellation: self.planner_cancellation.clone(),
+        };
+        let runtime = CampaignRuntime::start(supervisor, self.runtime)
             .map_err(CanonicalCampaignRuntimeError::RuntimeStart)?;
         Ok(AttachedCanonicalCampaignRuntime {
             campaign: self.campaign,
@@ -345,8 +382,8 @@ impl AttachedCanonicalCampaignRuntime {
 
     /// Requests sticky runtime and in-flight planner-process cancellation.
     pub fn request_shutdown(&self) {
-        self.planner_cancellation.cancel();
         self.runtime.request_shutdown();
+        self.planner_cancellation.cancel();
     }
 
     /// Stops and joins the runtime, returning its bounded counters.
@@ -358,6 +395,7 @@ impl AttachedCanonicalCampaignRuntime {
     pub fn shutdown_and_join(
         mut self,
     ) -> Result<CampaignRuntimeReport, CanonicalCampaignRuntimeError> {
+        self.runtime.request_shutdown();
         self.planner_cancellation.cancel();
         self.runtime
             .shutdown_and_join_in_place()
@@ -367,6 +405,7 @@ impl AttachedCanonicalCampaignRuntime {
 
 impl Drop for AttachedCanonicalCampaignRuntime {
     fn drop(&mut self) {
+        self.runtime.request_shutdown();
         self.planner_cancellation.cancel();
         let _ = self.runtime.shutdown_and_join_in_place();
     }

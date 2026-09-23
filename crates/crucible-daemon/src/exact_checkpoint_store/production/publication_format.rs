@@ -12,6 +12,7 @@ pub(super) struct ProductionSourcePreparation {
     pub(super) native_retirement: Option<ProductionExactCheckpointRetirement>,
     pub(super) promotion_source: Option<ExactCheckpointId>,
     pub(super) promotion_evidence: Option<Vec<u8>>,
+    pub(super) reuse: Option<ProductionRepositoryReuse>,
 }
 
 type ProductionRootChildren = (
@@ -39,6 +40,7 @@ pub(super) fn prepare_production_source(
         native_retirement: None,
         promotion_source: None,
         promotion_evidence: None,
+        reuse: None,
     })
 }
 
@@ -55,6 +57,7 @@ pub(super) fn prepare_production_source_with_cancellation(
         native_retirement,
         promotion_source,
         promotion_evidence,
+        reuse,
     } = preparation;
 
     check_cancellation(cancellation.as_ref())?;
@@ -83,18 +86,28 @@ pub(super) fn prepare_production_source_with_cancellation(
     )
     .map_err(map_checkpoint_store_error)?;
 
+    if reuse
+        .as_ref()
+        .is_some_and(|reused| reused.placements.len() != source.objects().len())
+    {
+        return Err(invalid_root("repository object placement count changed"));
+    }
     let mut objects = Vec::new();
     objects
         .try_reserve_exact(source.objects().len())
         .map_err(|_| ExactCheckpointStoreError::Store(StoreError::Quota))?;
     let mut object_bytes = 0_u64;
-    for object in source.objects() {
+    for (ordinal, object) in source.objects().iter().enumerate() {
         check_cancellation(cancellation.as_ref())?;
         object_bytes = object_bytes
             .checked_add(object.length())
             .ok_or_else(|| invalid_root("production object byte count overflow"))?;
-        let handle = portable_object_handle(Arc::clone(&source), *object, cancellation.clone());
-        let content = production_object_content_id(&handle)?;
+        let content = if let Some(reused) = &reuse {
+            reused.placements[ordinal]
+        } else {
+            let handle = portable_object_handle(Arc::clone(&source), *object, cancellation.clone());
+            production_object_content_id(&handle)?
+        };
         objects.push(ProductionObjectPlacement {
             object: *object,
             content,
@@ -200,6 +213,7 @@ pub(super) fn prepare_production_source_with_cancellation(
         source,
         objects,
         indexes,
+        reuse_backend: reuse.map(|reused| reused.backend),
         production_identity,
         promotion_source,
         promotion_evidence,

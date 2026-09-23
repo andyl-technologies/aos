@@ -245,8 +245,7 @@ fn hash_exact_checkpoint_artifact_sha256_with_boundary(
 mod replay;
 pub use replay::{
     PreparedProductionReplayOraclePromotion, ProductionBakedSnapshotCatalog,
-    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointResumeBasis,
+    ProductionBakedSnapshotSet, ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
 };
 
 #[cfg(all(test, feature = "test-support"))]

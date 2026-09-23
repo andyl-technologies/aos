@@ -51,6 +51,12 @@ pub enum QemuLiveNodeStepGateError {
         /// Underlying setup-probe error.
         source: QemuWhiteboxSetupError,
     },
+    /// The guarded image tool could not initialize the exact VMState container.
+    #[error("prepare exact VMState container failed")]
+    ExactVmstatePreparation {
+        /// Underlying contained image-tool failure.
+        source: crate::spawn::QemuGuardedImagePreparationError,
+    },
     /// The QMP channel configuration was rejected.
     #[error("build QMP channel config failed")]
     QmpChannelConfig {
@@ -241,6 +247,7 @@ impl QemuLiveNodeStepGateError {
     pub fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
         match self {
             Self::WhiteboxSetup { source } => source.take_unreaped_child(),
+            Self::ExactVmstatePreparation { source } => source.take_unreaped_child(),
             Self::NodeFactory { source } => source.take_unreaped_child(),
             Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
             _ => None,

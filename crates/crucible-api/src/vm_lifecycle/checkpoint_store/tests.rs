@@ -462,6 +462,40 @@ fn baked_snapshot_catalog_exposes_only_authenticated_modeled_snapshots() {
     );
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn materialized_baked_snapshots_survive_native_catalog_retirement() {
+    let root = tempfile::tempdir().expect("create baked snapshot retirement store");
+    let fixture = build_authenticated_production_checkpoint_codec_fixture(root.path())
+        .expect("build authenticated baked snapshot fixture");
+    let closure = Arc::new(fixture.closure().clone());
+    let node = NodeId {
+        name: String::from("vm-a"),
+    };
+    let snapshots = closure
+        .baked_snapshot_catalog_with_boundary(&mut || Ok(()))
+        .expect("authenticate baked snapshot catalog")
+        .materialize_with_boundary(&mut || Ok(()))
+        .expect("materialize authenticated baked snapshots");
+
+    retire_production_exact_checkpoint_catalog(&closure.native_retirement())
+        .expect("retire the native baked catalog");
+    assert_eq!(snapshots.nodes().collect::<Vec<_>>(), vec![&node]);
+    assert_eq!(
+        snapshots
+            .snapshot(&node)
+            .expect("retained baked snapshot")
+            .checkpoint()
+            .configuration,
+        fixture.configuration().id()
+    );
+    assert!(
+        closure
+            .baked_snapshot_catalog_with_boundary(&mut || Ok(()))
+            .is_err()
+    );
+}
+
 #[test]
 fn cold_genesis_catalog_checkpoint_round_trips_only_at_initial_boundary() {
     std::thread::Builder::new()

@@ -2,6 +2,46 @@
 
 use super::*;
 
+const FINAL_RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
+const FINAL_RAM_FRONTIER_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
+
+pub(super) fn final_ram_identity(
+    configuration: ContentHash,
+    target: &ExactCheckpointTargetRecord,
+    fault_semantic_identity: ContentHash,
+    checkpoint: ContentHash,
+    scheduler: &SingleSchedulerCheckpoint,
+) -> Result<ExactCheckpointIdentity, ExactCheckpointRelationError> {
+    let final_target = ContentHash::from_canonical_material(
+        FINAL_RAM_TARGET_DOMAIN,
+        &format!(
+            "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nfault={}",
+            configuration.to_hex(),
+            target.immutable_backing.to_hex(),
+            target.node,
+            target.counter,
+            target.scheduler_time,
+            fault_semantic_identity.to_hex(),
+        ),
+    );
+
+    let scheduler_bytes = scheduler
+        .canonical_bytes()
+        .map_err(|_| ExactCheckpointRelationError::TargetManifestMismatch)?;
+    let scheduler_hex = scheduler_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let final_frontier =
+        ContentHash::from_canonical_material(FINAL_RAM_FRONTIER_DOMAIN, &scheduler_hex);
+
+    Ok(ExactCheckpointIdentity {
+        checkpoint,
+        target: final_target,
+        frontier: final_frontier,
+    })
+}
+
 pub(super) fn authenticate_repository_manifest(
     repository: &ExactCheckpointRepositoryBinding,
     closure: &ExactCheckpointClosureRecord,

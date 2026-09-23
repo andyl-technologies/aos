@@ -61,7 +61,49 @@ pub struct ProductionBakedSnapshotCatalog {
     snapshot_limit: u64,
 }
 
+/// Authenticated modeled genesis snapshots independent of native catalog files.
+///
+/// Materialization opens each bounded snapshot while the native capture is
+/// still owned. Later replay uses only these decoded values, so retirement of
+/// the attempt-local catalog cannot invalidate an admitted baked genesis.
+pub struct ProductionBakedSnapshotSet {
+    snapshots: BTreeMap<NodeId, crucible_qemu::QemuVmSnapshot>,
+}
+
+impl ProductionBakedSnapshotSet {
+    /// Returns the authenticated modeled node set.
+    pub fn nodes(&self) -> impl ExactSizeIterator<Item = &NodeId> {
+        self.snapshots.keys()
+    }
+
+    /// Returns one already authenticated modeled snapshot.
+    #[must_use]
+    pub fn snapshot(&self, node: &NodeId) -> Option<&crucible_qemu::QemuVmSnapshot> {
+        self.snapshots.get(node)
+    }
+}
+
 impl ProductionBakedSnapshotCatalog {
+    /// Materializes every bounded snapshot before the native catalog is retired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when a snapshot is unavailable, corrupt,
+    /// outside its configured byte bound, or `boundary` stops a bounded read.
+    pub fn materialize_with_boundary(
+        self,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<ProductionBakedSnapshotSet, LifecycleApiError> {
+        let mut snapshots = BTreeMap::new();
+        for node in self.snapshots.keys() {
+            boundary()?;
+            let snapshot = self.open_snapshot(node, boundary)?;
+            snapshots.insert(node.clone(), snapshot);
+        }
+        boundary()?;
+        Ok(ProductionBakedSnapshotSet { snapshots })
+    }
+
     /// Returns the number of modeled node snapshots in the catalog.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -109,29 +151,15 @@ impl ProductionBakedSnapshotCatalog {
     }
 }
 
-/// Authenticated modeled continuation recovered from one production closure.
-///
-/// The value contains no filesystem or QEMU launch authority. It is the exact
-/// configuration and scheduler continuation established by the complete
-/// scenario-aware restore validator and is suitable for binding an operational
-/// resume request before any guest process is launched.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionExactCheckpointResumeBasis {
-    pub(super) identity: ContentHash,
-    pub(super) configuration: Configuration,
-    pub(super) scheduler: SingleSchedulerCheckpoint,
-}
-
 /// No-write production promotion carrying source-bound replay evidence.
 ///
 /// Snapshot bytes remain ordinary runtime state and never carry validation
-/// authority. This opaque value keeps the authenticated raw closure unchanged
-/// and binds one concrete replay comparison result to every target. The
+/// authority. This opaque value binds one concrete replay comparison result to
+/// every target in the authenticated source closure. The
 /// campaign exact-store owner persists that evidence in a distinct root whose
 /// source child names the raw root.
 pub struct PreparedProductionReplayOraclePromotion {
     pub(super) source: ContentHash,
-    pub(super) raw: ProductionExactCheckpointClosure,
     pub(super) evidence: Vec<u8>,
     pub(super) target_count: usize,
 }
@@ -163,41 +191,6 @@ impl PreparedProductionReplayOraclePromotion {
     #[must_use]
     pub fn evidence(&self) -> &[u8] {
         &self.evidence
-    }
-
-    /// Returns opaque authority to retire the attempt-local native source catalog.
-    ///
-    /// The caller may exercise this only after the promoted campaign-CAS root
-    /// is durable or after the owning publication phase has been abandoned.
-    #[must_use]
-    pub fn native_retirement(&self) -> ProductionExactCheckpointRetirement {
-        self.raw.native_retirement()
-    }
-}
-
-impl ProductionExactCheckpointResumeBasis {
-    /// Returns the authenticated native production-closure identity.
-    #[must_use]
-    pub const fn identity(&self) -> ContentHash {
-        self.identity
-    }
-
-    /// Returns the exact configuration at the restored scheduler boundary.
-    #[must_use]
-    pub const fn configuration(&self) -> &Configuration {
-        &self.configuration
-    }
-
-    /// Returns the complete scheduler continuation at that boundary.
-    #[must_use]
-    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
-        &self.scheduler
-    }
-
-    /// Consumes the basis into its modeled continuation.
-    #[must_use]
-    pub fn into_parts(self) -> (Configuration, SingleSchedulerCheckpoint) {
-        (self.configuration, self.scheduler)
     }
 }
 
@@ -366,92 +359,19 @@ impl ProductionExactCheckpointClosure {
         }
         Ok(())
     }
-
-    /// Reconstructs the modeled resume basis under an operational boundary.
-    ///
-    /// This applies the same complete scenario-aware validator used by
-    /// [`Self::validate_complete`] and retains only its exact configuration and
-    /// scheduler continuation. It performs no closure publication and grants
-    /// no QEMU launch authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when a closure object is unavailable,
-    /// corrupt, semantically inconsistent, or outside the authored bounds, or
-    /// when `boundary` rejects an operational chunk boundary.
-    pub fn authenticate_resume_basis_with_boundary(
-        &self,
-        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
-    ) -> Result<ProductionExactCheckpointResumeBasis, LifecycleApiError> {
-        boundary()?;
-        let restored = load_exact_checkpoint_set_with_boundary(
-            &self.run_state_root,
-            &self.source.scenario_def(),
-            &self.source,
-            self.identity,
-            boundary,
-        )?;
-        if restored.configuration.id() != self.configuration {
-            return Err(loop_factory_error(
-                "portable checkpoint restored a different configuration",
-            ));
-        }
-        let basis = ProductionExactCheckpointResumeBasis {
-            identity: restored.identity,
-            configuration: restored.configuration,
-            scheduler: restored.scheduler,
-        };
-        boundary()?;
-        Ok(basis)
-    }
-
-    /// Prepares a source-bound replay-oracle replacement without writes.
-    ///
-    /// `matches` must contain exactly one result for every live target in this
-    /// closure and no result for a permanently failed node. The raw closure is
-    /// completely reauthenticated before each check promotes its exact
-    /// snapshot. The returned opaque preparation retains the closure unchanged
-    /// and carries the source-bound comparison certificate separately.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when this closure is invalid or already
-    /// promoted, the check set is incomplete or contains a foreign node, a
-    /// check belongs to another snapshot, a comparison was not a match, or the
-    /// replacement cannot be encoded within the authored checkpoint bounds.
-    ///
-    /// The callback runs throughout complete source validation and between
-    /// every bounded snapshot decode, promotion, and canonical encode.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when this closure is invalid or already
-    /// promoted, the check set is incomplete or contains a foreign node, a
-    /// check belongs to another snapshot, a comparison was not a match, the
-    /// replacement exceeds its authored bounds, or `boundary` fails.
-    pub fn prepare_replay_oracle_promotion_with_boundary(
-        &self,
-        repository_root: crucible_campaign::ExactCheckpointId,
-        matches: BTreeMap<NodeId, QemuReplayOracleMatch>,
-        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
-    ) -> Result<PreparedProductionReplayOraclePromotion, LifecycleApiError> {
-        self.validate_complete_with_boundary(boundary)?;
-        prepare_production_replay_oracle_promotion_source(self, repository_root, matches, boundary)
-    }
 }
 
 const REPLAY_ORACLE_EVIDENCE_MAGIC: &[u8] = b"crucible.production-replay-oracle.v1\0";
 
-fn prepare_production_replay_oracle_promotion_source(
-    raw: &ProductionExactCheckpointClosure,
+pub(super) fn prepare_production_replay_oracle_promotion_source(
+    production_identity: ContentHash,
     repository_root: crucible_campaign::ExactCheckpointId,
+    expected: BTreeMap<NodeId, ContentHash>,
     mut matches: BTreeMap<NodeId, QemuReplayOracleMatch>,
     boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
 ) -> Result<PreparedProductionReplayOraclePromotion, LifecycleApiError> {
     boundary()?;
-    let limits = raw.source.plan().fault_signals().resource_limits();
-    let manifest = decode::decode_manifest_with_limits(raw.manifest(), limits)?;
-    if matches.len() != manifest.targets.len() {
+    if matches.len() != expected.len() {
         return Err(loop_factory_error(
             "production replay-oracle match set does not match the live target set",
         ));
@@ -459,52 +379,46 @@ fn prepare_production_replay_oracle_promotion_source(
 
     let mut evidence = Vec::new();
     evidence.extend_from_slice(REPLAY_ORACLE_EVIDENCE_MAGIC);
-    evidence.extend_from_slice(&raw.identity.bytes);
+    evidence.extend_from_slice(&production_identity.bytes);
     evidence.extend_from_slice(
-        &u32::try_from(manifest.targets.len())
+        &u32::try_from(expected.len())
             .map_err(|_| loop_factory_error("replay-oracle target count is not representable"))?
             .to_be_bytes(),
     );
-    for target in &manifest.targets {
+    for (node, expected_snapshot) in &expected {
         boundary()?;
-        let node = NodeId {
-            name: target.node.to_string(),
-        };
-        let matched = matches.remove(&node).ok_or_else(|| {
+        let matched = matches.remove(node).ok_or_else(|| {
             loop_factory_error(format!(
                 "production replay-oracle match is absent for `{}`",
-                target.node
+                node.name
             ))
         })?;
-        let snapshot =
-            read_portable_snapshot(raw, target.snapshot, limits.fat_checkpoint_bytes, boundary)?;
-        let runtime_hash = matched
-            .into_authenticated_source(
-                repository_root,
-                raw.identity,
-                target.manifest_identity,
-                &node,
-                &snapshot,
-            )
+        let authenticated = matched
+            .into_authenticated_source(repository_root, production_identity, node)
             .map_err(|error| {
                 loop_factory_error(format!(
                     "authenticate production replay-oracle snapshot for `{}`: {error}",
-                    target.node
+                    node.name
                 ))
             })?;
+        if authenticated.snapshot() != *expected_snapshot {
+            return Err(loop_factory_error(format!(
+                "production replay-oracle snapshot differs for `{}`",
+                node.name
+            )));
+        }
         append_replay_oracle_evidence_entry(
             &mut evidence,
-            target.node.as_str(),
-            target.snapshot,
-            target.manifest_identity,
-            runtime_hash,
+            &node.name,
+            authenticated.snapshot(),
+            authenticated.target_manifest(),
+            authenticated.runtime(),
         )?;
     }
     Ok(PreparedProductionReplayOraclePromotion {
-        source: raw.identity,
-        raw: raw.clone(),
+        source: production_identity,
         evidence,
-        target_count: manifest.targets.len(),
+        target_count: expected.len(),
     })
 }
 

@@ -10,6 +10,7 @@ use crucible::{
     AdvanceOutcome, Backend, BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash,
     EventLog, EventLogOffset, Icount, NodeId, RuntimeState,
 };
+use std::error::Error as _;
 use std::sync::Arc;
 
 use crate::node_factory::QemuNodeCheckpointAssertion;
@@ -867,10 +868,18 @@ fn retain_profile_restore_result(
     match result {
         Ok(node) => Ok(node),
         Err(mut source) => {
+            let mut detail = source.to_string();
+            let mut cause = source.source();
+            for _ in 0..4 {
+                let Some(next) = cause else { break };
+                detail.push_str(": ");
+                detail.push_str(&next.to_string());
+                cause = next.source();
+            }
             *failed_child = source.take_unreaped_child();
             Err(QemuVmRealizationError::Executor {
                 operation: "launch scenario-profile restored QEMU node",
-                message: format!("configuration {}: {source}", config.id().to_hex()),
+                message: format!("{detail}; configuration {}", config.id().to_hex()),
             })
         }
     }

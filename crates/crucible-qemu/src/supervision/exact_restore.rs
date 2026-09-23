@@ -8,6 +8,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::os::fd::AsFd as _;
+use std::path::Path;
 
 use crucible::{ContentHash, NodeId};
 
@@ -29,6 +30,7 @@ pub struct QemuProductionExactRestoreRequest {
     run_directory: QemuPreparedRunDirectory,
     process_contract: QemuChildProcessContract,
     snapshot: QemuVmSnapshot,
+    snapshot_object: ContentHash,
     node: NodeId,
     router: String,
     crash_detector: String,
@@ -96,16 +98,15 @@ impl QemuProductionExactRestoreRequest {
             router,
             crash_detector,
         } = profile;
-        if config.run_directory() != run_directory.path()
-            || target.node() != node.name
-            || target.snapshot() != snapshot.id()
-        {
-            return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: String::from(
-                    "exact restore request differs from its directory, node, or snapshot",
-                ),
-            });
-        }
+        let snapshot_object = exact_snapshot_object_identity(&snapshot)?;
+        validate_exact_restore_relation(
+            config.run_directory(),
+            run_directory.path(),
+            &node,
+            snapshot_object,
+            target.node(),
+            target.snapshot(),
+        )?;
         let selected_root = ContentHash {
             bytes: target.repository_root().content_id().digest(),
         };
@@ -126,6 +127,7 @@ impl QemuProductionExactRestoreRequest {
             run_directory,
             process_contract,
             snapshot,
+            snapshot_object,
             node,
             router,
             crash_detector,
@@ -144,6 +146,12 @@ impl QemuProductionExactRestoreRequest {
     /// Returns [`QemuLiveNodeStepGateError`] when byte authentication,
     /// descriptor sealing, launch admission, process setup, or restore fails.
     pub fn launch(mut self) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
+        self.run_directory
+            .prepare_vmstate_container_guarded(
+                self.config.qemu_executable(),
+                &self.process_contract,
+            )
+            .map_err(|source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source })?;
         let cancellation = self
             .process_contract
             .try_clone_cancellation_event()
@@ -164,6 +172,7 @@ impl QemuProductionExactRestoreRequest {
             &self.process_contract,
             identity,
             &self.snapshot,
+            self.snapshot_object,
             ram_inputs,
             std::os::fd::AsFd::as_fd(&cancellation),
         )?;
@@ -175,6 +184,40 @@ impl QemuProductionExactRestoreRequest {
             target,
         })
     }
+}
+
+fn exact_snapshot_object_identity(
+    snapshot: &QemuVmSnapshot,
+) -> Result<ContentHash, QemuLiveNodeStepGateError> {
+    // Repository targets name the canonical snapshot object, while id() names
+    // the snapshot's internal execution state.
+    let bytes = snapshot.to_canonical_bytes().map_err(|source| {
+        QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: format!("encode exact restore snapshot object: {source}"),
+        }
+    })?;
+    Ok(ContentHash::from_bytes(&bytes))
+}
+
+fn validate_exact_restore_relation(
+    config_directory: &Path,
+    prepared_directory: &Path,
+    node: &NodeId,
+    snapshot_object: ContentHash,
+    target_node: &str,
+    target_snapshot: ContentHash,
+) -> Result<(), QemuLiveNodeStepGateError> {
+    if config_directory != prepared_directory
+        || target_node != node.name
+        || target_snapshot != snapshot_object
+    {
+        return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from(
+                "exact restore request differs from its directory, node, or snapshot",
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn authenticate_immutable_backing(
@@ -271,5 +314,89 @@ impl QemuProductionExactRestoreLaunch {
     > {
         let node = resume_restored_exact_node(self.node)?;
         Ok((node, self.run_directory, self.target))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crucible::{Checkpoint, CheckpointKind, Configuration, ScenarioDef, VirtualTime};
+
+    use super::*;
+
+    #[test]
+    fn exact_restore_matches_repository_snapshot_object_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let definition = ScenarioDef::from_canonical_material(
+            "crucible.test.qemu.exact-restore",
+            "snapshot-object-identity",
+        );
+        let configuration = Configuration::genesis(definition);
+        let checkpoint = Checkpoint::from_recorded_configuration(
+            &configuration,
+            None,
+            VirtualTime::default(),
+            BTreeMap::new(),
+            CheckpointKind::Fat,
+            BTreeMap::new(),
+        )?;
+        let snapshot = QemuVmSnapshot::diskless(checkpoint)?;
+        let canonical = snapshot.to_canonical_bytes()?;
+        let object_identity = ContentHash::from_bytes(&canonical);
+        let node = NodeId {
+            name: String::from("guest"),
+        };
+        let run_directory = Path::new("/exact-restore-generation");
+
+        assert_ne!(snapshot.id(), object_identity);
+        assert_eq!(exact_snapshot_object_identity(&snapshot)?, object_identity);
+        assert!(
+            validate_exact_restore_relation(
+                run_directory,
+                run_directory,
+                &node,
+                object_identity,
+                "guest",
+                object_identity,
+            )
+            .is_ok()
+        );
+        for foreign_snapshot in [snapshot.id(), ContentHash::from_bytes(b"other snapshot")] {
+            assert!(
+                validate_exact_restore_relation(
+                    run_directory,
+                    run_directory,
+                    &node,
+                    object_identity,
+                    "guest",
+                    foreign_snapshot,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_exact_restore_relation(
+                run_directory,
+                run_directory,
+                &node,
+                object_identity,
+                "foreign guest",
+                object_identity,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_exact_restore_relation(
+                Path::new("/other-generation"),
+                run_directory,
+                &node,
+                object_identity,
+                "guest",
+                object_identity,
+            )
+            .is_err()
+        );
+        Ok(())
     }
 }

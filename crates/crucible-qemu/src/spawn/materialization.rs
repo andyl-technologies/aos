@@ -396,6 +396,8 @@ impl QemuPreparedRunDirectory {
             }
             (false, None) => None,
         };
+        self.prepare_vmstate_container_guarded(qemu_executable, contract)?;
+
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
             return Err(super::QemuGuardedImagePreparationError {
@@ -403,22 +405,6 @@ impl QemuPreparedRunDirectory {
                 child: None,
             });
         }
-        let device_state_bytes = self.launch_resources.minimum_writable_bytes();
-        let device_state_args = [
-            OsString::from("create"),
-            OsString::from("-q"),
-            OsString::from("-f"),
-            OsString::from("qcow2"),
-            OsString::from(crate::DEFAULT_VMSTATE_FILE_NAME),
-            OsString::from(format!("{device_state_bytes}B")),
-        ];
-        super::run_guarded_image_tool(
-            &image_tool,
-            &device_state_args,
-            "create fresh VMState container",
-            self,
-            contract,
-        )?;
 
         if let Some(root_bytes) = root_bytes {
             let root_args = [
@@ -443,6 +429,70 @@ impl QemuPreparedRunDirectory {
                 source,
                 child: None,
             })
+    }
+
+    /// Initializes the pinned VMState destination before fresh or exact launch.
+    ///
+    /// Exact restore consumes sealed device-state input separately, but QEMU
+    /// still opens this writable qcow2 node for future native captures.
+    ///
+    /// # Errors
+    ///
+    /// Returns `QemuGuardedImagePreparationError` if the contained image tool
+    /// fails, its child cannot be reaped, or the pinned output is invalid.
+    pub(crate) fn prepare_vmstate_container_guarded(
+        &mut self,
+        qemu_executable: &Path,
+        contract: &super::QemuChildProcessContract,
+    ) -> Result<(), super::QemuGuardedImagePreparationError> {
+        let image_tool = qemu_executable.with_file_name("qemu-img");
+        if !image_tool.is_absolute() {
+            return Err(super::QemuGuardedImagePreparationError {
+                source: QemuSpawnError::FreshImageToolPath { path: image_tool },
+                child: None,
+            });
+        }
+        let device_state_bytes = self.launch_resources.minimum_writable_bytes();
+        let device_state_args = [
+            OsString::from("create"),
+            OsString::from("-q"),
+            OsString::from("-f"),
+            OsString::from("qcow2"),
+            OsString::from(crate::DEFAULT_VMSTATE_FILE_NAME),
+            OsString::from(format!("{device_state_bytes}B")),
+        ];
+        super::run_guarded_image_tool(
+            &image_tool,
+            &device_state_args,
+            "create VMState container",
+            self,
+            contract,
+        )?;
+
+        let vmstate = self
+            .revalidate_identity()
+            .and_then(|metadata| {
+                checked_artifact_length(
+                    metadata.st_size,
+                    self.admitted_ceiling.2,
+                    &self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+                )
+            })
+            .and_then(|_| {
+                fsync(&self.vmstate).map_err(|source| QemuSpawnError::Io {
+                    operation: "synchronize VMState container",
+                    source: source.into(),
+                })?;
+                fsync(&self.directory).map_err(|source| QemuSpawnError::Io {
+                    operation: "synchronize VMState directory",
+                    source: source.into(),
+                })?;
+                Ok(())
+            });
+        vmstate.map_err(|source| super::QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        })
     }
 
     /// Begins one sealed exact device-state input for descriptor restore.

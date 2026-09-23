@@ -797,12 +797,13 @@ impl<'a> AtomicExactRestoreAdmission<'a> {
         process_contract: &'a QemuChildProcessContract,
         identity: QemuLiveNodeIdentity<'a>,
         snapshot: &'a QemuVmSnapshot,
+        snapshot_object: ContentHash,
         ram_inputs: crate::spawn::SealedAtomicExactRestoreInputs,
         cancellation_descriptor: BorrowedFd<'a>,
     ) -> Result<Self, QemuLiveNodeStepGateError> {
         let exact_binding = ram_inputs.binding();
         let target = ram_inputs.target();
-        if target.snapshot() != snapshot.id() || target.node() != identity.node {
+        if target.snapshot() != snapshot_object || target.node() != identity.node {
             return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
                 reason: String::from(
                     "repository-rooted target does not bind the launched node and snapshot",
@@ -830,7 +831,7 @@ impl<'a> AtomicExactRestoreAdmission<'a> {
         exact_binding: crate::spawn::QemuExactDeviceStateBinding,
     ) -> Result<Self, QemuLiveNodeStepGateError> {
         let request = ram_inputs.request();
-        if exact_binding.snapshot() != Some(snapshot.id()) {
+        if exact_binding.snapshot() != Some(ram_inputs.target().snapshot()) {
             return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
                 reason: String::from(
                     "authenticated exact-checkpoint root does not bind the restored snapshot",

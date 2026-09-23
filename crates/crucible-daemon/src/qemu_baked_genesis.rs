@@ -2,11 +2,10 @@
 //!
 //! A concrete replay-oracle worker needs an independently captured thin base
 //! before it can compare a newly paused fat checkpoint. This module turns the
-//! ordinary guarded fresh-lifecycle capture into that native, read-only
-//! capability. It deliberately does not publish a campaign root. Packaged
-//! composition advertises exact restore only after it has installed the fixed
-//! replay factories that materialize these artifacts under disjoint thin
-//! bindings.
+//! ordinary guarded fresh-lifecycle capture into an authenticated, read-only
+//! modeled snapshot set. It deliberately does not publish a campaign root.
+//! Packaged composition advertises exact restore only after it has installed
+//! the fixed replay factories under disjoint thin bindings.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use crucible::{
     SchedulerOperationalFailureClass, World,
 };
 use crucible_api::{
-    LifecycleApiError, ProductionBakedSnapshotCatalog, ProductionVmLifecycleConfig,
+    LifecycleApiError, ProductionBakedSnapshotSet, ProductionVmLifecycleConfig,
     ProductionVmNodeReplayLaunchProfile, ProductionVmReplayExactNodeRestoreAdmission,
 };
 use crucible_campaign::{AttemptResourceLimits, ExecutionRetentionIntent};
@@ -38,19 +37,18 @@ use crate::{
     QemuSavepointReplayProof, capture_fresh_genesis_checkpoint_candidate,
 };
 
-/// One completely authenticated native baked-genesis checkpoint closure.
+/// One completely authenticated baked-genesis snapshot set.
 ///
-/// The capability retains the production lifecycle's bounded native closure,
-/// not a second unversioned cache format. It exposes no mutation or campaign-ref
-/// authority. Admission authenticates one compact random-access catalog shared
-/// by every cloned replay factory; opening one node decodes only that target.
+/// The capability retains authenticated modeled snapshots captured before
+/// retirement of the native closure. It exposes no mutation, campaign-ref, or
+/// machine-state artifact authority. Cloned replay factories share the set.
 #[derive(Clone)]
 pub struct ProductionBakedGenesisCheckpoint {
     world: ContentHash,
     scenario: ContentHash,
     configuration: ContentHash,
     closure: ContentHash,
-    targets: Arc<ProductionBakedSnapshotCatalog>,
+    targets: Arc<ProductionBakedSnapshotSet>,
     launch_profiles: Arc<BTreeMap<NodeId, ProductionVmNodeReplayLaunchProfile>>,
 }
 
@@ -177,9 +175,13 @@ impl ProductionBakedGenesisCheckpoint {
             return Err(ProductionBakedGenesisCheckpointError::NodeSetMismatch);
         }
         let mut boundary = || cancellation_boundary(cancellation);
-        let targets = closure.baked_snapshot_catalog_with_boundary(&mut boundary)?;
+        let targets = closure
+            .baked_snapshot_catalog_with_boundary(&mut boundary)?
+            .materialize_with_boundary(&mut boundary)?;
         for node in targets.nodes() {
-            let snapshot = targets.open_snapshot(node, &mut boundary)?;
+            let snapshot = targets
+                .snapshot(node)
+                .ok_or(ProductionBakedGenesisCheckpointError::NodeSetMismatch)?;
             if !expected.remove(node) || snapshot.checkpoint().configuration != genesis.id() {
                 return Err(ProductionBakedGenesisCheckpointError::NodeSetMismatch);
             }
@@ -222,18 +224,9 @@ impl ProductionBakedGenesisCheckpoint {
         self.launch_profiles.get(node)
     }
 
-    /// Opens one authenticated baked snapshot without exposing artifact bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when `node` is absent or its retained
-    /// snapshot body became unavailable, corrupt, or semantically inconsistent.
-    fn open_snapshot(
-        &self,
-        node: &NodeId,
-        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
-    ) -> Result<crucible_qemu::QemuVmSnapshot, LifecycleApiError> {
-        self.targets.open_snapshot(node, boundary)
+    /// Returns one authenticated baked snapshot without reopening native state.
+    fn snapshot(&self, node: &NodeId) -> Option<&crucible_qemu::QemuVmSnapshot> {
+        self.targets.snapshot(node)
     }
 }
 
@@ -379,15 +372,15 @@ impl ProductionBakedGenesisReplayFactory {
                 message: String::from("target node has no retained launch profile"),
             })?
             .clone();
-        let mut boundary = || {
-            guard
-                .check_operational_boundary()
-                .map_err(map_guard_boundary_error)
-        };
+        guard.check_operational_boundary()?;
         let baked_snapshot = self
             .baked
-            .open_snapshot(&node, &mut boundary)
-            .map_err(map_replay_source_error)?;
+            .snapshot(&node)
+            .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+                role: "production baked-genesis replay target",
+                message: String::from("target node has no authenticated baked snapshot"),
+            })?
+            .clone();
         if baked_snapshot.checkpoint().configuration != self.baked.configuration() {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "production baked-genesis replay target",
@@ -564,7 +557,7 @@ where
             guard.child_process_contract()?,
             "crucible-replay-oracle-exact",
         )
-        .map_err(map_replay_source_error)?;
+        .map_err(map_replay_admission_error)?;
     let thin_launcher = QemuReplayValidationThinAdmission::admit(
         thin_config,
         thin_directory,
@@ -581,23 +574,23 @@ where
     Ok((store, executor))
 }
 
-fn map_replay_source_error(error: LifecycleApiError) -> QemuVmRealizationError {
+fn map_replay_admission_error(error: LifecycleApiError) -> QemuVmRealizationError {
     match error {
         LifecycleApiError::AttemptOperational {
             class: SchedulerOperationalFailureClass::Canceled,
             ..
         } => QemuVmRealizationError::Canceled {
-            operation: "opening a native replay-oracle checkpoint artifact",
+            operation: "admitting repository replay-oracle checkpoint source",
         },
         LifecycleApiError::AttemptOperational {
             class: SchedulerOperationalFailureClass::Retryable,
             message,
         } => QemuVmRealizationError::ExecutorUnavailable {
-            operation: "open native replay-oracle checkpoint artifact",
+            operation: "admit repository replay-oracle checkpoint source",
             message,
         },
         error => QemuVmRealizationError::Store {
-            operation: "open native replay-oracle checkpoint artifact",
+            operation: "admit repository replay-oracle checkpoint source",
             message: error.to_string(),
         },
     }
@@ -634,27 +627,6 @@ fn cancellation_boundary(cancellation: &ExecutionCancellation) -> Result<(), Lif
         });
     }
     Ok(())
-}
-
-fn map_guard_boundary_error(error: QemuVmRealizationError) -> LifecycleApiError {
-    let class = match &error {
-        QemuVmRealizationError::ExecutorUnavailable { .. } => {
-            SchedulerOperationalFailureClass::Retryable
-        }
-        QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
-        QemuVmRealizationError::ReapQuarantined { .. }
-        | QemuVmRealizationError::Store { .. }
-        | QemuVmRealizationError::Executor { .. }
-        | QemuVmRealizationError::InvalidCheckpoint { .. }
-        | QemuVmRealizationError::InvalidAncestor { .. }
-        | QemuVmRealizationError::ReplayOracleMismatch { .. } => {
-            SchedulerOperationalFailureClass::Terminal
-        }
-    };
-    LifecycleApiError::AttemptOperational {
-        class,
-        message: error.to_string(),
-    }
 }
 
 #[cfg(test)]

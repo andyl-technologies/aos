@@ -25,7 +25,8 @@ use crate::{
     DirectoryAssignmentLedger, ExactCheckpointStore, ExecutionCancellation, ExecutorCapacity,
     ExecutorLocalService, ExecutorLocalServiceError, ExecutorLoopbackEndpointConfig,
     ExecutorLoopbackServerConfig, LoopbackExecutorService, MemoryAssignmentLedger,
-    PausedCheckpointPromotionRecoveryResolutionError, PreparedSemanticAttemptResult,
+    PausedCheckpointPromotionRecoveryResolutionError, PreparedPausedCheckpointPromotion,
+    PreparedPausedCheckpointPromotionRestart, PreparedSemanticAttemptResult,
     ProductionPausedCheckpointReplayFactory, ProductionPausedCheckpointReplaySession,
     RepositoryAttemptAdmission, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
     UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
@@ -78,6 +79,11 @@ use crucible_cas::content_store::{
 
 struct TestDurableBackend {
     memory: MemoryBlobBackend,
+}
+
+struct RejectingPromotionBackend {
+    memory: TestDurableBackend,
+    reject_put: AtomicBool,
 }
 
 struct TransientExecutorReadBackend {
@@ -163,6 +169,95 @@ impl TestDurableBackend {
         Self {
             memory: MemoryBlobBackend::new("executor-pool-checkpoints", 8 * 1024 * 1024),
         }
+    }
+}
+
+impl RejectingPromotionBackend {
+    fn new() -> Self {
+        Self {
+            memory: TestDurableBackend::new(),
+            reject_put: AtomicBool::new(false),
+        }
+    }
+
+    fn reject_publication(&self) {
+        self.reject_put.store(true, Ordering::Release);
+    }
+}
+
+impl ImmutableBlobBackend for RejectingPromotionBackend {
+    fn name(&self) -> &str {
+        "rejecting-promotion-backend"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.memory.capabilities()
+    }
+
+    fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.memory.contains(id)
+    }
+
+    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.memory.read(id, range)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        if self.reject_put.load(Ordering::Acquire) {
+            Err(StoreError::Unauthorized)
+        } else {
+            self.memory.put_if_absent(id, source)
+        }
+    }
+}
+
+struct TerminalPromotionWorker;
+
+impl LocalCheckpointPromotionWorker for TerminalPromotionWorker {
+    type Error = &'static str;
+
+    fn prepare(
+        &mut self,
+        _work: &mut CheckpointPromotionRestartWork,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
+        Err(AttemptWorkerFailure::Terminal("terminal preparation"))
+    }
+}
+
+struct CountingTerminalPromotionWorker {
+    calls: Arc<AtomicUsize>,
+}
+
+impl LocalCheckpointPromotionWorker for CountingTerminalPromotionWorker {
+    type Error = &'static str;
+
+    fn prepare(
+        &mut self,
+        _work: &mut CheckpointPromotionRestartWork,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Err(AttemptWorkerFailure::Terminal("terminal preparation"))
+    }
+}
+
+struct PreparedPromotionWorker {
+    prepared: Option<PreparedPausedCheckpointPromotion>,
+}
+
+impl LocalCheckpointPromotionWorker for PreparedPromotionWorker {
+    type Error = &'static str;
+
+    fn prepare(
+        &mut self,
+        _work: &mut CheckpointPromotionRestartWork,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<PreparedPausedCheckpointPromotionRestart, AttemptWorkerFailure<Self::Error>> {
+        let prepared = self.prepared.take().expect("single promotion preparation");
+        Ok(PreparedPausedCheckpointPromotionRestart::Stage(Box::new(
+            prepared,
+        )))
     }
 }
 
@@ -622,6 +717,177 @@ fn operational_snapshots_are_read_only_and_revision_overflow_is_unavailable() {
     assert!(service.report().is_ok());
 
     pool.shutdown_and_join().expect("clean shutdown");
+}
+
+#[test]
+fn promotion_report_records_terminal_preparation_from_real_process_path() {
+    let checkpoints = checkpoint_store();
+    let (shared, mut work, prepared, _) = promotion_process_fixture(Arc::clone(&checkpoints));
+    let mut worker = TerminalPromotionWorker;
+
+    promotion::process_promotion_work(
+        &shared,
+        &mut worker,
+        &mut work,
+        ExecutionCancellation::default(),
+    );
+    drop(prepared);
+
+    let executor = shared.executor.lock().expect("executor report lock");
+    let report = shared.report(executor.supervisor());
+    assert_eq!(report.promotion_failures(), 1);
+    assert_eq!(report.promotion_failure_phases().preparation_terminal(), 1);
+    assert_eq!(
+        report
+            .promotion_failure_phases()
+            .publication_terminal_reverted(),
+        0
+    );
+    let failure = report
+        .last_promotion_failure()
+        .expect("terminal preparation retains its typed failure");
+    assert_eq!(failure.phase(), LocalExecutorPromotionPhase::Preparation);
+    assert_eq!(failure.detail(), "\"terminal preparation\"");
+    assert!(!failure.detail_truncated());
+    assert_eq!(
+        report.last_promotion_activity().map(|(_, phase)| phase),
+        Some(LocalExecutorPromotionPhase::Preparation)
+    );
+}
+
+#[test]
+fn stale_raw_promotion_is_discarded_before_worker_preparation() {
+    let checkpoints = checkpoint_store();
+    let fixture = crate::prepare_repository_promotion_fixture(&checkpoints);
+    let crate::RepositoryPromotionFixture {
+        prepared,
+        key,
+        state,
+        daemon_epoch,
+        capacity,
+    } = fixture;
+    let mut recovery_ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        recovery_ledger
+            .compare_exchange_attempt(key, None, Some(state))
+            .expect("seed raw promotion recovery"),
+        AttemptStateCas::Advanced
+    );
+    let recovery_supervisor = LocalExecutorSupervisor::new(
+        recovery_ledger,
+        AllowAllAttemptAdmission,
+        daemon_epoch,
+        capacity,
+    );
+    let recovery = recovery_supervisor
+        .paused_checkpoint_promotion_recovery(key)
+        .expect("load raw promotion recovery")
+        .expect("raw promotion recovery");
+
+    let stale_state = AttemptRuntimeState::Canceled {
+        execution_basis: state.execution_basis(),
+        origin: state.origin(),
+        daemon_epoch: state.daemon_epoch(),
+        execution: state.execution(),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(stale_state))
+            .expect("seed superseding terminal state"),
+        AttemptStateCas::Advanced
+    );
+    let supervisor =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, daemon_epoch, capacity);
+    let resources = AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000)
+        .expect("promotion fixture resource ceiling");
+    let executor = LocalExecutorCapabilityService::new(
+        supervisor,
+        description_with_limits(daemon_epoch, 1, resources),
+    )
+    .expect("promotion fixture capability");
+    let shared = SharedExecutor::new(executor, checkpoints, 1, 1, Vec::new(), None, None);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut worker = CountingTerminalPromotionWorker {
+        calls: Arc::clone(&calls),
+    };
+    let mut work = CheckpointPromotionRestartWork::Paused(recovery);
+
+    promotion::process_promotion_work(
+        &shared,
+        &mut worker,
+        &mut work,
+        ExecutionCancellation::default(),
+    );
+    drop(prepared);
+
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    let executor = shared.executor.lock().expect("executor report lock");
+    let report = shared.report(executor.supervisor());
+    assert_eq!(report.promotions_discarded(), 1);
+    assert_eq!(report.promotion_failures(), 0);
+    assert_eq!(report.promotion_failure_phases().preparation_terminal(), 0);
+    assert!(report.last_promotion_failure().is_none());
+    assert_eq!(
+        report.last_promotion_activity().map(|(_, phase)| phase),
+        Some(LocalExecutorPromotionPhase::Preflight)
+    );
+}
+
+#[test]
+fn promotion_report_records_terminal_publication_and_raw_reversion() {
+    let backend = Arc::new(RejectingPromotionBackend::new());
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+            .expect("promotion checkpoint store"),
+    );
+    let (shared, mut work, prepared, raw) = promotion_process_fixture(Arc::clone(&checkpoints));
+    backend.reject_publication();
+    let mut worker = PreparedPromotionWorker {
+        prepared: Some(prepared),
+    };
+
+    promotion::process_promotion_work(
+        &shared,
+        &mut worker,
+        &mut work,
+        ExecutionCancellation::default(),
+    );
+
+    let executor = shared.executor.lock().expect("executor report lock");
+    let report = shared.report(executor.supervisor());
+    assert_eq!(report.promotion_failures(), 1);
+    assert_eq!(report.promotions_discarded(), 1);
+    assert_eq!(report.promotion_failure_phases().preparation_terminal(), 0);
+    assert_eq!(
+        report
+            .promotion_failure_phases()
+            .publication_terminal_reverted(),
+        1
+    );
+    let key = match work {
+        CheckpointPromotionRestartWork::Paused(recovery) => recovery.key(),
+        CheckpointPromotionRestartWork::Staged(_) => panic!("fixture began as a raw pause"),
+    };
+    let failure = report
+        .last_promotion_failure()
+        .expect("terminal publication retains its typed failure");
+    assert_eq!(failure.key(), key);
+    assert_eq!(failure.phase(), LocalExecutorPromotionPhase::Publication);
+    assert!(!failure.detail().is_empty());
+    assert_eq!(
+        report.last_promotion_activity(),
+        Some((key, LocalExecutorPromotionPhase::Publication))
+    );
+    assert_eq!(
+        executor
+            .supervisor()
+            .paused_checkpoint_promotion_recovery(key)
+            .expect("load reverted promotion")
+            .expect("raw promotion remains eligible")
+            .source(),
+        raw
+    );
 }
 
 #[test]
@@ -2517,11 +2783,16 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
     )
     .expect("submit request");
     let checkpoints = checkpoint_store();
-    let raw = checkpoints
+    let prepared = checkpoints
         .prepare_production_closure(raw_fixture.closure().clone())
-        .and_then(|prepared| checkpoints.publish_production_closure(&prepared))
+        .expect("prepare raw production checkpoint");
+    let raw = checkpoints
+        .publish_production_closure(&prepared)
         .expect("publish raw production checkpoint")
         .root();
+    prepared
+        .retire_native_source()
+        .expect("retire redundant native checkpoint source");
     let store = CampaignExecutorStore::new(repository);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut factory = CountingProductionReplayFactory {
@@ -3336,6 +3607,53 @@ fn checkpoint_store() -> Arc<ExactCheckpointStore> {
     Arc::new(
         ExactCheckpointStore::new(Arc::new(TestDurableBackend::new()), 1024 * 1024)
             .expect("durable exact-checkpoint store"),
+    )
+}
+
+fn promotion_process_fixture(
+    checkpoints: Arc<ExactCheckpointStore>,
+) -> (
+    SharedExecutor<MemoryAssignmentLedger, AllowAllAttemptAdmission>,
+    CheckpointPromotionRestartWork,
+    PreparedPausedCheckpointPromotion,
+    ExactCheckpointId,
+) {
+    let fixture = crate::prepare_repository_promotion_fixture(&checkpoints);
+    let crate::RepositoryPromotionFixture {
+        prepared,
+        key,
+        state,
+        daemon_epoch,
+        capacity,
+    } = fixture;
+    let raw = prepared.source();
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(state))
+            .expect("seed promotion process fixture"),
+        AttemptStateCas::Advanced
+    );
+    let supervisor =
+        LocalExecutorSupervisor::new(ledger, AllowAllAttemptAdmission, daemon_epoch, capacity);
+    let recovery = supervisor
+        .paused_checkpoint_promotion_recovery(key)
+        .expect("load promotion process fixture")
+        .expect("raw promotion process fixture");
+    let resources = AttemptResourceLimits::new(1, 64 * 1024 * 1024, 0, 1_000)
+        .expect("promotion fixture resource ceiling");
+    let executor = LocalExecutorCapabilityService::new(
+        supervisor,
+        description_with_limits(daemon_epoch, 1, resources),
+    )
+    .expect("promotion fixture capability");
+    let shared = SharedExecutor::new(executor, checkpoints, 1, 1, Vec::new(), None, None);
+
+    (
+        shared,
+        CheckpointPromotionRestartWork::Paused(recovery),
+        prepared,
+        raw,
     )
 }
 

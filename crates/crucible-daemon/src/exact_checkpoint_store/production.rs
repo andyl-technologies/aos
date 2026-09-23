@@ -71,6 +71,11 @@ struct ProductionObjectPlacement {
     content: ContentId,
 }
 
+struct ProductionRepositoryReuse {
+    backend: Arc<dyn ImmutableBlobBackend>,
+    placements: Vec<ContentId>,
+}
+
 /// No-write preparation of one complete multi-node production checkpoint root.
 pub struct PreparedProductionExactCheckpoint {
     root: ExactCheckpointId,
@@ -80,6 +85,7 @@ pub struct PreparedProductionExactCheckpoint {
     source: Arc<dyn ProductionExactCheckpointPublicationSource>,
     objects: Vec<ProductionObjectPlacement>,
     indexes: Vec<(ContentId, BlobHandle)>,
+    reuse_backend: Option<Arc<dyn ImmutableBlobBackend>>,
     production_identity: ContentHash,
     promotion_source: Option<ExactCheckpointId>,
     promotion_evidence: Option<(ContentId, BlobHandle)>,
@@ -552,6 +558,18 @@ impl ProductionExactCheckpointPublicationSource for LoadedProductionExactCheckpo
 }
 
 impl ExactCheckpointStore {
+    fn require_reuse_backend(
+        &self,
+        backend: &Arc<dyn ImmutableBlobBackend>,
+    ) -> Result<(), ExactCheckpointStoreError> {
+        if !Arc::ptr_eq(&self.backend, backend) {
+            return Err(invalid_root(
+                "replay-oracle promotion source belongs to another backend",
+            ));
+        }
+        Ok(())
+    }
+
     /// Authenticates and prepares one complete production closure without writes.
     ///
     /// Every production object is streamed through both its native BLAKE3
@@ -614,65 +632,57 @@ impl ExactCheckpointStore {
             native_retirement,
             promotion_source: None,
             promotion_evidence: None,
+            reuse: None,
         })
     }
 
     /// Wraps one no-write replay-oracle replacement as a campaign exact root.
     ///
-    /// The input type can only be created by completely authenticating a raw
-    /// native production closure and applying one source-bound matching check
-    /// per live node. This operation independently streams every derived
-    /// snapshot and unchanged object through the campaign-CAS identity layer;
-    /// it performs no immutable writes.
+    /// The input type can only be created by consuming every repository-backed
+    /// restore admission and applying one source-bound matching check per live
+    /// node. The authenticated object placements are reused on the same CAS
+    /// backend; this operation regenerates only bounded metadata and writes
+    /// nothing.
     ///
     /// # Errors
     ///
     /// Returns an error when a regenerated snapshot changes, an object identity
     /// or length is inconsistent, aggregate arithmetic overflows, an index or
-    /// root exceeds its bound, or the source cannot be reopened.
+    /// root exceeds its bound, or the source belongs to another backend.
     pub(crate) fn prepare_production_replay_oracle_promotion_with_cancellation(
         &self,
         raw: ExactCheckpointId,
-        source: ProductionExactCheckpointClosure,
+        source: Arc<LoadedProductionExactCheckpoint>,
         promotion: PreparedProductionReplayOraclePromotion,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        self.prepare_production_replay_oracle_promotion_inner(
-            raw,
-            source,
-            promotion,
-            Some(cancellation.clone()),
-        )
-    }
-
-    fn prepare_production_replay_oracle_promotion_inner(
-        &self,
-        raw: ExactCheckpointId,
-        source: ProductionExactCheckpointClosure,
-        promotion: PreparedProductionReplayOraclePromotion,
-        cancellation: Option<ExecutionCancellation>,
-    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
         let production_identity = promotion.promoted();
-        if promotion.source() != source.identity() {
+        if source.root() != raw || promotion.source() != source.production_identity() {
             return Err(invalid_root(
-                "replay-oracle promotion names another native source",
+                "replay-oracle promotion names another repository source",
             ));
         }
+        self.require_reuse_backend(&source.backend)?;
+        source.authenticate_closure(self.maximum_checkpoint_bytes)?;
         let scenario = source.scenario();
         let configuration = source.configuration();
-        let native_retirement = Some(source.native_retirement());
         let promotion_evidence = promotion.evidence().to_vec();
-        let source: Arc<dyn ProductionExactCheckpointPublicationSource> = Arc::new(source);
+        let reuse = ProductionRepositoryReuse {
+            backend: Arc::clone(&source.backend),
+            placements: source.placements.clone(),
+        };
+        let source: Arc<dyn ProductionExactCheckpointPublicationSource> = source;
         prepare_production_source_with_cancellation(ProductionSourcePreparation {
             source,
             production_identity,
             scenario,
             configuration,
             maximum_checkpoint_bytes: self.maximum_checkpoint_bytes,
-            cancellation,
-            native_retirement,
+            cancellation: Some(cancellation.clone()),
+            native_retirement: None,
             promotion_source: Some(raw),
             promotion_evidence: Some(promotion_evidence),
+            reuse: Some(reuse),
         })
     }
 
@@ -696,17 +706,24 @@ impl ExactCheckpointStore {
             prepared.object_bytes,
             self.maximum_checkpoint_bytes,
         )?;
-        require_durable_receipt(
-            self.backend
-                .put_if_absent(prepared.manifest_id, &prepared.manifest_source)
-                .map_err(map_checkpoint_store_error)?,
-            prepared.manifest_id,
-            prepared.manifest_source.logical_length(),
-        )?;
+        if let Some(backend) = &prepared.reuse_backend {
+            self.require_reuse_backend(backend)?;
+        } else {
+            require_durable_receipt(
+                self.backend
+                    .put_if_absent(prepared.manifest_id, &prepared.manifest_source)
+                    .map_err(map_checkpoint_store_error)?,
+                prepared.manifest_id,
+                prepared.manifest_source.logical_length(),
+            )?;
+        }
         #[cfg(feature = "destructive-recovery-faults")]
         inject_exact_capture_enospc()?;
         for placement in &prepared.objects {
             check_cancellation(prepared.cancellation.as_ref())?;
+            if prepared.reuse_backend.is_some() {
+                continue;
+            }
             let source = portable_object_handle(
                 Arc::clone(&prepared.source),
                 placement.object,
@@ -722,6 +739,9 @@ impl ExactCheckpointStore {
         }
         for (identity, source) in &prepared.indexes {
             check_cancellation(prepared.cancellation.as_ref())?;
+            if prepared.reuse_backend.is_some() {
+                continue;
+            }
             require_durable_receipt(
                 self.backend
                     .put_if_absent(*identity, source)
@@ -996,10 +1016,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
     use crucible_cas::content_store::{
-        BackendCapabilities, ByteRange, MemoryBlobBackend, PlacementReceipt,
+        BackendCapabilities, ByteRange, DirectoryBlobBackend, MemoryBlobBackend, PlacementReceipt,
     };
 
     struct MemoryProductionSource {
@@ -1033,6 +1054,55 @@ mod tests {
 
     struct DurableMemoryBackend {
         memory: MemoryBlobBackend,
+    }
+
+    struct CountingDirectoryBackend {
+        directory: DirectoryBlobBackend,
+        reads: AtomicUsize,
+        puts: AtomicUsize,
+    }
+
+    impl CountingDirectoryBackend {
+        fn new(root: &std::path::Path) -> Self {
+            Self {
+                directory: DirectoryBlobBackend::new("repository-promotion-test", root),
+                reads: AtomicUsize::new(0),
+                puts: AtomicUsize::new(0),
+            }
+        }
+
+        fn reset_counts(&self) {
+            self.reads.store(0, Ordering::Relaxed);
+            self.puts.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl ImmutableBlobBackend for CountingDirectoryBackend {
+        fn name(&self) -> &str {
+            self.directory.name()
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.directory.capabilities()
+        }
+
+        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+            self.directory.contains(id)
+        }
+
+        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.directory.read(id, range)
+        }
+
+        fn put_if_absent(
+            &self,
+            id: ContentId,
+            source: &BlobHandle,
+        ) -> Result<PutReceipt, StoreError> {
+            self.puts.fetch_add(1, Ordering::Relaxed);
+            self.directory.put_if_absent(id, source)
+        }
     }
 
     struct ChangingProductionSource {
@@ -1170,6 +1240,98 @@ mod tests {
         assert_eq!(loaded.root(), root);
         assert_eq!(loaded.scenario(), scenario);
         assert_eq!(loaded.configuration(), configuration);
+    }
+
+    #[test]
+    fn repository_backed_promotion_reuses_the_durable_raw_closure() {
+        let temporary = tempfile::tempdir().expect("create repository promotion fixture");
+        let backend = Arc::new(CountingDirectoryBackend::new(temporary.path()));
+        let store = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+            .expect("admit repository promotion store");
+        let production_identity = ContentHash::from_bytes(b"repository promotion closure");
+        let scenario = ContentHash::from_bytes(b"repository promotion scenario");
+        let configuration = ContentHash::from_bytes(b"repository promotion configuration");
+        let raw = prepare_production_source(
+            Arc::new(memory_source(2)),
+            production_identity,
+            scenario,
+            configuration,
+            64 * 1024 * 1024,
+        )
+        .expect("prepare raw repository closure");
+        let raw = store
+            .publish_production_closure(&raw)
+            .expect("publish raw repository closure")
+            .root();
+        let cancellation = ExecutionCancellation::default();
+        let loaded = Arc::new(
+            store
+                .load_production_closure_with_cancellation(raw, &cancellation)
+                .expect("load raw repository closure"),
+        );
+
+        let node = b"node-0";
+        let mut evidence = Vec::new();
+        evidence.extend_from_slice(REPLAY_ORACLE_EVIDENCE_MAGIC);
+        evidence.extend_from_slice(&production_identity.bytes);
+        evidence.extend_from_slice(&1_u32.to_be_bytes());
+        evidence.extend_from_slice(
+            &u32::try_from(node.len())
+                .expect("fixture node length fits")
+                .to_be_bytes(),
+        );
+        evidence.extend_from_slice(node);
+        evidence.extend_from_slice(&[0x31; 32]);
+        evidence.extend_from_slice(&[0x32; 32]);
+        evidence.extend_from_slice(&[0x33; 32]);
+
+        let source: Arc<dyn ProductionExactCheckpointPublicationSource> = loaded.clone();
+        backend.reset_counts();
+        let promoted = prepare_production_source_with_cancellation(ProductionSourcePreparation {
+            source,
+            production_identity,
+            scenario,
+            configuration,
+            maximum_checkpoint_bytes: 64 * 1024 * 1024,
+            cancellation: Some(cancellation),
+            native_retirement: None,
+            promotion_source: Some(raw),
+            promotion_evidence: Some(evidence),
+            reuse: Some(ProductionRepositoryReuse {
+                backend: Arc::clone(&loaded.backend),
+                placements: loaded.placements.clone(),
+            }),
+        })
+        .expect("prepare repository-backed replay promotion");
+        assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
+
+        let other_backend = Arc::new(CountingDirectoryBackend::new(temporary.path()));
+        let other_store = ExactCheckpointStore::new(other_backend.clone(), 64 * 1024 * 1024)
+            .expect("admit separate repository store");
+        assert!(matches!(
+            other_store.require_reuse_backend(&loaded.backend),
+            Err(ExactCheckpointStoreError::InvalidRoot { .. })
+        ));
+        assert!(matches!(
+            other_store.publish_production_closure(&promoted),
+            Err(ExactCheckpointStoreError::InvalidRoot { .. })
+        ));
+        assert_eq!(other_backend.puts.load(Ordering::Relaxed), 0);
+
+        let promoted = store
+            .publish_production_closure(&promoted)
+            .expect("publish repository-backed replay promotion")
+            .root();
+        assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(backend.puts.load(Ordering::Relaxed), 2);
+        let promoted = store
+            .load_production_closure(promoted)
+            .expect("load repository-backed replay promotion");
+
+        assert_eq!(promoted.promotion_source(), Some(raw));
+        promoted
+            .authenticate_replay_oracle_promotion(&loaded)
+            .expect("authenticate unchanged repository promotion source");
     }
 
     #[test]
@@ -1320,6 +1482,7 @@ mod tests {
             native_retirement: None,
             promotion_source: None,
             promotion_evidence: None,
+            reuse: None,
         })
         .expect("prepare production closure before cancellation");
 

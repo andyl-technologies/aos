@@ -1325,29 +1325,7 @@ fn attest_fingerprint_enabled_qemu_descendants(
             .into_iter()
             .filter(|(_pid, arguments)| arguments.first() == Some(&expected_qemu))
             .collect::<Vec<_>>();
-        if !qemu_commands.is_empty() {
-            for (pid, arguments) in &qemu_commands {
-                let plugin_configuration = arguments
-                    .windows(2)
-                    .find(|pair| pair[0] == "-plugin")
-                    .map(|pair| pair[1].as_str())
-                    .ok_or_else(|| {
-                        format!(
-                            "{phase} QEMU descendant {pid} has no `-plugin` argument: {arguments:?}"
-                        )
-                    })?;
-                let expected_prefix = format!("{expected_plugin},");
-                if !plugin_configuration.starts_with(&expected_prefix)
-                    || !plugin_configuration
-                        .split(',')
-                        .any(|argument| argument == "fingerprint=on")
-                {
-                    return Err(format!(
-                        "{phase} QEMU descendant {pid} did not enable the packaged fingerprint sampler: {plugin_configuration:?}"
-                    )
-                    .into());
-                }
-            }
+        if attest_fingerprint_enabled_qemu_launches(&qemu_commands, &expected_plugin, phase)? {
             return Ok(Some(()));
         }
         Ok(None)
@@ -1361,6 +1339,76 @@ fn attest_fingerprint_enabled_qemu_descendants(
         service.child.id()
     )
     .into())
+}
+
+fn attest_fingerprint_enabled_qemu_launches(
+    qemu_commands: &[(u32, Vec<String>)],
+    expected_plugin: &str,
+    phase: &str,
+) -> Result<bool, Box<dyn Error>> {
+    let expected_prefix = format!("{expected_plugin},");
+    let mut completed_launches = 0;
+    for (pid, arguments) in qemu_commands {
+        let Some(plugin_configuration) = arguments
+            .windows(2)
+            .find(|pair| pair[0] == "-plugin")
+            .map(|pair| pair[1].as_str())
+        else {
+            // The stopped white-box setup probe deliberately omits the plugin.
+            // Presence of the production plugin argument is the concrete point
+            // at which the launch is complete enough for this assertion.
+            continue;
+        };
+        completed_launches += 1;
+        if !plugin_configuration.starts_with(&expected_prefix)
+            || !plugin_configuration
+                .split(',')
+                .any(|argument| argument == "fingerprint=on")
+        {
+            return Err(format!(
+                "{phase} QEMU descendant {pid} did not enable the packaged fingerprint sampler: {plugin_configuration:?}"
+            )
+            .into());
+        }
+    }
+    Ok(completed_launches != 0)
+}
+
+#[test]
+fn fingerprint_attestation_waits_past_setup_probe_until_production_launch() {
+    let expected_plugin = "/nix/store/plugin/lib/crucible.so";
+    let setup_probe = (
+        41,
+        vec![
+            String::from("/nix/store/qemu/bin/qemu-system-x86_64"),
+            String::from("-S"),
+        ],
+    );
+    assert!(
+        !attest_fingerprint_enabled_qemu_launches(
+            std::slice::from_ref(&setup_probe),
+            expected_plugin,
+            "setup race",
+        )
+        .expect("setup probe remains an incomplete launch")
+    );
+
+    let production = (
+        42,
+        vec![
+            String::from("/nix/store/qemu/bin/qemu-system-x86_64"),
+            String::from("-plugin"),
+            format!("{expected_plugin},fingerprint=on,whitebox=on"),
+        ],
+    );
+    assert!(
+        attest_fingerprint_enabled_qemu_launches(
+            &[setup_probe, production],
+            expected_plugin,
+            "production launch",
+        )
+        .expect("production launch attestation")
+    );
 }
 
 fn wait_for_new_running_attempt(
