@@ -239,18 +239,11 @@ pub(super) fn observe(
             ));
         } else if matches!(action, AttachmentSourceActionV1::Release { .. }) {
             ensure_mount_policy(executor)?;
-            let coordinates = {
-                let mut sessions = executor
-                    .sessions
-                    .lock()
-                    .map_err(|_| retryable("broker session lock is poisoned"))?;
-                sessions
-                    .mount
-                    .as_mut()
-                    .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+            let coordinates = with_mount_session(executor, |mount| {
+                mount
                     .mount_request_coordinates()
-                    .map_err(|error| retryable(error.to_string()))?
-            };
+                    .map_err(|error| retryable(error.to_string()))
+            })?;
             let prepared = owner
                 .prepare_current_source_release(
                     source,
