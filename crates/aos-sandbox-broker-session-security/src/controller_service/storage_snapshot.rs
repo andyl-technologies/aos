@@ -209,29 +209,7 @@ impl ProductionEffectExecutor {
                     fence,
                     &authority,
                 );
-                let admission = match admission {
-                    Ok(admission) => admission,
-                    Err(error) => {
-                        // The source commit may have succeeded despite its I/O error.
-                        self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                            operation: operation_id,
-                            operation_record: operation_record.digest(),
-                            plan,
-                            fence,
-                            authority,
-                            predecessor_inventory: predecessor.inventory().clone(),
-                            predecessor_outcome: predecessor.outcome().clone(),
-                            phase: AtomicSnapshotPhaseV1::Rejected,
-                        });
-                        return Err(retryable(error));
-                    }
-                };
-                if admission != LifecycleAtomicSnapshotSourceAdmissionV1::Reserved {
-                    return Err(retryable(
-                        "Storage source reservation already owns the exact group request",
-                    ));
-                }
-                self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
+                let mut pending = PendingAtomicSnapshotV1 {
                     operation: operation_id,
                     operation_record: operation_record.digest(),
                     plan,
@@ -240,7 +218,22 @@ impl ProductionEffectExecutor {
                     predecessor_inventory: predecessor.inventory().clone(),
                     predecessor_outcome: predecessor.outcome().clone(),
                     phase: AtomicSnapshotPhaseV1::Group(predecessor),
-                });
+                };
+                match admission {
+                    Ok(LifecycleAtomicSnapshotSourceAdmissionV1::Reserved) => {}
+                    Ok(_) => {
+                        return Err(retryable(
+                            "Storage source reservation already owns the exact group request",
+                        ));
+                    }
+                    Err(error) => {
+                        // The source commit may have succeeded despite its I/O error.
+                        pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(retryable(error));
+                    }
+                }
+                self.pending_atomic_snapshot = Some(pending);
             }
 
             let mut pending = self
@@ -278,45 +271,31 @@ impl ProductionEffectExecutor {
                         &pending.authority,
                     ) {
                         Ok(group) => {
-                            let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } =
-                                group.result()
-                            else {
-                                self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                                    phase: AtomicSnapshotPhaseV1::Rejected,
-                                    ..pending
-                                });
-                                return Err(permanent("Storage rejected the reserved group"));
+                            let (program, observation) = match snapshot_receipt_digests(
+                                &group,
+                                "Storage rejected the reserved group",
+                            ) {
+                                Ok(digests) => digests,
+                                Err(error) => {
+                                    pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                                    self.pending_atomic_snapshot = Some(pending);
+                                    return Err(error);
+                                }
                             };
-                            let receipt =
-                                match aos_sandbox_protocol::decode_atomic_storage_snapshot_response(
-                                    exact_body,
-                                ) {
-                                    Ok(receipt) => receipt,
-                                    Err(error) => {
-                                        self.pending_atomic_snapshot =
-                                            Some(PendingAtomicSnapshotV1 {
-                                                phase: AtomicSnapshotPhaseV1::Rejected,
-                                                ..pending
-                                            });
-                                        return Err(permanent(error));
-                                    }
-                                };
                             let progress = storage.finish_atomic_snapshot_inventory(
                                 &challenge,
                                 &current,
                                 &pending.plan,
-                                ObjectDigest::from_bytes(receipt.program()),
-                                ObjectDigest::from_bytes(receipt.observation()),
+                                program,
+                                observation,
                                 predecessor,
                                 group,
                             );
                             let progress = match progress {
                                 Ok(progress) => progress,
                                 Err(error) => {
-                                    self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                                        phase: AtomicSnapshotPhaseV1::Rejected,
-                                        ..pending
-                                    });
+                                    pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                                    self.pending_atomic_snapshot = Some(pending);
                                     return Err(retryable(error));
                                 }
                             };
@@ -344,53 +323,38 @@ impl ProductionEffectExecutor {
                         .as_mut()
                         .ok_or_else(missing_broker_session)?;
                     let group = recovery.group_outcome();
-                    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } =
-                        group.result()
-                    else {
-                        self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                            phase: AtomicSnapshotPhaseV1::Rejected,
-                            ..pending
-                        });
-                        return Err(permanent("retained Storage group is not successful"));
+                    let (program, observation) = match snapshot_receipt_digests(
+                        group,
+                        "retained Storage group is not successful",
+                    ) {
+                        Ok(digests) => digests,
+                        Err(error) => {
+                            pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                            self.pending_atomic_snapshot = Some(pending);
+                            return Err(error);
+                        }
                     };
-                    let receipt =
-                        match aos_sandbox_protocol::decode_atomic_storage_snapshot_response(
-                            exact_body,
-                        ) {
-                            Ok(receipt) => receipt,
-                            Err(error) => {
-                                self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                                    phase: AtomicSnapshotPhaseV1::Rejected,
-                                    ..pending
-                                });
-                                return Err(permanent(error));
-                            }
-                        };
                     let progress = storage.resume_atomic_snapshot_inventory(
                         &challenge,
                         &current,
                         &pending.plan,
-                        ObjectDigest::from_bytes(receipt.program()),
-                        ObjectDigest::from_bytes(receipt.observation()),
+                        program,
+                        observation,
                         recovery,
                     );
                     let progress = match progress {
                         Ok(progress) => progress,
                         Err(error) => {
-                            self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                                phase: AtomicSnapshotPhaseV1::Rejected,
-                                ..pending
-                            });
+                            pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                            self.pending_atomic_snapshot = Some(pending);
                             return Err(retryable(error));
                         }
                     };
                     finish_phase(progress)
                 }
                 AtomicSnapshotPhaseV1::Rejected => {
-                    self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
-                        phase: AtomicSnapshotPhaseV1::Rejected,
-                        ..pending
-                    });
+                    pending.phase = AtomicSnapshotPhaseV1::Rejected;
+                    self.pending_atomic_snapshot = Some(pending);
                     return Err(permanent("Storage group has a terminal rejected outcome"));
                 }
                 phase => phase,
@@ -479,6 +443,22 @@ impl ProductionEffectExecutor {
         self.pending_atomic_snapshot = None;
         Ok(true)
     }
+}
+
+fn snapshot_receipt_digests(
+    group: &AuthenticatedBrokerMethodOutcomeV1,
+    rejected_message: &'static str,
+) -> Result<(ObjectDigest, ObjectDigest), EffectFailure> {
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
+        return Err(permanent(rejected_message));
+    };
+    let receipt = aos_sandbox_protocol::decode_atomic_storage_snapshot_response(exact_body)
+        .map_err(permanent)?;
+
+    Ok((
+        ObjectDigest::from_bytes(receipt.program()),
+        ObjectDigest::from_bytes(receipt.observation()),
+    ))
 }
 
 fn finish_phase(progress: DormantAtomicStorageInventoryFinishProgressV1) -> AtomicSnapshotPhaseV1 {
