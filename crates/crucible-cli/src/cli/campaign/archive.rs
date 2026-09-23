@@ -326,7 +326,7 @@ fn prepare_archive_transfer_basis(
     })
 }
 
-fn prepare_owner(
+pub(super) fn prepare_owner(
     state: &Path,
     policy: &Path,
     store: &Path,
@@ -354,7 +354,9 @@ fn prepare_owner(
         .map_err(|error| archive_error(format!("campaign owner acquisition failed: {error}")))
 }
 
-fn open_exact_pins(state: &Path) -> Result<DirectoryExactPinMaterializationStore, CliError> {
+pub(super) fn open_exact_pins(
+    state: &Path,
+) -> Result<DirectoryExactPinMaterializationStore, CliError> {
     DirectoryExactPinMaterializationStore::open(state.join(EXACT_PIN_MATERIALIZATION_DIRECTORY))
         .map_err(|error| archive_error(format!("exact-pin catalog open failed: {error}")))
 }

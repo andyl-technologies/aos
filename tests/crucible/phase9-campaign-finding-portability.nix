@@ -94,6 +94,10 @@ in
             crucible \
             tests::verify_dispatch::finding_export::campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering
 
+          grep -Fqx \
+            'crucible.campaign.finding-bundle	2	crucible-cli::cli_campaign::finding_bundle	export-directory	gate:campaign-replay,gate:campaign-store-composition' \
+            docs/rfcs/0020-crucible-campaigns/schema-registry.tsv
+
           test "$(sed -n '1p' ${packagedReplay}/result)" = PASS
           test "$(grep -Fxc 'gate=gate:campaign-replay' ${packagedReplay}/result || true)" -eq 1
           grep -Fqx 'scope=portable-model,strict,production-qemu,native' \
@@ -114,7 +118,7 @@ in
           no_shared_store=true
           production_qemu_capture_replay=${packagedReplay}
           finding_native_evidence_self_contained=true
-          fresh_process_bundle_verification=true
+          fresh_process_bundle_archive_rejection=true
           RESULT
         '';
       }
