@@ -151,7 +151,7 @@ where
             | Self::Cleanup(error) => Some(error),
             Self::Driver(error) => Some(error),
             Self::CheckpointHandoff(error) => Some(error),
-            Self::CleanupAfterRunner { failure, .. } => Some(failure.as_ref()),
+            Self::CleanupAfterRunner { cleanup, .. } => Some(cleanup),
             Self::Reconciliation(error) => Some(error),
             Self::PriorReconciliationPending
             | Self::RuntimeBasisMismatch
@@ -458,5 +458,33 @@ impl<E> AttemptWorkerFailureExt<E> for AttemptWorkerFailure<E> {
         match self {
             Self::Retryable(error) | Self::Canceled(error) | Self::Terminal(error) => error,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::QemuHotForkWorldExecutionRunnerError;
+
+    #[test]
+    fn cleanup_failure_is_the_primary_error_after_runner_failure() {
+        let cleanup = crucible::SchedulerError::BoundaryViolation {
+            message: String::from("incomplete child shutdown"),
+        };
+        let error: QemuHotForkWorldExecutionRunnerError<
+            std::convert::Infallible,
+            std::convert::Infallible,
+        > = QemuHotForkWorldExecutionRunnerError::CleanupAfterRunner {
+            failure: Box::new(QemuHotForkWorldExecutionRunnerError::PriorReconciliationPending),
+            cleanup,
+        };
+
+        assert!(error.to_string().contains("incomplete child shutdown"));
+        assert!(
+            error
+                .source()
+                .is_some_and(|source| source.to_string().contains("incomplete child shutdown"))
+        );
     }
 }
