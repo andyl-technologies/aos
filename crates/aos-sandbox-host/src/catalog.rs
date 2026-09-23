@@ -16,6 +16,7 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::path::Path;
 
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_protocol::host_catalog::MAXIMUM_HOST_CATALOG_BYTES;
 pub use aos_sandbox_protocol::{
@@ -24,6 +25,7 @@ pub use aos_sandbox_protocol::{
 };
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 
+use crate::live_agent::read_root_owned_credential;
 use crate::plan::{
     HostCatalog, OpaqueHandle, ResolvedAttachmentAnchor, ResolvedIdentityAllocation,
     ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
@@ -32,6 +34,7 @@ use crate::{HostError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
 const CATALOG_NEXT_FILE: &str = "catalog.next";
+const GUEST_PACKAGE_BINDING_CREDENTIAL: &str = "guest-root-package-binding-v1";
 
 /// Resolves one fixed catalog file beneath a pre-opened private directory.
 ///
@@ -236,6 +239,11 @@ impl HostCatalog for FileHostCatalog {
         let guest_root_proof = publication
             .proof()
             .map_err(|error| HostError::Catalog(error.to_string()))?;
+        if guest_root_proof.package_binding != *protected_guest_package_binding()?.as_bytes() {
+            return Err(HostError::Catalog(
+                "guest-root proof differs from the deployed package binding".to_owned(),
+            ));
+        }
 
         let workspace_pin = verify_workspace_pin(
             workspace.root_directory(),
@@ -289,6 +297,43 @@ impl HostCatalog for FileHostCatalog {
             },
             attachment_anchor,
         })
+    }
+}
+
+fn protected_guest_package_binding() -> Result<ObjectDigest> {
+    let bytes = read_root_owned_credential(GUEST_PACKAGE_BINDING_CREDENTIAL, 65, 65)
+        .map_err(|()| HostError::Catalog("protected guest package binding is absent".to_owned()))?;
+    decode_guest_package_binding(&bytes)
+}
+
+fn decode_guest_package_binding(bytes: &[u8]) -> Result<ObjectDigest> {
+    if bytes.len() != 65 || bytes[64] != b'\n' {
+        return Err(HostError::Catalog(
+            "protected guest package binding is malformed".to_owned(),
+        ));
+    }
+
+    let mut digest = [0_u8; 32];
+    for (index, pair) in bytes[..64].chunks_exact(2).enumerate() {
+        let high = lowercase_hex_digit(pair[0])?;
+        let low = lowercase_hex_digit(pair[1])?;
+        digest[index] = (high << 4) | low;
+    }
+    if digest == [0; 32] {
+        return Err(HostError::Catalog(
+            "protected guest package binding is a sentinel".to_owned(),
+        ));
+    }
+    Ok(ObjectDigest::from_bytes(digest))
+}
+
+fn lowercase_hex_digit(byte: u8) -> Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(HostError::Catalog(
+            "protected guest package binding is not lowercase hex".to_owned(),
+        )),
     }
 }
 
@@ -638,6 +683,18 @@ mod tests {
 
     fn empty_snapshot(generation: u64) -> HostCatalogSnapshot {
         HostCatalogSnapshot::new(generation, Vec::new(), Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn protected_guest_package_binding_requires_exact_lowercase_digest_line() {
+        let line = format!("{}\n", "ab".repeat(32));
+        assert_eq!(
+            decode_guest_package_binding(line.as_bytes()).unwrap(),
+            ObjectDigest::from_bytes([0xab; 32])
+        );
+        assert!(decode_guest_package_binding(line.trim_end().as_bytes()).is_err());
+        assert!(decode_guest_package_binding(line.to_uppercase().as_bytes()).is_err());
+        assert!(decode_guest_package_binding(format!("{}\n", "00".repeat(32)).as_bytes()).is_err());
     }
 
     fn workspace_snapshot(

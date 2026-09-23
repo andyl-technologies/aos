@@ -193,7 +193,7 @@ fn read_protected_attach_private_key() -> Result<Vec<u8>, HostAgentLiveErrorV1> 
     Ok(std::mem::take(&mut *bytes))
 }
 
-fn read_root_owned_credential(
+pub(crate) fn read_root_owned_credential(
     file_name: &str,
     minimum_bytes: u64,
     maximum_bytes: u64,

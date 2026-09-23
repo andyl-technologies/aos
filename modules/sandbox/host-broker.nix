@@ -190,7 +190,12 @@ in {
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/unit-reference-policy-v1"]
           ++ brokerSessionConfiguration.installCommands;
         ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian";
-        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
+        # This public digest is pinned to the deployed immutable guest package,
+        # independent of Storage's assignment-bound physical root proof.
+        LoadCredential =
+          loadCredentials
+          ++ brokerSessionConfiguration.loadCredentials
+          ++ ["guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"];
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-host";
