@@ -5,7 +5,7 @@
 //! trust files are required before the agent signs any readback.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -27,6 +27,9 @@ use crate::process::{check_deadline, process_matches};
 const DIRECTORY: &str = "/etc/aos/sandbox-attach";
 const CONFIG: &str = "/etc/aos/sandbox-attach/sshd_config";
 const CLAIM: &str = "/etc/aos/sandbox-attach/gate-record.json";
+const NSS_POLICY: &str = "/etc/nsswitch.conf";
+const LOGIN_DATABASE: &str = "/etc/passwd";
+const MAXIMUM_LOGIN_FILE_BYTES: u64 = 1_048_576;
 const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
 
@@ -150,7 +153,141 @@ fn verify_admitted_process(
     {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
+    verify_static_login_uid(&binding.user, process.uid)?;
     Ok(())
+}
+
+fn verify_static_login_uid(user: &str, expected_uid: u32) -> Result<(), GuestProcessEffectErrorV1> {
+    let nss_policy = read_protected_static_file(NSS_POLICY)?;
+    let database = read_protected_static_file(LOGIN_DATABASE)?;
+    verify_static_login_uid_contents(user, expected_uid, &nss_policy, &database)
+}
+
+fn verify_static_login_uid_contents(
+    user: &str,
+    expected_uid: u32,
+    nss_policy: &str,
+    database: &str,
+) -> Result<(), GuestProcessEffectErrorV1> {
+    let mut found_policy = false;
+    for line in nss_policy.lines() {
+        let policy = line.split('#').next().unwrap_or("").trim();
+        if policy.is_empty() {
+            continue;
+        }
+        let Some((database, sources)) = policy.split_once(':') else {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        };
+        if database.trim() == "passwd" {
+            if found_policy || !sources.split_whitespace().eq(["files"]) {
+                return Err(GuestProcessEffectErrorV1::InvalidRequest);
+            }
+            found_policy = true;
+        }
+    }
+    if !found_policy {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+
+    let mut found_user = false;
+    for line in database.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.len() != 7 || fields[0].is_empty() {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        }
+        if fields[0] == user {
+            let uid = fields[2]
+                .parse::<u32>()
+                .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+            if found_user || uid != expected_uid {
+                return Err(GuestProcessEffectErrorV1::InvalidRequest);
+            }
+            found_user = true;
+        }
+    }
+    if !found_user {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn read_protected_static_file(path: &str) -> Result<String, GuestProcessEffectErrorV1> {
+    let root = fs::symlink_metadata("/")?;
+    let etc = fs::symlink_metadata("/etc")?;
+    if !root.is_dir()
+        || root.uid() != 0
+        || root.mode() & 0o022 != 0
+        || !etc.is_dir()
+        || etc.uid() != 0
+        || etc.mode() & 0o022 != 0
+    {
+        return Err(GuestProcessEffectErrorV1::UnprotectedLedger);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_CLOEXEC | O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o022 != 0
+        || metadata.len() == 0
+        || metadata.len() > MAXIMUM_LOGIN_FILE_BYTES
+    {
+        return Err(GuestProcessEffectErrorV1::UnprotectedLedger);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAXIMUM_LOGIN_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len() || bytes.contains(&0) {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+    String::from_utf8(bytes).map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_static_login_uid_contents;
+
+    #[test]
+    fn static_files_policy_requires_exact_account_uid() {
+        let passwd =
+            "root:x:0:0:root:/root:/bin/sh\naos_exec:x:1001:1001::/home/aos_exec:/bin/sh\n";
+        assert!(
+            verify_static_login_uid_contents("aos_exec", 1001, "passwd: files\n", passwd).is_ok()
+        );
+        assert!(
+            verify_static_login_uid_contents("aos_exec", 1002, "passwd: files\n", passwd).is_err()
+        );
+        assert!(
+            verify_static_login_uid_contents("missing", 1001, "passwd: files\n", passwd).is_err()
+        );
+    }
+
+    #[test]
+    fn dynamic_or_ambiguous_nss_policy_is_denied() {
+        let passwd = "aos_exec:x:1001:1001::/home/aos_exec:/bin/sh\n";
+        for policy in [
+            "passwd: files systemd\n",
+            "passwd: compat\n",
+            "passwd: files\npasswd: files\n",
+            "group: files\n",
+        ] {
+            assert!(verify_static_login_uid_contents("aos_exec", 1001, policy, passwd).is_err());
+        }
+        assert!(
+            verify_static_login_uid_contents(
+                "aos_exec",
+                1001,
+                "passwd: files\n",
+                &format!("{passwd}{passwd}")
+            )
+            .is_err()
+        );
+    }
 }
 
 fn install_protected_file(
