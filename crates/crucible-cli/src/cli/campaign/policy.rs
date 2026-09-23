@@ -166,9 +166,9 @@ struct AuthoredFairnessPolicy {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoredCampaignAttemptTimeout {
-    virtual_time_nanoseconds: Option<u64>,
-    execution_quanta: Option<u64>,
-    host_completion_watchdog_ms: Option<u64>,
+    virtual_time_nanoseconds: Option<AuthoredU64>,
+    execution_quanta: Option<AuthoredU64>,
+    host_completion_watchdog_ms: Option<AuthoredU64>,
 }
 
 #[derive(Deserialize)]
@@ -445,9 +445,15 @@ impl AuthoredCampaignPolicy {
 impl AuthoredCampaignAttemptTimeout {
     fn into_policy(self) -> Result<CampaignAttemptTimeoutPolicy, CliError> {
         CampaignAttemptTimeoutPolicy::new(
-            self.virtual_time_nanoseconds,
-            self.execution_quanta,
-            self.host_completion_watchdog_ms,
+            self.virtual_time_nanoseconds
+                .map(|value| value.into_value("attempt virtual-time deadline"))
+                .transpose()?,
+            self.execution_quanta
+                .map(|value| value.into_value("attempt execution-quanta deadline"))
+                .transpose()?,
+            self.host_completion_watchdog_ms
+                .map(|value| value.into_value("host completion watchdog"))
+                .transpose()?,
         )
         .map_err(|error| usage_error(format!("invalid attempt timeout policy: {error}")))
     }
@@ -1139,8 +1145,9 @@ stop = "next-choice"
         let input = temporary.path().join("policy.toml");
         let output = temporary.path().join("policy.bin");
         let authored = format!(
-            "{}\n[attempt_timeout]\nvirtual_time_nanoseconds = 1000000\nexecution_quanta = 500\nhost_completion_watchdog_ms = 30000\n",
-            manifest()
+            "{}\n[attempt_timeout]\nvirtual_time_nanoseconds = 1000000\nexecution_quanta = 500\nhost_completion_watchdog_ms = \"{}\"\n",
+            manifest(),
+            u64::MAX,
         );
         std::fs::write(&input, authored).expect("write bounded policy");
 
@@ -1153,7 +1160,7 @@ stop = "next-choice"
 
         assert_eq!(timeout.virtual_time_nanoseconds(), Some(1_000_000));
         assert_eq!(timeout.execution_quanta(), Some(500));
-        assert_eq!(timeout.host_completion_watchdog_ms(), Some(30_000));
+        assert_eq!(timeout.host_completion_watchdog_ms(), Some(u64::MAX));
         assert_eq!(
             policy
                 .id()
@@ -1174,7 +1181,7 @@ stop = "next-choice"
             "virtual_time_nanoseconds = 0",
             "execution_quanta = 0",
             "execution_quanta = 10\nhost_completion_watchdog_ms = 0",
-            "execution_quanta = 10\nhost_completion_watchdog_ms = 3600001",
+            "execution_quanta = 10\nhost_completion_watchdog_ms = \"18446744073709551616\"",
         ] {
             std::fs::write(
                 &input,
