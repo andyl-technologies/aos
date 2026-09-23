@@ -13,8 +13,8 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
 use aos_sandbox_core::{
-    AttachmentId, ExecutionId, ObjectDescriptor, OperationId, ProjectId, SandboxId, SnapshotId,
-    ViewId,
+    AttachmentId, ExecutionId, IncarnationId, ObjectDescriptor, OperationId, ProjectId, SandboxId,
+    SnapshotId, ViewId,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -1376,13 +1376,72 @@ enum CacheConsumerMutationV1 {
 /// Retains the exact public cache consumer checked against current desired state.
 ///
 /// This is not source-object membership, protected pin authority, or physical
-/// residency evidence. It only carries the consumer identity needed to select
-/// retained obligations after project and resource-version validation.
+/// residency evidence. It carries the consumer identity needed to select
+/// retained obligations and, for acquisition, the exact desired-state fence
+/// that a separately authenticated View source must match.
 pub struct RecheckedCacheConsumerV1 {
     object: ObjectDescriptor,
     project: ProjectId,
     view: ViewId,
     attachment: Option<AttachmentId>,
+    acquisition_fence: Option<RecheckedCacheAcquisitionFenceV1>,
+}
+
+/// Retains the current desired-state fence for one public cache pin acquisition.
+///
+/// The revision and runtime fields must be joined to independent source and
+/// protected Cache authority before a pin can be installed.
+pub struct RecheckedCacheAcquisitionFenceV1 {
+    view_revision: ObjectDescriptor,
+    view_generation: u64,
+    runtime: Option<RecheckedCacheRuntimeFenceV1>,
+}
+
+/// Retains the attached runtime identity checked for cache pin acquisition.
+pub struct RecheckedCacheRuntimeFenceV1 {
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    assignment_epoch: u64,
+}
+
+impl RecheckedCacheRuntimeFenceV1 {
+    /// Returns the Sandbox that owns the current attachment.
+    #[must_use]
+    pub const fn sandbox(&self) -> SandboxId {
+        self.sandbox
+    }
+
+    /// Returns the current observed Sandbox incarnation.
+    #[must_use]
+    pub const fn incarnation(&self) -> IncarnationId {
+        self.incarnation
+    }
+
+    /// Returns the current observed assignment epoch.
+    #[must_use]
+    pub const fn assignment_epoch(&self) -> u64 {
+        self.assignment_epoch
+    }
+}
+
+impl RecheckedCacheAcquisitionFenceV1 {
+    /// Returns the exact current portable View revision descriptor.
+    #[must_use]
+    pub const fn view_revision(&self) -> &ObjectDescriptor {
+        &self.view_revision
+    }
+
+    /// Returns the current desired generation of that View.
+    #[must_use]
+    pub const fn view_generation(&self) -> u64 {
+        self.view_generation
+    }
+
+    /// Returns the attached Sandbox incarnation and assignment epoch, if any.
+    #[must_use]
+    pub const fn runtime(&self) -> Option<&RecheckedCacheRuntimeFenceV1> {
+        self.runtime.as_ref()
+    }
 }
 
 impl RecheckedCacheConsumerV1 {
@@ -1409,6 +1468,15 @@ impl RecheckedCacheConsumerV1 {
     pub const fn attachment(&self) -> Option<AttachmentId> {
         self.attachment
     }
+
+    /// Returns the acquisition-only View and runtime fence.
+    ///
+    /// Release intentionally has no acquisition fence: an old attachment
+    /// source may still hold a pin after the current View revision changes.
+    #[must_use]
+    pub const fn acquisition_fence(&self) -> Option<&RecheckedCacheAcquisitionFenceV1> {
+        self.acquisition_fence.as_ref()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1423,7 +1491,7 @@ fn cache_consumer_mutation_intent(
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
     mutation_kind: CacheConsumerMutationV1,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
-    validate_cache_consumer_projection(
+    let _ = validate_cache_consumer_projection(
         journal,
         project,
         view_id,
@@ -1468,7 +1536,7 @@ pub fn recheck_cache_consumer_projection_v1(
         ),
         _ => return Err(OperationCompilationError::Rejected),
     };
-    validate_cache_consumer_projection(
+    let acquisition_fence = validate_cache_consumer_projection(
         journal,
         project,
         view_id,
@@ -1492,6 +1560,7 @@ pub fn recheck_cache_consumer_projection_v1(
         project,
         view: ViewId::from_bytes(exact_id(view_id)?),
         attachment,
+        acquisition_fence,
     })
 }
 
@@ -1502,7 +1571,7 @@ fn validate_cache_consumer_projection(
     attachment_id: &[u8],
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
     mutation_kind: CacheConsumerMutationV1,
-) -> Result<(), OperationCompilationError> {
+) -> Result<Option<RecheckedCacheAcquisitionFenceV1>, OperationCompilationError> {
     let view = load_view(journal, exact_id(view_id)?)?;
     ensure_view_project(&view, project)?;
     // Release remains possible after the consumer starts draining.
@@ -1517,6 +1586,7 @@ fn validate_cache_consumer_projection(
         return Err(OperationCompilationError::Rejected);
     }
 
+    let mut runtime = None;
     if attachment_id.is_empty() {
         validate_resource_mutation(&view.resource_version, mutation)?;
     } else {
@@ -1540,12 +1610,31 @@ fn validate_cache_consumer_projection(
             {
                 return Err(OperationCompilationError::Rejected);
             }
+            runtime = Some(RecheckedCacheRuntimeFenceV1 {
+                sandbox: SandboxId::from_bytes(exact_id(&attachment.sandbox_id)?),
+                incarnation: IncarnationId::from_bytes(exact_id(&observed.incarnation_id)?),
+                assignment_epoch: attachment.assignment_epoch,
+            });
         }
         // A replacement can change the attachment's current source before an old pin drains.
         validate_resource_mutation(&attachment.resource_version, mutation)?;
     }
 
-    Ok(())
+    if matches!(mutation_kind, CacheConsumerMutationV1::Release) {
+        return Ok(None);
+    }
+
+    let revision = view
+        .revision
+        .as_option()
+        .ok_or(OperationCompilationError::Rejected)?;
+    let view_revision = crate::public_mutation_compiler::object_descriptor(revision)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    Ok(Some(RecheckedCacheAcquisitionFenceV1 {
+        view_revision,
+        view_generation: view.desired_generation,
+        runtime,
+    }))
 }
 
 fn cancel_operation_intent(
