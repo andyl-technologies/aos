@@ -25,6 +25,7 @@ pub mod guardian_binding;
 pub mod identity;
 pub mod model;
 pub mod ownership_lease;
+pub mod public_attach_grant;
 pub mod publisher;
 pub mod registry;
 pub mod resources;
