@@ -128,6 +128,26 @@ pub struct RuntimeScopeClient {
 }
 
 impl RuntimeScopeClient {
+    /// Opens a fresh descriptor-subject channel to a trusted Host endpoint.
+    ///
+    /// The path locates the service; the configured cgroup and record subjects
+    /// authenticate the actual Host execution. Each client is single-use.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe or unavailable socket, an invalid retained Host
+    /// cgroup, or failure to enable kernel record-subject reporting.
+    pub fn connect(
+        path: &Path,
+        expected_host: HostServiceIdentity,
+    ) -> Result<Self, RuntimeScopeError> {
+        expected_host.cgroup.validate_current()?;
+        Ok(Self {
+            socket: DescriptorSubjectSocket::connect(path)?,
+            expected_host,
+        })
+    }
+
     /// Configures an exclusively owned connected Unix sequenced-packet channel.
     ///
     /// Credential and pidfd reporting are enabled before any hello is sent.

@@ -112,6 +112,7 @@ use aos_sandbox::{
     public_operation_resource_from_journal_v1,
 };
 
+mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
 pub(crate) mod execution;
