@@ -1,7 +1,37 @@
 //! Operational host observations that remain outside deterministic state.
 
 use std::future::Future;
-use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+
+/// Bounds an operational host wait without exporting a clock reading.
+pub(super) struct HostWaitDeadline {
+    started_at: Instant,
+    allowance: Duration,
+}
+
+impl HostWaitDeadline {
+    /// Starts an operational wait with the given host-time allowance.
+    // crucible-lint: allow clippy-disallowed-method -- the clock bounds only service supervision.
+    #[allow(clippy::disallowed_methods)]
+    pub(super) fn after(allowance: Duration) -> Self {
+        Self {
+            started_at: Instant::now(),
+            allowance,
+        }
+    }
+
+    /// Reports whether the host wait allowance has elapsed.
+    // crucible-lint: allow clippy-disallowed-method -- elapsed host time never enters campaign state.
+    #[allow(clippy::disallowed_methods)]
+    pub(super) fn expired(&self) -> bool {
+        self.started_at.elapsed() >= self.allowance
+    }
+
+    /// Pauses before another host service completion check.
+    pub(super) fn pause(&self, interval: Duration) {
+        std::thread::park_timeout(interval);
+    }
+}
 
 /// Identifies which host operation completed first.
 pub(super) enum HostRaceOutcome<F, S> {

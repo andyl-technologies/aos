@@ -18,11 +18,9 @@ use crucible_campaign::{
 };
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc,
+    atomic::{AtomicU64, Ordering},
 };
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const MAX_SELECTED_ORIGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES: u64 = 32 * 1024 * 1024 + 1024;
@@ -33,6 +31,7 @@ use crate::executor_supervisor::ExecutionCheckpointHandoff;
 use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticEvent, GuestSelectableBoundaryDiagnosticRecorder,
 };
+use crate::supervision::{AssignmentHostWatchdog, AssignmentHostWatchdogGuard};
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptCheckpointResult, AttemptExecutionOrigin,
     CancellationOutcome, CapturedAttemptCheckpoint, CheckpointCompletionOutcome,
@@ -588,93 +587,6 @@ impl Clone for AttemptExecutionContext {
 #[derive(Clone, Debug)]
 struct ExecutionQuantumBudget {
     consumed: Arc<AtomicU64>,
-}
-
-/// Monotonic, clone-shared operational deadline for one accepted assignment.
-#[derive(Clone, Debug)]
-struct AssignmentHostWatchdog {
-    started_at: Instant,
-    allowance: Duration,
-    expired: Arc<AtomicBool>,
-}
-
-impl AssignmentHostWatchdog {
-    // Host elapsed time is operational supervision only; it never enters
-    // campaign objects, modeled ordering, or finding signatures.
-    // crucible-lint: allow clippy-disallowed-method -- elapsed host time controls only operational cancellation.
-    #[allow(clippy::disallowed_methods)]
-    fn remaining(&self) -> Duration {
-        self.allowance.saturating_sub(self.started_at.elapsed())
-    }
-
-    fn expired(&self) -> bool {
-        self.expired.load(Ordering::Acquire) || self.remaining().is_zero()
-    }
-}
-
-/// Cancels a live QEMU child when the whole assignment exceeds its host budget.
-struct AssignmentHostWatchdogGuard {
-    completion: mpsc::Sender<()>,
-    watcher: Option<JoinHandle<()>>,
-    state: AssignmentHostWatchdog,
-}
-
-impl AssignmentHostWatchdogGuard {
-    // Host monotonic time controls only process cancellation for this assignment.
-    // crucible-lint: allow clippy-disallowed-method -- host time never enters campaign semantic state.
-    #[allow(clippy::disallowed_methods)]
-    fn start(milliseconds: u64, cancellation: ExecutionCancellation) -> std::io::Result<Self> {
-        let state = AssignmentHostWatchdog {
-            started_at: Instant::now(),
-            allowance: Duration::from_millis(milliseconds),
-            expired: Arc::new(AtomicBool::new(false)),
-        };
-        let (completion, receiver) = mpsc::channel();
-        let watcher_state = state.clone();
-        let watcher = thread::Builder::new()
-            .name(String::from("campaign-host-watchdog"))
-            .spawn(move || {
-                loop {
-                    // Keep each wait representable even when policy admits a
-                    // duration far beyond the platform's Instant range.
-                    let slice = watcher_state.remaining().min(Duration::from_secs(3600));
-                    match receiver.recv_timeout(slice) {
-                        Err(mpsc::RecvTimeoutError::Timeout) if watcher_state.expired() => {
-                            watcher_state.expired.store(true, Ordering::Release);
-                            cancellation.cancel();
-                            break;
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(mpsc::RecvTimeoutError::Disconnected) | Ok(()) => break,
-                    }
-                }
-            })?;
-        Ok(Self {
-            completion,
-            watcher: Some(watcher),
-            state,
-        })
-    }
-
-    fn stop(&mut self) -> bool {
-        // A completed candidate cannot win a race against the assignment deadline
-        // merely because the watchdog thread has not been scheduled yet.
-        if self.state.remaining().is_zero() {
-            self.state.expired.store(true, Ordering::Release);
-        }
-        let _ = self.completion.send(());
-        let joined = self
-            .watcher
-            .take()
-            .is_none_or(|watcher| watcher.join().is_ok());
-        !joined || self.state.expired()
-    }
-}
-
-impl Drop for AssignmentHostWatchdogGuard {
-    fn drop(&mut self) {
-        self.stop();
-    }
 }
 
 fn complete_host_watchdog<T, E>(
