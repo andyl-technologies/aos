@@ -158,6 +158,7 @@
     "aos-doc"
     "aos-doc-model"
     "aos-filesystem-view"
+    "aos-filesystem-view-core"
     "aos-filesystem-fuse"
     "aos-hub"
     "aos-hub-core"

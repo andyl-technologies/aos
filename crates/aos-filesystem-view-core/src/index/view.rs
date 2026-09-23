@@ -117,12 +117,20 @@ impl<'bytes> ValidatedIndex<'bytes> {
     }
 
     /// Decodes a root whose byte lifetime is retained by an internal owner.
-    pub(crate) fn retained_root(&self) -> Result<IndexNodeView<'bytes>, IndexError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::InvalidRecord`] if the validated bytes became inconsistent.
+    pub fn retained_root(&self) -> Result<IndexNodeView<'bytes>, IndexError> {
         decode_record_view(self.bytes, HEADER_BYTES, 0, self.descriptor.digest())
     }
 
     /// Re-resolves a private node handle through the authenticated format index.
-    pub(crate) fn authenticate_node(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign node or inconsistent authenticated bytes.
+    pub fn authenticate_node(
         &self,
         node: &IndexNodeView<'_>,
     ) -> Result<IndexNodeView<'bytes>, IndexError> {
@@ -212,7 +220,11 @@ impl<'bytes> ValidatedIndex<'bytes> {
     }
 
     /// Looks up a byte-slice child whose index lifetime is retained internally.
-    pub(crate) fn retained_lookup_child_bytes(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, foreign parent, or inconsistent index.
+    pub fn retained_lookup_child_bytes(
         &self,
         parent: &IndexNodeView<'_>,
         name: &[u8],
@@ -269,7 +281,11 @@ impl<'bytes> ValidatedIndex<'bytes> {
     }
 
     /// Returns a child range whose bytes are retained by an internal owner.
-    pub(crate) fn retained_directory_range(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign or non-directory node or invalid offsets.
+    pub fn retained_directory_range(
         &self,
         directory: &IndexNodeView<'_>,
     ) -> Result<DirectoryRange<'bytes>, IndexError> {
@@ -470,7 +486,8 @@ pub struct DirectoryRange<'a> {
 
 impl<'a> DirectoryRange<'a> {
     /// Reports whether two ranges carry the same authenticated identity.
-    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
         std::ptr::eq(self.bytes, other.bytes)
             && self.artifact == other.artifact
             && self.table_offset == other.table_offset

@@ -28,8 +28,10 @@
 //! daemons must explicitly own its activation object, dispatch the closed
 //! method profile, and retain recovery custody before advertising readiness.
 //!
-//! [`manifest`] owns the fixed `AOSBSC01` format. The private protected-files
-//! module pins the endpoint directory and its three role-local files. The
+//! [`manifest`] owns the fixed `AOSBSC01` format.
+//! `cache_source_membership` binds public Cache consumers to the independently
+//! authenticated View source projection. The private protected-files module
+//! pins the endpoint directory and its three role-local files. The
 //! private self-execution module pins and revalidates the loading process, the
 //! private entropy module implements bounded kernel acquisition, the endpoint
 //! module owns deliberately narrow client and broker custody APIs, and the
@@ -42,6 +44,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod cache_source_membership;
 mod controller_authority_effect;
 mod controller_ownership;
 mod controller_plan_signer;
@@ -76,6 +79,7 @@ mod recovery;
 )]
 mod self_execution;
 
+pub use cache_source_membership::{CacheSourceMembershipErrorV1, join_cache_source_membership_v1};
 pub use dormant_handshake::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,
     DormantBrokerDescriptorCommitResultV1, DormantBrokerDescriptorExecutionFailureV1,

@@ -347,6 +347,7 @@ dependencies = [
 name = "aos-filesystem-view"
 version = "0.1.0"
 dependencies = [
+ "aos-filesystem-view-core",
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
@@ -354,6 +355,15 @@ dependencies = [
  "ed25519-dalek",
  "libc",
  "rustix 1.1.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-filesystem-view-core"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
@@ -889,6 +899,7 @@ dependencies = [
 name = "aos-sandbox-broker-session-security"
 version = "0.1.0"
 dependencies = [
+ "aos-filesystem-view-core",
  "aos-proto",
  "aos-sandbox",
  "aos-sandbox-broker-session-protocol",

@@ -64,8 +64,12 @@ pub use view::{
 };
 pub use wire::INDEX_MEDIA_TYPE;
 
+#[cfg(feature = "test-fixtures")]
+pub use builder::StructuralIndexBuilder;
+#[cfg(not(feature = "test-fixtures"))]
+pub(crate) use builder::StructuralIndexBuilder;
 #[allow(unused_imports)]
-pub(crate) use builder::{FinishIndexResult, PushIndexResult, StructuralIndexBuilder};
+pub(crate) use builder::{FinishIndexResult, PushIndexResult};
 pub(crate) use wire::{
     FEATURE_ABSOLUTE_SYMLINK, FEATURE_ACL, FEATURE_PARENT_SYMLINK, byte_vector_charge,
     record_encoded_len,

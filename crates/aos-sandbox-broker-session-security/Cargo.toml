@@ -10,6 +10,7 @@ kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 
 [dependencies]
 aos-proto.workspace = true
+aos-filesystem-view-core.workspace = true
 aos-sandbox.workspace = true
 aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-core.workspace = true

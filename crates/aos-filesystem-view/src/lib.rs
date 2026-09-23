@@ -10,51 +10,37 @@
 //! immutable transport, worker supervisor, and Linux fs-verity mmap index
 //! catalog. Its portable worker API is unconditional; Linux descriptor
 //! ownership and protected FUSE qualification compile only on Linux.
+//! Portable validation and presentation live in `aos-filesystem-view-core` so
+//! controllers can authenticate source membership without importing worker
+//! broker-session integration.
 
-mod graph;
-mod index;
 #[cfg(target_os = "linux")]
 mod index_owner;
 mod inode;
-mod limits;
-mod presentation;
-mod remote_source;
-mod source;
-mod view_projection;
 mod worker;
 
-pub use graph::{CompileError, CompileSummary, TreeCompiler};
-pub use index::{
-    DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE, IndexAclEntries,
-    IndexAclRange, IndexContentView, IndexCrosslinks, IndexError, IndexExpectation,
-    IndexExtentRange, IndexExtentView, IndexExtents, IndexFileView, IndexNodeBodyView,
-    IndexNodeKind, IndexNodeSemantics, IndexNodeView, IndexObjectDescriptorView, IndexRecords,
-    IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange, IndexXattrView,
-    IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
+pub use aos_filesystem_view_core::{
+    AclCapability, CompileError, CompileSummary, DirectoryEntries, DirectoryEntryView,
+    DirectoryRange, DormantRemoteSource, ExactObject, FetchAmbiguity, FetchAttempt, FetchBeginPoll,
+    FetchControl, FetchControlState, FetchLimits, FetchRead, FetchReceipt, FetchRecovery,
+    FetchRecoveryError, FetchRecoveryPoll, INDEX_MEDIA_TYPE, IdMapExtent, IdentityMap,
+    IdentityMapError, ImmutableFetchTransport, IndexAclEntries, IndexAclRange, IndexContentView,
+    IndexCrosslinks, IndexError, IndexExpectation, IndexExtentRange, IndexExtentView, IndexExtents,
+    IndexFileView, IndexNodeBodyView, IndexNodeKind, IndexNodeSemantics, IndexNodeView,
+    IndexObjectDescriptorView, IndexRecords, IndexSparseContentView, IndexStaging, IndexSummary,
+    IndexXattrRange, IndexXattrView, IndexXattrs, MetadataTransportError, MetadataTransportLimits,
+    ObjectSource, PreparedPresentation, PresentationError, PresentationLimits, PresentationPlan,
+    PresentedAclEntries, PresentedAclRange, PresentedInodeAttributes, PresentedMetadata,
+    ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
+    RemoteFetchError, SourceError, StagedIndex, SyntheticDirectoryMetadata, TreeCompileLimits,
+    TreeCompiler, ValidatedIndex, ValidatedViewProjection, ValidatedViewSourceObject,
+    compile_view_projection, load_exact, validate_index,
 };
 pub use inode::{
     DirectoryCookie, DirectoryHandleId, DirectoryHandleLimits, DirectoryReadEntries,
     DirectoryReadEntry, DirectoryReadKind, DirectoryReservation, ForgetRequest, ForgetSummary,
     InodeAttributes, InodeError, InodeLookup, InodeTable, InodeTableLimits, LiveInode,
     OpenHandleId, OpenReservation, ROOT_NODE_ID,
-};
-pub use limits::TreeCompileLimits;
-pub use presentation::{
-    AclCapability, IdMapExtent, IdentityMap, IdentityMapError, MetadataTransportError,
-    MetadataTransportLimits, PreparedPresentation, PresentationError, PresentationLimits,
-    PresentationPlan, PresentedAclEntries, PresentedAclRange, PresentedInodeAttributes,
-    PresentedMetadata,
-};
-pub use remote_source::{
-    DormantRemoteSource, FetchAmbiguity, FetchAttempt, FetchBeginPoll, FetchControl,
-    FetchControlState, FetchLimits, FetchRead, FetchReceipt, FetchRecovery, FetchRecoveryError,
-    FetchRecoveryPoll, ImmutableFetchTransport, RemoteFetchError,
-};
-pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
-pub use view_projection::{
-    ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
-    SyntheticDirectoryMetadata, ValidatedViewProjection, ValidatedViewSourceObject,
-    compile_view_projection,
 };
 pub use worker::{
     AttachmentHealth, AuthenticatedConnectionJoin, BackingDisposition, BackingIdentity,
@@ -76,6 +62,13 @@ pub use worker::{
     VerifiedBackingEvidence, VerifiedObjectReader, WorkerAttributes, WorkerError, WorkerLifecycle,
     WorkerLifecycleSnapshot, WorkerLimits, WorkerPhase,
 };
+
+#[cfg(test)]
+mod index {
+    pub(crate) use aos_filesystem_view_core::test_fixtures::{
+        IndexNode, IndexRecord, StructuralIndexBuilder,
+    };
+}
 
 #[cfg(target_os = "linux")]
 pub use index_owner::{

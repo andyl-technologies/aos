@@ -31,6 +31,7 @@ members = [
     "aos-profile",
     "aos-systemd",
     "aos-filesystem-view",
+    "aos-filesystem-view-core",
     "aos-filesystem-fuse",
     "aos-filesystem-fuse/tests/fixtures/kernel-worker",
     "aos-filesystem-fuse/tests/fixtures/link-consumer",
@@ -254,6 +255,7 @@ aos-image-finalizer = { path = "aos-image-finalizer" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
 aos-filesystem-view = { path = "aos-filesystem-view" }
+aos-filesystem-view-core = { path = "aos-filesystem-view-core" }
 aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
 aos-sandbox-agent = { path = "aos-sandbox-agent" }
 aos-sandbox-core = { path = "aos-sandbox-core" }

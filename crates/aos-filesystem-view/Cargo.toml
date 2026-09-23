@@ -6,9 +6,10 @@ license.workspace = true
 
 [features]
 default = []
-test-fixtures = []
+test-fixtures = ["aos-filesystem-view-core/test-fixtures"]
 
 [dependencies]
+aos-filesystem-view-core.workspace = true
 aos-sandbox-core.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -20,6 +21,9 @@ aos-sandbox-broker-session-security.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }
+
+[dev-dependencies]
+aos-filesystem-view-core = { workspace = true, features = ["test-fixtures"] }
 
 [[test]]
 name = "semantic_no_alloc"

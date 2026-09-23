@@ -90,7 +90,7 @@ impl<W> StagedIndex<W> {
 }
 
 /// Writes a private structural-index artifact behind the consuming compiler.
-pub(crate) struct StructuralIndexBuilder<W> {
+pub struct StructuralIndexBuilder<W> {
     pub(super) writer: W,
     pub(super) compiler_abi: [u8; 32],
     pub(super) tree: ObjectDescriptor,
@@ -183,7 +183,12 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         ))
     }
 
-    pub(crate) fn new(
+    /// Opens a fresh bounded index staging writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError`] for invalid bounds, descriptors, or nonempty staging.
+    pub fn new(
         staging: IndexStaging<W>,
         compiler_abi: [u8; 32],
         tree: ObjectDescriptor,
@@ -239,8 +244,8 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
     /// # Errors
     ///
     /// Returns [`IndexError`] for arithmetic/format limits or staging I/O.
-    #[cfg(test)]
-    pub(crate) fn push(&mut self, record: &IndexRecord<'_>) -> Result<u64, IndexError> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn push(&mut self, record: &IndexRecord<'_>) -> Result<u64, IndexError> {
         self.push_with_external(record, 0, self.maximum_working_bytes)
             .map(|result| result.record_id)
     }
@@ -375,8 +380,8 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
     /// # Errors
     ///
     /// Returns [`IndexError::Io`] when seeking, writing, or flushing fails.
-    #[cfg(test)]
-    pub(crate) fn finish(self) -> Result<StagedIndex<W>, IndexError> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn finish(self) -> Result<StagedIndex<W>, IndexError> {
         let maximum = self.maximum_working_bytes;
         self.finish_with_external(0, maximum)
             .map(|result| result.staged)

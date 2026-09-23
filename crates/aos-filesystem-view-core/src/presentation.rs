@@ -356,7 +356,12 @@ impl<'index, 'bytes, 'plan> PreparedPresentation<'index, 'bytes, 'plan> {
         self.policy_digest
     }
 
-    pub(crate) fn translate_synthetic_identity(
+    /// Translates a synthetic directory's portable owner through this plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PresentationError`] if either owner ID has no exact mapping.
+    pub fn translate_synthetic_identity(
         &self,
         uid: u32,
         gid: u32,
