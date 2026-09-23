@@ -49,7 +49,7 @@ pub(super) fn replay_exact_finding(
     )
     .map_err(|error| backend_error(format!("archived production replay is invalid: {error}")))?;
     let (qemu, plugin, build_id) = resolve_immutable_qemu(cli)?;
-    let private = tempfile::tempdir().map_err(CliError::Io)?;
+    let private = private_bundle_tempdir()?;
     let guests = crucible_daemon::materialize_finding_replay_guest_assets(
         capture.deployment(),
         &qemu,

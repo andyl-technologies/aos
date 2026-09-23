@@ -483,9 +483,6 @@ struct CampaignFindingBundleMidpointArgs {
     /// Attach this node's gdbstub at the retained midpoint.
     #[arg(long, value_name = "ID", required = true)]
     node: String,
-    /// Listen for read-only GDB clients on this loopback address.
-    #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:0")]
-    gdb_listen: String,
     /// Maximum authenticated bytes admitted for one exact checkpoint closure.
     #[arg(long, default_value_t = 1_073_741_824, value_name = "BYTES")]
     maximum_checkpoint_bytes: u64,

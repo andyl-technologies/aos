@@ -37,6 +37,7 @@ crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-daemon = { path = "../crucible-daemon" }
 crucible-session = { path = "../crucible-session" }
+rcgen = { workspace = true }
 rustix = { workspace = true, features = ["process", "termios"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
