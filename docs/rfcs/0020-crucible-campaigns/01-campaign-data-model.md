@@ -811,7 +811,8 @@ may be earlier and is not a substitute. Terminal and assertion outcomes retain
 precedence. When virtual time and execution quanta first cross on the same
 scheduler quantum, virtual time is the reporting priority.
 
-Campaign policies may additionally bind every attempt's primary stop to an
+The current policy-bounded stop uses tag 9. Campaign policies may additionally
+bind every attempt's primary stop to an
 absolute virtual-time deadline, an absolute scheduler-quantum deadline, or
 both. At least one modeled deadline is required when this policy is present.
 An optional positive u64-millisecond host completion watchdog is operational
@@ -825,7 +826,9 @@ Policy timeout cannot authorize a selected continuation or statistical
 primary-stop sample. The intrinsic quantum fallback of
 `NextChoiceOrExecutionQuanta` has its own proof-bearing
 `BoundedPrimaryTimeout` outcome. It cannot authorize a selected continuation;
-a choice reached before that fallback can.
+a choice reached before that fallback can. Campaign logic handles an
+authenticated timeout outcome; no timer event is delivered to guest code for
+recovery.
 
 These stop tags occur only in the current enclosing records: `Attempt` v9,
 `BranchRequest` v10, `CampaignFact` v15, `Observation` v13, and discovery-service

@@ -708,7 +708,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   model named by the opportunity; the owner selects the earliest
   credited execution basis per semantic edge and normalizes completed plus one
   prospective offer with exact edge-ordered remainder distribution. Uniform
-  and generated sources remain weight one. Schema-v9 request identities are
+  and generated sources remain weight one. Schema-v10 request identities are
   the sole current encoding for every supported source form.
   Prospective bases are shared by branch point/raw weight and
   capped at 1,000,000 completed-edge visits per planner page.

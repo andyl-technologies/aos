@@ -122,7 +122,7 @@ source remains an auditable operator/planner override even when the opportunity
 names a model, and the model is used only when the request selects
 `ModeledFinite` or `ModeledGenerated`.
 They do not change canonical value order, legality, request budgets,
-deduplication, or attempt identity. Branch requests use schema v9, whose source
+deduplication, or attempt identity. Branch requests use schema v10, whose source
 encoding covers uniform, explicit, modeled, generated, statistical-finite, and
 SMC inputs. Generator draws remain keyed by `BranchRequestId`. Statistical
 finite and SMC sources retain complete positive target and proposal mass maps
@@ -971,7 +971,7 @@ ancestor-selection step. Without resampling, the generation carries each
 incoming weight and a unit normalization factor.
 
 The version-four implementation executes every declared transition stage. The
-owner issues exactly one schema-v9 branch request and proposal for each particle
+owner issues exactly one schema-v10 branch request and proposal for each particle
 slot, waits for all observations in a stage before deriving the next generation,
 and replays each request, proposal, admission, attempt, selection, path, and
 observation from authenticated snapshot roots. Every initial transition and
@@ -985,10 +985,10 @@ The pure planner receives schema-v3 `PlannerRequest` messages for SMC work. Each
 message retains the derived generation identity, complete particle slot,
 authenticated parent configuration, selected opportunity, and domain by value.
 Canonical frontier implementation version 8 validates that basis and emits a
-schema-v9 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
+schema-v10 `BranchRequest` with `CandidateSource::StatisticalSmc` (candidate-source
 tag 6); the stage-zero finite flight uses the same current request schema with
 `CandidateSource::StatisticalFinite` (tag 5). Planner-request schema v3 and
-branch-request schema v9 are the sole current encodings for every operation.
+branch-request schema v10 are the sole current encodings for every operation.
 
 A complete SMC report leaves the final population unresampled, preserves slot
 multiplicity, and multiplies every prefinal resampling normalization factor into
