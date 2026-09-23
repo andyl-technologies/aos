@@ -48,36 +48,7 @@ pub(super) fn replay_exact_finding(
         role.campaign_role(),
     )
     .map_err(|error| backend_error(format!("archived production replay is invalid: {error}")))?;
-    // Marker identity does not hash the executable bytes. Reject mutable
-    // overrides before discovery probes or executes either candidate.
-    for path in [cli.qemu.as_deref(), cli.plugin.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        require_immutable_store_path(path)?;
-    }
-    for name in [CRUCIBLE_QEMU_ENV, CRUCIBLE_PLUGIN_ENV] {
-        if let Some(path) = std::env::var_os(name).filter(|value| !value.is_empty()) {
-            require_immutable_store_path(Path::new(&path))?;
-        }
-    }
-    let backend = crate::cli_run_save::require_selftest_qemu_backend(cli)?;
-    let (qemu, plugin, build_id) = match backend {
-        ResolvedLocalBackend::Qemu {
-            qemu,
-            plugin,
-            qemu_build_id,
-            ..
-        } => {
-            require_immutable_store_path(&qemu)?;
-            require_immutable_store_path(&plugin)?;
-            (qemu, plugin, qemu_build_id)
-        }
-        #[cfg(any(test, feature = "test-double"))]
-        ResolvedLocalBackend::Double => {
-            return Err(backend_error("exact finding replay requires local QEMU"));
-        }
-    };
+    let (qemu, plugin, build_id) = resolve_immutable_qemu(cli)?;
     let private = tempfile::tempdir().map_err(CliError::Io)?;
     let guests = crucible_daemon::materialize_finding_replay_guest_assets(
         capture.deployment(),
@@ -114,15 +85,7 @@ pub(super) fn replay_exact_finding(
         recipe.lifecycle_quantum_budget,
     )
     .map_err(|error| backend_error(format!("finding replay resources are invalid: {error}")))?;
-    let lifecycle_objects = Arc::new(crucible::MemoryDagStore::new());
-    for (identity, bytes) in capture.lifecycle_objects() {
-        let observed = lifecycle_objects.put(bytes).map_err(|error| {
-            backend_error(format!("finding lifecycle object is invalid: {error}"))
-        })?;
-        if observed != *identity {
-            return Err(backend_error("finding lifecycle object hash disagrees"));
-        }
-    }
+    let lifecycle_objects = load_lifecycle_objects(&capture)?;
 
     for (index, side) in capture.sides().iter().enumerate() {
         let mut lifecycle = lifecycle_config(
@@ -157,7 +120,7 @@ pub(super) fn replay_exact_finding(
             build_id.clone(),
             lifecycle,
             deployment.host.clone(),
-            resources.clone(),
+            resources,
         )
         .with_initial_replay(model.schedule().clone(), Some(closure.clone()))
         .with_discovery_stop(StopCondition::VirtualTimeOrExecutionQuanta {
@@ -186,6 +149,40 @@ pub(super) fn replay_exact_finding(
     })
 }
 
+pub(super) fn resolve_immutable_qemu(cli: &Cli) -> Result<(PathBuf, PathBuf, String), CliError> {
+    // Marker identity does not hash the executable bytes. Reject mutable
+    // overrides before discovery probes or executes either candidate.
+    for path in [cli.qemu.as_deref(), cli.plugin.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        require_immutable_store_path(path)?;
+    }
+    for name in [CRUCIBLE_QEMU_ENV, CRUCIBLE_PLUGIN_ENV] {
+        if let Some(path) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            require_immutable_store_path(Path::new(&path))?;
+        }
+    }
+    let backend = crate::cli_run_save::require_selftest_qemu_backend(cli)?;
+    let (qemu, plugin, build_id) = match backend {
+        ResolvedLocalBackend::Qemu {
+            qemu,
+            plugin,
+            qemu_build_id,
+            ..
+        } => {
+            require_immutable_store_path(&qemu)?;
+            require_immutable_store_path(&plugin)?;
+            (qemu, plugin, qemu_build_id)
+        }
+        #[cfg(any(test, feature = "test-double"))]
+        ResolvedLocalBackend::Double => {
+            return Err(backend_error("exact finding replay requires local QEMU"));
+        }
+    };
+    Ok((qemu, plugin, build_id))
+}
+
 fn require_immutable_store_path(path: &Path) -> Result<(), CliError> {
     let canonical = std::fs::canonicalize(path).map_err(CliError::Io)?;
     if !canonical.starts_with("/nix/store") {
@@ -197,7 +194,22 @@ fn require_immutable_store_path(path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn lifecycle_config(
+pub(super) fn load_lifecycle_objects(
+    capture: &crucible_daemon::FindingProductionReplayCapture,
+) -> Result<Arc<crucible::MemoryDagStore>, CliError> {
+    let objects = Arc::new(crucible::MemoryDagStore::new());
+    for (identity, bytes) in capture.lifecycle_objects() {
+        let observed = objects.put(bytes).map_err(|error| {
+            backend_error(format!("finding lifecycle object is invalid: {error}"))
+        })?;
+        if observed != *identity {
+            return Err(backend_error("finding lifecycle object hash disagrees"));
+        }
+    }
+    Ok(objects)
+}
+
+pub(super) fn lifecycle_config(
     qemu: &Path,
     plugin: &Path,
     guests: &crucible_daemon::MaterializedFindingReplayGuestAssets,

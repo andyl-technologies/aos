@@ -118,6 +118,7 @@ in
           no_shared_store=true
           production_qemu_capture_replay=${packagedReplay}
           finding_native_evidence_self_contained=true
+          fresh_process_bundle_model_verification=true
           fresh_process_bundle_archive_rejection=true
           RESULT
         '';
