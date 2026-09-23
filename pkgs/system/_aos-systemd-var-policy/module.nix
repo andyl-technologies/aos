@@ -7,7 +7,6 @@
   cfg = config.aos.security.measuredVar;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "measured-var";
@@ -30,93 +29,88 @@
   verityRoot = systemMilestone "verity-root" milestones.verityRootVerified;
   verityReadiness = resultOf "verity-root" "resource";
 
-  service = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "aos-var-crypt";
-      enabled = true;
-      lifecycle = {
-        description = "Encrypt and TPM2-seal persistent state";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/aos-var-crypt";
-              arguments = [
-                cfg.pcrPublicKey
-                cfg.signedPcrs
-                cfg.pinnedPcrs
-                cfg.recoveryKeyPath
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      manager_identity = {
-        name = "aos-var-crypt";
-        aliases = [];
-      };
-      dependencies = {
-        prerequisites = [];
-        after =
-          [
-            (resultOf "boot-identity" "resource")
-            (resultOf "initrd-stage" "resource")
-            (resultOf "device-events" "resource")
-          ]
-          ++ lib.optional cfg.requireVerity verityReadiness;
-        before = [
-          (resultOf "persistent-state" "resource")
-          (resultOf "initrd-filesystems" "resource")
-        ];
-        requires =
-          [
-            (resultOf "boot-identity" "resource")
-          ]
-          ++ lib.optional cfg.requireVerity verityReadiness;
-        wants = [];
-        requisite = [];
-        conflicts = [];
-        binds_to = [];
-        part_of = [];
-        upholds = [];
-        required_by = [(resultOf "initrd-filesystems" "resource")];
-        wanted_by = [];
-        required_mounts = [];
-        implicit_dependencies = true;
-      };
-      conditions.all = [
+  serviceDefinition = {
+    lifecycle = {
+      description = "Encrypt and TPM2-seal persistent state";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
         {
-          kind = "kernel-argument";
-          argument = "aos.recovery=1";
-          negated = true;
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/aos-var-crypt";
+            arguments = [
+              cfg.pcrPublicKey
+              cfg.signedPcrs
+              cfg.pinnedPcrs
+              cfg.recoveryKeyPath
+            ];
+          };
+          ignore_failure = false;
         }
       ];
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      logging = {
-        standard_output = "structured-and-console";
-        standard_error = "structured-and-console";
-        directories = [];
-        directory_mode = "0755";
-      };
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    manager_identity = {
+      name = "aos-var-crypt";
+      aliases = [];
+    };
+    dependencies = {
+      prerequisites = [];
+      after =
+        [
+          (resultOf "boot-identity" "resource")
+          (resultOf "initrd-stage" "resource")
+          (resultOf "device-events" "resource")
+        ]
+        ++ lib.optional cfg.requireVerity verityReadiness;
+      before = [
+        (resultOf "persistent-state" "resource")
+        (resultOf "initrd-filesystems" "resource")
+      ];
+      requires =
+        [
+          (resultOf "boot-identity" "resource")
+        ]
+        ++ lib.optional cfg.requireVerity verityReadiness;
+      wants = [];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [(resultOf "initrd-filesystems" "resource")];
+      wanted_by = [];
+      required_mounts = [];
+      implicit_dependencies = true;
+    };
+    conditions.all = [
+      {
+        kind = "kernel-argument";
+        argument = "aos.recovery=1";
+        negated = true;
+      }
+    ];
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    logging = {
+      standard_output = "structured-and-console";
+      standard_error = "structured-and-console";
+      directories = [];
+      directory_mode = "0755";
     };
   };
   fragments = [
@@ -126,9 +120,7 @@
     initrdFilesystems
     persistentState
     verityRoot
-    service
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.security.measuredVar = {
     enable = lib.mkOption {
@@ -176,15 +168,15 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
-      );
+      aos.services."measured-var.aos-var-crypt" = serviceDefinition // {enable = cfg.enable && initrdStage;};
     }
-    (lib.mkIf (cfg.enable && initrdStage) {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
-      );
+    (serviceManagement.projectService {
+      inherit config lib consumerInstance;
+      name = "measured-var.aos-var-crypt";
+    })
+    (serviceManagement.projectContributions {
+      inherit config lib fragments;
+      enabled = cfg.enable && initrdStage;
     })
   ];
 }
