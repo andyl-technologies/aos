@@ -5,7 +5,7 @@
   packageArtifactFor,
   ...
 }: let
-  cfg = config.aos.services.libvirt;
+  cfg = config.aos.virtualization.libvirt;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -45,10 +45,19 @@
     principal = name;
     allocation = "existing";
   }}";
-  allowedPrincipals =
-    builtins.map
-    (name: principal (allowedPrincipalKey name) name "existing" {})
-    cfg.allowedUsers;
+  allowedPrincipals = serviceManagement.forProducers {
+    inherit consumerInstance;
+    interface = interfaces.principalResolution;
+    producers =
+      builtins.map (name: {
+        key = allowedPrincipalKey name;
+        parameters = {
+          inherit name;
+          allocation = "existing";
+        };
+      })
+      cfg.allowedUsers;
+  };
   accessMembership = producer "access-membership" interfaces.groupMembership {
     name = "libvirt-access";
     group = resultOf "access-group" "resource";
@@ -220,19 +229,10 @@
     isolated_identity_mapping = "full";
   };
   service = declaration:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["hardening"];
-      featureRequests = lib.optional (declaration ? hardening) (
-        serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = declaration.hardening;
-        }
-      );
+    (builtins.removeAttrs declaration ["hardening" "enabled"])
+    // {
+      inherit consumerInstance;
+      policy.hardening = declaration.hardening;
     };
   daemon = {
     name,
@@ -490,7 +490,7 @@
     };
   };
 
-  fragments =
+  producers =
     [
       qemuGroup
       accessGroup
@@ -499,109 +499,97 @@
       accessMembership
       localFilesystems
     ]
-    ++ allowedPrincipals ++ directories ++ [virtlogd virtlockd libvirtd];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
+    ++ [allowedPrincipals] ++ directories;
+  requirements = {
+    requirementTemplates.${availabilityRequirement} =
+      lib.abilities.interfaceSelector {
+        name = "aos.dbus.system-bus-availability";
+        abi = 1;
+      }
+      // {
+        description = "Selects the exact package-owned system message bus.";
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+    requirementTemplates.${authorizationRequirement} =
+      lib.abilities.interfaceSelector {
+        name = "aos.authorization.service-availability";
+        abi = 1;
+      }
+      // {
+        description = "Requires the selected system authorization service.";
+        methods = ["observe"];
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
+    requests.system-bus-availability = {
+      requirement = availabilityRequirement;
+      consumer = consumerInstance;
+      scope = ["system-bus"];
+      parameters.scope = "system-bus";
+    };
+    requests.${authorizationRequirement} = {
+      requirement = authorizationRequirement;
+      consumer = consumerInstance;
+      scope = ["authorization"];
+      parameters.scope = "system";
+    };
+  };
 in {
   imports = [./dbus-registration.nix];
 
-  options.aos.services = lib.mkOption {
-    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
-      options = lib.optionalAttrs (name == "libvirt") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Run Libvirt with the QEMU virtualization driver.";
-        };
-        allowedUsers = lib.mkOption {
-          type = abilityTypes.list {
-            element = serviceTypes.principalName;
-            maxItems = 256;
-            unique = true;
-            canonicalOrder = true;
-          };
-          default = [];
-          description = "Existing principals allowed to access the read-write Libvirt socket.";
-        };
+  options.aos.virtualization.libvirt = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Run Libvirt with the QEMU virtualization driver.";
+    };
+    allowedUsers = lib.mkOption {
+      type = abilityTypes.list {
+        element = serviceTypes.principalName;
+        maxItems = 256;
+        unique = true;
+        canonicalOrder = true;
       };
-    }));
-    default = {};
+      default = [];
+      description = "Existing principals allowed to access the read-write Libvirt socket.";
+    };
   };
 
   config = lib.mkMerge [
-    {aos.services.libvirt = {};}
     {
-      aos.abilities = lib.mkMerge (
-        [
-          {
-            requirementTemplates.${availabilityRequirement} =
-              lib.abilities.interfaceSelector {
-                name = "aos.dbus.system-bus-availability";
-                abi = 1;
-              }
-              // {
-                description = "Selects the exact package-owned system message bus.";
-                methods = ["observe"];
-                guarantees = [];
-                strength = "required";
-                fallback = null;
-              };
-            requirementTemplates.${authorizationRequirement} =
-              lib.abilities.interfaceSelector {
-                name = "aos.authorization.service-availability";
-                abi = 1;
-              }
-              // {
-                description = "Requires the selected system authorization service.";
-                methods = ["observe"];
-                guarantees = [];
-                strength = "required";
-                fallback = null;
-              };
-          }
-        ]
-        ++ builtins.map (value: value.declarations) definitions
-      );
+      aos.services = {
+        "libvirt.virtlogd" = virtlogd // {enable = cfg.enable;};
+        "libvirt.virtlockd" = virtlockd // {enable = cfg.enable;};
+        "libvirt.libvirtd" = libvirtd // {enable = cfg.enable;};
+      };
     }
     (lib.mkIf cfg.enable {
       environment.etc."libvirt".source = "${packageArtifactFor (lib.abilities.packageOutput {})}/etc/libvirt";
-      aos.abilities = lib.mkMerge (
-        [
+      aos.abilities.runtimeChecks.libvirt = {
+        description = "Libvirt local connection checks";
+        checks = [
           {
-            instances.${consumerInstance} = {};
-            requests.system-bus-availability = {
-              requirement = availabilityRequirement;
-              consumer = consumerInstance;
-              scope = ["system-bus"];
-              parameters.scope = "system-bus";
-            };
-            requests.${authorizationRequirement} = {
-              requirement = authorizationRequirement;
-              consumer = consumerInstance;
-              scope = ["authorization"];
-              parameters.scope = "system";
-            };
+            name = "libvirt-connect";
+            description = "The client connects to the local QEMU driver";
+            script = ''
+              vm.wait_until_succeeds(
+                  "virsh --connect qemu:///system list --all", timeout=30
+              )
+              vm.succeed("test -S /run/libvirt/libvirt-sock")
+              vm.succeed("test $(stat -c %G /run/libvirt/libvirt-sock) = libvirt")
+            '';
           }
-          {
-            runtimeChecks.libvirt = {
-              description = "Libvirt local connection checks";
-              checks = [
-                {
-                  name = "libvirt-connect";
-                  description = "The client connects to the local QEMU driver";
-                  script = ''
-                    vm.wait_until_succeeds(
-                        "virsh --connect qemu:///system list --all", timeout=30
-                    )
-                    vm.succeed("test -S /run/libvirt/libvirt-sock")
-                    vm.succeed("test $(stat -c %G /run/libvirt/libvirt-sock) = libvirt")
-                  '';
-                }
-              ];
-            };
-          }
-        ]
-        ++ builtins.map (value: value.configured) definitions
-      );
+        ];
+      };
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = producers ++ [requirements];
+      enabled = cfg.enable;
     })
   ];
 }
