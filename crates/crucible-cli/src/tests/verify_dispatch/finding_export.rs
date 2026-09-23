@@ -22,6 +22,23 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
+    if let Some(input) = std::env::var_os("CRUCIBLE_FINDING_BUNDLE_VALID_ARCHIVE_CHILD") {
+        let cli = <crate::Cli as clap::Parser>::try_parse_from([
+            std::ffi::OsString::from("crucible"),
+            std::ffi::OsString::from("--format"),
+            std::ffi::OsString::from("json"),
+            std::ffi::OsString::from("campaign"),
+            std::ffi::OsString::from("finding-bundle"),
+            std::ffi::OsString::from("verify"),
+            input,
+        ])?;
+        let crate::Commands::Campaign(campaign) = &cli.command else {
+            return Err(std::io::Error::other("missing parsed campaign command").into());
+        };
+        crate::cli_campaign::run_campaign_invocation(&cli, campaign)?;
+        return Ok(());
+    }
+
     if let Some(input) = std::env::var_os("CRUCIBLE_FINDING_BUNDLE_INVALID_ARCHIVE_CHILD") {
         let cli = <crate::Cli as clap::Parser>::try_parse_from([
             std::ffi::OsString::from("crucible"),
@@ -55,6 +72,9 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopOutcome,
     };
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
+    use crucible_daemon::campaign_store_composition::{
+        DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,
+    };
 
     const CAMPAIGN: &str = "cli-campaign-findings-finding-export";
     const PROPERTY: &str = "cli-campaign-findings-property";
@@ -412,20 +432,37 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     let bytes = crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
         std::slice::from_ref(&evidence),
     )?;
-    let plan = repository.plan_campaign_archive(
+    let executable = repository.plan_campaign_archive(
         published.new_snapshot,
-        CampaignArchivePolicy::Findings,
+        CampaignArchivePolicy::Executable,
         [],
         None,
     )?;
+    repository.stage_campaign_archive_metadata(&executable)?;
     let portable_root = tempfile::tempdir()?;
     let portable_bundle = portable_root.path().join("finding");
-    std::fs::create_dir_all(portable_bundle.join("archive"))?;
+    let archive_root = portable_bundle.join("archive");
+    let private_archive = CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "cli-finding-bundle-test",
+            archive_root.join("objects"),
+        )),
+        Arc::new(DirectoryRefBackend::new(archive_root.join("refs"))),
+    );
+    repository.transfer_campaign_archive_objects(
+        &private_archive,
+        &executable,
+        DurabilityRequirement::new(1, false)?,
+    )?;
+    assert_eq!(
+        private_archive.inspect_archived_finding(executable.manifest_id(), published.finding)?,
+        evidence.finding
+    );
     std::fs::write(
         portable_bundle.join("manifest"),
         format!(
             "crucible.campaign.finding-bundle.v2\narchive_manifest={}\n",
-            plan.manifest_id()
+            executable.manifest_id()
         ),
     )?;
     std::fs::write(portable_bundle.join("ledger"), &bytes)?;
@@ -433,8 +470,39 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         .arg("campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering")
         .arg("--test-threads=1")
         .env(
-            "CRUCIBLE_FINDING_BUNDLE_INVALID_ARCHIVE_CHILD",
+            "CRUCIBLE_FINDING_BUNDLE_VALID_ARCHIVE_CHILD",
             &portable_bundle,
+        )
+        .output()?;
+    assert!(
+        child.status.success() && String::from_utf8_lossy(&child.stdout).contains("1 passed"),
+        "fresh-process archive verification failed: {}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+
+    let plan = repository.plan_campaign_archive(
+        published.new_snapshot,
+        CampaignArchivePolicy::Findings,
+        [],
+        None,
+    )?;
+    let invalid_bundle = portable_root.path().join("invalid-finding");
+    std::fs::create_dir_all(invalid_bundle.join("archive"))?;
+    std::fs::write(
+        invalid_bundle.join("manifest"),
+        format!(
+            "crucible.campaign.finding-bundle.v2\narchive_manifest={}\n",
+            plan.manifest_id()
+        ),
+    )?;
+    std::fs::write(invalid_bundle.join("ledger"), &bytes)?;
+    let child = std::process::Command::new(std::env::current_exe()?)
+        .arg("campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering")
+        .arg("--test-threads=1")
+        .env(
+            "CRUCIBLE_FINDING_BUNDLE_INVALID_ARCHIVE_CHILD",
+            &invalid_bundle,
         )
         .output()?;
     assert!(
