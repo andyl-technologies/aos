@@ -1269,14 +1269,21 @@ mod tests {
 
     #[test]
     fn guest_agent_handoff_has_fixed_argument_roles_and_prebinding_order() {
-        let descriptor = std::fs::File::open("/proc/self/exe").unwrap();
+        use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+        use aos_sandbox_linux::seqpacket::SeqpacketSocket;
+
+        let (_host, channel) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let provisioning =
+            SealedReadOnlyCredential::create("guest-provisioning-test", b"fd4", 3).unwrap();
+        let attach_trust =
+            SealedReadOnlyCredential::create("guest-attach-test", b"fd5", 3).unwrap();
         let unbound = fixture();
         let original_digest = unbound.semantic_digest_v1();
         let spec = unbound
             .with_guest_agent_descriptors(
-                descriptor.as_fd(),
-                descriptor.as_fd(),
-                descriptor.as_fd(),
+                channel.as_fd(),
+                provisioning.as_fd(),
+                attach_trust.as_fd(),
             )
             .unwrap();
 
@@ -1316,7 +1323,7 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap()
-        .with_guest_agent_descriptors(descriptor.as_fd(), descriptor.as_fd(), descriptor.as_fd())
+        .with_guest_agent_descriptors(channel.as_fd(), provisioning.as_fd(), attach_trust.as_fd())
         .unwrap();
         let (_, anchored_property) = anchored
             .properties()
@@ -1345,9 +1352,9 @@ mod tests {
         assert!(
             bound
                 .with_guest_agent_descriptors(
-                    descriptor.as_fd(),
-                    descriptor.as_fd(),
-                    descriptor.as_fd(),
+                    channel.as_fd(),
+                    provisioning.as_fd(),
+                    attach_trust.as_fd(),
                 )
                 .is_err()
         );
