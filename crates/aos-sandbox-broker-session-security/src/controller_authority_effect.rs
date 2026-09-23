@@ -15,6 +15,9 @@ use aos_sandbox::{
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
+use aos_sandbox_protocol::semantics::{
+    CanonicalStoragePreparationSemanticsV1, ProtectedStorageCreatePreparationV1,
+};
 
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestPreparationV1,
@@ -46,6 +49,7 @@ enum AuthorityEffectExchangeKindV1 {
     Apply,
     HostQuery,
     AtomicStorage,
+    StoragePrepare,
 }
 
 enum AuthorityEffectStageV1 {
@@ -173,6 +177,62 @@ impl ControllerAuthorityEffectExchangeV1 {
             self.pending = Some(PendingAuthorityEffectV1 {
                 effect: effect.clone(),
                 kind: AuthorityEffectExchangeKindV1::AtomicStorage,
+                stage: preparation_stage(preparation),
+            });
+        }
+
+        let outcome = self.drive(session)?;
+        validate_apply_terminal(effect, &outcome)?;
+        Ok(outcome)
+    }
+
+    /// Retains one exact signed Create catalog preparation through completion.
+    pub(crate) fn storage_create_prepare(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        protected: &ProtectedStorageCreatePreparationV1,
+        effect: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        effect.broker_request().map_err(|_| {
+            EffectFailure::Permanent("Storage Create preparation is malformed".to_owned())
+        })?;
+        if self.failed {
+            return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
+        }
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.effect != *effect
+                || pending.kind != AuthorityEffectExchangeKindV1::StoragePrepare
+        }) {
+            return Err(EffectFailure::Permanent(
+                "Storage preparation differs from retained recovery custody".to_owned(),
+            ));
+        }
+        if self.pending.is_none() {
+            let preparation = session
+                .prepare_authenticated_authority_effect_checked(effect, |request| {
+                    let Ok(now) = crate::handshake::protected_boottime_nanoseconds() else {
+                        return false;
+                    };
+                    request.method()
+                        == aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                        && request.authorization().is_some()
+                        && CanonicalStoragePreparationSemanticsV1::decode(
+                            request.exact_body(),
+                            request.peer(),
+                            request.peer_policy(),
+                            now,
+                        )
+                        .is_ok_and(|decoded| protected.matches_decoded(&decoded))
+                })
+                .map_err(|_| {
+                    EffectFailure::Retryable(
+                        "Storage Create preparation could not enter protected session custody"
+                            .to_owned(),
+                    )
+                })?;
+            self.pending = Some(PendingAuthorityEffectV1 {
+                effect: effect.clone(),
+                kind: AuthorityEffectExchangeKindV1::StoragePrepare,
                 stage: preparation_stage(preparation),
             });
         }

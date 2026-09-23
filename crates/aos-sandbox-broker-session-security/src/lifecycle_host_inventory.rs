@@ -35,6 +35,7 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
+use aos_sandbox_protocol::semantics::ProtectedStorageCreatePreparationV1;
 use buffa::Message as _;
 
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
@@ -42,13 +43,13 @@ use crate::recovery::{
     ProtectedPriorAtomicStorageHistoryV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
-    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
-    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
-    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
-    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
-    ProtectedBrokerOutcomeCurrentnessOwnerV1, ProtectedBrokerRequestCommitRecoveryV1,
-    ProtectedBrokerSessionInitializationRecoveryV1,
+    AuthenticatedStorageCreatePreparationV1, DormantAuthenticatedBrokerSessionV1,
+    DormantBrokerRequestCoordinatesV1, DormantBrokerRequestPreparationV1,
+    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
+    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerRequestV1,
+    DormantUnconfirmedBrokerRequestV1, ProtectedBrokerOutcomeCommitRecoveryV1,
+    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerSessionInitializationRecoveryV1,
 };
 
 #[derive(Clone, Copy)]
@@ -1168,6 +1169,33 @@ impl DormantAtomicStorageInventoryCompletionV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Retains one exact signed Create Prepare and its authenticated catalog.
+    ///
+    /// A returned catalog is not Apply authority. The separate signed Apply
+    /// must name it and pass the Create-specific lifecycle handoff check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for another pending Storage query, stale protected
+    /// Create inputs, transport ambiguity, or a contradictory signed result.
+    pub fn prepare_storage_create(
+        &mut self,
+        protected: &ProtectedStorageCreatePreparationV1,
+        authority: &PreparedAuthorityEffectV1,
+    ) -> Result<AuthenticatedStorageCreatePreparationV1, EffectFailure> {
+        if self.0.pending.is_some() {
+            return Err(EffectFailure::Retryable(
+                "Storage inventory query retains exact session custody".to_owned(),
+            ));
+        }
+        let outcome = self.0.authority_effects.storage_create_prepare(
+            &mut self.0.session,
+            protected,
+            authority,
+        )?;
+        AuthenticatedStorageCreatePreparationV1::from_outcome(protected, authority, outcome)
+    }
+
     /// Borrows the retained Storage session for one separate guest-root effect.
     ///
     /// # Errors

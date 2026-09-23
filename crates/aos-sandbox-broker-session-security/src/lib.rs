@@ -87,6 +87,7 @@ mod recovery;
     reason = "sealed handshake boot access stays unreachable until P0-10"
 )]
 mod self_execution;
+mod storage_create_preparation;
 
 pub use cache_directory_source::{
     DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
@@ -199,3 +200,4 @@ pub use recovery::{
     ProtectedBrokerSessionFixedEndpointV1, ProtectedBrokerSessionInitializationRecoveryV1,
     ProtectedBrokerSessionInitializationResultV1,
 };
+pub use storage_create_preparation::AuthenticatedStorageCreatePreparationV1;

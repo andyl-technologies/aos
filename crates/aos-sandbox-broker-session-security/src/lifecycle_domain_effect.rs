@@ -17,17 +17,16 @@ use aos_sandbox::lifecycle::{
     LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
-use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use buffa::Message as _;
 
 use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
-    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
-    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
-    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
-    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
-    ProtectedBrokerOutcomeCurrentnessOwnerV1, ProtectedBrokerRequestCommitRecoveryV1,
-    ProtectedBrokerSessionInitializationRecoveryV1,
+    AuthenticatedStorageCreatePreparationV1, DormantAuthenticatedBrokerSessionV1,
+    DormantBrokerRequestCoordinatesV1, DormantBrokerRequestPreparationV1,
+    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
+    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerRequestV1,
+    DormantUnconfirmedBrokerRequestV1, ProtectedBrokerOutcomeCommitRecoveryV1,
+    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerSessionInitializationRecoveryV1,
 };
 
 /// Reports a completed observation or retained exact durable recovery custody.
@@ -301,12 +300,23 @@ impl DormantLifecycleDomainEffectOwnerV1 {
         challenge: LifecycleBootInventoryBootstrapChallengeV1,
         effect: CurrentLifecycleEffectV1<'lifecycle>,
         fence: LiveRuntimeFenceV1,
-        catalog: CatalogBindingV1,
+        preparation: &AuthenticatedStorageCreatePreparationV1,
         quota_bytes: u64,
         assignment_manifest: &[u8],
         sandbox_spec: &[u8],
         authority: &PreparedAuthorityEffectV1,
     ) -> Result<DormantLifecycleDomainEffectProgressV1<'lifecycle>, LifecyclePhase6ErrorV1> {
+        let prepared_fence = preparation.fence();
+        let desired = fence.desired();
+        if preparation.operation_id() != *effect.operation().as_bytes()
+            || prepared_fence.sandbox_id() != fence.sandbox().as_bytes()
+            || prepared_fence.incarnation_id() != fence.incarnation().as_bytes()
+            || prepared_fence.assignment_epoch() != fence.assignment_epoch().get()
+            || prepared_fence.desired_generation() != desired.expected_generation().get()
+            || prepared_fence.assignment_digest() != desired.resource_state().digest().as_bytes()
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         let exchange = ExchangeStageV1::Effect {
             challenge,
             endpoint: LifecycleBootBootstrapEndpointV1::Storage,
@@ -320,7 +330,7 @@ impl DormantLifecycleDomainEffectOwnerV1 {
                     .validate_authenticated_storage_create_request(
                         request,
                         fence,
-                        catalog,
+                        preparation.catalog(),
                         quota_bytes,
                         assignment_manifest,
                         sandbox_spec,
