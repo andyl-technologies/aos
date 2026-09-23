@@ -13,7 +13,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use aos_sandbox_core::{ObjectDigest, OperationId};
+use aos_sandbox_core::{
+    AttachmentId, ObjectDescriptor, ObjectDigest, OperationId, ProjectId, ViewId,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
@@ -716,6 +718,67 @@ impl CacheResidencyProtectedOwnerV1 {
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
             refresh()?;
             Ok(projection)
+        })
+    }
+
+    /// Finds the retained logical pin for one exact consumer and cache object.
+    ///
+    /// This query returns historical state, not current acquisition or drain
+    /// authority. In particular, an attachment replacement does not hide a pin
+    /// that still needs an independently authorized release.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protected time, authority, or cache replay fails.
+    pub fn retained_logical_pin(
+        &mut self,
+        partition: PhysicalPartitionId,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+    ) -> Result<Option<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let projection =
+                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
+            let mut latest: Option<(u64, Vec<CachePinV1>)> = None;
+
+            for envelope in projection.records().iter().filter(|envelope| {
+                envelope.key().kind() == CacheResidencyProtectedRecordKindV1::Pin
+            }) {
+                let payload = decode_cache_payload_for_lifecycle(envelope, &validator)?
+                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+                if payload.plan.partition != partition
+                    || &payload.plan.descriptor != object
+                    || payload.plan.project != project
+                {
+                    continue;
+                }
+                if latest
+                    .as_ref()
+                    .is_none_or(|(sequence, _)| payload.record.sequence > *sequence)
+                {
+                    latest = Some((payload.record.sequence, payload.pins));
+                }
+            }
+
+            let pin = latest.and_then(|(_, pins)| {
+                pins.into_iter().find(|pin| {
+                    pin.partition == partition
+                        && &pin.object == object
+                        && pin.project == project
+                        && pin.view == view
+                        && pin.attachment == attachment
+                        && pin.kind == super::CachePinKindV1::LogicalLease
+                })
+            });
+            refresh()?;
+            Ok(pin)
         })
     }
 
