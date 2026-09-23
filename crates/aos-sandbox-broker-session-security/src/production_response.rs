@@ -118,17 +118,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_response(pending)? {
                 DormantBrokerResponseSendProgressV1::Sent(_) => {
-                    crate::dormant_handshake::check_production_deadline(
-                        deadline_boottime_nanoseconds,
-                    )?;
-                    return Ok(self);
+                    return self.finish_sent_response(deadline_boottime_nanoseconds);
                 }
                 DormantBrokerResponseSendProgressV1::Pending(retained) => {
-                    crate::dormant_handshake::wait_for_handshake_readiness(
-                        self.as_fd()?,
-                        true,
-                        deadline_boottime_nanoseconds,
-                    )?;
+                    self.wait_for_response_readiness(deadline_boottime_nanoseconds)?;
                     pending = retained;
                 }
                 DormantBrokerResponseSendProgressV1::RecoveryRequired { error, .. } => {
@@ -192,17 +185,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_descriptor_response(pending)? {
                 DormantBrokerDescriptorSendProgressV1::Sent(_) => {
-                    crate::dormant_handshake::check_production_deadline(
-                        deadline_boottime_nanoseconds,
-                    )?;
-                    return Ok(self);
+                    return self.finish_sent_response(deadline_boottime_nanoseconds);
                 }
                 DormantBrokerDescriptorSendProgressV1::Pending(retained) => {
-                    crate::dormant_handshake::wait_for_handshake_readiness(
-                        self.as_fd()?,
-                        true,
-                        deadline_boottime_nanoseconds,
-                    )?;
+                    self.wait_for_response_readiness(deadline_boottime_nanoseconds)?;
                     pending = retained;
                 }
                 DormantBrokerDescriptorSendProgressV1::RecoveryRequired(retained) => {
@@ -228,17 +214,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_terminal_replay(pending)? {
                 DormantBrokerTerminalReplaySendProgressV1::Sent(_) => {
-                    crate::dormant_handshake::check_production_deadline(
-                        deadline_boottime_nanoseconds,
-                    )?;
-                    return Ok(self);
+                    return self.finish_sent_response(deadline_boottime_nanoseconds);
                 }
                 DormantBrokerTerminalReplaySendProgressV1::Pending(retained) => {
-                    crate::dormant_handshake::wait_for_handshake_readiness(
-                        self.as_fd()?,
-                        true,
-                        deadline_boottime_nanoseconds,
-                    )?;
+                    self.wait_for_response_readiness(deadline_boottime_nanoseconds)?;
                     pending = retained;
                 }
                 DormantBrokerTerminalReplaySendProgressV1::RecoveryRequired { error, .. } => {
@@ -283,17 +262,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
             match self.send_authenticated_descriptor_terminal_replay(pending) {
                 DormantBrokerDescriptorTerminalReplaySendProgressV1::Sent(_) => {
-                    crate::dormant_handshake::check_production_deadline(
-                        deadline_boottime_nanoseconds,
-                    )?;
-                    return Ok(self);
+                    return self.finish_sent_response(deadline_boottime_nanoseconds);
                 }
                 DormantBrokerDescriptorTerminalReplaySendProgressV1::Pending(retained) => {
-                    crate::dormant_handshake::wait_for_handshake_readiness(
-                        self.as_fd()?,
-                        true,
-                        deadline_boottime_nanoseconds,
-                    )?;
+                    self.wait_for_response_readiness(deadline_boottime_nanoseconds)?;
                     pending = retained;
                 }
                 DormantBrokerDescriptorTerminalReplaySendProgressV1::RecoveryRequired {
@@ -302,5 +274,26 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 } => return Err(error.into()),
             }
         }
+    }
+
+    // A sent packet may have reached its peer even when the deadline just expired.
+    fn finish_sent_response(
+        self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
+        Ok(self)
+    }
+
+    fn wait_for_response_readiness(
+        &self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<(), ProductionBrokerResponseErrorV1> {
+        crate::dormant_handshake::wait_for_handshake_readiness(
+            self.as_fd()?,
+            true,
+            deadline_boottime_nanoseconds,
+        )?;
+        Ok(())
     }
 }
