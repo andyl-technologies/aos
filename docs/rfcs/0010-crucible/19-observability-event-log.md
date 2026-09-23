@@ -95,6 +95,19 @@ site, not a boolean a caller can forget to set. That distinction is the subject 
 [§19.3](#193-causal-vs-observational-is-baked-into-the-schema); this section gives
 the whole record shape.
 
+For a resolved `backend_input`, the entry keeps the scheduler's logical
+delivery time as `virtual_time` and records the exact target VM physical
+retired-instruction counter in its node-local `icount` stamp. The scheduler
+computes that stamp when it resolves the delivery, before any later backend
+restart can rebase the node's logical-to-physical time mapping. Replay uses the
+retained physical stamp and verifies that its node matches the input target.
+Binary event-log segments use schema version 2 for this meaning; version 1
+segments are rejected rather than interpreted with the new semantics.
+The stamp authenticates a delivery within its backend generation. It does not
+prove how a later replacement backend reached a new counter origin, so guarded
+replay must reject a multi-generation target unless it has separate evidence
+for each generation boundary.
+
 ```rust,illustrative
 /// One entry in the unified event log (§19.1). Every observability consumer
 /// reads a projection of a stream of these (§19.6).

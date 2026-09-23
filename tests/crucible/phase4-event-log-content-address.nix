@@ -156,7 +156,7 @@
       }
       {
         label = "little-endian version asserted";
-        needle = "1_u32.to_le_bytes()";
+        needle = "2_u32.to_le_bytes()";
       }
       {
         label = "shared store dedup test";

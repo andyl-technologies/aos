@@ -114,6 +114,19 @@ pub(super) fn scheduler_event_log_entry(
     scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
 }
 
+pub(super) fn scheduler_event_log_entry_with_physical_icount(
+    sequence: u64,
+    at: VirtualTime,
+    payload: SchedulerEventLogPayload,
+    node: NodeId,
+    icount: Icount,
+) -> SchedulerEventLogEntry {
+    let event_payload = event_payload_from_scheduler_payload(&payload);
+    let class = event_kind_catalog_class_for_entry_construction(&event_payload);
+    let time = scheduler_event_log_time(at, &payload).with_icount(node, icount);
+    scheduler_event_log_entry_with_time(sequence, time, class, event_payload, payload)
+}
+
 pub(super) fn scheduler_event_log_entry_with_class(
     sequence: u64,
     at: VirtualTime,
@@ -122,10 +135,20 @@ pub(super) fn scheduler_event_log_entry_with_class(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let time = scheduler_event_log_time(at, &payload);
+    scheduler_event_log_entry_with_time(sequence, time, class, event_payload, payload)
+}
+
+pub(super) fn scheduler_event_log_entry_with_time(
+    sequence: u64,
+    time: EventLogTime,
+    class: SchedulerEventLogClass,
+    event_payload: EventPayload,
+    payload: SchedulerEventLogPayload,
+) -> SchedulerEventLogEntry {
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v1",
+        "crucible.scheduler.event-log.entry.v2",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -159,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v1",
+        "crucible.scheduler.event-log.entry.v2",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -1867,10 +1890,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v1",
+            "format=crucible.scheduler.event-log.segment-text.v2",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v1",
+            "canonical_format=crucible.scheduler.event-log.segment.v2",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
@@ -1934,6 +1957,7 @@ pub(super) enum SchedulerEventLogSegmentDecodeError {
     InvalidFlag { field: &'static str, value: u8 },
     InvalidLevel { value: u8 },
     InvalidClass { value: u8 },
+    InvalidBackendInputStamp { sequence: u64 },
     LengthTooLarge { field: &'static str, len: u64 },
     TrailingBytes { remaining: usize },
 }
@@ -2105,7 +2129,7 @@ pub(super) fn decode_scheduler_event_log_segment(
     })?;
     let mut entries = Vec::with_capacity(entry_count);
     for _ in 0..entry_count {
-        entries.push(SchedulerEventLogSegmentEntryMaterial {
+        let entry = SchedulerEventLogSegmentEntryMaterial {
             sequence: cursor.read_u64_le("entry.sequence")?,
             at_virtual_time_ticks: cursor.read_u64_le("entry.at_virtual_time_ticks")?,
             at_icount_retired: cursor.read_u64_le("entry.at_icount_retired")?,
@@ -2117,7 +2141,26 @@ pub(super) fn decode_scheduler_event_log_segment(
             payload_attribute_count: cursor.read_u64_le("entry.payload.attributes")?,
             content_hash: cursor.read_content_hash("entry.hash")?,
             entry_material: cursor.read_string("entry.material")?,
-        });
+        };
+        if entry.payload_kind == "backend_input" {
+            let valid_source = entry.at_icount_node.as_ref().is_some_and(|node| {
+                entry.source_material
+                    == scheduler_event_log_source_material(
+                        "entry.source",
+                        &EventSource::Node {
+                            node: NodeId { name: node.clone() },
+                        },
+                    )
+            });
+            if !valid_source {
+                return Err(
+                    SchedulerEventLogSegmentDecodeError::InvalidBackendInputStamp {
+                        sequence: entry.sequence,
+                    },
+                );
+            }
+        }
+        entries.push(entry);
     }
     cursor.finish()?;
     Ok(SchedulerEventLogSegmentMaterial {

@@ -99,3 +99,69 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
     assert_eq!(decoded.text_view(), segment.text_view());
     assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
 }
+
+#[test]
+fn event_log_v2_rejects_v1_and_missing_or_wrong_backend_input_stamp() {
+    let consumer = SchedulerNodeId {
+        node: NodeId {
+            name: String::from("consumer"),
+        },
+        kind: SchedulingNodeKind::Vm,
+    };
+    let producer = SchedulerNodeId {
+        node: NodeId {
+            name: String::from("producer"),
+        },
+        kind: SchedulingNodeKind::Vm,
+    };
+    let event = ScheduledEvent {
+        key: ScheduledEventKey::new(
+            SharedTimelineKey {
+                virtual_time: SimInstant { nanos: 7 },
+                node: consumer.clone(),
+                sequence: 1,
+            },
+            producer,
+        ),
+        payload: ScheduledEventPayload::BackendInput(BackendInput {
+            node: consumer.node.clone(),
+            payload: vec![1, 2, 3],
+        }),
+    };
+    let entry = scheduler_event_log_entry_with_physical_icount(
+        0,
+        VirtualTime { ticks: 7 },
+        SchedulerEventLogPayload::ResolvedHappening(event.clone()),
+        consumer.node.clone(),
+        Icount { retired: 107 },
+    );
+    let different_counter = scheduler_event_log_entry_with_physical_icount(
+        0,
+        VirtualTime { ticks: 7 },
+        SchedulerEventLogPayload::ResolvedHappening(event),
+        consumer.node,
+        Icount { retired: 108 },
+    );
+    assert!(entry.has_valid_content_hash());
+    assert!(different_counter.has_valid_content_hash());
+    assert_ne!(entry.content_hash(), different_counter.content_hash());
+
+    let material =
+        scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
+
+    let mut old_version = material.encode();
+    old_version[16..20].copy_from_slice(&1_u32.to_le_bytes());
+    assert!(matches!(
+        decode_scheduler_event_log_segment(&old_version),
+        Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: 1 })
+    ));
+
+    for stamp_node in [None, Some(String::from("wrong-node"))] {
+        let mut malformed = material.clone();
+        malformed.entries[0].at_icount_node = stamp_node;
+        assert!(matches!(
+            decode_scheduler_event_log_segment(&malformed.encode()),
+            Err(SchedulerEventLogSegmentDecodeError::InvalidBackendInputStamp { sequence: 0 })
+        ));
+    }
+}
