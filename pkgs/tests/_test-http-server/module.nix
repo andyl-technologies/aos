@@ -123,22 +123,15 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.services.main = serviceDefinition // {enable = cfg.enable;};
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
-        fragments);
+      aos.services."test-http-server.main" = serviceDefinition // {enable = cfg.enable;};
     }
     (serviceManagement.projectService {
       inherit config lib;
-      name = "main";
-      consumerInstance = "test-http-server";
+      name = "test-http-server.main";
     })
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
-        fragments
-      );
+    (serviceManagement.projectContributions {
+      inherit config lib fragments;
+      enabled = cfg.enable;
     })
   ];
 }

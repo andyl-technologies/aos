@@ -3,17 +3,26 @@
   config,
   lib,
   name,
-  consumerInstance ? name,
+  consumerInstance ? null,
   featureContributions ? [],
 }: let
   service = config.aos.services.${name};
+  nameParts = lib.splitString "." name;
+  localServiceName = builtins.elemAt nameParts (builtins.length nameParts - 1);
+  packageParts = builtins.genList (index: builtins.elemAt nameParts index) (builtins.length nameParts - 1);
+  localConsumerInstance =
+    if consumerInstance != null
+    then consumerInstance
+    else if packageParts == []
+    then name
+    else builtins.concatStringsSep "." packageParts;
   serviceFields =
     builtins.removeAttrs
     serviceManagement.types.serviceDeclarationFields
     ["service" "enabled"];
   declaration =
     {
-      service = name;
+      service = localServiceName;
       enabled = true;
     }
     // lib.filterAttrs
@@ -24,7 +33,8 @@
     then throw "Service '${name}' needs a lifecycle declaration before it can consume service abilities."
     else
       serviceManagement.forService {
-        inherit consumerInstance declaration featureContributions;
+        consumerInstance = localConsumerInstance;
+        inherit declaration featureContributions;
         serviceTypes = serviceManagement.types;
       };
 in
@@ -32,7 +42,7 @@ in
     {aos.abilities.requirementTemplates = contribution.requirementTemplates;}
     (lib.mkIf (service.enable && config.aos.abilities.environment != null) {
       aos.abilities = {
-        instances.${consumerInstance} = {};
+        instances.${localConsumerInstance} = {};
         requests = contribution.requests;
       };
     })
