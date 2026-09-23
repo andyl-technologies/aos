@@ -246,6 +246,12 @@ impl<'projection, 'index, 'bytes> ValidatedViewSourceObject<'projection, 'index,
     pub const fn view_identity(&self) -> (ViewId, Revision) {
         self.projection.view_identity()
     }
+
+    /// Returns the disclosure domain authenticated by the complete View.
+    #[must_use]
+    pub const fn disclosure(&self) -> CacheDomain {
+        self.projection.view().disclosure()
+    }
 }
 
 impl<'index, 'bytes> ValidatedViewProjection<'index, 'bytes> {

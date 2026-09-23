@@ -1,15 +1,15 @@
 //! Joins public Cache source membership to protected and physical pin owners.
 
-use aos_filesystem_view_core::ObjectSource;
+use aos_filesystem_view_core::{ObjectSource, ValidatedViewSourceObject};
 use aos_sandbox::Journal;
 use aos_sandbox::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1,
     CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CachePinV1,
     CacheResidencyCommitOutcomeV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, DormantCacheOwnerV1,
-    PhysicalPartitionId, PublicLogicalPinAcquisitionCommitV1, PublicLogicalPinAcquisitionErrorV1,
-    ValidatedPublicLogicalPinAcquisitionV1,
+    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, CatalogPresenceV1,
+    DormantCacheOwnerV1, PhysicalPartitionId, PublicLogicalPinAcquisitionCommitV1,
+    PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1,
 };
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
@@ -103,6 +103,9 @@ pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
     /// The exact View source did not prove this object's membership.
     #[error(transparent)]
     Source(#[from] CompiledCacheSourceMembershipErrorV1<E>),
+    /// No unique current resident partition matches the authenticated View.
+    #[error("public Cache pin has no unique resident partition for this View and object")]
+    PartitionSelection,
     /// Source membership did not match the current local consumer and partition.
     #[error(transparent)]
     Acquisition(#[from] PublicLogicalPinAcquisitionErrorV1),
@@ -375,9 +378,9 @@ pub fn execute_public_cache_unpin_consumer_v1(
 /// return `Retained` only after checking the current physical owner manifest.
 /// New and renewed protected transitions retain their exact commit outcome;
 /// callers must settle or recover an unresolved outcome before public success.
-/// This method does not select the partition or supply source authority: the
-/// caller must do both independently and retain the source journal until the
-/// protected commit-time consumer recheck completes.
+/// The partition is selected only from the protected resident catalog and
+/// authenticated View disclosure domain. The caller supplies source authority
+/// and retains the source journal through the protected commit-time recheck.
 ///
 /// # Errors
 ///
@@ -393,7 +396,6 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
     transaction_id: [u8; 16],
-    partition: PhysicalPartitionId,
     controller_node: NodeId,
     compiler_abi: [u8; 32],
     compilation_limits: CacheCompiledSourceLimitsV1,
@@ -404,6 +406,12 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
         compiler_abi,
         compilation_limits,
         |membership| {
+            let partition = select_public_cache_pin_partition_v1(
+                protected,
+                consumer,
+                membership,
+                controller_node,
+            )?;
             let acquisition = ValidatedPublicLogicalPinAcquisitionV1::new(
                 consumer,
                 membership,
@@ -439,6 +447,42 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
             }
         },
     )?
+}
+
+fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    consumer: &RecheckedCacheConsumerV1,
+    membership: &ValidatedViewSourceObject<'_, '_, '_>,
+    controller_node: NodeId,
+) -> Result<PhysicalPartitionId, PublicCachePinExecutionErrorV1<E>> {
+    let inventories = protected.reconstructed_partitions()?;
+    let mut selected = None;
+
+    for inventory in inventories {
+        let partition = inventory.global.node_quota.partition;
+        if partition.node().as_bytes() != controller_node.as_bytes()
+            || partition.disclosure() != membership.disclosure()
+        {
+            continue;
+        }
+
+        for payload in inventory.reconstructed {
+            if payload.plan.partition != partition
+                || payload.plan.project != consumer.project()
+                || &payload.plan.descriptor != consumer.object()
+                || !payload
+                    .catalog
+                    .is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
+            {
+                continue;
+            }
+            if selected.replace(partition).is_some() {
+                return Err(PublicCachePinExecutionErrorV1::PartitionSelection);
+            }
+        }
+    }
+
+    selected.ok_or(PublicCachePinExecutionErrorV1::PartitionSelection)
 }
 
 /// Drains one exact retained public pin through both protected Cache owners.

@@ -914,6 +914,26 @@ impl CacheResidencyProtectedOwnerV1 {
     pub fn reconstructed_node_quotas(
         &mut self,
     ) -> Result<Vec<super::NodeCacheQuotaV1>, CacheResidencyProtectedJournalErrorV1> {
+        Ok(self
+            .reconstructed_partitions()?
+            .into_iter()
+            .map(|inventory| inventory.global.node_quota)
+            .collect())
+    }
+
+    /// Returns every reconstructed partition from one current protected replay.
+    ///
+    /// This is historical catalog state, not publication or pin authority. A
+    /// caller selecting a physical partition must still obtain exact current
+    /// pin authority and recheck the public consumer at commit time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when protected time, authority, or typed replay cannot
+    /// be validated at both ends of the observation.
+    pub fn reconstructed_partitions(
+        &mut self,
+    ) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
         let authority = Arc::clone(&self.authority);
         authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
             let journal = self
@@ -923,12 +943,8 @@ impl CacheResidencyProtectedOwnerV1 {
             let projection =
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
             let inventories = reconstruct_cache_history(projection.records(), &validator)?;
-            let quotas = inventories
-                .into_iter()
-                .map(|inventory| inventory.global.node_quota)
-                .collect();
             refresh()?;
-            Ok(quotas)
+            Ok(inventories)
         })
     }
 
