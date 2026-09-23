@@ -1910,6 +1910,22 @@ impl QemuNode {
             })
     }
 
+    /// Captures the paused replay node's host network-ring continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a ring snapshot is invalid.
+    pub(crate) fn replay_network_transport_checkpoint(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .checkpoint_network_transport()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
     /// Reads one emitted frame through shared memory.
     ///
     /// # Errors
