@@ -32,7 +32,8 @@
 
 use aos_proto::aos::sandbox::local::v1::{PrepareStorageCatalogRequest, StorageAction};
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerGrantTarget, BrokerVerb, ObjectDigest, ProtocolId,
+    BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTarget, BrokerVerb, ObjectDigest,
+    OperationId, ProtocolId,
 };
 use buffa::Message as _;
 
@@ -389,6 +390,112 @@ impl CanonicalStoragePreparationSemanticsV1 {
     }
 }
 
+/// Commits protected Create inputs before broker-session coordinates exist.
+///
+/// This value does not authorize preparation. A controller must independently
+/// sign its commitment under the current assignment and retain the exact
+/// authenticated exchange. The broker's decoder uses the same canonical
+/// encoder, so a later request cannot silently change quota or catalog head.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtectedStorageCreatePreparationV1 {
+    assignment: BrokerAssignment,
+    operation_id: OperationId,
+    quota_bytes: u64,
+    reservation_bytes: u64,
+    inventory: CatalogBindingV1,
+    expected_head: CatalogBindingV1,
+    expires_boottime_nanoseconds: u64,
+    bytes: Vec<u8>,
+    commitment: BrokerArgumentCommitment,
+}
+
+impl ProtectedStorageCreatePreparationV1 {
+    /// Constructs one exact non-mutating Create preparation commitment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoragePreparationSemanticsError`] for a reserved operation,
+    /// invalid quota or reservation, zero expiry, or oversized encoding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_protected_inputs(
+        assignment: BrokerAssignment,
+        operation_id: OperationId,
+        quota_bytes: u64,
+        reservation_bytes: u64,
+        inventory: CatalogBindingV1,
+        expected_head: CatalogBindingV1,
+        expires_boottime_nanoseconds: u64,
+    ) -> Result<Self, StoragePreparationSemanticsError> {
+        if operation_id.as_bytes() == &[0; 16]
+            || quota_bytes == 0
+            || reservation_bytes > quota_bytes
+            || expires_boottime_nanoseconds == 0
+        {
+            return Err(StoragePreparationSemanticsError::InvalidActionShape);
+        }
+        let bytes = encode_canonical(
+            *assignment.sandbox().as_bytes(),
+            *assignment.incarnation().as_bytes(),
+            assignment.epoch().get(),
+            assignment.desired_generation().get(),
+            *assignment.digest().as_bytes(),
+            *operation_id.as_bytes(),
+            StoragePreparationOperationV1::CreateWorkspace {
+                quota_bytes,
+                reservation_bytes,
+            },
+            inventory,
+            expected_head,
+            expires_boottime_nanoseconds,
+        )?;
+        let commitment = BrokerArgumentCommitment::for_canonical_bytes(&bytes);
+        Ok(Self {
+            assignment,
+            operation_id,
+            quota_bytes,
+            reservation_bytes,
+            inventory,
+            expected_head,
+            expires_boottime_nanoseconds,
+            bytes,
+            commitment,
+        })
+    }
+
+    /// Returns the exact canonical bytes signed by preparation authority.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the method-separated signed-plan argument commitment.
+    #[must_use]
+    pub const fn argument_commitment(&self) -> BrokerArgumentCommitment {
+        self.commitment
+    }
+
+    /// Checks the complete broker-decoded meaning against protected inputs.
+    #[must_use]
+    pub fn matches_decoded(&self, decoded: &CanonicalStoragePreparationSemanticsV1) -> bool {
+        decoded.canonical_bytes() == self.bytes
+            && decoded.argument_commitment() == self.commitment
+            && decoded.operation_id() == *self.operation_id.as_bytes()
+            && decoded.operation()
+                == (StoragePreparationOperationV1::CreateWorkspace {
+                    quota_bytes: self.quota_bytes,
+                    reservation_bytes: self.reservation_bytes,
+                })
+            && decoded.fence().sandbox_id() == self.assignment.sandbox().as_bytes()
+            && decoded.fence().incarnation_id() == self.assignment.incarnation().as_bytes()
+            && decoded.fence().assignment_epoch() == self.assignment.epoch().get()
+            && decoded.fence().desired_generation() == self.assignment.desired_generation().get()
+            && decoded.fence().assignment_digest() == self.assignment.digest().as_bytes()
+            && decoded.inventory_binding() == self.inventory
+            && decoded.expected_catalog_head() == self.expected_head
+            && decoded.expires_boottime_nanoseconds() == self.expires_boottime_nanoseconds
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_canonical(
     sandbox_id: [u8; 16],
@@ -599,6 +706,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use aos_proto::aos::sandbox::local::v1::Audience;
+    use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
 
     use super::*;
 
@@ -687,6 +795,45 @@ mod tests {
                 101, 88, 90, 180, 116, 244, 92, 173, 182, 239, 41, 154, 127, 1,
             ]
         );
+    }
+
+    #[test]
+    fn protected_create_inputs_equal_the_broker_decoder_and_reject_substitution() {
+        let mut request = request(StorageAction::STORAGE_ACTION_CREATE_WORKSPACE);
+        request.requested_quota_bytes = 4096;
+        request.requested_reservation_bytes = 1024;
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([2; 16]),
+            IncarnationId::from_bytes([3; 16]),
+            AssignmentEpoch::new(4),
+            DesiredGeneration::new(5),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .unwrap();
+        let protected = ProtectedStorageCreatePreparationV1::from_protected_inputs(
+            assignment,
+            OperationId::from_bytes([7; 16]),
+            4096,
+            1024,
+            CatalogBindingV1::from_publisher(11, ObjectDigest::from_bytes([12; 32])).unwrap(),
+            CatalogBindingV1::from_publisher(13, ObjectDigest::from_bytes([14; 32])).unwrap(),
+            300,
+        )
+        .unwrap();
+        let decoded = decode(&request).unwrap();
+
+        assert!(protected.matches_decoded(&decoded));
+        assert_eq!(protected.canonical_bytes(), decoded.canonical_bytes());
+        assert_eq!(
+            protected.argument_commitment(),
+            decoded.argument_commitment()
+        );
+
+        request.expected_catalog_digest = vec![15; 32];
+        assert!(!protected.matches_decoded(&decode(&request).unwrap()));
+        request.expected_catalog_digest = vec![14; 32];
+        request.requested_quota_bytes = 8192;
+        assert!(!protected.matches_decoded(&decode(&request).unwrap()));
     }
 
     #[test]

@@ -61,7 +61,7 @@ pub use storage_guest_root::{
     decode_storage_guest_root_response_v1,
 };
 pub use storage_prepare::{
-    CanonicalStoragePreparationSemanticsV1, StoragePreparationOperationV1,
-    StoragePreparationSemanticsError,
+    CanonicalStoragePreparationSemanticsV1, ProtectedStorageCreatePreparationV1,
+    StoragePreparationOperationV1, StoragePreparationSemanticsError,
 };
 pub use storage_repair::{CanonicalStorageRepairSemanticsV1, StorageRepairSemanticsError};
