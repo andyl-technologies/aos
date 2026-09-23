@@ -291,6 +291,7 @@ impl OpenSshAttachRouteIssuerV1 {
             operation,
             &route.execution_id,
             &route.sandbox_incarnation_id,
+            route.assignment_epoch,
             principal.as_bytes(),
             &execution.audit_id,
         );
@@ -466,6 +467,7 @@ impl OpenSshAttachRouteIssuerV1 {
                     operation,
                     &route.execution_id,
                     &route.sandbox_incarnation_id,
+                    route.assignment_epoch,
                     principal.as_bytes(),
                     &execution.audit_id,
                 ))
@@ -535,14 +537,16 @@ fn forced_command(
     operation: OperationId,
     execution: &[u8],
     incarnation: &[u8],
+    assignment_epoch: u64,
     principal: &[u8],
     audit: &[u8],
 ) -> String {
     format!(
-        "aos-sandbox-exec-gate --operation-id {} --execution-id {} --incarnation-id {} --principal-id {} --audit-id {}",
+        "/usr/libexec/aos-sandbox-exec-gate --operation-id {} --execution-id {} --incarnation-id {} --assignment-epoch {} --principal-id {} --audit-id {}",
         hex_id(operation.as_bytes()),
         hex_id(execution),
         hex_id(incarnation),
+        assignment_epoch,
         hex_id(principal),
         hex_id(audit)
     )

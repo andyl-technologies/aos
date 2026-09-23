@@ -11,6 +11,9 @@
 //! [`protocol`] owns the exact `AOSAGE01` framing and allocation bounds;
 //! [`signed_outcome_packet`] carries its detached outcome signature on the
 //! Host/guest wire without changing the checkpoint frame.
+//! [`openssh_gate`] defines signed attach readback and the fixed bridge claim;
+//! Linux physical measurement and the forced-command binary own its guest
+//! enforcement path.
 //! [`dormant_guest_agent`], [`dormant_root_builder`], and
 //! [`dormant_package`] provide independent, executable normal-source seams
 //! with an independently packaged but uninstalled binary. [`broker_adapter`]
@@ -23,6 +26,9 @@ pub mod dormant_package;
 #[cfg(unix)]
 pub mod dormant_root_builder;
 pub mod model;
+pub mod openssh_gate;
+#[cfg(target_os = "linux")]
+pub mod openssh_gate_linux;
 #[cfg(target_os = "linux")]
 pub mod protected_entry;
 pub mod protocol;

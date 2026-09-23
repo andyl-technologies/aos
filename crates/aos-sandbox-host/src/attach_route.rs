@@ -3,9 +3,10 @@
 //! One record per execution lives in the root-owned Host execution journal.
 //! The record pins the endpoint, host key, trusted user CA, incarnation,
 //! assignment, and expiry. A record alone does not establish that the guest
-//! `sshd` and forced-command gate are running with those values. The live gate
-//! reader therefore stays unavailable until an authenticated AOSAGE gate
-//! observation is implemented and matched against the protected record.
+//! `sshd` and forced-command gate are running with those values. A fresh
+//! Host challenge and signed guest physical readback must match the protected
+//! route and agent peer. The synchronous route remains unavailable until the
+//! protected channel connects that exchange to service dispatch.
 //!
 //! ```text
 //! /var/lib/aos/sandbox-host/openssh-attach-route.journal
@@ -19,7 +20,12 @@ use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1,
 };
 use aos_sandbox::{Journal, JournalError, JournalLimits, RecordNamespace};
+use aos_sandbox_agent::openssh_gate::{
+    OpenSshGateBindingV1, OpenSshGateReadbackErrorV1, OpenSshGateReadbackV1,
+    verify_openssh_gate_readback_v1,
+};
 use aos_sandbox_core::ExecutionId;
+use rand::{TryRngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PublicKey};
@@ -74,34 +80,35 @@ impl HostOpenSshAttachRouteOwnerV1 {
         incarnation_id: [u8; 16],
         assignment_epoch: u64,
     ) -> Result<HostOpenSshAttachRouteEvidenceV1, HostOpenSshAttachRouteErrorV1> {
-        let protected = self.read_protected(execution_id, incarnation_id, assignment_epoch)?;
-        let live = self.read_live_forced_command_gate(&protected)?;
-        if live.binding != protected.gate_binding() || live.signed_observation_commitment == [0; 32]
-        {
-            return Err(HostOpenSshAttachRouteErrorV1::GateMismatch);
-        }
-        validate_current_execution(&protected.record)?;
-        if protected.record.expires_at <= current_unix_seconds()? {
-            return Err(HostOpenSshAttachRouteErrorV1::Expired);
-        }
+        let _pending = self.begin_observe_active(execution_id, incarnation_id, assignment_epoch)?;
+        Err(HostOpenSshAttachRouteErrorV1::LiveGateUnavailable)
+    }
 
-        Ok(HostOpenSshAttachRouteEvidenceV1 {
-            execution_id: protected.record.execution_id,
-            attach_operation_id: protected.record.attach_operation_id,
-            incarnation_id: protected.record.incarnation_id,
-            assignment_epoch: protected.record.assignment_epoch,
-            principal_id: protected.record.principal_id,
-            audit_id: protected.record.audit_id,
-            host: protected.record.host,
-            port: protected.record.port,
-            user: protected.record.user,
-            host_public_key: protected.record.host_public_key,
-            trusted_user_ca_public_key: protected.record.trusted_user_ca_public_key,
-            expires_at: protected.record.expires_at,
-            route_generation: protected.record.route_generation,
-            route_digest: protected.route_digest,
-            gate_observation_commitment: live.signed_observation_commitment,
-            forced_command_gate_active: true,
+    /// Starts a fresh challenge for a protected guest-agent gate readback.
+    ///
+    /// The caller must deliver this challenge over the protected guest-agent
+    /// channel and return the guest's signed physical readback to `complete`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the route is stale or OS entropy is unavailable.
+    pub fn begin_observe_active(
+        &mut self,
+        execution_id: [u8; 16],
+        incarnation_id: [u8; 16],
+        assignment_epoch: u64,
+    ) -> Result<PendingOpenSshGateObservationV1, HostOpenSshAttachRouteErrorV1> {
+        let protected = self.read_protected(execution_id, incarnation_id, assignment_epoch)?;
+        let mut challenge = [0u8; 32];
+        OsRng
+            .try_fill_bytes(&mut challenge)
+            .map_err(|_| HostOpenSshAttachRouteErrorV1::Entropy)?;
+        if challenge == [0; 32] {
+            return Err(HostOpenSshAttachRouteErrorV1::Entropy);
+        }
+        Ok(PendingOpenSshGateObservationV1 {
+            protected,
+            challenge,
         })
     }
 
@@ -139,17 +146,101 @@ impl HostOpenSshAttachRouteOwnerV1 {
             route_digest: digest.finalize().into(),
         })
     }
+}
 
-    fn read_live_forced_command_gate(
-        &self,
-        _route: &ProtectedRouteV1,
-    ) -> Result<LiveGateReadbackV1, HostOpenSshAttachRouteErrorV1> {
-        // The current AOSAGE protocol signs execution outcomes, but has no
-        // signed observation of the guest's live sshd and gate configuration.
-        // Do not promote a protected route to an attach capability before that
-        // independently measured observation exists.
-        Err(HostOpenSshAttachRouteErrorV1::LiveGateUnavailable)
+/// Retains a protected route while its fresh challenge is measured by the guest.
+pub struct PendingOpenSshGateObservationV1 {
+    protected: ProtectedRouteV1,
+    challenge: [u8; 32],
+}
+
+impl PendingOpenSshGateObservationV1 {
+    /// Returns the nonce the guest must sign after physical readback.
+    #[must_use]
+    pub const fn challenge(&self) -> [u8; 32] {
+        self.challenge
     }
+
+    /// Returns the protected route commitment sent to the guest for readback.
+    #[must_use]
+    pub const fn route_digest(&self) -> [u8; 32] {
+        self.protected.route_digest
+    }
+
+    /// Authenticates one guest packet and rechecks protected currentness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the packet signature, physical gate binding,
+    /// protected peer, route, or current execution changed during readback.
+    pub fn complete(
+        self,
+        owner: &mut HostOpenSshAttachRouteOwnerV1,
+        packet: &[u8],
+    ) -> Result<HostOpenSshAttachRouteEvidenceV1, HostOpenSshAttachRouteErrorV1> {
+        let mut runtime_owner = DormantRuntimeExecutionOwnerV1::open()?;
+        let current = runtime_owner.claim()?;
+        let peer = current.agent_peer();
+        let runtime = current.currentness().runtime().currentness();
+        if runtime.incarnation().as_bytes() != &self.protected.record.incarnation_id
+            || runtime.assignment_epoch().get() != self.protected.record.assignment_epoch
+        {
+            return Err(HostOpenSshAttachRouteErrorV1::Stale);
+        }
+        let (readback, commitment) = verify_openssh_gate_readback_v1(packet, &peer.public_key())?;
+        verify_readback_binding(
+            &self.protected,
+            self.challenge,
+            *peer.channel_binding().as_bytes(),
+            &readback,
+        )?;
+        drop(current);
+        drop(runtime_owner);
+
+        let latest = owner.read_protected(
+            self.protected.record.execution_id,
+            self.protected.record.incarnation_id,
+            self.protected.record.assignment_epoch,
+        )?;
+        if latest.route_digest != self.protected.route_digest {
+            return Err(HostOpenSshAttachRouteErrorV1::Stale);
+        }
+        let route = latest.record;
+        Ok(HostOpenSshAttachRouteEvidenceV1 {
+            execution_id: route.execution_id,
+            attach_operation_id: route.attach_operation_id,
+            incarnation_id: route.incarnation_id,
+            assignment_epoch: route.assignment_epoch,
+            principal_id: route.principal_id,
+            audit_id: route.audit_id,
+            host: route.host,
+            port: route.port,
+            user: route.user,
+            host_public_key: route.host_public_key,
+            trusted_user_ca_public_key: route.trusted_user_ca_public_key,
+            expires_at: route.expires_at,
+            route_generation: route.route_generation,
+            route_digest: latest.route_digest,
+            gate_observation_commitment: commitment,
+            forced_command_gate_active: true,
+        })
+    }
+}
+
+fn verify_readback_binding(
+    protected: &ProtectedRouteV1,
+    challenge: [u8; 32],
+    channel_binding: [u8; 32],
+    readback: &OpenSshGateReadbackV1,
+) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+    if readback.challenge != challenge
+        || readback.route_digest != protected.route_digest
+        || readback.channel_binding != channel_binding
+        || readback.binding != protected.gate_binding()
+    {
+        return Err(HostOpenSshAttachRouteErrorV1::GateMismatch);
+    }
+    Ok(())
 }
 
 /// Authenticated Host route fields usable only after live gate readback agrees.
@@ -214,38 +305,15 @@ struct ProtectedRouteV1 {
     route_digest: [u8; 32],
 }
 
-#[derive(Eq, PartialEq)]
-struct GateBindingV1 {
-    execution_id: [u8; 16],
-    attach_operation_id: [u8; 16],
-    incarnation_id: [u8; 16],
-    assignment_epoch: u64,
-    principal_id: [u8; 16],
-    audit_id: [u8; 16],
-    host: String,
-    port: u16,
-    user: String,
-    host_public_key: String,
-    trusted_user_ca_public_key: String,
-    expires_at: i64,
-    gate_config_digest: [u8; 32],
-}
-
-struct LiveGateReadbackV1 {
-    binding: GateBindingV1,
-    signed_observation_commitment: [u8; 32],
-}
-
 impl ProtectedRouteV1 {
-    fn gate_binding(&self) -> GateBindingV1 {
-        GateBindingV1 {
+    fn gate_binding(&self) -> OpenSshGateBindingV1 {
+        OpenSshGateBindingV1 {
             execution_id: self.record.execution_id,
             attach_operation_id: self.record.attach_operation_id,
             incarnation_id: self.record.incarnation_id,
             assignment_epoch: self.record.assignment_epoch,
             principal_id: self.record.principal_id,
             audit_id: self.record.audit_id,
-            host: self.record.host.clone(),
             port: self.record.port,
             user: self.record.user.clone(),
             host_public_key: self.record.host_public_key.clone(),
@@ -360,6 +428,12 @@ pub enum HostOpenSshAttachRouteErrorV1 {
     /// The Host wall clock cannot be read as Unix seconds.
     #[error("Host wall clock is unavailable")]
     Clock,
+    /// OS entropy could not produce a fresh gate challenge.
+    #[error("Host OpenSSH gate challenge entropy is unavailable")]
+    Entropy,
+    /// Guest readback packet could not be authenticated.
+    #[error("guest OpenSSH gate readback failed: {0}")]
+    Readback(#[from] OpenSshGateReadbackErrorV1),
     /// No authenticated live `sshd` and forced-command gate readback exists.
     #[error("authenticated live OpenSSH forced-command gate readback is unavailable")]
     LiveGateUnavailable,
@@ -373,7 +447,12 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
-    use super::{HostOpenSshAttachRouteErrorV1, ROUTE_MAGIC, RouteRecordV1, decode_route_record};
+    use aos_sandbox_agent::openssh_gate::{OpenSshGatePhysicalStateV1, OpenSshGateReadbackV1};
+
+    use super::{
+        HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC, RouteRecordV1,
+        decode_route_record, verify_readback_binding,
+    };
 
     fn route_record() -> RouteRecordV1 {
         let host_key = SigningKey::from_bytes(&[7; 32]).verifying_key();
@@ -431,6 +510,41 @@ mod tests {
         assert!(matches!(
             decode_route_record(&serde_json::to_vec(&untrusted_key).unwrap()),
             Err(HostOpenSshAttachRouteErrorV1::Malformed)
+        ));
+    }
+
+    #[test]
+    fn signed_gate_fields_must_match_every_protected_attach_identity() {
+        let route = route_record();
+        let protected = ProtectedRouteV1 {
+            record: route,
+            route_digest: [11; 32],
+        };
+        let mut readback = OpenSshGateReadbackV1 {
+            challenge: [12; 32],
+            route_digest: [11; 32],
+            channel_binding: [13; 32],
+            binding: protected.gate_binding(),
+            physical: OpenSshGatePhysicalStateV1 {
+                sshd_pid: 123,
+                sshd_start_ticks: 456,
+                sshd_executable_digest: [14; 32],
+                gate_executable_digest: [15; 32],
+                host_private_key_digest: [16; 32],
+            },
+        };
+        assert!(verify_readback_binding(&protected, [12; 32], [13; 32], &readback).is_ok());
+
+        readback.binding.trusted_user_ca_public_key.push('x');
+        assert!(matches!(
+            verify_readback_binding(&protected, [12; 32], [13; 32], &readback),
+            Err(HostOpenSshAttachRouteErrorV1::GateMismatch)
+        ));
+        readback.binding = protected.gate_binding();
+        readback.challenge = [17; 32];
+        assert!(matches!(
+            verify_readback_binding(&protected, [12; 32], [13; 32], &readback),
+            Err(HostOpenSshAttachRouteErrorV1::GateMismatch)
         ));
     }
 }
