@@ -584,7 +584,6 @@ shape-line|crates/crucible/src/model/configuration.rs|723
 shape-line|crates/crucible/src/model/debug.rs|2923
 shape-line|crates/crucible/src/model/engine.rs|2159
 shape-line|crates/crucible/src/model/exploration.rs|2472
-shape-line|crates/crucible/src/model/family.rs|1319
 shape-line|crates/crucible/src/model/fault_signal/authoring/signal_codec.rs|935
 shape-line|crates/crucible/src/model/fault_signal/authoring/target_resolution.rs|695
 shape-line|crates/crucible/src/model/fault_signal/binding_runtime_test.rs|1480
