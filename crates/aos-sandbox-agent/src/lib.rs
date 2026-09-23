@@ -23,6 +23,8 @@ pub mod dormant_package;
 #[cfg(unix)]
 pub mod dormant_root_builder;
 pub mod model;
+#[cfg(target_os = "linux")]
+pub mod protected_entry;
 pub mod protocol;
 pub mod signed_outcome_packet;
 pub use dormant_guest_agent::{

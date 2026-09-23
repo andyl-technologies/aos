@@ -1,36 +1,36 @@
-//! Dormant independently packaged AOS sandbox guest-agent entry point.
+//! Independently packaged AOS sandbox guest-agent entry point.
 //!
-//! The executable accepts no caller-selected transport or path. Until a
-//! protected launcher supplies the fixed inherited transport and provisioning
-//! contract, it fails closed without opening a listener or reporting readiness.
+//! The executable accepts no caller-selected transport or path. It claims only
+//! the protected launcher's fixed inherited channel and sealed provisioning.
 
-use std::fmt;
+#[cfg(not(target_os = "linux"))]
+use aos_sandbox_agent::DormantGuestAgentServiceV1;
+use aos_sandbox_agent::dormant_guest_agent_main_v1;
 
-use aos_sandbox_agent::{DormantGuestAgentServiceV1, dormant_guest_agent_main_v1};
+#[cfg(target_os = "linux")]
+use aos_sandbox_agent::protected_entry::{ProtectedGuestAgentV1, RejectingGuestEffectsV1};
 
-struct ProtectedLauncherRequired;
+#[cfg(not(target_os = "linux"))]
+struct UnsupportedPlatform;
 
-impl DormantGuestAgentServiceV1 for ProtectedLauncherRequired {
-    type Error = ProtectedLauncherRequiredError;
+#[cfg(not(target_os = "linux"))]
+impl DormantGuestAgentServiceV1 for UnsupportedPlatform {
+    type Error = std::io::Error;
 
     fn run(&mut self) -> Result<(), Self::Error> {
-        Err(ProtectedLauncherRequiredError)
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "protected guest-agent entry requires Linux",
+        ))
     }
 }
-
-#[derive(Debug)]
-struct ProtectedLauncherRequiredError;
-
-impl fmt::Display for ProtectedLauncherRequiredError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("protected inherited guest-agent transport is absent")
-    }
-}
-
-impl std::error::Error for ProtectedLauncherRequiredError {}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut service = ProtectedLauncherRequired;
+    #[cfg(target_os = "linux")]
+    let mut service = ProtectedGuestAgentV1::new(RejectingGuestEffectsV1::default());
+    #[cfg(not(target_os = "linux"))]
+    let mut service = UnsupportedPlatform;
+
     dormant_guest_agent_main_v1(std::env::args_os(), &mut service)?;
     Ok(())
 }

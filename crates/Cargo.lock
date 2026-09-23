@@ -863,6 +863,8 @@ version = "0.1.0"
 dependencies = [
  "aos-proto",
  "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
