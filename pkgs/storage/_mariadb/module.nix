@@ -5,6 +5,9 @@
   ...
 }: let
   cfg = config.mariadb;
+  anyServiceEnabled =
+    config.aos.services."mariadb.initialize".enable
+    || config.aos.services."mariadb.main".enable;
   inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -571,7 +574,7 @@ in {
       assertions = [
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || !cfg.tls.enable
             || (
               serviceManagement.credentialReferenceConfigured tlsCertificate
@@ -581,7 +584,7 @@ in {
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || cfg.tls.enable
             || builtins.all
             (reference: !serviceManagement.credentialReferenceConfigured reference)
@@ -593,17 +596,17 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       producers = abilityFragments.baseProducers;
-      enabled = cfg.enable;
+      enabled = anyServiceEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [abilityFragments.credentialRequests];
-      enabled = cfg.enable && credentials.all != [];
+      enabled = anyServiceEnabled && credentials.all != [];
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [abilityFragments.bootstrapConfiguration];
-      enabled = cfg.enable && credentials.bootstrapCredentials != [];
+      enabled = anyServiceEnabled && credentials.bootstrapCredentials != [];
     })
   ];
 }

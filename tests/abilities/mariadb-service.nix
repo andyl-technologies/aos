@@ -22,14 +22,22 @@
       operations = ["observe"];
       lifetime = "persistent";
     };
-  evaluate = settings:
+  evaluateWith = settings: extraModules:
     evaluateBase {
       name = "mariadb";
       module.mariadb = settings;
       packages = [pkgs.mariadb pkgs.systemd];
+      inherit extraModules;
     };
+  evaluate = settings: evaluateWith settings [];
   disabled = evaluate {};
   plain = evaluate {enable = true;};
+  disabledServices = evaluateWith {enable = true;} [
+    ({lib, ...}: {
+      aos.services."mariadb.initialize".enable = lib.mkForce false;
+      aos.services."mariadb.main".enable = lib.mkForce false;
+    })
+  ];
   tls = evaluate {
     enable = true;
     tls = {
@@ -45,6 +53,8 @@
   tlsRequests = requestsFor tls;
 in
   assert requestsFor disabled == {};
+  assert requestsFor disabledServices == {};
+  assert disabledServices.config.aos.abilities.requirementTemplates == plain.config.aos.abilities.requirementTemplates;
   assert plainRequests ? "mariadb:main-lifecycle";
   assert !(plainRequests ? "mariadb:main-credentials");
   assert !(plainRequests ? "mariadb:bootstrap-configuration");
