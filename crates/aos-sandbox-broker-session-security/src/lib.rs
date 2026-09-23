@@ -79,7 +79,10 @@ mod recovery;
 )]
 mod self_execution;
 
-pub use cache_source_membership::{CacheSourceMembershipErrorV1, join_cache_source_membership_v1};
+pub use cache_source_membership::{
+    CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1, join_cache_source_membership_v1,
+    with_cache_source_membership_v1,
+};
 pub use dormant_handshake::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,
     DormantBrokerDescriptorCommitResultV1, DormantBrokerDescriptorExecutionFailureV1,
