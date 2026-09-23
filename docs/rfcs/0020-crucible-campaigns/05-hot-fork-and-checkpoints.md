@@ -437,6 +437,17 @@ cases that retain or quarantine ownership. Scripted assembly also covers a
 powered-off retained source. The real-QEMU atomic-world matrix remains mandatory
 before T-CAM-7.4 is marked complete.
 
+The aggregate guard provisions a separate pinned target run directory for each
+child. QEMU copies the frozen source VMState and writable root overlay into
+that directory, and the host seals their identities against the successful
+child-file proof. Before adoption, the daemon revalidates both named files and
+the directory path against its retained descriptor. Later lifecycle generation
+ownership uses the adopted path while the supervisor-owned mode-`0700` attempt
+root prevents the QEMU child from replacing its directory entry. Exact
+checkpoint capture opens the writable overlay through the retained directory
+descriptor and rejects a replaced named inode or symlink before reading bytes.
+A missing or changed handoff quarantines the child before world publication.
+
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.
 - **[HFORK-14]** Permanently failed modeled nodes and non-VM I/O nodes must have

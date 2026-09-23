@@ -381,6 +381,12 @@ impl ProductionVmNodeLease for QemuAttemptGenerationLease {
         &self.identity
     }
 
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
+        Err(generation_error(
+            "generation lease has no pinned run-directory authority",
+        ))
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         if self.finished {
             return Ok(());

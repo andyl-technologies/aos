@@ -516,6 +516,7 @@ fn build_production_checkpoint_codec_fixture(
         .map_err(|error| loop_factory_error(format!("inspect fixture VMState: {error}")))?
         .len();
     let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &File::open(&overlay).map_err(|error| fixture_error("open fixture overlay", error))?,
         &overlay,
         &run_state_root.join("fixture-overlay-chunks"),
         "root overlay fixture",

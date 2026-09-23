@@ -602,6 +602,24 @@ where
         &self.identity
     }
 
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
+        let reconciliation = self.reconciliation.as_ref().ok_or_else(|| {
+            hot_fork_adoption_error("hot-fork child no longer retains its reconciliation owner")
+        })?;
+        let directory = reconciliation
+            .backend
+            .as_ref()
+            .and_then(|backend| backend.run_directory.as_ref())
+            .ok_or_else(|| {
+                hot_fork_adoption_error("hot-fork child lost its pinned run-directory authority")
+            })?;
+        directory
+            .open_root_overlay_for_checkpoint()
+            .map_err(|error| {
+                hot_fork_adoption_error(format!("open pinned hot-fork checkpoint overlay: {error}"))
+            })
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         let Some(reconciliation) = self.reconciliation.as_mut() else {
             return Ok(());
@@ -688,17 +706,19 @@ where
                 "hot-fork child identity differs from its installed node or target reservation",
             );
         }
-        let Some(run_directory) = backend
-            .run_directory
-            .as_ref()
-            .map(|directory| directory.path())
-        else {
+        let Some(run_directory) = backend.run_directory.as_ref() else {
             return retain_failed_world_adoption(
                 self,
                 "hot-fork child lost its pinned run-directory authority",
             );
         };
-        let run_directory = run_directory.to_path_buf();
+        if let Err(error) = run_directory.validate_hot_fork_adoption() {
+            return retain_failed_world_adoption(
+                self,
+                format!("hot-fork child run-directory handoff failed: {error}"),
+            );
+        }
+        let run_directory = run_directory.path().to_path_buf();
         let Some(node) = backend.installed_node.take() else {
             return retain_failed_world_adoption(
                 self,
