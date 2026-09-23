@@ -1015,7 +1015,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         checkpoint_targets: BTreeMap::new(),
         exact_ram_parents: BTreeMap::new(),
         recorded_controls: Vec::new(),
-        signal_artifact_objects: BTreeMap::new(),
+        signal_artifact_objects: Arc::new(BTreeMap::new()),
         debug_backend_paths: BTreeMap::new(),
         debug_gateway: None,
         debug_attach: None,

@@ -146,8 +146,8 @@ impl ProductionVmHotForkIoNodeBoundary {
 pub struct ProductionVmExactHotForkSourceBoundary {
     pub(super) configuration: Configuration,
     pub(super) scheduler: SingleSchedulerCheckpoint,
-    pub(super) event_log_objects: BTreeMap<ContentHash, Vec<u8>>,
-    pub(super) signal_artifact_objects: BTreeMap<ContentHash, Vec<u8>>,
+    pub(super) event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    pub(super) signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     pub(super) node_generations: BTreeMap<NodeId, u64>,
     pub(super) node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     pub(super) host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
@@ -193,8 +193,8 @@ impl ProductionVmExactHotForkSourceBoundary {
         Ok(Self {
             configuration: checkpoint.configuration.clone(),
             scheduler: checkpoint.scheduler.clone(),
-            event_log_objects: checkpoint.event_log_objects.clone(),
-            signal_artifact_objects: checkpoint.signal_artifact_objects.clone(),
+            event_log_objects: Arc::clone(&checkpoint.event_log_objects),
+            signal_artifact_objects: Arc::clone(&checkpoint.signal_artifact_objects),
             node_generations: checkpoint.node_generations.clone(),
             node_service_states: checkpoint.node_service_states.clone(),
             host_io,

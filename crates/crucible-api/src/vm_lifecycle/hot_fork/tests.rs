@@ -89,8 +89,8 @@ fn exact_boundary_from_continuation(
     ProductionVmExactHotForkSourceBoundary {
         configuration: continuation.configuration.clone(),
         scheduler: continuation.scheduler.clone(),
-        event_log_objects: continuation.event_log_objects.clone(),
-        signal_artifact_objects: continuation.signal_artifact_objects.clone(),
+        event_log_objects: Arc::clone(&continuation.event_log_objects),
+        signal_artifact_objects: Arc::clone(&continuation.signal_artifact_objects),
         node_generations: continuation.node_generations.clone(),
         node_service_states: continuation.node_service_states.clone(),
         host_io,
@@ -123,6 +123,82 @@ fn exact_boundary_rejects_extra_active_and_failed_host_io_owners() {
         .failed_host_io
         .insert(foreign_node.clone(), failed_node_state(&foreign_node));
     assert!(!boundary.matches(&extra_failed));
+}
+
+#[test]
+fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
+    let (_source, mut captured) = permanently_failed_continuation();
+    let original_bytes = vec![7; 4096];
+    let original = ContentHash::from_bytes(&original_bytes);
+    Arc::make_mut(&mut captured.event_log_objects).insert(original, original_bytes);
+
+    let mut first = captured
+        .try_clone_for_branch()
+        .unwrap_or_else(|error| panic!("clone first host branch: {error}"));
+    let second = captured
+        .try_clone_for_branch()
+        .unwrap_or_else(|error| panic!("clone second host branch: {error}"));
+
+    assert!(Arc::ptr_eq(
+        &first.event_log_objects,
+        &second.event_log_objects
+    ));
+    assert!(Arc::ptr_eq(
+        &first.signal_artifact_objects,
+        &second.signal_artifact_objects
+    ));
+
+    let replacement_bytes = vec![9; 4096];
+    let replacement = ContentHash::from_bytes(&replacement_bytes);
+    Arc::make_mut(&mut first.event_log_objects).insert(replacement, replacement_bytes);
+    assert!(!Arc::ptr_eq(
+        &first.event_log_objects,
+        &second.event_log_objects
+    ));
+    assert_eq!(
+        first.event_log_objects.get(&replacement),
+        Some(&vec![9; 4096])
+    );
+    assert!(!second.event_log_objects.contains_key(&replacement));
+    assert_eq!(
+        second.event_log_objects.get(&original),
+        Some(&vec![7; 4096])
+    );
+    assert_eq!(
+        captured.event_log_objects.get(&original),
+        Some(&vec![7; 4096])
+    );
+}
+
+#[test]
+fn child_materialization_retains_immutable_closure_backing() {
+    let (_source, mut captured) = permanently_failed_continuation();
+    let event_bytes = vec![3; 4 * 1024 * 1024];
+    let event = ContentHash::from_bytes(&event_bytes);
+    Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
+    let signal_bytes = vec![5; 4 * 1024 * 1024];
+    let signal = ContentHash::from_bytes(&signal_bytes);
+    Arc::make_mut(&mut captured.signal_artifact_objects).insert(signal, signal_bytes);
+
+    let child = captured
+        .try_clone_for_branch()
+        .unwrap_or_else(|error| panic!("clone child host branch: {error}"));
+    let generations = child.node_generations.clone();
+    let restored = child.into_restore_parts(generations, "child-run-state");
+
+    assert_eq!(captured.event_log_objects[&event].len(), 4 * 1024 * 1024);
+    assert_eq!(
+        captured.signal_artifact_objects[&signal].len(),
+        4 * 1024 * 1024
+    );
+    assert!(Arc::ptr_eq(
+        &captured.event_log_objects,
+        &restored.checkpoint.event_log_objects
+    ));
+    assert!(Arc::ptr_eq(
+        &captured.signal_artifact_objects,
+        &restored.checkpoint.signal_artifact_objects
+    ));
 }
 
 #[test]
