@@ -1445,10 +1445,12 @@ fn validate_cache_consumer_projection(
     ensure_view_project(&view, project)?;
     // Release remains possible after the consumer starts draining.
     if matches!(mutation_kind, CacheConsumerMutationV1::Acquire)
-        && !matches!(
-            view.phase.as_known(),
-            Some(ViewPhase::VIEW_PHASE_READY | ViewPhase::VIEW_PHASE_DEGRADED)
-        )
+        && (view.revision.as_option().is_none()
+            || view.desired_generation == 0
+            || !matches!(
+                view.phase.as_known(),
+                Some(ViewPhase::VIEW_PHASE_READY | ViewPhase::VIEW_PHASE_DEGRADED)
+            ))
     {
         return Err(OperationCompilationError::Rejected);
     }
@@ -1464,7 +1466,10 @@ fn validate_cache_consumer_projection(
                 .observed
                 .as_option()
                 .ok_or(OperationCompilationError::Rejected)?;
+            // An older ready attachment may drain, but cannot acquire new pins.
             if attachment.source_view_id != view_id
+                || attachment.view_revision.as_option() != view.revision.as_option()
+                || attachment.source_generation != view.desired_generation
                 || attachment.phase.as_known() != Some(AttachmentPhase::ATTACHMENT_PHASE_READY)
                 || attachment.assignment_epoch == 0
                 || attachment.assignment_epoch != observed.assignment_epoch
