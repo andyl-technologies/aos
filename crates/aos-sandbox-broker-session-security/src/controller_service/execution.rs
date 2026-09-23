@@ -75,6 +75,27 @@ enum ControllerExecutionActionV1 {
     Cancel,
 }
 
+impl ControllerExecutionActionV1 {
+    // Apply encoding and signed-request validation must agree on every field.
+    fn wire_fields(self) -> (HostExecutionActionV1, u32, u32, u32) {
+        match self {
+            Self::Resize { rows, columns } => (
+                HostExecutionActionV1::HOST_EXECUTION_ACTION_RESIZE,
+                u32::from(rows),
+                u32::from(columns),
+                0,
+            ),
+            Self::Signal { signal_code } => (
+                HostExecutionActionV1::HOST_EXECUTION_ACTION_SIGNAL,
+                0,
+                0,
+                u32::from(signal_code),
+            ),
+            Self::Cancel => (HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL, 0, 0, 0),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExecutionAuthorizationKindV1 {
     Apply,
@@ -400,23 +421,8 @@ impl ControllerExecutionIntentV1 {
         };
         let body = match kind {
             ExecutionAuthorizationKindV1::Apply => {
-                let (action, terminal_rows, terminal_columns, signal_number) = match self.action {
-                    ControllerExecutionActionV1::Resize { rows, columns } => (
-                        HostExecutionActionV1::HOST_EXECUTION_ACTION_RESIZE,
-                        u32::from(rows),
-                        u32::from(columns),
-                        0,
-                    ),
-                    ControllerExecutionActionV1::Signal { signal_code } => (
-                        HostExecutionActionV1::HOST_EXECUTION_ACTION_SIGNAL,
-                        0,
-                        0,
-                        u32::from(signal_code),
-                    ),
-                    ControllerExecutionActionV1::Cancel => {
-                        (HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL, 0, 0, 0)
-                    }
-                };
+                let (action, terminal_rows, terminal_columns, signal_number) =
+                    self.action.wire_fields();
                 let request = ApplyHostExecutionRequestV1 {
                     header: Some(header).into(),
                     operation_id: self.operation_id.as_bytes().to_vec(),
@@ -881,35 +887,16 @@ fn request_matches_intent(
             let Ok(request) = ApplyHostExecutionRequestV1::decode_from_slice(exact_body) else {
                 return false;
             };
-            let action_matches = match intent.action {
-                ControllerExecutionActionV1::Resize { rows, columns } => {
-                    request.action.as_known()
-                        == Some(HostExecutionActionV1::HOST_EXECUTION_ACTION_RESIZE)
-                        && request.terminal_rows == u32::from(rows)
-                        && request.terminal_columns == u32::from(columns)
-                        && request.signal_number == 0
-                }
-                ControllerExecutionActionV1::Signal { signal_code } => {
-                    request.action.as_known()
-                        == Some(HostExecutionActionV1::HOST_EXECUTION_ACTION_SIGNAL)
-                        && request.terminal_rows == 0
-                        && request.terminal_columns == 0
-                        && request.signal_number == u32::from(signal_code)
-                }
-                ControllerExecutionActionV1::Cancel => {
-                    request.action.as_known()
-                        == Some(HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL)
-                        && request.terminal_rows == 0
-                        && request.terminal_columns == 0
-                        && request.signal_number == 0
-                }
-            };
+            let (action, rows, columns, signal_number) = intent.action.wire_fields();
             request.encode_to_vec() == exact_body
                 && request.operation_id == intent.operation_id.as_bytes()
                 && request.execution_id == intent.execution_id
                 && request.source_operation_commitment == intent.source_operation_commitment
                 && request.canonical_execution_spec.is_empty()
-                && action_matches
+                && request.action.as_known() == Some(action)
+                && request.terminal_rows == rows
+                && request.terminal_columns == columns
+                && request.signal_number == signal_number
         }
         ExecutionAuthorizationKindV1::Query => {
             let Ok(request) = QueryHostExecutionRequestV1::decode_from_slice(exact_body) else {
