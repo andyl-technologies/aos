@@ -5,6 +5,7 @@
   guestChoice ? false,
   campaignMidpoint ? false,
   findingExactBundle ? false,
+  maintenanceTransfer ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -124,7 +125,9 @@
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
-      if guestChoice
+      if maintenanceTransfer
+      then "crucible-campaign-exact-maintenance-transfer"
+      else if guestChoice
       then "crucible-packaged-campaign-choice"
       else if findingExactBundle
       then "crucible-campaign-finding-exact-bundle"
@@ -191,13 +194,54 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
-      ${lib.optionalString (campaignMidpoint || findingExactBundle) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || campaignMidpoint || findingExactBundle || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
-        if guestChoice
+        if maintenanceTransfer
         then ''
-          export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img
+          maintenance_selector=packaged::guest_choice::maintenance_transfer::public_active_pause_restart_and_executable_transfer_rejects_incompatible_provenance
+          if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-maintenance-transfer-list.log 2>&1; then
+            cat /tmp/campaign-maintenance-transfer-list.log
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$maintenance_selector: test" \
+            /tmp/campaign-maintenance-transfer-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$maintenance_selector" --nocapture \
+            > /tmp/campaign-maintenance-transfer.log 2>&1; then
+            cat /tmp/campaign-maintenance-transfer.log
+            exit 1
+          fi
+          cat /tmp/campaign-maintenance-transfer.log
+          for evidence in \
+            source_active_world_exact_pause_restart=true \
+            source_exact_resume_progress=true \
+            source_nested_qemu_stopped=true \
+            recipient_executable_archive_authenticated=true \
+            recipient_exact_pin_import_authenticated=true \
+            recipient_campaign_resume=true \
+            recipient_imported_attempt_running=true \
+            recipient_nested_qemu_stopped=true \
+            incompatible_provenance_rejected_before_guest=true \
+            source_checkpoint_preserved=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" /tmp/campaign-maintenance-transfer.log
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            /tmp/campaign-maintenance-transfer.log
+          printf '%s\n' \
+            'gate=gate:campaign-exact-maintenance-transfer' \
+            'tasks=T-CAM-5.8' \
+            'tier=real-packaged-qemu'
+        ''
+        else if guestChoice
+        then ''
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/guest-choice-flight-list.log 2>&1; then
             cat /tmp/guest-choice-flight-list.log

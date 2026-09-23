@@ -2311,6 +2311,7 @@ dependencies = [
  "crucible-device",
  "crucible-harness",
  "crucible-protocol",
+ "crucible-qemu",
  "crucible-session",
  "libc",
  "rcgen",
