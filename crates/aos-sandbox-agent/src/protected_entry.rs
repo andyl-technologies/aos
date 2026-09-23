@@ -123,6 +123,30 @@ impl GuestAgentLaunchRecordV1 {
         self.signing_key.verifying_key().to_bytes()
     }
 
+    /// Returns the exact runtime for which this launch secret was minted.
+    #[must_use]
+    pub const fn runtime(&self) -> &AgentRuntimeBindingV1 {
+        &self.runtime
+    }
+
+    /// Returns the protected channel to which this launch secret is bound.
+    #[must_use]
+    pub const fn channel_binding(&self) -> ObjectDigest {
+        self.channel
+    }
+
+    /// Returns the one-time agent instance bound to this launch record.
+    #[must_use]
+    pub const fn agent_instance(&self) -> [u8; 16] {
+        self.instance
+    }
+
+    /// Returns the exact feature set supplied to the guest.
+    #[must_use]
+    pub const fn features(&self) -> &AgentFeatureSetV1 {
+        &self.features
+    }
+
     /// Encodes the canonical 258-byte `AOSAGP01` sealed-memfd payload.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {

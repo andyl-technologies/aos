@@ -32,6 +32,7 @@ ssh-key.workspace = true
 thiserror.workspace = true
 rustix = { workspace = true, features = ["fs", "net", "process", "time"] }
 tokio.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 aos-sandbox-guardian.workspace = true
