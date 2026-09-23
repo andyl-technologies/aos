@@ -733,7 +733,12 @@ where
     }
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
-        self.backend.fingerprint(node).map_err(Into::into)
+        let sample = self.backend.fingerprint(node.clone())?;
+        let at = self.loop_impl.backend_observation_time(&node, sample.at)?;
+
+        // The backend reports its node-local counter; public fingerprint time
+        // uses the same scheduler epoch as other observations from that node.
+        Ok(FingerprintSample { at, ..sample })
     }
 
     fn apply_control_at_boundary(
