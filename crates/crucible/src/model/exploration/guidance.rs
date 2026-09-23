@@ -282,7 +282,8 @@ pub struct AdaptiveStrategyRun {
 }
 
 /// Configuration for preemption branch generation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreemptionBranchConfig {
     /// Node whose vCPU is preempted.
     pub node: NodeId,
@@ -300,6 +301,22 @@ pub struct PreemptionBranchConfig {
     pub target_vcpu: VcpuId,
     /// Interrupt vector to deliver.
     pub irq: IrqVector,
+}
+
+impl PreemptionBranchConfig {
+    pub(crate) fn has_bounded_domain(&self) -> bool {
+        // Each instruction count yields a switch and an interrupt alternative.
+        const MAX_PREEMPTION_BRANCH_SLOTS: u64 = 2_048;
+
+        if self.step == 0 {
+            return false;
+        }
+        self.horizon
+            .retired
+            .checked_sub(self.deadline.retired)
+            .and_then(|span| (span / self.step).checked_add(1))
+            .is_some_and(|slots| slots <= MAX_PREEMPTION_BRANCH_SLOTS)
+    }
 }
 
 /// Result of preemption branch expansion.

@@ -18,7 +18,7 @@ fn crucible_payloads_round_trip_and_rederive_semantic_ids() {
             .expect("configuration artifact");
     assert_eq!(
         configuration_artifact.payload_schema(),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V3
     );
 
     assert_eq!(
@@ -36,6 +36,67 @@ fn crucible_payloads_round_trip_and_rederive_semantic_ids() {
         configuration_artifact.configuration(),
         campaign_configuration_id(configuration.id())
     );
+}
+
+#[test]
+fn configuration_import_rejects_forged_or_stripped_preemption_evidence() {
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let scenario_artifact =
+        encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
+    let parent = Configuration::genesis(scenario.scenario_def());
+    let producer = crucible::PreemptionBranchConfig {
+        node: crucible::NodeId {
+            name: String::from("node-a"),
+        },
+        deadline: crucible::Icount { retired: 2 },
+        horizon: crucible::Icount { retired: 2 },
+        step: 1,
+        switch_from_vcpu: crucible::VcpuId { index: 0 },
+        switch_to_vcpu: crucible::VcpuId { index: 0 },
+        target_vcpu: crucible::VcpuId { index: 0 },
+        irq: crucible::IrqVector { vector: 32 },
+    };
+    let (_, choices) =
+        crucible::preemption_branch_choices(&parent, &producer).expect("preemption choices");
+    let decisions = choices.first().expect("preemption branch").decisions();
+    let mut forged = serde_json::to_value(&decisions[0]).expect("selection JSON");
+    forged["Selection"]["preemption_config"]["node"]["name"] =
+        serde_json::Value::String(String::from("forged-node"));
+    let forged_selection = serde_json::from_value(forged).expect("structural selection");
+    let schedule = Schedule::from_decisions([forged_selection, decisions[1].clone()]);
+    let artifact = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
+        .expect("configuration artifact");
+
+    let error = decode_crucible_configuration_artifact(&scenario, &scenario_artifact, &artifact)
+        .expect_err("forged producer evidence must fail before selection resolution");
+    assert!(matches!(
+        error,
+        CrucibleArtifactError::InvalidPayload {
+            artifact: "configuration",
+            ..
+        }
+    ));
+
+    let Decision::Selection(selection) = &decisions[0] else {
+        panic!("typed branch must begin with a selection");
+    };
+    let stripped = Decision::Selection(SelectionDecision::new(
+        &selection.selection().expect("canonical selection"),
+    ));
+    let schedule = Schedule::from_decisions([stripped, decisions[1].clone()]);
+    let artifact = encode_crucible_configuration_artifact(&scenario_artifact, &schedule)
+        .expect("stripped configuration artifact");
+    let error = decode_crucible_configuration_artifact(&scenario, &scenario_artifact, &artifact)
+        .expect_err("stripped preemption evidence must fail before selection resolution");
+    assert!(matches!(
+        error,
+        CrucibleArtifactError::InvalidPayload {
+            artifact: "configuration",
+            ..
+        }
+    ));
 }
 
 #[test]

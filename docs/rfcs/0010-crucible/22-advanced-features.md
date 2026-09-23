@@ -1266,9 +1266,15 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   `Decision::Preemption` vCPU-switch and interrupt-timing decisions for
   single-vCPU guests. The gate proves commuting decisions on distinct nodes are
   collapsed by the explicit partial-order independence policy to the stable
-  content-addressed canonical schedule. Every explored child and each unique
-  representative of a covered child is materialized through the same
-  replay-oracle-checked fat checkpoint path, and the gate verifies their
+  content-addressed canonical schedule. Each typed branch retains its bounded
+  producer domain; reduction authenticates the original parent-bound selections
+  and reissues them at the reordered parents. Normal replay and artifact import
+  authenticate the retained producer at its recorded parent even without a
+  swap; they also reject a typed preemption whose producer evidence was
+  stripped. Reduction leaves dependent branches and branches with later
+  parent-bound selections distinct. Every explored child
+  and each unique representative of a covered child is materialized through
+  the same replay-oracle-checked fat checkpoint path, and the gate verifies their
   content addresses and replay evidence.
 - [x] **T-ADV-21** Implement optional, additive exploration of app-controlled
   randomness (`BackendRngEvidence`, 16/05) as a mutation/branch dimension over

@@ -129,7 +129,7 @@ struct AuthenticatedCampaignReplay {
 fn authenticate_and_replay(
     reproduction: &crucible_campaign::ReproductionArtifact,
 ) -> Result<AuthenticatedCampaignReplay, CliError> {
-    if reproduction.payload_schema() != crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3 {
+    if reproduction.payload_schema() != crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4 {
         return Err(backend_error(
             "campaign reproduction payload uses an unsupported schema",
         ));
@@ -254,7 +254,7 @@ mod tests {
                     b"campaign replay finding",
                 ),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
             artifact.to_compact_binary(),
         )?;
 
@@ -276,7 +276,7 @@ mod tests {
                 reproduction.configuration_artifact(),
                 reproduction.finding_fingerprint(),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
             artifact.to_compact_binary(),
         )?;
         let error = authenticate_and_replay(&mismatched)
@@ -297,7 +297,7 @@ mod tests {
                 reproduction.configuration_artifact(),
                 reproduction.finding_fingerprint(),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
             artifact.to_compact_binary(),
         )?;
         let error = authenticate_and_replay(&mismatched_scenario)
@@ -313,7 +313,7 @@ mod tests {
                 reproduction.configuration_artifact(),
                 reproduction.finding_fingerprint(),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3 + 1,
+            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4 + 1,
             artifact.to_compact_binary(),
         )?;
         let error = authenticate_and_replay(&wrong_schema)

@@ -1159,7 +1159,7 @@ impl ReproductionArtifact {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
     /// scenario, or schedule bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V8)?;
         let scenario_bytes = reader.read_binary_blob_bounded(
             "reproduction-artifact.scenario",
             MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
@@ -1219,13 +1219,17 @@ impl ReproductionArtifact {
         self.canonical_bytes()
     }
 
-    /// Replays the artifact through the reduction oracle.
+    /// Replays the artifact through producer validation and the reduction oracle.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError`] if the reduction function rejects the embedded
-    /// scenario/schedule pair.
+    /// scenario/schedule pair or retained preemption producer evidence.
     pub fn replay(&self) -> Result<ReproductionReplay, EngineError> {
+        validate_preemption_branch_schedule(&Configuration {
+            def: self.scenario_def(),
+            schedule: self.schedule.clone(),
+        })?;
         let state = reduce(&self.scenario_def(), &self.schedule)?;
         Ok(ReproductionReplay {
             artifact: self.id,

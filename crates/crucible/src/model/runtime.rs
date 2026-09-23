@@ -312,9 +312,23 @@ pub fn preemption_branch_choices(
     ),
     EngineError,
 > {
-    if config.step == 0 || config.deadline.retired > config.horizon.retired {
+    preemption_branch_choices_filtered(parent, config, None)
+}
+
+fn preemption_branch_choices_filtered(
+    parent: &Configuration,
+    config: &PreemptionBranchConfig,
+    selected: Option<&Decision>,
+) -> Result<
+    (
+        crucible_campaign::ChoiceDiscovery,
+        Vec<SearchFrontierChoice>,
+    ),
+    EngineError,
+> {
+    if !config.has_bounded_domain() {
         return Err(EngineError::ScenarioSerialization {
-            reason: String::from("preemption branch domain is empty"),
+            reason: String::from("preemption branch domain is empty or exceeds 4096 alternatives"),
         });
     }
 
@@ -347,20 +361,15 @@ pub fn preemption_branch_choices(
     }
 
     use crucible_campaign::{
-        AlternativeId, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain,
-        ChoiceSource, ChoiceValue, ConfigurationId, DiscreteAlternative, DiscreteDomain,
-        ScenarioDefId, SelectableDeclaration, Selection,
+        CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceSource,
+        ChoiceValue, ConfigurationId, DiscreteAlternative, DiscreteDomain, ScenarioDefId,
+        SelectableDeclaration, Selection,
     };
 
     let mut alternatives = BTreeMap::new();
     let mut alternative_ids = Vec::with_capacity(preemptions.len());
     for preemption in &preemptions {
-        let bytes = Schedule::from_decisions([Decision::Preemption(preemption.clone())])
-            .to_compact_binary();
-        let alternative = AlternativeId::from_hash(CampaignHash::derive(
-            "crucible.preemption.alternative.v1",
-            &bytes,
-        ));
+        let alternative = preemption_alternative_id(preemption);
         let label = match preemption.kind {
             PreemptionKind::VcpuSwitch { .. } => format!("vcpu-switch-{}", preemption.at.retired),
             PreemptionKind::InterruptAt { .. } => format!("interrupt-{}", preemption.at.retired),
@@ -421,6 +430,12 @@ pub fn preemption_branch_choices(
     let sequences = preemptions
         .into_iter()
         .zip(alternative_ids)
+        // Replay needs the complete domain identity, but only one selection.
+        .filter(|(preemption, _)| {
+            selected.is_none_or(|decision| {
+                matches!(decision, Decision::Preemption(candidate) if candidate == preemption)
+            })
+        })
         .map(|(preemption, alternative)| {
             let selection = Selection::new_campaign_branch(
                 &opportunity,
@@ -430,7 +445,10 @@ pub fn preemption_branch_choices(
             )
             .map_err(preemption_choice_error)?;
             Ok([
-                Decision::Selection(SelectionDecision::new(&selection)),
+                Decision::Selection(
+                    SelectionDecision::new_preemption_branch(&selection, config)
+                        .map_err(preemption_choice_error)?,
+                ),
                 Decision::Preemption(preemption),
             ])
         })
@@ -449,6 +467,89 @@ fn preemption_choice_error(error: crucible_campaign::CampaignCodecError) -> Engi
     }
 }
 
+fn preemption_alternative_id(preemption: &PreemptionDecision) -> crucible_campaign::AlternativeId {
+    let bytes =
+        Schedule::from_decisions([Decision::Preemption(preemption.clone())]).to_compact_binary();
+    crucible_campaign::AlternativeId::from_hash(crucible_campaign::CampaignHash::derive(
+        "crucible.preemption.alternative.v1",
+        &bytes,
+    ))
+}
+
+/// Authenticates retained preemption producer evidence at every recorded parent.
+///
+/// # Errors
+///
+/// Returns [`EngineError::ScenarioSerialization`] when typed producer evidence
+/// is missing or does not reproduce its selection and preemption at that prefix.
+pub fn validate_preemption_branch_schedule(
+    configuration: &Configuration,
+) -> Result<(), EngineError> {
+    let decisions = configuration.schedule.decisions();
+    if !decisions.iter().enumerate().any(|(index, decision)| {
+        matches!(decision, Decision::Selection(selection) if selection.preemption_config().is_some()
+            || (selection.is_campaign_branch()
+                && matches!(decisions.get(index + 1), Some(Decision::Preemption(_)))))
+    }) {
+        return Ok(());
+    }
+
+    let mut parent = Configuration::genesis(configuration.def.clone());
+    for (index, decision) in decisions.iter().enumerate() {
+        if let Decision::Selection(selection) = decision {
+            if let Some(config) = selection.preemption_config() {
+                let preemption = decisions
+                    .get(index + 1)
+                    .ok_or_else(|| preemption_producer_mismatch(index))?;
+                let expected = preemption_choice_at(&parent, config, preemption)
+                    .ok_or_else(|| preemption_producer_mismatch(index))?;
+                if expected.as_slice() != &decisions[index..index + 2] {
+                    return Err(preemption_producer_mismatch(index));
+                }
+            } else if let Some(Decision::Preemption(preemption)) = decisions.get(index + 1) {
+                if selection.is_campaign_branch()
+                    && matches!(
+                        selection.selection().map_err(preemption_choice_error)?.value(),
+                        crucible_campaign::ChoiceValue::Discrete(alternative)
+                            if *alternative == preemption_alternative_id(preemption)
+                    )
+                {
+                    return Err(EngineError::ScenarioSerialization {
+                        reason: format!(
+                            "preemption producer evidence is missing at decision {index}"
+                        ),
+                    });
+                }
+            }
+        }
+        parent = try_step(&parent, decision.clone())?;
+    }
+    Ok(())
+}
+
+fn preemption_producer_mismatch(index: usize) -> EngineError {
+    EngineError::ScenarioSerialization {
+        reason: format!("preemption producer evidence does not reproduce at decision {index}"),
+    }
+}
+
+pub(super) fn preemption_choice_at(
+    parent: &Configuration,
+    config: &PreemptionBranchConfig,
+    preemption: &Decision,
+) -> Option<[Decision; 2]> {
+    preemption_branch_choices_filtered(parent, config, Some(preemption))
+        .ok()?
+        .1
+        .into_iter()
+        .find_map(|choice| match choice.decisions() {
+            [selection @ Decision::Selection(_), branch] if branch == preemption => {
+                Some([selection.clone(), branch.clone()])
+            }
+            _ => None,
+        })
+}
+
 /// Materializes `config` into a live runtime through `graph`.
 ///
 /// Exact cached snapshots are checked against the replay oracle before they are
@@ -461,6 +562,14 @@ fn preemption_choice_error(error: crucible_campaign::CampaignCodecError) -> Engi
 /// Returns other [`EngineError`] variants when cached checkpoint metadata is
 /// invalid or suffix replay does not reconstruct the requested configuration.
 pub fn instantiate(
+    graph: &TemporalGraph,
+    config: &Configuration,
+) -> Result<RuntimeState, EngineError> {
+    validate_preemption_branch_schedule(config)?;
+    instantiate_validated(graph, config)
+}
+
+fn instantiate_validated(
     graph: &TemporalGraph,
     config: &Configuration,
 ) -> Result<RuntimeState, EngineError> {
@@ -482,7 +591,7 @@ pub fn instantiate(
     }
 
     if let Some(ancestor) = graph.nearest_cached_ancestor(config)? {
-        let ancestor_runtime = instantiate(graph, &ancestor)?;
+        let ancestor_runtime = instantiate_validated(graph, &ancestor)?;
         let suffix = config
             .schedule
             .suffix_from(ancestor.schedule.len())
@@ -491,7 +600,7 @@ pub fn instantiate(
     }
 
     let genesis = Configuration::genesis(config.def.clone());
-    let genesis_runtime = instantiate(graph, &genesis)?;
+    let genesis_runtime = instantiate_validated(graph, &genesis)?;
     let suffix = config
         .schedule
         .suffix_from(genesis.schedule.len())

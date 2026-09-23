@@ -1149,6 +1149,19 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
         Decision::Selection(selection) => {
             writer.write_u8(5);
             writer.write_binary_blob(selection.canonical_bytes());
+            if let Some(config) = selection.preemption_config() {
+                writer.write_u8(1);
+                writer.write_string(&config.node.name);
+                writer.write_u64(config.deadline.retired);
+                writer.write_u64(config.horizon.retired);
+                writer.write_u64(config.step);
+                writer.write_u32(config.switch_from_vcpu.index);
+                writer.write_u32(config.switch_to_vcpu.index);
+                writer.write_u32(config.target_vcpu.index);
+                writer.write_u32(config.irq.vector);
+            } else {
+                writer.write_u8(0);
+            }
         }
     }
 }
@@ -1196,15 +1209,68 @@ pub(super) fn read_decision_binary(
             },
             kind: read_preemption_kind_binary(reader)?,
         })),
-        5 => SelectionDecision::from_canonical_bytes(reader.read_binary_blob_bounded(
+        5 => read_selection_decision_binary(reader).map(Decision::Selection),
+        _ => Err(scenario_serialization_error("invalid decision tag")),
+    }
+}
+
+fn read_selection_decision_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<SelectionDecision, EngineError> {
+    let selection =
+        SelectionDecision::from_canonical_bytes(reader.read_binary_blob_bounded(
             "campaign selection decision",
             MAX_SELECTION_DECISION_BYTES,
         )?)
-        .map(Decision::Selection)
         .map_err(|error| {
             scenario_serialization_error(format!("invalid campaign selection decision: {error}"))
-        }),
-        _ => Err(scenario_serialization_error("invalid decision tag")),
+        })?;
+    match reader.read_u8()? {
+        0 => Ok(selection),
+        1 => {
+            let config = PreemptionBranchConfig {
+                node: NodeId {
+                    name: reader.read_string()?,
+                },
+                deadline: Icount {
+                    retired: reader.read_u64()?,
+                },
+                horizon: Icount {
+                    retired: reader.read_u64()?,
+                },
+                step: reader.read_u64()?,
+                switch_from_vcpu: VcpuId {
+                    index: reader.read_u32()?,
+                },
+                switch_to_vcpu: VcpuId {
+                    index: reader.read_u32()?,
+                },
+                target_vcpu: VcpuId {
+                    index: reader.read_u32()?,
+                },
+                irq: IrqVector {
+                    vector: reader.read_u32()?,
+                },
+            };
+            if !config.has_bounded_domain() {
+                return Err(scenario_serialization_error(
+                    "invalid preemption producer domain",
+                ));
+            }
+            let selection = selection.selection().map_err(|error| {
+                scenario_serialization_error(format!(
+                    "invalid campaign selection decision: {error}"
+                ))
+            })?;
+            SelectionDecision::new_preemption_branch(&selection, &config).map_err(|error| {
+                scenario_serialization_error(format!(
+                    "invalid preemption producer evidence: {error}"
+                ))
+            })
+        }
+        _ => Err(scenario_serialization_error(
+            "invalid preemption producer evidence tag",
+        )),
     }
 }
 
