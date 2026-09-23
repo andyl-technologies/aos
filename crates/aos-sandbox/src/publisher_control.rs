@@ -9,6 +9,8 @@
 mod challenge;
 pub use challenge::PendingPublisherChallengeReceipt;
 pub(crate) use challenge::register_challenge;
+mod read_grant;
+pub use read_grant::{CurrentPublisherReadAuthorityV1, current_publisher_self_read_authority_v1};
 mod join;
 pub(crate) use join::join_holder_request;
 pub use join::{

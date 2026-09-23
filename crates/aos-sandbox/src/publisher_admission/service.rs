@@ -23,6 +23,10 @@ use sha2::{Digest as _, Sha256};
 
 use super::dormant_effects::PublisherDormantEffectCapabilityV1;
 use super::durable_catalog::PublisherDurableCatalogOwnerV1;
+use super::durable_read_grants::{
+    PublisherReadGrantCommitOutcomeV1, PublisherReadGrantOutcomeUnknownV1,
+    PublisherReadGrantRecoveryV1,
+};
 use super::fixed_owner::PublisherFixedColdRecoveryV1;
 use super::{
     AdmissionDecisionStateV1, AdmissionError, AdmissionLedger, AdmissionLimits,
@@ -31,12 +35,12 @@ use super::{
     ObservedDescriptorV1, OpenForReadRequestV1, ProtectedMutationBranchV1,
     ProtectedStoreCommitToken, PublicationAuthorityEpoch, PublicationPermitId,
     PublisherLocalBodyV1, PublisherLocalMessageV1, PublisherLocalProtocolError,
-    PublisherProtectedJournalOwnerV1, ReadCatalogProjectionV1, RecoveryDispositionV1,
-    RecoveryObservationV1, RecoveryPhysicalCustodyV1, SourceReleaseError, SourceReleaseRegistry,
-    SourceReleaseV1,
+    PublisherProtectedJournalOwnerV1, ReadAuthorityGrantV1, ReadCatalogProjectionV1,
+    RecoveryDispositionV1, RecoveryObservationV1, RecoveryPhysicalCustodyV1, SourceReleaseError,
+    SourceReleaseRegistry, SourceReleaseV1,
 };
 use crate::journal::Journal;
-use crate::publisher_control::RuntimeJoinedPublisherRequest;
+use crate::publisher_control::{CurrentPublisherReadAuthorityV1, RuntimeJoinedPublisherRequest};
 use crate::publisher_roots::{
     PublicationRootCustody, PublicationRootId, PublicationRootRecordV1, PublicationRootRegistry,
     PublicationRootRegistryError, RootObservationError,
@@ -192,6 +196,7 @@ pub struct PublisherDomainServiceV1<'journal> {
     catalog: ReadCatalogProjectionV1,
     durable_catalog: PublisherDurableCatalogOwnerV1,
     read_grants: super::durable_read_grants::PublisherDurableReadGrantOwnerV1,
+    pending_read_grant: Option<PublisherReadGrantOutcomeUnknownV1>,
     committed: Option<CommittedAdmissionFrontier>,
     clock: PublisherServiceClockV1,
     maximum_catalog_entries: usize,
@@ -559,6 +564,7 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
             catalog,
             durable_catalog,
             read_grants,
+            pending_read_grant: None,
             committed,
             clock,
             maximum_catalog_entries: config.maximum_catalog_entries,
@@ -755,6 +761,63 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
         Ok(())
     }
 
+    /// Installs the publisher's separate current-policy read grant durably.
+    ///
+    /// The issuer retains the controller's protected policy writer and binds
+    /// this exact live publisher. A matching active grant is idempotent; a
+    /// revoked or different holder scope cannot be rebound by this method.
+    /// An ambiguous append remains owned by this service until recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale policy or session evidence, conflicting
+    /// durable grants, or an unresolved protected append.
+    pub fn install_publisher_self_read_grant(
+        &mut self,
+        record: &AuthenticatedPublisherRecord<'_>,
+        current_policy: &CurrentPublisherReadAuthorityV1<'_>,
+    ) -> Result<ReadAuthorityGrantV1, PublisherDomainServiceErrorV1> {
+        self.recover_pending_read_grant()?;
+        let now = self
+            .clock
+            .sample()
+            .map_err(|_| PublisherDomainServiceErrorV1::Clock)?;
+        current_policy
+            .recheck(record, now)
+            .map_err(|_| PublisherDomainServiceErrorV1::ReadGrant)?;
+        let outcome = self
+            .read_grants
+            .commit_current_self_read_grant(current_policy)
+            .map_err(|_| PublisherDomainServiceErrorV1::ReadGrant)?;
+        match outcome {
+            PublisherReadGrantCommitOutcomeV1::Applied(grant) => Ok(grant),
+            PublisherReadGrantCommitOutcomeV1::OutcomeUnknown(pending) => {
+                self.pending_read_grant = Some(pending);
+                Err(PublisherDomainServiceErrorV1::ReadGrant)
+            }
+        }
+    }
+
+    /// Recovers one exact ambiguous read-grant append before new reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error and retains the pending transaction when protected
+    /// reopen cannot prove that the intended grant is current.
+    pub fn recover_pending_read_grant(&mut self) -> Result<(), PublisherDomainServiceErrorV1> {
+        let Some(pending) = self.pending_read_grant.take() else {
+            return Ok(());
+        };
+        match self.read_grants.recover_outcome_unknown(pending) {
+            PublisherReadGrantRecoveryV1::Applied(_) => Ok(()),
+            PublisherReadGrantRecoveryV1::OutcomeUnknown(pending)
+            | PublisherReadGrantRecoveryV1::Conflict(pending) => {
+                self.pending_read_grant = Some(pending);
+                Err(PublisherDomainServiceErrorV1::ReadGrant)
+            }
+        }
+    }
+
     /// Resolves a publisher's own read request against independent current grants.
     ///
     /// The publisher session authenticates the holder and project, but does not
@@ -771,6 +834,8 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
         &'authority self,
         record: &AuthenticatedPublisherRecord<'_>,
         root: &'authority PublisherRootCapabilityV1,
+        current_policy: &CurrentPublisherReadAuthorityV1<'_>,
+        now: RawPairedClockSample,
     ) -> Result<CacheReadDecisionV1<'authority>, PublisherDomainServiceErrorV1> {
         record
             .recheck()
@@ -799,7 +864,9 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
         };
         let scope = record.scope();
         let root_record = root.custody.record();
-        if *holder != scope.principal
+        if current_policy.recheck(record, now).is_err()
+            || *read_authority_digest != current_policy.grant().grant_digest
+            || *holder != scope.principal
             || *project != scope.project
             || root_record.service_node != scope.node
             || root_record.service_principal != scope.principal
@@ -841,12 +908,14 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
     ///
     /// Returns an error for an invalid session or request, unavailable grant
     /// authority, or a committed backing that fails exact seal observation.
-    pub fn dispatch_publisher_open_for_read<'authority>(
+    fn dispatch_publisher_open_for_read<'authority>(
         &'authority self,
         record: &AuthenticatedPublisherRecord<'_>,
         root: &'authority PublisherRootCapabilityV1,
+        current_policy: &CurrentPublisherReadAuthorityV1<'_>,
+        now: RawPairedClockSample,
     ) -> Result<PublisherReadOpenV1<'authority>, PublisherDomainServiceErrorV1> {
-        let decision = self.authorize_publisher_open_for_read(record, root)?;
+        let decision = self.authorize_publisher_open_for_read(record, root, current_policy, now)?;
         let opened = match decision {
             CacheReadDecisionV1::Found(authorized) => {
                 let object = authorized.object().clone();
@@ -879,16 +948,21 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
     /// Returns an error for malformed request bytes, failed current authority
     /// or backing observation, response encoding, or an uncertain channel send.
     pub fn serve_publisher_open_for_read(
-        &self,
+        &mut self,
         record: &mut AuthenticatedPublisherRecord<'_>,
         root: &PublisherRootCapabilityV1,
+        current_policy: &CurrentPublisherReadAuthorityV1<'_>,
     ) -> Result<(), PublisherDomainServiceErrorV1> {
         let request = decode_local_message_v1(record.payload(), &[])?;
         if !matches!(&request.body, PublisherLocalBodyV1::OpenForRead { .. }) {
             return Err(PublisherLocalProtocolError::Malformed.into());
         }
 
-        let result = self.dispatch_publisher_open_for_read(record, root)?;
+        let now = self
+            .clock
+            .sample()
+            .map_err(|_| PublisherDomainServiceErrorV1::Clock)?;
+        let result = self.dispatch_publisher_open_for_read(record, root, current_policy, now)?;
         let response = result.response()?;
         let bytes = encode_local_message_v1(request.request_id, &response)?;
         match &result {

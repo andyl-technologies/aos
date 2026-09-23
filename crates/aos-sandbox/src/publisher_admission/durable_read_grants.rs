@@ -24,6 +24,7 @@ use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     RecoveryReport,
 };
+use crate::publisher_control::CurrentPublisherReadAuthorityV1;
 
 const FIXED_PUBLISHER_ROOT: &str = "/var/lib/aos/sandbox/publisher";
 const READ_GRANT_JOURNAL: &str = "read-grants-v1.journal";
@@ -49,7 +50,7 @@ pub(super) enum PublisherDurableReadGrantErrorV1 {
 
 /// Separates confirmed read-grant durability from an exact unresolved append.
 #[must_use = "an unknown read-grant outcome blocks new read authorization"]
-enum PublisherReadGrantCommitOutcomeV1 {
+pub(super) enum PublisherReadGrantCommitOutcomeV1 {
     /// Exact durable readback proved the requested current grant.
     Applied(ReadAuthorityGrantV1),
     /// The exact transaction requires protected reopen before any new read.
@@ -58,7 +59,7 @@ enum PublisherReadGrantCommitOutcomeV1 {
 
 /// Retains the predecessor and successor through ambiguous durability.
 #[must_use = "unresolved read-grant custody must be recovered"]
-struct PublisherReadGrantOutcomeUnknownV1 {
+pub(super) struct PublisherReadGrantOutcomeUnknownV1 {
     transaction: JournalTransaction,
     previous: Option<ReadAuthorityGrantV1>,
     intended: ReadAuthorityGrantV1,
@@ -67,7 +68,7 @@ struct PublisherReadGrantOutcomeUnknownV1 {
 
 /// Classifies an exact protected reopen of a pending read-grant transition.
 #[must_use = "read authorization remains closed until the outcome is applied"]
-enum PublisherReadGrantRecoveryV1 {
+pub(super) enum PublisherReadGrantRecoveryV1 {
     /// The intended successor is durable and current.
     Applied(ReadAuthorityGrantV1),
     /// The exact predecessor remained current but retry is still ambiguous.
@@ -123,12 +124,24 @@ impl PublisherDurableReadGrantOwnerV1 {
         Ok(&self.registry)
     }
 
+    /// Commits a grant only from the controller's retained current policy.
+    pub(super) fn commit_current_self_read_grant(
+        &mut self,
+        current: &CurrentPublisherReadAuthorityV1<'_>,
+    ) -> Result<PublisherReadGrantCommitOutcomeV1, PublisherDurableReadGrantErrorV1> {
+        self.current_registry()?;
+        let grant = current.grant().clone();
+        if self.heads.get(grant.holder.as_bytes()) == Some(&grant) {
+            return Ok(PublisherReadGrantCommitOutcomeV1::Applied(grant));
+        }
+        self.commit_issued_successor(grant)
+    }
+
     /// Commits one successor after a separate protected issuer has been joined.
     ///
-    /// This method remains private until that issuer supplies an opaque grant
-    /// capability. A public principal, request body, or publication permit
-    /// cannot issue a read grant. An unresolved append closes reads until its
-    /// exact recovery.
+    /// Only the policy-bound issuer wrapper above can call this method. A
+    /// public principal, request body, or publication permit cannot issue a
+    /// read grant. An unresolved append closes reads until exact recovery.
     fn commit_issued_successor(
         &mut self,
         grant: ReadAuthorityGrantV1,
@@ -188,7 +201,7 @@ impl PublisherDurableReadGrantOwnerV1 {
     }
 
     /// Reopens and resolves one exact unknown grant transaction.
-    fn recover_outcome_unknown(
+    pub(super) fn recover_outcome_unknown(
         &mut self,
         mut pending: PublisherReadGrantOutcomeUnknownV1,
     ) -> PublisherReadGrantRecoveryV1 {
