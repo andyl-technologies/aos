@@ -3398,11 +3398,22 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;
-            return sessions
-                .host
-                .as_mut()
-                .ok_or_else(|| EffectFailure::Retryable("Host session is unavailable".to_owned()))?
-                .query_execution(&intent, None);
+            let host = sessions.host.as_mut().ok_or_else(|| {
+                EffectFailure::Retryable("Host session is unavailable".to_owned())
+            })?;
+            let authorization = host
+                .needs_fresh_execution_authorization()
+                .then(|| {
+                    intent.prepare_authorization(
+                        execution::ExecutionAuthorizationKindV1::Query,
+                        context.project(),
+                        self.node,
+                        journal,
+                        self.broker_plan_signer.as_ref(),
+                    )
+                })
+                .transpose()?;
+            return host.query_execution(&intent, authorization.as_ref());
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
@@ -3508,11 +3519,22 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;
-            return sessions
-                .host
-                .as_mut()
-                .ok_or_else(|| EffectFailure::Retryable("Host session is unavailable".to_owned()))?
-                .apply_execution(&intent, None);
+            let host = sessions.host.as_mut().ok_or_else(|| {
+                EffectFailure::Retryable("Host session is unavailable".to_owned())
+            })?;
+            let authorization = host
+                .needs_fresh_execution_authorization()
+                .then(|| {
+                    intent.prepare_authorization(
+                        execution::ExecutionAuthorizationKindV1::Apply,
+                        context.project(),
+                        self.node,
+                        journal,
+                        self.broker_plan_signer.as_ref(),
+                    )
+                })
+                .transpose()?;
+            return host.apply_execution(&intent, authorization.as_ref());
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)

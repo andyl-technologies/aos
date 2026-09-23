@@ -12,19 +12,32 @@ use aos_proto::aos::sandbox::local::v1::{
     HostExecutionPhaseV1, QueryHostExecutionRequestV1, RequestHeader,
 };
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox::controller_service::public_projection::{
+    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+};
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
-use aos_sandbox::{EffectFailure, EffectObservation, EffectReceipt, PublicMutationEffectV1};
+use aos_sandbox::{
+    AuthorityPublicationStore, EffectFailure, EffectObservation, EffectReceipt, Journal,
+    PublicMutationEffectV1,
+};
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
-use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
+use aos_sandbox_core::{
+    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ExecutionId, NodeId, ObjectDigest,
+    OperationId, ProjectId, ProtocolId, ProtocolVersion, SandboxId,
+};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
 use aos_sandbox_protocol::host_execution::decode_host_execution_outcome_v1;
+use aos_sandbox_protocol::semantics::{
+    host_execution_apply_grant_v1, host_execution_query_grant_v1,
+};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
     DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
@@ -54,6 +67,12 @@ pub(crate) struct ControllerExecutionIntentV1 {
 enum ControllerExecutionActionV1 {
     Resize { rows: u16, columns: u16 },
     Signal { signal_code: u8 },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ExecutionAuthorizationKindV1 {
+    Apply,
+    Query,
 }
 
 impl ControllerExecutionIntentV1 {
@@ -109,6 +128,151 @@ impl ControllerExecutionIntentV1 {
             execution_id,
             action,
             source_operation_commitment,
+        })
+    }
+
+    pub(crate) fn prepare_authorization(
+        &self,
+        kind: ExecutionAuthorizationKindV1,
+        project: ProjectId,
+        node: NodeId,
+        journal: &mut Journal,
+        signer: Option<&ControllerBrokerPlanSignerV1>,
+    ) -> Result<BrokerAuthorizationArtifactsV1, EffectFailure> {
+        let signer = signer.ok_or_else(|| {
+            EffectFailure::Retryable("Host execution plan signer is unavailable".to_owned())
+        })?;
+        let projection = PublicProjectionStoreV1::new(journal)
+            .get(PublicProjectionKindV1::Execution, self.execution_id)
+            .map_err(retryable)?
+            .ok_or_else(|| {
+                EffectFailure::Retryable("protected execution projection is absent".to_owned())
+            })?;
+        if projection.project() != project {
+            return Err(EffectFailure::Permanent(
+                "execution projection crossed its admitted project".to_owned(),
+            ));
+        }
+        let PublicProjectionResourceV1::Execution(execution) = projection.resource() else {
+            return Err(EffectFailure::Permanent(
+                "execution projection has another resource kind".to_owned(),
+            ));
+        };
+        let sandbox_id: [u8; 16] = execution.sandbox_id.as_slice().try_into().map_err(|_| {
+            EffectFailure::Permanent("execution sandbox identity is invalid".to_owned())
+        })?;
+        let sandbox = SandboxId::from_bytes(sandbox_id);
+        let current = AuthorityPublicationStore::new(journal)
+            .current(sandbox)
+            .map_err(retryable)?
+            .ok_or_else(|| {
+                EffectFailure::Retryable("current execution authority is absent".to_owned())
+            })?;
+        let manifest = current.manifest();
+        let assignment = manifest.broker_assignment().map_err(retryable)?;
+        let lease_assignment = current.lease().lease().assignment();
+        if manifest.manifest().project() != project
+            || manifest.manifest().node() != node
+            || execution.sandbox_incarnation_id.as_slice()
+                != manifest.manifest().incarnation().as_bytes()
+            || execution.assignment_epoch != manifest.manifest().epoch().get()
+            || lease_assignment.sandbox() != assignment.sandbox()
+            || lease_assignment.incarnation() != assignment.incarnation()
+            || lease_assignment.epoch() != assignment.epoch()
+            || lease_assignment.digest() != assignment.digest()
+            || current.lease().lease().node() != node
+        {
+            return Err(EffectFailure::Retryable(
+                "execution assignment is not current".to_owned(),
+            ));
+        }
+
+        let semantics = match kind {
+            ExecutionAuthorizationKindV1::Apply => {
+                let action = match self.action {
+                    ControllerExecutionActionV1::Resize { rows, columns } => {
+                        EffectOperationV1::ResizeTerminal { rows, columns }
+                    }
+                    ControllerExecutionActionV1::Signal { signal_code } => {
+                        EffectOperationV1::Signal { signal_code }
+                    }
+                };
+                host_execution_apply_grant_v1(
+                    assignment,
+                    *self.operation_id.as_bytes(),
+                    ExecutionId::from_bytes(self.execution_id),
+                    ObjectDigest::from_bytes(self.source_operation_commitment),
+                    action,
+                    None,
+                )
+            }
+            ExecutionAuthorizationKindV1::Query => host_execution_query_grant_v1(
+                assignment,
+                *self.operation_id.as_bytes(),
+                ExecutionId::from_bytes(self.execution_id),
+                ObjectDigest::from_bytes(self.source_operation_commitment),
+            ),
+        }
+        .map_err(retryable)?;
+        let template = current
+            .templates()
+            .iter()
+            .find(|candidate| candidate.audience() == BrokerAudience::Host)
+            .ok_or_else(|| {
+                EffectFailure::Retryable("current Host authority template is absent".to_owned())
+            })?;
+        let parent = template.plan();
+        if parent.assignment() != assignment || parent.node() != node {
+            return Err(EffectFailure::Retryable(
+                "current Host template differs from execution assignment".to_owned(),
+            ));
+        }
+        let now = crate::controller_ownership::sample_ownership_clock()
+            .map_err(retryable)?
+            .wall_seconds();
+        let expires = now
+            .checked_add(30)
+            .map(|limit| {
+                limit
+                    .min(parent.expires_seconds())
+                    .min(current.lease().lease().authority_expires_seconds())
+            })
+            .ok_or_else(|| EffectFailure::Retryable("execution clock overflowed".to_owned()))?;
+        if now < parent.issued_seconds() || expires <= now {
+            return Err(EffectFailure::Retryable(
+                "current Host authority is outside its validity interval".to_owned(),
+            ));
+        }
+        let grant = BrokerGrant::new(
+            semantics.verb(),
+            semantics.target(),
+            semantics.commitment(),
+            64 * 1024,
+            0,
+        )
+        .map_err(retryable)?;
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Host,
+            ProtocolId::HostBroker,
+            ProtocolVersion::new(1, 0),
+            assignment,
+            node,
+            parent.ownership_authority().clone(),
+            vec![grant],
+            parent.policy_commitment(),
+            parent.revocation_scope(),
+            now,
+            expires,
+            Vec::new(),
+        )
+        .map_err(retryable)?;
+        let signed = signer.sign_plan(plan, now).map_err(retryable)?;
+        Ok(BrokerAuthorizationArtifactsV1 {
+            broker_plan: signed.canonical_plan().to_vec(),
+            broker_plan_signature: signed.canonical_signature().to_vec(),
+            ownership_lease: current.lease().canonical_lease().to_vec(),
+            ownership_lease_signature: current.lease().canonical_signature().to_vec(),
+            ..Default::default()
         })
     }
 
@@ -182,6 +346,10 @@ impl ControllerExecutionIntentV1 {
     }
 }
 
+fn retryable(error: impl ToString) -> EffectFailure {
+    EffectFailure::Retryable(error.to_string())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExecutionExchangeKindV1 {
     Apply,
@@ -218,6 +386,10 @@ pub(crate) struct ControllerExecutionExchangeV1 {
 impl ControllerExecutionExchangeV1 {
     pub(crate) const fn has_pending(&self) -> bool {
         self.pending.is_some() || self.failed
+    }
+
+    pub(crate) const fn needs_fresh_authorization(&self) -> bool {
+        self.pending.is_none() && !self.failed
     }
 
     pub(crate) const fn requires_reconnect(&self) -> bool {
@@ -287,11 +459,10 @@ impl ControllerExecutionExchangeV1 {
             ));
         }
         if self.pending.is_none() {
-            // TODO: Production must prepare a current signed execution plan and
-            // ownership lease from the protected assignment authority. No
-            // transport custody may begin until those artifacts are available.
             let authorization = authorization.ok_or_else(|| {
-                EffectFailure::Retryable("Host execution authorization is not installed".to_owned())
+                EffectFailure::Retryable(
+                    "current Host execution authorization is unavailable".to_owned(),
+                )
             })?;
             let method = match kind {
                 ExecutionExchangeKindV1::Apply => BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,

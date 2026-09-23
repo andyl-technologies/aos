@@ -83,6 +83,10 @@ impl ControllerHostPublication {
         }
     }
 
+    pub(crate) const fn needs_fresh_execution_authorization(&self) -> bool {
+        self.execution_effects.needs_fresh_authorization()
+    }
+
     /// Applies or resumes one exact Host authority effect on this same session.
     pub(crate) fn apply_authority_effect(
         &mut self,
