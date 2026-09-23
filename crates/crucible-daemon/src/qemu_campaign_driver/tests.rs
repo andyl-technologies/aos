@@ -2598,6 +2598,50 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         owner.replies[0].selected_value(),
         Some(ChoiceValue::Boolean(false).canonical_bytes().as_slice())
     );
+
+    let scenario = encode_crucible_scenario_artifact(input.scenario())
+        .expect("guest selectable scenario artifact");
+    let candidate =
+        encode_crucible_configuration_artifact(&scenario, &input.start().configuration().schedule)
+            .expect("candidate before the default guest choice");
+    let discovery = pending
+        .discoveries
+        .values()
+        .next()
+        .expect("retained guest discovery");
+    let locked_selection = Selection::new(
+        discovery.opportunity(),
+        discovery.domain(),
+        selection.value().clone(),
+        SelectionOrigin::LockedReplay,
+    )
+    .expect("same choice with a non-default origin");
+    let nondefault_configuration = accepted_step(
+        input.start().configuration(),
+        Decision::Selection(SelectionDecision::new(&locked_selection)),
+    );
+    let nondefault = QemuFreshPendingObservation {
+        input: pending.input.clone(),
+        configuration: nondefault_configuration,
+        stop: ModeledStop::Reached(input.attempt().stop().clone()),
+        event_log: pending.event_log.clone(),
+        event_log_bytes: pending.event_log_bytes,
+        discoveries: pending.discoveries.clone(),
+        terminal_quiescence: pending.terminal_quiescence.clone(),
+        terminal_at: pending.terminal_at,
+        completed_quanta: pending.completed_quanta,
+        attempt_event_count: pending.attempt_event_count,
+    };
+    let error = build_finding_candidate_boundary_evidence(pending, &candidate, Vec::new(), None)
+        .expect_err("a default guest continuation must reject this candidate");
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::FindingCandidateSelectionContinued
+    ));
+
+    let error = build_finding_candidate_boundary_evidence(nondefault, &candidate, Vec::new(), None)
+        .expect_err("a non-default selection must remain a strict artifact error");
+    assert!(matches!(error, QemuFreshModeledDriverError::Artifact(_)));
 }
 
 #[test]

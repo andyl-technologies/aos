@@ -37,7 +37,6 @@ use crucible_protocol::SelectionReply;
 use crucible_qemu::QemuNodeSelectablePendingRequest;
 use thiserror::Error;
 
-#[cfg(test)]
 use crate::CrucibleResolvedAttemptStart;
 use crate::guest_selectable::{
     GuestSelectableBoundaryDiagnosticStage, GuestSelectableError,
@@ -82,6 +81,9 @@ pub enum QemuFreshModeledDriverError {
     /// Strict Crucible artifact reconstruction failed.
     #[error("fresh campaign artifact projection failed: {0}")]
     Artifact(#[source] Box<CrucibleArtifactError>),
+    /// A private candidate continued through a validated default guest choice.
+    #[error("finding replay candidate continued through a default guest selection")]
+    FindingCandidateSelectionContinued,
     /// Campaign canonical construction failed.
     #[error("fresh campaign observation projection failed: {0}")]
     Campaign(#[source] CampaignCodecError),
@@ -2683,8 +2685,55 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         &mut pending.event_log_bytes,
         final_events.clone(),
     )?;
+    // The runner first binds `candidate` to the exact encoded target. Reduced
+    // candidates can expose later guest defaults; only validated continuations
+    // may be rejected as non-preserving replay trials.
+    let default_choice_continuation = match pending.input.start() {
+        CrucibleResolvedAttemptStart::Discover {
+            configuration: target,
+        } => {
+            let target_decisions = target.schedule.decisions();
+            let reached_decisions = pending.configuration.schedule.decisions();
+            let target_id = ConfigurationId::from_hash(CampaignHash::from_bytes(target.id().bytes));
+
+            candidate.configuration() == target_id
+                && reached_decisions.len() > target_decisions.len()
+                && reached_decisions.starts_with(target_decisions)
+                && reached_decisions[target_decisions.len()..]
+                    .iter()
+                    .all(|decision| {
+                        let Decision::Selection(decision) = decision else {
+                            return false;
+                        };
+                        decision.selection().is_ok_and(|selection| {
+                            selection.origin() == SelectionOrigin::Default
+                                && pending
+                                    .discoveries
+                                    .get(&selection.opportunity())
+                                    .is_some_and(|discovery| {
+                                        matches!(
+                                            discovery.declaration().source(),
+                                            crucible_campaign::ChoiceSource::Guest { .. }
+                                        ) && selection
+                                            .validate_replay(
+                                                discovery.opportunity(),
+                                                discovery.domain(),
+                                            )
+                                            .is_ok()
+                                    })
+                        })
+                    })
+        }
+        CrucibleResolvedAttemptStart::AfterAttempt { .. }
+        | CrucibleResolvedAttemptStart::Branch { .. } => false,
+    };
     let projection = project_boundary(pending, false, supplemental_oracle)?;
     if projection.child != *candidate {
+        if default_choice_continuation
+            && projection.child.scenario_artifact() == candidate.scenario_artifact()
+        {
+            return Err(QemuFreshModeledDriverError::FindingCandidateSelectionContinued);
+        }
         return Err(QemuFreshModeledDriverError::Artifact(Box::new(
             CrucibleArtifactError::SemanticIdentityMismatch {
                 artifact: "finding replay candidate configuration",
