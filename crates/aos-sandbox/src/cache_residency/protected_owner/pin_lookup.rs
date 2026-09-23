@@ -2,18 +2,48 @@
 
 use std::sync::Arc;
 
-use aos_sandbox_core::{AttachmentId, ObjectDescriptor, ProjectId, ViewId};
+use aos_sandbox_core::{AttachmentId, ObjectDescriptor, OperationId, ProjectId, ViewId};
 
 use super::{
     CacheAuthorityPurposeV1, CachePinV1, CacheRecoveryInventoryV1,
-    CacheResidencyAuthorityRequestV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyProtectedJournalV1, CacheResidencyProtectedOwnerV1, PhysicalPartitionId,
-    ProtectedDomainJournalErrorV1,
+    CacheResidencyAuthorityRequestV1, CacheResidencyCommitOutcomeV1,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalV1,
+    CacheResidencyProtectedOwnerV1, PhysicalPartitionId, ProtectedDomainJournalErrorV1,
+    ValidatedCacheResidencyPostcommitV1,
 };
 use crate::cache_residency::{CachePinKindV1, protected_journal::reconstruct_cache_history};
 use crate::production_operation_compiler::RecheckedCacheConsumerV1;
 
 impl CacheResidencyProtectedOwnerV1 {
+    /// Commits one public logical-pin release under its exact protected drain record.
+    ///
+    /// The postcommit callback can turn a confirmed release into a physical
+    /// Cache-owner admission. No public completion is implied by the journal
+    /// commit alone; ambiguous outcomes retain their recovery state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mismatched consumer or pin, stale authority,
+    /// invalid typed successor, or failed protected commit.
+    pub fn commit_public_logical_pin_release<R>(
+        &mut self,
+        transaction_id: [u8; 16],
+        consumer: &RecheckedCacheConsumerV1,
+        pin: &CachePinV1,
+        operation: OperationId,
+        handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
+    ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
+    {
+        let request = self.prepare_logical_pin_drain(consumer, pin)?;
+        let inventory = self.reconstructed_partition(pin.partition)?;
+        self.commit_authorized_pin_release(
+            transaction_id,
+            vec![request],
+            |controller| controller.seal_logical_pin_release(&inventory, pin, operation),
+            handoff,
+        )
+    }
+
     /// Issues bounded drain authority for an exact retained public logical pin.
     ///
     /// The consumer was independently rechecked against desired state. The
