@@ -239,6 +239,9 @@
   nginxService = import ./nginx-service.nix {
     inherit lib pkgs;
   };
+  mariadbService = import ./mariadb-service.nix {
+    inherit lib pkgs;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -658,6 +661,7 @@ in
   assert zfstoolsService;
   assert libvirtService;
   assert nginxService;
+  assert mariadbService;
   assert serviceManagement;
   assert dbusService;
   assert bindService;

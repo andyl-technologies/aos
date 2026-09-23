@@ -123,6 +123,9 @@ in
   assert requests ? "krb5:initialize-lifecycle";
   assert requests ? "krb5:kdc-lifecycle";
   assert !(requests ? "krb5:administration-lifecycle");
+  assert requests ? "mariadb:initialize-lifecycle";
+  assert requests ? "mariadb:main-lifecycle";
+  assert !(requests ? "mariadb:main-credentials");
   assert builtins.all (assertion: assertion.assertion) fixedPoint.config.assertions;
   assert builtins.all (request: request.parameters.allocation == "managed") identityRequests;
   assert builtins.all (request: !(request.parameters ? requested_id)) identityRequests;

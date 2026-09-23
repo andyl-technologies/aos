@@ -342,185 +342,142 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    initializeService = serviceManagement.forService {
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = commonHardening;
-        })
-      ];
-      inherit serviceTypes;
+    initializeService = {
+      policy.hardening = commonHardening;
       consumerInstance = "mariadb";
-      declaration = {
-        service = "initialize";
-        enabled = true;
-        lifecycle = {
-          description = "Initialize MariaDB state";
-          execution_model = "oneshot";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command "bin/mariadb-control" ["init" configPath statePath])];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "never";
-          restart_delay_millis = 0;
-          configuration_change_action = "none";
-          remain_after_exit = true;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 60000;
+      service = "initialize";
+      lifecycle = {
+        description = "Initialize MariaDB state";
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command "bin/mariadb-control" ["init" configPath statePath])];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "none";
+        remain_after_exit = true;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 60000;
+      };
+      supervision = {
+        startup_protocol = "process";
+        notification_access = "none";
+      };
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+      configuration.views = [
+        {
+          name = "server";
+          source = configPath;
+          optional = false;
+        }
+      ];
+      environment = {
+        variables = {};
+        search_path = runtimeSearchPath;
+      };
+      storage = commonStorage;
+      identity = commonIdentity;
+      isolation = commonIsolation;
+    };
+    mainService = {
+      policy.hardening = commonHardening;
+      consumerInstance = "mariadb";
+      service = "main";
+      lifecycle = {
+        description = "MariaDB database server";
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command "bin/mariadb-control" ["run" configPath])];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_token = cfg.restartToken;
+        restart_delay_millis = 5000;
+        configuration_change_action = "restart";
+        remain_after_exit = false;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 60000;
+      };
+      dependencies = {
+        after = [(resultOf "initialize-lifecycle" "resource") (resultOf "network-readiness" "resource")];
+        before = [];
+        requires = [(resultOf "initialize-lifecycle" "resource")];
+        wants = [(resultOf "network-readiness" "resource")];
+      };
+      supervision = {
+        startup_protocol = "notification";
+        notification_access = "all-processes";
+      };
+      readiness = {
+        mechanism = "process-signal";
+        signal_scope = "all-processes";
+        timeout_millis = 90000;
+      };
+      credentials =
+        if credentials.tlsCredentials == []
+        then null
+        else {
+          views =
+            builtins.map (credential: {
+              inherit (credential) name;
+              inherit (credential.reference) encrypted;
+              reference = resultOf "credential-${credential.name}" "credential-path";
+              optional = false;
+            })
+            credentials.tlsCredentials;
         };
-        supervision = {
-          startup_protocol = "process";
-          notification_access = "none";
-        };
-        readiness = {
-          mechanism = "successful-exit";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-        configuration.views = [
+      configuration.views =
+        [
           {
             name = "server";
             source = configPath;
             optional = false;
           }
-        ];
-        environment = {
-          variables = {};
-          search_path = runtimeSearchPath;
+        ]
+        ++ lib.optional (credentials.bootstrapCredentials != []) {
+          name = "bootstrap";
+          source = bootstrapPath;
+          optional = false;
         };
-        storage = commonStorage;
-        identity = commonIdentity;
-        isolation = commonIsolation;
+      environment = {
+        variables = {};
+        search_path = runtimeSearchPath;
+      };
+      storage = commonStorage;
+      logging = {
+        standard_output = "structured";
+        standard_error = "structured";
+        directories = [];
+        directory_mode = "0750";
+      };
+      identity = commonIdentity;
+      isolation = commonIsolation;
+      resources.open_files = {
+        kind = "maximum";
+        value = 65536;
       };
     };
-    mainService = serviceManagement.forService {
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = commonHardening;
-        })
-      ];
-      inherit serviceTypes;
-      consumerInstance = "mariadb";
-      declaration = {
-        service = "main";
-        enabled = true;
-        lifecycle = {
-          description = "MariaDB database server";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command "bin/mariadb-control" ["run" configPath])];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "on-failure";
-          restart_token = cfg.restartToken;
-          restart_delay_millis = 5000;
-          configuration_change_action = "restart";
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 60000;
-        };
-        dependencies = {
-          after = [(resultOf "initialize-lifecycle" "resource") (resultOf "network-readiness" "resource")];
-          before = [];
-          requires = [(resultOf "initialize-lifecycle" "resource")];
-          wants = [(resultOf "network-readiness" "resource")];
-        };
-        supervision = {
-          startup_protocol = "notification";
-          notification_access = "all-processes";
-        };
-        readiness = {
-          mechanism = "process-signal";
-          signal_scope = "all-processes";
-          timeout_millis = 90000;
-        };
-        credentials.views =
-          builtins.map (credential: {
-            inherit (credential) name;
-            inherit (credential.reference) encrypted;
-            reference = resultOf "credential-${credential.name}" "credential-path";
-            optional = false;
-          })
-          credentials.tlsCredentials;
-        configuration.views =
-          [
-            {
-              name = "server";
-              source = configPath;
-              optional = false;
-            }
-          ]
-          ++ lib.optional (credentials.bootstrapCredentials != []) {
-            name = "bootstrap";
-            source = bootstrapPath;
-            optional = false;
-          };
-        environment = {
-          variables = {};
-          search_path = runtimeSearchPath;
-        };
-        storage = commonStorage;
-        logging = {
-          standard_output = "structured";
-          standard_error = "structured";
-          directories = [];
-          directory_mode = "0750";
-        };
-        identity = commonIdentity;
-        isolation = commonIsolation;
-        resources.open_files = {
-          kind = "maximum";
-          value = 65536;
-        };
-      };
-    };
-    base = [
+    baseProducers = [
       storage
       runtimeStorage
       serviceGroup
       servicePrincipal
       networkReadiness
       serverConfiguration
-      initializeService
     ];
-    mainServiceConfigured = let
-      configured = (serviceManagement.splitDefinition mainService).configured;
-    in
-      configured
-      // {
-        requests =
-          if credentials.tlsCredentials == []
-          then builtins.removeAttrs configured.requests ["main-credentials"]
-          else configured.requests;
-      };
-    all = base ++ [mainService credentialRequests bootstrapConfiguration];
   in {
-    declarations =
-      builtins.map
-      (fragment: (serviceManagement.splitDefinition fragment).declarations)
-      all;
-    configuredBase =
-      builtins.map
-      (fragment: (serviceManagement.splitDefinition fragment).configured)
-      base
-      ++ [mainServiceConfigured];
-    credentialRequests = (serviceManagement.splitDefinition credentialRequests).configured;
-    bootstrapConfiguration = (serviceManagement.splitDefinition bootstrapConfiguration).configured;
+    inherit initializeService mainService baseProducers credentialRequests bootstrapConfiguration;
   };
 in {
   options.mariadb = {
@@ -607,7 +564,10 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge abilityFragments.declarations;
+      aos.services = {
+        "mariadb.initialize" = abilityFragments.initializeService // {enable = cfg.enable;};
+        "mariadb.main" = abilityFragments.mainService // {enable = cfg.enable;};
+      };
       assertions = [
         {
           assertion =
@@ -630,16 +590,20 @@ in {
         }
       ];
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities =
-        lib.mkMerge ([{instances.mariadb = {};}]
-          ++ abilityFragments.configuredBase);
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = abilityFragments.baseProducers;
+      enabled = cfg.enable;
     })
-    (lib.mkIf (cfg.enable && credentials.all != []) {
-      aos.abilities = abilityFragments.credentialRequests;
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [abilityFragments.credentialRequests];
+      enabled = cfg.enable && credentials.all != [];
     })
-    (lib.mkIf (cfg.enable && credentials.bootstrapCredentials != []) {
-      aos.abilities = abilityFragments.bootstrapConfiguration;
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [abilityFragments.bootstrapConfiguration];
+      enabled = cfg.enable && credentials.bootstrapCredentials != [];
     })
   ];
 }
