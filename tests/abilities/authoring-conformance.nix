@@ -2063,7 +2063,17 @@ in
   == sharedInterfaceIdentity;
   assert sharedImplementationProjection.interfaces.shared == sharedInterfaceIdentity;
   assert (builtins.head sharedImplementationProjection.exports).interface == sharedInterfaceIdentity;
-  assert coreGuaranteeProviderProjection.guarantees == {};
+  assert builtins.sort builtins.lessThan (map (guarantee: guarantee.name)
+    (builtins.attrValues coreGuaranteeProviderProjection.guarantees))
+  == [
+    "aos.guarantee.service-condition.kernel-argument"
+    "aos.guarantee.service-condition.mandatory-access-control"
+    "aos.guarantee.service-condition.path"
+    "aos.guarantee.service-template-exact-reuse"
+  ];
+  assert builtins.any
+  (guarantee: guarantee.name == "aos.guarantee.service-runtime-condition.privilege")
+  (builtins.attrValues pkgs.chrony.contract.value.guarantees);
   assert builtins.map (provider: provider.name) coreGuaranteeProviderProjection.implementation.providers
   == ["conditions" "lifecycle"];
   assert builtins.map (guarantee: guarantee.name)

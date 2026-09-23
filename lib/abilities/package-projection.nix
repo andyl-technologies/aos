@@ -84,17 +84,18 @@
       name: _: evaluated.interfaces.${name}.package == packageName
     )
     interfaceDocuments;
-  interfaceFor = implementation:
+  interfaceNameFor = implementation:
     if builtins.isString implementation.interface
-    then interfaceDocuments.${implementation.interface}
+    then implementation.interface
     else let
-      matches = builtins.filter (document:
-        abilities.interfaceIdentity document == implementation.interface)
-      (builtins.attrValues interfaceDocuments);
+      matches = builtins.filter (name:
+        abilities.interfaceIdentity interfaceDocuments.${name} == implementation.interface)
+      (builtins.attrNames interfaceDocuments);
     in
       if builtins.length matches == 1
       then builtins.head matches
       else throw "Implementation interface identity must resolve to one canonical shared declaration.";
+  interfaceFor = implementation: interfaceDocuments.${interfaceNameFor implementation};
   interfaceIdentityFor = implementation:
     abilities.interfaceIdentity (interfaceFor implementation);
   requirementsFor = implementation:
@@ -105,11 +106,42 @@
       value = semanticRequirement evaluated.requirementTemplates.${name};
     })
     (ownedNames evaluated.requirementTemplates)));
+  retainedInterfaceNames = lib.unique (
+    ownedNames evaluated.interfaces
+    ++ map (name: interfaceNameFor evaluated.implementations.${name}) implementationNames
+  );
+  referencedGuaranteeNames =
+    lib.concatMap (name: let
+      interface = evaluated.interfaces.${name};
+    in
+      interface.guarantees
+      ++ lib.concatMap (method: method.guarantees) (builtins.attrValues interface.methods))
+    retainedInterfaceNames
+    ++ lib.concatMap (name: evaluated.requirementTemplates.${name}.guarantees)
+    (ownedNames evaluated.requirementTemplates)
+    ++ lib.concatMap (name: let
+      implementation = evaluated.implementations.${name};
+    in
+      implementation.guarantees
+      ++ lib.concatMap (requirement: requirement.guarantees)
+      (builtins.attrValues implementation.requirements))
+    implementationNames;
+  ownedGuaranteeNames = ownedNames evaluated.guarantees;
+  retainedGuaranteeNames = lib.unique (ownedGuaranteeNames
+    ++ map (name:
+      if builtins.hasAttr name evaluated.guarantees
+      then name
+      else throw "Ability guarantee reference '${name}' has no exact package declaration.")
+    referencedGuaranteeNames);
   guarantees = builtins.listToAttrs (map (name: {
-      name = declarationAliasFor "guarantees" name;
+      # A package may consume a guarantee owned by a shared domain module.
+      name =
+        if builtins.elem name ownedGuaranteeNames
+        then declarationAliasFor "guarantees" name
+        else builtins.replaceStrings [":"] ["."] name;
       value = builtins.removeAttrs evaluated.guarantees.${name} ["package" "localKey"];
     })
-    (ownedNames evaluated.guarantees));
+    retainedGuaranteeNames);
   implementationArtifact = implementation:
     selector (
       if implementation.artifact == null
