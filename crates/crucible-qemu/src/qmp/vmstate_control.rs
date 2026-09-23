@@ -56,6 +56,13 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    pub(crate) fn adopt_guarded_launch_fdsets(
+        &mut self,
+        has_overlay: bool,
+    ) -> Result<(), QmpError> {
+        self.client.adopt_guarded_launch_fdsets(has_overlay)
+    }
+
     /// Returns a channel with the pre-established guest activation stream.
     #[must_use]
     pub fn with_debug_guest_activation_stream(mut self, stream: UnixStream) -> Self {
