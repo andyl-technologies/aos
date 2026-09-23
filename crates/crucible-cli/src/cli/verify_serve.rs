@@ -939,10 +939,6 @@ pub(crate) struct PrivatePackagedCampaignRun<'a> {
 ///
 /// Returns an error if the private service fails, the completion check fails,
 /// or the bounded execution deadline expires.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the host-only watchdog bounds an independent service and never enters campaign state"
-)]
 pub(crate) fn run_private_packaged_campaign_until<F>(
     run: PrivatePackagedCampaignRun<'_>,
     mut completed: F,
@@ -985,7 +981,7 @@ where
         .name(String::from("crucible-private-campaign"))
         .spawn(move || prepared.service.serve().map_err(Box::new))
         .map_err(|error| serve_error(format!("private campaign service thread error: {error}")))?;
-    let started = std::time::Instant::now();
+    let deadline = crate::host_boundary::HostWaitDeadline::after(run.timeout);
     let result = loop {
         match completed() {
             Ok(true) => break Ok(()),
@@ -994,8 +990,8 @@ where
                     "private packaged campaign service stopped early",
                 ));
             }
-            Ok(false) if started.elapsed() < run.timeout => {
-                std::thread::sleep(Duration::from_millis(100));
+            Ok(false) if !deadline.expired() => {
+                deadline.pause(Duration::from_millis(100));
             }
             Ok(false) => break Err(serve_error("private packaged campaign execution timed out")),
             Err(error) => break Err(error),
