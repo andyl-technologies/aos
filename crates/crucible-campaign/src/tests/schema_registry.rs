@@ -340,8 +340,14 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "exact-manifest",
         ),
         (
+            "crucible.executor.checkpoint-choice-closure",
+            "1",
+            "crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure",
+            "observation",
+        ),
+        (
             "crucible.executor.exact-checkpoint-root",
-            "4",
+            "5",
             "crucible-daemon::exact_checkpoint_store",
             "exact-manifest",
         ),
