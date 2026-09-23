@@ -362,11 +362,12 @@ records a deterministic timeout stop in the campaign Observation, subject to
 terminal and assertion outcome precedence. Campaign policy and triage can
 inspect that normal result. `host_completion_watchdog_ms` is an optional
 operational safeguard for a stalled executor; it must accompany a modeled
-bound, be positive, and be at most 3,600,000 ms. Its expiry aborts the attempt
-as a host failure, not a guest timeout or a replayable campaign finding. The
-watchdog never decides a guest outcome. Version two authored policy TOML is
-rejected; compile the current version-three manifest to produce the canonical
-version-five policy record.
+bound and be a positive unsigned millisecond count. Quote a canonical decimal
+value when it exceeds TOML's signed 64-bit integer range. Its expiry aborts
+the attempt as a host failure, not a guest timeout or a replayable campaign
+finding. The watchdog never decides a guest outcome. Version two authored
+policy TOML is rejected; compile the current version-three manifest to produce
+the canonical version-five policy record.
 
 The current format supports finite statistical sampling and optional sequential
 Monte Carlo stages. The ordinary policy fields remain required; statistical
