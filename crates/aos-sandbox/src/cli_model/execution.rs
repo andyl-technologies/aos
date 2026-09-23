@@ -9,13 +9,15 @@ use super::grammar::{
 use crate::controller_query::portable::CheckedFeatureSetV1;
 
 /// Maximum environment rows supplied to one execution.
-pub const MAXIMUM_EXEC_ENVIRONMENT: usize = 256;
+pub const MAXIMUM_EXEC_ENVIRONMENT: usize = aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_ENTRIES;
 /// Maximum bytes in one environment name.
-pub const MAXIMUM_EXEC_ENVIRONMENT_NAME_BYTES: usize = 256;
+pub const MAXIMUM_EXEC_ENVIRONMENT_NAME_BYTES: usize =
+    aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_NAME_BYTES;
 /// Maximum bytes in one environment value.
-pub const MAXIMUM_EXEC_ENVIRONMENT_VALUE_BYTES: usize = 1024 * 1024;
+pub const MAXIMUM_EXEC_ENVIRONMENT_VALUE_BYTES: usize =
+    aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_VALUE_BYTES;
 /// Maximum aggregate environment bytes.
-pub const MAXIMUM_EXEC_ENVIRONMENT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAXIMUM_EXEC_ENVIRONMENT_BYTES: usize = aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_BYTES;
 /// Maximum detached output capture bytes.
 pub const MAXIMUM_EXEC_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum public-key or proof bytes used for endpoint admission.
@@ -77,6 +79,7 @@ impl ExecutionEnvironmentVariableV1 {
         if !name_is_valid
             || value.len() > MAXIMUM_EXEC_ENVIRONMENT_VALUE_BYTES
             || value.contains(&0)
+            || name.len() + 1 + value.len() + 1 > aos_sandbox_core::MAX_EXECUTION_STRING_BYTES
         {
             Err(InvalidCliGrammar::InvalidArguments)
         } else {
@@ -163,7 +166,10 @@ impl ExecutionShellScriptV1 {
     /// Returns [`InvalidCliGrammar::InvalidArguments`] for NUL-containing or
     /// oversized script bytes.
     pub fn new(script: Vec<u8>) -> Result<Self, InvalidCliGrammar> {
-        if script.len() > super::grammar::MAXIMUM_EXEC_ARGUMENT_BYTES || script.contains(&0) {
+        if script.is_empty()
+            || script.len() > super::grammar::MAXIMUM_EXEC_ARGUMENT_BYTES
+            || script.contains(&0)
+        {
             Err(InvalidCliGrammar::InvalidArguments)
         } else {
             Ok(Self(script))

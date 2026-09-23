@@ -1271,7 +1271,11 @@ fn valid_optional_opaque(value: &[u8]) -> bool {
 }
 
 fn valid_command(command: &wire::Command) -> bool {
-    let direct = !command.arguments.is_empty() && command.sandbox_shell.is_empty();
+    let direct = command
+        .arguments
+        .first()
+        .is_some_and(|program| !program.is_empty())
+        && command.sandbox_shell.is_empty();
     let shell = command.arguments.is_empty()
         && !command.sandbox_shell.is_empty()
         && command.sandbox_shell.len() <= MAXIMUM_EXEC_ARGUMENT_BYTES
@@ -1350,15 +1354,30 @@ fn valid_features(features: &[wire::Feature]) -> bool {
 }
 
 fn valid_environment(environment: &[wire::EnvironmentVariable]) -> bool {
-    environment.iter().all(|variable| {
-        !variable.name.is_empty()
-            && !variable.value.contains(&0)
-            && variable.name.bytes().enumerate().all(|(index, byte)| {
-                byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
-            })
-    }) && environment
-        .windows(2)
-        .all(|pair| pair[0].name < pair[1].name)
+    let total_bytes = environment.iter().try_fold(0_usize, |total, variable| {
+        total
+            .checked_add(variable.name.len())?
+            .checked_add(variable.value.len())
+    });
+    environment.len() <= super::execution::MAXIMUM_EXEC_ENVIRONMENT
+        && total_bytes
+            .is_some_and(|bytes| bytes <= super::execution::MAXIMUM_EXEC_ENVIRONMENT_BYTES)
+        && environment.iter().all(|variable| {
+            !variable.name.is_empty()
+                && variable.name.len() <= super::execution::MAXIMUM_EXEC_ENVIRONMENT_NAME_BYTES
+                && variable.value.len() <= super::execution::MAXIMUM_EXEC_ENVIRONMENT_VALUE_BYTES
+                && variable.name.len() + 1 + variable.value.len() + 1
+                    <= aos_sandbox_core::MAX_EXECUTION_STRING_BYTES
+                && !variable.value.contains(&0)
+                && variable.name.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || byte.is_ascii_alphabetic()
+                        || (index > 0 && byte.is_ascii_digit())
+                })
+        })
+        && environment
+            .windows(2)
+            .all(|pair| pair[0].name < pair[1].name)
 }
 
 fn valid_relative_path(path: &[u8]) -> bool {

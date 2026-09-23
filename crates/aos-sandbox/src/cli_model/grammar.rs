@@ -17,11 +17,13 @@ pub const MAXIMUM_CLI_OPAQUE_BYTES: usize = 4 * 1024;
 /// Maximum bytes in an idempotency key.
 pub const MAXIMUM_IDEMPOTENCY_KEY_BYTES: usize = 256;
 /// Maximum arguments accepted by one execution.
-pub const MAXIMUM_EXEC_ARGUMENTS: usize = 1_024;
+pub const MAXIMUM_EXEC_ARGUMENTS: usize = aos_sandbox_core::MAX_EXECUTION_ARGUMENTS;
 /// Maximum bytes in one execution argument.
-pub const MAXIMUM_EXEC_ARGUMENT_BYTES: usize = 1024 * 1024;
+pub const MAXIMUM_EXEC_ARGUMENT_BYTES: usize =
+    aos_sandbox_core::MAX_EXECUTION_ARGUMENT_STRING_BYTES;
 /// Maximum aggregate bytes in an execution argument vector.
-pub const MAXIMUM_EXEC_ARGUMENT_VECTOR_BYTES: usize = 8 * 1024 * 1024;
+pub const MAXIMUM_EXEC_ARGUMENT_VECTOR_BYTES: usize =
+    aos_sandbox_core::MAX_EXECUTION_ARGUMENT_BYTES;
 /// Maximum bounded tree depth.
 pub const MAXIMUM_TREE_DEPTH: u16 = 1_024;
 /// Maximum resources requested in one page.

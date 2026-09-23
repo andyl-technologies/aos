@@ -86,6 +86,11 @@ only when the caller explicitly requests a sandbox-resident shell.
 The public client verifies that its supplied holder proof signs the final
 creation request before sending it; the controller verifies it again before
 admission. The holder private key never enters the public API.
+CLI and public-routing argument and environment ceilings use the portable
+execution model's limits: at most 4,096 arguments, 131,071 bytes per argument,
+2 MiB aggregate argument bytes, and 2 MiB aggregate environment-overlay bytes.
+The effective environment and target-specific `ARG_MAX` remain separately
+checked during protected runtime admission.
 
 The command supports:
 

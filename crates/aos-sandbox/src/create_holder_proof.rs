@@ -9,8 +9,8 @@ use buffa::Message as _;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey, PublicKey, SshSig};
 
 const SSHSIG_NAMESPACE: &str = "aos.sandbox.execution.create-holder-proof.v1";
-// A valid execution command may contain an 8 MiB argument vector. Keep the
-// proof envelope aligned with the public canonical-request ceiling.
+// The complete command and environment can be much larger than an attach
+// request. Keep the proof envelope aligned with the public request ceiling.
 const MAXIMUM_STATEMENT_BYTES: u32 = 16 * 1024 * 1024;
 const MAXIMUM_PUBLIC_KEY_BYTES: usize = 4 * 1024;
 const MAXIMUM_SIGNATURE_BYTES: usize = 8 * 1024;
