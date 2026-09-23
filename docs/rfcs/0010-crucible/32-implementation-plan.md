@@ -586,7 +586,7 @@ long-held locks.
   provider wiring through configuration-bound `SearchRetainedLogAssertionEvidence`,
   and retained evidence source digest/payload provenance in `search-run` output
   and reproduction artifacts;
-  file-backed `crucible.scenario-family.v2` fuzz family loading,
+  file-backed `crucible.scenario-family.v3` fuzz family loading,
   local-double `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
   `LocalDagStore` corpus persistence, stored family-hash loading as strict

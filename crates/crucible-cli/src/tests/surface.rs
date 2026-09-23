@@ -440,8 +440,9 @@ quiescent = true
 }
 
 pub(super) fn valid_fuzz_family_toml() -> &'static str {
-    r#"schema = "crucible.scenario-family.v2"
+    r#"schema = "crucible.scenario-family.v3"
 topology_shapes = ["ring"]
+fault_densities = [0]
 
 [seed_space]
 kind = "generated"
@@ -456,6 +457,36 @@ max = 2
 fixed_icount = 17
 cmdline = "cli-fuzz-family"
 "#
+}
+
+#[test]
+fn fuzz_family_authoring_uses_current_density_and_fault_plan_schema() {
+    let authored = valid_fuzz_family_toml();
+    let decoded = load_fuzz_family_toml("current fixture", authored)
+        .unwrap_or_else(|error| panic!("current family should decode: {error}"));
+    assert_eq!(decoded.space().fault_densities(), &[0]);
+
+    let old = authored.replace("crucible.scenario-family.v3", "crucible.scenario-family.v2");
+    let error = load_fuzz_family_toml("old fixture", &old)
+        .err()
+        .unwrap_or_else(|| panic!("old family schema must be rejected"));
+    assert!(error.to_string().contains("unsupported schema"));
+
+    let missing_plan = authored.replace("fault_densities = [0]", "fault_densities = [1]");
+    let error = load_fuzz_family_toml("missing plan", &missing_plan)
+        .err()
+        .unwrap_or_else(|| panic!("positive density needs a fault plan"));
+    assert!(error.to_string().contains("requires fault_plan_toml"));
+
+    let empty_plan = crucible::Plan::empty()
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("empty plan should serialize: {error}"));
+    let with_plan = authored.replace(
+        "fault_densities = [0]",
+        &format!("fault_densities = [0]\nfault_plan_toml = '''\n{empty_plan}\n'''"),
+    );
+    load_fuzz_family_toml("canonical empty plan", &with_plan)
+        .unwrap_or_else(|error| panic!("canonical fault plan should decode: {error}"));
 }
 
 pub(super) fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
