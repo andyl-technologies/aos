@@ -26,7 +26,7 @@
           package = pkgs.nginx;
           bundle = true;
         };
-        nginx = {
+        aos.services.nginx = {
           enable = true;
           virtualHosts.default = {};
         };
