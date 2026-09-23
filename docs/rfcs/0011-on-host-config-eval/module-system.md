@@ -240,12 +240,12 @@ configuration:
 > conscripting the service stays blocked. The bullets below specify that model.
 
 - **A package may write/enable only within roots it owns, or within the
-  owner-declared *contributable sub-paths* of a shared root.** A write outside
+  owner-declared *extensible sub-paths* of a shared root.** A write outside
   those (a foreign root, or an owner-only sub-path like `enable`) is rejected at
   **resolve time**, detected from the **resolver-assigned provenance**
   (authenticated package identity, *not* module `_file` — see precedence above)
-  checked against the installed owner's contributable surface in `SystemRoots`
-  (`RootContribution.paths ⊆ RootOwner.contributable`). Publish-side lints may
+  checked against the installed owner's extensible surface in `SystemRoots`
+  (`RootContribution.paths ⊆ RootOwner.extensible`). Publish-side lints may
   still check a package's *own* metadata, but the foreign-write/conscription
   check is per-system and no longer runs against a global index.
 - **Foreign top-level service enable is forbidden.** `redis-exporter` cannot set

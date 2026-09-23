@@ -509,7 +509,7 @@ in {
       authorizedKeysCommand = lib.mkOption {
         type = abilityTypes.optional authorizedKeysCommand;
         default = null;
-        contributable = true;
+        extensible = true;
         description = "Symbolic package command used to look up authorized keys.";
       };
     };

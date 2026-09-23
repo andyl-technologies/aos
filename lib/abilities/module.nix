@@ -1651,19 +1651,19 @@ in {
     runtimeChecks = mkOption {
       type = runtimeCheckMapType;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Runtime qualification groups authored by ability providers and consumers.";
     };
     guarantees = mkOption {
       type = abilityMapType "guarantees" guaranteeDeclarationType;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Guarantee declarations keyed by their owning module's local alias.";
     };
     interfaces = mkOption {
       type = abilityMapType "interfaces" interfaceDeclarationType;
       default = {};
-      contributable = true;
+      extensible = true;
       apply = interfaces: let
         declaredNames = builtins.map (declaration: declaration.name) (builtins.attrValues interfaces);
         targetsExist = builtins.all (declaration:
@@ -1679,13 +1679,13 @@ in {
     implementations = mkOption {
       type = abilityMapType "implementations" implementationType;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Ability implementations available to provider discovery.";
     };
     requirementTemplates = mkOption {
       type = abilityMapType "requirementTemplates" requirementBaseType;
       default = {};
-      contributable = true;
+      extensible = true;
       apply = requirements: let
         rejected =
           builtins.filter
@@ -1700,7 +1700,7 @@ in {
     instances = mkOption {
       type = abilityMapType "instances" instanceBaseType;
       default = {};
-      contributable = true;
+      extensible = true;
       apply = instances:
         if
           (instances == {} || config == null || config.aos.abilities.environment != null)
@@ -1719,7 +1719,7 @@ in {
     requests = mkOption {
       type = abilityMapType "requests" requestBaseType;
       default = {};
-      contributable = true;
+      extensible = true;
       apply = requests: let
         normalized = builtins.mapAttrs (_: normalizeRequest) requests;
       in

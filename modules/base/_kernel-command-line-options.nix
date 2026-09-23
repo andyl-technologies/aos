@@ -15,7 +15,7 @@ in {
       canonicalOrder = true;
     });
     default = {};
-    contributable = true;
+    extensible = true;
     description = "Package-owned kernel command-line fragments consumed by image construction.";
   };
 }

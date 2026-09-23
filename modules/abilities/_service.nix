@@ -9,6 +9,7 @@
   ...
 }: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
+  servicePolicy = lib.abilities.interfaces.servicePolicy;
   serviceFields =
     builtins.removeAttrs
     serviceManagement.types.serviceDeclarationFields
@@ -28,8 +29,25 @@
       description = serviceManagement.featureInterfaces.${name}.declaration.description;
     };
   };
+  policyFields = {
+    hardening = servicePolicy.types.settings.hardeningSettings;
+    devicePolicy = servicePolicy.types.settings.devicePolicySettings;
+    runtimeConditions = servicePolicy.types.settings.runtimeConditionSettings;
+  };
+  policyModule = {
+    options.policy =
+      builtins.mapAttrs
+      (name: fieldType:
+        lib.mkOption {
+          type = lib.abilities.types.optional fieldType;
+          default = null;
+          description = servicePolicy.interfaces.${name}.declaration.description;
+        })
+      policyFields;
+  };
   featureModules =
-    builtins.attrValues (builtins.mapAttrs featureModuleFor serviceFields);
+    builtins.attrValues (builtins.mapAttrs featureModuleFor serviceFields)
+    ++ [policyModule];
 
   packageSchemaFor = name: let
     schema = config.aos.serviceOptionModules.${name};
@@ -74,7 +92,7 @@ in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: serviceModuleFor name));
     default = {};
-    contributable = true;
+    extensible = true;
     description = "Typed service configurations assembled from domain feature modules.";
   };
 

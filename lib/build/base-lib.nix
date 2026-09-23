@@ -230,7 +230,7 @@
   # Root ownership shipped by the image is local system state, just like
   # package-owned roots derived from the exact installed profile. Every root
   # declared by the bundled base/system modules is already present and must
-  # never trigger a structural package fetch. Contributable paths retain the
+  # never trigger a structural package fetch. Extensible paths retain the
   # module engine's curated markers; interface ABI follows the image module ABI
   # until a root-specific image ABI is introduced.
   bundledRootNames = builtins.sort builtins.lessThan (lib.unique (
@@ -240,12 +240,12 @@
     builtins.map (root: {
       inherit root;
       interface_abi = moduleAbi;
-      contributable = builtins.sort builtins.lessThan (
+      extensible = builtins.sort builtins.lessThan (
         builtins.map
         (declaration: lib.concatStringsSep "." (builtins.tail declaration.path))
         (builtins.filter
           (declaration:
-            declaration.contributable
+            declaration.extensible
             && builtins.head declaration.path == root
             && builtins.length declaration.path > 1)
           realEval._optionDecls)

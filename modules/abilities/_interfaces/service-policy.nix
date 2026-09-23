@@ -78,7 +78,7 @@
       };
     };
 
-  runtimeConditions = request {
+  runtimeConditionFields = {
     privileges = types.list {
       element = types.record {
         fields = {
@@ -90,9 +90,11 @@
       unique = true;
     };
   };
+  runtimeConditions = request runtimeConditionFields;
+  runtimeConditionSettings = types.record {fields = runtimeConditionFields;};
   runtimeConditionsObservation = observation "runtime-conditions" runtimeConditions;
 
-  hardeningBase = request {
+  hardeningFields = {
     allow_privilege_escalation = types.boolean;
     ambient_privileges = servicePrivileges;
     privilege_bounds = privilegeBounds;
@@ -145,24 +147,33 @@
     operation_profile = types.enum ["privileged" "restricted" "system-service"];
     isolated_identity_mapping = types.enum ["full" "identity" "none" "self"];
   };
+  hardeningBase = request hardeningFields;
+  hardeningSettingsBase = types.record {fields = hardeningFields;};
+  hardeningConstraints = [
+    {
+      kind = "subset-unless";
+      subset = ["ambient_privileges"];
+      superset = ["privilege_bounds" "privileges"];
+      unless_path = ["privilege_bounds" "kind"];
+      unless_equals = "unrestricted";
+    }
+    {
+      kind = "disjoint-at";
+      left = ["operation_allow"];
+      right = ["operation_deny"];
+    }
+  ];
   hardening = types.refined {
     name = "valid provider-neutral service hardening";
     description = "service hardening with bounded ambient privileges and disjoint operation policy";
     type = hardeningBase;
-    constraints = [
-      {
-        kind = "subset-unless";
-        subset = ["ambient_privileges"];
-        superset = ["privilege_bounds" "privileges"];
-        unless_path = ["privilege_bounds" "kind"];
-        unless_equals = "unrestricted";
-      }
-      {
-        kind = "disjoint-at";
-        left = ["operation_allow"];
-        right = ["operation_deny"];
-      }
-    ];
+    constraints = hardeningConstraints;
+  };
+  hardeningSettings = types.refined {
+    name = "valid provider-neutral service hardening settings";
+    description = "service hardening settings with bounded ambient privileges and disjoint operation policy";
+    type = hardeningSettingsBase;
+    constraints = hardeningConstraints;
   };
   hardeningObservation = observation "hardening" hardening;
 
@@ -202,7 +213,7 @@
       };
     };
   };
-  devicePolicy = request {
+  devicePolicyFields = {
     baseline_access = types.enum ["declared-devices-only" "standard-runtime-devices"];
     rules = types.list {
       element = types.record {
@@ -216,6 +227,8 @@
       maxItems = 256;
     };
   };
+  devicePolicy = request devicePolicyFields;
+  devicePolicySettings = types.record {fields = devicePolicyFields;};
   devicePolicyObservation = observation "device-policy" devicePolicy;
 
   mergeContract = descriptorFor "aos.ability.merge-contract/v1" {
@@ -354,6 +367,9 @@
     guarantees.${privilegeGuaranteeAlias} = privilegeGuarantee;
     types = {
       inherit devicePolicy hardening runtimeConditions servicePrivilege;
+      settings = {
+        inherit hardeningSettings devicePolicySettings runtimeConditionSettings;
+      };
     };
   };
 in {

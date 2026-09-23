@@ -14,7 +14,7 @@ in {
       maxItems = 4096;
     };
     default = [];
-    contributable = true;
+    extensible = true;
     description = "Package-owned immutable directory trees materialized beneath /etc.";
   };
 }

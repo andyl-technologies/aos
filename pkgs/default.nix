@@ -422,7 +422,7 @@
           else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
         optionDocumentFor = sourcePath: path: declaration:
           {
-            inherit (declaration) description visibility contributable;
+            inherit (declaration) description visibility extensible;
             inherit path;
             type_signature = declaration.typeSig;
             structured_type = normalizeOptionType declaration.type;

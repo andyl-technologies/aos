@@ -75,7 +75,7 @@ GET /{registry}/-/api/v1/documentation/{document-sha256}
 ```
 
 Common parameters include `q`, `kind`, `package`, `version`, `platform`,
-`release`, `channel`, `owner`, `type`, `contributable`, `page_size`, and
+`release`, `channel`, `owner`, `type`, `extensible`, `page_size`, and
 `page_token`. Path encoding is defined over the structured option path, not an
 ambiguous dot-separated string.
 

@@ -94,7 +94,7 @@ in {
       type = lib.types.listOf providerRenderPlanType;
       default = [];
       internal = true;
-      contributable = true;
+      extensible = true;
       description = ''
         Pure render plans produced by authenticated provider modules. The
         selected manager materializes and collision-checks them once.
@@ -105,7 +105,7 @@ in {
       type = lib.types.listOf providerRenderPlanType;
       default = [];
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Pure manager-configuration plans from authenticated systemd providers.";
     };
 
@@ -123,7 +123,7 @@ in {
       });
       default = [];
       internal = true;
-      contributable = true;
+      extensible = true;
       description = "Pure network-configuration plans from the authenticated systemd controller.";
     };
 
@@ -143,56 +143,56 @@ in {
     services = lib.mkOption {
       type = systemdTypes.services;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .service units.";
     };
 
     targets = lib.mkOption {
       type = systemdTypes.targets;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .target units.";
     };
 
     sockets = lib.mkOption {
       type = systemdTypes.sockets;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .socket units.";
     };
 
     timers = lib.mkOption {
       type = systemdTypes.timers;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .timer units.";
     };
 
     paths = lib.mkOption {
       type = systemdTypes.paths;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .path units.";
     };
 
     slices = lib.mkOption {
       type = systemdTypes.slices;
       default = {};
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .slice units.";
     };
 
     mounts = lib.mkOption {
       type = systemdTypes.mounts;
       default = [];
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .mount units. Keyed by `where`, not by name.";
     };
 
     automounts = lib.mkOption {
       type = systemdTypes.automounts;
       default = [];
-      contributable = true;
+      extensible = true;
       description = "Typed systemd .automount units. Keyed by `where`, not by name.";
     };
 

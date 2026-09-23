@@ -750,7 +750,7 @@ message ListPackageOptionsRequest {
   string prefix = 5;
   string owner = 6;
   string type = 7;
-  optional bool contributable = 8;
+  optional bool extensible = 8;
   uint32 page_size = 9;
   string page_token = 10;
 }
@@ -762,7 +762,7 @@ message PackageOptionView {
   string type = 4;
   string owner_package = 5;
   string owner_root = 6;
-  bool contributable = 7;
+  bool extensible = 7;
   bytes canonical_option_json = 8;
 }
 

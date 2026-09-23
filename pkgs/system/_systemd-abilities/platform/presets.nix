@@ -23,7 +23,7 @@ in {
   options.systemd.systemPresetRules = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [];
-    contributable = true;
+    extensible = true;
     description = "Ordered systemd preset rules selected for this system.";
   };
 

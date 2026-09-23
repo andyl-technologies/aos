@@ -295,7 +295,7 @@ impl PackageAbilityReference {
                         root: declaration.path.first().cloned().unwrap_or_default(),
                         interface_abi: None,
                     },
-                    contributable: declaration.contributable,
+                    extensible: declaration.extensible,
                     source: Some(SourceLocator {
                         path: declaration.source.path.clone(),
                     }),

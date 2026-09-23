@@ -958,6 +958,51 @@
       }
     ];
   };
+  composedServiceFixedPoint = lib.evalModules {
+    specialArgs = {inherit lib;};
+    modules = [
+      ../../modules/abilities/default.nix
+      {
+        aos.abilities.environment = {
+          authority = "deployment";
+          key = "composed-service-test";
+          stage = "host";
+        };
+      }
+    ];
+    packageModules = [
+      {
+        name = "policy-owner";
+        module = {
+          config,
+          lib,
+          ...
+        }: {
+          config = lib.mkMerge [
+            {
+              aos.services."policy-owner.main" = {
+                enable = true;
+                inherit (minimalService) lifecycle;
+              };
+            }
+            (serviceManagement.projectService {
+              inherit config lib;
+              name = "policy-owner.main";
+            })
+          ];
+        };
+      }
+      {
+        name = "policy-extension";
+        module = {
+          config.aos.services."policy-owner.main".policy.devicePolicy = {
+            baseline_access = "declared-devices-only";
+            rules = [];
+          };
+        };
+      }
+    ];
+  };
   sharedGuarantee = {
     name = "aos.guarantee.test";
     version = 1;
@@ -1512,4 +1557,11 @@ in
   .success;
   assert builtins.all
   (alias: builtins.hasAttr alias fixedPoint.config.aos.abilities.interfaces)
-  declaredAliases; true
+  declaredAliases;
+  assert composedServiceFixedPoint.config.aos.abilities.requests."policy-owner:main-device_policy".parameters
+  == {
+    service = "main";
+    enabled = true;
+    baseline_access = "declared-devices-only";
+    rules = [];
+  }; true

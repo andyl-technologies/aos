@@ -37,7 +37,7 @@ in {
     default = null;
     readOnly = true;
     internal = true;
-    contributable = true;
+    extensible = true;
     description = "Exact package-owned artifact backend selected by an ability binding.";
   };
 }

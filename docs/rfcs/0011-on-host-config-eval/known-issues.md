@@ -13,7 +13,7 @@ resolutions here are the RFC's historical response.
 > [`decisions.md`](decisions.md): **F1** → dm-verity on the erofs root, roothash
 > on the measured UKI `.cmdline` (PCR-11 covers the producer); **F2** → manifest
 > carries job-script text, materializer writes gen-local paths; **F3** →
-> capability-scoped contribution surface (owner declares contributable
+> capability-scoped contribution surface (owner declares extensible
 > sub-paths). The alternatives below are retained only as design history; their
 > descriptions do not describe current implementation gaps.
 

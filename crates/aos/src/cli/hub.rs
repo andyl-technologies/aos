@@ -308,7 +308,7 @@ pub enum HubDocumentationCmd {
         #[arg(long = "type")]
         option_type: Option<String>,
         #[arg(long)]
-        contributable: Option<bool>,
+        extensible: Option<bool>,
         #[command(flatten)]
         pagination: HubPaginationArgs,
     },

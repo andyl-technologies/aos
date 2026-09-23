@@ -38,8 +38,8 @@ pub struct PackageOptionDeclaration {
     pub visibility: OptionVisibility,
     /// Records whether the module engine rejects external definitions.
     pub read_only: bool,
-    /// Records whether another authenticated package may contribute below the option.
-    pub contributable: bool,
+    /// Records whether another authenticated package may define values below the option.
+    pub extensible: bool,
     /// Carries an optional deprecation notice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<String>,
