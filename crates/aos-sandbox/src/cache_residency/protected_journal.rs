@@ -35,7 +35,12 @@ use super::{
     decode_typed_checkpoint, encode_atomic_object_record, encode_typed_checkpoint,
 };
 
+mod pin_effect;
 mod provisioning;
+
+use pin_effect::{
+    CurrentPhysicalPinActionV1, CurrentPhysicalPinEffectV1, current_physical_pin_effect,
+};
 
 const PARTITION_DESCRIPTOR_MAGIC: &[u8; 8] = b"AOSCPP01";
 const PARTITION_DESCRIPTOR_BYTES: usize = 241;
@@ -863,6 +868,9 @@ pub struct CacheResidencyPostcommitCapabilityV1 {
 pub struct ValidatedCacheResidencyPostcommitV1<'current> {
     kind: CacheResidencyTransactionKindV1,
     inner: ValidatedDomainPostcommitV1<'current, CacheResidencyProtectedJournalSchemaV1>,
+    // The grant is derived from the latest protected projection, not merely
+    // the historical transaction that originally changed this pin.
+    current_pin_effect: Option<CurrentPhysicalPinEffectV1>,
 }
 
 /// Retains cold-replayed cache state without granting fresh effect authority.
@@ -1325,11 +1333,23 @@ impl CacheResidencyPostcommitCapabilityV1 {
         authority: &'current CacheResidencyProtectedJournalV1<'_>,
     ) -> Result<ValidatedCacheResidencyPostcommitV1<'current>, CacheResidencyProtectedJournalErrorV1>
     {
-        authority.replay()?;
+        let projection = authority.replay()?;
         let inner = self.inner.consume(&authority.inner)?;
+        let records = inner
+            .records()
+            .iter()
+            .map(|record| record.envelope().clone())
+            .collect::<Vec<_>>();
+        let current_pin_effect = current_physical_pin_effect(
+            self.kind,
+            &records,
+            projection.records(),
+            &authority.validator,
+        )?;
         Ok(ValidatedCacheResidencyPostcommitV1 {
             kind: self.kind,
             inner,
+            current_pin_effect,
         })
     }
 }
@@ -1345,7 +1365,7 @@ impl CacheResidencyColdObservationV1 {
         authority: &'current CacheResidencyProtectedJournalV1<'_>,
     ) -> Result<ValidatedCacheResidencyPostcommitV1<'current>, CacheResidencyProtectedJournalErrorV1>
     {
-        authority.replay()?;
+        let projection = authority.replay()?;
         let inner = self.inner.consume(&authority.inner)?;
         let records = inner
             .records()
@@ -1353,7 +1373,17 @@ impl CacheResidencyColdObservationV1 {
             .map(|record| record.envelope().clone())
             .collect::<Vec<_>>();
         let kind = classify_replayed_cache_transaction(&records)?;
-        Ok(ValidatedCacheResidencyPostcommitV1 { kind, inner })
+        let current_pin_effect = current_physical_pin_effect(
+            kind,
+            &records,
+            projection.records(),
+            &authority.validator,
+        )?;
+        Ok(ValidatedCacheResidencyPostcommitV1 {
+            kind,
+            inner,
+            current_pin_effect,
+        })
     }
 }
 
@@ -1441,44 +1471,16 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
         partition: PhysicalPartitionId,
         descriptor: ObjectDescriptor,
         owner: &super::DormantCacheOwnerV1,
-        limits: CacheRecoveryLimitsV1,
     ) -> Result<super::CacheOwnerPinAdmissionV1, CacheResidencyProtectedJournalErrorV1> {
-        let exact_pin = self.inner.records().iter().any(|record| {
-            let body = record.envelope().payload();
-            let descriptor_end = 8 + PARTITION_DESCRIPTOR_BYTES;
-            if record.envelope().key().kind() != CacheResidencyProtectedRecordKindV1::Pin
-                || body.len() <= descriptor_end
-                || decode_partition_descriptor(&body[8..descriptor_end]) != Some(partition)
-            {
-                return false;
-            }
-            decode_atomic_object_record(partition, &body[descriptor_end..], limits).is_ok_and(
-                |payload| {
-                    if payload.record.kind != CacheRecordKindV1::Pin {
-                        return false;
-                    }
-                    match action {
-                        super::CacheOwnerPinActionV1::Acquire => {
-                            payload.record.state == 1
-                                && payload.pins.iter().any(|pin| {
-                                    pin.id.as_bytes() == id.as_bytes()
-                                        && pin.partition == partition
-                                        && pin.object == descriptor
-                                        && pin.evidence == payload.record.authority
-                                })
-                        }
-                        super::CacheOwnerPinActionV1::Release => {
-                            payload.record.state == 2
-                                && payload.released_pins.iter().any(|released| {
-                                    released.pin.id.as_bytes() == id.as_bytes()
-                                        && released.pin.partition == partition
-                                        && released.pin.object == descriptor
-                                        && released.drain.digest() == payload.record.authority
-                                })
-                        }
-                    }
-                },
-            )
+        let expected_action = match action {
+            super::CacheOwnerPinActionV1::Acquire => CurrentPhysicalPinActionV1::Acquire,
+            super::CacheOwnerPinActionV1::Release => CurrentPhysicalPinActionV1::Release,
+        };
+        let exact_pin = self.current_pin_effect.as_ref().is_some_and(|effect| {
+            effect.action == expected_action
+                && effect.pin.id.as_bytes() == id.as_bytes()
+                && effect.pin.partition == partition
+                && effect.pin.object == descriptor
         });
         let (predecessor, maximum_pins, maximum_pinned_bytes) = owner.pin_grant_context();
         if self.kind != CacheResidencyTransactionKindV1::PinChange
