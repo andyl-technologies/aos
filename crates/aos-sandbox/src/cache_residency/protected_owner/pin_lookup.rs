@@ -12,24 +12,25 @@ use super::{
 use crate::cache_residency::CachePinKindV1;
 
 impl CacheResidencyProtectedOwnerV1 {
-    /// Finds the sole retained logical pin for a public consumer and object.
+    /// Finds every retained partition pin for a public consumer and object.
     ///
     /// Public unpin requests carry no physical partition. This lookup scans
-    /// every partition in one protected replay and rejects an ambiguous
-    /// cross-partition obligation instead of releasing an arbitrary pin.
-    /// Historical state is not current drain or acquisition authority.
+    /// every partition in one protected replay. A migrated consumer may have
+    /// an old and a new physical obligation; unpin must drain each one rather
+    /// than choosing an arbitrary partition. Historical state is not current
+    /// drain or acquisition authority.
     ///
     /// # Errors
     ///
-    /// Returns an error if protected replay or currentness fails, or if more
-    /// than one partition retains this consumer/object obligation.
-    pub fn retained_consumer_logical_pin(
+    /// Returns an error if protected replay or currentness fails, or if a
+    /// partition contains more than one logical pin for this consumer/object.
+    pub fn retained_consumer_logical_pins(
         &mut self,
         object: &ObjectDescriptor,
         project: ProjectId,
         view: ViewId,
         attachment: Option<AttachmentId>,
-    ) -> Result<Option<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
+    ) -> Result<Vec<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
         let authority = Arc::clone(&self.authority);
         authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
             let journal = self
@@ -55,8 +56,9 @@ impl CacheResidencyProtectedOwnerV1 {
                 }
             }
 
-            let mut retained = None;
+            let mut retained = Vec::new();
             for (partition, (_, pins)) in latest {
+                let mut partition_pin = None;
                 for pin in pins {
                     if pin.partition.digest() != partition
                         || &pin.object != object
@@ -67,9 +69,12 @@ impl CacheResidencyProtectedOwnerV1 {
                     {
                         continue;
                     }
-                    if retained.replace(pin).is_some() {
+                    if partition_pin.replace(pin).is_some() {
                         return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
                     }
+                }
+                if let Some(pin) = partition_pin {
+                    retained.push(pin);
                 }
             }
             refresh()?;

@@ -222,7 +222,9 @@ Public `PinObject` and `UnpinObject` name the consuming view and, when present,
 its attachment. One active logical pin exists for each physical partition,
 object, project, view, and optional attachment. Repeated pin requests renew
 that obligation under current authority rather than adding another pin count;
-unpin resolves the exact retained obligation without a caller-supplied pin ID.
+unpin resolves every exact retained partition obligation for that consumer and
+object without a caller-supplied pin ID. Each partition drains under its own
+current authority, so a migration cannot silently strand an old pin.
 An attachment replacement does not erase the old view's pin before its drain.
 View-scoped logical pins block eviction but do not grant runtime read access.
 
