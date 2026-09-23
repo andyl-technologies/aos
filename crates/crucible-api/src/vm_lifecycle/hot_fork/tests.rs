@@ -600,7 +600,7 @@ fn powered_off_capture_does_not_silently_omit_a_missing_backend() {
 }
 
 #[test]
-fn hot_fork_adoption_inventory_rejects_powered_off_nodes() {
+fn hot_fork_adoption_inventory_requires_the_powered_off_child_and_next_generation() {
     let (_source, mut continuation) = permanently_failed_continuation();
     let boundary = continuation
         .nodes
@@ -608,18 +608,34 @@ fn hot_fork_adoption_inventory_rejects_powered_off_nodes() {
         .unwrap_or_else(|| panic!("fixture should contain a World node"));
     let node = boundary.node.clone();
     boundary.service_state = ProductionVmHotForkNodeServiceState::PoweredOff;
+    boundary.physical_time = Some(VirtualTime { ticks: 17 });
     continuation
         .node_service_states
-        .insert(node, ProductionNodeServiceState::PoweredOff);
+        .insert(node.clone(), ProductionNodeServiceState::PoweredOff);
 
     let error = validate_hot_fork_adoption_inventory(&continuation, &BTreeMap::new())
         .err()
-        .unwrap_or_else(|| panic!("powered-off adoption should fail closed"));
+        .unwrap_or_else(|| panic!("missing powered-off child should fail closed"));
     assert!(
         error
             .to_string()
-            .contains("does not yet support powered-off")
+            .contains("no adopted child for retained node")
     );
+
+    let error =
+        validate_hot_fork_adoption_inventory(&continuation, &BTreeMap::from([(node.clone(), 1)]))
+            .err()
+            .unwrap_or_else(|| panic!("unchanged powered-off generation should fail closed"));
+    assert!(error.to_string().contains("expected 2"));
+
+    let inventory =
+        validate_hot_fork_adoption_inventory(&continuation, &BTreeMap::from([(node.clone(), 2)]))
+            .unwrap_or_else(|error| panic!("powered-off child should be adopted: {error}"));
+    assert_eq!(
+        inventory.expected_times.get(&node),
+        Some(&VirtualTime { ticks: 17 })
+    );
+    assert_eq!(inventory.node_generations.get(&node), Some(&2));
 }
 
 #[test]

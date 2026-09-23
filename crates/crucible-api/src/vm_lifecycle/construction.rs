@@ -583,7 +583,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         };
         let launched = if let Some(adoption) = hot_fork_adoption {
             if restore_target.is_some()
-                || service_state != ProductionNodeServiceState::Running
+                || service_state == ProductionNodeServiceState::PermanentlyFailed
                 || hot_fork_expected_time.is_none()
             {
                 return Err(loop_factory_error(format!(
@@ -882,6 +882,21 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             .map_err(|error| {
                 loop_factory_error(format!("restore exact scheduler continuation: {error}"))
             })?;
+        if hot_fork_restore.is_some() {
+            // Boot must reactivate the captured Halted state, not a fresh runnable node.
+            for (node, state) in &node_service_states {
+                if *state == ProductionNodeServiceState::PoweredOff {
+                    scheduler
+                        .require_vm_node_activity(node, SchedulerNodeActivity::Halted)
+                        .map_err(|error| {
+                            loop_factory_error(format!(
+                                "restore powered-off hot-fork scheduler node `{}`: {error}",
+                                node.name
+                            ))
+                        })?;
+                }
+            }
+        }
     } else {
         if let Some(frontier) = first_configured_branch(config)
             .map(|branch| branch.frontier)

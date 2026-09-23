@@ -16,12 +16,13 @@ use crucible::model::MeasurementTerminalState;
 use crucible::{
     Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
     Icount, MarkerId, NodeId, ObservableEvent, ScenarioDefForm, ScenarioSelectableLimits,
-    ScenarioSelectables, SchedulerEventLogEntry, SchedulerQuiescence, SelectionDecision, World,
-    WorldNodeDef,
+    ScenarioSelectables, SchedulerEventLogEntry, SchedulerNodeActivity, SchedulerQuiescence,
+    SelectionDecision, World, WorldNodeDef,
 };
 use crucible_api::vm_lifecycle::{
     hot_fork_adoption_count_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
+    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
     reset_hot_fork_adoption_count_for_test,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};

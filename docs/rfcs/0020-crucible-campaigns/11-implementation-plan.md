@@ -467,8 +467,10 @@ lifecycle journal while still rejecting unfinished journal owners, staged
 replacements, cleanup failures, and incomplete transaction phases. Six new API
 regressions cover those ownership distinctions; the full API suite passes 265
 tests. The reactivation flight additionally checks the real inactive world's
-source-process distinction before its exact checkpoint. This does not enable
-powered-off child adoption or supply the remaining branch-private disk handoff.
+source-process distinction before its exact checkpoint. The production world
+factory now forks and adopts powered-off children with their retained service
+state, including them in atomic assembly and source reconciliation. The
+branch-private disk handoff remains separate work.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.

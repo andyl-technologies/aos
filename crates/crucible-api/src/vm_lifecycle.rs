@@ -105,6 +105,7 @@ pub use hot_fork::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
     production_permanently_failed_loop_for_test, reset_hot_fork_adoption_count_for_test,
 };
 
@@ -2292,12 +2293,11 @@ pub fn authenticate_production_vm_exact_hot_fork_source_boundary(
 
 /// Adopts one completely assembled hot-fork child World as a lifecycle.
 ///
-/// This boundary accepts no partial node set. Every running node in the opaque
-/// host continuation must have exactly one already-authenticated child and
-/// linear containment lease, while permanently failed nodes must have none.
-/// Powered-off nodes currently fail closed because preserving their paused
-/// restart image requires the still-open branch-private block/run-directory
-/// handoff. The complete semantic and child inventories are validated before
+/// This boundary accepts no partial node set. Every running or powered-off
+/// node in the opaque host continuation must have exactly one authenticated
+/// child and linear containment lease. Permanently failed nodes have none.
+/// A powered-off child retains its paused process for a later modeled Boot.
+/// The complete semantic and child inventories are validated before
 /// the production run directory is created. Each retained process incarnation
 /// is then reauthenticated before the lifecycle is published.
 ///
@@ -2412,13 +2412,14 @@ fn validate_hot_fork_adoption_inventory(
     let mut node_generations = BTreeMap::new();
     for boundary in continuation.nodes() {
         match boundary.service_state() {
-            ProductionVmHotForkNodeServiceState::Running => {
+            ProductionVmHotForkNodeServiceState::Running
+            | ProductionVmHotForkNodeServiceState::PoweredOff => {
                 let generation = adoption_generations
                     .get(boundary.node())
                     .copied()
                     .ok_or_else(|| {
                         loop_factory_error(format!(
-                            "hot-fork World has no adopted child for running node `{}`",
+                            "hot-fork World has no adopted child for retained node `{}`",
                             boundary.node().name
                         ))
                     })?;
@@ -2436,16 +2437,10 @@ fn validate_hot_fork_adoption_inventory(
                     )));
                 }
                 let physical_time = boundary.physical_time().ok_or_else(|| {
-                    loop_factory_error("running hot-fork node lost its physical boundary")
+                    loop_factory_error("retained hot-fork node lost its physical boundary")
                 })?;
                 expected_times.insert(boundary.node().clone(), physical_time);
                 node_generations.insert(boundary.node().clone(), generation);
-            }
-            ProductionVmHotForkNodeServiceState::PoweredOff => {
-                return Err(loop_factory_error(format!(
-                    "hot-fork lifecycle adoption does not yet support powered-off node `{}`",
-                    boundary.node().name
-                )));
             }
             ProductionVmHotForkNodeServiceState::PermanentlyFailed => {
                 if adoption_generations.contains_key(boundary.node()) {
@@ -2458,15 +2453,15 @@ fn validate_hot_fork_adoption_inventory(
             }
         }
     }
-    let expected_running = expected_times.keys().cloned().collect::<BTreeSet<_>>();
+    let expected_retained = expected_times.keys().cloned().collect::<BTreeSet<_>>();
     if adoption_generations
         .keys()
         .cloned()
         .collect::<BTreeSet<_>>()
-        != expected_running
+        != expected_retained
     {
         return Err(loop_factory_error(
-            "hot-fork adopted child set differs from the running-node set",
+            "hot-fork adopted child set differs from the retained-node set",
         ));
     }
     Ok(HotForkAdoptionInventory {

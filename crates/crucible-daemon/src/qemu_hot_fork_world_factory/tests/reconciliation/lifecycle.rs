@@ -174,6 +174,112 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
 }
 
 #[test]
+fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
+    let first =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
+    let second =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("second source");
+    let scenario = test_execution_scenario();
+    let powered_off = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .next()
+        .expect("scenario VM")
+        .id
+        .clone();
+    let (_nodes, source_world) =
+        prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test(
+            &scenario,
+            vec![first, second],
+            &BTreeSet::from([powered_off.clone()]),
+        )
+        .expect("prepared world with powered-off source");
+    let boundary = source_world
+        .continuation()
+        .nodes()
+        .iter()
+        .find(|boundary| boundary.node() == &powered_off)
+        .expect("powered-off boundary");
+    assert_eq!(
+        boundary.service_state(),
+        ProductionVmHotForkNodeServiceState::PoweredOff
+    );
+    assert!(boundary.process().is_some());
+    assert!(boundary.physical_time().is_some());
+
+    let input = execution_input_for_scenario(scenario);
+    let context = execution_context(&input, 0xc7);
+    let run_state = tempfile::tempdir().expect("run state");
+    let observations = ScriptedWorldObservations::new();
+    let mut factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        observations.clone(),
+    );
+
+    let mut lifecycle = match factory
+        .try_start(&input, &context)
+        .expect("start child world")
+    {
+        QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
+        QemuHotForkWorldLifecycleStart::Declined => panic!("powered-off source declined"),
+    };
+    assert!(lifecycle.start_materialization().is_ok());
+    let before_boot = lifecycle
+        .fault_evidence_snapshot()
+        .expect("adopted powered-off evidence");
+    let powered_off_evidence = before_boot
+        .nodes
+        .iter()
+        .find(|node| node.node == powered_off)
+        .expect("adopted powered-off node evidence");
+    assert_eq!(powered_off_evidence.service_state, "powered_off");
+    assert_eq!(
+        powered_off_evidence.scheduler_activity,
+        SchedulerNodeActivity::Halted
+    );
+    assert!(powered_off_evidence.backend_owned);
+    assert_eq!(powered_off_evidence.process_ownership, "exact");
+
+    lifecycle
+        .commit_modeled_boot_for_test(&powered_off)
+        .expect("commit later modeled Boot");
+    let after_boot = lifecycle
+        .fault_evidence_snapshot()
+        .expect("reactivated child evidence");
+    let booted_evidence = after_boot
+        .nodes
+        .iter()
+        .find(|node| node.node == powered_off)
+        .expect("booted node evidence");
+    assert_eq!(booted_evidence.service_state, "running");
+    assert_eq!(
+        booted_evidence.scheduler_activity,
+        SchedulerNodeActivity::Runnable
+    );
+    assert!(booted_evidence.backend_owned);
+    assert_eq!(booted_evidence.process_ownership, "exact");
+    assert_eq!(
+        observations
+            .retained_child_processes
+            .lock()
+            .expect("child registry")
+            .len(),
+        2
+    );
+    assert!(!factory.sources.available());
+
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).expect("shutdown child world");
+    reconcile_canceled_world(&mut lifecycle);
+    assert!(factory.recover(lifecycle).is_ok());
+    assert!(factory.sources.available());
+    assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(observations.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn two_factories_keep_independent_live_children_from_one_managed_source() {
     let source_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
