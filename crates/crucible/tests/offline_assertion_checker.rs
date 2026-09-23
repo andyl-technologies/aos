@@ -5,14 +5,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, ConditionEvaluationError,
-    ConditionLeaf, ContentHash, EventEvaluationKind, FramePredicate, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, HostAssertionReport,
-    Icount, LintedHostAssertionOracle, MarkerId, NodeId, NodeTemplate, ObservableEvent,
-    ObservedState, OfflineAssertionCheckError, OfflineAssertionChecker, Predicate, Properties,
-    Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    AssertionDef, AssertionId, AssertionRunVerdict, BackendInput, BlackBoxHostOracle,
+    ConditionEvaluationError, ConditionLeaf, ContentHash, Decision, EventEvaluationKind,
+    FramePredicate, HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind,
+    HostAssertionPredicate, HostAssertionReport, Icount, LintedHostAssertionOracle, MarkerId,
+    NodeId, NodeTemplate, ObservableEvent, ObservedState, OfflineAssertionCheckError,
+    OfflineAssertionChecker, Predicate, Properties, Property, ReachabilityExpectation,
+    ReachableDisposition, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    SharedTimelineKey, SimInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -456,6 +458,110 @@ fn offline_assertion_checker_defers_incomplete_atomic_observation_segment() {
         AssertionRunVerdict::Failed { .. }
     ));
     assert!(terminal.observable_events().contains(&observation));
+}
+
+#[test]
+fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
+    // A live linked delivery produced this shape: the prior evaluation was at
+    // 3.75B ticks, then one atomic quantum appended a physical backend input
+    // near 3.58B and its observation and boundary at 3.75B.
+    let world = world();
+    let properties = properties(
+        &world,
+        vec![assertion(
+            "sometimes-delivered-frame",
+            "the modeled frame reaches the peer",
+            Property::Sometimes {
+                predicate: Predicate::network_match(
+                    None,
+                    FramePredicate::contains(b"delivered".to_vec()),
+                ),
+            },
+        )],
+    );
+    let delivered = ObservableEvent::network_delivered(time(10), None, b"delivered".to_vec());
+    let peer = node("guest");
+    let delivery = ScheduledEvent {
+        key: ScheduledEventKey::new(
+            SharedTimelineKey {
+                virtual_time: SimInstant { nanos: 5 },
+                node: SchedulerNodeId {
+                    node: peer.clone(),
+                    kind: SchedulingNodeKind::Vm,
+                },
+                sequence: 0,
+            },
+            SchedulerNodeId {
+                node: node("sender"),
+                kind: SchedulingNodeKind::Vm,
+            },
+        ),
+        payload: ScheduledEventPayload::BackendInput(BackendInput {
+            node: peer,
+            payload: b"delivered".to_vec(),
+        }),
+    };
+    let entries = vec![
+        crucible::test_support::condition_boundary_entry_for_test(
+            0,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            1,
+            time(5),
+            SchedulerEventLogPayload::ResolvedHappening(delivery),
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            2,
+            time(5),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("late-quantum"),
+                value: 7,
+            })),
+        ),
+        crucible::test_support::condition_observation_entry_for_test(3, &delivered),
+        crucible::test_support::condition_boundary_entry_for_test(
+            4,
+            time(10),
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+
+    let flat = checker
+        .check_run(&properties, &entries)
+        .expect("the completed quantum hides its intermediate physical prefix");
+    let atomic =
+        RecordedAssertionLog::from_segments(vec![entries[..1].to_vec(), entries[1..].to_vec()])
+            .expect("atomic quantum segments should fold");
+    let mut oracle = BlackBoxHostOracle;
+    let segmented = checker
+        .check_run_with_oracle(&properties, &atomic, &mut oracle)
+        .expect("published quantum boundaries should regrade");
+
+    assert_eq!(flat, segmented);
+    assert_eq!(flat.verdict(), &AssertionRunVerdict::Passed);
+
+    let separately_published = RecordedAssertionLog::from_segments(vec![
+        entries[..1].to_vec(),
+        entries[1..2].to_vec(),
+        entries[2..].to_vec(),
+    ])
+    .expect("separate segments should fold");
+    let error = checker
+        .check_run_with_oracle(&properties, &separately_published, &mut oracle)
+        .expect_err("a published lower-time causal prefix must remain invalid");
+    assert!(matches!(
+        error,
+        OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry {
+                point,
+                sequence: 0,
+                event_at,
+            }
+        ) if point == time(5) && event_at == time(10)
+    ));
 }
 
 #[test]
