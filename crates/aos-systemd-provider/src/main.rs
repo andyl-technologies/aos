@@ -168,15 +168,13 @@ async fn run() -> Result<()> {
     if arguments.len() == 1 {
         return qualification_observer::run().await;
     }
-    if arguments.len() == 2 && arguments[1] == "render" {
-        return static_render::run();
+    if arguments.len() == 4 && arguments[1] == "render" {
+        return static_render::run(Path::new(&arguments[2]), Path::new(&arguments[3]));
     }
-    if arguments.len() == 6 && arguments[1] == "resolve-render-input" {
+    if arguments.len() == 4 && arguments[1] == "resolve-render-input" {
         return aos_ability_validate::build_frontend::resolve_static_render_input(
             Path::new(&arguments[2]),
             Path::new(&arguments[3]),
-            Path::new(&arguments[4]),
-            Path::new(&arguments[5]),
         );
     }
     if arguments.len() == 2 && arguments[1] == "assemble" {

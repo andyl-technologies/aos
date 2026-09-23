@@ -60,27 +60,33 @@ struct StaticRenderSelector {
 ///
 /// Returns an error if the selector inventory is duplicate or incomplete, an
 /// exported closure is malformed, or the input contains an invalid selector.
-pub fn resolve_static_render_input(
-    input_path: &Path,
-    selectors_path: &Path,
-    exported_graph_path: &Path,
-    output_path: &Path,
-) -> Result<()> {
-    let input: Value = serde_json::from_slice(&fs::read(input_path)?)
-        .context("decoding symbolic provider render input")?;
-    let selectors: Vec<StaticRenderSelector> =
-        serde_json::from_slice(&fs::read(selectors_path)?)
-            .context("decoding authenticated render selectors")?;
-    let graph: Value = serde_json::from_slice(&fs::read(exported_graph_path)?)
-        .context("decoding exported Nix graph")?;
-
-    let resolved = resolve_static_render_value(input, selectors, &graph)?;
+pub fn resolve_static_render_input(attrs_path: &Path, output_path: &Path) -> Result<()> {
+    let attrs: Value = serde_json::from_slice(&fs::read(attrs_path)?)
+        .context("decoding structured provider render attributes")?;
+    let resolved = resolve_static_render_attrs(&attrs)?;
     fs::write(output_path, aos_contract::canonical::to_vec(&resolved)?).with_context(|| {
         format!(
             "writing resolved provider render input {}",
             output_path.display()
         )
     })
+}
+
+fn resolve_static_render_attrs(attrs: &Value) -> Result<Value> {
+    let encoded_input = attrs
+        .get("realization")
+        .and_then(Value::as_str)
+        .context("structured provider render attributes omit realization")?;
+    let encoded_selectors = attrs
+        .get("selectorPaths")
+        .and_then(Value::as_str)
+        .context("structured provider render attributes omit selectorPaths")?;
+    let input: Value =
+        serde_json::from_str(encoded_input).context("decoding symbolic provider render input")?;
+    let selectors: Vec<StaticRenderSelector> = serde_json::from_str(encoded_selectors)
+        .context("decoding authenticated render selectors")?;
+
+    resolve_static_render_value(input, selectors, attrs)
 }
 
 fn resolve_static_render_value(
@@ -993,6 +999,31 @@ mod tests {
         let unused = resolve_static_render_value(json!({}), selectors(), &graph)
             .expect_err("unused selector inventory must fail");
         assert!(unused.to_string().contains("unused outputs"));
+    }
+
+    #[test]
+    fn static_render_reads_structured_nix_attributes() {
+        let attrs = json!({
+            "realization": serde_json::to_string(&json!({
+                "source": {
+                    "artifact": {
+                        "_type": "aos-package-output-selector",
+                        "package": "self",
+                        "output": "out",
+                    },
+                },
+            })).expect("fixture JSON should encode"),
+            "selectorPaths": serde_json::to_string(&json!([{
+                "package": "self",
+                "output": "out",
+                "path": ROOT,
+            }])).expect("fixture selectors should encode"),
+            "renderGraph": exported_graph()["runtimeGraph"],
+        });
+
+        let resolved =
+            resolve_static_render_attrs(&attrs).expect("structured Nix attributes should resolve");
+        assert_eq!(resolved["source"]["artifact"]["store_path"], ROOT);
     }
 
     #[test]

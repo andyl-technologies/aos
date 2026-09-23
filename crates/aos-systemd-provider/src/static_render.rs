@@ -1,6 +1,5 @@
 //! Build-time materialization using the same semantic renderer as live reconciliation.
 
-use std::env;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
@@ -18,10 +17,14 @@ use crate::render::{DROP_IN_FILE, render, render_service};
 
 const NATIVE_STATIC_INPUT_SCHEMA: &str = "aos.systemd.native-resource-static-input/v1";
 
-pub(crate) fn run() -> Result<()> {
-    let input_path = env::var("realizationPath").context("render input path is not set")?;
-    let output_path = env::var("out").context("render output path is not set")?;
-    let bytes = fs::read(&input_path).context("reading static systemd realization")?;
+pub(crate) fn run(input_path: &Path, attrs_path: &Path) -> Result<()> {
+    let attrs: serde_json::Value = serde_json::from_slice(&fs::read(attrs_path)?)
+        .context("decoding structured provider render attributes")?;
+    let output_path = attrs
+        .pointer("/outputs/out")
+        .and_then(serde_json::Value::as_str)
+        .context("structured provider render attributes omit the output path")?;
+    let bytes = fs::read(input_path).context("reading static systemd realization")?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).context("decoding realization")?;
     let schema = value
