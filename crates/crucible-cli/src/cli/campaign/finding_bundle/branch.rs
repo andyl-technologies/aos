@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crucible_campaign::{
     Attempt, AttemptStart, BranchBudget, BranchPath, BranchPathSegment, BranchRequest,
-    BranchRequestCause, CampaignArchiveInspection, CampaignArchivePolicy, CampaignCommandId,
-    CampaignControlAction, CampaignHash, CampaignPrincipal, CampaignRepository,
+    BranchRequestCause, BudgetGrant, CampaignArchiveInspection, CampaignArchivePolicy,
+    CampaignCommandId, CampaignControlAction, CampaignHash, CampaignPrincipal, CampaignRepository,
     CampaignRepositoryError, CampaignService, CampaignState, CandidateSource, ChoiceDomain,
     ChoiceValue, ControlRequest, DebugSessionId, DebuggerAuthorityKey, DebuggerSubmission,
     ExplainCampaignAttemptRequest, PlannerAuthorityKey, Proposal, RepositoryCampaignService,
@@ -222,6 +222,27 @@ pub(crate) fn run_finding_bundle_branch(
             .map_err(branch_error)?
             .new_snapshot;
     }
+    let budget = imported
+        .budget_projection(BRANCH_NAME)
+        .map_err(branch_error)?;
+    let needed_proposals = u64::from(budget.remaining_proposals() == 0);
+    let needed_attempts = u64::from(budget.remaining_attempts() == 0);
+    if needed_proposals != 0 || needed_attempts != 0 {
+        branch_snapshot = imported
+            .apply_control(
+                BRANCH_NAME,
+                &ControlRequest {
+                    command: private_command(session, "grant-budget"),
+                    expected_snapshot: branch_snapshot,
+                    action: CampaignControlAction::GrantBudget(
+                        BudgetGrant::new(needed_proposals, needed_attempts)
+                            .map_err(branch_error)?,
+                    ),
+                },
+            )
+            .map_err(branch_error)?
+            .new_snapshot;
+    }
 
     let request = BranchRequest::new(
         BranchRequest::identity(
@@ -357,6 +378,7 @@ pub(crate) fn run_finding_bundle_branch(
             executor_socket: &private.path().join("executor.sock"),
             deployment,
             campaign: BRANCH_NAME,
+            target_attempt: attempt_id,
             lifecycle: &lifecycle,
             timeout: Duration::from_secs(args.timeout_seconds),
         },
@@ -397,23 +419,26 @@ pub(crate) fn run_finding_bundle_branch(
     )?;
     let observation = completion
         .ok_or_else(|| backend_error("private branch has no authenticated observation"))?;
-    let branch_snapshot = imported.head(BRANCH_NAME).map_err(branch_error)?.snapshot_id();
-    let final_query = ExplainCampaignAttemptRequest::new(
-        principal,
-        campaign,
-        branch_snapshot,
-        attempt_id,
-    )
-    .map_err(branch_error)?;
+    let branch_snapshot = imported
+        .head(BRANCH_NAME)
+        .map_err(branch_error)?
+        .snapshot_id();
+    let final_query =
+        ExplainCampaignAttemptRequest::new(principal, campaign, branch_snapshot, attempt_id)
+            .map_err(branch_error)?;
     let final_explanation = service
         .explain_campaign_attempt(&final_query)
         .map_err(branch_error)?;
-    final_explanation.validate_for(&final_query).map_err(branch_error)?;
+    final_explanation
+        .validate_for(&final_query)
+        .map_err(branch_error)?;
     if final_explanation.observation() != Some(&observation)
         || final_explanation.selection() != Some(&selection)
         || final_explanation.proposal() != Some(&proposal)
     {
-        return Err(backend_error("final branch head lost executed choice provenance"));
+        return Err(backend_error(
+            "final branch head lost executed choice provenance",
+        ));
     }
     if imported
         .head(SOURCE_NAME)

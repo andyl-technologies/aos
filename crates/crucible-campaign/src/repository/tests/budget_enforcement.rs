@@ -148,6 +148,96 @@ fn campaign_allowances_gate_new_work_but_never_charge_replay() {
         cold.budget_projection("budget").expect("cold budget"),
         budget
     );
+
+    let derived = cold
+        .derive_campaign("budget", admitted.new_snapshot, "private-budget", None)
+        .expect("derive exhausted source");
+    let inherited = cold
+        .budget_projection("private-budget")
+        .expect("inherited budget");
+    assert_eq!(
+        (
+            inherited.remaining_proposals(),
+            inherited.remaining_attempts()
+        ),
+        (0, 0)
+    );
+    cold.apply_control(
+        "private-budget",
+        &command(
+            "private-budget-resume",
+            derived.new_snapshot,
+            CampaignControlAction::Resume,
+        ),
+    )
+    .expect("resume exhausted private campaign");
+    let private_funded = grant(&cold, "private-budget", "private-rebudget", 1, 1);
+    let private_request = branch_request(
+        &cold,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "private-budget-request",
+    );
+    let requested = cold
+        .submit_known_branch_request(
+            "private-budget",
+            private_funded.snapshot_id(),
+            &private_request,
+        )
+        .expect("submit private request");
+    let private_proposal = finite_proposal(
+        &private_request,
+        &policy,
+        &cold.head("private-budget").expect("private requested head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = cold
+        .issue_proposal("private-budget", requested.new_snapshot, &private_proposal)
+        .expect("issue private proposal");
+    let (private_selection, private_path, private_attempt) =
+        branch_attempt(&cold, &private_request, &private_proposal);
+    cold.admit_proposal(
+        "private-budget",
+        proposed.new_snapshot,
+        proposed.proposal,
+        &private_selection,
+        &private_path,
+        &private_attempt,
+    )
+    .expect("admit private attempt");
+    let private_budget = cold
+        .budget_projection("private-budget")
+        .expect("private budget");
+    assert_eq!(
+        (
+            private_budget.spent_proposals,
+            private_budget.spent_attempts
+        ),
+        (2, 2)
+    );
+    assert_eq!(
+        (
+            private_budget.remaining_proposals(),
+            private_budget.remaining_attempts()
+        ),
+        (0, 0)
+    );
+    assert_ne!(
+        cold.head("private-budget")
+            .expect("private head")
+            .snapshot_id(),
+        derived.new_snapshot
+    );
+    assert_eq!(
+        cold.budget_projection("budget").expect("source budget"),
+        budget
+    );
+    assert_eq!(
+        cold.head("budget").expect("source head").snapshot_id(),
+        admitted.new_snapshot
+    );
 }
 
 #[test]
