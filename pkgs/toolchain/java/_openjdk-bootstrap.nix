@@ -90,7 +90,7 @@
   # compilation rules when cross compiling. Keep those rules on the target
   # header set selected by configure.
   linuxLegacyX11CFlag =
-    if isLinuxArmCross && major >= 16 && major <= 17
+    if isLinuxCross && major >= 16 && major <= 17
     then " -I${xorg-stubs}/include"
     else "";
 
