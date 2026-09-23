@@ -14,6 +14,7 @@ use aos_sandbox::cache_residency::{
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};
+use sha2::{Digest as _, Sha256};
 
 use crate::cache_source_membership::{
     CacheCompiledSourceLimitsV1, CompiledCacheSourceMembershipErrorV1,
@@ -146,11 +147,32 @@ pub enum PublicCacheUnpinRecoveryErrorV1 {
     Protected(#[from] CacheResidencyProtectedJournalErrorV1),
 }
 
+/// Derives the stable protected release transaction for one exact logical pin.
+///
+/// A release tombstone retains the pin but not the public operation that first
+/// drained it. Binding transaction identity to the partition-local pin makes
+/// cold recovery possible after that operation or journal suffix is gone.
+/// The reserved all-zero journal identity is remapped deterministically.
+#[must_use]
+pub fn public_cache_unpin_transaction_id_v1(pin: &CachePinV1) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.cache.public-unpin-transaction.v1\0")
+        .chain_update(pin.partition().digest().as_bytes())
+        .chain_update(pin.id().as_bytes())
+        .finalize()
+        .into();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&digest[..16]);
+    if transaction_id == [0; 16] {
+        transaction_id[15] = 1;
+    }
+    transaction_id
+}
+
 /// Reconciles one released public pin after process restart or ambiguous effect.
 ///
-/// The caller supplies the durable transaction identity derived for this
-/// operation and pin. The exact release tombstone and current protected
-/// transaction must both agree before the physical owner can be changed.
+/// The exact release tombstone and its stable protected transaction must both
+/// agree before the physical owner can be changed.
 /// `Released` confirms this partition only; the public operation must also
 /// inspect every other retained or released partition obligation.
 ///
@@ -162,7 +184,6 @@ pub fn recover_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     consumer: &RecheckedCacheConsumerV1,
-    transaction_id: [u8; 16],
     pin: &CachePinV1,
 ) -> Result<PublicCacheUnpinRecoveryV1, PublicCacheUnpinRecoveryErrorV1> {
     if consumer.acquisition_fence().is_some() {
@@ -179,7 +200,7 @@ pub fn recover_public_cache_unpin_v1(
     }
 
     match protected.reconcile_current_pin_change(
-        transaction_id,
+        public_cache_unpin_transaction_id_v1(pin),
         CacheOwnerPinActionV1::Release,
         pin,
         physical,
@@ -318,7 +339,8 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
 ///
 /// The public request does not name a physical partition or pin ID. Its caller
 /// must find *every* retained partition pin for the consumer and object, then
-/// invoke this function for each with a distinct durable transaction identity.
+/// invoke this function for each. The exact pin derives a restart-stable
+/// transaction identity, including after its release tombstone is retained.
 /// A protected commit or physical settlement alone does not establish public
 /// completion; the caller must reconcile and observe each exact effect.
 ///
@@ -326,7 +348,6 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
 ///
 /// Returns an error when the pin is not the exact retained consumer obligation,
 /// the consumer changed at commit time, or protected authority is unavailable.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
@@ -334,11 +355,10 @@ pub fn execute_public_cache_unpin_v1(
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
-    transaction_id: [u8; 16],
     pin: &CachePinV1,
 ) -> Result<PublicCacheUnpinExecutionV1, CacheResidencyProtectedJournalErrorV1> {
     let (outcome, settlement) = protected.commit_public_logical_pin_release(
-        transaction_id,
+        public_cache_unpin_transaction_id_v1(pin),
         consumer,
         pin,
         operation,

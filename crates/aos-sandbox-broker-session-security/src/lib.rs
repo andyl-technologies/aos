@@ -86,7 +86,7 @@ pub use cache_public_pin::{
     PublicCacheUnpinExecutionV1, PublicCacheUnpinObservationErrorV1,
     PublicCacheUnpinRecoveryErrorV1, PublicCacheUnpinRecoveryV1, execute_public_cache_pin_v1,
     execute_public_cache_unpin_v1, observe_public_cache_unpin_completion_v1,
-    recover_public_cache_unpin_v1,
+    public_cache_unpin_transaction_id_v1, recover_public_cache_unpin_v1,
 };
 pub use cache_source_membership::{
     CacheCompiledSourceLimitsV1, CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
