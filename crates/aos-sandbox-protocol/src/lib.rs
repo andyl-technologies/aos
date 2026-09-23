@@ -47,7 +47,8 @@ pub use authenticated_session::{
     AuthenticatedNetworkInventoryResultV1,
 };
 pub use host_attach_gate::{
-    ValidatedHostAttachGateRequestV1, ValidatedHostAttachReadinessRequestV1,
+    HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES, ValidatedHostAttachGateRequestV1,
+    ValidatedHostAttachReadinessRequestV1,
     ValidatedHostAttachRouteQueryV1, decode_host_attach_gate_evidence_v1,
     decode_host_attach_gate_request_v1, decode_host_attach_readiness_request_v1,
     decode_host_attach_readiness_v1, decode_host_attach_route_evidence_v1,

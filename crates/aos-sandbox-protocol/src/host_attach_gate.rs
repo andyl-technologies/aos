@@ -23,7 +23,8 @@ use crate::{
     validate_request_header,
 };
 
-const MAXIMUM_REQUEST_BODY_BYTES: usize = 1024;
+/// Bounds the complete encoded Host gate-install request body.
+pub const HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES: usize = 1024;
 const MAXIMUM_RESPONSE_BODY_BYTES: usize = 8192;
 
 /// Carries an exact pending-grant packet from an authenticated controller peer.
@@ -212,7 +213,7 @@ pub fn decode_host_attach_gate_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHostAttachGateRequestV1, ProtocolValidationError> {
-    if bytes.len() > MAXIMUM_REQUEST_BODY_BYTES {
+    if bytes.len() > HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let request = InstallHostAttachGateRequestV1::decode_from_slice(bytes)

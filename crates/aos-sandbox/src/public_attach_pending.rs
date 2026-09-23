@@ -18,6 +18,7 @@ use aos_sandbox_core::{
     ProtocolId, ProtocolVersion, SandboxId,
 };
 use aos_sandbox_protocol::semantics::host_attach_gate::canonical_host_attach_gate_semantics_v1;
+use aos_sandbox_protocol::HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
@@ -350,6 +351,9 @@ pub(crate) fn prepare_public_attach_host_install_v1(
     if parent.assignment() != assignment || parent.node() != node {
         return Err(PublicAttachPendingErrorV1::Conflict);
     }
+    // The recovered template supplies current ownership and policy scope, not
+    // attenuation of its exact, unrelated method grant. The independent
+    // controller plan signer authorizes this per-operation Host verb.
     let expires = now_seconds
         .checked_add(30)
         .map(|limit| {
@@ -364,7 +368,8 @@ pub(crate) fn prepare_public_attach_host_install_v1(
         semantics.verb(),
         semantics.target(),
         semantics.commitment(),
-        64 * 1024,
+        u32::try_from(HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES)
+            .map_err(|_| PublicAttachPendingErrorV1::Conflict)?,
         0,
     )
     .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;

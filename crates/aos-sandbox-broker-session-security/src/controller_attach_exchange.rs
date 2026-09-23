@@ -139,9 +139,13 @@ impl ControllerHostAttachGateExchangeV1 {
                 EffectFailure::Retryable("current attach Host authorization is absent".to_owned())
             })?;
             let preparation = session
-                .prepare_authenticated_request(
+                .prepare_authenticated_request_checked(
                     BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
                     |coordinates| intent.envelope(coordinates, authorization),
+                    |request| {
+                        request.exact_body().len()
+                            <= aos_sandbox_protocol::HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES
+                    },
                 )
                 .map_err(|_| {
                     self.failed = true;
