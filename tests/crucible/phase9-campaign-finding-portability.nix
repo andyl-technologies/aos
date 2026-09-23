@@ -48,17 +48,18 @@ in
           fi
 
           target="$TMPDIR/crucible-campaign-finding-portability-target"
-          run_exact_integration_test() {
+          run_exact_test() {
             package=$1
-            test_target=$2
-            selector=$3
+            target_kind=$2
+            test_target=$3
+            selector=$4
             listing=$(cargo test \
               --frozen \
               --offline \
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p "$package" \
-              --test "$test_target" \
+              "$target_kind" "$test_target" \
               "$selector" \
               -- --exact --list)
             printf '%s\n' "$listing" | grep -Fqx "$selector: test"
@@ -69,7 +70,7 @@ in
               --target-dir "$target" \
               --manifest-path crates/Cargo.toml \
               -p "$package" \
-              --test "$test_target" \
+              "$target_kind" "$test_target" \
               "$selector" \
               -- --exact --test-threads=1 2>&1)
             printf '%s\n' "$output"
@@ -77,14 +78,21 @@ in
               | grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;'
           }
 
-          run_exact_integration_test \
+          run_exact_test \
             crucible-campaign \
+            --test \
             gate_campaign_replay \
             strict_campaign_planner_reproduces_every_accepted_step
-          run_exact_integration_test \
+          run_exact_test \
             crucible \
+            --test \
             gate_campaign_replay \
             offline_rich_finding_replays_without_campaign_store
+          run_exact_test \
+            crucible-cli \
+            --bin \
+            crucible \
+            tests::verify_dispatch::finding_export::campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering
 
           test "$(sed -n '1p' ${packagedReplay}/result)" = PASS
           test "$(grep -Fxc 'gate=gate:campaign-replay' ${packagedReplay}/result || true)" -eq 1
@@ -105,7 +113,8 @@ in
           no_campaign_daemon=true
           no_shared_store=true
           production_qemu_capture_replay=${packagedReplay}
-          finding_self_contained=true
+          finding_native_evidence_self_contained=true
+          fresh_process_bundle_verification=true
           RESULT
         '';
       }

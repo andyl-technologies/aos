@@ -4,7 +4,7 @@ use super::*;
 
 use serde::Serialize;
 
-const CAMPAIGN_REPLAY_REPORT_SCHEMA: &str = "crucible.cli.campaign-replay.v1";
+const CAMPAIGN_REPLAY_REPORT_SCHEMA: &str = "crucible.cli.campaign-replay.v2";
 
 #[derive(Serialize)]
 pub(super) struct CampaignReplayReport {
@@ -18,7 +18,7 @@ pub(super) struct CampaignReplayReport {
     artifact: String,
     scenario: String,
     configuration: String,
-    replayed_configuration: String,
+    replayed_state: String,
     authenticated: bool,
 }
 
@@ -81,6 +81,21 @@ where
         }
     };
 
+    replay_finding_object(&campaign, snapshot, finding, args.minimized, reproduction)
+}
+
+/// Replays one authenticated reproduction and constructs its CLI report.
+///
+/// # Errors
+///
+/// Returns an error when the stored payload or replayed semantic binding is invalid.
+pub(super) fn replay_finding_object(
+    campaign: &crucible_campaign::CampaignName,
+    snapshot: crucible_campaign::CampaignSnapshotId,
+    finding: crucible_campaign::FindingId,
+    minimized: bool,
+    reproduction: &crucible_campaign::ReproductionArtifact,
+) -> Result<CampaignReplayReport, CliError> {
     let replayed = authenticate_and_replay(reproduction)?;
     let reproduction_id = reproduction.id().map_err(|error| {
         backend_error(format!(
@@ -95,11 +110,11 @@ where
         snapshot: snapshot.to_string(),
         finding: finding.to_string(),
         reproduction: reproduction_id.to_string(),
-        minimized: args.minimized,
+        minimized,
         artifact: replayed.artifact,
         scenario: replayed.scenario,
         configuration: replayed.configuration,
-        replayed_configuration: replayed.replayed_configuration,
+        replayed_state: replayed.replayed_state,
         authenticated: true,
     })
 }
@@ -108,7 +123,7 @@ struct AuthenticatedCampaignReplay {
     artifact: String,
     scenario: String,
     configuration: String,
-    replayed_configuration: String,
+    replayed_state: String,
 }
 
 fn authenticate_and_replay(
@@ -130,9 +145,14 @@ fn authenticate_and_replay(
         .map_err(|error| backend_error(format!("campaign reproduction replay failed: {error}")))?;
     let scenario = artifact.scenario_form().id().to_hex();
     let configuration = reproduction.configuration().to_hex();
-    let replayed_configuration = replay.state.to_hex();
+    let reproduced_configuration = crucible::Configuration {
+        def: artifact.scenario_def(),
+        schedule: artifact.schedule().clone(),
+    }
+    .id()
+    .to_hex();
     if scenario != reproduction.scenario().to_hex()
-        || replayed_configuration != configuration
+        || reproduced_configuration != configuration
         || artifact.id().to_hex()
             != crucible::ContentHash::from_bytes(reproduction.payload()).to_hex()
     {
@@ -145,7 +165,7 @@ fn authenticate_and_replay(
         artifact: artifact.id().to_hex(),
         scenario,
         configuration,
-        replayed_configuration,
+        replayed_state: replay.state.to_hex(),
     })
 }
 
@@ -157,7 +177,7 @@ pub(super) fn render_campaign_replay(
         OutputFormat::Json | OutputFormat::Jsonl => serde_json::to_string(report)
             .map_err(|error| backend_error(format!("campaign replay encoding failed: {error}"))),
         OutputFormat::Table => Ok(format!(
-            "campaign={} snapshot={} finding={} reproduction={} minimized={} artifact={} scenario={} configuration={} replayed-configuration={} authenticated={}",
+            "campaign={} snapshot={} finding={} reproduction={} minimized={} artifact={} scenario={} configuration={} replayed-state={} authenticated={}",
             report.campaign,
             report.snapshot,
             report.finding,
@@ -166,11 +186,11 @@ pub(super) fn render_campaign_replay(
             report.artifact,
             report.scenario,
             report.configuration,
-            report.replayed_configuration,
+            report.replayed_state,
             report.authenticated,
         )),
         OutputFormat::Markdown => Ok(format!(
-            "| Field | Value |\n| --- | --- |\n| campaign | `{}` |\n| snapshot | `{}` |\n| finding | `{}` |\n| reproduction | `{}` |\n| minimized | {} |\n| artifact | `{}` |\n| scenario | `{}` |\n| configuration | `{}` |\n| replayed configuration | `{}` |\n| authenticated | {} |",
+            "| Field | Value |\n| --- | --- |\n| campaign | `{}` |\n| snapshot | `{}` |\n| finding | `{}` |\n| reproduction | `{}` |\n| minimized | {} |\n| artifact | `{}` |\n| scenario | `{}` |\n| configuration | `{}` |\n| replayed state | `{}` |\n| authenticated | {} |",
             report.campaign,
             report.snapshot,
             report.finding,
@@ -179,7 +199,7 @@ pub(super) fn render_campaign_replay(
             report.artifact,
             report.scenario,
             report.configuration,
-            report.replayed_configuration,
+            report.replayed_state,
             report.authenticated,
         )),
     }
@@ -203,7 +223,12 @@ mod tests {
             crucible::ReproductionArtifact::capture(&scenario, &crucible::Schedule::empty())?;
         let replay = artifact.replay()?;
         let scenario_id = crucible_campaign::ScenarioDefId::parse(&scenario.id().to_hex())?;
-        let configuration_id = crucible_campaign::ConfigurationId::parse(&replay.state.to_hex())?;
+        let configuration = crucible::Configuration {
+            def: artifact.scenario_def(),
+            schedule: artifact.schedule().clone(),
+        };
+        let configuration_id =
+            crucible_campaign::ConfigurationId::parse(&configuration.id().to_hex())?;
         let reproduction = crucible_campaign::ReproductionArtifact::new(
             crucible_campaign::ReproductionArtifactBasis::new(
                 scenario_id,
@@ -235,7 +260,8 @@ mod tests {
 
         let authenticated = authenticate_and_replay(&reproduction)?;
         assert_eq!(authenticated.artifact, artifact.id().to_hex());
-        assert_eq!(authenticated.configuration, replay.state.to_hex());
+        assert_eq!(authenticated.configuration, configuration.id().to_hex());
+        assert_eq!(authenticated.replayed_state, replay.state.to_hex());
 
         let mismatched = crucible_campaign::ReproductionArtifact::new(
             crucible_campaign::ReproductionArtifactBasis::new(
