@@ -373,6 +373,22 @@ fn harness_lint_ignores_comments_and_strings() {
 }
 
 #[test]
+fn binary_entry_modules_share_the_process_error_boundary() {
+    let package_dir = Path::new("crucible-debug-gateway");
+
+    assert!(is_binary_boundary_source(
+        "crucible-debug-gateway",
+        package_dir,
+        &package_dir.join("src/main/operator_relay.rs"),
+    ));
+    assert!(!is_binary_boundary_source(
+        "crucible-debug-gateway",
+        package_dir,
+        &package_dir.join("src/lib.rs"),
+    ));
+}
+
+#[test]
 fn harness_lint_rejects_error_and_logging_drift() {
     let library_findings = error_logging_failures(
         Path::new("crucible-sim/src/lib.rs"),

@@ -56,6 +56,7 @@ const REQUIRED_CLAIM_GATES: &[&str] = &[
     "gate:campaign-mutation-scaling",
     "gate:campaign-rfc-traceability",
     "gate:campaign-exact-maintenance-transfer",
+    "gate:campaign-policy-timeout-real-qemu",
     "gate:campaign-finding-exact-read-only",
     "gate:campaign-finding-signal-bundle",
 ];
