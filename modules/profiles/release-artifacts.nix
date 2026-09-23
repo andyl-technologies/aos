@@ -7,9 +7,11 @@
 {
   config,
   lib,
+  options,
   ...
 }: let
   cfg = config.aos.release;
+  sshBannerAvailable = builtins.hasAttr "banner" (lib.submoduleOptions options.aos.services.type._elementType ["aos" "services" "ssh"]);
   registryRenderer = import ../base/_apm-registry-renderer.nix {inherit lib;};
   registry = {
     url = cfg.url;
@@ -137,7 +139,7 @@ in {
       "issue.net" = lib.mkIf (cfg.warning != "") {text = cfg.warning;};
     };
 
-    aos.services.ssh.banner = lib.mkIf (cfg.warning != "") "/etc/issue.net";
+    aos.services.ssh.banner = lib.mkIf (cfg.warning != "" && sshBannerAvailable) "/etc/issue.net";
 
     aos.containers.definitions.aos = {
       filesystem.files =
