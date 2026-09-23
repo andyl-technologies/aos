@@ -3,14 +3,13 @@
 use std::collections::VecDeque;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible::{
-    CheckpointKind, ContentHash, EventLogCoverageObservation, ExecutionHorizon, GdbListen, NodeId,
+    CheckpointKind, ContentHash, EventLogCoverageObservation, ExecutionHorizon, NodeId,
     event_log_coverage_projection,
 };
 use crucible_shmem::{

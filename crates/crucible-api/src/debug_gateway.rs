@@ -832,6 +832,7 @@ impl DebugGatewayClientError {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::os::unix::net::UnixListener;
     use std::thread;

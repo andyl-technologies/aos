@@ -1,5 +1,7 @@
 //! Exact-checkpoint, attempt-boundary, and debug-policy quantum-loop tests.
 
+#![allow(clippy::expect_used)]
+
 use super::*;
 use crucible::SchedulerOperationalFailureClass;
 
