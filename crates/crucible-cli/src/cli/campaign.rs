@@ -15,6 +15,8 @@ mod authoring;
 mod configuration;
 #[path = "campaign/explain.rs"]
 mod explain;
+#[path = "campaign/finding_bundle.rs"]
+pub(crate) mod finding_bundle;
 #[path = "campaign/fixture.rs"]
 mod fixture;
 #[path = "campaign/lineage.rs"]
@@ -48,6 +50,7 @@ use explain::{
     validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
+use finding_bundle::{export_finding_bundle, verify_exported_finding};
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use lineage::{compile_campaign_lineage, render_campaign_lineage_compilation};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
@@ -451,6 +454,13 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         println!("{}", run_campaign_archive(archive, cli.output_format())?);
         return Ok(());
     }
+    if let CampaignCommand::FindingBundle(CampaignFindingBundleArgs {
+        command: CampaignFindingBundleCommand::Verify(verify),
+    }) = &args.command
+    {
+        println!("{}", verify_exported_finding(verify, cli.output_format())?);
+        return Ok(());
+    }
 
     let socket = args
         .socket
@@ -711,6 +721,16 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_replay(&client, principal, &args.command)?;
             render_campaign_replay(&report, cli.output_format())?
         }
+        CampaignCommand::FindingBundle(CampaignFindingBundleArgs {
+            command: CampaignFindingBundleCommand::Export(export),
+        }) => export_finding_bundle(&client, principal, export, cli.output_format())?,
+        CampaignCommand::FindingBundle(CampaignFindingBundleArgs {
+            command: CampaignFindingBundleCommand::Verify(_),
+        }) => {
+            return Err(backend_error(
+                "offline finding bundle verification reached connected campaign dispatch",
+            ));
+        }
         CampaignCommand::Debug(_) => {
             return Err(backend_error(
                 "campaign debug allocation reached semantic campaign dispatch",
@@ -751,6 +771,18 @@ fn prepare_campaign_command(
         CampaignCommand::Policy(_) => Ok(None),
         CampaignCommand::Lineage(_) => Ok(None),
         CampaignCommand::Archive(_) => Ok(None),
+        CampaignCommand::FindingBundle(bundle) => {
+            if let CampaignFindingBundleCommand::Export(export) = &bundle.command {
+                campaign_name(&export.name)?;
+                CampaignSnapshotId::parse(&export.snapshot).map_err(|error| {
+                    usage_error(format!("invalid finding bundle snapshot: {error}"))
+                })?;
+                crucible_campaign::FindingId::parse(&export.finding).map_err(|error| {
+                    usage_error(format!("invalid finding bundle finding: {error}"))
+                })?;
+            }
+            Ok(None)
+        }
         CampaignCommand::Create(create) => {
             let campaign = campaign_name(&create.name)?;
             let lineage = CampaignLineage::from_canonical_bytes(&read_campaign_record(
@@ -2536,6 +2568,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::Findings(_)
         | CampaignCommand::FrontierObject(_)
         | CampaignCommand::Replay(_)
+        | CampaignCommand::FindingBundle(_)
         | CampaignCommand::Triage(_)
         | CampaignCommand::Debug(_)
         | CampaignCommand::Pin(_)

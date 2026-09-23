@@ -373,6 +373,8 @@ enum CampaignCommand {
     FrontierObject(CampaignFrontierObjectArgs),
     /// Replay one authenticated finding reproduction through its pure oracle.
     Replay(CampaignReplayArgs),
+    /// Export or verify one authenticated finding and its native replay evidence.
+    FindingBundle(CampaignFindingBundleArgs),
     /// Project and minimize the authenticated findings retained by one snapshot.
     Triage(CampaignTriageArgs),
     /// Open an authenticated retained finding checkpoint in the debug relay.
@@ -409,6 +411,46 @@ struct CampaignReplayArgs {
     #[arg(long, value_name = "FINDING", required = true)]
     finding: String,
     /// Replay the authenticated minimized reproduction when present.
+    #[arg(long, action = ArgAction::SetTrue)]
+    minimized: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleArgs {
+    #[command(subcommand)]
+    command: CampaignFindingBundleCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignFindingBundleCommand {
+    /// Export one finding's authenticated triage evidence to a new directory.
+    Export(CampaignFindingBundleExportArgs),
+    /// Verify native signature evidence and replay the pure model without a service.
+    Verify(CampaignFindingBundleVerifyArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleExportArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact authenticated campaign snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding identity retained by the snapshot.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+    /// New directory for the portable finding bundle.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleVerifyArgs {
+    /// Exported finding bundle directory.
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Replay the authenticated minimized model reproduction when present.
     #[arg(long, action = ArgAction::SetTrue)]
     minimized: bool,
 }
