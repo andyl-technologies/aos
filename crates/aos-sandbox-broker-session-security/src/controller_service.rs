@@ -1018,7 +1018,7 @@ fn run_controller_cycle(
     guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
     guest_root_signer: Option<&ControllerBrokerPlanSignerV1>,
 ) -> Result<CatalogStatus, CycleFailure> {
-    {
+    let pending_snapshot = {
         let mut sessions = sessions
             .lock()
             .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
@@ -1036,6 +1036,31 @@ fn run_controller_cycle(
         }
         if cold_start {
             audit_pending_atomic_snapshot_sources(controller, &mut sessions, true)?;
+            let pending = controller
+                .pending_atomic_snapshot_sources()
+                .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+            if pending.len() > 1 {
+                return Err(CycleFailure::Fatal(
+                    "multiple Storage snapshot sources are pending".to_owned(),
+                ));
+            }
+            pending.first().map(|(operation, _)| *operation)
+        } else {
+            None
+        }
+    };
+    if let Some(operation) = pending_snapshot {
+        controller
+            .reconcile_operation_once(operation)
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+        if !controller
+            .pending_atomic_snapshot_sources()
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?
+            .is_empty()
+        {
+            return Err(CycleFailure::Retryable(
+                "original Storage snapshot source awaits terminal recovery".to_owned(),
+            ));
         }
     }
     let mut state = (controller, sessions);

@@ -5672,6 +5672,25 @@ where
         Ok(ControllerQuantumReport { steps, idle })
     }
 
+    /// Advances one selected operation before general fair reconciliation.
+    ///
+    /// The production controller uses this only for a protected pending
+    /// Storage snapshot source. Its original group must reach terminal source
+    /// custody before unrelated Storage mutations can change the post-head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the selected operation or its durable ledger cannot
+    /// be reconciled.
+    pub fn reconcile_operation_once(
+        &mut self,
+        operation_id: OperationId,
+    ) -> Result<ReconcileOutcome, ControllerServiceError> {
+        self.reconciler
+            .reconcile_once(operation_id)
+            .map_err(ControllerServiceError::Reconciler)
+    }
+
     /// Advances one bounded quantum under a paired controller clock sample.
     ///
     /// The sample is used only for public observation timestamps. Authority
@@ -6553,6 +6572,32 @@ mod tests {
             report.steps()[1].operation_id(),
             OperationId::from_bytes([2; 16])
         );
+    }
+
+    #[test]
+    fn selected_operation_advances_before_fair_quantum() {
+        let directory = TestDirectory::new();
+        let limits = NodeControllerLimits::new(8, 4, 2).unwrap();
+        let mut controller = controller(&directory.journal(), Executor::default(), limits);
+        controller.admit(&[1]).unwrap();
+        controller.admit(&[2]).unwrap();
+
+        assert_eq!(
+            controller
+                .reconcile_operation_once(OperationId::from_bytes([2; 16]))
+                .unwrap(),
+            ReconcileOutcome::Progressed
+        );
+        let report = controller.reconcile_quantum().unwrap();
+        assert_eq!(
+            report.steps()[0].operation_id(),
+            OperationId::from_bytes([1; 16])
+        );
+        assert_eq!(
+            report.steps()[1].operation_id(),
+            OperationId::from_bytes([2; 16])
+        );
+        assert_eq!(report.steps()[1].outcome(), ReconcileOutcome::EffectApplied);
     }
 
     #[test]
