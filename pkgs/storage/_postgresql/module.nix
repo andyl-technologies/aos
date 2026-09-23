@@ -459,75 +459,62 @@
       else cfg.replication.slot
     )
   ];
-  initService = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = commonHardening;
-      })
-    ];
-    inherit serviceTypes;
+  initService = {
+    policy.hardening = commonHardening;
     consumerInstance = "postgresql";
-    declaration = {
-      service = "initialize";
-      enabled = true;
-      lifecycle = {
-        description = "Initialize PostgreSQL database state";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command prepareArguments)];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [(resultOf "network-readiness" "resource")];
-        before = [];
-        requires = [];
-        wants = [(resultOf "network-readiness" "resource")];
-      };
-      supervision = {
-        startup_protocol = "process";
-        notification_access = "none";
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      credentials.views = lib.optional (initializationCredentialReference != null) {
-        name = initializationCredential;
-        encrypted = initializationCredentialReference.encrypted;
-        reference = initializationCredentialPath;
-        optional = false;
-      };
-      configuration.views = [
-        {
-          name = "server";
-          source = serverConfigurationPath;
-          optional = false;
-        }
-      ];
-      environment = {
-        variables = {};
-        search_path = runtimeSearchPath;
-      };
-      storage = commonStorage;
-      identity = commonIdentity;
-      isolation = commonIsolation;
+    service = "initialize";
+    lifecycle = {
+      description = "Initialize PostgreSQL database state";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command prepareArguments)];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
+    dependencies = {
+      after = [(resultOf "network-readiness" "resource")];
+      before = [];
+      requires = [];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "process";
+      notification_access = "none";
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    credentials.views = lib.optional (initializationCredentialReference != null) {
+      name = initializationCredential;
+      encrypted = initializationCredentialReference.encrypted;
+      reference = initializationCredentialPath;
+      optional = false;
+    };
+    configuration.views = [
+      {
+        name = "server";
+        source = serverConfigurationPath;
+        optional = false;
+      }
+    ];
+    environment = {
+      variables = {};
+      search_path = runtimeSearchPath;
+    };
+    storage = commonStorage;
+    identity = commonIdentity;
+    isolation = commonIsolation;
   };
   mainCredentialNames =
     lib.optional (
@@ -545,118 +532,103 @@
       value = credential;
     })
     configuredCredentials);
-  mainService = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = commonHardening;
-      })
-    ];
-    inherit serviceTypes;
+  mainService = {
+    policy.hardening = commonHardening;
     consumerInstance = "postgresql";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle = {
-        description = "PostgreSQL database server";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command ["run" statePlannedPath serverConfigurationPath])];
-        post_start = [];
-        stop = [(command ["stop" statePlannedPath])];
-        post_stop = [];
-        restart = "on-failure";
-        restart_token = cfg.restartToken;
-        restart_delay_millis = 2000;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [
-          (resultOf "initialize-lifecycle" "resource")
-          (resultOf "network-readiness" "resource")
-        ];
-        before = [];
-        requires = [(resultOf "initialize-lifecycle" "resource")];
-        wants = [(resultOf "network-readiness" "resource")];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "all-processes";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "all-processes";
-        timeout_millis = 90000;
-      };
-      reload = {
-        strategy = "command";
-        commands = [(command ["reload" statePlannedPath serverConfigurationPath])];
-        completion = "command-exit";
-      };
-      credentials =
-        if mainCredentialNames == []
-        then null
-        else {
-          views =
-            builtins.map (name: let
-              credential = credentialsByName.${name};
-            in {
-              inherit name;
-              inherit (credential.reference) encrypted;
-              reference = credentialPath name;
-              optional = false;
-            })
-            mainCredentialNames;
-        };
-      configuration.views = [
-        {
-          name = "server";
-          source = serverConfigurationPath;
-          optional = false;
-        }
-        {
-          name = "host-authentication";
-          source = hbaConfigurationPath;
-          optional = false;
-        }
+    service = "main";
+    lifecycle = {
+      description = "PostgreSQL database server";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command ["run" statePlannedPath serverConfigurationPath])];
+      post_start = [];
+      stop = [(command ["stop" statePlannedPath])];
+      post_stop = [];
+      restart = "on-failure";
+      restart_token = cfg.restartToken;
+      restart_delay_millis = 2000;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "initialize-lifecycle" "resource")
+        (resultOf "network-readiness" "resource")
       ];
-      environment = {
-        variables = {};
-        search_path = runtimeSearchPath;
+      before = [];
+      requires = [(resultOf "initialize-lifecycle" "resource")];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "all-processes";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "all-processes";
+      timeout_millis = 90000;
+    };
+    reload = {
+      strategy = "command";
+      commands = [(command ["reload" statePlannedPath serverConfigurationPath])];
+      completion = "command-exit";
+    };
+    credentials =
+      if mainCredentialNames == []
+      then null
+      else {
+        views =
+          builtins.map (name: let
+            credential = credentialsByName.${name};
+          in {
+            inherit name;
+            inherit (credential.reference) encrypted;
+            reference = credentialPath name;
+            optional = false;
+          })
+          mainCredentialNames;
       };
-      storage = commonStorage;
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = commonIdentity;
-      isolation = commonIsolation;
-      resources.open_files = {
-        kind = "maximum";
-        value = 1048576;
-      };
+    configuration.views = [
+      {
+        name = "server";
+        source = serverConfigurationPath;
+        optional = false;
+      }
+      {
+        name = "host-authentication";
+        source = hbaConfigurationPath;
+        optional = false;
+      }
+    ];
+    environment = {
+      variables = {};
+      search_path = runtimeSearchPath;
+    };
+    storage = commonStorage;
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = commonIdentity;
+    isolation = commonIsolation;
+    resources.open_files = {
+      kind = "maximum";
+      value = 1048576;
     };
   };
-  potentialFragments = [
+  producers = [
     storage
     runtimeStorage
     networkReadiness
     credentialRequests
     hbaConfiguration
     serverConfiguration
-    initService
-    mainService
   ];
 in {
   options.postgresql = {
@@ -827,9 +799,10 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).declarations)
-        potentialFragments);
+      aos.services = {
+        "postgresql.initialize" = initService // {enable = cfg.enable;};
+        "postgresql.main" = mainService // {enable = cfg.enable;};
+      };
       assertions = [
         {
           assertion = !cfg.enable || (cfg.listen.addresses != [] && builtins.length cfg.listen.addresses == builtins.length (lib.unique cfg.listen.addresses));
@@ -927,13 +900,9 @@ in {
         }
       ];
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.postgresql = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        potentialFragments
-      );
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
     })
   ];
 }

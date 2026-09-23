@@ -118,6 +118,9 @@ in
   assert !assertionsHold reservedSetting;
   assert postgresqlInstances disabled == {};
   assert postgresqlRequests disabled == {};
+  assert !disabled.config.aos.services."postgresql.main".enable;
+  assert standalone.config.aos.services."postgresql.initialize".enable;
+  assert standalone.config.aos.services."postgresql.main".enable;
   assert builtins.elem "postgresql:initialize-lifecycle" standaloneRequests;
   assert builtins.elem "postgresql:main-lifecycle" standaloneRequests;
   assert builtins.elem "postgresql:credential-bootstrap-superuser-password" standaloneRequests;
