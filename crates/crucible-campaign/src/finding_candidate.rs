@@ -411,7 +411,7 @@ impl FindingCandidateBundle {
         )
     }
 
-    /// Builds a version-six candidate with independently verifiable selection evidence.
+    /// Builds a current candidate with independently verifiable selection evidence.
     ///
     /// # Errors
     ///
@@ -600,7 +600,7 @@ impl FindingCandidateBundle {
         self.exact_retention
     }
 
-    /// Returns independently verifiable selector evidence for a version-six bundle.
+    /// Returns independently verifiable selector evidence for a current bundle.
     #[must_use]
     pub const fn exact_retention_evidence(&self) -> Option<&FindingExactRetentionEvidence> {
         self.exact_retention_evidence.as_ref()
