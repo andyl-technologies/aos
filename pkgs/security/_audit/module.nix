@@ -137,118 +137,105 @@
       }
     ];
   };
-  daemonService = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "auditd";
-      enabled = true;
-      lifecycle = {
-        description = "Linux Audit Daemon";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command "sbin/auditd" ["-n"])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 5000;
-        configuration_change_action = "reload";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [];
-        before = [];
-        requires = [];
-        wants = [];
-        prerequisites = [(retainedBy "auditd-configuration-file")];
-      };
-      reload = {
-        strategy = "signal";
-        commands = [];
-        signal = "HUP";
-        completion = "command-exit";
-      };
-      directories.managed = [
-        {
-          path = "audit";
-          purpose = "logs";
-          mode = "0700";
-          retention = "persistent";
-          owner = "root";
-          group = "root";
-        }
+  daemonService = {
+    lifecycle = {
+      description = "Linux Audit Daemon";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command "sbin/auditd" ["-n"])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 5000;
+      configuration_change_action = "reload";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+      prerequisites = [(retainedBy "auditd-configuration-file")];
+    };
+    reload = {
+      strategy = "signal";
+      commands = [];
+      signal = "HUP";
+      completion = "command-exit";
+    };
+    directories.managed = [
+      {
+        path = "audit";
+        purpose = "logs";
+        mode = "0700";
+        retention = "persistent";
+        owner = "root";
+        group = "root";
+      }
+    ];
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
+    };
+  };
+  rulesService = {
+    lifecycle = {
+      description = "Load Audit Rules";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command "libexec/aos-audit-rules" ["/etc/audit/audit.rules"])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+      prerequisites = [
+        (retainedBy "audit-rules-file")
+        (resultOf "auditd" "resource")
       ];
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = true;
-      };
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
     };
   };
-  rulesService = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "audit-rules";
-      enabled = true;
-      lifecycle = {
-        description = "Load Audit Rules";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command "libexec/aos-audit-rules" ["/etc/audit/audit.rules"])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [];
-        before = [];
-        requires = [];
-        wants = [];
-        prerequisites = [
-          (retainedBy "audit-rules-file")
-          (resultOf "auditd" "resource")
-        ];
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = true;
-      };
-    };
-  };
-  fragments = [
+  producers = [
     localFilesystems
     rulesConfiguration
     daemonConfiguration
     configurationFiles
-    daemonService
-    rulesService
   ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.security.audit = {
     enable = lib.mkOption {
@@ -301,29 +288,28 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);
+      aos.services = {
+        "audit.auditd" = daemonService // {enable = cfg.enable;};
+        "audit.audit-rules" = rulesService // {enable = cfg.enable;};
+      };
     }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [
-          {instances.${consumerInstance} = {};}
+      aos.abilities.runtimeChecks.audit = {
+        description = "Audit policy checks";
+        checks = [
           {
-            runtimeChecks.audit = {
-              description = "Audit policy checks";
-              checks = [
-                {
-                  name = "audit-rules";
-                  description = "Audit rules file exists";
-                  script = ''
-                    vm.succeed("test -f /etc/audit/audit.rules")
-                  '';
-                }
-              ];
-            };
+            name = "audit-rules";
+            description = "Audit rules file exists";
+            script = ''
+              vm.succeed("test -f /etc/audit/audit.rules")
+            '';
           }
-        ]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
+        ];
+      };
       aos.kernel.commandLineParts.audit = ["audit=1"];
     })
   ];
