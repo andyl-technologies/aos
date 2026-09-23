@@ -5,56 +5,57 @@
 # New or grown sections above 1000 lines use:
 # shape-review|path|sha256:digest|implementation-or-tests|section-lines|responsibilities|cohesion
 # The whole-file digest and role-specific count make every review invalid after
-# source changes. Sections above 1500 lines require a file-specific cohesion
+# source changes. Paths with a content-bound review need no legacy cap.
+# Sections above 1500 lines require a file-specific cohesion
 # rationale; smaller reviewed sections use `threshold-not-reached`.
 shape-review|crates/crucible-api/src/client.rs|sha256:3ea41773a0ce2ac530c0ba4690604120254f8d218ef6ba99667d4cdfe22efd90|implementation|2564|Transport-neutral control clients, lifecycle RPC request dispatch, and canonical response decoding.|In-process and HTTP/2 clients, request encoding, framed stream intake, and response and error decoding implement one shared control-client wire contract.
 shape-review|crates/crucible-api/src/lifecycle.rs|sha256:b99ee3daa591b790c9cc9270e4263d526a1efc7a736af76bbc4b9cfc38fed7a4|implementation|2341|Typed lifecycle requests, session ownership, replay-closure admission, and runtime actor control.|Request schemas, lifecycle errors, session registry state, replay-closure validation, and actor startup enforce one lifecycle control-plane contract.
 shape-review|crates/crucible-api/src/lifecycle/session_contract.rs|sha256:ffc090921fae11724ed91838193cde96248b5e6e8d8170a628a949fb7b67e6c7|implementation|1026|Lifecycle API request validation, session lookup, command dispatch, and reproduction retrieval.|threshold-not-reached
-shape-review|crates/crucible-api/src/server.rs|sha256:74beb36c37dbb27eaac1cdfe67b1488ad67ff3b30feb7a8d3c9894d82eaa7e11|implementation|2143|HTTP/2 lifecycle and debug transport, bounded request parsing, and streaming dispatch.|Connection service, RPC dispatch, bounded wire parsing, streaming body routing, and error encoding implement one lifecycle HTTP/2 protocol boundary.
+shape-review|crates/crucible-api/src/server.rs|sha256:f5cca2f58f659e540296145808e2f26870419762ae90c2cd5f2428167c9a7b67|implementation|2142|HTTP/2 lifecycle and debug transport, bounded request parsing, and streaming dispatch.|Connection service, RPC dispatch, bounded wire parsing, streaming body routing, and error encoding implement one lifecycle HTTP/2 protocol boundary.
 shape-review|crates/crucible-api/src/streaming.rs|sha256:c2ebc257fa2dd6e18968d3bca6644765b155cc2ef0ec2ed2221e6b5dae2718c8|implementation|1258|Public streaming command, state, watch, and send protocol across HTTP/2 and in-process transports.|threshold-not-reached
-shape-review|crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs|sha256:32b2fbebe027e7e85c53900cc8c6c4dff84e290b7322a8d57672ad9ef4afc162|tests|1783|Unit tests for durable exact-checkpoint closure storage.|Closure encoding, durable publication, recovery, and rejection cases share one exact-checkpoint storage fixture.
-shape-review|crates/crucible-api/src/vm_lifecycle/construction.rs|sha256:785c9f786c6058ed47a611caa962bcba81a91a4557b93139425a3f3325dee98a|implementation|1322|Ordered production lifecycle assembly and rollback-safe owner admission.|threshold-not-reached
-shape-review|crates/crucible-api/src/vm_lifecycle/hot_fork.rs|sha256:3806fca1ab2db380b579f16cc0f1ded5a4ba70a30f5f98d120dfd349ba1ebcf7|implementation|1588|Process-neutral production-world continuation for QEMU hot fork.|Source ownership, continuation capture, concurrent source loans, rollback, and test support enforce one atomic production-world hot-fork boundary.
+shape-review|crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs|sha256:bb6f70c5b8eca455f78736a89ce4cf8e7ca882e9476f1e245234cde89c57adde|tests|1783|Unit tests for durable exact-checkpoint closure storage.|Closure encoding, durable publication, recovery, and rejection cases share one exact-checkpoint storage fixture.
+shape-review|crates/crucible-api/src/vm_lifecycle/construction.rs|sha256:a2c9213b71a1ffdcb90c0477026c944c455985f7d1c75573c8a77629b84a1007|implementation|1317|Ordered production lifecycle assembly and rollback-safe owner admission.|threshold-not-reached
+shape-review|crates/crucible-api/src/vm_lifecycle/hot_fork.rs|sha256:7b29fb30289185da468e4348675d7baee5c13063f173926b2a528fe849baa50f|implementation|1589|Process-neutral production-world continuation for QEMU hot fork.|Source ownership, continuation capture, concurrent source loans, rollback, and test support enforce one atomic production-world hot-fork boundary.
 shape-review|crates/crucible-api/src/vm_lifecycle/network_faults/tests.rs|sha256:ff9e4e26e0023b250ff93abef3bd108609f93282d9b77d4089f288a9394177c0|tests|1183|Tests for production network-fault runtime behavior.|threshold-not-reached
-shape-review|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|sha256:2864cdd441f5c6edb0f491fdd55c81b0d2326c6dbccdec18c2a20d0e5ef93326|implementation|2551|`QuantumLoop` delegation for the production VM lifecycle.|Scheduler advance, selectable control, fault settlement, checkpointing, and shutdown delegate through one production lifecycle loop.
-shape-review|crates/crucible-api/src/vm_lifecycle/runtime.rs|sha256:7fc255e9edc32d0c06fe06b1f2965103e71c3af25424b2e86bf1569e68ca37ad|implementation|1175|Runtime observation and trigger settlement for production VM lifecycles.|threshold-not-reached
-shape-review|crates/crucible-api/src/vm_lifecycle/runtime/tests.rs|sha256:47ead436fd13fd95333f8b6d0324643242591c80a7063f35702f85e9d36fcdf2|tests|2090|Production runtime evidence and initial-boundary regression tests.|Initial-boundary, observation, trigger, and terminal-evidence cases exercise one production runtime state transition model.
+shape-review|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|sha256:a1533d98441f8b7dbe943e361a05f7b19d3cd4cfbe33bcb4d98863edcd0c71d7|implementation|2575|`QuantumLoop` delegation for the production VM lifecycle.|Scheduler advance, selectable control, fault settlement, checkpointing, and shutdown delegate through one production lifecycle loop.
+shape-review|crates/crucible-api/src/vm_lifecycle/runtime.rs|sha256:428964e4b2e4f67e2f976120221e97480449f64d9ee97a9adb76c5599b627f32|implementation|1217|Runtime observation and trigger settlement for production VM lifecycles.|threshold-not-reached
+shape-review|crates/crucible-api/src/vm_lifecycle/runtime/tests.rs|sha256:4d695113e378b74ada77b8465d339ea0f80ee72c022cbd5eb4e04e74e453317f|tests|2090|Production runtime evidence and initial-boundary regression tests.|Initial-boundary, observation, trigger, and terminal-evidence cases exercise one production runtime state transition model.
 shape-review|crates/crucible-api/tests/gate_control_client/contract_tests.rs|sha256:824898e9959e0f8569ae17387f98ff431fa358870d2ce60c7d8db9eb71f2dcda|tests|1268|Transport-neutral in-process and HTTP/2 control-client contract regressions.|threshold-not-reached
 shape-review|crates/crucible-api/tests/gate_control_client/http2_fixture.rs|sha256:94e5c95da69993908b937d1ff13cf9e6b78a606c29ae7ac9f754f0c6b94657e8|tests|2146|Production HTTP/2 lifecycle-server fixtures and canonical RPC bodies for control-client tests.|Server setup, scripted requests, canonical wire bodies, streaming fixtures, and teardown support one production transport test harness.
-shape-review|crates/crucible-campaign/src/campaign_service/query.rs|sha256:9d74cac635f326b5d0e6facfba1bc5c6359bffa1b384ea937c253bf541e4d81b|implementation|2495|Snapshot-bound campaign graph, frontier, object, and choice queries.|Query codecs, pagination, graph traversal, and response construction share one snapshot-authentication and boundedness policy.
+shape-review|crates/crucible-campaign/src/campaign_service/query.rs|sha256:79467f4f1ee1d680662773cab1b2687b110ca448a7a77f68552918346cdf5370|implementation|2494|Snapshot-bound campaign graph, frontier, object, and choice queries.|Query codecs, pagination, graph traversal, and response construction share one snapshot-authentication and boundedness policy.
 shape-review|crates/crucible-campaign/src/choice/model.rs|sha256:54cd5f8caa9012a2cbbbff87ef507d592f6a5e73bf110a266cd503e9343879b9|implementation|1335|Selectable declarations, runtime opportunities, selections, and probability-model bindings.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/execution/tests.rs|sha256:60c9b169fbcf1d5a22cff944cf37d546645a09643ba96cf75b8c510efb15e681|tests|1284|Campaign attempt execution message and canonical codec tests.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/execution/tests.rs|sha256:c121e239352c60ce7441841b17e246139dee15d890a9564cef47886c69814980|tests|1284|Campaign attempt execution message and canonical codec tests.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/finding.rs|sha256:ae6231be6c945c6a1dc2bf7763a92519daae6655945a79ae80c5f3700ffdd6a9|implementation|1095|Stable campaign findings and verifier-backed reproduction artifacts.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/merkle.rs|sha256:0f63af13aa4d7cdabaf8507a5e0e3fa5deb3bbafd111467fa3060bee3267fc6b|implementation|1433|Persistent authenticated Merkle-map construction, lookup, scanning, and bounded membership proofs.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/model.rs|sha256:9b6ea5c82e9f88386651e69cbb8042ef417d86452750ea51754a5ad7df1e4521|implementation|1355|Canonical campaign lineage, snapshots, planning basis, and accounting facts.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/model/facts.rs|sha256:a4a1b9e60668e5f9048cea912057510836a2ba8a473a888bda1721354ebb6fa1|implementation|1068|Lifecycle commands and immutable causal campaign facts.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/objective.rs|sha256:18076ff6266a93d94e1231195bfe3cf6cf8b7f4e33a368d807ee46a22428efc7|implementation|1895|Exact objective evaluation, deterministic ranking, and survivor evidence.|Exact value evaluation, dominance ranking, survivor selection, and explanation evidence share one deterministic comparison policy.
-shape-review|crates/crucible-campaign/src/observation.rs|sha256:1a25ea806eed38130ee33fbb2fe07c23f0381aea61244971a0061cde78ec4ce5|implementation|1113|Canonical modeled outcomes and executor-produced evidence.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/planner_service.rs|sha256:aa3a9c3162c953a4a26fbe00123598c8407810673c3c654bd8825ef402538609|implementation|1910|Pure planner request validation, retained input reconstruction, and checked-client service contracts.|Request codecs, authenticated retained inputs, statistical transition bases, service dispatch, and client response validation define one planner component boundary.
-shape-review|crates/crucible-campaign/src/planner_service/closed.rs|sha256:204aa40f1bc46416ac4560ed68d184b1922ec1cda45f6310292671cb18473326|implementation|1107|Closed deterministic planner over coordinator-authenticated frontier and statistical transition offers.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/policy.rs|sha256:48284d2a245341ee1fedb326879280f62e6e9b8dd14a34898c777a06f23cd0c5|implementation|1094|Bounded campaign explorer, choice, objective, retention, intervention-guidance, finite-statistical, and SMC policy schemas.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository.rs|sha256:46a44174fdbaea29d051b0794c1dd8918c0aad490120c4d6a52167c272137ea4|implementation|1565|Transactional campaign snapshots, projection caches, immutable objects, and one mutable ref.|Repository composition, projection acceleration, immutable objects, mutable refs, queries, validation, and transactions expose one authenticated snapshot authority.
+shape-review|crates/crucible-campaign/src/model/facts.rs|sha256:a7b7409e7652d2dfc98abc5cb716d54ecf33a1c04078715c9fa856e9fc748a76|implementation|1068|Lifecycle commands and immutable causal campaign facts.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/objective.rs|sha256:ab9fa9a55d951dc06042b5dab4baa820b40e8129230498908215275aae753db2|implementation|1898|Exact objective evaluation, deterministic ranking, and survivor evidence.|Exact value evaluation, dominance ranking, survivor selection, and explanation evidence share one deterministic comparison policy.
+shape-review|crates/crucible-campaign/src/observation.rs|sha256:854e6653580f88fa4cd3d4843ecb4060c35f3f597c4ccbfb9a87bc0c233712f6|implementation|1359|Canonical measurements, property and coverage evidence, and proof-bearing attempt stop outcomes.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/planner_service.rs|sha256:bc368ebaeedd8d9cad3fb0aa5673a8dd4cc8f3e45f006b587a4e4cebd58590a4|implementation|1910|Pure planner request validation, retained input reconstruction, and checked-client service contracts.|Request codecs, authenticated retained inputs, statistical transition bases, service dispatch, and client response validation define one planner component boundary.
+shape-review|crates/crucible-campaign/src/planner_service/closed.rs|sha256:d41b00678c523849f368f847c03762520a4c048b588aa4a21b993032ff6fb5cb|implementation|1107|Closed deterministic planner over coordinator-authenticated frontier and statistical transition offers.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/policy.rs|sha256:18d9dd16de8c21aa020df67ff897d056ac19a33a1788bcfeb2cf02970a33e790|implementation|1094|Bounded campaign explorer, choice, objective, retention, intervention-guidance, finite-statistical, and SMC policy schemas.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/repository.rs|sha256:6e30ed867a1e715e66b2b4a47f553bcd0b35f87f442b54e3f103fb86804e2a01|implementation|1563|Transactional campaign snapshots, projection caches, immutable objects, and one mutable ref.|Repository composition, projection acceleration, immutable objects, mutable refs, queries, validation, and transactions expose one authenticated snapshot authority.
 shape-review|crates/crucible-campaign/src/repository/closure.rs|sha256:0ffa511ecab8314799133f2141931fd7a81610567a9ee7d093af7d13e3ef0407|implementation|1402|Complete snapshot ancestry and reachable-object closure validation.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository/executor_driver.rs|sha256:f453326d26cc52c166bcc65f282373c653f55e398888477e73aef00137841283|implementation|1682|Bounded coordinator handoff from claimable attempts to one local executor.|Reservation, execution polling, savepoint capture, and completion handoff preserve one volatile coordinator-to-executor ownership model.
-shape-review|crates/crucible-campaign/src/repository/observation.rs|sha256:f51815b9575c201dfcda515fe3e928911a6206fd01994f5d28ef5c7a236326fc|implementation|1153|Exact observation publication and imported root-owner validation.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/repository/executor_driver.rs|sha256:34f95738e4ccb9a2b4510315a46b87d618fd0678fcceac7345b5ef1dbf83f490|implementation|1698|Bounded coordinator handoff from claimable attempts to one local executor.|Reservation, execution polling, savepoint capture, and completion handoff preserve one volatile coordinator-to-executor ownership model.
+shape-review|crates/crucible-campaign/src/repository/observation.rs|sha256:a5787cbef2041bf568c87a383accf60490fb4d86fc4a5d49078aaf939d4cee69|implementation|1148|Exact observation publication and imported root-owner validation.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/repository/planner_issue.rs|sha256:d51221bbb5c7c56e9749f6edcb44cea3628025e5e36feeaf85266ba21cdb404e|implementation|1102|Atomic planner-issued request, proposal, admission, and statistical-evidence projection.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/repository/projection/branch.rs|sha256:92309cfc4a5b42a4f501bb04d358656892936e372d71bfef6e20559203064799|implementation|1602|Authenticated branch visits and adaptive PUCT guidance projections.|Visit accounting, immutable execution-basis priors, coverage novelty, findings, objectives, and PUCT assembly share one branch-evidence projection pipeline.
 shape-review|crates/crucible-campaign/src/repository/savepoint.rs|sha256:6e29c40ba401579db05945b09fecddfbe6351d88a74a8260bf3f37f811e9b4a4|implementation|1264|Durable attempt-stop savepoint capture intent, projection, and continuation.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository/statistics.rs|sha256:263d8aba7ad2f46b92519e2819a8fd0d074b0a18421b809ab8e9ad7e09ef6440|implementation|1116|Owner-authenticated finite and SMC projection, evidence collection, and exact estimator replay.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository/tests.rs|sha256:f8e3219647af17e05374fc6cec314c7754dd0124bb0efaa97e7bfef2f6c2e2de|tests|1012|Repository test wiring and shared adversarial blob-source fixtures.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository/tests/coordination.rs|sha256:16c48a78222fda0d573410b3e2a1a92e6c955126f7b366f92011e4531c6154b8|tests|2549|Coordinator mutation, planner, and incremental-history repository tests.|Coordinator mutation, incremental history, planner, and retry cases assert one transactional repository contract.
-shape-review|crates/crucible-campaign/src/repository/tests/coordination/planning.rs|sha256:e149b00e489ee146a5ce0773e64a8881b6c0f2238e9fb674571ee0252df9b2e6|tests|3482|Planner driving, issue admission, restart, Beam closure, and objective-cursor coordination regressions.|Planner paging, PUCT and Beam guidance, issue admission, restart, and cursor cases reuse one coordinator history and planning fixture.
+shape-review|crates/crucible-campaign/src/repository/statistics.rs|sha256:04a8ff1ca5652136cfbbc7b0b5f14dbc2d2b92b03ef7595e8fc044571a74d499|implementation|1118|Owner-authenticated finite and SMC projection, evidence collection, and exact estimator replay.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/repository/tests.rs|sha256:89cf683f44d59e791a8f7cf2e2cf7a07a01a10630dbb80fbb0af04dc436f3916|tests|1049|Repository test wiring and shared adversarial blob-source fixtures.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/repository/tests/coordination.rs|sha256:873fa20c48ed60d85d2237094d359074dc3af60d78198721303058964c23412d|tests|2549|Coordinator mutation, planner, and incremental-history repository tests.|Coordinator mutation, incremental history, planner, and retry cases assert one transactional repository contract.
+shape-review|crates/crucible-campaign/src/repository/tests/coordination/planning.rs|sha256:e1241d50994d4de0da2e65b899dec1c218d462de65c243fad1e3c1257bf1962e|tests|3505|Planner driving, issue admission, restart, Beam closure, and objective-cursor coordination regressions.|Planner paging, PUCT and Beam guidance, issue admission, restart, and cursor cases reuse one coordinator history and planning fixture.
 shape-review|crates/crucible-campaign/src/repository/tests/execution/expansion.rs|sha256:401f2684e8d5ebc2b1ddaec1818301053970a03b2edb95e15fc9a61d323518db|tests|1434|Finite expansion, immutable execution-basis guidance, and branch-budget regressions.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository/tests/savepoint.rs|sha256:1d67f765c93a80410b0624789e709384e56c01168f1c36ddfdfe52e4a26c6188|tests|2013|Savepoint capture intent, scope authentication, resolution, and continuation regressions.|Capture, authentication, resolution, restart, and continuation cases share one repository and executor-control fixture.
+shape-review|crates/crucible-campaign/src/repository/tests/savepoint.rs|sha256:7064a326f190a70378106134dd22624de9e2eed6ac64d3daae8be23a2416fd38|tests|2013|Savepoint capture intent, scope authentication, resolution, and continuation regressions.|Capture, authentication, resolution, restart, and continuation cases share one repository and executor-control fixture.
 shape-review|crates/crucible-campaign/src/repository/tests/statistics.rs|sha256:65d694b0247189cf357c57f21d6e92f040842ea0471b42a7745896b7b379a0c1|tests|1503|Finite statistical policy, planning, estimation, evidence replay, refusal, restart regressions, and SMC test-module wiring.|Finite and SMC repository tests share one retained statistical-policy fixture and validate a single evidence-projection contract.
-shape-review|crates/crucible-campaign/src/repository/tests/statistics/smc.rs|sha256:9e61b719079dab874945fc0caa2af9749c8ac5310bf3de7efe507fe392643c64|tests|1116|Owner-level SMC stage execution, resampling, evidence replay, barrier, forgery, and restart regressions.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/repository/tests/validation.rs|sha256:2b0636a89e6245e21a06702da32057b32bc19963d37151ee298d54bd9b2873c6|tests|2327|Imported-history, closure, planner-projection identity, and owner-validation repository tests.|Imported history, closure, planner projection identity, and owner validation use the same adversarial repository object graph.
-shape-review|crates/crucible-campaign/src/repository/tests/validation/generator_expansion.rs|sha256:747176377fff922b87cabae75740f495bf0953673fac98747af227565fd21eb3|tests|2229|Generator expansion, feedback, and owner-bound validation regressions.|Expansion, feedback, replay, and owner-bound rejection cases exercise one generator identity and cursor model.
+shape-review|crates/crucible-campaign/src/repository/tests/statistics/smc.rs|sha256:eab79af823fd7bc3b60d59f1a920ad9e907c290c042fb3666963f8483c4bc8a7|tests|1116|Owner-level SMC stage execution, resampling, evidence replay, barrier, forgery, and restart regressions.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/repository/tests/validation.rs|sha256:36103d0acd8fe7889ee3f12e2965d55420cb30d4216cb122046ac430336cc43f|tests|2327|Imported-history, closure, planner-projection identity, and owner-validation repository tests.|Imported history, closure, planner projection identity, and owner validation use the same adversarial repository object graph.
+shape-review|crates/crucible-campaign/src/repository/tests/validation/generator_expansion.rs|sha256:45e73b6300222ed9f11b59dba2bf286cfce3926432f38f5f404ba9ce9a971e6e|tests|2229|Generator expansion, feedback, and owner-bound validation regressions.|Expansion, feedback, replay, and owner-bound rejection cases exercise one generator identity and cursor model.
 shape-review|crates/crucible-campaign/src/repository/tests/validation/generator_strategies.rs|sha256:ff8ded11d7e5d6f629cc595522df053373df6b3a51dece00b0884eb831c92cf2|tests|1533|Corpus and static integer generator strategy regressions.|Corpus and integer strategy cases share canonical candidate ordering, bounds, and restart semantics.
 shape-review|crates/crucible-campaign/src/repository/transactions/planner.rs|sha256:cf8104b1c998021b458b47ba791d60826d5bfae7e82a78973102e494edd92c82|implementation|1086|Atomic planner invocation, proposal, Beam projection, and retained-request publication.|threshold-not-reached
 shape-review|crates/crucible-campaign/src/statistics/evidence.rs|sha256:74633aae873e42c94bf3acf60aa7e75da2b451b5b77730bcd5cc6220f1b34aef|implementation|1018|Canonical finite and SMC evidence schemas, bounded decoding, and required-root lookup derivation.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/statistics/smc.rs|sha256:11bc953bf447fdeacf3ab314ae9a1452b19cbb49fe5ef0fa88f117b7b0a23e0b|implementation|1250|Exact SMC genealogy, systematic resampling, completed-particle records, and estimator reports.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/tests.rs|sha256:c3409dedc3f97d6b294753322dc75a4e444f3f857b3aaa834fc1ac2b9b757988|tests|2853|Tests campaign canonical encoding, lineage, bounds, and policy primitives.|Canonical encoding, lineage, policy, and bound cases share the campaign primitive fixtures they validate.
+shape-review|crates/crucible-campaign/src/statistics/smc.rs|sha256:b546831e0f2cab159966373a63333c9857f1555dda69f7be50168c995e41bfa6|implementation|1250|Exact SMC genealogy, systematic resampling, completed-particle records, and estimator reports.|threshold-not-reached
+shape-review|crates/crucible-campaign/src/tests.rs|sha256:9f2ef91c5738e9465efea4d294f3bb82f81f1cb1036735209ca53493d85587a6|tests|2853|Tests campaign canonical encoding, lineage, bounds, and policy primitives.|Canonical encoding, lineage, policy, and bound cases share the campaign primitive fixtures they validate.
 shape-review|crates/crucible-campaign/tests/gate_campaign_cold_continuity.rs|sha256:7871d7f09af6d99f904d8a267a700e9233006782857252b2ba8380b8bb7e15da|tests|1028|Cold campaign pause, archive restore, and process-bound resume regressions.|threshold-not-reached
 shape-review|crates/crucible-cas/src/content_store.rs|sha256:4509fc68e19b488c15fb312121e51e5a5df2acb786946d3f1f7fb0240a050673|implementation|1495|Backend-neutral immutable-object, mutable-ref, streaming, and administrative content-store contracts.|threshold-not-reached
 shape-review|crates/crucible-cas/src/content_store/encrypted_directory.rs|sha256:f81557fe4b60f9d97f6a974a4e239cfe92219005c18c8d74488f95bd422440cd|implementation|1477|Authenticated encrypted and compressed directory storage, streaming reads, inventory, and key validation.|threshold-not-reached
@@ -62,100 +63,100 @@ shape-review|crates/crucible-cas/src/content_store/graph.rs|sha256:8318aecd89b4d
 shape-review|crates/crucible-cas/src/content_store/packed.rs|sha256:f7679fa6736151c27d43e5c44f60cc8fd389f7ebbf2ef394a954a97df1e5376e|implementation|1334|Immutable pack creation, indexing, recovery, compaction, and logical inventory.|threshold-not-reached
 shape-review|crates/crucible-cas/src/content_store/tests/tier.rs|sha256:115bf3a41d85d7061bbf0c371c07f0d857e54cc9f98bcf619e9279cf6637f0d4|tests|1196|Composed-tier promotion, repair, routing, and durability policy conformance.|threshold-not-reached
 shape-review|crates/crucible-cli/src/cli/backend.rs|sha256:6dbbac3486c640283297d560f9feeea987998a0eda991ab77fbefb777834c06c|implementation|1281|Backend discovery, validation, routing, and command outcome projection.|threshold-not-reached
-shape-review|crates/crucible-cli/src/cli/campaign.rs|sha256:2ab14c0022ec29cb9458146a700a6626f657a6f0af3d372fb89e9fe4d9f91817|implementation|2579|Thin local client for authenticated lazy-campaign inspection and control.|Campaign queries, mutations, pagination, watches, status, and output projection share one authenticated local client protocol.
-shape-review|crates/crucible-cli/src/cli/campaign_run.rs|sha256:8dcab3160d15fd3a020d8a5c6184634bd1b3569b0b71804d367c00fc9d4f09b2|implementation|1300|Campaign-owned run, savepoint, closure-bound resume, and terminal-fingerprint CLI projection.|threshold-not-reached
+shape-review|crates/crucible-cli/src/cli/campaign.rs|sha256:8bd98b262969172d5ad8862140d2cd078b13e3c75792a5d72f745207ef2429e3|implementation|2689|Thin local client for authenticated lazy-campaign inspection and control.|Campaign queries, mutations, pagination, watches, status, and output projection share one authenticated local client protocol.
+shape-review|crates/crucible-cli/src/cli/campaign_run.rs|sha256:7aef77b879691f11e5323392e383a82962f0d7e728a54c158f8a7d1c3234a19c|implementation|1360|Campaign-owned run, savepoint, closure-bound resume, and terminal-fingerprint CLI projection.|threshold-not-reached
 shape-review|crates/crucible-cli/src/cli/control.rs|sha256:4e1928f2dc9bb4e5aab6e4cd630b0e0fa15310778fe559840f6a3ad703acf61c|implementation|1232|Save control-client workflows, interactive run control, and outcome projection.|threshold-not-reached
-shape-review|crates/crucible-cli/src/cli/planning/invocations.rs|sha256:6b05256eb1a158eb6c3a00e543965976190141487baf143f3171644fe5694557|implementation|2311|Command invocation plans for run, save, search, fuzz, and replay workflows.|Run, save, search, fuzz, and replay plans share seed resolution, bounds, and deterministic invocation evidence.
+shape-review|crates/crucible-cli/src/cli/planning/invocations.rs|sha256:49f5057c7fdfb54d2ad8d695b849b2827ac88f530cb1b358d443e4cba6da8846|implementation|2323|Command invocation plans for run, save, search, fuzz, and replay workflows.|Run, save, search, fuzz, and replay plans share seed resolution, bounds, and deterministic invocation evidence.
 shape-review|crates/crucible-cli/src/cli/run_save.rs|sha256:efa1d9705950c1c04b88395a001a91de677fc62c8538698faba9264e121df6db|implementation|1177|Local run/save workflows and closure-bound remote resume control setup.|threshold-not-reached
-shape-review|crates/crucible-cli/src/cli/run_save/qemu_live.rs|sha256:5b0ba1846b3315f572b09d4795f87067574d3e2389e7c98245467807bcc7aa2f|implementation|1248|Live packaged-QEMU run and save execution, probing, search, replay, and outcome projection.|threshold-not-reached
+shape-review|crates/crucible-cli/src/cli/run_save/qemu_live.rs|sha256:f4320c4659874c64d82d9233fc45da55b6731983bb7bb1c31e28ac6a4b041a19|implementation|1268|Live packaged-QEMU run and save execution, probing, search, replay, and outcome projection.|threshold-not-reached
 shape-review|crates/crucible-cli/src/cli/verify_serve/service.rs|sha256:3aff22cfd48de38d2e1ee95e9c4401df4b7d3495a14586e695e7fe8c97f91793|implementation|1060|Daemon service startup, campaign attachment, private executor supervision, and shutdown.|threshold-not-reached
-shape-review|crates/crucible-cli/src/main.rs|sha256:959a7bec7aa98cd16b025fe50d1b5019ddf0bddf58f2691d45cba0a959d0e32f|implementation|2543|`crucible` is the CLI entry point for the Crucible control plane.|Argument types, command dispatch, backend routing, output selection, and exit projection define one CLI surface.
-shape-review|crates/crucible-cli/src/tests/replay_artifact.rs|sha256:b1c3399e5a780a6633b991e40430293e545b98fce39d98222632ae1ab9566871|tests|2722|Replay-artifact parsing, authentication, current-schema, and production-QEMU regression tests.|Format, provenance, current-schema, production replay, and refusal cases share one artifact-validation fixture.
-shape-review|crates/crucible-cli/src/tests/surface.rs|sha256:4a394e7048f9d633e5829d68e16fe3ee5dc216375954a15864988ab136bf0ec1|tests|3335|CLI parsing, planning, backend selection, and run workflow tests.|Parsing, invocation planning, backend routing, output, and run workflow cases reuse one CLI operation recorder.
+shape-review|crates/crucible-cli/src/main.rs|sha256:5dcaa43790adf942764e4fe5a0c6ba70e241e33280b78176783c83ae6555da04|implementation|2663|`crucible` is the CLI entry point for the Crucible control plane.|Argument types, command dispatch, backend routing, output selection, and exit projection define one CLI surface.
+shape-review|crates/crucible-cli/src/tests/replay_artifact.rs|sha256:bd540aa633ff776bf4d4c06f983a08d53ba196f6154b48d41fa4a1be97a19492|tests|2722|Replay-artifact parsing, authentication, current-schema, and production-QEMU regression tests.|Format, provenance, current-schema, production replay, and refusal cases share one artifact-validation fixture.
+shape-review|crates/crucible-cli/src/tests/surface.rs|sha256:182d41f66939db0392efbf76b2c0f35f880cac82c5bbc757788d4eafcdf56157|tests|3366|CLI parsing, planning, backend selection, and run workflow tests.|Parsing, invocation planning, backend routing, output, and run workflow cases reuse one CLI operation recorder.
 shape-review|crates/crucible-cli/src/tests/verify_dispatch.rs|sha256:0b068b397830c52370c7852dcf78c54fb180a803ac060c4efab7ebfeacac10fb|tests|2858|Verification, dispatch, backend-selection, selftest, and failure-path tests.|Verification, replay, daemon routing, backend selection, selftest, and failure cases reuse one dispatch and live-probe harness.
-shape-review|crates/crucible-cli/tests/campaign_store_process.rs|sha256:b4b1fc7e218a43d1e6f07f9d675c7528d5a14e9a03f80efba9d79f72f365de7e|tests|1263|Hermetic public-process campaign store, archive, cache, write-back maintenance, GC, and restart flights.|threshold-not-reached
-shape-review|crates/crucible-cli/tests/campaign_store_process/midpoint_debug.rs|sha256:2d75904d8ef239eaa1f3f0107b128c2c688bb715d444c4b893eb3ddf568ff8a2|tests|1246|Public-process midpoint campaign fixture for authenticated fast and q7 branch selection, failure discovery, and retained-finding lookup.|threshold-not-reached
-shape-review|crates/crucible-cli/tests/support/campaign_packaged_process/guest_choice.rs|sha256:0ee3f94ab18e4ba39cc7243eb04e114d7bdbca8e2e9a84cb99b6336d5ae5d779|tests|1680|Packaged guest-choice campaign, exact-checkpoint promotion, daemon-restart, and native-resume flight.|Guest-choice discovery, exact promotion, daemon restart, replay verification, and native resume share one packaged-process fixture and retained campaign state.
+shape-review|crates/crucible-cli/tests/campaign_store_process.rs|sha256:cd9971516b645e421e5ea0fb11610703eee4e7ac6ab51f091e293631fdd9e0b4|tests|1355|Hermetic public-process campaign store, archive, cache, write-back maintenance, GC, and restart flights.|threshold-not-reached
+shape-review|crates/crucible-cli/tests/campaign_store_process/midpoint_debug.rs|sha256:4e4fc34bfc374e1f2b9e6938a25828bdc841308e24f6ce70a7c5de6acbb43c48|tests|1360|Public-process midpoint campaign fixture for authenticated fast and q7 branch selection, failure discovery, and retained-finding lookup.|threshold-not-reached
+shape-review|crates/crucible-cli/tests/support/campaign_packaged_process/guest_choice.rs|sha256:de3be4d2438125214d581d20e82fa01d9aeaef1a9966f877d503a769fe2fd7ad|tests|1785|Packaged guest-choice campaign, exact-checkpoint promotion, daemon-restart, and native-resume flight.|Guest-choice discovery, exact promotion, daemon restart, replay verification, and native resume share one packaged-process fixture and retained campaign state.
 shape-review|crates/crucible-daemon/src/assignment_ledger.rs|sha256:7b415095d188ca416f53028c6a9a9bfa6b2629c0d53b7aeff3e65be5ca59f8b5|implementation|1976|Crash-safe operational assignment records for the local executor.|Assignment records, attempt transitions, checksummed publication, restart recovery, and retention fencing form one crash-safe ledger format.
-shape-review|crates/crucible-daemon/src/assignment_ledger/tests.rs|sha256:27c6a2c778458159a700bebf9617baa3e54319f0a8f160719f6800a20fc5ed5f|tests|1221|Memory and crash-safe directory assignment-ledger conformance tests.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/automatic_finding_runner.rs|sha256:3ff1f9e71e69c7c5006789fe9c7eea6ab2bfe342a68d868f1e36ff84bc790cdd|implementation|1186|Production attempt execution, bounded private replay, signature-preserving reduction, and exact finding retention orchestration.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/automatic_finding_runner/tests.rs|sha256:c6df048edccf81ee7f45b8132b55e549e5a28ecf097e4eb98525ada3d68b849f|tests|1020|Automatic finding outcome, exact-retention, and admitted-campaign-basis regressions.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/campaign_bootstrap.rs|sha256:6ddbe7abe382036cccdf8b2d17d1aa4492909c4851700e8ef943abfaef155c28|implementation|1789|Durable single-host bootstrap for the local campaign service.|State-root locking, endpoint ownership, repository opening, and runtime attachment make one exclusive service lifecycle.
-shape-review|crates/crucible-daemon/src/campaign_bootstrap/tests.rs|sha256:9a5164324e3ef4dda3ef0e4de4aa36a7d303987652a4e6751e489e1c01d4e513|tests|1923|Durable campaign-service bootstrap regressions.|Endpoint binding, repository locking, runtime attachment, restart, and cleanup cases share one durable bootstrap fixture.
+shape-review|crates/crucible-daemon/src/assignment_ledger/tests.rs|sha256:15ddde1242c27e89ceee9287f71e751d4886c96b1da94cd60003d34625563c30|tests|1221|Memory and crash-safe directory assignment-ledger conformance tests.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/automatic_finding_runner.rs|sha256:e12ee4f159034d0fefbeb6b5ac8fa9021f82d86e85680184472f090d49175537|implementation|1306|Production attempt execution, bounded private replay, signature-preserving reduction, and exact finding retention orchestration.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/automatic_finding_runner/tests.rs|sha256:15c0c5cc669807b4ac3e3831b10420b3ae5e79c78baaad7fa8932b152d7a6fb8|tests|1161|Automatic finding outcome, exact-retention, and admitted-campaign-basis regressions.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/campaign_bootstrap.rs|sha256:8e12250f4c6e0437d770f8189ceff8407aa69353ef647a44f3681ac8dcfe33d6|implementation|1896|Durable single-host bootstrap for the local campaign service.|State-root locking, endpoint ownership, repository opening, and runtime attachment make one exclusive service lifecycle.
+shape-review|crates/crucible-daemon/src/campaign_bootstrap/tests.rs|sha256:b8b26b4374997fa6fc4acbc27cda2634982b59f9a3f30fdf37ee86dbb292274f|tests|2054|Durable campaign-service bootstrap regressions.|Endpoint binding, repository locking, runtime attachment, restart, and cleanup cases share one durable bootstrap fixture.
 shape-review|crates/crucible-daemon/src/campaign_gc/apply.rs|sha256:b9486f3520de22e886d35d7a5e4b1ec6fed4696d66c3898b9773db39b02fd11f|implementation|1156|Exact-generation campaign GC root revalidation, policy authentication, journal transition, and physical deletion.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/campaign_gc/tests.rs|sha256:09c06de659d7cae19c03666e0edfc52609a822ab3f6edbeabaeafaa6aedba26d|tests|3014|Canonical identity, policy, and bound tests for campaign GC planning and apply.|Plan identities, manifests, policy-aware physical roles, exact write-back roots, journal recovery, and stale-generation cases share one GC administration model.
 shape-review|crates/crucible-daemon/src/campaign_loopback.rs|sha256:e67a1d74922d276fc6f7d678862247151bb1be47f8083ea7eeb309f33005dfe6|implementation|2044|Versioned Unix-stream transport for the user-facing campaign service.|Frame codecs, serialized exchange, poisoning, deadlines, and peer credentials jointly define one authenticated local transport.
 shape-review|crates/crucible-daemon/src/campaign_transfer.rs|sha256:2c95e4a1e00ac35457ab76e3f55b5aa402590a5dfaad788434294e5298e665e3|implementation|1013|Durable campaign archive transfer, journal, retention fence, endpoint resolution, and receipt protocol.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/crucible_artifact.rs|sha256:3a66e9b4d842f45b41109a4ab418c02e39f53306adef2d628b232de4b373060e|implementation|1449|Strict Crucible execution-model payloads carried by campaign artifacts.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/crucible_artifact.rs|sha256:947a09270427c9afc957fb3bf621362c17aeb6c18136dc0733f7201b13b3f194|implementation|1449|Strict Crucible execution-model payloads carried by campaign artifacts.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/crucible_artifact/prepared_result.rs|sha256:81bc37b33f0d5fa0d8a75c965c2ca8c46392def7f0cc41e9319922f683f293ae|implementation|1645|Durable self-authenticating prepared semantic attempt results.|Result encoding, measurement replay evidence, finding closure, bounds, and decoding validation protect one prepared-result format.
 shape-review|crates/crucible-daemon/src/crucible_artifact/tests/publication.rs|sha256:0e81ec7383cc16f56a3200b56690e4047f67b6abdde71c5db1481d7f8d22c929|tests|1337|Artifact publication rejection and canonical prepared-result regressions.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/exact_checkpoint_store/production.rs|sha256:3c73caf126889923eab1190b79f3e56ec58064f4c05d1a1df1797871db0a5e20|implementation|1009|Production exact-checkpoint root encoding, authenticated repository loading, and same-backend replay promotion publication.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/executor_loopback/tests.rs|sha256:01cd60367700ddb23737a119604364b9a0f931354c5e53a4c2fbad690b5e28fa|tests|1355|Strict executor Unix-stream adapter conformance tests.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/executor_pool.rs|sha256:58e31e997253ceaf0fc75102d0e962bc1f5d75569d1314229a95fd66a2e4af62|implementation|2939|Fixed local attempt workers around the sole-writer executor supervisor.|Queue ownership, worker execution, publication, retry phases, and shutdown preserve one linear attempt token.
+shape-review|crates/crucible-daemon/src/exact_checkpoint_store/production.rs|sha256:e76920489689aea54c608057a82d9274f44394e673fbacd7c852080713d8df2e|implementation|1108|Production exact-checkpoint root encoding, authenticated repository loading, and same-backend replay promotion publication.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/executor_loopback/tests.rs|sha256:1bcea99fc0412209ae6ee08ebd95834f571e24874cd276274f2e05a1a83e6ca5|tests|1355|Strict executor Unix-stream adapter conformance tests.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/executor_pool.rs|sha256:75e084a04f65c752a7a02502460c2641b5fba67986a3c542494a3010a7dd12c5|implementation|2908|Fixed local attempt workers around the sole-writer executor supervisor.|Queue ownership, worker execution, publication, retry phases, and shutdown preserve one linear attempt token.
 shape-review|crates/crucible-daemon/src/executor_pool/tests.rs|sha256:6b7ccede6678769aed4788621b4306b3604acd1117545a7d63580b320f42f92c|tests|3763|Conformance tests for fixed local executor ownership, checkpoint recovery, and semantic-result publication.|Worker ownership, retry phase, checkpoint promotion recovery, measurement replay, objective publication, ledger, cancellation, and shutdown cases use one fixed-pool conformance harness.
 shape-review|crates/crucible-daemon/src/executor_supervisor.rs|sha256:0e2576f5e57a08fb447132e71cc34d4c7aab2b5fcca0a6992185f340ab26ad66|implementation|1129|Bounded single-host attempt admission and execution supervision.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/executor_supervisor/tests.rs|sha256:097a92c8c61e58a3a74809168d78ba5dc071ba7e61e3bf34d5bcf50e91b23ef7|tests|2471|Bounded local executor supervision and recovery conformance tests.|Cancellation, deduplication, capacity, checkpoint, resume, recovery, and shutdown cases share one supervisor fixture and lifecycle model.
-shape-review|crates/crucible-daemon/src/executor_worker.rs|sha256:a7d0ad54eb8010b4a61315de0d9b5c34ba1dce95a3da2151783f5cd344458866|implementation|1411|Repository-backed local attempt execution and canonical completion handoff.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/executor_supervisor/tests.rs|sha256:768fd2a4340721548107062b9dd871e3718da47c30678a51773e59606ba182cf|tests|2471|Bounded local executor supervision and recovery conformance tests.|Cancellation, deduplication, capacity, checkpoint, resume, recovery, and shutdown cases share one supervisor fixture and lifecycle model.
+shape-review|crates/crucible-daemon/src/executor_worker.rs|sha256:8a884bce766ce4a491910abfd60364875d406f4a861f314c38d9b9304b5a5728|implementation|1481|Repository-backed local attempt execution and canonical completion handoff.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/packaged_qemu_executor.rs|sha256:3702d83dbebc8dd56a557a597b778e032936aeb38777f42fbf2c40b4a5a6874f|implementation|1820|Packaged production-QEMU executor composition for local campaigns.|Store composition, resource guards, runner construction, endpoints, and lifecycle wiring form one packaged production-executor boundary.
-shape-review|crates/crucible-daemon/src/packaged_qemu_executor/tests.rs|sha256:4c0982b49a6206e3e9117cd9636c33d958024dd8dd1e5972f68226eece5675f2|tests|1689|Packaged executor composition, endpoint, and lifecycle regression tests.|Composition, endpoint, lifecycle, restart, and shutdown cases exercise one packaged-executor ownership boundary.
-shape-review|crates/crucible-daemon/src/paused_checkpoint_promotion.rs|sha256:bdcb95c7aa3597d9d424a3223a598a204afc5acf943a1ffc25401ab94793b7cb|implementation|1162|Crash-safe replay-oracle promotion of paused attempt checkpoints.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/prepared_result_journal.rs|sha256:e99595172562088a06477426b1172a5ba216e6615ba5ce4af429a9c2162912a8|implementation|1392|Crash-safe local ownership of prepared semantic attempt results.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/qemu_campaign_driver.rs|sha256:01fdaa75de40c22ecec60a3b9a17bb07af432c9ae1a2c56827fafb9a3a11cf09|implementation|2643|Concrete modeled driving and observation projection for campaign QEMU attempts.|Modeled driving, observation projection, measurement evidence, selectable settlement, and cancellation share one attempt execution state.
-shape-review|crates/crucible-daemon/src/qemu_campaign_driver/tests.rs|sha256:65e7f2180126b624f8d4cb0757f218a3ee54c3649a1c1fc70458dc847243deb1|tests|3090|QEMU campaign driver candidate, evidence, and cancellation tests.|Candidate reconstruction, evidence projection, selectable ordering, resource charging, and cancellation share one modeled-driver harness.
-shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle.rs|sha256:f2a0c1ebd539c97e818bc4d6bdf427ce315bbb6c5bc6c09ed67efcb10e2ad300|implementation|2217|Attempt-guarded construction, replay-closure validation, and terminal evidence capture for the production QEMU lifecycle.|Guard installation, lifecycle construction, replay-closure admission, modeled driving, terminal-fingerprint preparation, final drain, and teardown transfer one indivisible attempt authority.
-shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/campaign_run.rs|sha256:e8c8159c05478fe2bc46e704fbf909891a3daed326f543fe01694f010ab19740|implementation|2680|Shared ownership for guarded scenario-default campaign runs, savepoints, and closure-bound portable resumes.|Request validation, source admission, exact capture, replay-closure validation, continuation selection, and bounded execution share one campaign state machine.
+shape-review|crates/crucible-daemon/src/packaged_qemu_executor/tests.rs|sha256:b1bbbebaf2e25456f72b7f9c48ca83c339643ae0e459091fa3bffd033d6d09e6|tests|1694|Packaged executor composition, endpoint, and lifecycle regression tests.|Composition, endpoint, lifecycle, restart, and shutdown cases exercise one packaged-executor ownership boundary.
+shape-review|crates/crucible-daemon/src/paused_checkpoint_promotion.rs|sha256:5d316e31292dff9c8fcaaac7e2231cd7e924c6fb613a94a8a609679c8dc46b16|implementation|1170|Crash-safe replay-oracle promotion of paused attempt checkpoints.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/prepared_result_journal.rs|sha256:81a2a6caca0918c764b68531a5b8e459bc8722b58502a54ece418df57a718d1d|implementation|1392|Crash-safe local ownership of prepared semantic attempt results.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/qemu_campaign_driver.rs|sha256:3056c827ddb58bd4b52a12b96b221a30612efc9f3f4d4f3888f9e10a2c7a35ef|implementation|2917|Modeled QEMU driving, stop and timeout proofs, and observation projection for campaign attempts.|Modeled driving, stop proofs, measurement and property evidence, selectable settlement, and cancellation share one attempt execution state.
+shape-review|crates/crucible-daemon/src/qemu_campaign_driver/tests.rs|sha256:ded0025df50ca87d572ee0e3d663f6d3fc05dc2bf00e43c4ba086efce43f6a6e|tests|3562|QEMU campaign driver stop, timeout, candidate, evidence, and cancellation regressions.|Candidate reconstruction, stop and timeout proofs, evidence projection, selectable ordering, resource charging, and cancellation reuse one modeled-driver harness.
+shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle.rs|sha256:026425f7117bcb19ad89b3ee71c114536690041ac65eb87cc47f7a3dc71e7c4c|implementation|2301|Attempt-guarded construction, replay-closure validation, and terminal evidence capture for the production QEMU lifecycle.|Guard installation, lifecycle construction, replay-closure admission, modeled driving, terminal-fingerprint preparation, final drain, and teardown transfer one indivisible attempt authority.
+shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/campaign_run.rs|sha256:483912efc662c7726d189f7e310d2162e830d418aa50be7262aaec02a3b890b2|implementation|2681|Shared ownership for guarded scenario-default campaign runs, savepoints, and closure-bound portable resumes.|Request validation, source admission, exact capture, replay-closure validation, continuation selection, and bounded execution share one campaign state machine.
 shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/campaign_run/tests.rs|sha256:a1e2329ab80d6c20efa2b7f26e15e029c3669696e4e096851163df41aa544dc3|tests|2503|Shared-owner regressions for guarded campaign runs, savepoints, closure-bound resumes, and terminal evidence.|Discovery, savepoint, replay-closure reconstruction and rejection, restart, resume, and terminal-fingerprint cases reuse one guarded campaign lifecycle fixture and repository contract.
-shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/tests.rs|sha256:00bad4dfaaff5b994cdce872631e633bf375ab23d268a5fe6e444f1c75376d25|tests|3796|QEMU campaign lifecycle restart, terminal-evidence, promotion, and recovery tests.|Construction, promotion, restart, terminal-fingerprint capture, guard transfer, and recovery cases exercise one production lifecycle ownership model.
+shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/tests.rs|sha256:2eff204b0075c5b4e6e4660365d431e07a9568ae50004e66bcdbea55c1d61a55|tests|3809|QEMU campaign lifecycle restart, terminal-evidence, promotion, and recovery tests.|Construction, promotion, restart, terminal-fingerprint capture, guard transfer, and recovery cases exercise one production lifecycle ownership model.
 shape-review|crates/crucible-daemon/src/qemu_campaign_resume/tests.rs|sha256:a06d908d97ece5cdf65aec0fcc60dea8ccd3198776709f73158523319f06bf14|tests|1032|Campaign resume authentication, restoration, and failure-recovery regressions.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs|sha256:4265dfe7e7b5f5e806b626ffe2591d85e32c1f13db05be5efb67d421c160c8ef|implementation|1453|Whole-world retained-source selection, launch, execution, terminal-fingerprint preparation, and recovery.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs|sha256:02f568112ab387824fe58f760d794f748413d541d3e2d7c7dad8c113aa3d46dc|tests|1486|Scripted production whole-world composition and terminal-preparation regressions.|threshold-not-reached
-shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs|sha256:93846da22c64f769c391f545f55962de939370bbd9123954549da16103fa9522|tests|1088|Native production equivalence and performance regressions across thin, exact-resume, and hot-fork execution.|threshold-not-reached
+shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs|sha256:f75784b89c5b2ab5647f6ce500b7e3524a8e2b61f60c994cabd686c7aec6b296|tests|1173|Native production equivalence and performance regressions across thin, exact-resume, and hot-fork execution.|threshold-not-reached
 shape-review|crates/crucible-harness/src/phase_plan.rs|sha256:15971ad2214806630cb95f790498e5b3df74f519c0106295503d66e903b4bf31|implementation|1445|Phase-gate ordering for RFC-0010.|threshold-not-reached
 shape-review|crates/crucible-harness/tests/engineering_hygiene.rs|sha256:b50d60eb83d04b47e8e6bf94499ce760cbebe5cfc8602f4d127ed02666436cfa|tests|1043|Checks source-role reviews, module headers, QEMU boundary confinement, and commit-hygiene policy wiring.|threshold-not-reached
 shape-review|crates/crucible-protocol/src/selectable_catalog_plan.rs|sha256:f5ea1e9350ceb6e5b4d48158df97ee65994cd9cb01b7e1b0d0bd1aa5ae8d523f|implementation|1439|Canonical guest-selectable catalog continuation encoding, current decoding, and invariant validation.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/idle_loop.rs|sha256:daf7a145edd465be38ba767b9b1ce42c97f30d79fdeeb27172b78e6089b83364|implementation|1008|QEMU idle-loop wake authorization, vCPU aggregation, timer publication, and scheduler futex handoff.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/runtime.rs|sha256:17c254cc49f3df405fb4e6129ba776c9dc73e5773cf1ad0618d6def2284ee9bf|implementation|2735|Live QEMU plugin installation and process-lifetime runtime ownership.|Capability preflight, callback registration, owner publication, control service, and teardown must execute in one atomic runtime order.
-shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|sha256:60b95da751b71d4550b19a2c9126a1452d68ad38868bb75a5c13ab813c072176|implementation|2722|Live vCPU-boundary and sim-loop shared-memory callback adapters.|The vCPU, time, network, block, and 9p callbacks coordinate through one process-global runtime and quantum publication state.
+shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|sha256:7607db02da61b9e3e3840249df55d293e314f4e31e2dc9a1ad6a3d1eba4cbb9a|implementation|2715|Live vCPU-boundary and sim-loop shared-memory callback adapters.|The vCPU, time, network, block, and 9p callbacks coordinate through one process-global runtime and quantum publication state.
 shape-review|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|sha256:5e027f5d3169277689703de12ff096b45e7649dccc90d3578d0b56761520cd6f|tests|1531|Live QEMU callback integration tests.|vCPU boundary, timer, block, 9p, network, control, and fingerprint cases share one installed live-callback runtime fixture and shared-memory publication contract.
 shape-review|crates/crucible-qemu-plugin/src/runtime/tests.rs|sha256:1ff115988450b51cd41869254d77071ec10da7a68d79ed702836cf4ff2fce9be|tests|1810|Live runtime installation, control-worker, and teardown tests.|Installation, control-worker, callback teardown, and fatal-policy cases traverse one process-owner lifecycle.
 shape-review|crates/crucible-qemu-plugin/src/whitebox_doorbell/selectable/catalog.rs|sha256:ca9960fa9ae642fe57440f858086eb0d28ed6a337c1c3d3401d59936688199a2|implementation|1202|Guest-selectable declaration, pending-request, reply, and checkpoint catalog state.|threshold-not-reached
 shape-review|crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs|sha256:2b4ba696f358a5dd0e3d38a8850ff195056882ff65360a43cd61325beed23968|implementation|1310|Production QEMU/plugin diskless comparator flight, boundary comparison, and real-device recovery subflight orchestration.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/launch.rs|sha256:078e6b06a046cace9ff04879d2809ec0998037a641712b30f6d5b38e6e71389d|implementation|1710|Deterministic QEMU launch profile construction and opt-in runtime tracing.|Launch validation, canonical argument serialization, and diagnostic trace selection share the same content-addressed profile invariant.
 shape-review|crates/crucible-qemu/src/linux_cgroup.rs|sha256:f3714ec131bf45347193e0cef449b84bcfa6ff22a11309440d9861a09b1790f7|implementation|1561|Linux cgroup-v2 authority for attempt-contained QEMU processes.|Descriptor pinning, credential drop, watcher completion, and quarantine transfer form one privileged process-containment transaction.
-shape-review|crates/crucible-qemu/src/mapped_quantum.rs|sha256:3ba3a60943112da6ec973f2183b198687e532564d7fe80c05a21fae9b2f29184|implementation|1113|Owned mapped shared-memory adapter for QEMU quantum channels.|threshold-not-reached
+shape-review|crates/crucible-qemu/src/mapped_quantum.rs|sha256:cbd50f66b5b68fb8095929343e5e039da2840d01fdbf49dd4c851166cba14c11|implementation|1114|Owned mapped shared-memory adapter for QEMU quantum channels.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/node/channels.rs|sha256:54f3c5048138aa822858c82ad1e8a3d78ede2a82365b655c72b187847523def9|implementation|1034|Typed plugin IPC, shared-memory, and QMP channel contracts for one QEMU node.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/node/test_support/hot_fork.rs|sha256:daddafb17b9d250003211dbaa8f02cb819678ed6fef3025909fe2b414947e6c3|tests|1509|Scripted retained-template transport for cross-crate hot-fork tests.|Scripted source setup, child handshake emulation, transport faults, and teardown validate one retained-template hot-fork transport contract.
 shape-review|crates/crucible-qemu/src/node/tests/hot_fork.rs|sha256:fcae6e440a54def502ab1511924245049a2b6ebf493ebb08495ecc58bd03c33f|tests|1129|QEMU node hot-fork ownership transfer, rejection, and quarantine regressions.|threshold-not-reached
-shape-review|crates/crucible-qemu/src/node_factory.rs|sha256:bd7c3376a768e53eb286c26f922aabc14a10cb6d67f49295af3f0e5ab1e70f7c|implementation|1087|Linux factory for already-spawned QEMU nodes.|threshold-not-reached
-shape-review|crates/crucible-qemu/src/node_set.rs|sha256:0578148413b74eca685e57b4769d68ef9389f664dcf5ddec677c1336672b43e4|implementation|1932|Node-addressed production QEMU backend set.|Node-addressed routing and whole-world hot-fork transfer depend on the same live NodeId ownership map.
+shape-review|crates/crucible-qemu/src/node_factory.rs|sha256:07c6585499c7740897d4a2572389d7bcddb8312a2f2ebeb3414edd638dc390a8|implementation|1088|Linux factory for already-spawned QEMU nodes.|threshold-not-reached
+shape-review|crates/crucible-qemu/src/node_set.rs|sha256:e88b0676af4674349170bcdb551e80e68a9a41718ac06fb75c74b1169060f3db|implementation|1924|Node-addressed production QEMU backend set.|Node-addressed routing and whole-world hot-fork transfer depend on the same live NodeId ownership map.
 shape-review|crates/crucible-qemu/src/spawn.rs|sha256:951647ab21881b9799223567daa01e6107d1c6b0f399c7deee53ebe06b3f8337|implementation|1806|Guarded QEMU process admission, fixed-descriptor transport, and child setup.|Descriptor creation, cgroup admission, helper and probe execution, and pre-exec descriptor installation form one Linux child-process boundary.
 shape-review|crates/crucible-qemu/src/spawn/run_directory.rs|sha256:3516fee37d9e2c199e0ddd4572a2613dd1dbea50ef35011e0c90327c261d2407|implementation|1129|Pinned run-directory authority, sealed launch artifact identities, and bounded trace retention.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/spawn_test.rs|sha256:5f2160a09564098b65cd54c8a6dfba726ec19fc404b0a963687c5b9bc2395a85|tests|1669|Tests retained diagnostic traces, inherited descriptors, guarded pre-exec placement, pinned run directories, and process cleanup.|Trace retention, launch-resource admission, guarded child setup, descriptor inheritance, and cleanup cases reuse one Linux process-boundary fixture and its low-level file-descriptor helpers.
 shape-review|crates/crucible-qemu/src/supervision/block_io_servicer.rs|sha256:1d9f064b9b6ac0745c2b9691d28f335a8ccc52e4c180651a813314e1eed66105|implementation|2245|Host block-I/O servicer for a live QEMU node's `SLOT_BLK_IO` rings.|Ring consumption, deterministic device computation, and deadline publication share one FIFO and guest-icount ordering invariant.
 shape-review|crates/crucible-qemu/src/supervision/host_io_runtime.rs|sha256:cb80186f2336ac3615834cd520ac0632a9e9cab3666d9da60ff0087f818fc707|implementation|1463|Production host-I/O runtime for a live QEMU node.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/supervision/ninep_io_servicer.rs|sha256:2ef3ab123f326f71dc92bc6243dbf85e7588825cdf143f127a79fccf460e1114|implementation|1339|Host servicer for a live node's signal-driven `SLOT_9P_IO` rings.|threshold-not-reached
-shape-review|crates/crucible-qemu/src/supervision/node_step_gate.rs|sha256:5614685f42bede5ab4221398ec635bfca9416b1ae112b9fc9a29a45d05e5c3e4|implementation|1587|Production fresh-launch and exact-restore admission into an owned live QEMU node.|Configuration validation, process admission, plugin and QMP assembly, checkpoint binding, authenticated failure diagnostics, and reaping form one guarded node-construction transition.
+shape-review|crates/crucible-qemu/src/supervision/node_step_gate.rs|sha256:164c2d8615594c727aeacb8d58e73180bff0ddfa967dabf45df6a7d5da194ef3|implementation|1587|Production fresh-launch and exact-restore admission into an owned live QEMU node.|Configuration validation, process admission, plugin and QMP assembly, checkpoint binding, authenticated failure diagnostics, and reaping form one guarded node-construction transition.
 shape-review|crates/crucible-qemu/tests/deterministic_launch.rs|sha256:03ddb9615819cd36f65007ebe9520f11ff43c05c3deff1939cdb81b93277ec02|tests|1720|Integration tests for deterministic launch profiles, admitted QEMU arguments, identity material, and rejected host influence.|Profile construction, argument validation, identity hashing, and negative host-input cases jointly enforce one public deterministic-launch contract.
 shape-review|crates/crucible-qemu/tests/qmp.rs|sha256:4bbcd7f733e61ca925109a246b61de9d106aad2d3b73fd24ea28ec9f0929a467|tests|1433|Checks the minimal typed QMP client and its hot-fork schema registry.|threshold-not-reached
 shape-review|crates/crucible-session/src/session/actor.rs|sha256:9594eaed7b9a640b96f23d1174b76ad095696f62a9978e4af3b7ee686ad5a40c|implementation|1290|Session actor command admission, lifecycle transitions, live publication, and event-stream ownership.|threshold-not-reached
-shape-review|crates/crucible-session/src/session/engine.rs|sha256:733e2ccff54f384a73fb20817329102cb6305476bd447ff0beba57bc62c895ad|implementation|1976|Session engine lifecycle, quantum execution, checkpoint, fork, and replay control.|Execution driving, command boundaries, checkpoint state, fork continuation, replay restoration, and terminal publication share one session state machine.
-shape-review|crates/crucible-session/src/tests/engine_state.rs|sha256:cfc0c30c8e7e9cdfc7230c57b0089419bff7a46d45d2477bb45ac31a8bd0895f|tests|2457|Session lifecycle, command-boundary, checkpoint, resume, fork, and failure regressions.|Lifecycle, control, checkpoint, resume, fork, replay, and failure cases exercise one session-engine state-transition fixture.
-shape-review|crates/crucible/src/model/binary_state.rs|sha256:b851de33ecef446f946a68d1703a5d69890378adb29e604500ed85ea7f959e21|implementation|1653|Canonical binary encoding for scenarios, checkpoints, and materialized scheduler state.|Primitive writers and state codecs share one canonical byte layout and version-compatibility contract.
-shape-review|crates/crucible/src/model/engine.rs|sha256:f9e2d5b797f1aad1229824b9851d4698b83f2f17143d12a6b7a67a1f6cc33a8d|implementation|2219|Engine replay reconstruction, checkpoint validation, reduction, and symmetry helpers.|Replay reconstruction, checkpoint validation, reduction, and symmetry helpers operate on one engine state-transition model.
+shape-review|crates/crucible-session/src/session/engine.rs|sha256:92d0168ac82af1d6922b2ad0ddf294dda883398927efa72af98a0e037bb06e3a|implementation|1992|Session engine lifecycle, quantum execution, checkpoint, fork, and replay control.|Execution driving, command boundaries, checkpoint state, fork continuation, replay restoration, and terminal publication share one session state machine.
+shape-review|crates/crucible-session/src/tests/engine_state.rs|sha256:a7a5119164963b902ed04b280ca57dcc3682ce8fbb840e17ad7b430681a59d2a|tests|2530|Session lifecycle, command-boundary, checkpoint, resume, fork, and failure regressions.|Lifecycle, control, checkpoint, resume, fork, replay, and failure cases exercise one session-engine state-transition fixture.
+shape-review|crates/crucible/src/model/binary_state.rs|sha256:f3ef7b61531da59cf26b2b4f417fee9d076ff0fcf0ce93b467a2df3bb8a6c373|implementation|1719|Canonical binary encoding for scenarios, checkpoints, and materialized scheduler state.|Primitive writers and scenario and checkpoint codecs share the current canonical byte layout and validation contract.
+shape-review|crates/crucible/src/model/engine.rs|sha256:c07baa1f5a427023354b14a820ad708a60014f2d1c9e4455a491da56668dd930|implementation|2309|Engine replay reconstruction, checkpoint validation, reduction, and symmetry helpers.|Replay reconstruction, checkpoint validation, reduction, and symmetry helpers operate on one engine state-transition model.
 shape-review|crates/crucible/src/model/failure/replay_evidence.rs|sha256:c88316680160db2048fac054cbc9f7ec61963a336607f7974ae03a2bc657dc54|implementation|1035|Replay-oracle evidence, sampled mismatch reports, divergence bisection, and artifact authentication.|threshold-not-reached
 shape-review|crates/crucible/src/model/fault_signal/binding_runtime_test.rs|sha256:1e6298ee09a0da08e3e5365f913ac56af22d63c5be640bc6fa48e4a2672c07cb|tests|1490|Tests deterministic binding evaluation, checkpointing, replay, and search overrides.|threshold-not-reached
 shape-review|crates/crucible/src/model/fault_signal/evaluator.rs|sha256:952f0d03b3bc25da20ee71103dd305f83da9f9652ced0e289c1f5384b562fd91|implementation|1988|Typed evaluation of fault-signal sources, transforms, temporal operators, and compositions.|Domain validation, recursive dependency evaluation, typed operators, and stateful node semantics share one memoized signal-evaluation context.
 shape-review|crates/crucible/src/model/measurement/runtime.rs|sha256:5de7d46876ca6da41c38dae6ab231279bbc2bcb0a51b69ddbed1a23a6b64bb02|implementation|1466|Bounded replay evaluation and exact aggregation for scenario measurements.|threshold-not-reached
 shape-review|crates/crucible/src/model/temporal_graph/search_storage.rs|sha256:6cd973ca6eee3a074754988b751babd3774b980b98084fb3070b0d7e76274500|implementation|1312|Temporal frontier search, checkpoint DAG persistence, cache admission, and garbage collection.|threshold-not-reached
-shape-review|crates/crucible/src/scheduler/event_log.rs|sha256:10e9c34415bfb3793736ab43284522c1e562dd824358a336f53908b5891e2fe1|implementation|2210|Quantum-loop contracts, canonical scheduler logging, and event projections.|Quantum-loop interfaces, log storage, and event projections share deterministic ordering and replay invariants.
+shape-review|crates/crucible/src/scheduler/event_log.rs|sha256:ca644b608201e62c6fdd67da13f21d9c05e74776545d486447c43d02e7be180f|implementation|2223|Quantum-loop contracts, canonical scheduler logging, and event projections.|Quantum-loop interfaces, log storage, and event projections share deterministic ordering and replay invariants.
 shape-review|crates/crucible/src/scheduler/single_scheduler_drive.rs|sha256:21ce824c8c13a705126810a8feb87aaa12716540995597673f2e4972ff4ac76f|implementation|1923|Scheduler topology transitions, advancement planning, authoritative quantum drive, and control drain.|Topology transitions, advance planning, quantum execution, and control draining compose one authoritative scheduler step.
 shape-review|crates/crucible/src/scheduler/single_scheduler_state.rs|sha256:7678dfef8a40180536ead859cbd9a40d8a5b15ba41ab4641bd9ddcd3a7c88b3f|implementation|1415|Scheduler construction, World/device attachment, materialization, faults, and lifecycle.|threshold-not-reached
 shape-review|crates/crucible/src/scheduler/tests.rs|sha256:b219a4554d282d72c38972336eb97912f1764b0051dbaad2dee139d925ce66cd|tests|1910|Scheduler unit tests for backend routing, control, checkpoints, faults, and topology.|Backend, control, checkpoint, fault, and topology cases reuse the scheduler fixture and authoritative quantum-loop contract.
 shape-review|crates/crucible/src/scheduler/topology.rs|sha256:31875b2886b2fc8064f3ad49cb51bd314ad53919634df56e8eaeedef7f3c165b|implementation|1565|Control admission, lookahead topology, timeline ordering, horizons, and rendezvous.|Control admission, lookahead, rendezvous, and horizon calculation share one canonical timeline ordering.
-shape-review|crates/crucible/src/trigger/assertions.rs|sha256:7cdb7bc8590de08b0f0661b62f3f396e856c7dd9adf3d08632e6ccfe92f9513c|implementation|2514|Host assertion outcomes, replay, offline checking, evaluation, and lifecycle state.|Outcome encoding, replay, evaluation, violation evidence, and lifecycle transitions implement one host-assertion contract.
+shape-review|crates/crucible/src/trigger/assertions.rs|sha256:7b762a462e504e22201d28b3f371297e2bfba964eec9f829cca9d2d811b31589|implementation|2532|Host assertion outcomes, replay, offline checking, evaluation, and lifecycle state.|Outcome encoding, replay, evaluation, violation evidence, and lifecycle transitions implement one host-assertion contract.
 shape-review|crates/crucible/src/trigger/evaluation.rs|sha256:a40527d360e650f0abcc241d0b2e92c0bbdad60372acbfe6fd10079620ba22b1|implementation|1252|Cached condition evaluation, runtime fact projection, and predicate matching.|threshold-not-reached
 shape-review|crates/crucible/src/trigger/event_graph.rs|sha256:ed85cbc6e065b3376dcbc83f1a3d139d86d82d107dc466d757cdef612367d0e8|implementation|1967|Event graph authoring, lowering, firing, state, and validation.|Graph authoring, lowering, firing, runtime state, and validation all preserve the same event identities and dependencies.
-shape-review|crates/crucible/tests/gate_campaign_replay.rs|sha256:3b58bcf9aef389e12284038d8bfe8d9325f749fafe97c2051d7d84d0fdff141a|tests|1014|Campaign replay admission, authenticated history, and exact-retention regressions.|threshold-not-reached
+shape-review|crates/crucible/tests/gate_campaign_replay.rs|sha256:db33e91f2ab1377a3e1468cd84ad23da217f67c2f21b4d86dddd891d7f095583|tests|1014|Campaign replay admission, authenticated history, and exact-retention regressions.|threshold-not-reached
 shape-review|crates/crucible/tests/gate_content_address.rs|sha256:9f2514469d52d70e7a0967e7fff4448a31fdc3ec8bd90376f3109a2c192080be|tests|1945|Content-address identities, local DAG storage, checkpoint artifacts, and garbage collection regressions.|Identity, storage, current artifact reachability, and collection cases share one content-addressed graph and store contract.
 shape-review|crates/crucible/tests/gate_replay_oracle.rs|sha256:74ab227c86a72a01535973c2c8bcb06751c50156a6141a27c1996cacf20d4b5a|tests|1633|Replay-oracle integration tests for materialization sampling, mismatch localization, and reproduction artifacts.|Materialization, sampling, corruption, bisection, and artifact round trips share one temporal-graph replay-oracle fixture.
 shape-line|crates/aos-cache/src/backend/http.rs|1007
@@ -327,134 +328,64 @@ shape-line|crates/aos/tests/apm_system_config_dir.rs|1085
 shape-line|crates/aos/tests/apr_cache_cli.rs|1848
 shape-line|crates/aos/tests/apr_origin_config_cli.rs|1198
 shape-line|crates/aos/tests/hub_topology_cutover.rs|819
-shape-line|crates/crucible-api/src/client.rs|2965
 shape-line|crates/crucible-api/src/debug_gateway.rs|923
-shape-line|crates/crucible-api/src/lifecycle.rs|2209
 shape-line|crates/crucible-api/src/open_set.rs|722
 shape-line|crates/crucible-api/src/rpc_abi.rs|642
-shape-line|crates/crucible-api/src/server.rs|2931
-shape-line|crates/crucible-api/src/streaming.rs|1252
 shape-line|crates/crucible-api/src/vm_lifecycle.rs|2868
 shape-line|crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs|3217
-shape-line|crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs|1533
 shape-line|crates/crucible-api/src/vm_lifecycle/helpers.rs|784
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults.rs|2765
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/boundary.rs|1841
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route.rs|1030
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route/custody_and_payload.rs|2042
 shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/route/frame_policy.rs|2145
-shape-line|crates/crucible-api/src/vm_lifecycle/network_faults/tests.rs|1189
-shape-line|crates/crucible-api/src/vm_lifecycle/quantum_loop.rs|2587
-shape-line|crates/crucible-api/src/vm_lifecycle/runtime.rs|977
-shape-line|crates/crucible-api/src/vm_lifecycle/runtime/tests.rs|1577
 shape-line|crates/crucible-api/src/vm_lifecycle/storage_faults.rs|2570
 shape-line|crates/crucible-api/tests/gate_control_client/conformance.rs|1276
-shape-line|crates/crucible-api/tests/gate_control_client/contract_tests.rs|1723
-shape-line|crates/crucible-api/tests/gate_control_client/http2_fixture.rs|2364
 shape-line|crates/crucible-campaign/src/campaign_service.rs|3024
-shape-line|crates/crucible-campaign/src/campaign_service/query.rs|2504
-shape-line|crates/crucible-campaign/src/campaign_service/query/tests.rs|1756
 shape-line|crates/crucible-campaign/src/campaign_service/tests.rs|1151
 shape-line|crates/crucible-campaign/src/choice/domain.rs|737
 shape-line|crates/crucible-campaign/src/choice/group.rs|693
-shape-line|crates/crucible-campaign/src/choice/model.rs|1190
 shape-line|crates/crucible-campaign/src/execution.rs|2551
 shape-line|crates/crucible-campaign/src/executor_capability.rs|984
 shape-line|crates/crucible-campaign/src/exploration/guidance.rs|1710
 shape-line|crates/crucible-campaign/src/exploration/planner.rs|1055
 shape-line|crates/crucible-campaign/src/exploration/request.rs|741
-shape-line|crates/crucible-campaign/src/finding.rs|1335
 shape-line|crates/crucible-campaign/src/identity.rs|655
-shape-line|crates/crucible-campaign/src/merkle.rs|2008
-shape-line|crates/crucible-campaign/src/model.rs|1331
-shape-line|crates/crucible-campaign/src/model/facts.rs|818
-shape-line|crates/crucible-campaign/src/objective.rs|1842
-shape-line|crates/crucible-campaign/src/observation.rs|1093
-shape-line|crates/crucible-campaign/src/planner_service.rs|1798
-shape-line|crates/crucible-campaign/src/planner_service/closed.rs|816
-shape-line|crates/crucible-campaign/src/policy.rs|1590
-shape-line|crates/crucible-campaign/src/repository.rs|1369
-shape-line|crates/crucible-campaign/src/repository/closure.rs|1563
-shape-line|crates/crucible-campaign/src/repository/executor_driver.rs|977
-shape-line|crates/crucible-campaign/src/repository/observation.rs|1091
-shape-line|crates/crucible-campaign/src/repository/planner_issue.rs|890
 shape-line|crates/crucible-campaign/src/repository/projection.rs|2915
-shape-line|crates/crucible-campaign/src/repository/projection/branch.rs|1587
-shape-line|crates/crucible-campaign/src/repository/tests.rs|787
-shape-line|crates/crucible-campaign/src/repository/tests/coordination.rs|2487
-shape-line|crates/crucible-campaign/src/repository/tests/coordination/planning.rs|2797
-shape-line|crates/crucible-campaign/src/repository/tests/validation.rs|1796
-shape-line|crates/crucible-campaign/src/repository/tests/validation/generator_expansion.rs|2973
-shape-line|crates/crucible-campaign/src/repository/tests/validation/generator_strategies.rs|2177
-shape-line|crates/crucible-campaign/src/tests.rs|3503
 shape-line|crates/crucible-cas/src/bin/crucible-fleet-store.rs|1067
 shape-line|crates/crucible-cas/src/cas/campaign_codec.rs|1233
 shape-line|crates/crucible-cas/src/cas/campaign_store.rs|1514
 shape-line|crates/crucible-cas/src/cas/tests.rs|1286
-shape-line|crates/crucible-cas/src/content_store.rs|1456
 shape-line|crates/crucible-cas/src/content_store/composition.rs|740
 shape-line|crates/crucible-cas/src/content_store/compressed_directory.rs|698
 shape-line|crates/crucible-cas/src/content_store/directory.rs|1059
-shape-line|crates/crucible-cas/src/content_store/encrypted_directory.rs|1453
-shape-line|crates/crucible-cas/src/content_store/graph.rs|1837
-shape-line|crates/crucible-cas/src/content_store/packed.rs|1267
 shape-line|crates/crucible-cas/src/content_store/s3_ref.rs|1436
 shape-line|crates/crucible-cas/src/content_store/write_back.rs|909
 shape-line|crates/crucible-cas/src/lib.rs|1390
 shape-line|crates/crucible-cli/src/cli/artifact.rs|1011
-shape-line|crates/crucible-cli/src/cli/backend.rs|1281
-shape-line|crates/crucible-cli/src/cli/campaign.rs|2681
 shape-line|crates/crucible-cli/src/cli/campaign/explain.rs|1078
 shape-line|crates/crucible-cli/src/cli/campaign/fixture.rs|742
 shape-line|crates/crucible-cli/src/cli/campaign/gc.rs|971
 shape-line|crates/crucible-cli/src/cli/campaign/policy.rs|779
 shape-line|crates/crucible-cli/src/cli/campaign/ranking.rs|778
 shape-line|crates/crucible-cli/src/cli/campaign/tests.rs|4140
-shape-line|crates/crucible-cli/src/cli/control.rs|1168
-shape-line|crates/crucible-cli/src/cli/planning/invocations.rs|2514
 shape-line|crates/crucible-cli/src/cli/planning/verify_seed_render.rs|902
-shape-line|crates/crucible-cli/src/cli/run_save.rs|1176
-shape-line|crates/crucible-cli/src/cli/run_save/qemu_live.rs|919
 shape-line|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs|1141
 shape-line|crates/crucible-cli/src/cli/verify_serve/campaign_import.rs|650
 shape-line|crates/crucible-cli/src/cli/verify_serve/campaign_store.rs|1670
-shape-line|crates/crucible-cli/src/main.rs|2323
-shape-line|crates/crucible-cli/src/tests/replay_artifact.rs|2673
 shape-line|crates/crucible-cli/src/tests/state_workflows.rs|2614
-shape-line|crates/crucible-cli/src/tests/surface.rs|3522
-shape-line|crates/crucible-cli/src/tests/verify_dispatch.rs|3243
 shape-line|crates/crucible-cli/tests/machine_readable.rs|1286
-shape-line|crates/crucible-daemon/src/assignment_ledger.rs|1937
-shape-line|crates/crucible-daemon/src/assignment_ledger/tests.rs|907
-shape-line|crates/crucible-daemon/src/campaign_bootstrap.rs|1547
 shape-line|crates/crucible-daemon/src/campaign_bootstrap/runtime_registry.rs|700
-shape-line|crates/crucible-daemon/src/campaign_bootstrap/tests.rs|1914
 shape-line|crates/crucible-daemon/src/campaign_endpoint.rs|761
 shape-line|crates/crucible-daemon/src/campaign_gc.rs|608
-shape-line|crates/crucible-daemon/src/campaign_gc/tests.rs|1552
-shape-line|crates/crucible-daemon/src/campaign_loopback.rs|2071
 shape-line|crates/crucible-daemon/src/campaign_server.rs|696
 shape-line|crates/crucible-daemon/src/crucible_qemu_runner.rs|1170
 shape-line|crates/crucible-daemon/src/exact_checkpoint_restore.rs|937
-shape-line|crates/crucible-daemon/src/exact_checkpoint_store/production.rs|1424
 shape-line|crates/crucible-daemon/src/exact_pin_retention.rs|1191
 shape-line|crates/crucible-daemon/src/executor_loopback.rs|787
-shape-line|crates/crucible-daemon/src/executor_loopback/tests.rs|833
-shape-line|crates/crucible-daemon/src/executor_pool.rs|1924
 shape-line|crates/crucible-daemon/src/executor_pool/promotion.rs|759
-shape-line|crates/crucible-daemon/src/executor_pool/tests.rs|2174
 shape-line|crates/crucible-daemon/src/executor_server.rs|711
-shape-line|crates/crucible-daemon/src/executor_supervisor.rs|2943
-shape-line|crates/crucible-daemon/src/executor_supervisor/tests.rs|1638
-shape-line|crates/crucible-daemon/src/executor_worker.rs|1465
-shape-line|crates/crucible-daemon/src/packaged_qemu_executor.rs|1066
-shape-line|crates/crucible-daemon/src/packaged_qemu_executor/tests.rs|781
-shape-line|crates/crucible-daemon/src/paused_checkpoint_promotion.rs|997
 shape-line|crates/crucible-daemon/src/qemu_baked_genesis.rs|716
-shape-line|crates/crucible-daemon/src/qemu_campaign_driver.rs|1186
-shape-line|crates/crucible-daemon/src/qemu_campaign_driver/tests.rs|1423
-shape-line|crates/crucible-daemon/src/qemu_campaign_lifecycle.rs|1525
-shape-line|crates/crucible-daemon/src/qemu_campaign_lifecycle/tests.rs|1897
 shape-line|crates/crucible-daemon/src/qemu_resource_guard.rs|1091
 shape-line|crates/crucible-daemon/src/qemu_resource_guard/tests.rs|608
 shape-line|crates/crucible-debug-gateway/src/lib.rs|632
@@ -472,13 +403,11 @@ shape-line|crates/crucible-guest/src/guest_introspection_agent.rs|967
 shape-line|crates/crucible-guest/src/lib.rs|889
 shape-line|crates/crucible-harness/src/adversarial.rs|1265
 shape-line|crates/crucible-harness/src/e2e.rs|1351
-shape-line|crates/crucible-harness/src/phase_plan.rs|1437
 shape-line|crates/crucible-s3-store/src/lib.rs|2025
 shape-line|crates/crucible-harness/src/replay_oracle.rs|1312
 shape-line|crates/crucible-harness/src/reproduction.rs|2420
 shape-line|crates/crucible-harness/tests/crate_artifact_types.rs|719
 shape-line|crates/crucible-harness/tests/determinism_core_coverage.rs|643
-shape-line|crates/crucible-harness/tests/engineering_hygiene.rs|754
 shape-line|crates/crucible-harness/tests/gate_license_boundary.rs|617
 shape-line|crates/crucible-harness/tests/harness_lint.rs|984
 shape-line|crates/crucible-harness/tests/reproduction_artifact.rs|694
@@ -499,7 +428,6 @@ shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1269
 shape-line|crates/crucible-qemu-plugin/src/fault_command.rs|2432
 shape-line|crates/crucible-qemu-plugin/src/fault_command/bridge.rs|1299
 shape-line|crates/crucible-qemu-plugin/src/fault_command_test.rs|1179
-shape-line|crates/crucible-qemu-plugin/src/idle_loop.rs|991
 shape-line|crates/crucible-qemu-plugin/src/inbound.rs|635
 shape-line|crates/crucible-qemu-plugin/src/network_rx.rs|1294
 shape-line|crates/crucible-qemu-plugin/src/network_tx.rs|835
@@ -508,12 +436,8 @@ shape-line|crates/crucible-qemu-plugin/src/preemption.rs|910
 shape-line|crates/crucible-qemu-plugin/src/registration.rs|809
 shape-line|crates/crucible-qemu-plugin/src/registration/tests.rs|727
 shape-line|crates/crucible-qemu-plugin/src/round_robin.rs|786
-shape-line|crates/crucible-qemu-plugin/src/runtime.rs|2783
-shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|2485
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|1926
-shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|1209
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|769
-shape-line|crates/crucible-qemu-plugin/src/runtime/tests.rs|1815
 shape-line|crates/crucible-qemu-plugin/src/setup.rs|1121
 shape-line|crates/crucible-qemu-plugin/src/setup/tests.rs|701
 shape-line|crates/crucible-qemu-plugin/src/time_control.rs|1217
@@ -522,46 +446,30 @@ shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|2206
 shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs|1817
 shape-line|crates/crucible-qemu/src/fault_capability.rs|1779
 shape-line|crates/crucible-qemu/src/host_setup.rs|1914
-shape-line|crates/crucible-qemu/src/launch.rs|1758
 shape-line|crates/crucible-qemu/src/launch/plugin_config.rs|699
 shape-line|crates/crucible-qemu/src/launch/validation.rs|869
 shape-line|crates/crucible-qemu/src/linux_attempt_host.rs|826
 shape-line|crates/crucible-qemu/src/linux_attempt_storage.rs|1779
-shape-line|crates/crucible-qemu/src/linux_cgroup.rs|2881
 shape-line|crates/crucible-linux-resource/src/linux_project_quota.rs|1134
-shape-line|crates/crucible-qemu/src/mapped_quantum.rs|1240
 shape-line|crates/crucible-qemu/src/node.rs|3609
 shape-line|crates/crucible-qemu/src/node/hot_fork_child_qmp.rs|731
 shape-line|crates/crucible-qemu/src/node/hot_fork_diagnostics.rs|715
 shape-line|crates/crucible-qemu/src/node/hot_fork_plugin_endpoints.rs|653
 shape-line|crates/crucible-qemu/src/node/hot_fork_ring_image.rs|952
-shape-line|crates/crucible-qemu/src/node_factory.rs|1397
-shape-line|crates/crucible-qemu/src/node_set.rs|1159
 shape-line|crates/crucible-qemu/src/node_tests.rs|2354
 shape-line|crates/crucible-qemu/src/qmp.rs|2867
 shape-line|crates/crucible-qemu/src/qmp/hot_fork/block_barrier.rs|682
 shape-line|crates/crucible-qemu/src/qmp/hot_fork/plugin.rs|819
 shape-line|crates/crucible-qemu/src/qmp/vmstate_control.rs|895
 shape-line|crates/crucible-qemu/src/quantum.rs|837
-shape-line|crates/crucible-qemu/src/spawn.rs|1936
 shape-line|crates/crucible-qemu/src/spawn/materialization.rs|911
-shape-line|crates/crucible-qemu/src/spawn_test.rs|1368
 shape-line|crates/crucible-qemu/src/storage_array.rs|713
 shape-line|crates/crucible-qemu/src/storage_fault_resolver.rs|2904
 shape-line|crates/crucible-qemu/src/storage_fault_resolver_tests.rs|1306
-shape-line|crates/crucible-qemu/src/supervision/block_io_servicer.rs|2258
 shape-line|crates/crucible-qemu/src/supervision/bounded_scheduler_preemption.rs|860
 shape-line|crates/crucible-qemu/src/supervision/device_host_work.rs|1066
-shape-line|crates/crucible-qemu/src/supervision/host_io_runtime.rs|1407
-shape-line|crates/crucible-qemu/src/supervision/ninep_io_servicer.rs|1328
-shape-line|crates/crucible-qemu/src/supervision/node_step_gate.rs|2483
-shape-line|crates/crucible-qemu/tests/deterministic_launch.rs|1679
-shape-line|crates/crucible-qemu/tests/qmp.rs|2410
-shape-line|crates/crucible-session/src/session/actor.rs|1273
 shape-line|crates/crucible-session/src/session/commands.rs|908
-shape-line|crates/crucible-session/src/session/engine.rs|1842
 shape-line|crates/crucible-session/src/tests/actor_runtime.rs|2250
-shape-line|crates/crucible-session/src/tests/engine_state.rs|2362
 shape-line|crates/crucible-session/tests/gate_control_responsive.rs|721
 shape-line|crates/crucible-session/tests/gate_exploration_fork.rs|633
 shape-line|crates/crucible-shmem/src/mapped_setup_region/hot_fork.rs|676
@@ -577,17 +485,12 @@ shape-line|crates/crucible/src/decision.rs|1369
 shape-line|crates/crucible/src/decision/app_random_selectable.rs|967
 shape-line|crates/crucible/src/decision/signal_fault_selectable.rs|956
 shape-line|crates/crucible/src/device_subnode.rs|1228
-shape-line|crates/crucible/src/example_corpus.rs|2225
 shape-line|crates/crucible/src/model/binary_plan.rs|854
-shape-line|crates/crucible/src/model/binary_state.rs|1678
 shape-line|crates/crucible/src/model/configuration.rs|723
 shape-line|crates/crucible/src/model/debug.rs|2923
-shape-line|crates/crucible/src/model/engine.rs|2159
 shape-line|crates/crucible/src/model/exploration.rs|2472
 shape-line|crates/crucible/src/model/fault_signal/authoring/signal_codec.rs|935
 shape-line|crates/crucible/src/model/fault_signal/authoring/target_resolution.rs|695
-shape-line|crates/crucible/src/model/fault_signal/binding_runtime_test.rs|1480
-shape-line|crates/crucible/src/model/fault_signal/evaluator.rs|1983
 shape-line|crates/crucible/src/model/fault_signal/evaluator/codec.rs|667
 shape-line|crates/crucible/src/model/fault_signal/evaluator/math.rs|2067
 shape-line|crates/crucible/src/model/fault_signal/evaluator_test.rs|630
@@ -605,7 +508,6 @@ shape-line|crates/crucible/src/model/fault_signal/validation.rs|1394
 shape-line|crates/crucible/src/model/material.rs|1444
 shape-line|crates/crucible/src/model/materialized.rs|1345
 shape-line|crates/crucible/src/model/measurement.rs|1159
-shape-line|crates/crucible/src/model/measurement/runtime.rs|1459
 shape-line|crates/crucible/src/model/measurement/runtime/tests.rs|882
 shape-line|crates/crucible/src/model/plan_properties.rs|1270
 shape-line|crates/crucible/src/model/temporal_graph/core.rs|1683
@@ -619,29 +521,19 @@ shape-line|crates/crucible/src/model/world_network_policy.rs|1409
 shape-line|crates/crucible/src/scheduler/checkpoint.rs|687
 shape-line|crates/crucible/src/scheduler/control_state.rs|1028
 shape-line|crates/crucible/src/scheduler/event_codec.rs|2364
-shape-line|crates/crucible/src/scheduler/event_log.rs|2219
 shape-line|crates/crucible/src/scheduler/event_log/backend_loop.rs|748
 shape-line|crates/crucible/src/scheduler/scenario.rs|719
-shape-line|crates/crucible/src/scheduler/single_scheduler_drive.rs|1887
-shape-line|crates/crucible/src/scheduler/single_scheduler_state.rs|1616
-shape-line|crates/crucible/src/scheduler/tests.rs|1909
-shape-line|crates/crucible/src/scheduler/topology.rs|1517
 shape-line|crates/crucible/src/sim_backend.rs|2005
 shape-line|crates/crucible/src/tests/model_core.rs|2103
 shape-line|crates/crucible/src/tests/world_validation.rs|1223
-shape-line|crates/crucible/src/trigger/assertions.rs|2479
 shape-line|crates/crucible/src/trigger/conditions.rs|1916
-shape-line|crates/crucible/src/trigger/evaluation.rs|1235
-shape-line|crates/crucible/src/trigger/event_graph.rs|1893
 shape-line|crates/crucible/src/trigger/evidence.rs|2004
 shape-line|crates/crucible/src/trigger/observability.rs|1071
 shape-line|crates/crucible/tests/backend_node_routing.rs|728
 shape-line|crates/crucible/tests/event_graph_replay_oracle.rs|758
-shape-line|crates/crucible/tests/gate_content_address.rs|2214
 shape-line|crates/crucible/tests/gate_e2e_determinism_concurrency.rs|762
 shape-line|crates/crucible/tests/gate_failure_signature.rs|1850
 shape-line|crates/crucible/tests/gate_guided_adaptive_exploration.rs|650
-shape-line|crates/crucible/tests/gate_replay_oracle.rs|1632
 shape-line|crates/crucible/tests/gate_search_strategies.rs|1957
 shape-line|crates/crucible/tests/gate_unifying_view.rs|696
 shape-line|crates/crucible/tests/guest_marker_assertions.rs|736
@@ -838,5 +730,5 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/midp
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign/finding_bundle/midpoint.rs|Qemu
 shape-review|crates/crucible/src/example_corpus.rs|sha256:c5f29789adaa6e571d6697cb8f6963bdc02cd02c7ba37b4f7e6c86ec30a427d1|implementation|2231|Executable deterministic examples spanning scenarios, graphs, replay, coverage, and campaign artifacts.|The examples share canonical builders and return one public corpus used by documentation and end-to-end gates.
 shape-review|crates/crucible/src/model/fault_signal/spatial/sampling.rs|sha256:4b5432e7f74e267cf9c1064e5bf780de8ac30d93dd4a0ed8e8fb366776cb3842|implementation|1003|Exact spatial signal sampling for point, grid, tiled, and analytic sources.|threshold-not-reached
-shape-review|crates/crucible-campaign/src/campaign_service/query/tests.rs|sha256:a2ada1c2a1c3c5724e340f509ab5833c3d5a237ff48b73451f57c7d4a09f07c8|tests|1771|Authenticated campaign query, pagination, graph, object, and snapshot regression tests.|The query tests reuse one repository fixture and verify the complete bounded snapshot-query contract.
+shape-review|crates/crucible-campaign/src/campaign_service/query/tests.rs|sha256:51d91f1284cae4a12d8930e44848e5f5d0ea3f608c9c72f9493da8db61a02dfc|tests|1771|Authenticated campaign query, pagination, graph, object, and snapshot regression tests.|The query tests reuse one repository fixture and verify the complete bounded snapshot-query contract.
 shape-review|crates/crucible-harness/tests/campaign_gate_traceability.rs|sha256:7baeee2ee6f974db8bf17587b92c60a992e793dccb4e461e040afb57ef39a521|tests|1089|RFC-0020 requirement-to-target, exact-selector, Nix, and manual-evidence contract validation.|threshold-not-reached
