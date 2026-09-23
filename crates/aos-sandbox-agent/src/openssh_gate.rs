@@ -112,6 +112,41 @@ pub struct OpenSshGateReadbackV1 {
     pub physical: OpenSshGatePhysicalStateV1,
 }
 
+/// Requests installation and a fresh physical observation on one agent session.
+///
+/// The guest must derive process identity from its protected execution ledger;
+/// this request supplies only the already-admitted route and challenge.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenSshGateObserveRequestV1 {
+    /// Exact authenticated agent handshake binding.
+    pub session_binding: [u8; 32],
+    /// Fresh Host-generated challenge.
+    pub challenge: [u8; 32],
+    /// Protected Host route record commitment.
+    pub route_digest: [u8; 32],
+    /// Exact installed route, including the admitted attach operation.
+    pub binding: OpenSshGateBindingV1,
+}
+
+impl OpenSshGateObserveRequestV1 {
+    /// Rejects sentinel identities before dispatching any guest installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a route or challenge is missing or malformed.
+    pub fn validate(&self) -> Result<(), OpenSshGateReadbackErrorV1> {
+        self.binding.validate()?;
+        if self.session_binding == [0; 32]
+            || self.challenge == [0; 32]
+            || self.route_digest == [0; 32]
+        {
+            return Err(OpenSshGateReadbackErrorV1::InvalidBinding);
+        }
+        Ok(())
+    }
+}
+
 /// Root-installed attach claim consumed by the unprivileged forced command.
 ///
 /// The guest process owner also reads this claim under root-only ledger custody
@@ -152,6 +187,7 @@ impl OpenSshGateClaimV1 {
             || self.process_start_ticks == 0
             || self.sshd_pid == 0
             || self.sshd_start_ticks == 0
+            || self.process_pid == self.sshd_pid
         {
             return Err(OpenSshGateReadbackErrorV1::InvalidBinding);
         }

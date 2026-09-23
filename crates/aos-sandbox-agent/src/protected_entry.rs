@@ -36,6 +36,9 @@ use crate::model::{
     AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentOperationRequestV1,
     AgentOperationSequenceV1, AgentRuntimeBindingV1, AgentSessionBindingV1, InvalidAgentModel,
 };
+use crate::openssh_gate::{
+    OpenSshGateObserveRequestV1, OpenSshGateReadbackV1, sign_openssh_gate_readback_v1,
+};
 use crate::protocol::{
     AgentFrameV1, AgentProtocolError, MAX_AGENT_FRAME_BYTES, decode_frame_v1, encode_frame_v1,
 };
@@ -172,6 +175,25 @@ pub trait GuestOperationEffectsV1 {
         channel: ObjectDigest,
         deadline: Instant,
     ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1>;
+
+    /// Installs or rechecks one gate and returns a fresh physical measurement.
+    ///
+    /// Implementations must bind the requested attach to a protected admitted
+    /// execution and root-owned process ledger before launching sshd or writing
+    /// the fixed claim. The default preserves fail-closed behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when installation, ownership, or readback is unavailable.
+    fn observe_openssh_gate(
+        &mut self,
+        _request: &OpenSshGateObserveRequestV1,
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+    ) -> Result<OpenSshGateReadbackV1, ProtectedGuestAgentErrorV1> {
+        Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
+    }
 }
 
 /// Conservatively handles the source-only guest without launching a process.
@@ -297,6 +319,49 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
             let deadline = Instant::now() + OPERATION_TIMEOUT;
             let request = match decode_frame_v1(&receive(&mut socket, deadline)?)? {
                 AgentFrameV1::OperationRequest(request) => request,
+                AgentFrameV1::OpenSshGateObserveRequest(bytes) => {
+                    let observe: OpenSshGateObserveRequestV1 = serde_json::from_slice(&bytes)
+                        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    observe
+                        .validate()
+                        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    if serde_json::to_vec(&observe)
+                        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?
+                        != bytes
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
+                    }
+                    if observe.session_binding != *binding.digest().as_bytes() {
+                        return Err(ProtectedGuestAgentErrorV1::SessionMismatch);
+                    }
+                    if observe.binding.incarnation_id
+                        != *provisioning.runtime.incarnation().as_bytes()
+                        || observe.binding.assignment_epoch
+                            != provisioning.runtime.assignment_epoch().get()
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::OperationMismatch);
+                    }
+                    let readback = self.effects.observe_openssh_gate(
+                        &observe,
+                        &provisioning.runtime,
+                        provisioning.channel,
+                        deadline,
+                    )?;
+                    check_deadline(deadline)?;
+                    if readback.challenge != observe.challenge
+                        || readback.route_digest != observe.route_digest
+                        || readback.channel_binding != *provisioning.channel.as_bytes()
+                        || readback.binding != observe.binding
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
+                    }
+                    let packet =
+                        sign_openssh_gate_readback_v1(&readback, &provisioning.signing_key)
+                            .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    let frame = encode_frame_v1(&AgentFrameV1::OpenSshGateReadback(packet));
+                    send(&mut socket, &frame, deadline)?;
+                    continue;
+                }
                 _ => return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame),
             };
             if request.session() != binding {
@@ -690,6 +755,9 @@ pub enum ProtectedGuestAgentErrorV1 {
     /// Guest-local process effect or observation is unavailable.
     #[error("guest-agent process effect is unavailable")]
     EffectUnavailable,
+    /// An OpenSSH installation request is malformed or mismatched after readback.
+    #[error("guest-agent OpenSSH gate request is invalid")]
+    InvalidGateRequest,
     /// Guest-local effect or protected ledger processing failed.
     #[error("guest-agent protected effect failed: {0}")]
     EffectFailed(String),

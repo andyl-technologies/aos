@@ -6,6 +6,8 @@
 //!       / 2 handshake-response
 //!       / 3 operation-request
 //!       / 4 operation-outcome
+//!       / 5 OpenSSH gate install/readback request
+//!       / 6 signed OpenSSH gate readback
 //! ```
 //!
 //! Integers are big-endian. Variable bytes use a `u32be` length and every
@@ -28,7 +30,7 @@ const MAGIC: &[u8; 8] = b"AOSAGE01";
 /// Maximum complete agent frame, including header.
 pub const MAX_AGENT_FRAME_BYTES: usize = 16 * 1_048_576 + 1_024;
 
-/// Defines the four exact frame shapes in agent protocol 1.0.
+/// Defines the exact frame shapes in agent protocol 1.0.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentFrameV1 {
     /// Starts an exact incarnation handshake.
@@ -39,6 +41,10 @@ pub enum AgentFrameV1 {
     OperationRequest(AgentOperationRequestV1),
     /// Returns the exact result for one operation.
     OperationOutcome(AgentExecutionOutcomeV1),
+    /// Carries bounded canonical JSON for an exact gate installation/readback.
+    OpenSshGateObserveRequest(Vec<u8>),
+    /// Returns a bounded signed physical readback packet.
+    OpenSshGateReadback(Vec<u8>),
 }
 
 /// Encodes one exact protocol frame.
@@ -63,6 +69,14 @@ pub fn encode_frame_v1(frame: &AgentFrameV1) -> Vec<u8> {
             bytes.push(4);
             encode_operation_outcome(&mut bytes, outcome);
         }
+        AgentFrameV1::OpenSshGateObserveRequest(request) => {
+            bytes.push(5);
+            put_bytes(&mut bytes, request);
+        }
+        AgentFrameV1::OpenSshGateReadback(packet) => {
+            bytes.push(6);
+            put_bytes(&mut bytes, packet);
+        }
     }
     bytes
 }
@@ -84,6 +98,8 @@ pub fn decode_frame_v1(bytes: &[u8]) -> Result<AgentFrameV1, AgentProtocolError>
         2 => AgentFrameV1::HandshakeResponse(decode_handshake_response(&mut cursor)?),
         3 => AgentFrameV1::OperationRequest(decode_operation_request(&mut cursor)?),
         4 => AgentFrameV1::OperationOutcome(decode_operation_outcome(&mut cursor)?),
+        5 => AgentFrameV1::OpenSshGateObserveRequest(cursor.length_prefixed(4096)?.to_vec()),
+        6 => AgentFrameV1::OpenSshGateReadback(cursor.length_prefixed(8192)?.to_vec()),
         _ => return Err(AgentProtocolError::UnknownValue),
     };
     cursor.finish()?;
@@ -442,5 +458,33 @@ impl<'a> Cursor<'a> {
             return Err(AgentProtocolError::InvalidLength);
         }
         self.take(length)
+    }
+}
+
+#[cfg(test)]
+mod openssh_gate_tests {
+    use super::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
+
+    #[test]
+    fn gate_frames_round_trip_and_reject_trailing_or_unbounded_payloads() {
+        let request = AgentFrameV1::OpenSshGateObserveRequest(b"{}".to_vec());
+        let encoded = encode_frame_v1(&request);
+        assert_eq!(decode_frame_v1(&encoded), Ok(request));
+
+        let response = AgentFrameV1::OpenSshGateReadback(b"AOSSGR01".to_vec());
+        assert_eq!(decode_frame_v1(&encode_frame_v1(&response)), Ok(response));
+
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert_eq!(
+            decode_frame_v1(&trailing),
+            Err(AgentProtocolError::TrailingBytes)
+        );
+
+        let oversized = AgentFrameV1::OpenSshGateObserveRequest(vec![1; 4097]);
+        assert_eq!(
+            decode_frame_v1(&encode_frame_v1(&oversized)),
+            Err(AgentProtocolError::InvalidLength)
+        );
     }
 }

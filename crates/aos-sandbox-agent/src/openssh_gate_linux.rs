@@ -10,6 +10,7 @@ use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
@@ -97,6 +98,26 @@ impl RunningOpenSshGateV1 {
         channel_binding: [u8; 32],
         key: &SigningKey,
     ) -> Result<Vec<u8>, OpenSshGatePhysicalErrorV1> {
+        let readback = self.physical_readback(challenge, route_digest, channel_binding)?;
+        sign_openssh_gate_readback_v1(&readback, key)
+            .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)
+    }
+
+    /// Measures the installed gate without granting its owner signing-key custody.
+    ///
+    /// The protected agent entry signs this value only after matching its
+    /// authenticated session and provisioned runtime. The owned sshd child,
+    /// protected claim, files, and listener are checked anew on every call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owned daemon or exact installation changed.
+    pub fn physical_readback(
+        &mut self,
+        challenge: [u8; 32],
+        route_digest: [u8; 32],
+        channel_binding: [u8; 32],
+    ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
         if self.child.try_wait()?.is_some() {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
@@ -150,8 +171,7 @@ impl RunningOpenSshGateV1 {
             binding: self.binding.clone(),
             physical,
         };
-        sign_openssh_gate_readback_v1(&readback, key)
-            .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)
+        Ok(readback)
     }
 }
 
@@ -213,6 +233,13 @@ pub fn load_openssh_gate_claim_v1() -> Result<OpenSshGateClaimV1, OpenSshGatePhy
     if serde_json::to_vec(&claim).map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
         != file.bytes
     {
+        return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
+        .as_secs();
+    if i64::try_from(now).map_or(true, |now| claim.binding.expires_at <= now) {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
     let config = read_protected_file(Path::new(CONFIG_PATH), 4096, false)?;

@@ -44,7 +44,10 @@
   };
   credentialFields =
     authorityCredentialFields
-    // {backendReadiness = "backend-readiness.json";};
+    // {
+      backendReadiness = "backend-readiness.json";
+      opensshAttachTrust = "openssh-attach-trust.json";
+    };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   # Sources are names in the platform credential namespace, not paths or
@@ -94,6 +97,8 @@ in {
           description =
             if name == "backendReadiness"
             then "Optional protected boot-local readiness claims published externally as ${credentialFile}; ingestion alone never enables Apply."
+            else if name == "opensshAttachTrust"
+            then "Optional externally provisioned OpenSSH attach trust pins (endpoint, server host public key, user CA public key, and expected gate configuration digest) loaded as ${credentialFile}; their presence alone never enables attach."
             else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields

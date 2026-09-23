@@ -14,6 +14,9 @@
 //! value = canonical JSON RouteRecordV1 with deny_unknown_fields
 //! ```
 
+use std::fs::OpenOptions;
+use std::io::Read as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::runtime_execution::{
@@ -21,9 +24,11 @@ use aos_sandbox::runtime_execution::{
 };
 use aos_sandbox::{Journal, JournalError, JournalLimits, RecordNamespace};
 use aos_sandbox_agent::openssh_gate::{
-    OpenSshGateBindingV1, OpenSshGateReadbackErrorV1, OpenSshGateReadbackV1,
-    verify_openssh_gate_readback_v1,
+    OpenSshGateBindingV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackErrorV1,
+    OpenSshGateReadbackV1, verify_openssh_gate_readback_v1,
 };
+use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
+use aos_sandbox_agent::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
 use aos_sandbox_core::ExecutionId;
 use rand::{TryRngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -35,6 +40,11 @@ const ROUTE_JOURNAL_NAME: &str = "openssh-attach-route.journal";
 const ROUTE_KEY_PREFIX: &[u8] = b"openssh-attach-route-v1/";
 const ROUTE_MAGIC: &str = "AOSHAR01";
 const ROUTE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.host.openssh-attach-route.v1\0";
+const TRUST_CREDENTIAL_PATH: &str =
+    "/run/credentials/aos-sandbox-hostd.service/openssh-attach-trust.json";
+const TRUST_MAGIC: &str = "AOSHAT01";
+const O_NOFOLLOW: i32 = 0o400_000;
+const O_CLOEXEC: i32 = 0o2_000_000;
 const MAXIMUM_ROUTE_BYTES: usize = 2048;
 const MAXIMUM_HOST_BYTES: usize = 255;
 const MAXIMUM_USER_BYTES: usize = 32;
@@ -43,6 +53,20 @@ const MAXIMUM_KEY_BYTES: usize = 128;
 /// Owns the fixed root-protected OpenSSH route journal.
 pub struct HostOpenSshAttachRouteOwnerV1 {
     journal: Journal,
+}
+
+/// Exchanges one frame on a retained, authenticated guest-agent session.
+///
+/// The transport owner must retain the original protected channel, not connect
+/// to an operator-selected endpoint. The signed response is checked against
+/// protected peer identity independently of transport success.
+pub trait OpenSshGateAgentExchangeV1 {
+    /// Sends one exact frame and returns one bounded response frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the authenticated channel is no longer available.
+    fn exchange(&mut self, request: &[u8]) -> std::io::Result<Vec<u8>>;
 }
 
 impl HostOpenSshAttachRouteOwnerV1 {
@@ -82,6 +106,30 @@ impl HostOpenSshAttachRouteOwnerV1 {
     ) -> Result<HostOpenSshAttachRouteEvidenceV1, HostOpenSshAttachRouteErrorV1> {
         let _pending = self.begin_observe_active(execution_id, incarnation_id, assignment_epoch)?;
         Err(HostOpenSshAttachRouteErrorV1::LiveGateUnavailable)
+    }
+
+    /// Measures an installed gate on an already-authenticated agent session.
+    ///
+    /// The session binding must be that of `exchange`'s retained handshake;
+    /// the guest checks it before any installation. The signed response is
+    /// then compared with the protected Host peer and route currentness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport loss, malformed framing, or mismatched
+    /// physical readback.
+    pub fn observe_active_on_session(
+        &mut self,
+        execution_id: [u8; 16],
+        incarnation_id: [u8; 16],
+        assignment_epoch: u64,
+        session_binding: [u8; 32],
+        exchange: &mut impl OpenSshGateAgentExchangeV1,
+    ) -> Result<HostOpenSshAttachRouteEvidenceV1, HostOpenSshAttachRouteErrorV1> {
+        let pending = self.begin_observe_active(execution_id, incarnation_id, assignment_epoch)?;
+        let request = pending.request_frame(session_binding)?;
+        let response = exchange.exchange(&request)?;
+        pending.complete_frame(self, &response)
     }
 
     /// Starts a fresh challenge for a protected guest-agent gate readback.
@@ -134,6 +182,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
             return Err(HostOpenSshAttachRouteErrorV1::Stale);
         }
         validate_current_execution(&route)?;
+        validate_deployment_trust(&route)?;
         if route.expires_at <= current_unix_seconds()? {
             return Err(HostOpenSshAttachRouteErrorV1::Expired);
         }
@@ -165,6 +214,50 @@ impl PendingOpenSshGateObservationV1 {
     #[must_use]
     pub const fn route_digest(&self) -> [u8; 32] {
         self.protected.route_digest
+    }
+
+    /// Encodes the exact install/readback request for a retained agent session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session or protected route cannot be encoded.
+    pub fn request_frame(
+        &self,
+        session_binding: [u8; 32],
+    ) -> Result<Vec<u8>, HostOpenSshAttachRouteErrorV1> {
+        let request = OpenSshGateObserveRequestV1 {
+            session_binding,
+            challenge: self.challenge,
+            route_digest: self.protected.route_digest,
+            binding: self.protected.gate_binding(),
+        };
+        request
+            .validate()
+            .map_err(HostOpenSshAttachRouteErrorV1::Readback)?;
+        let bytes =
+            serde_json::to_vec(&request).map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
+        if bytes.len() > 4096 {
+            return Err(HostOpenSshAttachRouteErrorV1::Malformed);
+        }
+        Ok(encode_frame_v1(&AgentFrameV1::OpenSshGateObserveRequest(
+            bytes,
+        )))
+    }
+
+    /// Decodes one authenticated channel response and verifies its signed gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if framing or physical gate evidence is invalid.
+    pub fn complete_frame(
+        self,
+        owner: &mut HostOpenSshAttachRouteOwnerV1,
+        frame: &[u8],
+    ) -> Result<HostOpenSshAttachRouteEvidenceV1, HostOpenSshAttachRouteErrorV1> {
+        let AgentFrameV1::OpenSshGateReadback(packet) = decode_frame_v1(frame)? else {
+            return Err(HostOpenSshAttachRouteErrorV1::GateMismatch);
+        };
+        self.complete(owner, &packet)
     }
 
     /// Authenticates one guest packet and rechecks protected currentness.
@@ -300,6 +393,23 @@ struct RouteRecordV1 {
     gate_config_digest: [u8; 32],
 }
 
+/// Exact externally provisioned systemd credential for one gate route.
+///
+/// The credential is an independent deployment trust input, not a route
+/// assertion or evidence that the guest installed anything. A new attach
+/// operation with different config bytes requires a matching new credential.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentTrustV1 {
+    magic: String,
+    host: String,
+    port: u16,
+    user: String,
+    host_public_key: String,
+    trusted_user_ca_public_key: String,
+    gate_config_digest: [u8; 32],
+}
+
 struct ProtectedRouteV1 {
     record: RouteRecordV1,
     route_digest: [u8; 32],
@@ -340,6 +450,42 @@ fn validate_current_execution(route: &RouteRecordV1) -> Result<(), HostOpenSshAt
     Ok(())
 }
 
+fn validate_deployment_trust(route: &RouteRecordV1) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(TRUST_CREDENTIAL_PATH)
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
+    }
+    let mut bytes = Vec::new();
+    file.take((MAXIMUM_ROUTE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    if bytes.len() > MAXIMUM_ROUTE_BYTES {
+        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
+    }
+    let trust: DeploymentTrustV1 = serde_json::from_slice(&bytes)
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    if serde_json::to_vec(&trust).map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?
+        != bytes
+        || trust.magic != TRUST_MAGIC
+        || trust.host != route.host
+        || trust.port != route.port
+        || trust.user != route.user
+        || trust.host_public_key != route.host_public_key
+        || trust.trusted_user_ca_public_key != route.trusted_user_ca_public_key
+        || trust.gate_config_digest != route.gate_config_digest
+    {
+        return Err(HostOpenSshAttachRouteErrorV1::TrustMismatch);
+    }
+    Ok(())
+}
+
 fn decode_route_record(bytes: &[u8]) -> Result<RouteRecordV1, HostOpenSshAttachRouteErrorV1> {
     if bytes.len() > MAXIMUM_ROUTE_BYTES {
         return Err(HostOpenSshAttachRouteErrorV1::Malformed);
@@ -364,6 +510,17 @@ fn decode_route_record(bytes: &[u8]) -> Result<RouteRecordV1, HostOpenSshAttachR
         || !canonical_ed25519_key(&record.host_public_key)
         || !canonical_ed25519_key(&record.trusted_user_ca_public_key)
     {
+        return Err(HostOpenSshAttachRouteErrorV1::Malformed);
+    }
+    let expected_config = expected_openssh_gate_config_v1(
+        &ProtectedRouteV1 {
+            record: record.clone(),
+            route_digest: [0; 32],
+        }
+        .gate_binding(),
+    )
+    .map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
+    if <[u8; 32]>::from(Sha256::digest(expected_config)) != record.gate_config_digest {
         return Err(HostOpenSshAttachRouteErrorV1::Malformed);
     }
     Ok(record)
@@ -434,6 +591,18 @@ pub enum HostOpenSshAttachRouteErrorV1 {
     /// Guest readback packet could not be authenticated.
     #[error("guest OpenSSH gate readback failed: {0}")]
     Readback(#[from] OpenSshGateReadbackErrorV1),
+    /// The externally provisioned systemd trust credential is unavailable.
+    #[error("OpenSSH attach deployment trust credential is unavailable")]
+    TrustUnavailable,
+    /// The protected route differs from externally provisioned trust pins.
+    #[error("OpenSSH attach route differs from deployment trust pins")]
+    TrustMismatch,
+    /// Authenticated agent framing is malformed.
+    #[error("guest OpenSSH gate agent frame failed: {0}")]
+    Protocol(#[from] AgentProtocolError),
+    /// The retained authenticated guest-agent channel failed.
+    #[error("guest OpenSSH gate channel failed: {0}")]
+    Transport(#[from] std::io::Error),
     /// No authenticated live `sshd` and forced-command gate readback exists.
     #[error("authenticated live OpenSSH forced-command gate readback is unavailable")]
     LiveGateUnavailable,
@@ -445,9 +614,11 @@ pub enum HostOpenSshAttachRouteErrorV1 {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
+    use sha2::{Digest as _, Sha256};
     use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
     use aos_sandbox_agent::openssh_gate::{OpenSshGatePhysicalStateV1, OpenSshGateReadbackV1};
+    use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
 
     use super::{
         HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC, RouteRecordV1,
@@ -464,7 +635,7 @@ mod tests {
             .to_openssh()
             .unwrap();
 
-        RouteRecordV1 {
+        let mut record = RouteRecordV1 {
             magic: ROUTE_MAGIC.to_owned(),
             execution_id: [1; 16],
             attach_operation_id: [2; 16],
@@ -480,7 +651,15 @@ mod tests {
             expires_at: 2_000_000_000,
             route_generation: 1,
             gate_config_digest: [10; 32],
+        };
+        let binding = ProtectedRouteV1 {
+            record: record.clone(),
+            route_digest: [0; 32],
         }
+        .gate_binding();
+        record.gate_config_digest =
+            Sha256::digest(expected_openssh_gate_config_v1(&binding).unwrap()).into();
+        record
     }
 
     #[test]
