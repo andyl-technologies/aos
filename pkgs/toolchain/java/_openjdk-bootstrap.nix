@@ -38,6 +38,7 @@
   qualification ? null,
 }: let
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
   buildTarget =
     if isDarwinCross || isLinuxArmCross
@@ -84,14 +85,14 @@
   # jpackage embeds native launchers in the module image, beyond ELF scrubbing.
   # Replace the full compiler prefix, including its hash, but retain assertions.
   linuxJpackageCxxFlag =
-    if isLinuxArmCross && major >= 14
+    if isLinuxCross && major >= 14
     then " -ffile-prefix-map=${stdenv.gcc}=/aos-toolchain"
     else "";
   # JDK 16 and 17 omit the configured X include directory from several headless AWT
   # compilation rules when cross compiling. Keep those rules on the target
   # header set selected by configure.
   linuxLegacyX11CFlag =
-    if isLinuxArmCross && major >= 16 && major <= 17
+    if isLinuxCross && major >= 16 && major <= 17
     then " -I${xorg-stubs}/include"
     else "";
 

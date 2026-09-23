@@ -3,14 +3,14 @@
   buildPackages,
   fetchurl,
 }: let
-  version = "2.44";
+  version = "2.45.1";
 in
   buildPackages.mkDerivation {
     pname = "highway-assembler";
     inherit version;
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/binutils/binutils-${version}.tar.xz"];
-      hash = "0dvj6zs7fcfm5bln1k9ma1h96a4wqi79s3i4p7fnfgnnb7h1f86f";
+      hash = "199sa5igipbvz2zg0j1zgvrybphgcznq2bcnjpngs64xzvk03qaz";
     };
 
     buildDeps = [buildPackages.gnumake buildPackages.texinfo buildPackages.gettext];

@@ -465,6 +465,7 @@ mod tests {
             "schema":"aos.boot.static-abilities/v1",
             "platforms":[{
                 "platform":{"os":"linux","architecture":"amd64"},
+                "target":{"system":"linux","architecture":"x86_64"},
                 "execution_stage":execution_stage,
                 "packages":[],
                 "abilities":[],
