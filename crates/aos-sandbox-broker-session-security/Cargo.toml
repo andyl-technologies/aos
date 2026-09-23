@@ -54,6 +54,10 @@ path = "src/bin/aos-netd.rs"
 name = "aos-sandbox-mountd"
 path = "src/bin/aos-sandbox-mountd.rs"
 
+[[bin]]
+name = "aos-sandbox-ownershipd"
+path = "src/bin/aos-sandbox-ownershipd.rs"
+
 [dev-dependencies]
 hex.workspace = true
 rcgen.workspace = true

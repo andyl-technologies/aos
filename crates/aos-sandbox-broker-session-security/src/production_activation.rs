@@ -315,7 +315,7 @@ impl ProductionBrokerSessionActivationV1 {
     }
 }
 
-fn validate_activation_process(
+pub(crate) fn validate_activation_process(
     expected_descriptors: usize,
 ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
     let listen_pid = environment_u32("LISTEN_PID")?;
@@ -337,7 +337,7 @@ fn validate_activation_process(
     Ok(())
 }
 
-fn activation_names(
+pub(crate) fn activation_names(
     expected_descriptors: usize,
 ) -> Result<Vec<String>, ProductionBrokerSessionActivationErrorV1> {
     let names = std::env::var("LISTEN_FDNAMES").map_err(|_| {
