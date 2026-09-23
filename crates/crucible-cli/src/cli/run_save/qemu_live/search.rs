@@ -4,7 +4,7 @@ use super::*;
 
 use crucible_api as campaign_output_api;
 use crucible_campaign::{
-    ObservationCondition, ObservationStopSatisfaction, PropertyVerdict, StopOutcome,
+    ObservationCondition, ObservationStopSatisfaction, PropertyVerdict, StopCondition, StopOutcome,
 };
 use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignExploration, GuardedCampaignExplorationCompletion,
@@ -845,9 +845,17 @@ fn accepted_observation_outcome(accepted: &GuardedDefaultCampaignObservation) ->
     }
     match accepted.observation().stop() {
         StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => OutcomeKind::Failed,
-        StopOutcome::ModeledTimeout(_) => OutcomeKind::Timeout,
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. } => OutcomeKind::Timeout,
         StopOutcome::GuestCrash(_) => OutcomeKind::Crashed,
         StopOutcome::Reached(_) | StopOutcome::TerminalSuccess => OutcomeKind::Passed,
+        StopOutcome::BoundedPrimaryReached { stop, .. } => match stop.primary() {
+            StopCondition::VirtualTimeNanoseconds(_)
+            | StopCondition::ExecutionQuanta(_)
+            | StopCondition::VirtualTimeOrExecutionQuanta { .. } => OutcomeKind::Timeout,
+            _ => OutcomeKind::Passed,
+        },
         StopOutcome::ObservationReached(proof) => match proof.satisfaction() {
             ObservationStopSatisfaction::SchedulerQuiescent => OutcomeKind::Passed,
             ObservationStopSatisfaction::AssertionViolationTransition => OutcomeKind::Failed,
@@ -869,12 +877,18 @@ fn accepted_failure_material(
     match accepted.observation().stop() {
         StopOutcome::AssertionFailure(property) => violations.push(property.clone()),
         StopOutcome::ScenarioFailure(reasons) => violations.extend(reasons.iter().cloned()),
-        StopOutcome::ModeledTimeout(_) if violations.is_empty() => {
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. }
+            if violations.is_empty() =>
+        {
             return Err(backend_error(
                 "campaign timeout finding lacks an authenticated timeout-budget record",
             ));
         }
-        StopOutcome::ModeledTimeout(_) => {}
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. } => {}
         StopOutcome::ObservationReached(proof)
             if proof.satisfaction()
                 == ObservationStopSatisfaction::AssertionViolationTransition =>
@@ -884,7 +898,10 @@ fn accepted_failure_material(
             }
         }
         StopOutcome::ObservationReached(_) => {}
-        StopOutcome::Reached(_) | StopOutcome::TerminalSuccess | StopOutcome::GuestCrash(_) => {}
+        StopOutcome::Reached(_)
+        | StopOutcome::BoundedPrimaryReached { .. }
+        | StopOutcome::TerminalSuccess
+        | StopOutcome::GuestCrash(_) => {}
     }
     violations.sort();
     violations.dedup();
@@ -920,6 +937,24 @@ fn accepted_event_frames(accepted: &GuardedDefaultCampaignObservation) -> Vec<Ve
 fn accepted_stop_label(stop: &StopOutcome) -> String {
     match stop {
         StopOutcome::Reached(condition) => format!("reached:{condition:?}"),
+        StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
+            "bounded-primary-reached:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
+            "bounded-primary-timeout:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
+            "policy-timeout:{kind:?}:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),
         StopOutcome::ModeledTimeout(name) => format!("modeled-timeout:{name}"),
         StopOutcome::GuestCrash(class) => format!("guest-crash:{class}"),

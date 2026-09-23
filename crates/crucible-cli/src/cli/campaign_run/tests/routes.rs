@@ -3,6 +3,39 @@
 use super::*;
 
 #[test]
+fn default_run_reports_attempt_timeout_and_bounded_primary_separately() {
+    let mut plan = default_run_plan();
+    plan.max_virtual_time_ticks = Some(10);
+    let primary =
+        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(10), Some(20), Some(8))
+            .or_panic("bounded default stop");
+    let reached = StopOutcome::BoundedPrimaryReached {
+        stop: primary,
+        proof: crucible_campaign::BoundedStopProof::new(10, 2),
+    };
+    assert_eq!(
+        campaign_stop_status(&plan, &reached).or_panic("primary status"),
+        (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+    );
+    assert!(campaign_stop_label(&reached).starts_with("bounded-primary-reached:"));
+
+    plan.max_virtual_time_ticks = Some(30);
+    let policy_stop =
+        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(30), Some(20), Some(8))
+            .or_panic("policy-preempted default stop");
+    let policy = StopOutcome::PolicyTimeout {
+        stop: policy_stop,
+        kind: crucible_campaign::PolicyTimeoutKind::VirtualTime,
+        proof: crucible_campaign::BoundedStopProof::new(20, 3),
+    };
+    assert_eq!(
+        campaign_stop_status(&plan, &policy).or_panic("policy timeout status"),
+        (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+    );
+    assert!(campaign_stop_label(&policy).contains("policy-timeout:VirtualTime:"));
+}
+
+#[test]
 fn batch_campaign_route_accepts_exact_semantic_stops() {
     let mut default = default_run_plan();
     assert!(batch_campaign_run_eligible(&default));

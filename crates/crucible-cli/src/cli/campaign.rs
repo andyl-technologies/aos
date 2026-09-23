@@ -52,8 +52,7 @@ use explain::{
 };
 use finding_bundle::{
     export_finding_bundle, run_finding_bundle_branch, run_finding_bundle_fork_write,
-    run_finding_bundle_midpoint,
-    verify_exported_finding,
+    run_finding_bundle_midpoint, verify_exported_finding,
 };
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use lineage::{compile_campaign_lineage, render_campaign_lineage_compilation};
@@ -689,10 +688,7 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             } else if branch.all {
                 apply_campaign_all_branch(&client, principal.clone(), branch)?
             } else {
-                let prepared = prepared.ok_or_else(|| {
-                    backend_error("campaign branch was not prepared before connection")
-                })?;
-                apply_campaign_acceptance(&client, prepared)?
+                apply_campaign_direct_branch(&client, principal.clone(), branch)?
             };
             render_campaign_acceptance(&report, cli.output_format())?
         }
@@ -906,7 +902,11 @@ fn prepare_campaign_command(
             }
             Ok(None)
         }
-        CampaignCommand::Branch(branch) => prepare_campaign_branch(branch, principal).map(Some),
+        CampaignCommand::Branch(branch) => {
+            // The request is rebuilt with the authenticated active policy after connection.
+            prepare_campaign_branch(branch, principal)?;
+            Ok(None)
+        }
         CampaignCommand::Status(status) => {
             campaign_name(&status.name)?;
             Ok(None)
@@ -1183,6 +1183,54 @@ fn prepare_campaign_branch_with_basis(
     Ok(PreparedCampaignCommand::Branch(submission))
 }
 
+fn apply_campaign_direct_branch<S>(
+    client: &CampaignClient<S>,
+    principal: CampaignPrincipal,
+    branch: &CampaignBranchArgs,
+) -> Result<CampaignAcceptanceReport, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let mut basis = parse_campaign_branch_basis(branch)?;
+    basis.stop = campaign_policy_bound_stop(
+        client,
+        &principal,
+        &basis.campaign,
+        basis.expected,
+        basis.stop,
+    )?;
+    let prepared = prepare_campaign_branch_with_basis(branch, &principal, basis)?;
+    apply_campaign_acceptance(client, prepared)
+}
+
+fn campaign_policy_bound_stop<S>(
+    client: &CampaignClient<S>,
+    principal: &CampaignPrincipal,
+    campaign: &CampaignName,
+    expected: CampaignSnapshotId,
+    primary: StopCondition,
+) -> Result<StopCondition, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let request = GetCampaignRequest::new(principal.clone(), campaign.clone())
+        .map_err(|error| usage_error(format!("invalid campaign policy query: {error}")))?;
+    let response = client
+        .get_campaign(&request)
+        .map_err(|error| backend_error(format!("campaign policy query failed: {error}")))?;
+    if response.snapshot() != expected {
+        return Err(usage_error(
+            "campaign branch snapshot precondition is no longer the current head",
+        ));
+    }
+    response
+        .policy_body()
+        .bound_stop(primary)
+        .map_err(|error| backend_error(format!("active campaign policy stop is invalid: {error}")))
+}
+
 fn apply_campaign_selector_branch<S>(
     client: &CampaignClient<S>,
     principal: CampaignPrincipal,
@@ -1204,7 +1252,7 @@ where
         branch.instance.as_deref(),
         scan_limit,
     )?;
-    let basis = parse_campaign_branch_basis_with_choice(
+    let mut basis = parse_campaign_branch_basis_with_choice(
         branch,
         &opportunity.to_string(),
         &domain.to_string(),
@@ -1213,6 +1261,13 @@ where
     if branch.all {
         return apply_campaign_all_branch_with_basis(client, principal, branch, basis);
     }
+    basis.stop = campaign_policy_bound_stop(
+        client,
+        &principal,
+        &basis.campaign,
+        basis.expected,
+        basis.stop,
+    )?;
     let prepared = prepare_campaign_branch_with_basis(branch, &principal, basis)?;
     apply_campaign_acceptance(client, prepared)
 }
@@ -1493,7 +1548,7 @@ fn apply_campaign_all_branch_with_basis<S>(
     client: &CampaignClient<S>,
     principal: CampaignPrincipal,
     branch: &CampaignBranchArgs,
-    basis: ParsedCampaignBranchBasis,
+    mut basis: ParsedCampaignBranchBasis,
 ) -> Result<CampaignAcceptanceReport, CliError>
 where
     S: CampaignService,
@@ -1541,6 +1596,13 @@ where
     .map_err(|error| backend_error(format!("canonical all generator is invalid: {error}")))?
     .id()
     .map_err(|error| backend_error(format!("canonical all generator identity failed: {error}")))?;
+    basis.stop = campaign_policy_bound_stop(
+        client,
+        &principal,
+        &basis.campaign,
+        basis.expected,
+        basis.stop,
+    )?;
     let request = BranchRequest::new(
         BranchRequest::identity(
             basis.branch_point,

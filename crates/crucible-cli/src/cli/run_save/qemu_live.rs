@@ -392,7 +392,9 @@ fn qemu_fuzz_campaign_status(
         StopOutcome::TerminalSuccess => {
             Ok((BackendCommandStatus::Passed, OutcomeKind::Passed, true))
         }
-        StopOutcome::ModeledTimeout(_) => {
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. } => {
             Ok((BackendCommandStatus::Timeout, OutcomeKind::Timeout, false))
         }
         StopOutcome::GuestCrash(_) => {
@@ -401,7 +403,7 @@ fn qemu_fuzz_campaign_status(
         StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => {
             Ok((BackendCommandStatus::Failed, OutcomeKind::Failed, false))
         }
-        StopOutcome::Reached(_) => Err(backend_error(
+        StopOutcome::Reached(_) | StopOutcome::BoundedPrimaryReached { .. } => Err(backend_error(
             "campaign fuzz ended at an unexpected campaign boundary",
         )),
     }
@@ -437,6 +439,24 @@ fn qemu_fuzz_observation_status(
 fn qemu_fuzz_campaign_stop_label(stop: &StopOutcome) -> String {
     match stop {
         StopOutcome::Reached(condition) => format!("reached:{condition:?}"),
+        StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
+            "bounded-primary-reached:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
+            "bounded-primary-timeout:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
+            "policy-timeout:{kind:?}:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),
         StopOutcome::ModeledTimeout(name) => format!("modeled-timeout:{name}"),
         StopOutcome::GuestCrash(class) => format!("guest-crash:{class}"),

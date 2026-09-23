@@ -442,17 +442,17 @@ TOML integers. To author a value above TOML's signed 64-bit integer ceiling,
 use an unpadded quoted decimal string as shown above. This form applies to
 unsigned choice values, masses, draw coordinates and parents, estimand
 endpoints, and exact-rational numerators and denominators. Both statistical
-sections require the current schema version two.
+sections require the current authored schema version three.
 
 `intervention_learning` defaults to `exclude`, which retains operator- and
 debugger-derived observations while keeping them out of adaptive guidance and
 Beam survivor ranking. Set it to `include-in-guidance` only when that feedback
-is intended; the opt-in is recorded in the canonical version-four policy
+is intended; the opt-in is recorded in the canonical version-five policy
 identity and in planner proposal explanations. The opt-in does not make
 interventions eligible for statistical estimators.
 
-A choice `selector` may remain a plain stable declaration name, which preserves
-the original offline format and needs no scenario file. With `--scenario`, it
+A choice `selector` may be a plain stable declaration name, which needs no
+scenario file. With `--scenario`, it
 may instead be `{ kind = "selectable", id = "..." }` or a conjunction
 `{ kind = "tags", all = ["...", "..."] }`. The supplied scenario must have
 the exact semantic ID named by the policy. An exact ID must occur in that

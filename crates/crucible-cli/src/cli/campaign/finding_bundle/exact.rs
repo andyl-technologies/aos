@@ -266,14 +266,18 @@ fn compare_side(
 ) -> Result<(), CliError> {
     let evidence = replay.evidence();
     let outcome = match replay.terminal().observation().stop() {
-        StopOutcome::TerminalSuccess | StopOutcome::Reached(_) => {
+        StopOutcome::TerminalSuccess
+        | StopOutcome::Reached(_)
+        | StopOutcome::BoundedPrimaryReached { .. } => {
             FindingProductionReplayTerminalOutcome::Passed
         }
-        StopOutcome::ModeledTimeout(_) => FindingProductionReplayTerminalOutcome::Timeout,
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. } => FindingProductionReplayTerminalOutcome::Timeout,
         StopOutcome::AssertionFailure(_)
         | StopOutcome::ScenarioFailure(_)
         | StopOutcome::GuestCrash(_) => FindingProductionReplayTerminalOutcome::Failed,
-        _ => {
+        StopOutcome::ObservationReached(_) => {
             return Err(backend_error(
                 "fresh finding replay has an unexpected terminal outcome",
             ));

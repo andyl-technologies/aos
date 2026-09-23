@@ -47,6 +47,7 @@ struct GraphPageService {
     map: MerkleMap,
     root: ContentId,
     snapshot: CampaignSnapshot,
+    active_policy_body: CampaignPolicy,
     snapshots: BTreeMap<CampaignSnapshotId, CampaignSnapshot>,
     object_key: CampaignHash,
     object: ObjectEnvelope,
@@ -246,11 +247,13 @@ impl CampaignService for FixedHeadService {
         &self,
         request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
+        let policy_body = campaign_records().1;
         Ok(GetCampaignResponse::new(
             request,
             snapshot("current"),
             lineage("lineage"),
-            policy("policy"),
+            policy_body.id().expect("fixed policy ID"),
+            policy_body,
             CampaignState::Running,
         )
         .expect("fixed get response"))
@@ -424,12 +427,14 @@ impl CampaignService for StatusSequenceService {
     ) -> Result<GetCampaignResponse, Self::Error> {
         let get_index = self.calls.get.fetch_add(1, Ordering::SeqCst);
         let head = render_status::status_sequence_head(get_index);
+        let policy_body = campaign_records().1;
 
         Ok(GetCampaignResponse::new(
             request,
             head,
             lineage("lineage"),
-            policy("policy"),
+            policy_body.id().expect("scripted policy ID"),
+            policy_body,
             CampaignState::Running,
         )
         .expect("scripted get response"))
@@ -503,9 +508,17 @@ impl CampaignService for GraphPageService {
 
     fn get_campaign(
         &self,
-        _request: &GetCampaignRequest,
+        request: &GetCampaignRequest,
     ) -> Result<GetCampaignResponse, Self::Error> {
-        unreachable!("unused campaign-service operation")
+        Ok(GetCampaignResponse::new(
+            request,
+            self.snapshot.id().expect("graph head ID"),
+            self.snapshot.lineage(),
+            self.snapshot.active_policy(),
+            self.active_policy_body.clone(),
+            CampaignState::Running,
+        )
+        .expect("graph head with authenticated policy"))
     }
 
     fn get_campaign_status(
@@ -1314,6 +1327,118 @@ fn campaign_all_branch_derives_authenticated_generator_policy_and_budget() {
             ..
         } if request == expected.to_string() && prior_snapshot == source_snapshot.to_string()
     ));
+}
+
+#[test]
+fn campaign_direct_branch_binds_the_authenticated_attempt_timeout() {
+    let (service, bounded_snapshot, old_snapshot) = bounded_graph_page_service();
+    let template = service.branch_request.clone();
+    let branch = graph_branch_args(&service, bounded_snapshot, "bounded-command");
+    let expected = BranchRequest::new(
+        BranchRequest::identity(
+            template.branch_point(),
+            template.parent(),
+            template.opportunity(),
+            template.domain(),
+        ),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+            .expect("finite source"),
+        BranchRequestCause::Operator(
+            CampaignCommandId::parse(branch.command.as_deref().expect("operator command"))
+                .expect("operator command ID"),
+        ),
+        BranchBudget::new(1, 1).expect("branch budget"),
+        StopCondition::bounded(StopCondition::NextChoice, Some(100), Some(10))
+            .expect("bounded stop"),
+    )
+    .expect("expected bounded branch")
+    .id()
+    .expect("bounded branch ID");
+    let client = CampaignClient::new(service);
+    let principal = CampaignPrincipal::new("operator").expect("principal");
+
+    let report = apply_campaign_direct_branch(&client, principal.clone(), &branch)
+        .expect("apply bounded branch");
+    assert!(matches!(
+        report,
+        CampaignAcceptanceReport::Branch { request, .. } if request == expected.to_string()
+    ));
+
+    let stale = CampaignBranchArgs {
+        expected: old_snapshot.to_string(),
+        ..branch
+    };
+    assert!(apply_campaign_direct_branch(&client, principal, &stale).is_err());
+}
+
+#[test]
+fn campaign_selector_and_all_branches_bind_the_authenticated_attempt_timeout() {
+    for all in [false, true] {
+        let (service, bounded_snapshot, _) = bounded_graph_page_service();
+        let template = service.branch_request.clone();
+        let active_policy = service.snapshot.active_policy();
+        let command = CampaignCommandId::from_hash(hash("bounded-selector-command"));
+        let mut branch = graph_branch_args(&service, bounded_snapshot, "bounded-selector-command");
+        if all {
+            branch.command = None;
+            branch.values.clear();
+            branch.all = true;
+        } else {
+            branch.opportunity = None;
+            branch.domain = None;
+            branch.selector = vec![String::from("product.network.retry")];
+        }
+        let (source, cause, proposals) = if all {
+            let generator = CandidateGeneratorSpec::new(
+                STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                CandidateGeneratorAlgorithm::All,
+            )
+            .expect("all generator")
+            .id()
+            .expect("all generator ID");
+            (
+                CandidateSource::generated(generator),
+                BranchRequestCause::ExhaustivePolicy(active_policy),
+                2,
+            )
+        } else {
+            (
+                CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(true)]))
+                    .expect("selector source"),
+                BranchRequestCause::Operator(command),
+                1,
+            )
+        };
+        let expected = BranchRequest::new(
+            BranchRequest::identity(
+                template.branch_point(),
+                template.parent(),
+                template.opportunity(),
+                template.domain(),
+            ),
+            source,
+            cause,
+            BranchBudget::new(proposals, 1).expect("branch budget"),
+            StopCondition::bounded(StopCondition::NextChoice, Some(100), Some(10))
+                .expect("bounded stop"),
+        )
+        .expect("expected bounded request")
+        .id()
+        .expect("bounded request ID");
+        let client = CampaignClient::new(service);
+        let principal = CampaignPrincipal::new("operator").expect("principal");
+
+        let report = if all {
+            apply_campaign_all_branch(&client, principal, &branch)
+        } else {
+            apply_campaign_selector_branch(&client, principal, &branch)
+        }
+        .expect("apply policy-bound branch");
+        assert!(matches!(
+            report,
+            CampaignAcceptanceReport::Branch { request, .. } if request == expected.to_string()
+        ));
+    }
 }
 
 #[test]
@@ -2991,6 +3116,8 @@ fn branch_request(label: &str) -> BranchRequest {
 }
 
 fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapshotId) {
+    let active_policy_body = campaign_records().1;
+    let active_policy_id = active_policy_body.id().expect("graph active policy ID");
     let backend = Arc::new(MemoryBlobBackend::new("cli-graph-page", u64::MAX));
     let map = MerkleMap::new(backend);
     let mut root = map.empty().expect("empty graph root");
@@ -3127,7 +3254,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         request_id,
         domain_id,
         ChoiceValue::Boolean(true),
-        policy("next-policy"),
+        active_policy_id,
         None,
         1,
         CampaignViewId::parse(&fixture_record_id(
@@ -3296,7 +3423,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
     let snapshot = CampaignSnapshot::successor(
         historical_id,
         lineage("lineage"),
-        policy("next-policy"),
+        active_policy_id,
         roots,
         transition,
         historical.budget_ledger(),
@@ -3309,6 +3436,7 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
             map,
             root: root.content_id(),
             snapshot,
+            active_policy_body,
             snapshots,
             object_key,
             object,
@@ -3331,6 +3459,63 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
         snapshot_id,
         historical_id,
     )
+}
+
+fn bounded_graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapshotId) {
+    let (mut service, old_snapshot, _) = graph_page_service();
+    let timeout = CampaignAttemptTimeoutPolicy::new(Some(100), Some(10), Some(1_000))
+        .expect("attempt timeout");
+    service.active_policy_body = service
+        .active_policy_body
+        .clone()
+        .with_attempt_timeout_policy(timeout)
+        .expect("bounded policy");
+    let policy_id = service.active_policy_body.id().expect("bounded policy ID");
+    let transition = CampaignFactId::parse(&fixture_record_id(
+        CampaignRecordKind::Fact,
+        "cli-bounded-branch-transition",
+    ))
+    .expect("bounded transition");
+    service.snapshot = CampaignSnapshot::successor(
+        old_snapshot,
+        service.snapshot.lineage(),
+        policy_id,
+        service.snapshot.roots(),
+        transition,
+        service.snapshot.budget_ledger(),
+    )
+    .expect("bounded head");
+    let bounded_snapshot = service.snapshot.id().expect("bounded head ID");
+    service
+        .snapshots
+        .insert(bounded_snapshot, service.snapshot.clone());
+    (service, bounded_snapshot, old_snapshot)
+}
+
+fn graph_branch_args(
+    service: &GraphPageService,
+    snapshot: CampaignSnapshotId,
+    command: &str,
+) -> CampaignBranchArgs {
+    let template = &service.branch_request;
+    CampaignBranchArgs {
+        name: String::from("example"),
+        expected: snapshot.to_string(),
+        command: Some(CampaignCommandId::from_hash(hash(command)).to_string()),
+        branch_point: template.branch_point().to_string(),
+        parent: template.parent().to_string(),
+        opportunity: Some(template.opportunity().to_string()),
+        domain: Some(template.domain().to_string()),
+        selector: Vec::new(),
+        instance: None,
+        selector_scan_limit: 256,
+        values: vec![String::from("true")],
+        generator: None,
+        all: false,
+        proposals: None,
+        attempts: 1,
+        stop: String::from("next-choice"),
+    }
 }
 
 fn add_ambiguous_selector_choice(
