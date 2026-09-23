@@ -1473,6 +1473,9 @@ in rec {
         };
         dependencies = [campaignStoreEquivalence];
       };
+      campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
+        inherit pkgs lib;
+      };
     };
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
       inherit pkgs lib;
@@ -3116,10 +3119,13 @@ in rec {
           phase5.gates.campaignStoreComposition
           phase5.gates.campaignStoreEquivalence
           phase5.gates.exactClosureStreaming
+          phase5.gates.campaignExactMaintenanceTransfer
           phase7.gates.hotForkIsolation
           phase7.gates.hotForkScaling
           phase7.gates.hostCloneCost
           phase7.gates.worldForkAtomicity
+          campaignFindingExactVm
+          campaignFindingSignalVm
         ];
         requiredClaims = [
           {
@@ -3253,6 +3259,46 @@ in rec {
             requiredLines = [
               "check=checks.crucible.phase4.campaignRfcTraceability"
               "scope=catalog,cargo-targets,manual-artifact-contracts,nix-wiring"
+            ];
+          }
+          {
+            gate = "gate:campaign-exact-maintenance-transfer";
+            result = phase5.gates.campaignExactMaintenanceTransfer;
+            requiredLines = [
+              "gate=gate:campaign-exact-maintenance-transfer"
+              "tier=real-packaged-qemu"
+              "source_active_world_exact_pause_restart=true"
+              "source_exact_resume_progress=true"
+              "source_nested_qemu_stopped=true"
+              "recipient_executable_archive_authenticated=true"
+              "recipient_exact_pin_import_authenticated=true"
+              "recipient_campaign_resume=true"
+              "recipient_imported_attempt_running=true"
+              "recipient_nested_qemu_stopped=true"
+              "incompatible_provenance_rejected_before_guest=true"
+              "source_checkpoint_preserved=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-finding-exact-read-only";
+            result = campaignFindingExactVm;
+            requiredLines = [
+              "gate=gate:campaign-finding-exact-read-only"
+              "finding_bundle_fresh_process_exact_qemu=true"
+              "finding_bundle_source_owner_absent=true"
+              "finding_bundle_signature_and_terminal_reproduced=true"
+              "finding_bundle_live_midpoint_read_only=true"
+              "finding_bundle_mutation_rejected_and_checkpoint_unchanged=true"
+              "finding_bundle_tamper_rejected=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-finding-signal-bundle";
+            result = campaignFindingSignalVm;
+            requiredLines = [
+              "gate=gate:campaign-finding-signal-bundle"
+              "finding_bundle_selected_fault_and_guest_response=true"
+              "finding_bundle_signal_archive_unchanged=true"
             ];
           }
         ];
