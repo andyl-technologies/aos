@@ -15,23 +15,13 @@ fn preparation_is_all_or_nothing_before_live_capture() {
         name: String::from("node-b"),
     };
     let node_icounts = BTreeMap::from([
-        (node_a.clone(), crucible::Icount { retired: 11 }),
-        (node_b.clone(), crucible::Icount { retired: 13 }),
+        (node_a.clone(), crucible::Icount { retired: 17 }),
+        (node_b.clone(), crucible::Icount { retired: 19 }),
     ]);
     let boundaries = || {
         vec![
-            (
-                node_a.clone(),
-                11,
-                VirtualTime { ticks: 17 },
-                ProductionNodeServiceState::Running,
-            ),
-            (
-                node_b.clone(),
-                13,
-                VirtualTime { ticks: 19 },
-                ProductionNodeServiceState::PoweredOff,
-            ),
+            (node_a.clone(), 17, ProductionNodeServiceState::Running),
+            (node_b.clone(), 19, ProductionNodeServiceState::PoweredOff),
         ]
     };
     let indexes = BTreeMap::from([(node_a.clone(), 0), (node_b.clone(), 1)]);
@@ -55,6 +45,20 @@ fn preparation_is_all_or_nothing_before_live_capture() {
     assert_eq!(prepared.len(), 2);
     assert_eq!(prepared[0].node, node_a);
     assert_eq!(prepared[0].checkpoint.node_icounts, node_icounts);
+    // Both nodes may be ahead of or behind the shared frontier in physical
+    // icount, but QEMU capture provenance uses the checkpoint's global time.
+    assert_eq!(prepared[0].counter, 17);
+    assert_eq!(prepared[1].counter, 19);
+    assert_eq!(prepared[0].scheduler_time, VirtualTime { ticks: 23 });
+    assert_eq!(prepared[1].scheduler_time, VirtualTime { ticks: 23 });
+    assert_eq!(
+        prepared[0].checkpoint.virtual_time,
+        prepared[0].scheduler_time
+    );
+    assert_eq!(
+        prepared[1].checkpoint.virtual_time,
+        prepared[1].scheduler_time
+    );
     assert_eq!(
         prepared[1].ram_output,
         staging.path().join("node-1-ram.crucram")
@@ -71,6 +75,19 @@ fn preparation_is_all_or_nothing_before_live_capture() {
         prepared[1].staged_device_chunks,
         staging.path().join("node-1-device-objects")
     );
+
+    let single = prepare_exact_checkpoint_targets(
+        &configuration,
+        VirtualTime { ticks: 17 },
+        &BTreeMap::from([(node_a.clone(), crucible::Icount { retired: 17 })]),
+        vec![(node_a.clone(), 17, ProductionNodeServiceState::Running)],
+        &indexes,
+        &directories,
+        staging.path(),
+    )
+    .unwrap_or_else(|error| panic!("single-node target should prepare: {error}"));
+    assert_eq!(single[0].scheduler_time, VirtualTime { ticks: 17 });
+    assert_eq!(single[0].counter, 17);
 
     let incomplete_directories = BTreeMap::from([(node_a.clone(), PathBuf::from("generation-a"))]);
     let error = prepare_exact_checkpoint_targets(
