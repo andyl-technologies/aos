@@ -68,7 +68,7 @@ shape-review|crates/crucible-cli/src/cli/control.rs|sha256:4e1928f2dc9bb4e5aab6e
 shape-review|crates/crucible-cli/src/cli/planning/invocations.rs|sha256:6b05256eb1a158eb6c3a00e543965976190141487baf143f3171644fe5694557|implementation|2311|Command invocation plans for run, save, search, fuzz, and replay workflows.|Run, save, search, fuzz, and replay plans share seed resolution, bounds, and deterministic invocation evidence.
 shape-review|crates/crucible-cli/src/cli/run_save.rs|sha256:efa1d9705950c1c04b88395a001a91de677fc62c8538698faba9264e121df6db|implementation|1177|Local run/save workflows and closure-bound remote resume control setup.|threshold-not-reached
 shape-review|crates/crucible-cli/src/cli/run_save/qemu_live.rs|sha256:5b0ba1846b3315f572b09d4795f87067574d3e2389e7c98245467807bcc7aa2f|implementation|1248|Live packaged-QEMU run and save execution, probing, search, replay, and outcome projection.|threshold-not-reached
-shape-review|crates/crucible-cli/src/cli/verify_serve.rs|sha256:532e46e703bb70e5699e4218eae8e144825d93f64d71b4fef3e662feae1fc820|implementation|1461|Verification comparison, canonical witnesses, and replay-validating daemon service entrypoints.|threshold-not-reached
+shape-review|crates/crucible-cli/src/cli/verify_serve/service.rs|sha256:3aff22cfd48de38d2e1ee95e9c4401df4b7d3495a14586e695e7fe8c97f91793|implementation|1060|Daemon service startup, campaign attachment, private executor supervision, and shutdown.|threshold-not-reached
 shape-review|crates/crucible-cli/src/main.rs|sha256:959a7bec7aa98cd16b025fe50d1b5019ddf0bddf58f2691d45cba0a959d0e32f|implementation|2543|`crucible` is the CLI entry point for the Crucible control plane.|Argument types, command dispatch, backend routing, output selection, and exit projection define one CLI surface.
 shape-review|crates/crucible-cli/src/tests/replay_artifact.rs|sha256:b1c3399e5a780a6633b991e40430293e545b98fce39d98222632ae1ab9566871|tests|2722|Replay-artifact parsing, authentication, current-schema, and production-QEMU regression tests.|Format, provenance, current-schema, production replay, and refusal cases share one artifact-validation fixture.
 shape-review|crates/crucible-cli/src/tests/surface.rs|sha256:4a394e7048f9d633e5829d68e16fe3ee5dc216375954a15864988ab136bf0ec1|tests|3335|CLI parsing, planning, backend selection, and run workflow tests.|Parsing, invocation planning, backend routing, output, and run workflow cases reuse one CLI operation recorder.
@@ -415,7 +415,6 @@ shape-line|crates/crucible-cli/src/cli/planning/verify_seed_render.rs|902
 shape-line|crates/crucible-cli/src/cli/run_save.rs|1176
 shape-line|crates/crucible-cli/src/cli/run_save/qemu_live.rs|919
 shape-line|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs|1141
-shape-line|crates/crucible-cli/src/cli/verify_serve.rs|1871
 shape-line|crates/crucible-cli/src/cli/verify_serve/campaign_import.rs|650
 shape-line|crates/crucible-cli/src/cli/verify_serve/campaign_store.rs|1670
 shape-line|crates/crucible-cli/src/main.rs|2323
@@ -740,6 +739,9 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/search.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve.rs|qemu
+# The service module owns host-side VM service setup and delegates execution to the daemon.
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve/service.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve/service.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve/packaged_executor.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/verify_serve/packaged_executor.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/main.rs|QEMU
