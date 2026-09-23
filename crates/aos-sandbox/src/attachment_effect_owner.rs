@@ -25,8 +25,10 @@ use crate::attachment_slot_state::{
     DurableAttachmentSlotV1,
 };
 use crate::attachment_source::{
-    self, AttachmentSourceBoundsV1, AttachmentSourceError, CurrentAttachmentSourcePlanV1,
-    PreparedCurrentAttachmentSourceAcquireV1,
+    self, AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
+    CurrentAttachmentSourcePlanV1, DurableAttachmentSourceCompletionV1,
+    DurableCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceAcquireV1,
+    PreparedCurrentAttachmentSourceDispatchV1,
 };
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
@@ -386,6 +388,114 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             plan,
             operation_id,
             deadline_boottime_nanoseconds,
+            clock,
+        )
+    }
+
+    /// Builds the independent Mount plan for one exact protected Acquire.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed source or ownership state and invalid plan bounds.
+    pub fn current_source_acquire_plan<T>(
+        &mut self,
+        prepared: &PreparedCurrentAttachmentSourceAcquireV1,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.plan_at(self.journal, mount_revocation_scope, clock)
+    }
+
+    /// Binds the independent signed Mount plan to one exact Acquire request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected state or a substituted Mount signature, scope,
+    /// grant, or request template.
+    pub fn bind_current_source_acquire<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentSourceAcquireV1,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.bind_signed_plan(self.journal, signed_plan, clock)
+    }
+
+    /// Atomically records exact source custody and signed Mount packet before I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed Host or Mount authority, a wrong packet, predecessor
+    /// conflict, or failed protected commit and readback.
+    pub fn admit_current_source_acquire<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentSourceDispatchV1,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.admit_current(self.journal, clock)
+    }
+
+    /// Closes exact Acquire custody only after fresh Active Mount inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Active source plan, missing exact durable attempt, stale
+    /// Host or paired inventory, or failed protected completion commit.
+    pub fn complete_current_source_acquire<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<DurableAttachmentSourceCompletionV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if !matches!(
+            plan.action(),
+            AttachmentSourceActionV1::CompleteAcquire { .. }
+        ) {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let attachment = plan.desired().intent().id();
+        let attempt = attachment_source::recover_open_attempt(self.journal, attachment)?
+            .ok_or(AttachmentSourceError::Conflict)?;
+        attachment_source::record_completion(self.journal, attempt, plan, clock)
+    }
+
+    /// Custodies one exact completed detached Create against fresh consumed-source inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different source or Mount completion, missing Acquire
+    /// predecessor, stale inventory, or failed protected commit.
+    pub fn record_current_source_consume<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        completed: &CompletedCurrentAttachmentMountAttemptV1,
+        clock: &mut T,
+    ) -> Result<attachment_source::DurableAttachmentSourceAttemptV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let attachment = *plan.desired().intent().id().as_bytes();
+        let predecessor = attachment_source::current_predecessor(self.journal, attachment)?;
+        attachment_source::record_current_attempt(
+            self.journal,
+            plan,
+            attachment_source::AttachmentSourceAttemptKindV1::Consume,
+            OperationId::from_bytes(completed.completion().request_id()),
+            completed.completion().record_digest(),
+            Vec::new(),
+            Some(completed),
+            predecessor,
             clock,
         )
     }

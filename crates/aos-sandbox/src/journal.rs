@@ -213,6 +213,8 @@ pub enum RecordNamespace {
     BrokerSessionStorageGroupArchive = 55,
     /// Controller reservation for one physically verified guest-root publication.
     GuestRootPublication = 56,
+    /// Exact authorized Mount Acquire packets linked to attachment-source custody.
+    AttachmentSourceDispatch = 57,
     /// Durable ambiguous or completed Storage guest-root population attempts.
     StorageGuestRootPublicationAttempt = 58,
 }
@@ -276,6 +278,7 @@ impl RecordNamespace {
             54 => Ok(Self::PublicAttachPending),
             55 => Ok(Self::BrokerSessionStorageGroupArchive),
             56 => Ok(Self::GuestRootPublication),
+            57 => Ok(Self::AttachmentSourceDispatch),
             58 => Ok(Self::StorageGuestRootPublicationAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
@@ -3644,6 +3647,7 @@ mod tests {
             RecordNamespace::PublicAttachPending,
             RecordNamespace::BrokerSessionStorageGroupArchive,
             RecordNamespace::GuestRootPublication,
+            RecordNamespace::AttachmentSourceDispatch,
             RecordNamespace::StorageGuestRootPublicationAttempt,
         ];
         for namespace in namespaces {
@@ -3651,7 +3655,7 @@ mod tests {
             assert_ne!(code, 0);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 57, 255] {
+        for code in [0, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

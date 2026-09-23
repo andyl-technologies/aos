@@ -607,10 +607,21 @@ pub(crate) fn controller_state_digest(
             .count(),
     )
     .map_err(|_| MountAttemptError::Capacity)?;
-    if attachment_source_attempt_count != 0 || attachment_source_completion_count != 0 {
+    let attachment_source_dispatch_count = u32::try_from(
+        journal
+            .records(RecordNamespace::AttachmentSourceDispatch)
+            .count(),
+    )
+    .map_err(|_| MountAttemptError::Capacity)?;
+    if attachment_source_attempt_count != 0
+        || attachment_source_completion_count != 0
+        || attachment_source_dispatch_count != 0
+    {
         crate::attachment_source::validate_attempt_namespace(journal)
             .map_err(|_| MountAttemptError::CorruptState)?;
         crate::attachment_source::validate_completion_namespace(journal)
+            .map_err(|_| MountAttemptError::CorruptState)?;
+        crate::attachment_source::validate_dispatch_namespace(journal)
             .map_err(|_| MountAttemptError::CorruptState)?;
     }
     let mut digest = Sha256::new();
@@ -741,6 +752,24 @@ pub(crate) fn controller_state_digest(
         }
         digest.update(attachment_source_completion_count.to_be_bytes());
         for (key, value) in journal.records(RecordNamespace::AttachmentSourceCompletion) {
+            digest.update(
+                u32::try_from(key.len())
+                    .map_err(|_| MountAttemptError::Capacity)?
+                    .to_be_bytes(),
+            );
+            digest.update(key);
+            digest.update(
+                u32::try_from(value.len())
+                    .map_err(|_| MountAttemptError::Capacity)?
+                    .to_be_bytes(),
+            );
+            digest.update(value);
+        }
+    }
+    if attachment_source_dispatch_count != 0 {
+        digest.update(b"attachment-source-dispatch\0");
+        digest.update(attachment_source_dispatch_count.to_be_bytes());
+        for (key, value) in journal.records(RecordNamespace::AttachmentSourceDispatch) {
             digest.update(
                 u32::try_from(key.len())
                     .map_err(|_| MountAttemptError::Capacity)?

@@ -2037,12 +2037,19 @@ where
                     .records(RecordNamespace::AttachmentSourceCompletion)
                     .next()
                     .is_some()
+                || self
+                    .journal
+                    .records(RecordNamespace::AttachmentSourceDispatch)
+                    .next()
+                    .is_some()
             {
                 #[cfg(target_os = "linux")]
                 {
                     crate::attachment_source::validate_attempt_namespace(&mut self.journal)
                         .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
                     crate::attachment_source::validate_completion_namespace(&mut self.journal)
+                        .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
+                    crate::attachment_source::validate_dispatch_namespace(&mut self.journal)
                         .map_err(|error| ReconcilerError::AttachmentSource(Box::new(error)))?;
                 }
                 #[cfg(not(target_os = "linux"))]

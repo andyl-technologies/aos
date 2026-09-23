@@ -334,6 +334,9 @@ pub enum AttachmentSourceError {
     /// The exact Mount source-acquisition plan cannot be represented.
     #[error(transparent)]
     Plan(#[from] InvalidBrokerAuthorizationPlan),
+    /// The exact signed plan does not bind the canonical Acquire request.
+    #[error(transparent)]
+    DispatchTemplate(#[from] crate::BrokerDispatchTemplateError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -13,6 +13,7 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use super::dispatch_custody::DispatchRecord;
 use super::planning::{
     AttachmentSourceActionV1, AttachmentSourceError, CanonicalPlan, CurrentAttachmentSourcePlanV1,
 };
@@ -237,7 +238,7 @@ pub(super) struct CompletionRecord {
 }
 
 pub(super) struct CustodyHistory {
-    attempts: BTreeMap<[u8; 16], AttemptRecord>,
+    pub(super) attempts: BTreeMap<[u8; 16], AttemptRecord>,
     completions: BTreeMap<[u8; 16], CompletionRecord>,
     tails: BTreeMap<[u8; 16], ([u8; 16], Option<[u8; 32]>)>,
     retained_bytes: usize,
@@ -550,7 +551,7 @@ impl CustodyHistory {
         }
     }
 
-    fn open_attempt(&self, attachment_id: [u8; 16]) -> Option<&AttemptRecord> {
+    pub(super) fn open_attempt(&self, attachment_id: [u8; 16]) -> Option<&AttemptRecord> {
         let (operation, completion) = self.tails.get(&attachment_id)?;
         if completion.is_none() {
             self.attempts.get(operation)
@@ -1283,6 +1284,40 @@ pub(crate) fn record_current_attempt<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    record_current_attempt_with_dispatch(
+        journal,
+        &plan,
+        kind,
+        operation_id,
+        request_digest,
+        exact_request_body,
+        mount_completion,
+        expected_predecessor,
+        None,
+        clock,
+    )
+    .map(|(attempt, _)| attempt)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn record_current_attempt_with_dispatch<T>(
+    journal: &mut Journal,
+    plan: &CurrentAttachmentSourcePlanV1,
+    kind: AttachmentSourceAttemptKindV1,
+    operation_id: OperationId,
+    request_digest: ObjectDigest,
+    exact_request_body: Vec<u8>,
+    mount_completion: Option<&crate::CompletedCurrentAttachmentMountAttemptV1>,
+    expected_predecessor: Option<ObjectDigest>,
+    packet: Option<Vec<u8>>,
+    clock: &mut T,
+) -> Result<(DurableAttachmentSourceAttemptV1, Option<DispatchRecord>), AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    if packet.is_some() && kind != AttachmentSourceAttemptKindV1::Acquire {
+        return Err(AttachmentSourceError::Conflict);
+    }
     let history = CustodyHistory::load(journal)?;
     let replay = history.attempts.contains_key(operation_id.as_bytes());
     if !replay {
@@ -1321,15 +1356,32 @@ where
     record.digest = record.compute_digest();
     record.validate()?;
     PlanReferences::decode(&record.plan_bytes)?;
+    let dispatch = packet
+        .map(|packet| DispatchRecord::new(&record, packet))
+        .transpose()?;
 
     let outcome = match history.attempts.get(&record.operation_id) {
-        Some(current) if current == &record => AttachmentSourceAttemptOutcomeV1::Replay,
+        Some(current) if current == &record => {
+            if dispatch.as_ref() != super::dispatch_custody::current(journal, &record)?.as_ref() {
+                return Err(AttachmentSourceError::Conflict);
+            }
+            AttachmentSourceAttemptOutcomeV1::Replay
+        }
         Some(_) => return Err(AttachmentSourceError::Conflict),
         None => {
             history.validate_next_attempt(&record)?;
-            history.ensure_capacity(record.encoded_len().saturating_add(16))?;
+            let added = record.encoded_len().saturating_add(16).saturating_add(
+                dispatch
+                    .as_ref()
+                    .map_or(0, |value| value.encoded_len() + 16),
+            );
+            history.ensure_capacity(added)?;
             plan.recheck(journal, clock)?;
-            journal.commit(&record.transaction()?)?;
+            let transaction = match dispatch.as_ref() {
+                Some(dispatch) => record.transaction_with_dispatch(dispatch)?,
+                None => record.transaction()?,
+            };
+            journal.commit(&transaction)?;
             AttachmentSourceAttemptOutcomeV1::Recorded
         }
     };
@@ -1337,7 +1389,22 @@ where
     if committed.attempts.get(&record.operation_id) != Some(&record) {
         return Err(AttachmentSourceError::CorruptState);
     }
-    Ok(DurableAttachmentSourceAttemptV1 { record, outcome })
+    if dispatch.as_ref() != super::dispatch_custody::current(journal, &record)?.as_ref() {
+        return Err(AttachmentSourceError::CorruptState);
+    }
+    Ok((
+        DurableAttachmentSourceAttemptV1 { record, outcome },
+        dispatch,
+    ))
+}
+
+pub(crate) fn current_predecessor(
+    journal: &mut Journal,
+    attachment_id: [u8; 16],
+) -> Result<Option<ObjectDigest>, AttachmentSourceError> {
+    CustodyHistory::load(journal)?
+        .predecessor(attachment_id)
+        .map(|value| value.map(ObjectDigest::from_bytes))
 }
 
 /// Records exact current evidence completing or canceling one custody attempt.
@@ -1609,6 +1676,20 @@ impl AttemptRecord {
             JournalRecord::put(ATTEMPT_NAMESPACE, self.operation_id.to_vec(), self.encode()),
         )
     }
+
+    fn transaction_with_dispatch(
+        &self,
+        dispatch: &DispatchRecord,
+    ) -> Result<JournalTransaction, AttachmentSourceError> {
+        transaction_records(
+            ATTEMPT_TRANSACTION_DOMAIN,
+            self.digest,
+            vec![
+                JournalRecord::put(ATTEMPT_NAMESPACE, self.operation_id.to_vec(), self.encode()),
+                dispatch.journal_record(),
+            ],
+        )
+    }
 }
 
 impl CompletionRecord {
@@ -1630,6 +1711,14 @@ fn transaction(
     digest: [u8; 32],
     record: JournalRecord,
 ) -> Result<JournalTransaction, AttachmentSourceError> {
+    transaction_records(domain, digest, vec![record])
+}
+
+fn transaction_records(
+    domain: &[u8],
+    digest: [u8; 32],
+    records: Vec<JournalRecord>,
+) -> Result<JournalTransaction, AttachmentSourceError> {
     let mut id: [u8; 16] = Sha256::new()
         .chain_update(domain)
         .chain_update(digest)
@@ -1639,7 +1728,7 @@ fn transaction(
     if id == [0; 16] {
         id[15] = 1;
     }
-    Ok(JournalTransaction::new(id, vec![record])?)
+    Ok(JournalTransaction::new(id, records)?)
 }
 
 pub(crate) fn validate_attempt_namespace(

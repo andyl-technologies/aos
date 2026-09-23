@@ -13,6 +13,7 @@
 //! exact predecessor-completion digest per attachment.
 
 mod custody;
+mod dispatch_custody;
 mod format;
 mod planning;
 mod preparation;
@@ -26,11 +27,15 @@ pub use planning::{
     AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
     CurrentAttachmentSourcePlanV1,
 };
-pub use preparation::PreparedCurrentAttachmentSourceAcquireV1;
+pub use dispatch_custody::DurableCurrentAttachmentSourceDispatchV1;
+pub use preparation::{
+    PreparedCurrentAttachmentSourceAcquireV1, PreparedCurrentAttachmentSourceDispatchV1,
+};
 
 pub(crate) use custody::{
-    record_completion, record_current_attempt, recover_open_attempt, validate_attempt_namespace,
-    validate_completion_namespace,
+    current_predecessor, record_completion, record_current_attempt, recover_open_attempt,
+    validate_attempt_namespace, validate_completion_namespace,
 };
 pub(crate) use planning::plan_current;
 pub(crate) use preparation::prepare_current_acquire;
+pub(crate) use dispatch_custody::validate_namespace as validate_dispatch_namespace;
