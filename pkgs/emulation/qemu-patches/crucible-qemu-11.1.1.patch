@@ -1,4 +1,4 @@
-From e0ca7ee7610119b2f7e0b3f19e1751ce44d352b0 Mon Sep 17 00:00:00 2001
+From e72ecd59057a7e6dfe5b61d26826b28533489785 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -31030,7 +31030,7 @@ index 50ebe37845285d7cc1d427d35a261dff58b914b7..0b91ba43a596cbc372c9b2fdf1465029
                                      void *opaque, JSONWriter *vmdesc,
                                      Error **errp);
 diff --git a/monitor/fds.c b/monitor/fds.c
-index cc35d2ec334929216bb9653890b058406035f4f6..758af92785572fe27da1bc988978619249fb3132 100644
+index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced631c0ff3 100644
 --- a/monitor/fds.c
 +++ b/monitor/fds.c
 @@ -166,6 +166,36 @@ int monitor_get_fd(Monitor *mon, const char *fdname, Error **errp)
@@ -31114,7 +31114,7 @@ index cc35d2ec334929216bb9653890b058406035f4f6..758af92785572fe27da1bc9889786192
  AddfdInfo *qmp_add_fd(bool has_fdset_id, int64_t fdset_id,
                        const char *opaque, Error **errp)
  {
-@@ -331,6 +391,99 @@ FdsetInfoList *qmp_query_fdsets(Error **errp)
+@@ -331,6 +391,171 @@ FdsetInfoList *qmp_query_fdsets(Error **errp)
      return fdset_list;
  }
  
@@ -31161,6 +31161,75 @@ index cc35d2ec334929216bb9653890b058406035f4f6..758af92785572fe27da1bc9889786192
 +    return true;
 +}
 +
++static bool monitor_crucible_overlay_fdset_valid(MonFdset *fdset, Error **errp)
++{
++#ifndef O_DIRECT
++    error_setg(errp, "Crucible pinned root overlay requires O_DIRECT");
++    return false;
++#else
++    MonFdsetFd *original;
++    MonFdsetFd *duplicate;
++    struct stat overlay_stat = { 0 };
++    bool have_overlay_stat = false;
++    bool have_read = false;
++    bool have_write = false;
++
++    QLIST_FOREACH(original, &fdset->fds, next) {
++        struct stat current_stat;
++        int flags = fcntl(original->fd, F_GETFL);
++
++        if (!original->opaque || flags < 0 || !(flags & O_DIRECT) ||
++            fstat(original->fd, &current_stat) < 0 ||
++            !S_ISREG(current_stat.st_mode)) {
++            goto invalid;
++        }
++        if (strcmp(original->opaque, "crucible-root-overlay-read") == 0 &&
++            (flags & O_ACCMODE) == O_RDONLY && !have_read) {
++            have_read = true;
++        } else if (strcmp(original->opaque,
++                          "crucible-root-overlay-write") == 0 &&
++                   (flags & O_ACCMODE) == O_RDWR && !have_write) {
++            have_write = true;
++        } else {
++            goto invalid;
++        }
++        if (have_overlay_stat &&
++            (current_stat.st_dev != overlay_stat.st_dev ||
++             current_stat.st_ino != overlay_stat.st_ino ||
++             current_stat.st_mode != overlay_stat.st_mode)) {
++            goto invalid;
++        }
++        overlay_stat = current_stat;
++        have_overlay_stat = true;
++    }
++    if (!have_read || !have_write || QLIST_EMPTY(&fdset->dup_fds)) {
++        goto invalid;
++    }
++
++    QLIST_FOREACH(duplicate, &fdset->dup_fds, next) {
++        struct stat duplicate_stat;
++        int flags = fcntl(duplicate->fd, F_GETFL);
++        int access_and_direct = flags & (O_ACCMODE | O_DIRECT);
++
++        if (duplicate->opaque || flags < 0 ||
++            (access_and_direct != (O_RDONLY | O_DIRECT) &&
++             access_and_direct != (O_RDWR | O_DIRECT)) ||
++            fstat(duplicate->fd, &duplicate_stat) < 0 ||
++            duplicate_stat.st_dev != overlay_stat.st_dev ||
++            duplicate_stat.st_ino != overlay_stat.st_ino ||
++            duplicate_stat.st_mode != overlay_stat.st_mode) {
++            goto invalid;
++        }
++    }
++    return true;
++
++invalid:
++    error_setg(errp, "Crucible launch fdset 2 lacks the pinned direct-I/O "
++               "read/write overlay pair or has a mismatched block descriptor");
++    return false;
++#endif
++}
++
 +void qmp_x_crucible_adopt_launch_fdsets(bool root_overlay, Error **errp)
 +{
 +    MonFdset *fdset;
@@ -31189,18 +31258,21 @@ index cc35d2ec334929216bb9653890b058406035f4f6..758af92785572fe27da1bc9889786192
 +    if (!monitor_crucible_launch_fdset_valid(vmstate, "crucible-vmstate",
 +                                             errp) ||
 +        (root_overlay &&
-+         !monitor_crucible_launch_fdset_valid(overlay,
-+                                              "crucible-root-overlay", errp))) {
++         !monitor_crucible_overlay_fdset_valid(overlay, errp))) {
 +        return;
 +    }
 +
 +    sets[0] = vmstate;
 +    sets[1] = overlay;
 +    for (i = 0; i < set_count; i++) {
++        MonFdsetFd *original;
++        MonFdsetFd *next_original;
 +        MonFdsetFd *duplicate;
 +        MonFdsetFd *next_duplicate;
 +
-+        monitor_fdset_fd_free(QLIST_FIRST(&sets[i]->fds));
++        QLIST_FOREACH_SAFE(original, &sets[i]->fds, next, next_original) {
++            monitor_fdset_fd_free(original);
++        }
 +        QLIST_FOREACH_SAFE(duplicate, &sets[i]->dup_fds, next,
 +                           next_duplicate) {
 +            /* The block node still owns the live descriptor. */
@@ -31214,7 +31286,7 @@ index cc35d2ec334929216bb9653890b058406035f4f6..758af92785572fe27da1bc9889786192
  AddfdInfo *monitor_fdset_add_fd(int fd, bool has_fdset_id, int64_t fdset_id,
                                  const char *opaque, Error **errp)
  {
-@@ -512,4 +665,7 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
+@@ -512,4 +737,7 @@ int monitor_fd_param(Monitor *mon, const char *fdname, Error **errp)
  static void __attribute__((__constructor__)) monitor_fds_init(void)
  {
      qemu_mutex_init(&mon_fdsets_lock);
@@ -95487,7 +95559,7 @@ index 56ff860e216c8f37105b56839447b54cd05712de..a5114635e2227b01983182228354611d
 +  )
 +endif
 diff --git a/tests/qtest/qmp-cmd-test.c b/tests/qtest/qmp-cmd-test.c
-index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb7460637834c2f 100644
+index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..db3a6bf1d3b9198b91545b217063c97ca9f25d3c 100644
 --- a/tests/qtest/qmp-cmd-test.c
 +++ b/tests/qtest/qmp-cmd-test.c
 @@ -15,6 +15,7 @@
@@ -95507,11 +95579,11 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb74606
          { "query-vm-generation-id", ERROR_CLASS_GENERIC_ERROR },
          /* Only valid with a USB bus added */
          { "x-query-usb", ERROR_CLASS_GENERIC_ERROR },
-@@ -343,6 +346,156 @@ static void test_object_add_failure_modes(void)
+@@ -343,6 +346,314 @@ static void test_object_add_failure_modes(void)
      qtest_quit(qts);
  }
  
-+#ifndef _WIN32
++#if !defined(_WIN32) && defined(O_DIRECT)
 +static int crucible_test_image(void)
 +{
 +    g_autofree char *path = NULL;
@@ -95523,6 +95595,21 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb74606
 +    return fd;
 +}
 +
++static void crucible_test_direct_overlay(int *read_fd, int *write_fd)
++{
++    g_autofree char *path = NULL;
++    int file = g_file_open_tmp("crucible-direct-overlay-XXXXXX", &path, NULL);
++
++    g_assert_cmpint(file, >=, 0);
++    g_assert_cmpint(ftruncate(file, 4096), ==, 0);
++    *read_fd = open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
++    *write_fd = open(path, O_RDWR | O_DIRECT | O_CLOEXEC);
++    g_assert_cmpint(*read_fd, >=, 0);
++    g_assert_cmpint(*write_fd, >=, 0);
++    g_assert_cmpint(unlink(path), ==, 0);
++    close(file);
++}
++
 +static void crucible_assert_fdsets_empty(QTestState *qts)
 +{
 +    QDict *reply = qtest_qmp(qts, "{'execute':'query-fdsets'}");
@@ -95531,24 +95618,50 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb74606
 +    qobject_unref(reply);
 +}
 +
++static void crucible_add_vmstate_node(QTestState *qts, int fd)
++{
++    qtest_qmp_fds_assert_success(qts, &fd, 1,
++        "{'execute':'add-fd','arguments':{'fdset-id':1,"
++        "'opaque':'crucible-vmstate'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-add','arguments':{'driver':'file',"
++        "'filename':'/dev/fdset/1','node-name':'vmstate-test'}}");
++}
++
++static void crucible_add_overlay_fd(QTestState *qts, int fd, bool writable)
++{
++    if (writable) {
++        qtest_qmp_fds_assert_success(qts, &fd, 1,
++            "{'execute':'add-fd','arguments':{'fdset-id':2,"
++            "'opaque':'crucible-root-overlay-write'}}");
++    } else {
++        qtest_qmp_fds_assert_success(qts, &fd, 1,
++            "{'execute':'add-fd','arguments':{'fdset-id':2,"
++            "'opaque':'crucible-root-overlay-read'}}");
++    }
++}
++
++static void crucible_add_direct_overlay_node(QTestState *qts)
++{
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-add','arguments':{'driver':'file',"
++        "'filename':'/dev/fdset/2','node-name':'overlay-test',"
++        "'cache':{'direct':true}}}");
++}
++
 +static void test_crucible_adopt_launch_fdsets(void)
 +{
 +    QTestState *qts = qtest_init(common_args);
 +    int vmstate_fd = crucible_test_image();
-+    int overlay_fd = crucible_test_image();
++    int overlay_read_fd;
++    int overlay_write_fd;
 +
-+    qtest_qmp_fds_assert_success(qts, &vmstate_fd, 1,
-+        "{'execute':'add-fd','arguments':{'fdset-id':1,"
-+        "'opaque':'crucible-vmstate'}}");
-+    qtest_qmp_fds_assert_success(qts, &overlay_fd, 1,
-+        "{'execute':'add-fd','arguments':{'fdset-id':2,"
-+        "'opaque':'crucible-root-overlay'}}");
-+    qtest_qmp_assert_success(qts,
-+        "{'execute':'blockdev-add','arguments':{'driver':'file',"
-+        "'filename':'/dev/fdset/1','node-name':'vmstate-test'}}");
-+    qtest_qmp_assert_success(qts,
-+        "{'execute':'blockdev-add','arguments':{'driver':'file',"
-+        "'filename':'/dev/fdset/2','node-name':'overlay-test'}}");
++    crucible_test_direct_overlay(&overlay_read_fd, &overlay_write_fd);
++
++    crucible_add_vmstate_node(qts, vmstate_fd);
++    crucible_add_overlay_fd(qts, overlay_read_fd, false);
++    crucible_add_overlay_fd(qts, overlay_write_fd, true);
++    crucible_add_direct_overlay_node(qts);
 +
 +    qtest_qmp_assert_success(qts,
 +        "{'execute':'x-crucible-adopt-launch-fdsets',"
@@ -95560,7 +95673,8 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb74606
 +        "{'execute':'blockdev-del','arguments':{'node-name':'overlay-test'}}");
 +
 +    close(vmstate_fd);
-+    close(overlay_fd);
++    close(overlay_read_fd);
++    close(overlay_write_fd);
 +    qtest_quit(qts);
 +}
 +
@@ -95659,16 +95773,132 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb74606
 +    close(vmstate_fd);
 +    qtest_quit(qts);
 +}
++
++static void test_crucible_reject_missing_overlay_mode(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int vmstate_fd = crucible_test_image();
++    int overlay_read_fd;
++    int overlay_write_fd;
++    QDict *reply;
++
++    crucible_test_direct_overlay(&overlay_read_fd, &overlay_write_fd);
++    crucible_add_vmstate_node(qts, vmstate_fd);
++    crucible_add_overlay_fd(qts, overlay_write_fd, true);
++    crucible_add_direct_overlay_node(qts);
++
++    reply = qtest_qmp(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':true}}");
++    qmp_expect_error_and_unref(reply, "GenericError");
++
++    /* The failed call must leave the live block node and fdset usable. */
++    crucible_add_overlay_fd(qts, overlay_read_fd, false);
++    qtest_qmp_assert_success(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':true}}");
++    crucible_assert_fdsets_empty(qts);
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'vmstate-test'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'overlay-test'}}");
++
++    close(vmstate_fd);
++    close(overlay_read_fd);
++    close(overlay_write_fd);
++    qtest_quit(qts);
++}
++
++static void test_crucible_reject_wrong_overlay_mode(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int vmstate_fd = crucible_test_image();
++    int overlay_read_fd;
++    int overlay_write_fd;
++    QDict *reply;
++
++    crucible_test_direct_overlay(&overlay_read_fd, &overlay_write_fd);
++    crucible_add_vmstate_node(qts, vmstate_fd);
++    crucible_add_overlay_fd(qts, overlay_write_fd, false);
++    crucible_add_overlay_fd(qts, overlay_write_fd, true);
++    crucible_add_direct_overlay_node(qts);
++
++    reply = qtest_qmp(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':true}}");
++    qmp_expect_error_and_unref(reply, "GenericError");
++    reply = qtest_qmp(qts, "{'execute':'query-fdsets'}");
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(reply, "return")), ==, 2);
++    qobject_unref(reply);
++
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':2}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'overlay-test'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':1}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'vmstate-test'}}");
++    crucible_assert_fdsets_empty(qts);
++
++    close(vmstate_fd);
++    close(overlay_read_fd);
++    close(overlay_write_fd);
++    qtest_quit(qts);
++}
++
++static void test_crucible_reject_mixed_overlay_images(void)
++{
++    QTestState *qts = qtest_init(common_args);
++    int vmstate_fd = crucible_test_image();
++    int first_read_fd;
++    int first_write_fd;
++    int second_read_fd;
++    int second_write_fd;
++    QDict *reply;
++
++    crucible_test_direct_overlay(&first_read_fd, &first_write_fd);
++    crucible_test_direct_overlay(&second_read_fd, &second_write_fd);
++    crucible_add_vmstate_node(qts, vmstate_fd);
++    crucible_add_overlay_fd(qts, first_read_fd, false);
++    crucible_add_overlay_fd(qts, second_write_fd, true);
++    crucible_add_direct_overlay_node(qts);
++
++    reply = qtest_qmp(qts,
++        "{'execute':'x-crucible-adopt-launch-fdsets',"
++        "'arguments':{'root-overlay':true}}");
++    qmp_expect_error_and_unref(reply, "GenericError");
++    reply = qtest_qmp(qts, "{'execute':'query-fdsets'}");
++    g_assert_cmpuint(qlist_size(qdict_get_qlist(reply, "return")), ==, 2);
++    qobject_unref(reply);
++
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':2}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'overlay-test'}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'remove-fd','arguments':{'fdset-id':1}}");
++    qtest_qmp_assert_success(qts,
++        "{'execute':'blockdev-del','arguments':{'node-name':'vmstate-test'}}");
++    crucible_assert_fdsets_empty(qts);
++
++    close(vmstate_fd);
++    close(first_read_fd);
++    close(first_write_fd);
++    close(second_read_fd);
++    close(second_write_fd);
++    qtest_quit(qts);
++}
 +#endif
 +
  int main(int argc, char *argv[])
  {
      QmpSchema schema;
-@@ -356,6 +509,17 @@ int main(int argc, char *argv[])
+@@ -356,6 +667,23 @@ int main(int argc, char *argv[])
      qtest_add_func("qmp/object-add-failure-modes",
                     test_object_add_failure_modes);
  
-+#ifndef _WIN32
++#if !defined(_WIN32) && defined(O_DIRECT)
 +    qtest_add_func("qmp/crucible-adopt-launch-fdsets",
 +                   test_crucible_adopt_launch_fdsets);
 +    qtest_add_func("qmp/crucible-reject-replaced-launch-image",
@@ -95677,6 +95907,12 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..a3e988d0f09793354151e321abb74606
 +                   test_crucible_reject_extra_launch_fdset);
 +    qtest_add_func("qmp/crucible-reject-unopened-launch-image",
 +                   test_crucible_reject_unopened_launch_image);
++    qtest_add_func("qmp/crucible-reject-missing-overlay-mode",
++                   test_crucible_reject_missing_overlay_mode);
++    qtest_add_func("qmp/crucible-reject-wrong-overlay-mode",
++                   test_crucible_reject_wrong_overlay_mode);
++    qtest_add_func("qmp/crucible-reject-mixed-overlay-images",
++                   test_crucible_reject_mixed_overlay_images);
 +#endif
 +
      ret = g_test_run();
