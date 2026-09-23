@@ -5083,6 +5083,30 @@ where
         self.accept_compiled_plan(plan, request_digest)
     }
 
+    // Public entry points bind the same canonical request to the live peer.
+    #[cfg(target_os = "linux")]
+    fn checked_public_request_digest(
+        &self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        canonical_request: &[u8],
+    ) -> Result<[u8; 32], ControllerServiceError> {
+        if canonical_request.is_empty() {
+            return Err(ControllerServiceError::EmptyRequest);
+        }
+        if canonical_request.len() > self.limits.maximum_request_bytes {
+            return Err(ControllerServiceError::RequestTooLarge);
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+        Ok(public_controller_request_digest(
+            self.scope,
+            peer.principal(),
+            peer.project(),
+            canonical_request,
+        ))
+    }
+
     /// Admits one public request with live TLS peer evidence and protected compilation.
     ///
     /// The RPC owner must supply the exact canonical method/body received on
@@ -5104,21 +5128,7 @@ where
         capability_id: aos_sandbox_core::CapabilityId,
         canonical_request: &[u8],
     ) -> Result<AcceptOutcome, ControllerServiceError> {
-        if canonical_request.is_empty() {
-            return Err(ControllerServiceError::EmptyRequest);
-        }
-        if canonical_request.len() > self.limits.maximum_request_bytes {
-            return Err(ControllerServiceError::RequestTooLarge);
-        }
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-
-        let request_digest = public_controller_request_digest(
-            self.scope,
-            peer.principal(),
-            peer.project(),
-            canonical_request,
-        );
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
         let plan = self.compiler.compile_public(
             self.reconciler.journal_mut(),
             peer,
@@ -5149,21 +5159,7 @@ where
         capability_id: aos_sandbox_core::CapabilityId,
         canonical_request: &[u8],
     ) -> Result<crate::public_attach_pending::PublicAttachPendingV1, ControllerServiceError> {
-        if canonical_request.is_empty() {
-            return Err(ControllerServiceError::EmptyRequest);
-        }
-        if canonical_request.len() > self.limits.maximum_request_bytes {
-            return Err(ControllerServiceError::RequestTooLarge);
-        }
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-
-        let request_digest = public_controller_request_digest(
-            self.scope,
-            peer.principal(),
-            peer.project(),
-            canonical_request,
-        );
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
         let pending = crate::production_operation_compiler::reserve_public_attach_v1(
             self.reconciler.journal_mut(),
             peer,
@@ -5203,21 +5199,7 @@ where
         [u8; aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES],
         ControllerServiceError,
     > {
-        if canonical_request.is_empty() {
-            return Err(ControllerServiceError::EmptyRequest);
-        }
-        if canonical_request.len() > self.limits.maximum_request_bytes {
-            return Err(ControllerServiceError::RequestTooLarge);
-        }
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-
-        let request_digest = public_controller_request_digest(
-            self.scope,
-            peer.principal(),
-            peer.project(),
-            canonical_request,
-        );
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
         let rechecked = crate::production_operation_compiler::reserve_public_attach_v1(
             self.reconciler.journal_mut(),
             peer,
@@ -5270,21 +5252,7 @@ where
         ),
         ControllerServiceError,
     > {
-        if canonical_request.is_empty() {
-            return Err(ControllerServiceError::EmptyRequest);
-        }
-        if canonical_request.len() > self.limits.maximum_request_bytes {
-            return Err(ControllerServiceError::RequestTooLarge);
-        }
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-
-        let request_digest = public_controller_request_digest(
-            self.scope,
-            peer.principal(),
-            peer.project(),
-            canonical_request,
-        );
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
         let plan = crate::production_operation_compiler::compile_public_attach_route_v1(
             self.reconciler.journal_mut(),
             peer,
@@ -5332,21 +5300,7 @@ where
         capability_id: aos_sandbox_core::CapabilityId,
         canonical_request: &[u8],
     ) -> Result<AcceptOutcome, ControllerServiceError> {
-        if canonical_request.is_empty() {
-            return Err(ControllerServiceError::EmptyRequest);
-        }
-        if canonical_request.len() > self.limits.maximum_request_bytes {
-            return Err(ControllerServiceError::RequestTooLarge);
-        }
-        peer.recheck()
-            .map_err(|_| OperationCompilationError::Rejected)?;
-
-        let request_digest = public_controller_request_digest(
-            self.scope,
-            peer.principal(),
-            peer.project(),
-            canonical_request,
-        );
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
         let plan = self.compiler.compile_public_operator_recovery(
             self.reconciler.journal_mut(),
             peer,

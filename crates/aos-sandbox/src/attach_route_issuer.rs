@@ -203,6 +203,44 @@ impl AuthenticatedOpenSshRouteV1 {
             .map_err(|_| AttachRouteIssuanceErrorV1::InvalidRoute)?;
         Ok(())
     }
+
+    fn validate_attach_binding(
+        &self,
+        request: &ExecutionControlRequest,
+        execution: &Execution,
+        principal: PrincipalId,
+        operation: OperationId,
+        request_digest: [u8; 32],
+    ) -> Result<(), AttachRouteIssuanceErrorV1> {
+        verify_attach_holder_proof_v1(request)
+            .map_err(|_| AttachRouteIssuanceErrorV1::InvalidHolderProof)?;
+        self.validate()?;
+        if operation.as_bytes() == &[0; 16]
+            || principal.as_bytes() == &[0; 16]
+            || request_digest == [0; 32]
+            || self.attach_operation_id != *operation.as_bytes()
+            || self.principal_id != *principal.as_bytes()
+            || self.audit_id != execution.audit_id.as_slice()
+        {
+            return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
+        }
+        Ok(())
+    }
+
+    fn matches_current_execution(
+        &self,
+        request: &ExecutionControlRequest,
+        execution: &Execution,
+    ) -> bool {
+        request.execution_id.as_slice() == self.execution_id
+            && request.mutation.as_option().is_some_and(|mutation| {
+                mutation.expected_incarnation_id.as_slice() == self.sandbox_incarnation_id
+            })
+            && execution.execution_id.as_slice() == self.execution_id
+            && execution.sandbox_incarnation_id.as_slice() == self.sandbox_incarnation_id
+            && execution.assignment_epoch == self.assignment_epoch
+            && execution.phase.as_known() == Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+    }
 }
 
 /// Owns one protected OpenSSH user CA key used only for public attach issuance.
@@ -246,35 +284,14 @@ impl OpenSshAttachRouteIssuerV1 {
         request_digest: [u8; 32],
         now_seconds: i64,
     ) -> Result<OpenSshAccessEndpoint, AttachRouteIssuanceErrorV1> {
-        verify_attach_holder_proof_v1(request)
-            .map_err(|_| AttachRouteIssuanceErrorV1::InvalidHolderProof)?;
-        route.validate()?;
-        if operation.as_bytes() == &[0; 16]
-            || principal.as_bytes() == &[0; 16]
-            || request_digest == [0; 32]
-            || route.attach_operation_id != *operation.as_bytes()
-            || route.principal_id != *principal.as_bytes()
-            || route.audit_id != execution.audit_id.as_slice()
-        {
-            return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
-        }
+        route.validate_attach_binding(request, execution, principal, operation, request_digest)?;
 
         let authority_key = canonical_ed25519_key(&route.trusted_user_ca_public_key)
             .map_err(|_| AttachRouteIssuanceErrorV1::InvalidRoute)?;
         if authority_key.key_data() != self.authority.public_key().key_data() {
             return Err(AttachRouteIssuanceErrorV1::InvalidAuthority);
         }
-        if request.execution_id.as_slice() != route.execution_id
-            || request.mutation.as_option().is_none_or(|mutation| {
-                mutation.expected_incarnation_id.as_slice() != route.sandbox_incarnation_id
-            })
-            || execution.execution_id.as_slice() != route.execution_id
-            || execution.sandbox_incarnation_id.as_slice() != route.sandbox_incarnation_id
-            || execution.assignment_epoch != route.assignment_epoch
-            || execution.audit_id.len() != 16
-            || execution.audit_id.iter().all(|byte| *byte == 0)
-            || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
-        {
+        if !route.matches_current_execution(request, execution) {
             return Err(AttachRouteIssuanceErrorV1::StaleExecution);
         }
         let command = execution
@@ -381,24 +398,10 @@ impl OpenSshAttachRouteIssuerV1 {
         request_digest: [u8; 32],
         now_seconds: i64,
     ) -> Result<(), AttachRouteIssuanceErrorV1> {
-        verify_attach_holder_proof_v1(request)
-            .map_err(|_| AttachRouteIssuanceErrorV1::InvalidHolderProof)?;
-        route.validate()?;
-        if operation.as_bytes() == &[0; 16]
-            || principal.as_bytes() == &[0; 16]
-            || request_digest == [0; 32]
-            || route.attach_operation_id != *operation.as_bytes()
-            || route.principal_id != *principal.as_bytes()
-            || route.audit_id != execution.audit_id.as_slice()
-        {
-            return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
-        }
+        route.validate_attach_binding(request, execution, principal, operation, request_digest)?;
         let trusted_ca = canonical_ed25519_key(&route.trusted_user_ca_public_key)?;
         if trusted_ca.key_data() != self.authority.public_key().key_data()
-            || request.execution_id.as_slice() != route.execution_id
-            || request.mutation.as_option().is_none_or(|mutation| {
-                mutation.expected_incarnation_id.as_slice() != route.sandbox_incarnation_id
-            })
+            || !route.matches_current_execution(request, execution)
             || access.execution_id.as_slice() != route.execution_id
             || access.sandbox_incarnation_id.as_slice() != route.sandbox_incarnation_id
             || access.principal_id.as_slice() != principal.as_bytes()
@@ -408,10 +411,6 @@ impl OpenSshAttachRouteIssuerV1 {
             || access.port != u32::from(route.port)
             || access.user != route.user
             || access.host_public_key != route.host_public_key
-            || execution.execution_id.as_slice() != route.execution_id
-            || execution.sandbox_incarnation_id.as_slice() != route.sandbox_incarnation_id
-            || execution.assignment_epoch != route.assignment_epoch
-            || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
         {
             return Err(AttachRouteIssuanceErrorV1::StaleExecution);
         }
