@@ -852,9 +852,7 @@ impl CampaignRepository {
         finding: &Finding,
         bundle: FindingCandidateBundleId,
     ) -> Result<bool, CampaignRepositoryError> {
-        let Some(root) = finding.candidate_occurrences() else {
-            return Ok(finding.candidate_bundle() == Some(bundle));
-        };
+        let root = finding.candidate_occurrences();
         Ok(self
             .merkle
             .get(root, finding_candidate_occurrence_key(bundle))?

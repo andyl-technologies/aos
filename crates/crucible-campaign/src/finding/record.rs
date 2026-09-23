@@ -13,8 +13,8 @@ pub struct Finding {
     occurrences: FindingOccurrenceSet,
     minimized: Option<ReproductionArtifactId>,
     exact_pins: FindingExactPins,
-    candidate_bundle: Option<FindingCandidateBundleId>,
-    candidate_occurrences: Option<FindingCandidateOccurrenceSet>,
+    candidate_bundle: FindingCandidateBundleId,
+    candidate_occurrences: FindingCandidateOccurrenceSet,
 }
 
 /// Stable signature and first-occurrence basis for the finding record.
@@ -147,8 +147,8 @@ impl Finding {
             occurrences: basis.occurrences,
             minimized,
             exact_pins,
-            candidate_bundle: Some(candidate_bundle),
-            candidate_occurrences: Some(candidate_occurrences),
+            candidate_bundle,
+            candidate_occurrences,
         };
         codec::ensure_encoded_size(
             &value,
@@ -229,36 +229,26 @@ impl Finding {
     /// The record preserves the first bundle retained for the finding, while
     /// [`Self::candidate_occurrences`] is authoritative for all bundles.
     #[must_use]
-    pub const fn candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
+    pub const fn candidate_bundle(&self) -> FindingCandidateBundleId {
         self.candidate_bundle
     }
 
     /// Returns the authenticated Merkle root of retained candidate bundles.
     #[must_use]
-    pub const fn candidate_occurrences(&self) -> Option<ContentId> {
-        match self.candidate_occurrences {
-            Some(occurrences) => Some(occurrences.root()),
-            None => None,
-        }
+    pub const fn candidate_occurrences(&self) -> ContentId {
+        self.candidate_occurrences.root()
     }
 
     /// Returns the number of retained candidate bundles.
     #[must_use]
     pub const fn candidate_occurrence_count(&self) -> u32 {
-        match self.candidate_occurrences {
-            Some(occurrences) => occurrences.count(),
-            None if self.candidate_bundle.is_some() => 1,
-            None => 0,
-        }
+        self.candidate_occurrences.count()
     }
 
     /// Returns the candidate bundle added or reaffirmed by this record version.
     #[must_use]
-    pub const fn latest_candidate_bundle(&self) -> Option<FindingCandidateBundleId> {
-        match self.candidate_occurrences {
-            Some(occurrences) => Some(occurrences.latest()),
-            None => self.candidate_bundle,
-        }
+    pub const fn latest_candidate_bundle(&self) -> FindingCandidateBundleId {
+        self.candidate_occurrences.latest()
     }
 
     /// Returns strict canonical record-body bytes.
@@ -317,19 +307,18 @@ impl Finding {
         if let Some(minimized) = self.minimized {
             children.push(("minimized".to_owned(), minimized.content_id()));
         }
-        if let Some(candidate_bundle) = self.candidate_bundle {
-            children.push(("candidate-bundle".to_owned(), candidate_bundle.content_id()));
-        }
-        if let Some(candidate_occurrences) = self.candidate_occurrences {
-            children.push((
-                "candidate-occurrences".to_owned(),
-                candidate_occurrences.root(),
-            ));
-            children.push((
-                "latest-candidate-bundle".to_owned(),
-                candidate_occurrences.latest().content_id(),
-            ));
-        }
+        children.push((
+            "candidate-bundle".to_owned(),
+            self.candidate_bundle.content_id(),
+        ));
+        children.push((
+            "candidate-occurrences".to_owned(),
+            self.candidate_occurrences.root(),
+        ));
+        children.push((
+            "latest-candidate-bundle".to_owned(),
+            self.candidate_occurrences.latest().content_id(),
+        ));
         children.extend(self.exact_pins.content_children());
         children
     }
@@ -345,8 +334,9 @@ impl Canonical for Finding {
         self.occurrences.encode(encoder);
         self.minimized.encode(encoder);
         self.exact_pins.encode(encoder);
-        self.candidate_bundle.encode(encoder);
-        self.candidate_occurrences.encode(encoder);
+        // Schema v4 carries present Option tags, even though absence is invalid.
+        Some(self.candidate_bundle).encode(encoder);
+        Some(self.candidate_occurrences).encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {

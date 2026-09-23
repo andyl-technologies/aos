@@ -2606,6 +2606,36 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
         Finding::from_canonical_bytes(&finding.canonical_bytes()).expect("decode finding"),
         finding
     );
+    let first_bundle = finding.candidate_bundle();
+    let candidate_occurrences = FindingCandidateOccurrenceSet::new(
+        finding.candidate_occurrences(),
+        finding.candidate_occurrence_count(),
+        finding.latest_candidate_bundle(),
+    )
+    .expect("candidate occurrence set");
+    let canonical = finding.canonical_bytes();
+    let bundle_bytes = encode(&Some(first_bundle));
+    let occurrence_bytes = encode(&Some(candidate_occurrences));
+    let bundle_start = canonical.len() - bundle_bytes.len() - occurrence_bytes.len();
+
+    let mut missing_bundle = canonical[..bundle_start].to_vec();
+    missing_bundle.extend(encode(&None::<FindingCandidateBundleId>));
+    missing_bundle.extend(&canonical[bundle_start + bundle_bytes.len()..]);
+    assert_eq!(
+        Finding::from_canonical_bytes(&missing_bundle),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding record has no authenticated candidate bundle",
+        })
+    );
+
+    let mut missing_occurrences = canonical[..canonical.len() - occurrence_bytes.len()].to_vec();
+    missing_occurrences.extend(encode(&None::<FindingCandidateOccurrenceSet>));
+    assert_eq!(
+        Finding::from_canonical_bytes(&missing_occurrences),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "finding record has no authenticated candidate occurrences",
+        })
+    );
     assert_eq!(signature.cluster_key(), finding.signature().cluster_key());
 
     let envelope = ObjectEnvelope::for_record_versioned(

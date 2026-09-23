@@ -191,14 +191,6 @@ fn authenticate_campaign_occurrences(
 ) -> Result<(), CliError> {
     let expected_count = usize::try_from(item.finding.candidate_occurrence_count())
         .map_err(|_| artifact_error(format!("finding {index} occurrence count is invalid")))?;
-    if expected_count == 0 {
-        if item.finding.candidate_bundle().is_some() || !item.occurrence_proofs.is_empty() {
-            return Err(artifact_error(format!(
-                "finding {index} has inconsistent candidate occurrence evidence"
-            )));
-        }
-        return Ok(());
-    }
     if item.occurrence_proofs.len() != expected_count {
         return Err(artifact_error(format!(
             "finding {index} does not retain one proof page per candidate occurrence"
@@ -360,14 +352,8 @@ fn authenticate_campaign_occurrences(
         }
     }
     if after.is_some()
-        || item
-            .finding
-            .candidate_bundle()
-            .is_none_or(|bundle| !bundle_ids.contains(&bundle))
-        || item
-            .finding
-            .latest_candidate_bundle()
-            .is_none_or(|bundle| !bundle_ids.contains(&bundle))
+        || !bundle_ids.contains(&item.finding.candidate_bundle())
+        || !bundle_ids.contains(&item.finding.latest_candidate_bundle())
     {
         return Err(artifact_error(format!(
             "finding {index} occurrence proof chain is incomplete"

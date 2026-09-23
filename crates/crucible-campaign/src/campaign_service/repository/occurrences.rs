@@ -27,12 +27,7 @@ where
         let (finding, finding_proof) = self
             .repository
             .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
-        let occurrence_root =
-            finding
-                .candidate_occurrences()
-                .ok_or(CampaignRepositoryError::InvalidRequest {
-                    reason: "campaign-finding-has-no-candidate-occurrence-index",
-                })?;
+        let occurrence_root = finding.candidate_occurrences();
         let limit = usize::try_from(request.limit()).map_err(|_| {
             CampaignRepositoryError::InvalidRequest {
                 reason: "campaign-finding-occurrence-query-page-size-is-invalid",
@@ -85,12 +80,7 @@ where
         let (finding, finding_proof) = self
             .repository
             .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
-        let occurrence_root =
-            finding
-                .candidate_occurrences()
-                .ok_or(CampaignRepositoryError::InvalidRequest {
-                    reason: "campaign-finding-has-no-candidate-occurrence-index",
-                })?;
+        let occurrence_root = finding.candidate_occurrences();
         let (bundle, occurrence_proof) = self
             .repository
             .finding_candidate_bundle_with_proof(occurrence_root, request.bundle())?;
@@ -194,12 +184,7 @@ where
         let (finding, finding_proof) = self
             .repository
             .finding_with_proof(head.snapshot().roots().findings, request.finding())?;
-        let occurrence_root =
-            finding
-                .candidate_occurrences()
-                .ok_or(CampaignRepositoryError::InvalidRequest {
-                    reason: "campaign-finding-has-no-candidate-occurrence-index",
-                })?;
+        let occurrence_root = finding.candidate_occurrences();
         let (bundle, occurrence_proof) = self
             .repository
             .finding_candidate_bundle_with_proof(occurrence_root, request.bundle())?;

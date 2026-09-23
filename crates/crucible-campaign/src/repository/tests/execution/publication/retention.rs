@@ -225,7 +225,7 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
     assert_eq!(finding.reproduction(), original);
     assert_eq!(finding.minimized(), Some(minimized));
     assert_eq!(finding.first_seen_snapshot(), observed.new_snapshot);
-    assert_eq!(finding.candidate_bundle(), Some(bundle_id));
+    assert_eq!(finding.candidate_bundle(), bundle_id);
     assert_eq!(finding.candidate_occurrence_count(), 1);
     repository.evict_local_checkpoint(published.new_snapshot.content_id());
     assert_eq!(

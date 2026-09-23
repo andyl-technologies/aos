@@ -510,9 +510,7 @@ pub fn load_archived_finding_production_capture(
     role: CampaignFindingTriageReplayRole,
 ) -> Result<FindingProductionReplayCapture, CampaignFindingHandoffError> {
     let finding = repository.inspect_archived_exact_finding(archive, finding_id)?;
-    let candidate_id = finding
-        .latest_candidate_bundle()
-        .ok_or(CampaignFindingHandoffError::MissingCandidateBundle)?;
+    let candidate_id = finding.latest_candidate_bundle();
     let candidate = repository.load_finding_candidate_bundle(candidate_id)?;
     let references = candidate
         .replay_captures()
@@ -723,9 +721,6 @@ pub enum CampaignFindingHandoffError {
     /// A retained execution-model artifact failed semantic decoding.
     #[error(transparent)]
     Artifact(#[from] CrucibleArtifactError),
-    /// The selected finding has no retained candidate bundle.
-    #[error("archived finding has no candidate bundle")]
-    MissingCandidateBundle,
     /// The candidate bundle has no portable production capture outcomes.
     #[error("archived finding candidate has no production capture set")]
     MissingCaptureSet,
