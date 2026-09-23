@@ -4052,23 +4052,14 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 .map_err(|_| {
                     EffectFailure::Permanent("admitted attachment identity is invalid".to_owned())
                 })?;
-            let action = attachment_physical::observe(
+            let verified = attachment_physical::observe(
                 self,
                 operation_id,
                 AttachmentId::from_bytes(attachment_id),
                 sandbox,
                 journal,
             )?;
-            let pending = match action {
-                aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1::Ready {
-                    ..
-                }
-                | aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1::Released => {
-                    "attachment physical state is verified; public completion is pending"
-                }
-                _ => "attachment source and Mount transaction is pending",
-            };
-            return Err(EffectFailure::Retryable(pending.to_owned()));
+            return verified.receipt(operation_id);
         }
         let cache_consumer = if matches!(
             &request,

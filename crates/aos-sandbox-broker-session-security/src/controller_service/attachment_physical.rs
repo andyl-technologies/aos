@@ -14,12 +14,54 @@ use aos_sandbox::attachment_state::AttachmentDesiredPresenceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
 use aos_sandbox_core::model::AttachmentConsistency;
-use aos_sandbox_core::{AttachmentId, OperationId, SandboxId};
+use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, SandboxId};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::{
-    ControllerBrokerPlanSignerV1, EffectFailure, ProductionEffectExecutor, sample_ownership_clock,
+    ControllerBrokerPlanSignerV1, EffectFailure, EffectReceipt, ProductionEffectExecutor,
+    sample_ownership_clock,
 };
+
+/// Reports only exact source/Mount terminal proof eligible for a public receipt.
+pub(super) enum VerifiedAttachmentPhysicalV1 {
+    Ready {
+        desired_digest: ObjectDigest,
+        acquisition_id: [u8; 32],
+        mount_handle: [u8; 32],
+        verification_digest: [u8; 32],
+    },
+    Released {
+        desired_digest: ObjectDigest,
+    },
+}
+
+impl VerifiedAttachmentPhysicalV1 {
+    /// Encodes a stable public receipt from exact protected terminal proof.
+    pub(super) fn receipt(self, operation: OperationId) -> Result<EffectReceipt, EffectFailure> {
+        let mut bytes = Vec::with_capacity(8 + 16 + 32 * 4);
+        match self {
+            Self::Ready {
+                desired_digest,
+                acquisition_id,
+                mount_handle,
+                verification_digest,
+            } => {
+                bytes.extend_from_slice(b"AOSATR01");
+                bytes.extend_from_slice(operation.as_bytes());
+                bytes.extend_from_slice(desired_digest.as_bytes());
+                bytes.extend_from_slice(&acquisition_id);
+                bytes.extend_from_slice(&mount_handle);
+                bytes.extend_from_slice(&verification_digest);
+            }
+            Self::Released { desired_digest } => {
+                bytes.extend_from_slice(b"AOSADL01");
+                bytes.extend_from_slice(operation.as_bytes());
+                bytes.extend_from_slice(desired_digest.as_bytes());
+            }
+        }
+        EffectReceipt::new(bytes).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    }
+}
 
 pub(super) fn observe(
     executor: &mut ProductionEffectExecutor,
@@ -27,7 +69,7 @@ pub(super) fn observe(
     attachment: AttachmentId,
     sandbox: SandboxId,
     journal: &mut Journal,
-) -> Result<AttachmentReconciliationActionV1, EffectFailure> {
+) -> Result<VerifiedAttachmentPhysicalV1, EffectFailure> {
     if drain_pending_before_slot(executor, journal)? {
         return Err(retryable("fresh authenticated Mount inventory is pending"));
     }
@@ -64,6 +106,7 @@ pub(super) fn observe(
     if desired.record_digest() != current.record_digest() {
         return Err(retryable("attachment generation has a protected successor"));
     }
+    let desired_digest = desired.record_digest();
     if desired.presence() == AttachmentDesiredPresenceV1::Present
         && desired.intent().consistency() != AttachmentConsistency::ImmutableRevision
     {
@@ -176,6 +219,14 @@ pub(super) fn observe(
                 "source custody completed; fresh Mount inventory is pending",
             ));
         }
+        if matches!(action, AttachmentSourceActionV1::CompleteConsume { .. }) {
+            owner
+                .complete_current_source_consume(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "post-attach source custody completed; fresh Mount inventory is pending",
+            ));
+        }
         if action == AttachmentSourceActionV1::Released {
             let (target, resources) = source.into_mount_reconciliation_inputs();
             (target, resources, Some(action))
@@ -250,6 +301,33 @@ pub(super) fn observe(
             "protected source acquisition has not reached the Mount transition",
         ));
     }
+    if matches!(action, AttachmentReconciliationActionV1::Verify { .. }) {
+        owner
+            .verify_current_mount_installation(reconciliation, &mut clock)
+            .map_err(|error| retryable(error.to_string()))?;
+        return Err(retryable(
+            "post-attach kernel evidence is recorded; fresh Mount inventory is pending",
+        ));
+    }
+    if let AttachmentReconciliationActionV1::Ready {
+        mount_handle,
+        verification_digest,
+        ..
+    } = action
+    {
+        let Some(AttachmentSourceActionV1::Ready { acquisition_id, .. }) = source_action else {
+            return Err(retryable("source readiness proof is unavailable"));
+        };
+        return Ok(VerifiedAttachmentPhysicalV1::Ready {
+            desired_digest,
+            acquisition_id,
+            mount_handle,
+            verification_digest,
+        });
+    }
+    if action == AttachmentReconciliationActionV1::Released {
+        return Ok(VerifiedAttachmentPhysicalV1::Released { desired_digest });
+    }
     if !matches!(
         action,
         AttachmentReconciliationActionV1::Prepare { .. }
@@ -257,7 +335,9 @@ pub(super) fn observe(
             | AttachmentReconciliationActionV1::Replace { .. }
             | AttachmentReconciliationActionV1::Detach { .. }
     ) {
-        return Ok(action);
+        return Err(retryable(
+            "attachment source and Mount transaction is pending",
+        ));
     }
 
     ensure_mount_policy(executor)?;
@@ -327,6 +407,29 @@ fn source_allows_mount(
                 ..
             },
         ) => mount_handle == candidate,
+        (
+            Some(AttachmentSourceActionV1::AwaitAttachment {
+                mount_handle,
+                consume_attempt_recorded: true,
+                ..
+            }),
+            AttachmentReconciliationActionV1::Verify {
+                mount_handle: candidate,
+                ..
+            },
+        ) => mount_handle == candidate,
+        (
+            Some(AttachmentSourceActionV1::Ready {
+                mount_handle,
+                verification_digest,
+                ..
+            }),
+            AttachmentReconciliationActionV1::Ready {
+                mount_handle: candidate,
+                verification_digest: candidate_verification,
+                ..
+            },
+        ) => mount_handle == candidate && verification_digest == candidate_verification,
         (
             Some(AttachmentSourceActionV1::DrainAttachment { mount_handle, .. }),
             AttachmentReconciliationActionV1::Detach {
@@ -616,5 +719,87 @@ mod tests {
             Some(AttachmentSourceActionV1::Released),
             mount,
         ));
+    }
+
+    #[test]
+    fn post_attach_verification_and_ready_require_exact_source_match() {
+        let awaiting = AttachmentSourceActionV1::AwaitAttachment {
+            acquisition_id: [1; 32],
+            mount_handle: [2; 32],
+            lifecycle: MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+            consume_attempt_recorded: true,
+        };
+        let verify = AttachmentReconciliationActionV1::Verify {
+            mount_handle: [2; 32],
+            unique_mount_id: 9,
+        };
+        assert!(source_allows_mount(Some(awaiting), verify));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::AwaitAttachment {
+                acquisition_id: [1; 32],
+                mount_handle: [2; 32],
+                lifecycle: MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+                consume_attempt_recorded: false,
+            }),
+            verify,
+        ));
+
+        let ready = AttachmentSourceActionV1::Ready {
+            acquisition_id: [1; 32],
+            mount_handle: [2; 32],
+            verification_digest: [3; 32],
+        };
+        let installed = AttachmentReconciliationActionV1::Ready {
+            mount_handle: [2; 32],
+            unique_mount_id: 9,
+            verification_digest: [3; 32],
+        };
+        assert!(source_allows_mount(Some(ready), installed));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Ready {
+                acquisition_id: [1; 32],
+                mount_handle: [2; 32],
+                verification_digest: [4; 32],
+            }),
+            installed,
+        ));
+        assert!(!source_allows_mount(
+            Some(AttachmentSourceActionV1::Ready {
+                acquisition_id: [1; 32],
+                mount_handle: [5; 32],
+                verification_digest: [3; 32],
+            }),
+            installed,
+        ));
+    }
+
+    #[test]
+    fn terminal_receipts_bind_operation_and_protected_evidence() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let ready = VerifiedAttachmentPhysicalV1::Ready {
+            desired_digest: ObjectDigest::from_bytes([2; 32]),
+            acquisition_id: [3; 32],
+            mount_handle: [4; 32],
+            verification_digest: [5; 32],
+        }
+        .receipt(operation)
+        .unwrap();
+        assert_eq!(ready.as_bytes().len(), 8 + 16 + 32 * 4);
+        assert_eq!(&ready.as_bytes()[..8], b"AOSATR01");
+        assert_eq!(&ready.as_bytes()[8..24], operation.as_bytes());
+        assert_eq!(&ready.as_bytes()[24..56], &[2; 32]);
+        assert_eq!(&ready.as_bytes()[56..88], &[3; 32]);
+        assert_eq!(&ready.as_bytes()[88..120], &[4; 32]);
+        assert_eq!(&ready.as_bytes()[120..152], &[5; 32]);
+
+        let released = VerifiedAttachmentPhysicalV1::Released {
+            desired_digest: ObjectDigest::from_bytes([2; 32]),
+        }
+        .receipt(operation)
+        .unwrap();
+        assert_eq!(released.as_bytes().len(), 8 + 16 + 32);
+        assert_eq!(&released.as_bytes()[..8], b"AOSADL01");
+        assert_eq!(&released.as_bytes()[8..24], operation.as_bytes());
+        assert_eq!(&released.as_bytes()[24..56], &[2; 32]);
     }
 }
