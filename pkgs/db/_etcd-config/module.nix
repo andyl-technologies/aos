@@ -289,148 +289,133 @@
         mode = "0440";
       };
     };
-    serviceRequest = serviceManagement.forService {
-      featureRequests = [
-        (serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = {
-            allow_privilege_escalation = false;
-            ambient_privileges = [];
-            privilege_bounds = {
-              kind = "restricted";
-              privileges = [];
-            };
-            resource_control_delegation = false;
-            resource_control_access = "read-only";
-            device_access_scope = "shared";
-            host_clock_mutation = false;
-            host_name_mutation = false;
-            operating_system_log_access = false;
-            operating_system_extension_access = false;
-            operating_system_tunable_access = false;
-            lock_execution_personality = true;
-            writable_executable_memory = false;
-            isolation_domains = [];
-            network_families = ["ipv4" "ipv6" "local"];
-            memory_pressure_adjustment = 0;
-            permit_realtime = false;
-            permit_elevated_file_identity = false;
-            process_visibility = "all";
-            security_label = "aos-pkg-etcd";
-            operation_architectures = [];
-            operation_allow = [];
-            operation_deny = [];
-            operation_profile = "restricted";
-            isolated_identity_mapping = "none";
-          };
-        })
-      ];
-      inherit serviceTypes;
+    serviceRequest = {
+      policy.hardening = {
+        allow_privilege_escalation = false;
+        ambient_privileges = [];
+        privilege_bounds = {
+          kind = "restricted";
+          privileges = [];
+        };
+        resource_control_delegation = false;
+        resource_control_access = "read-only";
+        device_access_scope = "shared";
+        host_clock_mutation = false;
+        host_name_mutation = false;
+        operating_system_log_access = false;
+        operating_system_extension_access = false;
+        operating_system_tunable_access = false;
+        lock_execution_personality = true;
+        writable_executable_memory = false;
+        isolation_domains = [];
+        network_families = ["ipv4" "ipv6" "local"];
+        memory_pressure_adjustment = 0;
+        permit_realtime = false;
+        permit_elevated_file_identity = false;
+        process_visibility = "all";
+        security_label = "aos-pkg-etcd";
+        operation_architectures = [];
+        operation_allow = [];
+        operation_deny = [];
+        operation_profile = "restricted";
+        isolated_identity_mapping = "none";
+      };
       consumerInstance = "etcd";
-      declaration = {
-        service = "main";
-        enabled = true;
-        lifecycle = {
-          description = "etcd distributed key-value store";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command ["--config-file" (resultOf "server-configuration" "planned-path")])];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "on-failure";
-          restart_token = cfg.restartToken;
-          restart_delay_millis = 5000;
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
+      service = "main";
+      lifecycle = {
+        description = "etcd distributed key-value store";
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command ["--config-file" (resultOf "server-configuration" "planned-path")])];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_token = cfg.restartToken;
+        restart_delay_millis = 5000;
+        remain_after_exit = false;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      dependencies = {
+        after = [(resultOf "network-readiness" "resource")];
+        before = [];
+        requires = [];
+        wants = [(resultOf "network-readiness" "resource")];
+      };
+      readiness = {
+        mechanism = "process-signal";
+        signal_scope = "all-processes";
+        timeout_millis = 90000;
+      };
+      credentials =
+        if usedCredentials == []
+        then null
+        else {
+          views =
+            builtins.map (credential: {
+              inherit (credential) name;
+              inherit (credential.reference) encrypted;
+              reference = resultOf "credential-${credential.name}" "credential-path";
+              optional = false;
+            })
+            usedCredentials;
         };
-        dependencies = {
-          after = [(resultOf "network-readiness" "resource")];
-          before = [];
-          requires = [];
-          wants = [(resultOf "network-readiness" "resource")];
-        };
-        readiness = {
-          mechanism = "process-signal";
-          signal_scope = "all-processes";
-          timeout_millis = 90000;
-        };
-        credentials =
-          if usedCredentials == []
-          then null
-          else {
-            views =
-              builtins.map (credential: {
-                inherit (credential) name;
-                inherit (credential.reference) encrypted;
-                reference = resultOf "credential-${credential.name}" "credential-path";
-                optional = false;
-              })
-              usedCredentials;
-          };
-        configuration.views = [
-          {
-            name = "server";
-            source = resultOf "server-configuration" "planned-path";
-            optional = false;
-          }
-        ];
-        storage.mounts = [
-          {
-            name = "data";
-            source = resultOf "data-storage" "planned-path";
-            access = "read-write";
-          }
-          {
-            name = "runtime";
-            source = resultOf "runtime-storage" "planned-path";
-            access = "read-write";
-          }
-        ];
-        logging = {
-          standard_output = "structured";
-          standard_error = "structured";
-          directories = [];
-          directory_mode = "0750";
-        };
-        identity = {
-          supplementary_groups = [];
-          ephemeral = true;
-          file_creation_mask = "0077";
-        };
-        isolation = {
-          privilege = "unprivileged";
-          filesystem = "read-only-system";
-          network = "host";
-          process_visibility = "host";
-          termination_scope = "all-processes";
-          temporary_directory = "private";
-          devices = [];
-          host_paths = [];
-          permit_core_dumps = false;
-        };
-        resources.open_files = {
-          kind = "maximum";
-          value = 1048576;
-        };
+      configuration.views = [
+        {
+          name = "server";
+          source = resultOf "server-configuration" "planned-path";
+          optional = false;
+        }
+      ];
+      storage.mounts = [
+        {
+          name = "data";
+          source = resultOf "data-storage" "planned-path";
+          access = "read-write";
+        }
+        {
+          name = "runtime";
+          source = resultOf "runtime-storage" "planned-path";
+          access = "read-write";
+        }
+      ];
+      logging = {
+        standard_output = "structured";
+        standard_error = "structured";
+        directories = [];
+        directory_mode = "0750";
+      };
+      identity = {
+        supplementary_groups = [];
+        ephemeral = true;
+        file_creation_mask = "0077";
+      };
+      isolation = {
+        privilege = "unprivileged";
+        filesystem = "read-only-system";
+        network = "host";
+        process_visibility = "host";
+        termination_scope = "all-processes";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [];
+        permit_core_dumps = false;
+      };
+      resources.open_files = {
+        kind = "maximum";
+        value = 1048576;
       };
     };
-  in [dataStorage runtimeStorage networkReadiness configurationRequest credentialRequests serviceRequest];
-  staticAbilityFragments =
-    builtins.map
-    (fragment: (serviceManagement.splitDefinition fragment).declarations)
-    (abilityFragmentsFor true true);
-  configuredAbilityFragments =
-    builtins.map
-    (fragment: (serviceManagement.splitDefinition fragment).configured)
-    (abilityFragmentsFor cfg.client.tls.enable cfg.peer.tls.enable);
+  in {
+    service = serviceRequest;
+    inherit credentialRequests;
+    producers = [dataStorage runtimeStorage networkReadiness configurationRequest credentialRequests];
+  };
+  configured = abilityFragmentsFor cfg.client.tls.enable cfg.peer.tls.enable;
+  allCredentials = (abilityFragmentsFor true true).credentialRequests;
 in {
   options.etcd = {
     enable = mkOption {
@@ -613,15 +598,17 @@ in {
           message = "etcd auto-compaction retention must be a positive revision or duration matching its mode";
         }
       ];
+      aos.services."etcd.main" = configured.service // {enable = cfg.enable;};
     }
-    (lib.mkMerge (builtins.map
-      (fragment: {aos.abilities = fragment;})
-      staticAbilityFragments))
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.etcd = {};}]
-        ++ configuredAbilityFragments
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      inherit (configured) producers;
+      enabled = cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [allCredentials];
+      enabled = false;
     })
   ];
 }
