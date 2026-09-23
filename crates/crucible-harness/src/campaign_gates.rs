@@ -282,6 +282,10 @@ const CAMPAIGN_REPLAY_PRODUCTION_NIX_SOURCES: &[&str] =
 const CAMPAIGN_OPERATIONAL_CONTINUITY_SELECTORS: &[ExactSelector] = &[
     ExactSelector {
         source: "crates/crucible-cli/tests/campaign_store_process.rs",
+        name: "public_checkpoint_pause_survives_stopped_service_gc_and_cold_resume",
+    },
+    ExactSelector {
+        source: "crates/crucible-cli/tests/campaign_store_process.rs",
         name: "public_campaign_debug_opens_authenticated_finding_at_fast_midpoint",
     },
     ExactSelector {
@@ -394,6 +398,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                     "gate=gate:campaign-operational-continuity",
                     "coordinator_executor_restart=true",
                     "exact_pause=true",
+                    "public_checkpoint_pause_restart_resume=true",
                     "backend_neutral_archival=true",
                     "offline_maintenance_transfer=true",
                     "fast_midpoint_debug=true",
