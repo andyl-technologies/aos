@@ -17,8 +17,29 @@ use crate::attachment_state::{
 };
 use crate::mount_attempt::CurrentMountInventoryReconciliationV1;
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::CurrentNamespaceTarget;
+use crate::runtime_scope::{
+    self, CurrentNamespaceTarget, CurrentRuntimeScopeError, CurrentRuntimeScopePolicy,
+    NamespaceTargetError, NamespaceTargetOutcome, RuntimeGenerationError, RuntimeScopeClient,
+    RuntimeScopeHolder,
+};
 use crate::{Journal, JournalError};
+
+/// Reports failure to bind a fresh Host observation to protected namespace authority.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectedAttachmentTargetErrorV1 {
+    /// Protected journal custody was unavailable or unhealthy.
+    #[error(transparent)]
+    Journal(#[from] JournalError),
+    /// Current holder, signed authority, or Host payload observation failed.
+    #[error(transparent)]
+    Runtime(#[from] CurrentRuntimeScopeError),
+    /// The observed execution changed or its audit history failed.
+    #[error(transparent)]
+    Generation(#[from] RuntimeGenerationError),
+    /// The signed namespace target changed or needs an assignment successor.
+    #[error(transparent)]
+    Target(#[from] NamespaceTargetError),
+}
 
 /// Borrows protected controller custody for one attachment effect step.
 pub struct ProtectedAttachmentEffectOwnerV1<'journal> {
@@ -34,6 +55,40 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     pub fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
         journal.ensure_protected_authority()?;
         Ok(Self { journal })
+    }
+
+    /// Binds a fresh authenticated Host observation to its signed namespace target.
+    ///
+    /// Trusted deployment supplies the holder selector, single-use Host channel,
+    /// pinned verification policy, and paired clock. The journal selects and
+    /// rechecks actual current authority. A returned advancement proposal is
+    /// inert until a signed assignment successor is published and a new Host
+    /// observation is acquired.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, missing or changed authority, a failed Host
+    /// observation, invalid audit history, or stale namespace allocation.
+    pub fn observe_current_target<T>(
+        &mut self,
+        holder: RuntimeScopeHolder,
+        client: RuntimeScopeClient,
+        policy: CurrentRuntimeScopePolicy,
+        clock: &mut T,
+    ) -> Result<NamespaceTargetOutcome, ProtectedAttachmentTargetErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        let scope =
+            runtime_scope::acquire_current_runtime(self.journal, holder, client, policy, clock)?;
+        let generation =
+            runtime_scope::CurrentRuntimeGeneration::track(scope, self.journal, clock)?;
+        Ok(CurrentNamespaceTarget::bind(
+            generation,
+            self.journal,
+            clock,
+        )?)
     }
 
     /// Loads the current desired generation, including a release tombstone.
