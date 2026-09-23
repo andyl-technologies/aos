@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_storage::activation::take_systemd_listener;
+use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
 use aos_sandbox_storage::peer::ControllerPeerVerifier;
 use aos_sandbox_storage::{
     StorageBrokerRuntime, StorageIdentityPoolV1, StoragePrepareReadiness, StorageRuntimeError,
@@ -62,7 +63,10 @@ fn run() -> Result<(), StorageServiceError> {
     if let Some(diagnostic) = prepare_readiness_diagnostic(runtime.prepare_readiness()) {
         eprintln!("aos-storaged: {diagnostic}");
     }
-    let mut service = StorageService::new(runtime, verifier);
+    let guest_root_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
+        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+    let mut service =
+        StorageService::new(runtime, verifier).with_guest_root_template(guest_root_template);
 
     loop {
         service.serve_once(&mut listener)?;
@@ -89,6 +93,7 @@ struct Arguments {
     authority_directory: PathBuf,
     bootstrap_directory: PathBuf,
     resolver_policy_directory: Option<PathBuf>,
+    guest_root_template: PathBuf,
 }
 
 fn arguments() -> Result<Arguments, StorageServiceError> {
@@ -102,6 +107,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
     let authority_directory = required_path(arguments.next(), "authority directory")?;
     let bootstrap_directory = required_path(arguments.next(), "bootstrap directory")?;
     let resolver_policy_directory = optional_path(arguments.next(), "resolver policy directory")?;
+    let guest_root_template = required_path(arguments.next(), "guest root template")?;
     if arguments.next().is_some() {
         return Err(usage_error());
     }
@@ -114,6 +120,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         authority_directory,
         bootstrap_directory,
         resolver_policy_directory,
+        guest_root_template,
     })
 }
 
@@ -168,7 +175,7 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY [RESOLVER_POLICY_DIRECTORY|-]"
+        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE"
             .to_owned(),
     )
 }

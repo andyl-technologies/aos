@@ -35,6 +35,9 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 
 use crate::broker::{StorageBrokerError, advertised_storage_methods};
+use crate::guest_root_inventory::{
+    ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
+};
 use crate::peer::ControllerPeerVerifier;
 use crate::runtime::{
     StorageApplyReadiness, StorageBrokerRuntime, StorageRuntimeError,
@@ -314,13 +317,28 @@ impl StorageRpcRuntime for StorageBrokerRuntime {
 pub struct StorageService<R> {
     runtime: R,
     verifier: ControllerPeerVerifier,
+    guest_root_template: Option<ProtectedGuestRootTemplateV1>,
 }
 
 impl<R: StorageRpcRuntime> StorageService<R> {
     /// Constructs a service around a protected runtime and exact peer verifier.
     #[must_use]
     pub const fn new(runtime: R, verifier: ControllerPeerVerifier) -> Self {
-        Self { runtime, verifier }
+        Self {
+            runtime,
+            verifier,
+            guest_root_template: None,
+        }
+    }
+
+    /// Pins the protected guest-root package for physical inventory readback.
+    ///
+    /// Without this template, inventory cannot present guest-root publication
+    /// proof. The package is selected by deployment, never by an RPC field.
+    #[must_use]
+    pub fn with_guest_root_template(mut self, template: ProtectedGuestRootTemplateV1) -> Self {
+        self.guest_root_template = Some(template);
+        self
     }
 
     /// Accepts, authenticates, serves, replies, and closes one connection.
@@ -521,14 +539,40 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             .runtime
             .inventory_resources(activation_deadline, worker_cutoff)
         {
-            Ok(body) => encode_success_or_resource_exhausted(
-                header.request_id(),
-                envelope,
-                body,
-                header.maximum_response_bytes(),
-                "complete Storage inventory exceeds the response ceiling",
-                true,
-            ),
+            Ok(body) => {
+                let body = match self.guest_root_template.as_ref() {
+                    Some(template) => attach_guest_root_publication_readback_v1(&body, template)
+                        .map_err(|_| StorageRuntimeError::Recovery),
+                    None => Ok(body),
+                };
+                match body {
+                    Ok(body)
+                        if boottime().map_err(|_| ProtocolValidationError::DeadlineExpired)?
+                            < activation_deadline =>
+                    {
+                        encode_success_or_resource_exhausted(
+                            header.request_id(),
+                            envelope,
+                            body,
+                            header.maximum_response_bytes(),
+                            "complete Storage inventory exceeds the response ceiling",
+                            true,
+                        )
+                    }
+                    Ok(_) => encode_runtime_error(
+                        header.request_id(),
+                        envelope,
+                        &StorageRuntimeError::Recovery,
+                        header.maximum_response_bytes(),
+                    ),
+                    Err(error) => encode_runtime_error(
+                        header.request_id(),
+                        envelope,
+                        &error,
+                        header.maximum_response_bytes(),
+                    ),
+                }
+            }
             Err(error) => encode_runtime_error(
                 header.request_id(),
                 envelope,

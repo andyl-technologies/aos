@@ -42,6 +42,13 @@ in {
       description = "The exact AOS OpenZFS package compiled into broker worker requests.";
     };
 
+    guestRootTemplate = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.aos-sandbox-guest-root-template;
+      defaultText = "pkgs.aos-sandbox-guest-root-template";
+      description = "The exact AOS-built guest root and package closure measured by Storage inventory.";
+    };
+
     authorityDirectory = lib.mkOption {
       type = lib.types.str;
       default = worker.authorityDirectory;
@@ -152,6 +159,7 @@ in {
             "/sys/fs/cgroup"
             cfg.authorityDirectory
             cfg.bootstrapDirectory
+            cfg.guestRootTemplate
           ]
           ++ lib.optional (cfg.resolverPolicyDirectory != null) cfg.resolverPolicyDirectory;
         StartLimitIntervalSec = 60;
@@ -173,7 +181,8 @@ in {
             if cfg.resolverPolicyDirectory == null
             then "-"
             else cfg.resolverPolicyDirectory
-          )}
+          )} \
+            ${cfg.guestRootTemplate}
         '';
         LoadCredential = brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
@@ -215,7 +224,7 @@ in {
         ProtectProc = "invisible";
         ProtectSystem = "strict";
         ReadOnlyPaths =
-          [cfg.authorityDirectory cfg.bootstrapDirectory]
+          [cfg.authorityDirectory cfg.bootstrapDirectory cfg.guestRootTemplate]
           ++ lib.optional (cfg.resolverPolicyDirectory != null) "-${cfg.resolverPolicyDirectory}";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
