@@ -98,76 +98,107 @@ pub(in crate::model) fn validate_divergence_point(
     })
 }
 
-pub(in crate::model) fn validate_violation_point(
+fn host_assertion_transition_index(
     event_log: &FailureRecordedEventLog,
     violation: &FailurePropertyViolationRecord,
-) -> Result<usize, EngineError> {
-    if let Some((index, _)) =
-        event_log
-            .projection
-            .entries()
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| {
-                entry.entry.event_payload().kind() == violation.violation.event_kind
-                    && entry.entry.at() == violation.violation.at_virtual_time
-                    && violation_event_icount_matches(entry.entry.time(), &violation.violation)
-                    && violation_event_assertion_matches(
-                        entry.entry.event_payload(),
-                        &violation.violation,
-                    )
-            })
-    {
-        return Ok(index);
+) -> Result<Option<usize>, EngineError> {
+    let mismatch = || EngineError::UnifiedOperationEvidenceMismatch {
+        operation: "failure-signature.violation",
+        reason: "host assertion transition is ambiguous or inconsistent",
+    };
+    let mut matches = event_log
+        .projection
+        .entries()
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            entry.entry.event_payload().kind() == violation.violation.event_kind
+                && entry.entry.at() == violation.violation.at_virtual_time
+                && violation_event_assertion_matches(
+                    entry.entry.event_payload(),
+                    &violation.violation,
+                )
+        });
+    let Some((index, transition)) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(mismatch());
     }
 
-    Err(EngineError::UnifiedOperationEvidenceMismatch {
-        operation: "failure-signature.violation",
-        reason: "violation record is absent from recorded causal projection",
-    })
+    let entry = &transition.entry;
+    let boundary_stamp = entry.time().icount.node.is_none()
+        && entry.time().icount.icount.retired == entry.at().ticks;
+    if entry.source() != &EventSource::Engine
+        || !boundary_stamp
+        || !matches!(
+            entry.payload(),
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
+                state: AssertionPhase::Violated,
+                ..
+            })
+        )
+    {
+        return Err(mismatch());
+    }
+    Ok(Some(index))
 }
 
-pub(in crate::model) fn validated_host_violation_cone(
+pub(in crate::model) struct ValidatedPropertyViolation {
+    pub(in crate::model) causal_cone: FailureCausalCone,
+    pub(in crate::model) anchor: Option<usize>,
+}
+
+pub(in crate::model) fn validated_property_violation(
     finding: &FindingReproductionArtifact,
     event_log: &FailureRecordedEventLog,
     violation: &FailurePropertyViolationRecord,
     canonicalizer: &FailureSymmetryCanonicalizer,
-) -> Result<FailureCausalCone, EngineError> {
+) -> Result<ValidatedPropertyViolation, EngineError> {
     let mismatch = || EngineError::UnifiedOperationEvidenceMismatch {
         operation: "failure-signature.violation",
         reason: "violation record is absent from recorded causal projection and host assertion replay",
     };
-
-    // An existing transition with the same identity must pass the causal-site
-    // check; a bad physical stamp cannot be replaced by a different witness.
-    if event_log.projection.entries().iter().any(|entry| {
-        entry.entry.event_payload().kind() == violation.violation.event_kind
-            && entry.entry.at() == violation.violation.at_virtual_time
-            && violation_event_assertion_matches(entry.entry.event_payload(), &violation.violation)
-    }) {
-        return Err(mismatch());
-    }
 
     let scenario = finding.artifact.scenario_form();
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&scenario.world)
         .check_run(&scenario.properties, &event_log.raw_entries)
         .map_err(|_| mismatch())?;
-    if !report.violations().iter().any(|replayed| {
+    let matches_expected = |replayed: &HostAssertionViolation| {
         let mut replayed = replayed.clone();
         replayed.reproduction_artifact = finding.artifact.id();
         replayed == violation.violation
-    }) {
+    };
+    if !report.violations().iter().any(&matches_expected) {
         return Err(mismatch());
     }
 
-    let anchor = event_log
-        .projection
-        .entries()
-        .iter()
-        .enumerate()
-        .rfind(|(_, entry)| entry.entry.at() <= violation.violation.at_virtual_time)
-        .map(|(index, _)| index);
+    let transition =
+        host_assertion_transition_index(event_log, violation).map_err(|_| mismatch())?;
+    let outcome_is_violated = report.outcomes().iter().any(|outcome| {
+        outcome.assertion == violation.violation.assertion
+            && outcome.at == violation.violation.at_virtual_time
+            && outcome.quantifier == violation.violation.quantifier
+            && matches!(
+                outcome.kind,
+                HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail
+            )
+    });
+    // A host-only recorded log can omit the runtime's derived transition.
+    // When one is retained, it must agree with the rechecked verdict.
+    if transition.is_some() && !outcome_is_violated {
+        return Err(mismatch());
+    }
+    let anchor = transition.or_else(|| {
+        event_log
+            .projection
+            .entries()
+            .iter()
+            .enumerate()
+            .rfind(|(_, entry)| entry.entry.at() <= violation.violation.at_virtual_time)
+            .map(|(index, _)| index)
+    });
     let mut material = anchor.map_or_else(
         || String::from("causal_cone_events=0"),
         |index| {
@@ -180,30 +211,42 @@ pub(in crate::model) fn validated_host_violation_cone(
     // The checker establishes the failed predicate from the exact raw log.
     // Retain the physical marker coordinate independently of the scheduler
     // boundary so replay cannot substitute a different guest observation.
+    let claims_guest_marker = violation.violation.node.is_some()
+        && violation.violation.detail.contains("guest marker marker=");
     let marker_witnesses = event_log
         .raw_entries
         .iter()
-        .filter_map(|entry| match entry.payload() {
+        .enumerate()
+        .filter_map(|(raw_index, entry)| match entry.payload() {
             SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
                 retired_icount,
                 node,
                 marker,
-            }) if violation.violation.at_icount == Some(*retired_icount)
-                && violation.violation.node.as_ref() == Some(node) =>
+            }) if claims_guest_marker
+                && violation.violation.at_icount == Some(*retired_icount)
+                && violation.violation.node.as_ref() == Some(node)
+                && entry.at() <= violation.violation.at_virtual_time
+                && violation
+                    .violation
+                    .detail
+                    .contains(&format!("guest marker marker={} matched", marker.name)) =>
             {
-                Some((entry.at(), node, marker, retired_icount))
+                Some((raw_index, entry.at(), node, marker, retired_icount))
             }
             _ => None,
         })
         .collect::<Vec<_>>();
     // The detail was regenerated and compared above, so its witness label is
     // checker-owned rather than an unchecked claim from the replay payload.
-    let claims_guest_marker = violation.violation.node.is_some()
-        && violation.violation.detail.contains("guest marker marker=");
     if marker_witnesses.len() > 1 || (claims_guest_marker && marker_witnesses.len() != 1) {
         return Err(mismatch());
     }
-    if let Some((at, node, marker, icount)) = marker_witnesses.first() {
+    if let (Some(index), Some((raw_index, ..))) = (transition, marker_witnesses.first())
+        && *raw_index >= event_log.projection.entries()[index].raw_index
+    {
+        return Err(mismatch());
+    }
+    if let Some((_, at, node, marker, icount)) = marker_witnesses.first() {
         let node = canonicalizer.canonical_node(node);
         material.push_str(&format!(
             "\nguest_marker_witness=marker:{:?};node:{:?};icount:{};at:{}",
@@ -217,7 +260,10 @@ pub(in crate::model) fn validated_host_violation_cone(
         violation.violation.at_virtual_time.ticks,
         violation.violation.detail
     ));
-    Ok(FailureCausalCone::from_canonical_material(material))
+    Ok(ValidatedPropertyViolation {
+        causal_cone: FailureCausalCone::from_canonical_material(material),
+        anchor,
+    })
 }
 
 pub(in crate::model) fn validate_timeout_point(
@@ -251,16 +297,6 @@ pub(in crate::model) fn validate_timeout_point(
             operation: "failure-signature.timeout",
             reason: "timeout boundary is absent from recorded causal projection",
         })
-}
-
-pub(in crate::model) fn violation_event_icount_matches(
-    at: &crate::scheduler::EventLogTime,
-    violation: &HostAssertionViolation,
-) -> bool {
-    violation
-        .at_icount
-        .map(|icount| at.icount.icount == icount)
-        .unwrap_or(true)
 }
 
 pub(in crate::model) fn violation_event_assertion_matches(
@@ -1043,8 +1079,10 @@ pub(in crate::model) fn push_minimization_attempt_lines(
 }
 
 pub(in crate::model) fn failure_report_anchor_index(
+    finding: &FindingReproductionArtifact,
     failure: &FailureClusterReportFailure,
     event_log: &FailureRecordedEventLog,
+    canonicalizer: &FailureSymmetryCanonicalizer,
 ) -> Result<usize, EngineError> {
     match failure {
         FailureClusterReportFailure::Property(record) => {
@@ -1054,7 +1092,12 @@ pub(in crate::model) fn failure_report_anchor_index(
                     actual: record.violation.reproduction_artifact,
                 });
             }
-            validate_violation_point(event_log, record)
+            validated_property_violation(finding, event_log, record, canonicalizer)?
+                .anchor
+                .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+                    operation: "failure-cluster-report",
+                    reason: "host assertion has no retained causal anchor",
+                })
         }
         FailureClusterReportFailure::Divergence(divergence) => {
             validate_divergence_point(event_log, &divergence.to_divergence_point())

@@ -247,8 +247,13 @@ impl FailureClusterReport {
             });
         }
 
-        let causal_index = failure_report_anchor_index(&failure, event_log)?;
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
+        let causal_index = failure_report_anchor_index(
+            &minimization.minimization.minimized,
+            &failure,
+            event_log,
+            &canonicalizer,
+        )?;
         let event_log_excerpt =
             failure_report_excerpt(event_log, causal_index, excerpt_len, &canonicalizer);
         let causal_chain = failure_causal_cone_entries(event_log, causal_index, &canonicalizer)

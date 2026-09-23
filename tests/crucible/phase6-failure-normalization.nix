@@ -107,8 +107,8 @@
         needle = "failure_causal_cone_entries";
       }
       {
-        label = "property violation point validation";
-        needle = "validate_violation_point";
+        label = "replayed property violation validation";
+        needle = "validated_property_violation";
       }
       {
         label = "divergence point returns causal index";
