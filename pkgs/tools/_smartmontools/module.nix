@@ -53,114 +53,100 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds.kind = "unrestricted";
-          resource_control_delegation = false;
-          resource_control_access = "host";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = true;
-          isolation_domains = [];
-          network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "privileged";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+  serviceDefinition = {
     consumerInstance = "service";
-    declaration = {
-      service = "smartd";
-      enabled = true;
-      lifecycle = {
-        description = "S.M.A.R.T. Disk Monitoring Daemon (${packageName} ${packageVersion})";
-        execution_model = "forking";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command ["-c" (resultOf "configuration-file" "planned-path")])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 30000;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [(resultOf "local-filesystems" "resource")];
-        before = [];
-        requires = [];
-        wants = [];
-      };
-      supervision = {
-        startup_protocol = "process";
-        notification_access = "none";
-      };
-      readiness = {
-        mechanism = "process-running";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      termination = {
-        signal = "TERM";
-        final_signal = "KILL";
-        process_id_file = "/run/smartd.pid";
-        send_to_all_processes = true;
-      };
-      configuration.views = [
-        {
-          name = "smartd";
-          source = resultOf "configuration-file" "planned-path";
-          optional = false;
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        home_access = "inaccessible";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = true;
-      };
+    service = "smartd";
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds.kind = "unrestricted";
+      resource_control_delegation = false;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
+    };
+    lifecycle = {
+      description = "S.M.A.R.T. Disk Monitoring Daemon (${packageName} ${packageVersion})";
+      execution_model = "forking";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command ["-c" (resultOf "configuration-file" "planned-path")])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 30000;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [(resultOf "local-filesystems" "resource")];
+      before = [];
+      requires = [];
+      wants = [];
+    };
+    supervision = {
+      startup_protocol = "process";
+      notification_access = "none";
+    };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    termination = {
+      signal = "TERM";
+      final_signal = "KILL";
+      process_id_file = "/run/smartd.pid";
+      send_to_all_processes = true;
+    };
+    configuration.views = [
+      {
+        name = "smartd";
+        source = resultOf "configuration-file" "planned-path";
+        optional = false;
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      home_access = "inaccessible";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
     };
   };
-  abilityFragments = [filesystems configuration service];
-  serviceContributions = builtins.map serviceManagement.splitDefinition abilityFragments;
+  producers = [filesystems configuration];
   watchdog = serviceManagement.forProducer {
     consumerInstance = "watchdog";
     key = "manager-watchdog";
@@ -173,7 +159,6 @@
       kexec_timeout_millis = cfg.watchdogTimeout * 2000;
     };
   };
-  watchdogContribution = serviceManagement.splitDefinition watchdog;
 in {
   options.aos.monitoring.hardware = {
     enable = lib.mkOption {
@@ -212,26 +197,19 @@ in {
   config = lib.mkMerge [
     {
       aos.monitoring.hardware.enable = lib.mkDefault config.aos.storage.hardwareMonitoringRecommended;
-      aos.abilities = lib.mkMerge (
-        [watchdogContribution.declarations]
-        ++ builtins.map (definition: definition.declarations) serviceContributions
-      );
+      aos.services.smartd = serviceDefinition // {enable = cfg.enable && cfg.smartd;};
     }
-    (lib.mkIf (cfg.enable && cfg.smartd) {
-      aos.abilities = lib.mkMerge (
-        [{instances.service = {};}]
-        ++ builtins.map (definition: definition.configured) serviceContributions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = config.aos.services.smartd.enable;
     })
-    (lib.mkIf (
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [watchdog];
+      enabled =
         cfg.enable
         && config.aos.abilities.environment != null
-        && config.aos.abilities.environment.stage == "host"
-      ) {
-        aos.abilities = lib.mkMerge [
-          {instances.watchdog = {};}
-          watchdogContribution.configured
-        ];
-      })
+        && config.aos.abilities.environment.stage == "host";
+    })
   ];
 }
