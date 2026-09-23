@@ -731,7 +731,15 @@ fn validate_execution_control(
         return Err(OperationCompilationError::Rejected);
     }
 
-    match lower_public_execution_control_v1(request)? {
+    let dispatch = lower_public_execution_control_v1(request)?;
+    // Guest control effects cannot target an execution before its process exists.
+    if matches!(dispatch, PublicExecutionControlDispatchV1::Effect(_))
+        && execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+
+    match dispatch {
         PublicExecutionControlDispatchV1::Attach
         | PublicExecutionControlDispatchV1::Effect(EffectOperationV1::Signal { .. }) => {}
         PublicExecutionControlDispatchV1::Effect(EffectOperationV1::ResizeTerminal { .. }) => {
