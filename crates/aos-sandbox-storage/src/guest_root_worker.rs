@@ -14,9 +14,11 @@
 //! ```
 
 use std::fs;
+use std::os::fd::AsRawFd as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use aos_sandbox_agent::guest_root_marker::publish_guest_root_marker_before_v1;
 use aos_sandbox_agent::guest_root_populate::populate_fresh_guest_root_before_v1;
@@ -24,6 +26,7 @@ use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_broker::{BrokerEffectIntentV1, BrokerEffectStatusV1};
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::cgroup::{CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootArgumentsV1;
@@ -39,8 +42,9 @@ use crate::pin_worker::{
     boottime_now_nanoseconds, ensure_before_deadline, verify_same_live_subject,
 };
 use crate::pin_worker_runtime::{
-    ReplayLedger, current_cgroup, receive_packet_before, send_packet_before, transfer_deadline,
-    verify_storaged_subject,
+    ReplayLedger, current_cgroup, quiesce_cgroup, quiesce_worker, receive_packet_before,
+    send_packet_before, transfer_deadline, verify_exact_worker_subject, verify_storaged_subject,
+    verify_systemd_peer, wait_for_worker_quiescence,
 };
 use crate::process::open_cgroup_root;
 use crate::runtime::trusted_paired_clock_sample;
@@ -57,6 +61,183 @@ const MAXIMUM_PACKET_BYTES: usize = 8192;
 const STORAGED_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const WORKER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-guest-root-publisher@";
 const WORKER_CGROUP_SUFFIX: &str = ".service";
+const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
+const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
+const WORKER_CGROUP_BASENAME_PREFIX: &str = "aos-sandbox-guest-root-publisher@";
+const MAXIMUM_RECOVERED_WORKERS: usize = 128;
+
+/// Invokes only the fixed root-owned one-shot publisher and retains its cgroup to exit.
+pub(crate) struct SystemdGuestRootPublisherClientV1 {
+    socket_path: PathBuf,
+    systemd_manager: RetainedCgroupAnchor,
+    worker_parent: RetainedCgroupAnchor,
+    fail_stopped: bool,
+}
+
+impl SystemdGuestRootPublisherClientV1 {
+    pub(crate) fn new(
+        socket_path: PathBuf,
+        cgroup_root: CgroupV2Root,
+    ) -> Result<Self, ZfsWorkerError> {
+        if socket_path != Path::new("/run/aos/sandbox-guest-root-publisher/control.sock") {
+            return Err(ZfsWorkerError::Authority);
+        }
+        Ok(Self {
+            socket_path,
+            systemd_manager: cgroup_root.resolve(Path::new(SYSTEMD_MANAGER_CGROUP))?,
+            worker_parent: cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?,
+            fail_stopped: false,
+        })
+    }
+
+    pub(crate) fn publish(
+        &mut self,
+        request: &[u8],
+        expected_proof: GuestRootPublicationProofV1,
+        effect_deadline: u64,
+    ) -> Result<GuestRootPublicationProofV1, ZfsWorkerError> {
+        if self.fail_stopped || decode_request(request)?.effect_operation == [0; 16] {
+            return Err(ZfsWorkerError::Authority);
+        }
+        ensure_before_deadline(effect_deadline)?;
+        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
+        verify_systemd_peer(socket.peer(), &self.systemd_manager)?;
+
+        let ready = receive_packet_before(&mut socket, 520, transfer_deadline()?)?;
+        if !ready.descriptors().is_empty() {
+            return Err(ZfsWorkerError::PeerMismatch);
+        }
+        let worker_path = decode_ready(ready.payload())?;
+        let worker_cgroup = self.worker_parent.resolve_descendant(Path::new(
+            worker_path
+                .strip_prefix("aos.slice/aos-control.slice/")
+                .ok_or(ZfsWorkerError::PeerMismatch)?,
+        ))?;
+        verify_exact_worker_subject(ready.subject(), &worker_cgroup)?;
+        let population = worker_cgroup.population_monitor()?;
+
+        // Response transfer may finish after the effect deadline; the worker
+        // checks that deadline before each mutation and before marker publish.
+        let response_deadline = effect_deadline
+            .checked_add(Duration::from_secs(5).as_nanos() as u64)
+            .ok_or(ZfsWorkerError::Authority)?;
+        let exchange = (|| {
+            send_packet_before(&mut socket, request, effect_deadline)?;
+            let response = receive_packet_before(&mut socket, 274, response_deadline)?;
+            verify_same_live_subject(ready.subject(), response.subject())?;
+            verify_exact_worker_subject(response.subject(), &worker_cgroup)?;
+            if !response.descriptors().is_empty() {
+                return Err(ZfsWorkerError::PeerMismatch);
+            }
+            let proof = decode_result(response.payload())?;
+            if proof != expected_proof {
+                return Err(ZfsWorkerError::Authority);
+            }
+            send_packet_before(&mut socket, ACK_MAGIC, response_deadline)?;
+            Ok(proof)
+        })();
+
+        match exchange {
+            Ok(proof) => {
+                if let Err(error) =
+                    wait_for_worker_quiescence(ready.subject(), &population, Duration::from_secs(1))
+                {
+                    if quiesce_worker(ready.subject(), &worker_cgroup, &population).is_err() {
+                        self.fail_stopped = true;
+                    }
+                    return Err(ZfsWorkerError::Quiescence(format!(
+                        "guest-root publisher did not exit cleanly: {error}"
+                    )));
+                }
+                Ok(proof)
+            }
+            Err(error) => {
+                if let Err(cancellation) =
+                    quiesce_worker(ready.subject(), &worker_cgroup, &population)
+                {
+                    self.fail_stopped = true;
+                    return Err(ZfsWorkerError::Quiescence(format!(
+                        "guest-root publisher cancellation failed after {error}: {cancellation}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Cancels publisher remnants before the journal can admit another effect.
+    pub(crate) fn recover_quiescence(&mut self) -> Result<(), ZfsWorkerError> {
+        if self.fail_stopped {
+            return Err(ZfsWorkerError::Authority);
+        }
+        let recovery = (|| {
+            for _ in 0..2 {
+                for worker in self.recovered_workers()? {
+                    let population = worker.population_monitor()?;
+                    quiesce_cgroup(&worker, &population)?;
+                }
+            }
+            for worker in self.recovered_workers()? {
+                if worker.population_monitor()?.state()? == CgroupPopulationState::Populated {
+                    return Err(ZfsWorkerError::Quiescence(
+                        "a recovered guest-root publisher remained populated".to_owned(),
+                    ));
+                }
+            }
+            Ok(())
+        })();
+        if recovery.is_err() {
+            self.fail_stopped = true;
+        }
+        recovery
+    }
+
+    fn recovered_workers(&self) -> Result<Vec<RetainedCgroupAnchor>, ZfsWorkerError> {
+        let directory = PathBuf::from(format!(
+            "/proc/self/fd/{}",
+            self.worker_parent.as_fd().as_raw_fd()
+        ));
+        let mut names = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let name = entry?
+                .file_name()
+                .into_string()
+                .map_err(|_| ZfsWorkerError::PeerMismatch)?;
+            if name.starts_with(WORKER_CGROUP_BASENAME_PREFIX)
+                && name.ends_with(WORKER_CGROUP_SUFFIX)
+            {
+                validate_worker_cgroup(&format!("{CONTROL_SLICE_CGROUP}/{name}"))?;
+                names.push(name);
+                if names.len() > MAXIMUM_RECOVERED_WORKERS {
+                    return Err(ZfsWorkerError::Quiescence(
+                        "guest-root publisher recovery count exceeded ceiling".to_owned(),
+                    ));
+                }
+            }
+        }
+        names.sort_unstable();
+        names
+            .into_iter()
+            .map(|name| {
+                self.worker_parent
+                    .resolve_descendant(Path::new(&name))
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+}
+
+fn validate_worker_cgroup(cgroup: &str) -> Result<(), ZfsWorkerError> {
+    let instance = cgroup
+        .strip_prefix(WORKER_CGROUP_PREFIX)
+        .and_then(|value| value.strip_suffix(WORKER_CGROUP_SUFFIX))
+        .filter(|value| !value.is_empty() && value.len() <= 255 && !value.contains('/'))
+        .ok_or(ZfsWorkerError::PeerMismatch)?;
+    if instance == "." || instance == ".." || cgroup.len() > 512 {
+        return Err(ZfsWorkerError::PeerMismatch);
+    }
+    Ok(())
+}
 
 pub(crate) struct GuestRootWorkerRequestV1<'a> {
     effect_operation: [u8; 16],
@@ -271,13 +452,7 @@ fn publish_authenticated(
 }
 
 fn encode_ready(cgroup: &str) -> Result<Vec<u8>, ZfsWorkerError> {
-    if !cgroup.starts_with(WORKER_CGROUP_PREFIX)
-        || !cgroup.ends_with(WORKER_CGROUP_SUFFIX)
-        || cgroup.len() > 512
-        || cgroup[WORKER_CGROUP_PREFIX.len()..cgroup.len() - WORKER_CGROUP_SUFFIX.len()].is_empty()
-    {
-        return Err(ZfsWorkerError::PeerMismatch);
-    }
+    validate_worker_cgroup(cgroup)?;
     let mut bytes = Vec::with_capacity(READY_MAGIC.len() + cgroup.len());
     bytes.extend_from_slice(READY_MAGIC);
     bytes.extend_from_slice(cgroup.as_bytes());
@@ -290,13 +465,7 @@ pub(crate) fn decode_ready(bytes: &[u8]) -> Result<&str, ZfsWorkerError> {
     }
     let cgroup = std::str::from_utf8(&bytes[READY_MAGIC.len()..])
         .map_err(|_| ZfsWorkerError::PeerMismatch)?;
-    if !cgroup.starts_with(WORKER_CGROUP_PREFIX)
-        || !cgroup.ends_with(WORKER_CGROUP_SUFFIX)
-        || cgroup.len() > 512
-        || cgroup[WORKER_CGROUP_PREFIX.len()..cgroup.len() - WORKER_CGROUP_SUFFIX.len()].is_empty()
-    {
-        return Err(ZfsWorkerError::PeerMismatch);
-    }
+    validate_worker_cgroup(cgroup)?;
     Ok(cgroup)
 }
 
@@ -383,5 +552,20 @@ mod tests {
         let mut malformed = encoded;
         malformed[26..28].copy_from_slice(&1_u16.to_be_bytes());
         assert!(decode_request(&malformed).is_err());
+    }
+
+    #[test]
+    fn ready_cgroup_is_single_fixed_systemd_instance() {
+        let valid = "aos.slice/aos-control.slice/aos-sandbox-guest-root-publisher@9.service";
+        assert_eq!(decode_ready(&encode_ready(valid).unwrap()).unwrap(), valid);
+
+        for invalid in [
+            "aos.slice/aos-control.slice/aos-sandbox-guest-root-publisher@.service",
+            "aos.slice/aos-control.slice/aos-sandbox-guest-root-publisher@../x.service",
+            "aos.slice/aos-control.slice/aos-sandbox-guest-root-publisher@x/y.service",
+            "aos.slice/aos-control.slice/aos-sandbox-workspace-pin-worker@9.service",
+        ] {
+            assert!(encode_ready(invalid).is_err());
+        }
     }
 }

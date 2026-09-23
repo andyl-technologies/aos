@@ -954,7 +954,7 @@ fn receive_observer_request_before(
         ))
 }
 
-fn quiesce_worker(
+pub(crate) fn quiesce_worker(
     subject: &KernelAuthorizedRecordSubject,
     worker_cgroup: &RetainedCgroupAnchor,
     population: &CgroupPopulationMonitor,
@@ -991,7 +991,7 @@ fn worker_is_quiescent(
     }
 }
 
-fn wait_for_worker_quiescence(
+pub(crate) fn wait_for_worker_quiescence(
     subject: &KernelAuthorizedRecordSubject,
     population: &CgroupPopulationMonitor,
     timeout: Duration,
@@ -1028,7 +1028,7 @@ fn wait_for_worker_quiescence(
     }
 }
 
-fn quiesce_cgroup(
+pub(crate) fn quiesce_cgroup(
     worker_cgroup: &RetainedCgroupAnchor,
     population: &CgroupPopulationMonitor,
 ) -> Result<(), ZfsWorkerError> {
@@ -2196,7 +2196,7 @@ fn verify_worker_subject(
     Ok(worker_cgroup)
 }
 
-fn verify_exact_worker_subject(
+pub(crate) fn verify_exact_worker_subject(
     subject: &KernelAuthorizedRecordSubject,
     worker_cgroup: &RetainedCgroupAnchor,
 ) -> Result<(), ZfsWorkerError> {
