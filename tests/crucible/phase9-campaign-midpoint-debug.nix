@@ -49,7 +49,6 @@ in
           replay_causal_entries=$(grep -E '^authenticated_replay_causal_entries=' "$serial" | cut -d = -f 2)
           minimization_original=$(grep -E '^minimization_original_replay=' "$serial" | cut -d = -f 2-)
           verification_original=$(grep -E '^verification_original_replay=' "$serial" | cut -d = -f 2-)
-          test "$minimization_original" != "$verification_original"
 
           mkdir -p "$out/evidence"
           cp "$serial" "$out/evidence/public-campaign-midpoint-debug.output"

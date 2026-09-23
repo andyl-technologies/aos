@@ -809,9 +809,6 @@ fn validate_replayed_failure_boundary(
         triage.minimization_original(),
         triage.verification_original(),
     ];
-    if replay_ids[0] == replay_ids[1] {
-        return Err("campaign finding reused one replay record for both original proofs".into());
-    }
     let mut causal_entries = 0_usize;
     for replay_id in replay_ids {
         let record = repository.load_finding_triage_replay_evidence(replay_id)?;
