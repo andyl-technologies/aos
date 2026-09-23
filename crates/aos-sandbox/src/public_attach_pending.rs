@@ -9,9 +9,20 @@
 //! epoch | principal | audit | expiry seconds | SHA-256 of preceding bytes
 //! ```
 
-use aos_sandbox_core::OperationId;
+use aos_proto::aos::sandbox::v1::ExecutionPhase;
+use aos_sandbox_core::public_attach_grant::{
+    PUBLIC_ATTACH_GRANT_BYTES, PublicAttachPendingGrantV1, sign_public_attach_pending_grant_v1,
+};
+use aos_sandbox_core::{OperationId, SandboxId};
+use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_service::public_projection::{
+    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+};
+use crate::runtime_authority::{
+    RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
+};
 use crate::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
 };
@@ -191,6 +202,98 @@ pub enum PublicAttachPendingErrorV1 {
     /// The protected journal cannot durably commit or recover the reservation.
     #[error("public attach reservation authority is unavailable")]
     Unavailable,
+}
+
+/// Signs the exact protected reservation for one current Host assignment.
+///
+/// The caller must provide the dedicated attach-grant signing key and digests
+/// of independently provisioned Host trust and generated gate configuration.
+/// The Host must pin that key and compare the signed fields with its own live
+/// admission and lease before writing a route. This method only signs a
+/// reservation that is still pending ordinary operation admission.
+///
+/// # Errors
+///
+/// Rejects a missing, expired, or changed pending record; stale execution or
+/// runtime authority; an already admitted idempotency key; or invalid grant
+/// inputs.
+pub fn sign_reserved_public_attach_grant_v1(
+    journal: &mut Journal,
+    pending: &PublicAttachPendingV1,
+    signing_key: &SigningKey,
+    trust_digest: [u8; 32],
+    gate_config_digest: [u8; 32],
+    now_seconds: i64,
+) -> Result<[u8; PUBLIC_ATTACH_GRANT_BYTES], PublicAttachPendingErrorV1> {
+    let stored = load_public_attach_pending_v1(journal, &pending.key)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    if stored != *pending
+        || pending.expires_at <= now_seconds
+        || now_seconds <= 0
+        || journal.check_idempotency(&pending.key, pending.request_digest)
+            != IdempotencyOutcome::Vacant
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Execution, pending.execution)
+        .map_err(|_| PublicAttachPendingErrorV1::Corrupt)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let PublicProjectionResourceV1::Execution(execution) = projection.resource() else {
+        return Err(PublicAttachPendingErrorV1::Corrupt);
+    };
+    if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+        || !pending.matches_execution(
+            &execution.execution_id,
+            &execution.sandbox_incarnation_id,
+            execution.assignment_epoch,
+            &pending.principal,
+            &execution.audit_id,
+        )
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let sandbox = SandboxId::from_bytes(
+        execution
+            .sandbox_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicAttachPendingErrorV1::Corrupt)?,
+    );
+    let binding = RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())
+        .and_then(|store| store.current(sandbox))
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let manifest = binding.manifest().manifest();
+    if binding.state() != RuntimeAuthorityStateV1::Bound
+        || manifest.incarnation().as_bytes() != &pending.incarnation
+        || manifest.epoch().get() != pending.assignment_epoch
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+
+    let grant = PublicAttachPendingGrantV1 {
+        operation_id: *pending.operation.as_bytes(),
+        execution_id: pending.execution,
+        sandbox_id: *manifest.sandbox().as_bytes(),
+        incarnation_id: pending.incarnation,
+        node_id: *manifest.node().as_bytes(),
+        assignment_epoch: pending.assignment_epoch,
+        desired_generation: manifest.desired_generation().get(),
+        namespace_generation: manifest.namespace_generation().get(),
+        assignment_digest: *binding.assignment_digest().as_bytes(),
+        lease_generation: binding.lease_generation(),
+        lease_digest: *binding.lease_digest().as_bytes(),
+        principal_id: pending.principal,
+        audit_id: pending.audit,
+        expires_at: pending.expires_at,
+        request_digest: pending.request_digest,
+        pending_digest: pending.record_digest(),
+        trust_digest,
+        gate_config_digest,
+    };
+    sign_public_attach_pending_grant_v1(&grant, signing_key)
+        .map_err(|_| PublicAttachPendingErrorV1::Conflict)
 }
 
 /// Loads one protected reservation by its public idempotency key.

@@ -63,6 +63,15 @@
     ++ lib.optional (brokers.hostBroker.credentials.brokerRevocationScope != null)
     "broker-revocation-scope:/run/credentials/@system/${brokers.hostBroker.credentials.brokerRevocationScope}"
   );
+  attachTrustCredential = brokers.hostBroker.credentials.opensshAttachTrust or null;
+  attachGrantPublicKeyCredential = brokers.hostBroker.credentials.opensshAttachGrantPublicKey or null;
+  opensshAttachCredentials = lib.optionals (cfg.credentials.opensshAttachGrantSigningKey != null) (
+    ["openssh-attach-grant-signing-key:/run/credentials/@system/${cfg.credentials.opensshAttachGrantSigningKey}"]
+    ++ lib.optional (attachTrustCredential != null)
+    "openssh-attach-trust.json:/run/credentials/@system/${attachTrustCredential}"
+    ++ lib.optional (attachGrantPublicKeyCredential != null)
+    "openssh-attach-grant-public-key:/run/credentials/@system/${attachGrantPublicKeyCredential}"
+  );
   ownershipCredentials = lib.optionals ownershipAuthority.enable (
     lib.optional (ownershipAuthority.credentials.sessionKey != null)
     "ownership-session-key:/run/credentials/@system/${ownershipAuthority.credentials.sessionKey}"
@@ -106,6 +115,11 @@ in {
           default = null;
           description = "Optional external 32-byte controller broker-plan signing seed for authority publications and Guardian arm plans.";
         };
+        opensshAttachGrantSigningKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional external 32-byte seed for the dedicated signed public OpenSSH attach pending grant.";
+        };
         cacheReplayBundle = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
@@ -144,6 +158,16 @@ in {
               && brokers.hostBroker.credentials.brokerRevocationScope != null
             );
           message = "aos.sandbox.controllerService broker-plan signing requires the Host broker's public plan policy, key, and revocation scope";
+        }
+        {
+          assertion =
+            (cfg.credentials.opensshAttachGrantSigningKey == null
+              && attachTrustCredential == null
+              && attachGrantPublicKeyCredential == null)
+            || (cfg.credentials.opensshAttachGrantSigningKey != null
+              && attachTrustCredential != null
+              && attachGrantPublicKeyCredential != null);
+          message = "aos.sandbox.controllerService OpenSSH attach grants require the dedicated signing key and both Host attach trust credentials together";
         }
         {
           assertion = brokers.storageBroker.enable;
@@ -211,7 +235,7 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        LoadCredential = nodeCredentials ++ cacheReplayCredentials ++ brokerPlanCredentials ++ ownershipCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
+        LoadCredential = nodeCredentials ++ cacheReplayCredentials ++ brokerPlanCredentials ++ opensshAttachCredentials ++ ownershipCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

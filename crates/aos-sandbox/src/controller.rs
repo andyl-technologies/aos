@@ -5176,6 +5176,72 @@ where
         Ok(pending)
     }
 
+    /// Signs a protected pending attach for the separately authenticated Host.
+    ///
+    /// The signing key must be the externally provisioned attach-grant key;
+    /// the Host pins its distinct public half. Trust and gate configuration
+    /// digests must come from the Host's provisioned inputs. This step is not
+    /// public operation admission or proof of an installed gate.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale authorization, a changed reservation or runtime binding,
+    /// an expired reservation, or invalid grant inputs.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_public_attach_pending_grant(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+        pending: &crate::public_attach_pending::PublicAttachPendingV1,
+        signing_key: &ed25519_dalek::SigningKey,
+        trust_digest: [u8; 32],
+        gate_config_digest: [u8; 32],
+        now_seconds: i64,
+    ) -> Result<
+        [u8; aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES],
+        ControllerServiceError,
+    > {
+        if canonical_request.is_empty() {
+            return Err(ControllerServiceError::EmptyRequest);
+        }
+        if canonical_request.len() > self.limits.maximum_request_bytes {
+            return Err(ControllerServiceError::RequestTooLarge);
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+        let request_digest = public_controller_request_digest(
+            self.scope,
+            peer.principal(),
+            peer.project(),
+            canonical_request,
+        );
+        let rechecked = crate::production_operation_compiler::reserve_public_attach_v1(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )?;
+        if rechecked != *pending {
+            return Err(OperationCompilationError::Rejected.into());
+        }
+        let grant = crate::public_attach_pending::sign_reserved_public_attach_grant_v1(
+            self.reconciler.journal_mut(),
+            pending,
+            signing_key,
+            trust_digest,
+            gate_config_digest,
+            now_seconds,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(grant)
+    }
+
     /// Admits a public attach using current authenticated Host OpenSSH evidence.
     ///
     /// The protected issuer and route evidence must come from the controller's
