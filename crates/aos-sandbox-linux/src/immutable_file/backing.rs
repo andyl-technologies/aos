@@ -50,6 +50,7 @@ use crate::uapi;
 pub struct FsVerityBacking {
     file: OwnedFd,
     observed: ObservedFile,
+    verified_verity: FsVerityDigest,
 }
 
 impl FsVerityBacking {
@@ -84,6 +85,38 @@ impl FsVerityBacking {
         }
 
         let file = root.open_regular(relative)?.into_owned_fd();
+        Self::admit_owned(file, expected_verity, expected_bytes)
+    }
+
+    /// Verifies one already-received file description without reopening a path.
+    ///
+    /// The caller must obtain `expected_verity` and `expected_bytes` from
+    /// independent current authority and bind the received descriptor to its
+    /// authenticated transport record. Fs-verity and read-only flags establish
+    /// immutable bytes, not publication provenance or disclosure permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an oversized, writable, nonregular, unsealed,
+    /// mismatched, or changing descriptor.
+    pub fn from_received(
+        file: OwnedFd,
+        expected_verity: FsVerityDigest,
+        expected_bytes: u64,
+        maximum_bytes: u64,
+    ) -> Result<Self, ImmutableFileError> {
+        if expected_bytes > maximum_bytes {
+            return Err(ImmutableFileError::BackingLimitExceeded);
+        }
+
+        Self::admit_owned(file, expected_verity, expected_bytes)
+    }
+
+    fn admit_owned(
+        file: OwnedFd,
+        expected_verity: FsVerityDigest,
+        expected_bytes: u64,
+    ) -> Result<Self, ImmutableFileError> {
         let before = inspect_read_only(file.as_fd())?;
         if before.bytes != expected_bytes {
             return Err(ImmutableFileError::SizeMismatch);
@@ -101,7 +134,14 @@ impl FsVerityBacking {
         Ok(Self {
             file,
             observed: before,
+            verified_verity: expected_verity,
         })
+    }
+
+    /// Returns the independently expected measurement verified on this FD.
+    #[must_use]
+    pub const fn verified_verity(&self) -> FsVerityDigest {
+        self.verified_verity
     }
 
     /// Returns kernel identity diagnostics tied to this descriptor's borrow.
@@ -163,6 +203,15 @@ fn inspect_read_only(fd: BorrowedFd<'_>) -> Result<ObservedFile, ImmutableFileEr
     let observed = inspect(fd)?;
     if observed.file_type != libc::S_IFREG {
         return Err(ImmutableFileError::NotRegular);
+    }
+    let descriptor_flags = rustix::io::fcntl_getfd(fd).map_err(|source| {
+        ImmutableFileError::Linux(crate::Error::Syscall {
+            operation: "fcntl(F_GETFD) immutable backing",
+            source: source.into(),
+        })
+    })?;
+    if !descriptor_flags.contains(rustix::io::FdFlags::CLOEXEC) {
+        return Err(ImmutableFileError::DescriptorNotCloseOnExec);
     }
     let flags = uapi::get_status_flags(fd)?;
     if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {

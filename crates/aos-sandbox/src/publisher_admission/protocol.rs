@@ -449,6 +449,33 @@ pub(crate) fn decode_local_source_message_from_carrier_v1(
     Ok(message)
 }
 
+/// Decodes one exact immutable-backing response from the fixed local carrier.
+///
+/// # Errors
+///
+/// Returns an error for malformed framing, an inexact descriptor observation,
+/// or a method other than `OpenFound`.
+pub(crate) fn decode_local_backing_message_from_carrier_v1(
+    bytes: &[u8],
+    identity_digest: ObjectDigest,
+) -> Result<PublisherLocalMessageV1, PublisherLocalProtocolError> {
+    if bytes.len() < HEADER_BYTES || bytes.len() > HEADER_BYTES + MAXIMUM_BODY_BYTES {
+        return Err(PublisherLocalProtocolError::LimitExceeded);
+    }
+    let body_digest = ObjectDigest::from_bytes(exact(&bytes[32..64])?);
+    let observed = ObservedDescriptorV1::from_carrier(
+        0,
+        identity_digest,
+        DescriptorAccessV1::ReadOnlyImmutableBacking,
+        body_digest,
+    );
+    let message = decode_local_message_v1(bytes, &[observed])?;
+    if !matches!(&message.body, PublisherLocalBodyV1::OpenFound { .. }) {
+        return Err(PublisherLocalProtocolError::DescriptorMismatch);
+    }
+    Ok(message)
+}
+
 fn validate_descriptors(
     body: &PublisherLocalBodyV1,
     body_digest: ObjectDigest,

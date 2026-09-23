@@ -16,7 +16,9 @@ use aos_sandbox_core::{
     ObjectDescriptor, ObjectDigest, OperationId, RawClockProvenance, RawPairedClockSample,
 };
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::immutable_file::{FsVerityPublicationRoot, ObservedSealedPublicationFile};
+use aos_sandbox_linux::immutable_file::{
+    FsVerityBacking, FsVerityDigest, FsVerityPublicationRoot, ObservedSealedPublicationFile,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::dormant_effects::PublisherDormantEffectCapabilityV1;
@@ -47,11 +49,15 @@ use super::linux_bridge::{
     materialize_linux_artifact, plan_linux_artifact, publish_and_settle_linux_artifact,
     recover_prepared_linux_artifact,
 };
-use super::protocol::{decode_local_message_v1, decode_local_source_message_from_carrier_v1};
+use super::protocol::{
+    decode_local_backing_message_from_carrier_v1, decode_local_message_v1,
+    decode_local_source_message_from_carrier_v1, encode_local_message_v1,
+};
 use super::read_authority::authorize_cache_read_v1;
 
 const ROOT_BOOT_DOMAIN: &[u8] = b"aos.sandbox.publisher.root-live-boot.v1\0";
 const SOURCE_DESCRIPTOR_DOMAIN: &[u8] = b"aos.sandbox.publisher.source-descriptor.v1\0";
+const BACKING_DESCRIPTOR_DOMAIN: &[u8] = b"aos.sandbox.publisher.backing-descriptor.v1\0";
 const PREPARE_INTENT_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.publisher.prepare-intent-transaction.v1\0";
 const PREPARE_SEALED_TRANSACTION_DOMAIN: &[u8] =
@@ -79,6 +85,73 @@ pub fn publisher_source_descriptor_commitment_v1(
         DescriptorAccessV1::ReadableSource,
     )
     .map_err(Into::into)
+}
+
+/// Binds one independently verified received backing to its transport record.
+///
+/// The caller must obtain the expected fs-verity measurement and size from
+/// current catalog authority before constructing `backing`. This commitment
+/// alone grants neither publication nor disclosure authority.
+///
+/// # Errors
+///
+/// Returns an error if boot identity is unavailable or the backing does not
+/// use the publisher's fixed SHA-256 fs-verity profile.
+pub fn publisher_received_backing_descriptor_commitment_v1(
+    backing: &FsVerityBacking,
+) -> Result<DescriptorCommitmentV1, PublisherDomainServiceErrorV1> {
+    let observed = backing.identity();
+    let identity = backing_descriptor_identity_v1(
+        observed.device(),
+        observed.inode(),
+        observed.bytes(),
+        backing.verified_verity(),
+    )?;
+    DescriptorCommitmentV1::first(identity, DescriptorAccessV1::ReadOnlyImmutableBacking)
+        .map_err(Into::into)
+}
+
+/// Decodes a received backing response against independently expected facts.
+///
+/// `backing` must be admitted from the transferred FD using the current
+/// catalog's expected measurement and size. The caller must also authenticate
+/// the transport peer and request correlation; this helper checks exact
+/// request, object, catalog entry, descriptor identity, and descriptor role.
+///
+/// # Errors
+///
+/// Returns an error for an unavailable boot identity, malformed framing, or
+/// any response or transferred-FD mismatch.
+pub fn decode_publisher_open_found_from_carrier_v1(
+    bytes: &[u8],
+    backing: &FsVerityBacking,
+    expected_request_id: [u8; 16],
+    expected_object: &ObjectDescriptor,
+    expected_catalog_entry_digest: ObjectDigest,
+) -> Result<PublisherLocalMessageV1, PublisherDomainServiceErrorV1> {
+    let observed = backing.identity();
+    let identity = backing_descriptor_identity_v1(
+        observed.device(),
+        observed.inode(),
+        observed.bytes(),
+        backing.verified_verity(),
+    )?;
+    let message = decode_local_backing_message_from_carrier_v1(bytes, identity)?;
+    let PublisherLocalBodyV1::OpenFound {
+        object,
+        catalog_entry_digest,
+        ..
+    } = &message.body
+    else {
+        return Err(PublisherLocalProtocolError::DescriptorMismatch.into());
+    };
+    if message.request_id != expected_request_id
+        || object != expected_object
+        || *catalog_entry_digest != expected_catalog_entry_digest
+    {
+        return Err(PublisherLocalProtocolError::DescriptorMismatch.into());
+    }
+    Ok(message)
 }
 
 /// Configures one fixed dormant publisher domain owner.
@@ -282,6 +355,49 @@ pub enum PublisherReadOpenV1<'root> {
     },
 }
 
+impl PublisherReadOpenV1<'_> {
+    /// Builds the response body while retaining the exact opened descriptor.
+    ///
+    /// The `Found` descriptor must travel in the same atomic carrier record
+    /// as this body. A descriptorless concealed result uses the same request
+    /// commitment for absence and authorization denial.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if boot identity or the fixed SHA-256 backing
+    /// commitment cannot be observed.
+    pub fn response(&self) -> Result<PublisherLocalBodyV1, PublisherDomainServiceErrorV1> {
+        match self {
+            Self::Found {
+                object,
+                catalog_entry_digest,
+                backing,
+            } => {
+                let identity = backing_descriptor_identity_v1(
+                    backing.device(),
+                    backing.inode(),
+                    backing.bytes(),
+                    backing.observed_verity_digest(),
+                )?;
+                let backing = DescriptorCommitmentV1::first(
+                    identity,
+                    DescriptorAccessV1::ReadOnlyImmutableBacking,
+                )?;
+                Ok(PublisherLocalBodyV1::OpenFound {
+                    object: object.clone(),
+                    catalog_entry_digest: *catalog_entry_digest,
+                    backing,
+                })
+            }
+            Self::NotFoundOrConcealed { request_digest } => {
+                Ok(PublisherLocalBodyV1::OpenNotFoundOrConcealed {
+                    request_digest: *request_digest,
+                })
+            }
+        }
+    }
+}
+
 impl PublisherRecoveryDispatchV1 {
     /// Builds the typed recovery response for canonical encoding.
     #[must_use]
@@ -336,6 +452,9 @@ pub enum PublisherDomainServiceErrorV1 {
     /// The committed read backing could not be opened as its sealed identity.
     #[error(transparent)]
     ReadBacking(#[from] CacheReadOpenErrorV1),
+    /// The authenticated publisher response could not be sent exactly.
+    #[error(transparent)]
+    ResponseTransport(#[from] crate::publisher_sessions::PublisherSessionError),
 }
 
 impl<'journal> PublisherDomainServiceV1<'journal> {
@@ -747,6 +866,40 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
             .recheck()
             .map_err(|_| PublisherDomainServiceErrorV1::SessionMismatch)?;
         Ok(opened)
+    }
+
+    /// Sends one authorized read result on the exact authenticated publisher channel.
+    ///
+    /// A found descriptor and its commitment travel in one atomic packet. The
+    /// publisher must still verify received object bytes before using them as
+    /// portable content; this response does not issue a new read grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed request bytes, failed current authority
+    /// or backing observation, response encoding, or an uncertain channel send.
+    pub fn serve_publisher_open_for_read(
+        &self,
+        record: &mut AuthenticatedPublisherRecord<'_>,
+        root: &PublisherRootCapabilityV1,
+    ) -> Result<(), PublisherDomainServiceErrorV1> {
+        let request = decode_local_message_v1(record.payload(), &[])?;
+        if !matches!(&request.body, PublisherLocalBodyV1::OpenForRead { .. }) {
+            return Err(PublisherLocalProtocolError::Malformed.into());
+        }
+
+        let result = self.dispatch_publisher_open_for_read(record, root)?;
+        let response = result.response()?;
+        let bytes = encode_local_message_v1(request.request_id, &response)?;
+        match &result {
+            PublisherReadOpenV1::Found { backing, .. } => {
+                record.send_response(&bytes, Some(backing.as_fd()))?;
+            }
+            PublisherReadOpenV1::NotFoundOrConcealed { .. } => {
+                record.send_response(&bytes, None)?;
+            }
+        }
+        Ok(())
     }
 
     /// Opens the fixed object root under one protected cold-recovery fence.
@@ -1655,6 +1808,30 @@ fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
         hasher.update(part);
     }
     ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+fn backing_descriptor_identity_v1(
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    verified_verity: FsVerityDigest,
+) -> Result<ObjectDigest, PublisherDomainServiceErrorV1> {
+    let FsVerityDigest::Sha256(verity) = verified_verity else {
+        return Err(PublisherLocalProtocolError::Malformed.into());
+    };
+    let boot = KernelBootId::current()
+        .map_err(|_| PublisherDomainServiceErrorV1::Clock)?
+        .into_bytes();
+    Ok(digest_parts(
+        BACKING_DESCRIPTOR_DOMAIN,
+        &[
+            &boot,
+            &device.to_be_bytes(),
+            &inode.to_be_bytes(),
+            &bytes.to_be_bytes(),
+            &verity,
+        ],
+    ))
 }
 
 fn readable_source_identity(

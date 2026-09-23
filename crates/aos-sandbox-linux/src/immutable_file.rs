@@ -107,6 +107,9 @@ pub enum ImmutableFileError {
     /// The backing file description is not opened for read-only access.
     #[error("immutable backing descriptor is not read-only")]
     DescriptorNotReadOnly,
+    /// The backing descriptor could leak into a later exec.
+    #[error("immutable backing descriptor is not close-on-exec")]
+    DescriptorNotCloseOnExec,
     /// A transferred immutable file is not owned by the creating identity.
     #[error("immutable file is not owned by the current effective user")]
     UnexpectedOwner,

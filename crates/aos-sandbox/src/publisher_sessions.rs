@@ -18,9 +18,17 @@
 //! magic "AOSPUBI1" (8 bytes) | publisher instance (16 bytes)
 //! ```
 //!
+//! A separately authorized `OpenForRead` request may receive one canonical
+//! publisher-local response on the same channel. `OpenFound` carries exactly
+//! one read-only sealed backing descriptor atomically with its response body;
+//! concealed results carry none. The authenticated channel alone never grants
+//! read authority.
+//!
 //! Fatal receives retire the transport but retain its process pin and service
 //! reservation until an explicit controller operation observes process exit.
 //! This process-local table starts empty and cannot restore sessions from a journal.
+
+use std::os::fd::BorrowedFd;
 
 use aos_sandbox_core::{
     ChannelBinding, NodeId, PrincipalId, ProjectId, PublisherInstanceId, ResourceId,
@@ -443,7 +451,7 @@ impl PreparedPublisherSession<'_> {
 /// }
 /// ```
 pub struct AuthenticatedPublisherRecord<'a> {
-    session: &'a PublisherSession,
+    session: &'a mut PublisherSession,
     record: ReceivedRecord,
     process_info: PidFdInfo,
 }
@@ -489,5 +497,33 @@ impl AuthenticatedPublisherRecord<'_> {
     /// Rejects exit, cgroup mismatch, process mismatch, or failed kernel observations.
     pub fn recheck(&self) -> Result<PidFdInfo, PublisherSessionError> {
         self.session.check_record(&self.record)
+    }
+
+    /// Sends one response to the same live publisher connection.
+    ///
+    /// A descriptor-bearing result is sent atomically with its canonical
+    /// response bytes. The caller must construct and validate the typed body
+    /// before calling this transport primitive; it grants no application
+    /// authority and cannot make a sent descriptor revocable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pinned execution changed, the channel closed,
+    /// or the whole record and optional descriptor could not be sent.
+    pub(crate) fn send_response(
+        &mut self,
+        payload: &[u8],
+        backing: Option<BorrowedFd<'_>>,
+    ) -> Result<(), PublisherSessionError> {
+        self.recheck()?;
+        match backing {
+            Some(backing) => self
+                .session
+                .socket
+                .send_with_descriptors(payload, &[backing])?,
+            None => self.session.socket.send(payload)?,
+        }
+        self.recheck()?;
+        Ok(())
     }
 }
