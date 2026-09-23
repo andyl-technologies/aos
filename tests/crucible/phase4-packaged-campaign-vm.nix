@@ -6,13 +6,14 @@
   campaignMidpoint ? false,
   findingExactBundle ? false,
   findingSignalBundle ? false,
+  findingForkWrite ? false,
   maintenanceTransfer ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle) " --features packaged-midpoint-flight";
+  campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite) " --features packaged-midpoint-flight";
   campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}";
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
@@ -83,16 +84,16 @@
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
-    project_id_count = 1
+    project_id_count = ${if findingForkWrite then "2" else "1"}
     child_user_id = 65534
     child_group_id = 65534
     maximum_tasks = 64
     maximum_inodes = 4096
     finish_timeout_ms = 15000
-    maximum_slots = 1
+    maximum_slots = ${if findingForkWrite then "2" else "1"}
     maximum_vcpus = 2
     maximum_resident_bytes = ${toString (
-      if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle
+      if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
       then 1073741824
       else 536870912
     )}
@@ -130,6 +131,8 @@
       then "crucible-campaign-exact-maintenance-transfer"
       else if guestChoice
       then "crucible-packaged-campaign-choice"
+      else if findingForkWrite
+      then "crucible-campaign-finding-fork-write"
       else if findingExactBundle
       then "crucible-campaign-finding-exact-bundle"
       else if findingSignalBundle
@@ -137,12 +140,12 @@
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
-    memory = 2048;
+    memory = if findingForkWrite then 3072 else 2048;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
-      ++ (lib.optional (findingExactBundle || findingSignalBundle) pkgs.crucible)
+      ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
       ++ (
-        if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle
+        if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
         then [choiceInitramfs]
         else []
       );
@@ -189,7 +192,7 @@
       echo 'campaign-host-setup-complete=true'
       ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
       export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
-      ${lib.optionalString (findingExactBundle || findingSignalBundle) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
+      ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
       export CRUCIBLE_FLIGHT_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
       export CRUCIBLE_FLIGHT_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
       export CRUCIBLE_FLIGHT_DEPLOYMENT=/tmp/executor.toml
@@ -197,7 +200,7 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
-      ${lib.optionalString (guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
@@ -304,6 +307,25 @@
             'gate=gate:typed-choice-product-checkpoint' \
             'proven=typed-guest-registration,fresh-qemu-restore'
           cat /tmp/guest-choice-flight.log
+        ''
+        else if findingForkWrite
+        then ''
+          fork_selector=finding_exact_vm::packaged_finding_bundle_fork_write_is_noncanonical
+          fork_log=/tmp/campaign-finding-fork-write.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --exact \
+            "$fork_selector" --nocapture > "$fork_log" 2>&1; then
+            cat "$fork_log"
+            exit 1
+          fi
+          cat "$fork_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_fork_source_owner_absent=true' "$fork_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_two_live_packaged_qemu=true' "$fork_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_noncanonical_register_write=true' "$fork_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_canonical_checkpoint_and_bundle_unchanged=true' "$fork_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_fork_qemu_teardown=true' "$fork_log"
+          ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$fork_log"
+          printf '%s\n' 'gate=gate:campaign-finding-fork-write'
         ''
         else if findingExactBundle
         then ''
