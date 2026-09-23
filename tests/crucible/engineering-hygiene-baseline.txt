@@ -69,7 +69,6 @@ shape-review|crates/crucible-cli/src/cli/campaign_run.rs|sha256:7aef77b879691f11
 shape-review|crates/crucible-cli/src/cli/control.rs|sha256:4e1928f2dc9bb4e5aab6e4cd630b0e0fa15310778fe559840f6a3ad703acf61c|implementation|1232|Save control-client workflows, interactive run control, and outcome projection.|threshold-not-reached
 shape-review|crates/crucible-cli/src/cli/planning/invocations.rs|sha256:49f5057c7fdfb54d2ad8d695b849b2827ac88f530cb1b358d443e4cba6da8846|implementation|2323|Command invocation plans for run, save, search, fuzz, and replay workflows.|Run, save, search, fuzz, and replay plans share seed resolution, bounds, and deterministic invocation evidence.
 shape-review|crates/crucible-cli/src/cli/run_save.rs|sha256:efa1d9705950c1c04b88395a001a91de677fc62c8538698faba9264e121df6db|implementation|1177|Local run/save workflows and closure-bound remote resume control setup.|threshold-not-reached
-shape-review|crates/crucible-cli/src/cli/run_save/qemu_live.rs|sha256:f4320c4659874c64d82d9233fc45da55b6731983bb7bb1c31e28ac6a4b041a19|implementation|1268|Live packaged-QEMU run and save execution, probing, search, replay, and outcome projection.|threshold-not-reached
 shape-review|crates/crucible-cli/src/cli/verify_serve/service.rs|sha256:3aff22cfd48de38d2e1ee95e9c4401df4b7d3495a14586e695e7fe8c97f91793|implementation|1060|Daemon service startup, campaign attachment, private executor supervision, and shutdown.|threshold-not-reached
 shape-review|crates/crucible-cli/src/main.rs|sha256:5dcaa43790adf942764e4fe5a0c6ba70e241e33280b78176783c83ae6555da04|implementation|2663|`crucible` is the CLI entry point for the Crucible control plane.|Argument types, command dispatch, backend routing, output selection, and exit projection define one CLI surface.
 shape-review|crates/crucible-cli/src/tests/replay_artifact.rs|sha256:bd540aa633ff776bf4d4c06f983a08d53ba196f6154b48d41fa4a1be97a19492|tests|2722|Replay-artifact parsing, authentication, current-schema, and production-QEMU regression tests.|Format, provenance, current-schema, production replay, and refusal cases share one artifact-validation fixture.
@@ -622,6 +621,9 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs|QEMU
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs|Qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|qemu

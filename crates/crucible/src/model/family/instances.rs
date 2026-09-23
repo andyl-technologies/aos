@@ -104,6 +104,30 @@ impl ScenarioFamily {
         self.instantiate(params)
     }
 
+    /// Selects one pinned family instance from authenticated coverage feedback.
+    ///
+    /// The returned energy is a deterministic admission budget input. Callers
+    /// execute the pinned instance and feed its observed coverage into the next
+    /// selection; this method does not invent a scheduler decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the family space or selected instance is invalid.
+    pub fn sample_coverage_guided(
+        &self,
+        config: CoverageGuidedFuzzConfig,
+        sequence: u64,
+        feedback: &[EventLogCoverageFeedback],
+    ) -> Result<(u64, PinnedScenario, u64), EngineError> {
+        let cardinality = self.space.cardinality()?;
+        let fingerprint = coverage_guided_fuzz_feedback_fingerprint(feedback, sequence);
+        let sample_index =
+            coverage_guided_fuzz_sample_index(config, sequence, fingerprint, cardinality);
+        let energy = coverage_guided_fuzz_energy(config, sequence, fingerprint);
+
+        Ok((sample_index, self.instantiate_sample(sample_index)?, energy))
+    }
+
     /// Samples and mutates concrete scenarios using event-log coverage feedback.
     ///
     /// Each iteration chooses one family parameter point, pins that point to a

@@ -78,6 +78,7 @@ pub(super) fn run_local_double_fuzz_workflow_with_family(
     Ok(outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn fuzz_execution_report_from_run(
     plan: &FuzzDriverPlan,
     run: &crucible::CoverageGuidedFuzzRun,
@@ -102,6 +103,7 @@ pub(super) fn fuzz_execution_report_from_run(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn fuzz_execution_report_from_corpus_run(
     plan: &FuzzDriverPlan,
     corpus: &Path,
