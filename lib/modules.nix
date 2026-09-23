@@ -393,7 +393,7 @@
               else config._condition;
           }
       ) (collectDefsAtPath path config._value file provenance)
-    else if builtins.length path == 0
+    else if path == []
     then [
       {
         inherit file provenance;
@@ -403,10 +403,9 @@
     else if builtins.isAttrs config
     then let
       key = builtins.head path;
-      rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
     in
       if builtins.hasAttr key config
-      then collectDefsAtPath rest config.${key} file provenance
+      then collectDefsAtPath (builtins.tail path) config.${key} file provenance
       else []
     else [];
 
@@ -416,22 +415,7 @@
   deepMerge = lhs: rhs:
     if builtins.isAttrs lhs && builtins.isAttrs rhs
     then let
-      lNames = builtins.attrNames lhs;
-      rNames = builtins.attrNames rhs;
-      allNames = let
-        combined = lNames ++ rNames;
-        dedup = acc: remaining:
-          if remaining == []
-          then acc
-          else let
-            h = builtins.elemAt remaining 0;
-            t = builtins.genList (i: builtins.elemAt remaining (i + 1)) (builtins.length remaining - 1);
-          in
-            if builtins.any (x: x == h) acc
-            then dedup acc t
-            else dedup (acc ++ [h]) t;
-      in
-        dedup [] combined;
+      allNames = builtins.attrNames (lhs // rhs);
     in
       builtins.listToAttrs (
         builtins.map (name: {
@@ -1364,33 +1348,28 @@
             (builtins.attrNames value))
         else [path];
 
-      pathHasPrefix = prefix: path:
-        builtins.length prefix
-        <= builtins.length path
-        && builtins.all
-        (i: builtins.elemAt prefix i == builtins.elemAt path i)
-        (builtins.genList (i: i) (builtins.length prefix));
-
       # Package modules may define only these module-engine diagnostic
       # channels without declaring their options. They are typed and consumed
       # by the engine itself; they cannot materialize runtime state.
       packageEngineContributionRoots = ["assertions" "warnings"];
 
-      declarationsContaining = path:
-        builtins.filter
-        (decl: decl.path != [] && pathHasPrefix decl.path path)
-        allOptionDecls;
+      # Preserve the first declaration's authorship when several modules
+      # extend the same option; optionMap separately merges their types.
+      authorshipDeclarations = builtins.listToAttrs (builtins.map (decl: {
+          name = builtins.toJSON decl.path;
+          value = decl;
+        })
+        (builtins.filter (decl: decl.path != []) allOptionDecls));
 
       nearestDeclaration = path: let
-        candidates = declarationsContaining path;
-        ordered =
-          builtins.sort
-          (left: right: builtins.length left.path > builtins.length right.path)
-          candidates;
+        prefixes = builtins.genList (index:
+          builtins.toJSON (lists.take (index + 1) path))
+        (builtins.length path);
+        matching = builtins.filter (name: builtins.hasAttr name authorshipDeclarations) prefixes;
       in
-        if ordered == []
+        if matching == []
         then null
-        else builtins.head ordered;
+        else authorshipDeclarations.${builtins.elemAt matching (builtins.length matching - 1)};
 
       authorizePackagePath = module: path: let
         package = strings.removePrefix "package:" module._provenance;
@@ -1929,10 +1908,43 @@
         allOptionDecls;
 
       # --- Phase 3: Collect config definitions for each option ---
+      topLevelConfigDefs = config: conditions:
+        if isMkMerge config
+        then builtins.concatMap (value: topLevelConfigDefs value conditions) config._values
+        else if isMkIf config
+        then topLevelConfigDefs config._value (conditions ++ [config._condition])
+        else if builtins.isAttrs config
+        then
+          builtins.map (key: {
+            inherit key;
+            value =
+              lists.foldr (condition: value: {
+                _type = "if";
+                _condition = condition;
+                _value = value;
+              })
+              config.${key}
+              conditions;
+          }) (builtins.attrNames config)
+        else [];
+
+      # Pull only the first component through root-level mkIf/mkMerge nodes.
+      # Reuse these roots for every option without forcing nested config.
+      configDefsByTopLevel = builtins.groupBy (record: record.key) (builtins.concatMap (module:
+        builtins.map (definition: definition // {inherit module;})
+        (topLevelConfigDefs module.config []))
+      evaluatedModules);
+
       configForOption = decl:
-        builtins.concatLists (
-          builtins.map (m: collectDefsAtPath decl.path m.config m._file (m._provenance or null)) evaluatedModules
-        );
+        if decl.path == []
+        then
+          builtins.concatMap (module:
+            collectDefsAtPath [] module.config module._file (module._provenance or null))
+          evaluatedModules
+        else
+          builtins.concatMap (record:
+            collectDefsAtPath (builtins.tail decl.path) record.value record.module._file (record.module._provenance or null))
+          (configDefsByTopLevel.${builtins.head decl.path} or []);
 
       # --- Phase 4: Merge config values for each option ---
       mergedOptions = builtins.listToAttrs (
