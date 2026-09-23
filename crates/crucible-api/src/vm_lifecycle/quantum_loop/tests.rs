@@ -304,6 +304,21 @@ fn daemon_debug_policy_accepts_an_explicit_loopback_listener() {
 }
 
 #[test]
+fn production_gateway_rejects_explicit_tcp_listener() {
+    let listen = GdbListen::new("127.0.0.1:9000").expect("loopback listener");
+
+    let error = private_gateway_listener_request(&debug_config(true), &listen)
+        .expect_err("private gateway must reject explicit TCP listener");
+
+    assert!(error.to_string().contains("explicit TCP listener"));
+    private_gateway_listener_request(
+        &debug_config(true),
+        &GdbListen::new("127.0.0.1:0").expect("ephemeral listener sentinel"),
+    )
+    .expect("internal ephemeral listener sentinel");
+}
+
+#[test]
 fn fixed_debug_policy_rejects_a_different_listener() {
     let listen = GdbListen::new("127.0.0.1:9000")
         .unwrap_or_else(|error| panic!("loopback listener should parse: {error}"));

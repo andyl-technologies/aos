@@ -347,6 +347,8 @@ pub enum DebugGatewayMessageKind {
     OperatorStatusAck = 17,
     /// Acquires or releases scheduler ownership around an internal VM run.
     SchedulerLease = 18,
+    /// Grants guest writes on the private owner Unix endpoint after a debug fork.
+    OperatorAccess = 19,
     /// Reports a typed gateway rejection, optionally correlated to a stream.
     Error = 255,
 }
@@ -372,6 +374,7 @@ impl DebugGatewayMessageKind {
             16 => Ok(Self::OperatorStatus),
             17 => Ok(Self::OperatorStatusAck),
             18 => Ok(Self::SchedulerLease),
+            19 => Ok(Self::OperatorAccess),
             255 => Ok(Self::Error),
             _ => Err(DebugGatewayDecodeError::UnknownKind { tag }),
         }

@@ -40,17 +40,8 @@ fn racing_interrupt_collapses_completed_run_into_one_correlated_stop() {
             .unwrap_or_else(|error| panic!("scheduler stop acknowledgement should read: {error}"));
         assert_eq!(acknowledgement, [b'+']);
     });
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .unwrap_or_else(|error| panic!("operator listener should bind: {error}"));
-    let mut operator = TcpStream::connect(
-        listener
-            .local_addr()
-            .unwrap_or_else(|error| panic!("operator listener should have an address: {error}")),
-    )
-    .unwrap_or_else(|error| panic!("operator client should connect: {error}"));
-    let (writer, _) = listener
-        .accept()
-        .unwrap_or_else(|error| panic!("operator writer should accept: {error}"));
+    let (mut operator, writer) =
+        UnixStream::pair().unwrap_or_else(|error| panic!("operator pair should open: {error}"));
     with_gateway(&process, |gateway| {
         gateway.operator_writer = Some(writer);
         gateway
@@ -65,8 +56,13 @@ fn racing_interrupt_collapses_completed_run_into_one_correlated_stop() {
     let routed = poll_scheduler_run_control(&process, poll)
         .unwrap_or_else(|error| panic!("continue should route: {error}"));
     assert_eq!(routed.payload, b"c");
-    queue_scheduler_run_control(&process, vec![0x03], false)
-        .unwrap_or_else(|error| panic!("interrupt should queue: {error}"));
+    with_gateway(&process, |gateway| {
+        gateway
+            .run_control_requests
+            .push_back((2, gateway.operator_epoch, vec![0x03]));
+        Ok(())
+    })
+    .unwrap_or_else(|error| panic!("interrupt fixture should queue: {error}"));
     let completion = DebugGatewayFrame::v1(DebugGatewayMessageKind::RspData, 1, b"T05".to_vec())
         .unwrap_or_else(|error| panic!("completion should build: {error}"));
     dispatch_request(&process, completion)

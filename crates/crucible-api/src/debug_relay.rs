@@ -1,6 +1,6 @@
 //! Lease-bound daemon relay for stable GDB byte streams.
 //!
-//! A relay connects only to a loopback endpoint reported by the session actor.
+//! A relay connects only to a private Unix or loopback endpoint reported by the session actor.
 //! Every operation presents the authenticated client and controller generation;
 //! reconnecting the HTTP/2 transport never transfers relay ownership. Each
 //! relay retains one idempotent holder on the active controller lease. Other
@@ -10,6 +10,8 @@
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::path::Path;
 use std::sync::Arc;
 // crucible-lint: allow host-monotonic-time -- relay expiry releases only daemon-local transport resources and never enters scenario, replay, or fingerprint state.
 use std::time::{Duration, Instant as RelayInstant};
@@ -17,7 +19,7 @@ use std::time::{Duration, Instant as RelayInstant};
 use crucible_session::{DebugClientId, DebugControllerLease};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::Mutex;
 
 use crate::SessionRef;
@@ -64,10 +66,39 @@ struct DebugRelay {
     session: SessionRef,
     lease: DebugControllerLease,
     holder: DebugControllerHolderId,
-    stream: Arc<Mutex<TcpStream>>,
+    stream: Arc<Mutex<DebugRelayStream>>,
     access: DebugRelayAccess,
     read_only_filter: ReadOnlyGdbFilter,
     last_activity: RelayInstant,
+}
+
+pub(crate) enum DebugRelayStream {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+
+impl DebugRelayStream {
+    #[cfg(test)]
+    async fn readable(&self) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.readable().await,
+            Self::Unix(stream) => stream.readable().await,
+        }
+    }
+
+    fn try_read(&self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.try_read(bytes),
+            Self::Unix(stream) => stream.try_read(bytes),
+        }
+    }
+
+    async fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.write_all(bytes).await,
+            Self::Unix(stream) => stream.write_all(bytes).await,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,7 +158,32 @@ impl DebugRelayRegistry {
         })
     }
 
-    pub(crate) async fn connect(endpoint: &str) -> Result<TcpStream, DebugRelayError> {
+    pub(crate) async fn connect(endpoint: &str) -> Result<DebugRelayStream, DebugRelayError> {
+        if let Some(path) = endpoint.strip_prefix("unix:") {
+            let path = Path::new(path);
+            let parent = path
+                .parent()
+                .ok_or(DebugRelayError::InvalidGatewayEndpoint)?;
+            let directory =
+                std::fs::metadata(parent).map_err(|_| DebugRelayError::InvalidGatewayEndpoint)?;
+            let socket =
+                std::fs::metadata(path).map_err(|_| DebugRelayError::InvalidGatewayEndpoint)?;
+            if !path.is_absolute()
+                || !directory.is_dir()
+                || directory.permissions().mode() & 0o077 != 0
+                || !socket.file_type().is_socket()
+                || socket.permissions().mode() & 0o077 != 0
+            {
+                return Err(DebugRelayError::InvalidGatewayEndpoint);
+            }
+            return tokio::time::timeout(DEBUG_RELAY_IO_TIMEOUT, UnixStream::connect(path))
+                .await
+                .map_err(|_| DebugRelayError::ConnectTimeout)?
+                .map(DebugRelayStream::Unix)
+                .map_err(|error| DebugRelayError::Connect {
+                    message: error.to_string(),
+                });
+        }
         let address: SocketAddr = endpoint
             .parse()
             .map_err(|_| DebugRelayError::InvalidGatewayEndpoint)?;
@@ -137,6 +193,7 @@ impl DebugRelayRegistry {
         tokio::time::timeout(DEBUG_RELAY_IO_TIMEOUT, TcpStream::connect(address))
             .await
             .map_err(|_| DebugRelayError::ConnectTimeout)?
+            .map(DebugRelayStream::Tcp)
             .map_err(|error| DebugRelayError::Connect {
                 message: error.to_string(),
             })
@@ -144,7 +201,7 @@ impl DebugRelayRegistry {
 
     pub(crate) fn register(
         &mut self,
-        stream: TcpStream,
+        stream: DebugRelayStream,
         session: SessionRef,
         lease: DebugControllerLease,
         holder: DebugControllerHolderId,
@@ -177,7 +234,7 @@ impl DebugRelayRegistry {
     }
 
     pub(crate) async fn write_stream(
-        stream: Arc<Mutex<TcpStream>>,
+        stream: Arc<Mutex<DebugRelayStream>>,
         bytes: &[u8],
     ) -> Result<usize, DebugRelayError> {
         if bytes.len() > DEBUG_RELAY_CHUNK_MAX_BYTES {
@@ -203,7 +260,7 @@ impl DebugRelayRegistry {
         generation: u64,
         holder: DebugControllerHolderId,
         bytes: &[u8],
-    ) -> Result<(Arc<Mutex<TcpStream>>, Vec<u8>), DebugRelayError> {
+    ) -> Result<(Arc<Mutex<DebugRelayStream>>, Vec<u8>), DebugRelayError> {
         if bytes.len() > DEBUG_RELAY_CHUNK_MAX_BYTES {
             return Err(DebugRelayError::ChunkTooLarge {
                 length: bytes.len(),

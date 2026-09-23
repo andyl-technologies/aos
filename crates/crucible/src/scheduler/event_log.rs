@@ -333,6 +333,19 @@ pub trait QuantumLoop {
         Ok(entries)
     }
 
+    /// Unlocks guest-write RSP packets after a noncanonical guest-edit fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no private production debugger gateway
+    /// is attached or it rejects the owner-only access transition.
+    fn authorize_noncanonical_guest_write(&mut self) -> Result<(), SchedulerError> {
+        Err(BackendError::Unsupported {
+            capability: "authorize_noncanonical_guest_write",
+        }
+        .into())
+    }
+
     /// Opens the optional backend gdbstub channel outside scheduler order.
     ///
     /// Pure loops and backends without a real mediated gdbstub use the default

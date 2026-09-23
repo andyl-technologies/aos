@@ -59,11 +59,9 @@ fn hello() -> DebugGatewayFrame {
 }
 
 fn test_process() -> SharedGatewayProcess {
-    Arc::new(Mutex::new(GatewayProcess::new(Some(
-        "127.0.0.1:12345"
-            .parse()
-            .unwrap_or_else(|error| panic!("test listener should parse: {error}")),
-    ))))
+    Arc::new(Mutex::new(GatewayProcess::new(Some(String::from(
+        "unix:/run/crucible/operator.sock",
+    )))))
 }
 
 fn configure_active_backend(process: &SharedGatewayProcess, endpoint: &str) -> UnixStream {
@@ -83,6 +81,79 @@ fn configure_active_backend(process: &SharedGatewayProcess, endpoint: &str) -> U
     })
     .unwrap_or_else(|error| panic!("active backend should configure: {error}"));
     peer
+}
+
+#[test]
+fn direct_operator_writes_require_private_branch_authorization() {
+    let process = Arc::new(Mutex::new(GatewayProcess::new(Some(String::from(
+        "unix:/tmp/private-gdb.sock",
+    )))));
+    let mut backend = configure_active_backend(&process, "/run/crucible/private-qemu.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    operator
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("operator read timeout");
+    backend
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("backend read timeout");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("operator writer setup");
+
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+    let write = encode_rsp_packet(b"P0=ff");
+    handle_operator_rsp_unit(
+        &process,
+        RspUnit::Packet(write.clone()),
+        &mut pending,
+        &mut synthetic_stop,
+    )
+    .expect("read-only rejection");
+    let expected_rejection = [b"+".as_slice(), encode_rsp_packet(b"E22").as_slice()].concat();
+    let mut rejection = vec![0_u8; expected_rejection.len()];
+    operator.read_exact(&mut rejection).expect("read rejection");
+    assert_eq!(rejection, expected_rejection);
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "denied write reached QEMU"
+    );
+
+    for control in [b"c".as_slice(), b"s", b"vCont;c"] {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encode_rsp_packet(control)),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("run control rejection");
+    }
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "run control reached QEMU"
+    );
+
+    let unlock = DebugGatewayFrame::v1(
+        DebugGatewayMessageKind::OperatorAccess,
+        0,
+        b"branch-guest-write".to_vec(),
+    )
+    .expect("unlock frame");
+    with_gateway(&process, |gateway| gateway.handle(unlock)).expect("owner unlock");
+    handle_operator_rsp_unit(
+        &process,
+        RspUnit::Packet(write.clone()),
+        &mut pending,
+        &mut synthetic_stop,
+    )
+    .expect("branch write admission");
+    let mut forwarded = vec![0_u8; write.len()];
+    backend
+        .read_exact(&mut forwarded)
+        .expect("authorized QEMU write");
+    assert_eq!(forwarded, write);
 }
 
 #[test]
@@ -360,17 +431,8 @@ fn packet_admitted_after_commit_barrier_reaches_only_new_backend() {
     new_peer
         .set_read_timeout(Some(Duration::from_millis(50)))
         .unwrap_or_else(|error| panic!("new backend timeout should set: {error}"));
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .unwrap_or_else(|error| panic!("operator listener should bind: {error}"));
-    let operator_peer = TcpStream::connect(
-        listener
-            .local_addr()
-            .unwrap_or_else(|error| panic!("operator address should inspect: {error}")),
-    )
-    .unwrap_or_else(|error| panic!("operator peer should connect: {error}"));
-    let (operator_writer, _) = listener
-        .accept()
-        .unwrap_or_else(|error| panic!("operator writer should accept: {error}"));
+    let (operator_peer, operator_writer) =
+        UnixStream::pair().unwrap_or_else(|error| panic!("operator pair should open: {error}"));
     let new_generation = with_gateway(&process, |gateway| {
         let old = gateway
             .model

@@ -1,5 +1,6 @@
 //! Relay ownership, replacement, and transport regressions.
 
+use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
@@ -73,6 +74,31 @@ fn session(id: u64, epoch: u64) -> SessionRef {
         epoch,
         crucible::Seed::from_u64(id),
     )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn relay_connects_only_to_private_unix_gateway_endpoint() {
+    let directory = tempfile::tempdir().expect("temporary gateway directory");
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("private gateway directory");
+    let socket = directory.path().join("operator.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("operator socket");
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+        .expect("owner operator socket");
+    let endpoint = format!("unix:{}", socket.display());
+
+    assert!(matches!(
+        DebugRelayRegistry::connect(&endpoint).await,
+        Ok(DebugRelayStream::Unix(_))
+    ));
+    let _accepted = listener.accept().await.expect("private relay connection");
+
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o666))
+        .expect("public socket fixture");
+    assert!(matches!(
+        DebugRelayRegistry::connect(&endpoint).await,
+        Err(DebugRelayError::InvalidGatewayEndpoint)
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

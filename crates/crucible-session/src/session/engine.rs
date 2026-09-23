@@ -1790,58 +1790,65 @@ impl<L: QuantumLoop> Engine<L> {
                     Err(self.invalid_transition(command.clone()))
                 }
             },
-            SessionCommand::DebugForkNonCanonical { request, reply } => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.validate_event_log_prefix(event_log)?;
-                    let attach = self.current_debug_attach("debug-fork-non-canonical")?;
-                    let introspection_node =
-                        request.actions.first().and_then(|action| match action {
-                            DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
-                                Some(node.clone())
-                            }
-                            _ => None,
-                        });
-                    if let Some(node) = introspection_node.as_ref()
-                        && self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled)
-                    {
-                        return Err(SessionError::GuestIntrospectionNotAuthorized {
-                            node: node.name.clone(),
-                        });
+            SessionCommand::DebugForkNonCanonical { request, reply } => {
+                match self.state {
+                    EngineState::Running | EngineState::Paused { .. } => {
+                        self.validate_event_log_prefix(event_log)?;
+                        let attach = self.current_debug_attach("debug-fork-non-canonical")?;
+                        let introspection_node =
+                            request.actions.first().and_then(|action| match action {
+                                DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
+                                    Some(node.clone())
+                                }
+                                _ => None,
+                            });
+                        if let Some(node) = introspection_node.as_ref()
+                            && self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled)
+                        {
+                            return Err(SessionError::GuestIntrospectionNotAuthorized {
+                                node: node.name.clone(),
+                            });
+                        }
+                        let mut candidate_graph = self.graph.clone();
+                        let report = candidate_graph
+                            .debug_non_canonical_branch(&attach, request, event_log)?;
+                        let entries = report
+                            .event_log_with_fork_marker
+                            .iter()
+                            .skip(event_log.len())
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let entries = self
+                            .quantum_loop
+                            .append_noncanonical_debug_event_log_entries(entries)?;
+                        self.append_boundary_event_log_entries(entries)?;
+                        if request.actions.iter().any(|action| {
+                            matches!(action, DebugNonCanonicalBranchAction::GuestEdit(_))
+                        }) {
+                            self.quantum_loop.authorize_noncanonical_guest_write()?;
+                        }
+                        self.graph = candidate_graph;
+                        self.debug_branch_required = false;
+                        self.debug_coordinator
+                            .forked_non_canonical(self.configuration.id());
+                        if let Some(node) = introspection_node {
+                            self.begin_debug_guest_activation(node, report, reply.clone());
+                        } else if matches!(self.state, EngineState::Running) {
+                            self.active_step = None;
+                            self.state = EngineState::Paused {
+                                reason: PauseReason::UserRequested,
+                            };
+                            reply.complete(Ok(report));
+                        } else {
+                            reply.complete(Ok(report));
+                        }
+                        Ok(self.snapshot())
                     }
-                    let mut candidate_graph = self.graph.clone();
-                    let report =
-                        candidate_graph.debug_non_canonical_branch(&attach, request, event_log)?;
-                    let entries = report
-                        .event_log_with_fork_marker
-                        .iter()
-                        .skip(event_log.len())
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let entries = self
-                        .quantum_loop
-                        .append_noncanonical_debug_event_log_entries(entries)?;
-                    self.append_boundary_event_log_entries(entries)?;
-                    self.graph = candidate_graph;
-                    self.debug_branch_required = false;
-                    self.debug_coordinator
-                        .forked_non_canonical(self.configuration.id());
-                    if let Some(node) = introspection_node {
-                        self.begin_debug_guest_activation(node, report, reply.clone());
-                    } else if matches!(self.state, EngineState::Running) {
-                        self.active_step = None;
-                        self.state = EngineState::Paused {
-                            reason: PauseReason::UserRequested,
-                        };
-                        reply.complete(Ok(report));
-                    } else {
-                        reply.complete(Ok(report));
+                    EngineState::Loaded | EngineState::Stopped { .. } => {
+                        Err(self.invalid_transition(command.clone()))
                     }
-                    Ok(self.snapshot())
                 }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
-            },
+            }
             SessionCommand::GuestIntrospection {
                 node,
                 channel_id,
