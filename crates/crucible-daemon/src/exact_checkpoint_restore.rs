@@ -138,7 +138,9 @@ impl InstalledProductionAttemptCheckpoint {
 
 mod guarded_replay;
 
-pub(crate) use guarded_replay::{QemuGuardedReplayOracleSession, replay_quarantine_with_cause};
+pub(crate) use guarded_replay::{
+    GuardedReplayAdmission, QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
+};
 
 /// Installs and binds one version-nine production checkpoint for attempt resume.
 ///

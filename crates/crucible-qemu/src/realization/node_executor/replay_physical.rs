@@ -90,6 +90,61 @@ impl QemuReplayValidationExecutor {
             })
     }
 
+    /// Queues one root-authenticated backend input at its recorded physical time.
+    ///
+    /// The input ring retains a future delivery count while the guest is idle;
+    /// enqueuing it does not advance the guest or the replay event log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation is stale, the input belongs to
+    /// another node or a past boundary, or the QEMU transport rejects it.
+    pub fn enqueue_materialized_replay_input(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        input: BackendInput,
+        delivery: Icount,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.validate_observation(
+            &thin.authority,
+            thin.generation,
+            self.thin_observation_generation,
+            "thin replay observation",
+        )?;
+        self.validate_active_replay_runtime(&thin.runtime)?;
+        let current = replay_node_icount(&thin.runtime, &self.node)?;
+        if input.node != self.node || delivery.retired < current.retired {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded replay backend input",
+                message: String::from("input node or delivery count differs from the live replay"),
+            });
+        }
+
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "enqueue guarded replay backend input",
+                message: String::from("no QEMU replay node is active"),
+            })?;
+        SimulationBackend::apply(
+            node,
+            &BackendEffect::DeliverInput(input),
+            VirtualTime {
+                ticks: delivery.retired,
+            },
+        )
+        .map_err(|source| node_backend_error("enqueue guarded replay backend input", source))?;
+
+        let generation = self.issue_observation_generation()?;
+        self.thin_observation_generation = Some(generation);
+        Ok(QemuReplayOracleThinObservation {
+            runtime: thin.runtime,
+            authority: Arc::clone(&self.authority),
+            generation,
+        })
+    }
+
     /// Advances thin replay toward a checkpoint ceiling without changing its schedule.
     ///
     /// The caller bounds `ceiling` by the exact checkpoint and charges the

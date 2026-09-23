@@ -22,7 +22,7 @@ use thiserror::Error;
 
 use crate::exact_checkpoint_restore::validate_materialized_start_configuration;
 use crate::exact_checkpoint_restore::{
-    QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
+    GuardedReplayAdmission, QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
 };
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
 use crate::{
@@ -767,6 +767,7 @@ where
             break;
         };
         let node = next.node().clone();
+        let process_generation = next.process_generation();
         let snapshot = next.snapshot().clone();
         let session = factory.begin_target(
             target.source.world(),
@@ -805,7 +806,11 @@ where
         let comparison = session.check_snapshot_replay_oracle(
             target.source.world(),
             target.source,
-            &choices,
+            GuardedReplayAdmission {
+                choices: &choices,
+                scheduler: installed.scheduler(),
+                process_generation,
+            },
             installed.configuration(),
             &snapshot,
             &baked,

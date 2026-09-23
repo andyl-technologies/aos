@@ -5,9 +5,10 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crucible::{
-    Decision, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId,
-    ScenarioSelectableLimits, ScenarioSelectables, Seed, SelectionDecision, WhiteBoxPolicy, World,
-    WorldNode,
+    BackendInput, Decision, DeliveryOrderDecision, Icount, IrqVector, NodeId, NodeTemplate, Plan,
+    PreemptionDecision, PreemptionKind, Properties, ReadyPoint, RngDecision, RngStreamId,
+    ScenarioSelectableLimits, ScenarioSelectables, Seed, SelectionDecision, VcpuId, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_campaign::{
     BooleanDomain, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
@@ -21,6 +22,7 @@ struct ScriptedPhysicalReplay {
     pending: Option<SelectablePlanPendingRequest>,
     replies: Vec<SelectionReply>,
     advances: Vec<Icount>,
+    inputs: Vec<(Icount, Vec<u8>)>,
 }
 
 impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
@@ -85,6 +87,21 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         self.replies.push(reply.clone());
         Ok(())
     }
+
+    fn enqueue_input(
+        &mut self,
+        state: Self::Observation,
+        input: BackendInput,
+        delivery: Icount,
+    ) -> Result<Self::Observation, QemuVmRealizationError> {
+        if input.node != self.node || delivery.retired < state.retired {
+            return Err(invalid_replay_selection(
+                "scripted input crossed physical count",
+            ));
+        }
+        self.inputs.push((delivery, input.payload));
+        Ok(state)
+    }
 }
 
 fn replay_choice_fixture()
@@ -148,6 +165,70 @@ fn replay_choice_fixture()
 }
 
 #[test]
+fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let node = NodeId {
+        name: String::from("receiver"),
+    };
+    let mut replay = ScriptedPhysicalReplay {
+        node: node.clone(),
+        upcoming: VecDeque::new(),
+        pending: None,
+        replies: Vec::new(),
+        advances: Vec::new(),
+        inputs: Vec::new(),
+    };
+    let first = BackendInput {
+        node: node.clone(),
+        payload: b"first".to_vec(),
+    };
+    let second = BackendInput {
+        node: node.clone(),
+        payload: b"second".to_vec(),
+    };
+    let delivery_order = Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks: 1 },
+        order: Vec::new(),
+    });
+    let preemption = Decision::Preemption(PreemptionDecision {
+        node,
+        at: Icount { retired: 1 },
+        kind: PreemptionKind::InterruptAt {
+            target_vcpu: VcpuId { index: 0 },
+            irq: IrqVector { vector: 32 },
+        },
+    });
+
+    let state = replay.enqueue_input(Icount { retired: 1 }, first, Icount { retired: 1 })?;
+    let state = replay_one_nonselection_decision_boundary(
+        &mut replay,
+        state,
+        Icount { retired: 3 },
+        &delivery_order,
+    )?;
+    assert_eq!(state.retired, 1);
+    let state = replay_one_nonselection_decision_boundary(
+        &mut replay,
+        state,
+        Icount { retired: 3 },
+        &preemption,
+    )?;
+    assert_eq!(state.retired, 2);
+    let state = replay.enqueue_input(state, second, Icount { retired: 2 })?;
+
+    assert_eq!(state.retired, 2);
+    assert_eq!(replay.advances, vec![Icount { retired: 2 }]);
+    assert_eq!(
+        replay.inputs,
+        vec![
+            (Icount { retired: 1 }, b"first".to_vec()),
+            (Icount { retired: 2 }, b"second".to_vec())
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, node, [first, second]) = replay_choice_fixture()?;
@@ -202,6 +283,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         pending: None,
         replies: Vec::new(),
         advances: Vec::new(),
+        inputs: Vec::new(),
     };
 
     let after_rng_icount = replay_one_nonselection_boundary(
@@ -248,6 +330,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         pending: None,
         replies: Vec::new(),
         advances: Vec::new(),
+        inputs: Vec::new(),
     };
     assert!(
         replay_one_local_guest_choice(
@@ -268,6 +351,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         pending: None,
         replies: Vec::new(),
         advances: Vec::new(),
+        inputs: Vec::new(),
     };
     assert!(
         replay_one_local_guest_choice(
@@ -288,6 +372,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         pending: Some(first.clone()),
         replies: Vec::new(),
         advances: Vec::new(),
+        inputs: Vec::new(),
     };
     assert!(
         replay_one_nonselection_boundary(
