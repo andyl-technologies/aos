@@ -14,6 +14,16 @@ use serde_json::{Value, json};
 
 use super::*;
 
+pub(super) struct PreparedFindingBundleMidpoint {
+    pub(super) midpoint: crucible_daemon::ArchivedFindingDebugMidpoint,
+    pub(super) checkpoints: Arc<ExactCheckpointStore>,
+    pub(super) lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    pub(super) host: crucible_daemon::LinuxQemuAttemptHostConfig,
+    pub(super) resources: AttemptResourceLimits,
+    pub(super) report: Value,
+    pub(super) private: tempfile::TempDir,
+}
+
 /// Opens a private QEMU restore and exposes one read-only local GDB relay.
 ///
 /// # Errors
@@ -28,6 +38,98 @@ pub(crate) fn run_finding_bundle_midpoint(
         return Err(usage_error("midpoint requires a nonempty node"));
     }
 
+    let prepared = prepare_finding_bundle_midpoint(cli, args)?;
+    let PreparedFindingBundleMidpoint {
+        midpoint,
+        checkpoints,
+        lifecycle,
+        host,
+        resources,
+        report,
+        private,
+    } = prepared;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async move {
+        let transport = private_midpoint_transport(private.path())?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(CliError::Io)?;
+        let address = listener.local_addr().map_err(CliError::Io)?;
+        let mut policy = DebugAuthorizationPolicy::deny_all();
+        policy
+            .grant_certificate_role(
+                transport.client_identity.certificate_sha256(),
+                DebugRole::new([DebugCapability::Observe, DebugCapability::Control]),
+            )
+            .map_err(|error| backend_error(format!("midpoint client role is invalid: {error}")))?;
+        let client = RpcControlClient::new_mtls(
+            RpcEndpoint::http2(format!("https://{address}")),
+            RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
+        )
+        .map_err(control_client_error)?;
+        let session = midpoint
+            .admit_guarded_read_only_session(checkpoints, lifecycle, host, resources)
+            .await
+            .map_err(|error| backend_error(format!("finding midpoint restore failed: {error}")))?;
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
+            listener,
+            session.shared_control_plane(),
+            LifecycleServerMode::read_write(),
+            transport.acceptor,
+            policy,
+            async move {
+                let _ = stopped.await;
+            },
+        ));
+        let relay = async {
+            print_midpoint_report(&report, cli.output_format())?;
+            crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
+                &client,
+                session.session(),
+                crucible::NodeId {
+                    name: args.node.clone(),
+                },
+                &private.path().join("gdb.sock"),
+            )
+            .await
+        }
+        .await;
+        let destroyed = session
+            .in_process_client()
+            .destroy_session(
+                DestroySessionRequest::new(session.session())
+                    .with_expected_epoch(session.session().epoch),
+            )
+            .await
+            .map_err(control_client_error);
+        drop(client);
+        let _ = shutdown.send(());
+        let served =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), &mut server).await {
+                Ok(result) => result
+                    .map_err(|error| {
+                        backend_error(format!("finding midpoint relay task failed: {error}"))
+                    })?
+                    .map_err(CliError::Io),
+                Err(_) => {
+                    server.abort();
+                    let _ = server.await;
+                    Err(backend_error("finding midpoint relay shutdown timed out"))
+                }
+            };
+        destroyed?;
+        served?;
+        relay
+    })
+}
+
+pub(super) fn prepare_finding_bundle_midpoint(
+    cli: &Cli,
+    args: &CampaignFindingBundleMidpointArgs,
+) -> Result<PreparedFindingBundleMidpoint, CliError> {
     let bundle = load_authenticated_bundle(&args.input)?;
     let finding =
         bundle.evidence.finding.id().map_err(|error| {
@@ -121,93 +223,27 @@ pub(crate) fn run_finding_bundle_midpoint(
     .map_err(|error| backend_error(format!("finding midpoint resources are invalid: {error}")))?;
 
     let report = midpoint_report(&bundle, &midpoint, &capture, selected, fault_trace.as_ref())?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(async move {
-        let transport = private_midpoint_transport(private.path())?;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(CliError::Io)?;
-        let address = listener.local_addr().map_err(CliError::Io)?;
-        let mut policy = DebugAuthorizationPolicy::deny_all();
-        policy
-            .grant_certificate_role(
-                transport.client_identity.certificate_sha256(),
-                DebugRole::new([DebugCapability::Observe, DebugCapability::Control]),
-            )
-            .map_err(|error| backend_error(format!("midpoint client role is invalid: {error}")))?;
-        let client = RpcControlClient::new_mtls(
-            RpcEndpoint::http2(format!("https://{address}")),
-            RpcMutualTlsConfig::from_pem(transport.ca_pem, transport.client_identity_pem),
-        )
-        .map_err(control_client_error)?;
-        let session = midpoint
-            .admit_guarded_read_only_session(checkpoints, lifecycle, deployment.host, resources)
-            .await
-            .map_err(|error| backend_error(format!("finding midpoint restore failed: {error}")))?;
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let mut server = tokio::spawn(serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(
-            listener,
-            session.shared_control_plane(),
-            // Relay setup uses control verbs; the admitted actor is still ReadOnlyDebug.
-            LifecycleServerMode::read_write(),
-            transport.acceptor,
-            policy,
-            async move {
-                let _ = stopped.await;
-            },
-        ));
-        let relay = async {
-            print_midpoint_report(&report, cli.output_format())?;
-            crate::cli_triage_debug::run_private_unix_debug_relay_with_client_async(
-                &client,
-                session.session(),
-                crucible::NodeId {
-                    name: args.node.clone(),
-                },
-                &private.path().join("gdb.sock"),
-            )
-            .await
-        }
-        .await;
-        let destroyed = session
-            .in_process_client()
-            .destroy_session(
-                DestroySessionRequest::new(session.session())
-                    .with_expected_epoch(session.session().epoch),
-            )
-            .await
-            .map_err(control_client_error);
-        drop(client);
-        let _ = shutdown.send(());
-        let served =
-            match tokio::time::timeout(std::time::Duration::from_secs(10), &mut server).await {
-                Ok(result) => result
-                    .map_err(|error| {
-                        backend_error(format!("finding midpoint relay task failed: {error}"))
-                    })?
-                    .map_err(CliError::Io),
-                Err(_) => {
-                    server.abort();
-                    let _ = server.await;
-                    Err(backend_error("finding midpoint relay shutdown timed out"))
-                }
-            };
-        destroyed?;
-        served?;
-        relay
+    Ok(PreparedFindingBundleMidpoint {
+        midpoint,
+        checkpoints,
+        lifecycle,
+        host: deployment.host,
+        resources,
+        report,
+        private,
     })
 }
 
-struct PrivateMidpointTransport {
-    acceptor: tokio_rustls::TlsAcceptor,
-    ca_pem: String,
-    client_identity_pem: String,
-    client_identity: crucible_api::DebugTransportIdentity,
+pub(super) struct PrivateMidpointTransport {
+    pub(super) acceptor: tokio_rustls::TlsAcceptor,
+    pub(super) ca_pem: String,
+    pub(super) client_identity_pem: String,
+    pub(super) client_identity: crucible_api::DebugTransportIdentity,
 }
 
-fn private_midpoint_transport(directory: &Path) -> Result<PrivateMidpointTransport, CliError> {
+pub(super) fn private_midpoint_transport(
+    directory: &Path,
+) -> Result<PrivateMidpointTransport, CliError> {
     // Both rustls providers are present in the workspace dependency closure;
     // the first installed process provider is shared with the RPC client.
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -354,7 +390,7 @@ fn lower_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-fn print_midpoint_report(report: &Value, format: OutputFormat) -> Result<(), CliError> {
+pub(super) fn print_midpoint_report(report: &Value, format: OutputFormat) -> Result<(), CliError> {
     match format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             println!(
@@ -366,10 +402,12 @@ fn print_midpoint_report(report: &Value, format: OutputFormat) -> Result<(), Cli
         }
         OutputFormat::Table | OutputFormat::Markdown => {
             println!(
-                "finding-midpoint checkpoint={} role={} configuration={} read-only=true branch=no-branch selection={} failure={}",
+                "finding-midpoint checkpoint={} role={} configuration={} read-only={} branch={} selection={} failure={}",
                 report["checkpoint"],
                 report["checkpoint_role"],
                 report["configuration"],
+                report["read_only"],
+                report["branch_classification"],
                 report["selection_sequence"],
                 report["failure_detail"],
             );

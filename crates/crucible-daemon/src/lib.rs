@@ -222,7 +222,7 @@ pub use campaign_endpoint::{
 };
 pub use campaign_finding_handoff::{
     ArchivedFindingDebugControlPlane, ArchivedFindingDebugMidpoint, ArchivedFindingDebugSession,
-    CampaignFindingHandoffError, MaterializedFindingReplayGuest,
+    ArchivedFindingDebugSessionPair, CampaignFindingHandoffError, MaterializedFindingReplayGuest,
     MaterializedFindingReplayGuestAssets, load_archived_finding_production_capture,
     materialize_finding_replay_guest_assets, prepare_archived_finding_debug_midpoint,
 };
