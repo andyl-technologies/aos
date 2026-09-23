@@ -680,13 +680,12 @@ fn guest_marker_assertion_implementation_is_observational_and_deterministic() {
         include_str!("../src/trigger/assertions.rs"),
         include_str!("../src/trigger/evaluation.rs"),
     );
-    let marker_block = trigger
-        .split("pub enum GuestAssertionKind")
-        .nth(1)
-        .expect("guest assertion marker kind should exist")
-        .split("/// Host-authored resolver for assertion leaves")
-        .next()
-        .expect("host assertion resolver follows guest assertion marker payload");
+    let (_, marker_and_leaves) = include_str!("../src/trigger/conditions.rs")
+        .split_once("pub enum GuestAssertionKind")
+        .expect("guest assertion marker kind should exist");
+    let (marker_block, _) = marker_and_leaves
+        .split_once("/// One leaf predicate request made by the shared condition evaluator")
+        .expect("condition leaves follow guest assertion marker payload");
 
     for required in [
         "pub id: AssertionId",

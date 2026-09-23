@@ -4,6 +4,7 @@
 //! and typed transport responses through the private server surface.
 
 use std::error::Error;
+use std::os::unix::fs::PermissionsExt;
 
 use axum::body::to_bytes;
 use axum::extract::State;
@@ -548,8 +549,11 @@ async fn controller_release_cannot_bypass_a_live_relay_holder() -> Result<(), Bo
         .await
         .register(session, lease.clone(), holder)?;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let stream = DebugRelayRegistry::connect(&listener.local_addr()?.to_string()).await?;
+    let relay_directory = tempfile::tempdir()?;
+    let relay_path = relay_directory.path().join("debug-relay.sock");
+    let listener = tokio::net::UnixListener::bind(&relay_path)?;
+    std::fs::set_permissions(&relay_path, std::fs::Permissions::from_mode(0o600))?;
+    let stream = DebugRelayRegistry::connect(&format!("unix:{}", relay_path.display())).await?;
     state.debug_relays.lock().await.register(
         stream,
         session,
