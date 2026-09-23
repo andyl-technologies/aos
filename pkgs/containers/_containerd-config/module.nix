@@ -237,162 +237,149 @@
     };
     ignore_failure = false;
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = true;
-          ambient_privileges = [
-            "change-file-ownership"
-            "create-device-node"
-            "administer-network"
-            "raw-network"
-            "change-group-identity"
-            "change-user-identity"
-            "administer-host"
-            "change-root-directory"
-          ];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [
-              "change-file-ownership"
-              "create-device-node"
-              "administer-network"
-              "raw-network"
-              "change-group-identity"
-              "change-user-identity"
-              "administer-host"
-              "change-root-directory"
-            ];
-          };
-          resource_control_delegation = true;
-          resource_control_access = "host";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = true;
-          isolation_domains = [];
-          network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
-          memory_pressure_adjustment = -999;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          security_label = "aos-pkg-containerd";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "privileged";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = true;
+      ambient_privileges = [
+        "change-file-ownership"
+        "create-device-node"
+        "administer-network"
+        "raw-network"
+        "change-group-identity"
+        "change-user-identity"
+        "administer-host"
+        "change-root-directory"
+      ];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [
+          "change-file-ownership"
+          "create-device-node"
+          "administer-network"
+          "raw-network"
+          "change-group-identity"
+          "change-user-identity"
+          "administer-host"
+          "change-root-directory"
+        ];
+      };
+      resource_control_delegation = true;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+      memory_pressure_adjustment = -999;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      security_label = "aos-pkg-containerd";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
+    };
     consumerInstance = "containerd";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle = {
-        description = "containerd standalone container runtime";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command ["--config" configPath])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "always";
-        restart_token = cfg.restartToken;
-        restart_delay_millis = 5000;
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
+    service = "main";
+    lifecycle = {
+      description = "containerd standalone container runtime";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command ["--config" configPath])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_token = cfg.restartToken;
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "kernel-modules" "resource")
+        (resultOf "network-readiness" "resource")
+        (resultOf "root-storage" "resource")
+        (resultOf "state-storage" "resource")
+      ];
+      before = [];
+      requires = [
+        (resultOf "kernel-modules" "resource")
+        (resultOf "root-storage" "resource")
+        (resultOf "state-storage" "resource")
+      ];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    resources = {
+      open_files = {
+        kind = "maximum";
+        value = 1048576;
       };
-      dependencies = {
-        after = [
-          (resultOf "kernel-modules" "resource")
-          (resultOf "network-readiness" "resource")
-          (resultOf "root-storage" "resource")
-          (resultOf "state-storage" "resource")
-        ];
-        before = [];
-        requires = [
-          (resultOf "kernel-modules" "resource")
-          (resultOf "root-storage" "resource")
-          (resultOf "state-storage" "resource")
-        ];
-        wants = [(resultOf "network-readiness" "resource")];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "main-process";
-        timeout_millis = 90000;
-      };
-      resources = {
-        open_files = {
-          kind = "maximum";
-          value = 1048576;
-        };
-        processes.kind = "unbounded";
-        tasks.kind = "unbounded";
-      };
-      configuration.views = [
+      processes.kind = "unbounded";
+      tasks.kind = "unbounded";
+    };
+    configuration.views = [
+      {
+        name = "server";
+        source = configPath;
+        optional = false;
+      }
+    ];
+    storage.mounts = [
+      {
+        name = "root";
+        source = rootPath;
+        access = "read-write";
+      }
+      {
+        name = "state";
+        source = statePath;
+        access = "read-write";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "main-process";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = lib.optionals (cfg.registryConfigResource != null) [
         {
-          name = "server";
-          source = configPath;
-          optional = false;
+          source = resultOf "registry-config-view" "host-path";
+          mode = "read-only";
         }
       ];
-      storage.mounts = [
-        {
-          name = "root";
-          source = rootPath;
-          access = "read-write";
-        }
-        {
-          name = "state";
-          source = statePath;
-          access = "read-write";
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "main-process";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = lib.optionals (cfg.registryConfigResource != null) [
-          {
-            source = resultOf "registry-config-view" "host-path";
-            mode = "read-only";
-          }
-        ];
-        permit_core_dumps = true;
-      };
+      permit_core_dumps = true;
     };
   };
-  fragments = [
+  producers = [
     storage
     rootStorage
     grpcSocket
@@ -400,9 +387,7 @@
     kernelModules
     networkReadiness
     configuration
-    service
   ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.containerd = {
     enable = mkOption {
@@ -488,15 +473,11 @@ in {
           message = "containerd.requiredPlugins must not contain duplicates";
         }
       ];
+      aos.services."containerd.main" = service // {enable = cfg.enable;};
     }
-    (lib.mkMerge (
-      builtins.map (definition: {aos.abilities = definition.declarations;}) definitions
-    ))
-    (lib.mkIf cfg.enable (
-      lib.mkMerge (
-        [{aos.abilities.instances.containerd = {};}]
-        ++ builtins.map (definition: {aos.abilities = definition.configured;}) definitions
-      )
-    ))
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
   ];
 }
