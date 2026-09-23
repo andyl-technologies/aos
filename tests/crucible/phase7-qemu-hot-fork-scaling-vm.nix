@@ -45,13 +45,21 @@
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib > "$TMPDIR/messages.jsonl"
+            -p crucible-api -p crucible-qemu -p crucible-daemon --lib \
+            > "$TMPDIR/messages.jsonl"
           daemon_test=$(jq -r \
             'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
             "$TMPDIR/messages.jsonl")
           test -f "$daemon_test"
           mkdir -p "$out/bin"
           cp "$daemon_test" "$out/bin/crucible-daemon-scaling"
+          for package in crucible_api crucible_qemu; do
+            binary=$(jq -r --arg package "$package" \
+              'select(.reason == "compiler-artifact" and .target.name == $package and .profile.test == true and .executable != null) | .executable' \
+              "$TMPDIR/messages.jsonl")
+            test -f "$binary"
+            cp "$binary" "$out/bin/$package-clone-cost"
+          done
         '';
       }
     ];
@@ -189,6 +197,39 @@ in
           'test result: ok. 1 passed; 0 failed; 0 ignored;'
       }
 
+      run_host_clone_test() {
+        package="$1"
+        name="$2"
+        result="$3"
+        binary=${flight}/bin/"$package"-clone-cost
+        listing=$("$binary" --exact "$name" --list)
+        count=$(printf '%s\n' "$listing" \
+          | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
+        [ "$count" -eq 1 ]
+        ${pkgs.coreutils}/bin/timeout -k 30 120 \
+          "$binary" --exact "$name" --nocapture > "$result" 2>&1
+        ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"
+        cat "$result"
+      }
+
+      run_host_clone_test \
+        crucible_api \
+        vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
+        /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_continuation_siblings=64' /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_immutable_object_bytes=33554432' /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_shared_backing_copies=1' /tmp/host-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'host_clone_private_growth_limit_kib=65536' /tmp/host-clone-cost-result
+      run_host_clone_test \
+        crucible_qemu \
+        production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
+        /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'fault_checkpoint_siblings=64' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'qemu_authentication_map_copies=1' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'child_private_ledgers=network-adapter,pending-qemu-events' /tmp/fault-clone-cost-result
+
       run_exact_lib_test \
         crucible-daemon \
         qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically \
@@ -240,6 +281,8 @@ in
         /tmp/production-stress-result
       ${pkgs.grep}/bin/grep -Fxq \
         'production_whole_world_lifecycles=10000' /tmp/production-stress-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'qemu_child_pairing=exact_source_boundary' /tmp/production-stress-result
       ${pkgs.grep}/bin/grep -Fxq 'source_threads_leaked=0' /tmp/production-stress-result
       ${pkgs.grep}/bin/grep -Fxq 'source_descriptors_leaked=0' /tmp/production-stress-result
 
@@ -257,7 +300,9 @@ in
         ${pkgs.grep}/bin/grep -Fxq "$evidence" /tmp/performance-ratchet-result
       done
 
-      cat /tmp/daemon-scaling-result \
+      cat /tmp/host-clone-cost-result \
+        /tmp/fault-clone-cost-result \
+        /tmp/daemon-scaling-result \
         /tmp/depth-scaling-result \
         /tmp/memory-scaling-result \
         /tmp/production-stress-result \

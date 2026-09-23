@@ -250,10 +250,14 @@ fn sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences() {
     let fingerprint = ContentHash::from_bytes(b"source qemu fingerprint");
     let source = empty_checkpoint(&plan, None)
         .with_unvalidated_test_node(&plan, node.clone(), fingerprint)
-        .expect("source checkpoint should admit one node");
+        .unwrap_or_else(|error| panic!("source checkpoint should admit one node: {error}"));
 
-    let first = source.try_clone().expect("first sibling should clone");
-    let second = source.try_clone().expect("second sibling should clone");
+    let first = source
+        .try_clone()
+        .unwrap_or_else(|error| panic!("first sibling should clone: {error}"));
+    let second = source
+        .try_clone()
+        .unwrap_or_else(|error| panic!("second sibling should clone: {error}"));
 
     assert!(std::sync::Arc::ptr_eq(
         &first.qemu_fingerprints,
@@ -279,11 +283,108 @@ fn sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences() {
     assert_eq!(
         first
             .to_canonical_bytes()
-            .expect("first sibling should encode"),
+            .unwrap_or_else(|error| panic!("first sibling should encode: {error}")),
         second
             .to_canonical_bytes()
-            .expect("second sibling should encode")
+            .unwrap_or_else(|error| panic!("second sibling should encode: {error}"))
     );
+}
+
+#[test]
+fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
+    const SIBLINGS: usize = 64;
+    const ADAPTER_BYTES: usize = 32 * 1024;
+
+    let plan = FaultSignalPlan::empty();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let mut source = empty_checkpoint(&plan, Some(empty_network(vec![7; ADAPTER_BYTES])))
+        .with_unvalidated_test_node(&plan, node.clone(), ContentHash::from_bytes(b"qemu"))
+        .unwrap_or_else(|error| panic!("source checkpoint should admit one node: {error}"));
+    source
+        .pending_qemu_events
+        .try_insert(node.clone(), vec![authenticated_qemu_event(vec![3; 4096])])
+        .unwrap_or_else(|error| panic!("source event ledger should admit one event: {error}"));
+
+    let mut siblings = (0..SIBLINGS)
+        .map(|_| {
+            source
+                .try_clone()
+                .unwrap_or_else(|error| panic!("clone sibling fault checkpoint: {error}"))
+        })
+        .collect::<Vec<_>>();
+
+    let source_network = source
+        .network_state
+        .as_ref()
+        .unwrap_or_else(|| panic!("source network ledger should exist"));
+    let source_events = source
+        .pending_qemu_events
+        .get(&node)
+        .unwrap_or_else(|| panic!("source event ledger should exist"));
+    for sibling in &siblings {
+        let sibling_network = sibling
+            .network_state
+            .as_ref()
+            .unwrap_or_else(|| panic!("sibling network ledger should exist"));
+        let sibling_events = sibling
+            .pending_qemu_events
+            .get(&node)
+            .unwrap_or_else(|| panic!("sibling event ledger should exist"));
+        assert!(std::sync::Arc::ptr_eq(
+            &source.qemu_fingerprints,
+            &sibling.qemu_fingerprints
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &source.qemu_fault_sequences,
+            &sibling.qemu_fault_sequences
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &source.qemu_fault_event_sequences,
+            &sibling.qemu_fault_event_sequences
+        ));
+        assert_ne!(
+            source_network.adapter_state.as_ptr(),
+            sibling_network.adapter_state.as_ptr()
+        );
+        assert_ne!(
+            source_events[0].payload.as_ptr(),
+            sibling_events[0].payload.as_ptr()
+        );
+    }
+    siblings[0]
+        .pending_qemu_events
+        .get_mut(&node)
+        .unwrap_or_else(|| panic!("first sibling event ledger should exist"))[0]
+        .payload[0] = 9;
+    siblings[0]
+        .network_state
+        .as_mut()
+        .unwrap_or_else(|| panic!("first sibling network ledger should exist"))
+        .adapter_state[0] = 9;
+    assert_eq!(source_events[0].payload[0], 3);
+    assert_eq!(
+        siblings[1]
+            .pending_qemu_events
+            .get(&node)
+            .unwrap_or_else(|| panic!("second sibling event ledger should exist"))[0]
+            .payload[0],
+        3
+    );
+    assert_eq!(source_network.adapter_state[0], 7);
+    assert_eq!(
+        siblings[1]
+            .network_state
+            .as_ref()
+            .unwrap_or_else(|| panic!("second sibling network ledger should exist"))
+            .adapter_state[0],
+        7
+    );
+
+    println!("fault_checkpoint_siblings={SIBLINGS}");
+    println!("qemu_authentication_map_copies=1");
+    println!("child_private_ledgers=network-adapter,pending-qemu-events");
 }
 
 #[test]
