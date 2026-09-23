@@ -1368,6 +1368,12 @@ in
                 test "$(grep -Fc 'TEST_BIG_ENDIAN(IS_BIG_ENDIAN)' "$maxmind_cmake")" = 1
                 sed -i 's/TEST_BIG_ENDIAN(IS_BIG_ENDIAN)/set(IS_BIG_ENDIAN 0)/' "$maxmind_cmake"
 
+                # POSIX headers define ssize_t even when this restricted
+                # CMake probe cannot link; retain the fallback for Windows.
+                nghttp2_cmake="$TMPDIR/repo-overrides/com_github_nghttp2_nghttp2/CMakeLists.txt"
+                test "$(grep -Fc 'if(SIZEOF_SSIZE_T STREQUAL "")' "$nghttp2_cmake")" = 1
+                sed -i 's/if(SIZEOF_SSIZE_T STREQUAL "")/if(WIN32 AND SIZEOF_SSIZE_T STREQUAL "")/' "$nghttp2_cmake"
+
                 for integer_header in envoy/common/random_generator.h \
                     envoy/stream_info/stream_id_provider.h; do
                   test -f "$integer_header"
