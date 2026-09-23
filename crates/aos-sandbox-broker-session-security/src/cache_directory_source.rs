@@ -43,9 +43,9 @@ impl Read for PortableObjectReader {
 
 impl ObjectSource for DirectoryPortableObjectSource {
     type Error = aos_sandbox_linux::Error;
-    type Reader = PortableObjectReader;
+    type Reader<'source> = PortableObjectReader;
 
-    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader, Self::Error> {
+    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader<'_>, Self::Error> {
         let name = staged_object_name(descriptor);
         let file = self.root.open_regular(Path::new(&name))?;
         Ok(PortableObjectReader { file })

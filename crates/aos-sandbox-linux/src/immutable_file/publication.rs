@@ -18,6 +18,7 @@ pub use naming::{
 };
 pub use observation::{
     ObserveSealedPublicationError, ObservedRetainedPrivateArtifact, ObservedSealedPublicationFile,
+    ObservedSealedPublicationReader,
 };
 
 use std::error::Error as StdError;

@@ -49,9 +49,9 @@ impl Source {
 
 impl ObjectSource for Source {
     type Error = std::io::Error;
-    type Reader = Cursor<Vec<u8>>;
+    type Reader<'source> = Cursor<Vec<u8>>;
 
-    fn open(&mut self, descriptor: &ObjectDescriptor) -> std::io::Result<Self::Reader> {
+    fn open(&mut self, descriptor: &ObjectDescriptor) -> std::io::Result<Self::Reader<'_>> {
         let (_, bytes) = self
             .0
             .iter()

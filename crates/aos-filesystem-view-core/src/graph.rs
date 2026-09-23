@@ -956,9 +956,9 @@ mod tests {
 
     impl ObjectSource for MemorySource {
         type Error = Infallible;
-        type Reader = Cursor<Vec<u8>>;
+        type Reader<'source> = Cursor<Vec<u8>>;
 
-        fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader, Self::Error> {
+        fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader<'_>, Self::Error> {
             Ok(Cursor::new(
                 self.0
                     .iter()

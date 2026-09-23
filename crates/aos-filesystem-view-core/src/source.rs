@@ -17,8 +17,10 @@ pub trait ObjectSource {
     /// Source-specific failure.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Streaming reader returned for one object request.
-    type Reader: Read;
+    /// Streaming reader retaining any source authority borrowed for this open.
+    type Reader<'source>: Read
+    where
+        Self: 'source;
 
     /// Opens the object named by the exact descriptor.
     ///
@@ -28,7 +30,10 @@ pub trait ObjectSource {
     /// # Errors
     ///
     /// Returns a source-specific error when the object cannot be opened.
-    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader, Self::Error>;
+    fn open<'source>(
+        &'source mut self,
+        descriptor: &ObjectDescriptor,
+    ) -> Result<Self::Reader<'source>, Self::Error>;
 }
 
 /// Contains bytes proven to match an exact portable object descriptor.
@@ -131,13 +136,40 @@ mod tests {
 
     struct Bytes(Vec<u8>);
 
+    struct BorrowedBytes(Vec<u8>);
+
     impl ObjectSource for Bytes {
         type Error = Infallible;
-        type Reader = Cursor<Vec<u8>>;
+        type Reader<'source> = Cursor<Vec<u8>>;
 
-        fn open(&mut self, _descriptor: &ObjectDescriptor) -> Result<Self::Reader, Self::Error> {
+        fn open(
+            &mut self,
+            _descriptor: &ObjectDescriptor,
+        ) -> Result<Self::Reader<'_>, Self::Error> {
             Ok(Cursor::new(self.0.clone()))
         }
+    }
+
+    impl ObjectSource for BorrowedBytes {
+        type Error = Infallible;
+        type Reader<'source> = Cursor<&'source [u8]>;
+
+        fn open(
+            &mut self,
+            _descriptor: &ObjectDescriptor,
+        ) -> Result<Self::Reader<'_>, Self::Error> {
+            Ok(Cursor::new(&self.0))
+        }
+    }
+
+    #[test]
+    fn exact_loader_keeps_borrowed_source_alive_through_verification() {
+        let media = MediaType::new("application/vnd.aos.sandbox.content.v1").unwrap();
+        let descriptor = descriptor_for_bytes(media, b"borrowed object");
+        let mut source = BorrowedBytes(b"borrowed object".to_vec());
+
+        let exact = load_exact(&mut source, &descriptor, 64).unwrap();
+        assert_eq!(exact.bytes(), b"borrowed object");
     }
 
     #[test]

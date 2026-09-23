@@ -29,8 +29,8 @@ pub use publication::{
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
     MaterializationError, MaterializationFailure, NoReplacePublicationError,
     ObserveSealedPublicationError, ObservedRetainedPrivateArtifact, ObservedSealedPublicationFile,
-    PublicationName, PublicationRootError, RenamedSealedFile, RetainedPrivateArtifact,
-    RetainedPrivatePhase, SealedPrivateFile,
+    ObservedSealedPublicationReader, PublicationName, PublicationRootError, RenamedSealedFile,
+    RetainedPrivateArtifact, RetainedPrivatePhase, SealedPrivateFile,
 };
 
 use std::marker::PhantomData;

@@ -59,8 +59,8 @@ impl Source {
 
 impl ObjectSource for Source {
     type Error = std::convert::Infallible;
-    type Reader = Cursor<Vec<u8>>;
-    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader, Self::Error> {
+    type Reader<'source> = Cursor<Vec<u8>>;
+    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader<'_>, Self::Error> {
         Ok(Cursor::new(
             self.0
                 .iter()

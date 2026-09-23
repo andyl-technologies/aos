@@ -6,6 +6,7 @@
 //! supply that authority before decoding the observed bytes as protected state.
 
 use std::fs::File;
+use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use super::{
@@ -52,6 +53,11 @@ pub struct ObservedSealedPublicationFile<'root> {
     identity: PrivateIdentity,
     allocated_bytes: u64,
     verity: FsVerityDigest,
+}
+
+/// Streams one observed sealed inode while retaining its pinned root.
+pub struct ObservedSealedPublicationReader<'root> {
+    observed: ObservedSealedPublicationFile<'root>,
 }
 
 /// Pins one exact private inode retained after interrupted materialization.
@@ -106,7 +112,7 @@ impl AsFd for ObservedRetainedPrivateArtifact<'_> {
     }
 }
 
-impl ObservedSealedPublicationFile<'_> {
+impl<'root> ObservedSealedPublicationFile<'root> {
     /// Returns the exact basename resolved beneath the retained root.
     #[must_use]
     pub fn name(&self) -> &PublicationName {
@@ -145,6 +151,12 @@ impl ObservedSealedPublicationFile<'_> {
     pub const fn observed_verity_digest(&self) -> FsVerityDigest {
         self.verity
     }
+
+    /// Converts the observed inode into a streaming reader without duplicating it.
+    #[must_use]
+    pub fn into_reader(self) -> ObservedSealedPublicationReader<'root> {
+        ObservedSealedPublicationReader { observed: self }
+    }
 }
 
 impl<'root> ObservedSealedPublicationFile<'root> {
@@ -169,6 +181,12 @@ impl<'root> ObservedSealedPublicationFile<'root> {
 impl AsFd for ObservedSealedPublicationFile<'_> {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.file.as_fd()
+    }
+}
+
+impl Read for ObservedSealedPublicationReader<'_> {
+    fn read(&mut self, destination: &mut [u8]) -> io::Result<usize> {
+        rustix::io::read(self.observed.file.as_fd(), destination).map_err(Into::into)
     }
 }
 

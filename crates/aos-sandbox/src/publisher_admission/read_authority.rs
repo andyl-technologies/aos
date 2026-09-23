@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(target_os = "linux")]
+use aos_filesystem_view_core::ObjectSource;
 use aos_sandbox_core::{
     CacheDomainId, MediaType, ObjectDescriptor, ObjectDigest, PrincipalId, ProjectId, ResourceId,
     model::{CacheDomain, CacheDomainKind},
@@ -17,6 +19,7 @@ use crate::publisher_roots::{AuthorizedPublicationRoot, PublicationRootRegistry}
 #[cfg(target_os = "linux")]
 use aos_sandbox_linux::immutable_file::{
     FsVerityDigest, ObserveSealedPublicationError, ObservedSealedPublicationFile,
+    ObservedSealedPublicationReader,
 };
 
 use super::digest_parts;
@@ -695,6 +698,9 @@ pub enum CacheReadDecisionV1<'authority> {
 #[derive(Debug, thiserror::Error)]
 #[cfg(target_os = "linux")]
 pub enum CacheReadOpenErrorV1 {
+    /// The requested object is not the one covered by this exact read grant.
+    #[error("cache source descriptor does not match the authorized object")]
+    DescriptorMismatch,
     /// The internally derived publication name was rejected.
     #[error("canonical cache publication name is invalid")]
     InvalidName,
@@ -814,6 +820,23 @@ impl AuthorizedCacheRead<'_> {
     #[must_use]
     pub const fn allocated_bytes(&self) -> u64 {
         self.entry.allocated_bytes
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<'authority> ObjectSource for AuthorizedCacheRead<'authority> {
+    type Error = CacheReadOpenErrorV1;
+    type Reader<'source>
+        = ObservedSealedPublicationReader<'source>
+    where
+        Self: 'source;
+
+    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader<'_>, Self::Error> {
+        if self.object() != descriptor {
+            return Err(CacheReadOpenErrorV1::DescriptorMismatch);
+        }
+        self.open_sealed()
+            .map(ObservedSealedPublicationFile::into_reader)
     }
 }
 
