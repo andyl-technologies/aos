@@ -54,6 +54,10 @@
   cacheReplayCredentials =
     lib.optional (cfg.credentials.cacheReplayBundle != null)
     "cache-replay-bundle:/run/credentials/@system/${cfg.credentials.cacheReplayBundle}";
+  guestRootTemplateCredentials = [
+    "guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"
+    "guest-root-tree-digest-v1:${pkgs.aos-sandbox-guest-root-template}/root-tree-digest"
+  ];
   brokerPlanCredentials = lib.optionals (cfg.credentials.brokerPlanSigningKey != null) (
     ["broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}"]
     ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPolicy != null)
@@ -267,6 +271,7 @@ in {
         LoadCredential =
           nodeCredentials
           ++ cacheReplayCredentials
+          ++ guestRootTemplateCredentials
           ++ brokerPlanCredentials
           ++ mountPlanCredentials
           ++ opensshAttachCredentials
