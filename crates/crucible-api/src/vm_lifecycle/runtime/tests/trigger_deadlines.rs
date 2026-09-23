@@ -133,6 +133,8 @@ fn terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output()
     let mut lifecycle = production_loop_without_backends(&scenario);
     lifecycle.settle_genesis_entrypoints()?;
     lifecycle.settle_trigger_graph()?;
+    lifecycle.initial_lifecycle_observations_pending = false;
+    assert!(lifecycle.exact_checkpoint_ready()?);
 
     let mut frame = vec![0_u8; 60];
     frame[..6].copy_from_slice(&crucible::deterministic_node_mac(&peer_node));
@@ -153,6 +155,7 @@ fn terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output()
         .network_transaction_parts_mut()
         .3
         .push(pending);
+    assert!(!lifecycle.exact_checkpoint_ready()?);
     lifecycle
         .inner
         .loop_impl_mut()
@@ -210,6 +213,7 @@ fn terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output()
         .inner
         .settle_pending_network_outputs_at_current_frontier()?;
     assert_eq!(lifecycle.inner.pending_network_output_count(), 0);
+    assert!(lifecycle.exact_checkpoint_ready()?);
     let repeated = lifecycle
         .inner
         .settle_pending_network_outputs_at_current_frontier()?;

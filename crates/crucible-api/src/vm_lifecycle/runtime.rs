@@ -222,8 +222,9 @@ impl ProductionVmLifecycleLoop {
     /// Reports whether every live node can enter an exact checkpoint now.
     ///
     /// A false result means an already-admitted device coroutine crosses the
-    /// current scheduler boundary or a selectable catalog outside the initial
-    /// execution boundary has not frozen. The caller may drive another ordinary
+    /// current scheduler boundary, a selectable catalog outside the initial
+    /// execution boundary has not frozen, or emitted network output is still
+    /// ahead of the shared frontier. The caller may drive another ordinary
     /// quantum and retry; checkpoint capture itself never advances through the
     /// deterministic completion coordinate.
     ///
@@ -234,6 +235,7 @@ impl ProductionVmLifecycleLoop {
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         if self.inner.loop_impl().pending_branch_effect_choice_count() != 0
             || !self.signal_fault_branches.is_empty()
+            || self.inner.pending_network_output_count() != 0
         {
             return Ok(false);
         }
