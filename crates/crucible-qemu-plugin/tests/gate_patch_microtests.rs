@@ -56,13 +56,14 @@ fn gate_patch_microtests_covers_atomic_qemu_artifact() -> Result<(), Box<dyn Err
     ] {
         assert_contains(&descriptor, field);
     }
-    assert_contains(
-        &read(
-            &root,
-            &format!("pkgs/emulation/qemu-patches/{ATOMIC_PATCH}"),
-        )?,
-        "Signed-off-by",
-    );
+    let repository_gate = read(&root, "tests/crucible/_qemu-atomic-patch-repository.nix")?;
+    for evidence in [
+        "bundle commit must contain exactly one embedded gpgsig header",
+        "bundle commit must contain exactly one matching DCO sign-off",
+        "bundle commit does not regenerate the checked atomic patch",
+    ] {
+        assert_contains(&repository_gate, evidence);
+    }
 
     let qemu_nix = read(&root, "pkgs/emulation/qemu.nix")?;
     assert_contains(
