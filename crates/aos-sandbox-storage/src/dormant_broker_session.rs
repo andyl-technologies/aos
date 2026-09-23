@@ -228,6 +228,19 @@ impl DormantStorageApplyCompositionV1 {
         &self.runtime
     }
 
+    /// Proves the pinned template and no-effect publisher before accepting sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the template is retained and the fixed worker
+    /// authenticates through its live socket and exits completely.
+    pub fn probe_guest_root_publisher(&self) -> Result<(), StorageRuntimeError> {
+        if self.guest_root_template.is_none() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        self.runtime.probe_guest_root_publisher()
+    }
+
     /// Produces one complete post-observation Storage inventory body.
     ///
     /// The caller must submit these exact bytes through the authenticated

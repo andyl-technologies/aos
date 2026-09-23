@@ -26,8 +26,11 @@ use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_broker::{BrokerEffectIntentV1, BrokerEffectStatusV1};
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::cgroup::{CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::cgroup::{
+    CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
+};
 use aos_sandbox_linux::inventory::MountId;
+use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootArgumentsV1;
 use sha2::{Digest as _, Sha256};
@@ -55,6 +58,8 @@ const REQUEST_MAGIC: &[u8; 8] = b"AOSGRW01";
 const RESULT_MAGIC: &[u8; 8] = b"AOSGPR01";
 const READY_MAGIC: &[u8; 8] = b"AOSGRD01";
 const ACK_MAGIC: &[u8; 8] = b"AOSGACK1";
+const HEALTH_REQUEST_MAGIC: &[u8; 8] = b"AOSGRH01";
+const HEALTH_RESULT_MAGIC: &[u8; 8] = b"AOSGRHOK";
 const VERSION: u16 = 1;
 const REQUEST_PREFIX_BYTES: usize = 8 + 2 + 16 + 2 + 2 + 2;
 const MAXIMUM_PACKET_BYTES: usize = 8192;
@@ -103,7 +108,7 @@ impl SystemdGuestRootPublisherClientV1 {
         let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
         verify_systemd_peer(socket.peer(), &self.systemd_manager)?;
 
-        let ready = receive_packet_before(&mut socket, 520, transfer_deadline()?)?;
+        let ready = receive_packet_before(&mut socket, 520, effect_deadline)?;
         if !ready.descriptors().is_empty() {
             return Err(ZfsWorkerError::PeerMismatch);
         }
@@ -137,12 +142,65 @@ impl SystemdGuestRootPublisherClientV1 {
             Ok(proof)
         })();
 
+        self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
+    }
+
+    /// Proves the installed fixed service can start with its protected inputs.
+    ///
+    /// The health packet contains no authority and the worker returns before
+    /// opening a workspace slot or attempting any filesystem mutation.
+    pub(crate) fn probe(&mut self) -> Result<(), ZfsWorkerError> {
+        if self.fail_stopped {
+            return Err(ZfsWorkerError::Authority);
+        }
+        let mut socket = DescriptorSubjectSocket::connect(&self.socket_path)?;
+        verify_systemd_peer(socket.peer(), &self.systemd_manager)?;
+        // Template verification scans the complete pinned package before the
+        // worker sends READY; it is bounded separately from packet transfer.
+        let ready_deadline = boottime_now_nanoseconds()?
+            .checked_add(Duration::from_secs(60).as_nanos() as u64)
+            .ok_or(ZfsWorkerError::Authority)?;
+        let ready = receive_packet_before(&mut socket, 520, ready_deadline)?;
+        if !ready.descriptors().is_empty() {
+            return Err(ZfsWorkerError::PeerMismatch);
+        }
+        let worker_path = decode_ready(ready.payload())?;
+        let worker_cgroup = self.worker_parent.resolve_descendant(Path::new(
+            worker_path
+                .strip_prefix("aos.slice/aos-control.slice/")
+                .ok_or(ZfsWorkerError::PeerMismatch)?,
+        ))?;
+        verify_exact_worker_subject(ready.subject(), &worker_cgroup)?;
+        let population = worker_cgroup.population_monitor()?;
+        let deadline = transfer_deadline()?;
+
+        let exchange = (|| {
+            send_packet_before(&mut socket, HEALTH_REQUEST_MAGIC, deadline)?;
+            let response = receive_packet_before(&mut socket, HEALTH_RESULT_MAGIC.len(), deadline)?;
+            verify_same_live_subject(ready.subject(), response.subject())?;
+            verify_exact_worker_subject(response.subject(), &worker_cgroup)?;
+            if !response.descriptors().is_empty() || response.payload() != HEALTH_RESULT_MAGIC {
+                return Err(ZfsWorkerError::PeerMismatch);
+            }
+            send_packet_before(&mut socket, ACK_MAGIC, deadline)?;
+            Ok(())
+        })();
+        self.finish_exchange(exchange, ready.subject(), &worker_cgroup, &population)
+    }
+
+    fn finish_exchange<T>(
+        &mut self,
+        exchange: Result<T, ZfsWorkerError>,
+        subject: &KernelAuthorizedRecordSubject,
+        worker_cgroup: &RetainedCgroupAnchor,
+        population: &CgroupPopulationMonitor,
+    ) -> Result<T, ZfsWorkerError> {
         match exchange {
             Ok(proof) => {
                 if let Err(error) =
-                    wait_for_worker_quiescence(ready.subject(), &population, Duration::from_secs(1))
+                    wait_for_worker_quiescence(subject, population, Duration::from_secs(1))
                 {
-                    if quiesce_worker(ready.subject(), &worker_cgroup, &population).is_err() {
+                    if quiesce_worker(subject, worker_cgroup, population).is_err() {
                         self.fail_stopped = true;
                     }
                     return Err(ZfsWorkerError::Quiescence(format!(
@@ -152,9 +210,7 @@ impl SystemdGuestRootPublisherClientV1 {
                 Ok(proof)
             }
             Err(error) => {
-                if let Err(cancellation) =
-                    quiesce_worker(ready.subject(), &worker_cgroup, &population)
-                {
+                if let Err(cancellation) = quiesce_worker(subject, worker_cgroup, population) {
                     self.fail_stopped = true;
                     return Err(ZfsWorkerError::Quiescence(format!(
                         "guest-root publisher cancellation failed after {error}: {cancellation}"
@@ -517,6 +573,16 @@ pub fn run_inherited_guest_root_publisher(
         return Err(ZfsWorkerError::Protocol(
             "guest root worker forbids descriptors",
         ));
+    }
+    if received.payload() == HEALTH_REQUEST_MAGIC {
+        send_packet_before(&mut socket, HEALTH_RESULT_MAGIC, ready_deadline)?;
+        let acknowledgement = receive_packet_before(&mut socket, ACK_MAGIC.len(), ready_deadline)?;
+        verify_same_live_subject(received.subject(), acknowledgement.subject())?;
+        verify_storaged_subject(acknowledgement.subject(), &storaged)?;
+        if !acknowledgement.descriptors().is_empty() || acknowledgement.payload() != ACK_MAGIC {
+            return Err(ZfsWorkerError::PeerMismatch);
+        }
+        return Ok(());
     }
     let request = decode_request(received.payload())?;
     let (attempt, effect) = authenticate_request(&authority, &key, request, &template)?;

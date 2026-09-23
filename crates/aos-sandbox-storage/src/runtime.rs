@@ -892,6 +892,23 @@ impl StorageBrokerRuntime {
         workspaces.is_terminally_materialized()
     }
 
+    /// Proves the fixed protected publisher is live before a static method profile is served.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when current Storage inventory is closed, or the
+    /// socket-activated publisher cannot authenticate and exit cleanly.
+    pub fn probe_guest_root_publisher(&self) -> Result<(), StorageRuntimeError> {
+        if !self.is_inventory_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let mut publisher = SystemdGuestRootPublisherClientV1::new(
+            PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
+            open_cgroup_root()?,
+        )?;
+        publisher.probe().map_err(Into::into)
+    }
+
     /// Encodes the current physically revalidated complete Storage inventory.
     ///
     /// # Errors

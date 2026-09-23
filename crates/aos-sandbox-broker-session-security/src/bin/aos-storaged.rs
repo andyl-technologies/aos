@@ -68,6 +68,10 @@ fn run() -> Result<(), StorageServiceError> {
     if let Some(diagnostic) = prepare_readiness_diagnostic(storage.runtime().prepare_readiness()) {
         eprintln!("aos-storaged: {diagnostic}");
     }
+    // The production handshake has a static complete Storage method profile.
+    // Do not accept any session until the method-31 publisher is actually
+    // installed, authenticates, and exits from a mutation-free health request.
+    storage.probe_guest_root_publisher()?;
 
     loop {
         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
