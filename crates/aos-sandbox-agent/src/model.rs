@@ -668,6 +668,41 @@ pub enum AgentExecutionPhaseV1 {
     Ready,
 }
 
+impl AgentExecutionPhaseV1 {
+    /// Returns the stable phase code used by agent frames and durable outcomes.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Authorized => 1,
+            Self::Starting => 2,
+            Self::Running => 3,
+            Self::Exited => 4,
+            Self::Canceled => 5,
+            Self::Failed => 6,
+            Self::Lost => 7,
+            Self::Quiesced => 8,
+            Self::Ready => 9,
+        }
+    }
+
+    /// Decodes a registered phase code, rejecting unknown values.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Authorized),
+            2 => Some(Self::Starting),
+            3 => Some(Self::Running),
+            4 => Some(Self::Exited),
+            5 => Some(Self::Canceled),
+            6 => Some(Self::Failed),
+            7 => Some(Self::Lost),
+            8 => Some(Self::Quiesced),
+            9 => Some(Self::Ready),
+            _ => None,
+        }
+    }
+}
+
 /// Stores one exact bounded operation outcome.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentExecutionOutcomeV1 {
@@ -756,7 +791,7 @@ impl AgentExecutionOutcomeV1 {
             self.sequence.get(),
             *self.operation_id.as_bytes(),
             self.request_commitment,
-            phase_code(self.phase),
+            self.phase.code(),
             &self.result_bytes,
             self.result_digest,
         )
@@ -941,20 +976,6 @@ fn result_digest(bytes: &[u8]) -> ObjectDigest {
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
     ObjectDigest::from_bytes(digest.finalize().into())
-}
-
-const fn phase_code(phase: AgentExecutionPhaseV1) -> u8 {
-    match phase {
-        AgentExecutionPhaseV1::Authorized => 1,
-        AgentExecutionPhaseV1::Starting => 2,
-        AgentExecutionPhaseV1::Running => 3,
-        AgentExecutionPhaseV1::Exited => 4,
-        AgentExecutionPhaseV1::Canceled => 5,
-        AgentExecutionPhaseV1::Failed => 6,
-        AgentExecutionPhaseV1::Lost => 7,
-        AgentExecutionPhaseV1::Quiesced => 8,
-        AgentExecutionPhaseV1::Ready => 9,
-    }
 }
 
 fn execution_limits(maximum_bytes: usize) -> aos_sandbox_core::DecodeLimits {

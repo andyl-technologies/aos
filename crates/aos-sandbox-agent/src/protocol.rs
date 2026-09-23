@@ -283,7 +283,7 @@ fn encode_operation_outcome(output: &mut Vec<u8>, outcome: &AgentExecutionOutcom
     output.extend_from_slice(&outcome.sequence().get().to_be_bytes());
     output.extend_from_slice(outcome.operation_id().as_bytes());
     output.extend_from_slice(outcome.request_commitment().as_bytes());
-    output.push(phase_code(outcome.phase()));
+    output.push(outcome.phase().code());
     put_bytes(output, outcome.result_bytes());
     output.extend_from_slice(outcome.result_digest().as_bytes());
 }
@@ -295,7 +295,8 @@ fn decode_operation_outcome(
     let sequence = AgentOperationSequenceV1::new(cursor.u64()?)?;
     let operation_id = AgentOperationIdV1::new(cursor.array()?)?;
     let request_commitment = ObjectDigest::from_bytes(cursor.array()?);
-    let phase = decode_phase(cursor.u8()?)?;
+    let phase =
+        AgentExecutionPhaseV1::from_code(cursor.u8()?).ok_or(AgentProtocolError::UnknownValue)?;
     let result_bytes = cursor.length_prefixed(1_048_576)?.to_vec();
     let result_digest = ObjectDigest::from_bytes(cursor.array()?);
     AgentExecutionOutcomeV1::restore(
@@ -323,35 +324,6 @@ fn decode_feature(code: u8) -> Result<AgentFeatureV1, AgentProtocolError> {
         4 => Ok(AgentFeatureV1::TerminalResize),
         5 => Ok(AgentFeatureV1::ExecutionSignal),
         6 => Ok(AgentFeatureV1::Quiesce),
-        _ => Err(AgentProtocolError::UnknownValue),
-    }
-}
-
-const fn phase_code(phase: AgentExecutionPhaseV1) -> u8 {
-    match phase {
-        AgentExecutionPhaseV1::Authorized => 1,
-        AgentExecutionPhaseV1::Starting => 2,
-        AgentExecutionPhaseV1::Running => 3,
-        AgentExecutionPhaseV1::Exited => 4,
-        AgentExecutionPhaseV1::Canceled => 5,
-        AgentExecutionPhaseV1::Failed => 6,
-        AgentExecutionPhaseV1::Lost => 7,
-        AgentExecutionPhaseV1::Quiesced => 8,
-        AgentExecutionPhaseV1::Ready => 9,
-    }
-}
-
-fn decode_phase(code: u8) -> Result<AgentExecutionPhaseV1, AgentProtocolError> {
-    match code {
-        1 => Ok(AgentExecutionPhaseV1::Authorized),
-        2 => Ok(AgentExecutionPhaseV1::Starting),
-        3 => Ok(AgentExecutionPhaseV1::Running),
-        4 => Ok(AgentExecutionPhaseV1::Exited),
-        5 => Ok(AgentExecutionPhaseV1::Canceled),
-        6 => Ok(AgentExecutionPhaseV1::Failed),
-        7 => Ok(AgentExecutionPhaseV1::Lost),
-        8 => Ok(AgentExecutionPhaseV1::Quiesced),
-        9 => Ok(AgentExecutionPhaseV1::Ready),
         _ => Err(AgentProtocolError::UnknownValue),
     }
 }
