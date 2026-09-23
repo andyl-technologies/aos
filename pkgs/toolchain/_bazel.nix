@@ -179,6 +179,12 @@
     if isCross
     then buildPackages.gcc-libs
     else gcc-libs;
+  # The ARM cross bootstrap runs target-architecture Bazel exec tools.
+  bazelExecGccLibs =
+    if isCross
+    then gcc-libs
+    else buildGccLibs;
+  bazelExecRuntimePath = lib.optionalString stdenv.hostPlatform.isLinux ":${bazelExecGccLibs}/lib";
   buildLlvm =
     if isCross
     then buildPackages.llvm
@@ -1463,7 +1469,7 @@ in
             cat > ../tools/bash-with-path << BASHWRAP
             #!${buildBash}/bin/bash
             export PATH="${buildToolsPath}:\$PATH"
-            export LD_LIBRARY_PATH="$BT_LIB:${buildGccLibs}/lib''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="$BT_LIB${bazelExecRuntimePath}''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
             exec ${buildBash}/bin/bash "\$@"
             BASHWRAP
             chmod +x ../tools/bash-with-path
@@ -1502,7 +1508,7 @@ in
               --curses=no
               ${lib.optionalString stdenv.hostPlatform.isLinux ''
               --linkopt=-Wl,-rpath,${gcc-libs}/lib
-              --host_linkopt=-Wl,-rpath,${buildGccLibs}/lib
+              --host_linkopt=-Wl,-rpath,${bazelExecGccLibs}/lib
             ''}
               ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
               --cpu=aarch64
@@ -1520,8 +1526,8 @@ in
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
               --host_action_env=PATH=${buildToolsPath}
-              --action_env=LD_LIBRARY_PATH=$BT_LIB:${buildGccLibs}/lib
-              --host_action_env=LD_LIBRARY_PATH=$BT_LIB:${buildGccLibs}/lib
+              --action_env=LD_LIBRARY_PATH=$BT_LIB${bazelExecRuntimePath}
+              --host_action_env=LD_LIBRARY_PATH=$BT_LIB${bazelExecRuntimePath}
               --shell_executable=$(cd ../tools && pwd)/bash-with-path
               --python_path=${buildPython3}/bin/python3
             "
