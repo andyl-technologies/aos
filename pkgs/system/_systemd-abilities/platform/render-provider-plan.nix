@@ -10,12 +10,10 @@ in
     realization = plan.input;
     inherit selectorPaths;
     outputChecks = {};
-    passAsFile = ["realization" "selectorPaths"];
     exportReferencesGraph.renderGraph = artifactPaths;
   } ''
     ${providerPackage}/bin/aos-systemd-provider resolve-render-input \
-      "$realizationPath" "$selectorPathsPath" "$NIX_ATTRS_JSON_FILE" \
-      resolved-realization.json
-    realizationPath=resolved-realization.json \
-      ${providerPackage}/bin/aos-systemd-provider render
+      "$NIX_ATTRS_JSON_FILE" resolved-realization.json
+    ${providerPackage}/bin/aos-systemd-provider render \
+      resolved-realization.json "$NIX_ATTRS_JSON_FILE"
   ''
