@@ -161,6 +161,7 @@ pub(super) fn compile_public_mutation(
             &value.view_id,
             &value.attachment_id,
             value.mutation.as_option(),
+            CacheConsumerMutationV1::Acquire,
         )?,
         Request::CacheUnpin(value) => cache_consumer_mutation_intent(
             journal,
@@ -171,6 +172,7 @@ pub(super) fn compile_public_mutation(
             &value.view_id,
             &value.attachment_id,
             value.mutation.as_option(),
+            CacheConsumerMutationV1::Release,
         )?,
         Request::CancelOperation(value) => cancel_operation_intent(
             journal,
@@ -1364,6 +1366,12 @@ fn validate_resource_mutation(
     }
 }
 
+#[derive(Clone, Copy)]
+enum CacheConsumerMutationV1 {
+    Acquire,
+    Release,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cache_consumer_mutation_intent(
     journal: &Journal,
@@ -1374,8 +1382,16 @@ fn cache_consumer_mutation_intent(
     view_id: &[u8],
     attachment_id: &[u8],
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+    mutation_kind: CacheConsumerMutationV1,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
-    validate_cache_consumer_projection(journal, project, view_id, attachment_id, mutation)?;
+    validate_cache_consumer_projection(
+        journal,
+        project,
+        view_id,
+        attachment_id,
+        mutation,
+        mutation_kind,
+    )?;
     Ok(mutation_intent(operation, method, canonical_request))
 }
 
@@ -1401,6 +1417,7 @@ pub fn recheck_cache_consumer_projection_v1(
             &value.view_id,
             &value.attachment_id,
             value.mutation.as_option(),
+            CacheConsumerMutationV1::Acquire,
         ),
         Request::CacheUnpin(value) => validate_cache_consumer_projection(
             journal,
@@ -1408,6 +1425,7 @@ pub fn recheck_cache_consumer_projection_v1(
             &value.view_id,
             &value.attachment_id,
             value.mutation.as_option(),
+            CacheConsumerMutationV1::Release,
         ),
         _ => Err(OperationCompilationError::Rejected),
     }
@@ -1419,9 +1437,19 @@ fn validate_cache_consumer_projection(
     view_id: &[u8],
     attachment_id: &[u8],
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+    mutation_kind: CacheConsumerMutationV1,
 ) -> Result<(), OperationCompilationError> {
     let view = load_view(journal, exact_id(view_id)?)?;
     ensure_view_project(&view, project)?;
+    // Release remains possible after the consumer starts draining.
+    if matches!(mutation_kind, CacheConsumerMutationV1::Acquire)
+        && !matches!(
+            view.phase.as_known(),
+            Some(ViewPhase::VIEW_PHASE_READY | ViewPhase::VIEW_PHASE_DEGRADED)
+        )
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
 
     if attachment_id.is_empty() {
         validate_resource_mutation(&view.resource_version, mutation)?;
@@ -1430,6 +1458,11 @@ fn validate_cache_consumer_projection(
         let sandbox = load_sandbox(journal, exact_id(&attachment.sandbox_id)?)?;
         ensure_sandbox_project(&sandbox, project)?;
         if attachment.source_view_id != view_id {
+            return Err(OperationCompilationError::Rejected);
+        }
+        if matches!(mutation_kind, CacheConsumerMutationV1::Acquire)
+            && attachment.phase.as_known() != Some(AttachmentPhase::ATTACHMENT_PHASE_READY)
+        {
             return Err(OperationCompilationError::Rejected);
         }
         validate_resource_mutation(&attachment.resource_version, mutation)?;
