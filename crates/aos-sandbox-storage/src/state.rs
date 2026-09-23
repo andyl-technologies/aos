@@ -707,8 +707,8 @@ impl StorageTransactionStore {
     pub(crate) fn begin_guest_root_publication_attempt(
         &mut self,
         attempt: GuestRootPublicationAttemptV1,
-        sealed: SealedStorageAdmission,
-    ) -> Result<(), StorageStateError> {
+        sealed: &SealedStorageAdmission,
+    ) -> Result<Vec<u8>, StorageStateError> {
         self.ensure_authority_readable()?;
         attempt.validate()?;
         if attempt.phase != crate::guest_root_attempt::GuestRootAttemptPhaseV1::Ambiguous
@@ -760,28 +760,29 @@ impl StorageTransactionStore {
             return Err(StorageStateError::AuthorityLinkMismatch);
         }
 
+        let sealed_attempt = self.key.seal_guest_root_publication_attempt(attempt)?;
         let transaction = JournalTransaction::new(
             guest_root_attempt_transaction_id(attempt.effect_operation),
             vec![
                 JournalRecord::put(
                     RecordNamespace::DesiredState,
                     proof.sandbox.to_vec(),
-                    sealed.current_fence,
+                    sealed.current_fence.clone(),
                 ),
                 JournalRecord::put(
                     RecordNamespace::Effect,
                     attempt.request_id.to_vec(),
-                    sealed.effect,
+                    sealed.effect.clone(),
                 ),
                 JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
                     attempt.effect_operation.to_vec(),
-                    sealed.operation_fence,
+                    sealed.operation_fence.clone(),
                 ),
                 JournalRecord::put(
                     RecordNamespace::StorageGuestRootPublicationAttempt,
                     attempt.effect_operation.to_vec(),
-                    self.key.seal_guest_root_publication_attempt(attempt)?,
+                    sealed_attempt.clone(),
                 ),
             ],
         )?;
@@ -796,7 +797,7 @@ impl StorageTransactionStore {
         }
         self.guest_root_attempts
             .insert(attempt.effect_operation, attempt);
-        Ok(())
+        Ok(sealed_attempt)
     }
 
     pub(crate) fn atomic_dataset_snapshot_inventory(

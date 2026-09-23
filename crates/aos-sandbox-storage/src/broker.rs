@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
+use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectClockDispositionV1, BrokerEffectIntentV1,
     BrokerEffectStatusV1,
@@ -20,12 +21,13 @@ use aos_sandbox_core::{
     ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::semantics::storage::StorageOperation;
+use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAtomicStorageSnapshotRequestV1,
-    decode_atomic_storage_snapshot_request,
+    ValidatedStorageWorkspace, decode_atomic_storage_snapshot_request,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -33,6 +35,8 @@ use crate::authorization::{StorageAuthorityV1, decode_assignment};
 use crate::catalog_preparation::{
     RetainedStorageCatalogPreparationV1, StoragePreparationAuthorityRecordsV1,
 };
+use crate::guest_root_attempt::{GuestRootAttemptPhaseV1, GuestRootPublicationAttemptV1};
+use crate::guest_root_worker::encode_request as encode_guest_root_worker_request;
 use crate::helper::{
     PreobservedZfsMutation, StorageMutationHelper, ZfsHelperError, ZfsHelperOutcome,
     ZfsProcessBackend,
@@ -439,6 +443,97 @@ impl FreshStorageEffectAuthority {
 }
 
 impl StorageAdmissionCoordinator {
+    /// Commits a fresh signed root-publication effect before the one-shot worker can run.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_guest_root_publication(
+        &mut self,
+        semantics: &CanonicalStorageGuestRootSemanticsV1,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        clock: &RawPairedClockSample,
+        workspace: &ValidatedStorageWorkspace,
+        expected_proof: GuestRootPublicationProofV1,
+    ) -> Result<(Vec<u8>, u64), StorageBrokerError> {
+        self.transactions.ensure_authority_readable()?;
+        let sandbox = *semantics.fence().sandbox_id();
+        let request_id = *semantics.header().request_id();
+        let operation = semantics.operation_id();
+        if workspace.fence() != semantics.fence()
+            || workspace.workspace_handle() != &semantics.workspace_handle()
+            || workspace.creation_operation_id() != &semantics.creation_operation_id()
+            || workspace.guest_root_publication_proof().is_some()
+            || expected_proof.sandbox != sandbox
+            || expected_proof.incarnation != *semantics.fence().incarnation_id()
+            || expected_proof.assignment_epoch != semantics.fence().assignment_epoch()
+            || expected_proof.assignment_digest != *semantics.fence().assignment_digest()
+            || expected_proof.creation_operation != semantics.creation_operation_id()
+            || expected_proof.workspace_handle != semantics.workspace_handle()
+            || expected_proof.dataset_guid != workspace.dataset_guid()
+            || expected_proof.root_image_digest != *workspace.root_image().digest().as_bytes()
+            || workspace.resource_kernel_boot_id() != &clock.host_boot_id()
+        {
+            return Err(StorageBrokerError::Request);
+        }
+        let pin = self
+            .transactions
+            .satisfied_workspace_ensure_pin_for_active_creation(
+                semantics.creation_operation_id(),
+                semantics.workspace_handle(),
+            )?;
+        if pin.dataset_guid() != workspace.dataset_guid()
+            || pin.root_device() != workspace.root_device()
+            || pin.root_inode() != workspace.root_inode()
+        {
+            return Err(StorageBrokerError::Request);
+        }
+        let prior_fence = self
+            .transactions
+            .authority_record(RecordNamespace::DesiredState, &sandbox)?
+            .map(<[u8]>::to_vec);
+        let admission = self
+            .authority
+            .admit_guest_root_publication(
+                artifacts,
+                semantics,
+                request_body,
+                protocol_version,
+                peer,
+                policy,
+                clock,
+                prior_fence.as_deref(),
+            )
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let sealed = self
+            .authority
+            .seal(&sandbox, &request_id, &operation, &admission)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let deadline = admission.effect.effect_deadline_boottime_nanoseconds();
+        let attempt = GuestRootPublicationAttemptV1 {
+            effect_operation: operation,
+            request_id,
+            sealed_effect_digest: Sha256::digest(&sealed.effect).into(),
+            operation_fence_digest: Sha256::digest(&sealed.operation_fence).into(),
+            expected_proof,
+            root_device: workspace.root_device(),
+            root_inode: workspace.root_inode(),
+            kernel_boot: clock.host_boot_id(),
+            effect_deadline_boottime_nanoseconds: deadline,
+            phase: GuestRootAttemptPhaseV1::Ambiguous,
+        };
+        let request = encode_guest_root_worker_request(
+            operation,
+            &self
+                .transactions
+                .begin_guest_root_publication_attempt(attempt, &sealed)?,
+            &sealed.effect,
+            &sealed.operation_fence,
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        Ok((request, deadline))
+    }
     /// Constructs a coordinator from complete protected authority and state.
     #[must_use]
     pub const fn new(authority: StorageAuthorityV1, transactions: StorageTransactionStore) -> Self {
