@@ -201,7 +201,7 @@ where
         loop {
             let at = self.current_icount(&thin)?;
             if at == target_icount {
-                verify_target_pending_request(self, fat_pending.first())?;
+                verify_target_pending_request(self, at, fat_pending.first())?;
                 if !self.executor.replay_selectable_reply_is_quiescent()? {
                     return Err(invalid_replay_selection(
                         "selected guest reply remains unconsumed at exact target count",
@@ -357,6 +357,8 @@ fn replay_one_local_guest_choice<T: GuardedReplayPhysicalNode>(
         let pending = node.drain_pending()?;
         match pending.as_slice() {
             [request] => {
+                let at = node.current_icount(&state)?;
+                validate_guest_request_at_boundary(request, at)?;
                 let reply = recorded_guest_reply(source, node.node(), current, recorded, request)?;
                 node.enqueue_reply(request, &reply)?;
                 return Ok(state);
@@ -460,15 +462,32 @@ fn reject_unrecorded_local_request<T: GuardedReplayPhysicalNode>(
 
 fn verify_target_pending_request<T: GuardedReplayPhysicalNode>(
     node: &mut T,
+    at: Icount,
     expected: Option<&SelectablePlanPendingRequest>,
 ) -> Result<(), QemuVmRealizationError> {
     let actual = node.drain_pending()?;
     let expected = expected.map_or(&[][..], std::slice::from_ref);
+    if actual.len() == 1 {
+        validate_guest_request_at_boundary(&actual[0], at)?;
+    }
     if actual.as_slice() == expected {
         Ok(())
     } else {
         Err(invalid_replay_selection(
             "thin replay pending request differs from the exact probe at target",
+        ))
+    }
+}
+
+fn validate_guest_request_at_boundary(
+    request: &SelectablePlanPendingRequest,
+    at: Icount,
+) -> Result<(), QemuVmRealizationError> {
+    if request.icount().checked_add(1) == Some(at.retired) {
+        Ok(())
+    } else {
+        Err(invalid_replay_selection(
+            "guest request trap count does not match the physical pause",
         ))
     }
 }
