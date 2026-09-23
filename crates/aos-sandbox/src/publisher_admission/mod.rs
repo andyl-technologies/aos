@@ -151,7 +151,7 @@ pub use replay::{ProtectedLedgerReplayV1, ReplayedPublisherRecordV1, VerifiedHis
 pub use service::{
     AdoptedPublisherSourceV1, PublisherAdmissionDispatchV1, PublisherColdPreparationRecoveryV1,
     PublisherCompletionDispatchV1, PublisherDomainServiceErrorV1, PublisherDomainServiceV1,
-    PublisherRecoveryDispatchV1, PublisherRootCapabilityV1,
+    PublisherReadOpenV1, PublisherRecoveryDispatchV1, PublisherRootCapabilityV1,
     publisher_source_descriptor_commitment_v1,
 };
 pub use source::{

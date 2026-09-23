@@ -256,3 +256,10 @@ impl AuthorizedPublicationRoot<'_> {
         &self.custody.root
     }
 }
+
+impl<'custody> AuthorizedPublicationRoot<'custody> {
+    /// Consumes the logical root borrow while preserving its custody lifetime.
+    pub(crate) const fn into_mechanics(self) -> &'custody FsVerityPublicationRoot {
+        &self.custody.root
+    }
+}

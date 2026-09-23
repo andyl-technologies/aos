@@ -12,18 +12,21 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use aos_sandbox_core::format::encode_publisher_admission_request_v1;
-use aos_sandbox_core::{ObjectDigest, OperationId, RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_core::{
+    ObjectDescriptor, ObjectDigest, OperationId, RawClockProvenance, RawPairedClockSample,
+};
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::immutable_file::FsVerityPublicationRoot;
+use aos_sandbox_linux::immutable_file::{FsVerityPublicationRoot, ObservedSealedPublicationFile};
 use sha2::{Digest as _, Sha256};
 
 use super::dormant_effects::PublisherDormantEffectCapabilityV1;
 use super::durable_catalog::PublisherDurableCatalogOwnerV1;
 use super::fixed_owner::PublisherFixedColdRecoveryV1;
 use super::{
-    AdmissionDecisionStateV1, AdmissionError, AdmissionLedger, AdmissionLimits, CapacityPolicyV1,
-    CommittedAdmissionFrontier, CompletionDispositionV1, CompletionReceiptV1, DescriptorAccessV1,
-    DescriptorCommitmentV1, ObservedDescriptorV1, ProtectedMutationBranchV1,
+    AdmissionDecisionStateV1, AdmissionError, AdmissionLedger, AdmissionLimits,
+    CacheReadDecisionV1, CacheReadOpenErrorV1, CapacityPolicyV1, CommittedAdmissionFrontier,
+    CompletionDispositionV1, CompletionReceiptV1, DescriptorAccessV1, DescriptorCommitmentV1,
+    ObservedDescriptorV1, OpenForReadRequestV1, ProtectedMutationBranchV1,
     ProtectedStoreCommitToken, PublicationAuthorityEpoch, PublicationPermitId,
     PublisherLocalBodyV1, PublisherLocalMessageV1, PublisherLocalProtocolError,
     PublisherProtectedJournalOwnerV1, ReadCatalogProjectionV1, RecoveryDispositionV1,
@@ -44,7 +47,8 @@ use super::linux_bridge::{
     materialize_linux_artifact, plan_linux_artifact, publish_and_settle_linux_artifact,
     recover_prepared_linux_artifact,
 };
-use super::protocol::decode_local_source_message_from_carrier_v1;
+use super::protocol::{decode_local_message_v1, decode_local_source_message_from_carrier_v1};
+use super::read_authority::authorize_cache_read_v1;
 
 const ROOT_BOOT_DOMAIN: &[u8] = b"aos.sandbox.publisher.root-live-boot.v1\0";
 const SOURCE_DESCRIPTOR_DOMAIN: &[u8] = b"aos.sandbox.publisher.source-descriptor.v1\0";
@@ -259,6 +263,25 @@ pub enum PublisherColdPreparationRecoveryV1<'root> {
     Observed(PublisherRecoveryDispatchV1),
 }
 
+/// Returns one already-open sealed backing or a uniform concealed result.
+#[must_use = "a publisher read result must be sent or deliberately discarded"]
+pub enum PublisherReadOpenV1<'root> {
+    /// A current grant and catalog entry authorized this pinned backing.
+    Found {
+        /// Exact descriptor authorized by the protected catalog.
+        object: ObjectDescriptor,
+        /// Commitment to the catalog entry used for this open.
+        catalog_entry_digest: ObjectDigest,
+        /// Already-open fs-verity-sealed descriptor under retained root custody.
+        backing: ObservedSealedPublicationFile<'root>,
+    },
+    /// Absence and denied disclosure share one response shape.
+    NotFoundOrConcealed {
+        /// Commitment to the exact authenticated read request.
+        request_digest: ObjectDigest,
+    },
+}
+
 impl PublisherRecoveryDispatchV1 {
     /// Builds the typed recovery response for canonical encoding.
     #[must_use]
@@ -310,6 +333,9 @@ pub enum PublisherDomainServiceErrorV1 {
     /// Protected read-grant currentness could not be confirmed.
     #[error("publisher read-grant authority is unavailable")]
     ReadGrant,
+    /// The committed read backing could not be opened as its sealed identity.
+    #[error(transparent)]
+    ReadBacking(#[from] CacheReadOpenErrorV1),
 }
 
 impl<'journal> PublisherDomainServiceV1<'journal> {
@@ -608,6 +634,119 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
     ) -> Result<(), PublisherDomainServiceErrorV1> {
         root.custody.release(&mut self.roots)?;
         Ok(())
+    }
+
+    /// Resolves a publisher's own read request against independent current grants.
+    ///
+    /// The publisher session authenticates the holder and project, but does not
+    /// itself grant disclosure. A protected read grant, committed catalog entry,
+    /// and retained root must all agree before a sealed backing can be opened.
+    /// Other read clients require their own authenticated session class.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed message, stale publisher session,
+    /// unavailable protected grant owner, or failed root observation. Missing
+    /// or mismatched grant and catalog state share the concealed decision.
+    fn authorize_publisher_open_for_read<'authority>(
+        &'authority self,
+        record: &AuthenticatedPublisherRecord<'_>,
+        root: &'authority PublisherRootCapabilityV1,
+    ) -> Result<CacheReadDecisionV1<'authority>, PublisherDomainServiceErrorV1> {
+        record
+            .recheck()
+            .map_err(|_| PublisherDomainServiceErrorV1::SessionMismatch)?;
+        let message = decode_local_message_v1(record.payload(), &[])?;
+        let PublisherLocalBodyV1::OpenForRead {
+            holder,
+            project,
+            object,
+            read_authority_digest,
+            catalog_generation,
+        } = &message.body
+        else {
+            return Err(PublisherLocalProtocolError::Malformed.into());
+        };
+
+        let request = OpenForReadRequestV1::new(
+            *holder,
+            *project,
+            object.clone(),
+            *read_authority_digest,
+            *catalog_generation,
+        );
+        let concealed = || CacheReadDecisionV1::NotFoundOrConcealed {
+            request_digest: request.request_digest(),
+        };
+        let scope = record.scope();
+        let root_record = root.custody.record();
+        if *holder != scope.principal
+            || *project != scope.project
+            || root_record.service_node != scope.node
+            || root_record.service_principal != scope.principal
+            || root_record.project != scope.project
+            || root_record.resource != scope.cache_resource
+        {
+            return Ok(concealed());
+        }
+
+        root.recheck_fixed(self.root_device, self.root_inode)?;
+        let grants = self
+            .read_grants
+            .current_registry()
+            .map_err(|_| PublisherDomainServiceErrorV1::ReadGrant)?;
+        let Some(authority) = grants.select_current(*holder) else {
+            return Ok(concealed());
+        };
+        let Some(catalog) = self.catalog.select_current(object, *catalog_generation) else {
+            return Ok(concealed());
+        };
+        let read_root = match root.custody.authorize_retained_read(&self.roots) {
+            Ok(read_root) => read_root,
+            Err(_) => return Ok(concealed()),
+        };
+        let decision =
+            authorize_cache_read_v1(&request, authority, catalog, &self.roots, read_root);
+        record
+            .recheck()
+            .map_err(|_| PublisherDomainServiceErrorV1::SessionMismatch)?;
+        Ok(decision)
+    }
+
+    /// Opens one publisher-self read only while its session remains current.
+    ///
+    /// The returned descriptor is already sealed and pinned. This handoff does
+    /// not issue a read grant or authenticate a different read-client role.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid session or request, unavailable grant
+    /// authority, or a committed backing that fails exact seal observation.
+    pub fn dispatch_publisher_open_for_read<'authority>(
+        &'authority self,
+        record: &AuthenticatedPublisherRecord<'_>,
+        root: &'authority PublisherRootCapabilityV1,
+    ) -> Result<PublisherReadOpenV1<'authority>, PublisherDomainServiceErrorV1> {
+        let decision = self.authorize_publisher_open_for_read(record, root)?;
+        let opened = match decision {
+            CacheReadDecisionV1::Found(authorized) => {
+                let object = authorized.object().clone();
+                let catalog_entry_digest = authorized.catalog_entry_digest();
+                let backing = authorized.into_open_sealed()?;
+                PublisherReadOpenV1::Found {
+                    object,
+                    catalog_entry_digest,
+                    backing,
+                }
+            }
+            CacheReadDecisionV1::NotFoundOrConcealed { request_digest } => {
+                PublisherReadOpenV1::NotFoundOrConcealed { request_digest }
+            }
+        };
+        record
+            .recheck()
+            .map_err(|_| PublisherDomainServiceErrorV1::SessionMismatch)?;
+        Ok(opened)
     }
 
     /// Opens the fixed object root under one protected cold-recovery fence.

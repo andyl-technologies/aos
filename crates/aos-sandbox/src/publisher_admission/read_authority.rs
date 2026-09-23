@@ -18,8 +18,8 @@ use crate::publisher_roots::PublicationRootId;
 use crate::publisher_roots::{AuthorizedPublicationRoot, PublicationRootRegistry};
 #[cfg(target_os = "linux")]
 use aos_sandbox_linux::immutable_file::{
-    FsVerityDigest, ObserveSealedPublicationError, ObservedSealedPublicationFile,
-    ObservedSealedPublicationReader,
+    FsVerityDigest, FsVerityPublicationRoot, ObserveSealedPublicationError,
+    ObservedSealedPublicationFile, ObservedSealedPublicationReader,
 };
 
 use super::digest_parts;
@@ -678,7 +678,8 @@ pub struct AuthorizedCacheRead<'authority> {
     entry: &'authority CommittedReadEntryV1,
     _authority: CurrentReadAuthority<'authority>,
     _catalog: CurrentReadCatalog<'authority>,
-    _root: &'authority AuthorizedPublicationRoot<'authority>,
+    // Own this borrow so the decision can leave the service's join frame.
+    _root: AuthorizedPublicationRoot<'authority>,
 }
 
 /// Gives absent and concealed objects the identical external result.
@@ -725,7 +726,7 @@ pub fn authorize_cache_read_v1<'authority>(
     authority: CurrentReadAuthority<'authority>,
     catalog: CurrentReadCatalog<'authority>,
     roots: &'authority PublicationRootRegistry,
-    root: &'authority AuthorizedPublicationRoot<'authority>,
+    root: AuthorizedPublicationRoot<'authority>,
 ) -> CacheReadDecisionV1<'authority> {
     let concealed = || CacheReadDecisionV1::NotFoundOrConcealed {
         request_digest: request.request_digest,
@@ -740,6 +741,9 @@ pub fn authorize_cache_read_v1<'authority>(
         ) && roots.generation_digest(entry.root_id, entry.root_generation)
             == Some(entry.root_digest)
             && current.generation >= entry.root_generation
+            && current.project == entry.project
+            && current.resource == entry.resource
+            && current.domain == entry.domain
             && entry.root_digest == root.record_digest()
             && entry.root_generation == root.generation()
     });
@@ -767,7 +771,7 @@ pub fn authorize_cache_read_v1<'authority>(
 }
 
 #[cfg(target_os = "linux")]
-impl AuthorizedCacheRead<'_> {
+impl<'authority> AuthorizedCacheRead<'authority> {
     /// Opens the exact fs-verity-sealed backing under retained read authority.
     ///
     /// The filename is derived from the authenticated object digest, never
@@ -781,23 +785,21 @@ impl AuthorizedCacheRead<'_> {
     /// Returns an error when the name is invalid, the backing is absent or
     /// substituted, or sealed descriptor-relative observation fails.
     pub fn open_sealed(&self) -> Result<ObservedSealedPublicationFile<'_>, CacheReadOpenErrorV1> {
-        let name = published_name_for_object(&self.entry.object)
-            .map_err(|_| CacheReadOpenErrorV1::InvalidName)?;
-        let observed = self
-            ._root
-            .mechanics()
-            .open_named_sealed(&name, self.entry.object.encoded_size())?
-            .ok_or(CacheReadOpenErrorV1::BackingMismatch)?;
-        let expected_verity =
-            FsVerityDigest::Sha256(*self.entry.backing_identity_digest.as_bytes());
-        if observed.bytes() != self.entry.object.encoded_size()
-            || observed.allocated_bytes() != self.entry.allocated_bytes
-            || observed.observed_verity_digest() != expected_verity
-        {
-            return Err(CacheReadOpenErrorV1::BackingMismatch);
-        }
+        open_sealed_read_entry(self.entry, self._root.mechanics())
+    }
 
-        Ok(observed)
+    /// Opens immediately and consumes the authorization decision.
+    ///
+    /// The opened descriptor keeps the root pinned after the read-grant and
+    /// catalog borrows are released; it does not authorize a later fresh open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the exact sealed backing cannot be observed.
+    pub(crate) fn into_open_sealed(
+        self,
+    ) -> Result<ObservedSealedPublicationFile<'authority>, CacheReadOpenErrorV1> {
+        open_sealed_read_entry(self.entry, self._root.into_mechanics())
     }
 
     /// Returns the exact pinned object descriptor.
@@ -823,6 +825,27 @@ impl AuthorizedCacheRead<'_> {
     pub const fn allocated_bytes(&self) -> u64 {
         self.entry.allocated_bytes
     }
+}
+
+#[cfg(target_os = "linux")]
+fn open_sealed_read_entry<'root>(
+    entry: &CommittedReadEntryV1,
+    root: &'root FsVerityPublicationRoot,
+) -> Result<ObservedSealedPublicationFile<'root>, CacheReadOpenErrorV1> {
+    let name =
+        published_name_for_object(&entry.object).map_err(|_| CacheReadOpenErrorV1::InvalidName)?;
+    let observed = root
+        .open_named_sealed(&name, entry.object.encoded_size())?
+        .ok_or(CacheReadOpenErrorV1::BackingMismatch)?;
+    let expected_verity = FsVerityDigest::Sha256(*entry.backing_identity_digest.as_bytes());
+    if observed.bytes() != entry.object.encoded_size()
+        || observed.allocated_bytes() != entry.allocated_bytes
+        || observed.observed_verity_digest() != expected_verity
+    {
+        return Err(CacheReadOpenErrorV1::BackingMismatch);
+    }
+
+    Ok(observed)
 }
 
 #[cfg(target_os = "linux")]
