@@ -7,7 +7,6 @@
 //! production closures and consumes sealed RAM and device-state descriptors
 //! through the production lifecycle.
 
-use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
 use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
@@ -15,18 +14,13 @@ use crucible_api::{
     DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
     ProductionVmExactNodeRestoreAdmissions,
 };
-use crucible_qemu::{
-    QemuBakedGenesisSnapshot, QemuReplayOracleMatch, QemuReplayValidationExecutor,
-    QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot,
-};
 use thiserror::Error;
-
-use crucible_campaign::ExactCheckpointId;
 
 use crate::{
     ExactCheckpointStore, ExactCheckpointStoreError, ExecutionCancellation,
-    PreparedProductionExactCheckpoint, QemuAttemptProcessResourceGuard,
+    PreparedProductionExactCheckpoint,
 };
+use crucible_campaign::ExactCheckpointId;
 
 /// Installed and semantically bound production continuation proof.
 ///
@@ -142,248 +136,9 @@ impl InstalledProductionAttemptCheckpoint {
     }
 }
 
-/// Attempt-owned guarded executor for one exact fat/thin replay comparison.
-///
-/// The session routes the selected fat probe through the exact-root launcher
-/// and every cached-ancestor or baked-genesis restore through a disjoint thin-
-/// path launcher. It borrows the promotion's aggregate attempt guard while the
-/// current node is active. Any realization failure transfers that aggregate
-/// authority to quarantine after retaining any pre-install child.
-pub(crate) struct QemuGuardedReplayOracleSession<'a, G>
-where
-    G: QemuAttemptProcessResourceGuard,
-{
-    executor: &'a mut QemuReplayValidationExecutor,
-    guard: &'a mut G,
-    realization_failed: bool,
-    backend_reaped: bool,
-    guard_terminal: bool,
-}
+mod guarded_replay;
 
-impl<'a, G> QemuGuardedReplayOracleSession<'a, G>
-where
-    G: QemuAttemptProcessResourceGuard,
-{
-    /// Borrows one aggregate attempt guard for node-local replay validation.
-    #[must_use]
-    pub(crate) const fn new(
-        executor: &'a mut QemuReplayValidationExecutor,
-        guard: &'a mut G,
-    ) -> Self {
-        Self {
-            executor,
-            guard,
-            realization_failed: false,
-            backend_reaped: false,
-            guard_terminal: false,
-        }
-    }
-
-    /// Reaps the final thin-path generation while retaining the aggregate guard.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError::ReapQuarantined`] when realization or
-    /// reap failed and resource ownership was transferred to quarantine. Other
-    /// cleanup diagnostics are returned only after reap attestation.
-    pub(crate) fn finish(mut self) -> Result<(), QemuVmRealizationError> {
-        self.cleanup()
-    }
-
-    /// Compares one authenticated fat snapshot with replay from baked genesis.
-    ///
-    /// Runtime observations stay opaque outside `crucible-qemu`; this session
-    /// may sequence guarded operations but cannot manufacture comparison
-    /// evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError`] when either guarded realization,
-    /// replay quantum, or final source-bound comparison fails.
-    pub(crate) fn check_snapshot_replay_oracle(
-        &mut self,
-        world: &crucible::World,
-        configuration: &Configuration,
-        snapshot: &QemuVmSnapshot,
-        baked: &QemuBakedGenesisSnapshot,
-    ) -> Result<QemuReplayOracleMatch, QemuVmRealizationError> {
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=exact-load-start");
-        self.guard.check_operational_boundary()?;
-        let result = self
-            .executor
-            .load_materialized_exact_snapshot_probe_guarded(configuration, snapshot);
-        let fat = self.observe_realization(result)?;
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=exact-load-complete");
-
-        let genesis = Configuration::genesis(configuration.def.clone());
-        self.guard.check_operational_boundary()?;
-        let process_contract = self.guard.child_process_contract()?;
-        let result = self.executor.load_prepared_baked_genesis_guarded(
-            process_contract,
-            &genesis,
-            world,
-            baked,
-        );
-        let mut thin = self.observe_realization(result)?;
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=genesis-load-complete");
-
-        let mut current = genesis;
-        for (decision_index, decision) in configuration.schedule.decisions().iter().enumerate() {
-            if decision_index < 4 {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=quantum-start index={decision_index}"
-                );
-            }
-            let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
-                QemuVmRealizationError::InvalidCheckpoint {
-                    role: "baked-genesis replay target",
-                    message: format!("decision violates the scenario model: {source}"),
-                }
-            })?;
-            self.guard.check_operational_boundary()?;
-            self.guard.charge_execution_quantum()?;
-            let result = self.executor.replay_materialized_one_quantum(
-                thin,
-                QemuVmReplayRequest::new(current, decision.clone())?,
-            );
-            thin = self.observe_realization(result)?;
-            if decision_index < 4 {
-                eprintln!(
-                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=quantum-complete index={decision_index}"
-                );
-            }
-            current = next;
-        }
-        if &current != configuration {
-            return Err(QemuVmRealizationError::InvalidAncestor {
-                message: String::from("baked-genesis replay did not reach target configuration"),
-            });
-        }
-
-        eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=compare-start");
-        self.executor
-            .finish_replay_oracle_comparison(snapshot, configuration, fat, thin)
-    }
-
-    fn observe_realization<T>(
-        &mut self,
-        result: Result<T, QemuVmRealizationError>,
-    ) -> Result<T, QemuVmRealizationError> {
-        if result.is_err() {
-            self.realization_failed = true;
-            if let Some(child) = self.executor.take_failed_launch_child_for_quarantine() {
-                self.guard.retain_failed_launch_child(child);
-            }
-        }
-        let boundary = self.guard.check_operational_boundary();
-        observed_realization(result, boundary)
-    }
-
-    fn cleanup(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.realization_failed && !self.guard_terminal {
-            self.guard.quarantine();
-            self.guard_terminal = true;
-            return Err(QemuVmRealizationError::ReapQuarantined {
-                operation: "finish guarded replay-oracle comparison",
-                message: String::from(
-                    "failed-realization process authority and attempt resources were quarantined",
-                ),
-            });
-        }
-        if !self.backend_reaped {
-            match self.executor.shutdown_active_node() {
-                Ok(()) => self.backend_reaped = true,
-                Err(error) => {
-                    if !self.guard_terminal {
-                        self.guard.quarantine();
-                        self.guard_terminal = true;
-                    }
-                    return Err(QemuVmRealizationError::ReapQuarantined {
-                        operation: "finish guarded replay-oracle comparison",
-                        message: error.to_string(),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-fn observed_realization<T>(
-    result: Result<T, QemuVmRealizationError>,
-    boundary: Result<(), QemuVmRealizationError>,
-) -> Result<T, QemuVmRealizationError> {
-    match (result, boundary) {
-        (Err(cause), Err(cleanup @ QemuVmRealizationError::ReapQuarantined { .. })) => {
-            Err(replay_quarantine_with_cause(cause, cleanup))
-        }
-        // The session still quarantines a failed realization during finish.
-        // Retain its cause when a second boundary error cannot explain it.
-        (Err(cause), _) => Err(cause),
-        (Ok(_), Err(boundary)) => Err(boundary),
-        (Ok(value), Ok(())) => Ok(value),
-    }
-}
-
-const MAX_REPLAY_QUARANTINE_DETAIL_BYTES: usize = 2 * 1024;
-const REPLAY_QUARANTINE_TRUNCATION_SUFFIX: &str = " ... [truncated]";
-
-struct BoundedReplayQuarantineDetail(String);
-
-impl fmt::Write for BoundedReplayQuarantineDetail {
-    fn write_str(&mut self, value: &str) -> fmt::Result {
-        let available = MAX_REPLAY_QUARANTINE_DETAIL_BYTES
-            .saturating_sub(REPLAY_QUARANTINE_TRUNCATION_SUFFIX.len())
-            .saturating_sub(self.0.len());
-        let mut boundary = available.min(value.len());
-        while !value.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        self.0.push_str(&value[..boundary]);
-        if boundary < value.len() {
-            self.0.push_str(REPLAY_QUARANTINE_TRUNCATION_SUFFIX);
-            return Err(fmt::Error);
-        }
-        Ok(())
-    }
-}
-
-/// Keeps quarantine authoritative while placing the initiating replay failure first.
-pub(crate) fn replay_quarantine_with_cause(
-    cause: QemuVmRealizationError,
-    cleanup: QemuVmRealizationError,
-) -> QemuVmRealizationError {
-    let QemuVmRealizationError::ReapQuarantined { operation, message } = cleanup else {
-        return cause;
-    };
-    let mut detail = BoundedReplayQuarantineDetail(String::new());
-    match &cause {
-        QemuVmRealizationError::ReapQuarantined {
-            message: earlier, ..
-        } if earlier.starts_with("replay comparison failed: ") => {
-            let _ = write!(detail, "{earlier}; cleanup: {message}");
-        }
-        _ => {
-            let _ = write!(
-                detail,
-                "replay comparison failed: {cause}; cleanup: {message}"
-            );
-        }
-    }
-    QemuVmRealizationError::ReapQuarantined {
-        operation,
-        message: detail.0,
-    }
-}
-
-impl<G> Drop for QemuGuardedReplayOracleSession<'_, G>
-where
-    G: QemuAttemptProcessResourceGuard,
-{
-    fn drop(&mut self) {
-        let _ = self.cleanup();
-    }
-}
+pub(crate) use guarded_replay::{QemuGuardedReplayOracleSession, replay_quarantine_with_cause};
 
 /// Installs and binds one version-nine production checkpoint for attempt resume.
 ///
@@ -964,86 +719,6 @@ mod captured_source_tests {
 
     use crucible::{RngDecision, RngStreamId, Schedule};
     use crucible_cas::content_store::{ContentId, ObjectKind};
-
-    #[test]
-    fn replay_quarantine_starts_with_bounded_initiating_failure() {
-        let cause = QemuVmRealizationError::Executor {
-            operation: "load exact fat probe",
-            message: "realization failed ".to_owned() + &"界".repeat(2_000),
-        };
-        let cleanup = QemuVmRealizationError::ReapQuarantined {
-            operation: "finish guarded replay-oracle comparison",
-            message: String::from("process authority was quarantined"),
-        };
-
-        let result = replay_quarantine_with_cause(cause, cleanup);
-        let QemuVmRealizationError::ReapQuarantined { operation, message } = result else {
-            panic!("failed cleanup must remain quarantine classified");
-        };
-        assert_eq!(operation, "finish guarded replay-oracle comparison");
-        assert!(message.starts_with(
-            "replay comparison failed: load exact fat probe executor operation failed: realization failed"
-        ));
-        assert!(message.ends_with(REPLAY_QUARANTINE_TRUNCATION_SUFFIX));
-        assert!(message.len() <= MAX_REPLAY_QUARANTINE_DETAIL_BYTES);
-    }
-
-    #[test]
-    fn replay_realization_cause_survives_failing_operational_boundary() {
-        let cause = QemuVmRealizationError::Executor {
-            operation: "load exact fat probe",
-            message: String::from("original realization failure"),
-        };
-        let boundary = QemuVmRealizationError::Executor {
-            operation: "check QEMU attempt resources",
-            message: String::from("secondary boundary failure"),
-        };
-
-        let Err(result) = observed_realization::<()>(Err(cause), Err(boundary)) else {
-            panic!("realization must fail");
-        };
-        assert!(matches!(
-            result,
-            QemuVmRealizationError::Executor { operation: "load exact fat probe", message }
-                if message == "original realization failure"
-        ));
-
-        let cause = QemuVmRealizationError::Executor {
-            operation: "load exact fat probe",
-            message: String::from("original realization failure"),
-        };
-        let boundary = QemuVmRealizationError::ReapQuarantined {
-            operation: "check QEMU attempt resources",
-            message: String::from("boundary quarantined"),
-        };
-        let Err(result) = observed_realization::<()>(Err(cause), Err(boundary)) else {
-            panic!("quarantine must remain terminal");
-        };
-        let QemuVmRealizationError::ReapQuarantined { message, .. } = result else {
-            panic!("boundary quarantine classification must survive");
-        };
-        assert!(message.starts_with("replay comparison failed: load exact fat probe"));
-        assert!(message.contains("boundary quarantined"));
-    }
-
-    #[test]
-    fn replay_comparison_cause_survives_non_quarantine_cleanup_error() {
-        let cause = QemuVmRealizationError::Executor {
-            operation: "compare replay oracle",
-            message: String::from("original mismatch"),
-        };
-        let cleanup = QemuVmRealizationError::Executor {
-            operation: "finish replay guard",
-            message: String::from("secondary cleanup failure"),
-        };
-
-        let result = replay_quarantine_with_cause(cause, cleanup);
-        assert!(matches!(
-            result,
-            QemuVmRealizationError::Executor { operation: "compare replay oracle", message }
-                if message == "original mismatch"
-        ));
-    }
 
     #[test]
     fn production_resume_basis_requires_the_exact_attempt_prefix() {

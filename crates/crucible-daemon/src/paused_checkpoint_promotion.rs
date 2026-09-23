@@ -815,6 +815,8 @@ where
         let mut session = QemuGuardedReplayOracleSession::new(&mut executor, &mut guard);
         let comparison = session.check_snapshot_replay_oracle(
             target.source.world(),
+            target.source,
+            &choices,
             installed.configuration(),
             &snapshot,
             &baked,
