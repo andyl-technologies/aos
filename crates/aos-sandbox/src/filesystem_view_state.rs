@@ -195,6 +195,16 @@ impl DurableFilesystemViewRevisionV1 {
         &self.record.descriptor
     }
 
+    /// Borrows the exact canonical View bytes committed by this revision.
+    ///
+    /// These bytes have already passed journal replay and descriptor checks.
+    /// A consumer must still match the revision and descriptor against its
+    /// current desired-state fence before using them as source authority.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.record.view_bytes
+    }
+
     /// Returns the operation that committed this revision.
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
@@ -593,6 +603,22 @@ pub(crate) fn get_current(
         .get(&view_id)
         .cloned()
         .map(|record| DurableFilesystemViewRevisionV1 { record }))
+}
+
+/// Loads the validated current View revision from a healthy controller journal.
+///
+/// A released View is returned as a tombstone; callers must check presence
+/// before using its canonical bytes for a new source-dependent effect.
+///
+/// # Errors
+///
+/// Returns an error if the journal is unhealthy or its View history is invalid.
+pub fn current_filesystem_view_revision_v1(
+    journal: &Journal,
+    view_id: ViewId,
+) -> Result<Option<DurableFilesystemViewRevisionV1>, FilesystemViewRevisionStateError> {
+    journal.ensure_healthy()?;
+    get_current(journal, view_id)
 }
 
 pub(crate) fn get_revision(

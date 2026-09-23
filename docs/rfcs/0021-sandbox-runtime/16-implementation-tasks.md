@@ -311,11 +311,13 @@ the outstanding work concrete:
   pin, but a fresh acquisition remains retry-only.
   Cache pin admission fences the named view or attachment to its project and
   current resource version, and the source-membership and protected pin helpers
-  exist. A protected, project-scoped sealed source adapter can stream exact
-  portable objects, but no authenticated source producer or bounded controller
-  worker connects it to public `CachePin` execution yet. Operator recovery
-  actions other than ownership-gate Retry lack a completing effect path and are
-  rejected before new admission. Retry is admitted only for an operation with
+  exist. The protected current View revision can supply canonical View bytes;
+  a project-scoped sealed source adapter supplies exact tree objects for the
+  corresponding pin helper. No authenticated tree-object producer or bounded
+  controller worker connects that helper to fresh public `CachePin` execution
+  yet. Operator recovery actions other than ownership-gate Retry lack a
+  completing effect path and are rejected before new admission. Retry is
+  admitted only for an operation with
   a validated ownership gate. Connect the remaining methods to their protected
   owners before claiming the public mutation family is complete.
 - Execution control is not a same-process owner call. Public admission now

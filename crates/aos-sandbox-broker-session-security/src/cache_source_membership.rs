@@ -6,6 +6,9 @@ use aos_filesystem_view_core::{
     ValidatedViewProjection, ValidatedViewSourceObject, compile_view_projection, load_exact,
     validate_index,
 };
+use aos_sandbox::filesystem_view_state::{
+    DurableFilesystemViewRevisionV1, FilesystemViewRevisionPresenceV1,
+};
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::model::ViewSource;
 use aos_sandbox_core::{
@@ -202,10 +205,102 @@ where
         limits,
     )?;
     let view_object = load_exact(source, fence.view_revision(), maximum_view_bytes)?;
-    let view = decode_view(view_object.bytes(), membership_limits.projection.decode)?;
+
+    compile_authenticated_cache_source_membership_v1(
+        consumer,
+        source,
+        view_object.bytes(),
+        compiler_abi,
+        limits,
+        use_membership,
+    )
+}
+
+/// Compiles source membership using canonical bytes from a durable View revision.
+///
+/// The protected revision supplies the View bytes, so the project source only
+/// needs the exact immutable tree objects. The revision must still match the
+/// consumer's current desired-state fence; released or stale revisions cannot
+/// authorize a new pin.
+///
+/// # Errors
+///
+/// Returns an error for a release-only consumer, stale or released revision,
+/// exceeded compilation limits, invalid tree source, or absent object.
+pub fn with_compiled_cache_source_membership_from_revision_v1<S, R>(
+    consumer: &RecheckedCacheConsumerV1,
+    source: &mut S,
+    revision: &DurableFilesystemViewRevisionV1,
+    compiler_abi: [u8; 32],
+    limits: CacheCompiledSourceLimitsV1,
+    use_membership: impl FnOnce(&ValidatedViewSourceObject<'_, '_, '_>) -> R,
+) -> Result<R, CompiledCacheSourceMembershipErrorV1<S::Error>>
+where
+    S: ObjectSource,
+{
+    let fence = consumer
+        .acquisition_fence()
+        .ok_or(CompiledCacheSourceMembershipErrorV1::ReleaseOnly)?;
+    if revision.presence() != FilesystemViewRevisionPresenceV1::Available
+        || revision.view_id() != consumer.view()
+        || revision.descriptor() != fence.view_revision()
+        || revision.revision().get() != fence.view_generation()
+    {
+        return Err(CompiledCacheSourceMembershipErrorV1::Membership(
+            CacheSourceMembershipErrorV1::StaleView,
+        ));
+    }
+
+    let maximum_view_bytes = limits
+        .tree
+        .object_bytes
+        .min(limits.membership.projection.decode.maximum_bytes);
+    let view_bytes = revision.canonical_bytes();
+    if view_bytes.len() > maximum_view_bytes {
+        return Err(CompiledCacheSourceMembershipErrorV1::ViewFormat(
+            CanonicalCborError::ObjectTooLarge,
+        ));
+    }
+    preflight_compilation_memory(
+        view_bytes.len() as u64,
+        limits
+            .tree
+            .index_bytes
+            .min(limits.membership.maximum_index_bytes),
+        limits,
+    )?;
+
+    compile_authenticated_cache_source_membership_v1(
+        consumer,
+        source,
+        view_bytes,
+        compiler_abi,
+        limits,
+        use_membership,
+    )
+}
+
+fn compile_authenticated_cache_source_membership_v1<S, R>(
+    consumer: &RecheckedCacheConsumerV1,
+    source: &mut S,
+    view_bytes: &[u8],
+    compiler_abi: [u8; 32],
+    limits: CacheCompiledSourceLimitsV1,
+    use_membership: impl FnOnce(&ValidatedViewSourceObject<'_, '_, '_>) -> R,
+) -> Result<R, CompiledCacheSourceMembershipErrorV1<S::Error>>
+where
+    S: ObjectSource,
+{
+    let tree_limits = limits.tree;
+    let membership_limits = limits.membership;
+    let view = decode_view(view_bytes, membership_limits.projection.decode)?;
     let ViewSource::ImmutableTree { tree } = view.source() else {
         return Err(CompiledCacheSourceMembershipErrorV1::NonImmutableSource);
     };
+
+    let maximum_index_bytes = tree_limits
+        .index_bytes
+        .min(membership_limits.maximum_index_bytes);
 
     let staging = IndexStaging::new(
         CacheIndexBuffer::new(maximum_index_bytes)
@@ -224,7 +319,7 @@ where
 
     with_cache_source_membership_v1(
         consumer,
-        view_object.bytes(),
+        view_bytes,
         &index_bytes,
         &expectation,
         membership_limits,

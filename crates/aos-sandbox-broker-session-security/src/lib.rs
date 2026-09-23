@@ -92,6 +92,7 @@ pub use cache_public_pin::{
     PublicCachePinRecoveryErrorV1, PublicCachePinRecoveryV1, PublicCacheUnpinExecutionV1,
     PublicCacheUnpinObservationErrorV1, PublicCacheUnpinProgressErrorV1,
     PublicCacheUnpinProgressV1, PublicCacheUnpinRecoveryErrorV1, PublicCacheUnpinRecoveryV1,
+    execute_public_cache_pin_from_project_revision_v1,
     execute_public_cache_pin_from_project_source_v1, execute_public_cache_pin_v1,
     execute_public_cache_unpin_consumer_v1, execute_public_cache_unpin_v1,
     observe_public_cache_unpin_completion_v1, public_cache_pin_transaction_id_v1,
@@ -101,7 +102,8 @@ pub use cache_public_pin::{
 pub use cache_source_membership::{
     CacheCompiledSourceLimitsV1, CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
     CompiledCacheSourceMembershipErrorV1, join_cache_source_membership_v1,
-    with_cache_source_membership_v1, with_compiled_cache_source_membership_v1,
+    with_cache_source_membership_v1, with_compiled_cache_source_membership_from_revision_v1,
+    with_compiled_cache_source_membership_v1,
 };
 pub use dormant_handshake::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,

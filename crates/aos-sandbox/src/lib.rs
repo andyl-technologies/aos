@@ -170,7 +170,7 @@ pub use dispatch::{
 pub use filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionCommitOutcomeV1,
     FilesystemViewRevisionMutationV1, FilesystemViewRevisionPresenceV1,
-    FilesystemViewRevisionStateError,
+    FilesystemViewRevisionStateError, current_filesystem_view_revision_v1,
 };
 #[cfg(target_os = "linux")]
 pub use host_catalog_reconciliation::{

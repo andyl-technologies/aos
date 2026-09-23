@@ -12,6 +12,7 @@ use aos_sandbox::cache_residency::{
     PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1,
 };
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox::filesystem_view_state::DurableFilesystemViewRevisionV1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};
 use sha2::{Digest as _, Sha256};
@@ -21,6 +22,7 @@ use crate::cache_directory_source::{
 };
 use crate::cache_source_membership::{
     CacheCompiledSourceLimitsV1, CompiledCacheSourceMembershipErrorV1,
+    with_compiled_cache_source_membership_from_revision_v1,
     with_compiled_cache_source_membership_v1,
 };
 
@@ -163,6 +165,56 @@ pub fn execute_public_cache_pin_from_project_source_v1(
         compiler_abi,
         compilation_limits,
     )
+}
+
+/// Acquires a public pin using the durable View revision and sealed project tree objects.
+///
+/// The protected View revision supplies canonical View bytes, while the
+/// project-scoped source supplies only the immutable tree graph. Both are
+/// checked against the current consumer before the protected commit.
+///
+/// # Errors
+///
+/// Returns an error for a cross-project root, stale or released View revision,
+/// invalid source graph, or protected and physical pin failures.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_public_cache_pin_from_project_revision_v1(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    source: &mut ProjectSealedViewObjectSourceV1,
+    revision: &DurableFilesystemViewRevisionV1,
+    consumer: &RecheckedCacheConsumerV1,
+    source_journal: &Journal,
+    request: &DormantSandboxRequestKindV1,
+    operation: OperationId,
+    controller_node: NodeId,
+    compiler_abi: [u8; 32],
+    compilation_limits: CacheCompiledSourceLimitsV1,
+) -> Result<PublicCachePinExecutionV1, PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1>>
+{
+    if source.project() != consumer.project() {
+        return Err(PublicCachePinExecutionErrorV1::SourceProjectMismatch);
+    }
+
+    with_compiled_cache_source_membership_from_revision_v1(
+        consumer,
+        source,
+        revision,
+        compiler_abi,
+        compilation_limits,
+        |membership| {
+            commit_public_pin_for_membership(
+                protected,
+                physical,
+                consumer,
+                membership,
+                source_journal,
+                request,
+                operation,
+                controller_node,
+            )
+        },
+    )?
 }
 
 /// Classifies a cold public pin acquisition without selecting a new partition.
@@ -543,47 +595,66 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
         compiler_abi,
         compilation_limits,
         |membership| {
-            let partition = select_public_cache_pin_partition_v1(
+            commit_public_pin_for_membership(
                 protected,
+                physical,
                 consumer,
                 membership,
-                controller_node,
-            )?;
-            let acquisition = ValidatedPublicLogicalPinAcquisitionV1::new(
-                consumer,
-                membership,
-                partition,
-                controller_node,
-            )?;
-            let result = protected.commit_public_logical_pin_acquisition(
-                public_cache_pin_transaction_id_v1(operation),
-                &acquisition,
-                operation,
                 source_journal,
                 request,
-                |postcommit| postcommit.settle_cache_owner_pin_change(physical),
-            )?;
-
-            match result {
-                PublicLogicalPinAcquisitionCommitV1::Retained(pin) => {
-                    let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id())?;
-                    let presence = physical.observe_pin(id, pin.partition(), pin.object())?;
-                    if presence != CacheOwnerPinPresenceV1::Present {
-                        return Err(PublicCachePinExecutionErrorV1::Physical(
-                            CacheOwnerErrorV1::RecoveryMismatch,
-                        ));
-                    }
-                    Ok(PublicCachePinExecutionV1::Retained(pin))
-                }
-                PublicLogicalPinAcquisitionCommitV1::Committed { outcome, handoff } => {
-                    Ok(PublicCachePinExecutionV1::Committed {
-                        outcome,
-                        settlement: handoff,
-                    })
-                }
-            }
+                operation,
+                controller_node,
+            )
         },
     )?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_public_pin_for_membership<E: std::error::Error + 'static>(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    consumer: &RecheckedCacheConsumerV1,
+    membership: &ValidatedViewSourceObject<'_, '_, '_>,
+    source_journal: &Journal,
+    request: &DormantSandboxRequestKindV1,
+    operation: OperationId,
+    controller_node: NodeId,
+) -> Result<PublicCachePinExecutionV1, PublicCachePinExecutionErrorV1<E>> {
+    let partition =
+        select_public_cache_pin_partition_v1(protected, consumer, membership, controller_node)?;
+    let acquisition = ValidatedPublicLogicalPinAcquisitionV1::new(
+        consumer,
+        membership,
+        partition,
+        controller_node,
+    )?;
+    let result = protected.commit_public_logical_pin_acquisition(
+        public_cache_pin_transaction_id_v1(operation),
+        &acquisition,
+        operation,
+        source_journal,
+        request,
+        |postcommit| postcommit.settle_cache_owner_pin_change(physical),
+    )?;
+
+    match result {
+        PublicLogicalPinAcquisitionCommitV1::Retained(pin) => {
+            let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id())?;
+            let presence = physical.observe_pin(id, pin.partition(), pin.object())?;
+            if presence != CacheOwnerPinPresenceV1::Present {
+                return Err(PublicCachePinExecutionErrorV1::Physical(
+                    CacheOwnerErrorV1::RecoveryMismatch,
+                ));
+            }
+            Ok(PublicCachePinExecutionV1::Retained(pin))
+        }
+        PublicLogicalPinAcquisitionCommitV1::Committed { outcome, handoff } => {
+            Ok(PublicCachePinExecutionV1::Committed {
+                outcome,
+                settlement: handoff,
+            })
+        }
+    }
 }
 
 fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
