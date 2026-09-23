@@ -1665,6 +1665,10 @@ struct ProductionEffectExecutor {
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     pending_attachment_slot_attempt:
         Option<aos_sandbox::destination_slot_effect::DurableCurrentDestinationSlotAttemptV1>,
+    pending_attachment_catalog_query:
+        Option<aos_sandbox::attachment_mount::PreparedCurrentAttachmentMountCatalogQueryV1>,
+    pending_attachment_mount_attempt:
+        Option<aos_sandbox::attachment_mount::DurableCurrentAttachmentMountAttemptV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
@@ -1718,6 +1722,8 @@ impl ProductionEffectExecutor {
             attachment_host,
             attachment_mount,
             pending_attachment_slot_attempt: None,
+            pending_attachment_catalog_query: None,
+            pending_attachment_mount_attempt: None,
             source_domains,
             cache_inventory: None,
             cache_physical: None,
@@ -3759,6 +3765,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 context.project(),
                 &request,
             )?;
+            if attachment_physical::drain_pending_before_slot(self, journal)? {
+                return Err(EffectFailure::Retryable(
+                    "fresh authenticated Mount inventory is pending".to_owned(),
+                ));
+            }
             attachment_slot_effect::advance(
                 self,
                 operation_id,
