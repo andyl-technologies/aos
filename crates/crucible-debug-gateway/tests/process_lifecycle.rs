@@ -2,8 +2,8 @@
 //! Process-boundary lifecycle tests for the standalone debugger gateway.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::os::unix::net::UnixListener;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -16,7 +16,7 @@ fn apache_client_launches_negotiates_queries_and_reaps_gateway() {
     let mut process = DebugGatewayProcess::launch(executable)
         .unwrap_or_else(|error| panic!("gateway should launch: {error}"));
     assert!(process.control_socket().is_absolute());
-    assert!(process.operator_listen().is_none());
+    assert!(process.operator_endpoint().is_none());
     let status = process
         .client_mut()
         .backend_status()
@@ -34,16 +34,61 @@ fn apache_client_launches_negotiates_queries_and_reaps_gateway() {
 }
 
 #[test]
+fn owner_unix_operator_rejects_direct_writes_before_branch_fork() {
+    let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
+    let process =
+        DebugGatewayProcess::launch_with_owner_unix(executable).expect("private gateway launch");
+    assert!(
+        process.operator_endpoint().is_some(),
+        "private Unix listener"
+    );
+    let endpoint = process
+        .operator_endpoint()
+        .expect("private operator endpoint");
+    let path = Path::new(
+        endpoint
+            .strip_prefix("unix:")
+            .expect("Unix endpoint prefix"),
+    );
+    assert_eq!(
+        std::fs::metadata(path.parent().expect("socket parent"))
+            .expect("private directory")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+    );
+    assert_eq!(
+        std::fs::metadata(path)
+            .expect("owner socket")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+    );
+
+    let mut direct = UnixStream::connect(path).expect("owner socket connection");
+    direct
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    direct
+        .write_all(&encode_rsp_packet(b"P0=ff"))
+        .expect("write attempt");
+    assert_eq!(read_rsp_payload(&mut direct), b"E22");
+    direct
+        .write_all(&encode_rsp_packet(b"c"))
+        .expect("run-control attempt");
+    assert_eq!(read_rsp_payload(&mut direct), b"E22");
+}
+
+#[test]
 fn stable_gdb_connection_survives_backend_replacement() {
     let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
     let directory = tempfile::tempdir()
         .unwrap_or_else(|error| panic!("temporary backend directory should open: {error}"));
     let first_path = directory.path().join("first.sock");
     let first_backend = spawn_fake_qemu_backend(first_path.clone(), b"g", b"0102");
-    let trusted_listen = "127.0.0.1:0"
-        .parse()
-        .unwrap_or_else(|error| panic!("trusted loopback should parse: {error}"));
-    let mut process = DebugGatewayProcess::launch_with_trusted_loopback(executable, trusted_listen)
+    let mut process = DebugGatewayProcess::launch_with_owner_unix(executable)
         .unwrap_or_else(|error| panic!("gateway should launch: {error}"));
     let first_generation = process
         .promote_backend(&first_path)
@@ -60,10 +105,8 @@ fn stable_gdb_connection_survives_backend_replacement() {
         Some(first_generation)
     );
 
-    let operator_listen = process
-        .operator_listen()
-        .unwrap_or_else(|| panic!("trusted gateway should expose a gdb listener"));
-    let mut gdb = TcpStream::connect(operator_listen)
+    let operator_socket = owner_operator_socket(&process);
+    let mut gdb = UnixStream::connect(operator_socket)
         .unwrap_or_else(|error| panic!("operator gdb should connect: {error}"));
     gdb.set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap_or_else(|error| panic!("operator timeout should set: {error}"));
@@ -76,7 +119,7 @@ fn stable_gdb_connection_survives_backend_replacement() {
     assert_eq!(read_rsp_payload(&mut gdb), b"0102");
 
     let second_path = directory.path().join("second.sock");
-    let second_backend = spawn_run_control_qemu_backend(second_path.clone(), b"m1000,1", b"ff");
+    let second_backend = spawn_read_only_qemu_backend(second_path.clone(), b"m1000,1", b"ff");
     process
         .promote_backend(&second_path)
         .unwrap_or_else(|error| panic!("second backend should promote: {error}"));
@@ -87,40 +130,15 @@ fn stable_gdb_connection_survives_backend_replacement() {
     assert_eq!(read_rsp_payload(&mut gdb), b"ff");
 
     gdb.write_all(&encode_rsp_packet(b"s"))
-        .unwrap_or_else(|error| panic!("scheduler step should write: {error}"));
-    let mut routed = None;
-    for _attempt in 0..100 {
-        routed = process
-            .poll_run_control()
-            .unwrap_or_else(|error| panic!("run control should poll: {error}"));
-        if routed.is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(routed.as_deref(), Some(b"s".as_slice()));
-    process
-        .complete_run_control(b"T05")
-        .unwrap_or_else(|error| panic!("scheduler stop should complete: {error}"));
-    assert_eq!(read_rsp_payload(&mut gdb), b"T05");
-    gdb.write_all(b"-")
-        .unwrap_or_else(|error| panic!("scheduler stop should nack: {error}"));
-    assert_eq!(read_rsp_payload(&mut gdb), b"T05");
-    gdb.write_all(b"+")
-        .unwrap_or_else(|error| panic!("scheduler stop should acknowledge: {error}"));
+        .unwrap_or_else(|error| panic!("direct scheduler step should write: {error}"));
+    assert_eq!(read_rsp_payload(&mut gdb), b"E22");
 
     gdb.write_all(&encode_rsp_packet(b"c"))
-        .unwrap_or_else(|error| panic!("scheduler continue should write: {error}"));
-    assert_eq!(poll_run_control(&mut process), b"c");
+        .unwrap_or_else(|error| panic!("direct scheduler continue should write: {error}"));
+    assert_eq!(read_rsp_payload(&mut gdb), b"E22");
     gdb.write_all(&[0x03])
-        .unwrap_or_else(|error| panic!("scheduler interrupt should write: {error}"));
-    assert_eq!(poll_run_control(&mut process), [0x03]);
-    process
-        .complete_run_control(b"T02")
-        .unwrap_or_else(|error| panic!("scheduler interrupt should complete: {error}"));
-    assert_eq!(read_rsp_payload(&mut gdb), b"T02");
-    gdb.write_all(b"+")
-        .unwrap_or_else(|error| panic!("scheduler interrupt should acknowledge: {error}"));
+        .unwrap_or_else(|error| panic!("direct scheduler interrupt should write: {error}"));
+    assert_eq!(read_rsp_payload(&mut gdb), b"E22");
 
     drop(gdb);
     process
@@ -141,19 +159,14 @@ fn operator_reconnect_restores_the_active_qemu_backend() {
         .unwrap_or_else(|error| panic!("temporary backend directory should open: {error}"));
     let backend_path = directory.path().join("reconnecting.sock");
     let backend = spawn_reconnecting_fake_qemu_backend(backend_path.clone());
-    let trusted_listen = "127.0.0.1:0"
-        .parse()
-        .unwrap_or_else(|error| panic!("trusted loopback should parse: {error}"));
-    let mut process = DebugGatewayProcess::launch_with_trusted_loopback(executable, trusted_listen)
+    let mut process = DebugGatewayProcess::launch_with_owner_unix(executable)
         .unwrap_or_else(|error| panic!("gateway should launch: {error}"));
     process
         .promote_backend(&backend_path)
         .unwrap_or_else(|error| panic!("backend should promote: {error}"));
-    let operator_listen = process
-        .operator_listen()
-        .unwrap_or_else(|| panic!("trusted gateway should expose a gdb listener"));
+    let operator_socket = owner_operator_socket(&process);
 
-    let mut first = TcpStream::connect(operator_listen)
+    let mut first = UnixStream::connect(&operator_socket)
         .unwrap_or_else(|error| panic!("first operator should connect: {error}"));
     first
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -172,7 +185,7 @@ fn operator_reconnect_restores_the_active_qemu_backend() {
     assert_eq!(read_rsp_payload(&mut first), b"0102");
     drop(first);
 
-    let mut second = TcpStream::connect(operator_listen)
+    let mut second = UnixStream::connect(&operator_socket)
         .unwrap_or_else(|error| panic!("second operator should connect: {error}"));
     second
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -194,17 +207,15 @@ fn operator_reconnect_restores_the_active_qemu_backend() {
         .unwrap_or_else(|_| panic!("reconnecting fake backend should not panic"));
 }
 
-fn poll_run_control(process: &mut DebugGatewayProcess) -> Vec<u8> {
-    for _attempt in 0..100 {
-        let routed = process
-            .poll_run_control()
-            .unwrap_or_else(|error| panic!("run control should poll: {error}"));
-        if let Some(packet) = routed {
-            return packet;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    panic!("run control should arrive within the bounded poll budget")
+fn owner_operator_socket(process: &DebugGatewayProcess) -> PathBuf {
+    let endpoint = process
+        .operator_endpoint()
+        .expect("private gateway operator endpoint");
+    PathBuf::from(
+        endpoint
+            .strip_prefix("unix:")
+            .expect("Unix endpoint prefix"),
+    )
 }
 
 fn spawn_fake_qemu_backend(
@@ -240,7 +251,7 @@ fn spawn_fake_qemu_backend(
     })
 }
 
-fn spawn_run_control_qemu_backend(
+fn spawn_read_only_qemu_backend(
     path: PathBuf,
     expected_request: &'static [u8],
     reply: &'static [u8],
@@ -268,21 +279,6 @@ fn spawn_run_control_qemu_backend(
         stream
             .write_all(&encode_rsp_packet(reply))
             .unwrap_or_else(|error| panic!("request reply should write: {error}"));
-
-        for stop in [b"T05".as_slice(), b"T02".as_slice()] {
-            assert_eq!(read_rsp_payload(&mut stream), b"c");
-            stream
-                .write_all(b"+")
-                .unwrap_or_else(|error| panic!("scheduler resume should acknowledge: {error}"));
-            let mut interrupt = [0_u8; 1];
-            stream
-                .read_exact(&mut interrupt)
-                .unwrap_or_else(|error| panic!("scheduler interrupt should read: {error}"));
-            assert_eq!(interrupt, [0x03]);
-            stream
-                .write_all(&encode_rsp_packet(stop))
-                .unwrap_or_else(|error| panic!("scheduler stop should write: {error}"));
-        }
 
         let mut drain = [0_u8; 64];
         while stream.read(&mut drain).is_ok_and(|read| read != 0) {}
