@@ -33,10 +33,13 @@ use crate::{
     OperationPlan, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
 };
 
+mod execution_control;
 #[cfg(target_os = "linux")]
 mod operator_recovery;
 mod policy_plan;
 mod public_mutation;
+
+pub use execution_control::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 
 const CAPABILITY_RESOURCE_VERSION_DOMAIN: &[u8] =
     b"aos.sandbox.public-capability-resource-version.v1\0";

@@ -7,10 +7,11 @@
 //! privileged broker request.
 
 use aos_proto::aos::sandbox::v1::{
-    Attachment, AttachmentPhase, DesiredLifecycle, Execution, ExecutionControlAction,
-    ExecutionIoMode, ExecutionPhase, FilesystemView, Sandbox, SandboxDesiredState,
-    SandboxObservedState, SandboxPhase, Snapshot, SnapshotPhase, Timestamp, ViewPhase,
+    Attachment, AttachmentPhase, DesiredLifecycle, Execution, ExecutionIoMode, ExecutionPhase,
+    FilesystemView, Sandbox, SandboxDesiredState, SandboxObservedState, SandboxPhase, Snapshot,
+    SnapshotPhase, Timestamp, ViewPhase,
 };
+use aos_sandbox_core::runtime_backend::EffectOperationV1;
 use aos_sandbox_core::{
     AttachmentId, ExecutionId, OperationId, ProjectId, SandboxId, SnapshotId, ViewId,
 };
@@ -28,6 +29,8 @@ use crate::{
     EffectPlan, IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
     PublicMutationEffectV1,
 };
+
+use super::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 
 const PUBLIC_MUTATION_INTENT_KEY: &[u8] = b"aos.public.mutation-intent.v1\0";
 const PUBLIC_MUTATION_INTENT_MAGIC: &[u8; 8] = b"AOSPMI01";
@@ -728,10 +731,10 @@ fn validate_execution_control(
         return Err(OperationCompilationError::Rejected);
     }
 
-    match request.action.as_known() {
-        Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
-        | Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_SIGNAL) => {}
-        Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_RESIZE) => {
+    match lower_public_execution_control_v1(request)? {
+        PublicExecutionControlDispatchV1::Attach
+        | PublicExecutionControlDispatchV1::Effect(EffectOperationV1::Signal { .. }) => {}
+        PublicExecutionControlDispatchV1::Effect(EffectOperationV1::ResizeTerminal { .. }) => {
             let command = execution
                 .command
                 .as_option()
@@ -740,7 +743,7 @@ fn validate_execution_control(
                 return Err(OperationCompilationError::Rejected);
             }
         }
-        Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_UNSPECIFIED) | None => {
+        PublicExecutionControlDispatchV1::Effect(_) => {
             return Err(OperationCompilationError::Malformed);
         }
     }
