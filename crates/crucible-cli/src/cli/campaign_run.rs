@@ -671,14 +671,13 @@ fn validate_campaign_resume_frontier(
     if let StopOutcome::BoundedPrimaryReached { proof, .. }
     | StopOutcome::BoundedPrimaryTimeout { proof, .. }
     | StopOutcome::PolicyTimeout { proof, .. } = stop
+        && proof.frontier_nanoseconds() != frontier.ticks
     {
-        if proof.frontier_nanoseconds() != frontier.ticks {
-            return Err(CliError::Identity(format!(
-                "campaign resume bounded proof frontier {} differs from terminal frontier {}",
-                proof.frontier_nanoseconds(),
-                frontier.ticks
-            )));
-        }
+        return Err(CliError::Identity(format!(
+            "campaign resume bounded proof frontier {} differs from terminal frontier {}",
+            proof.frontier_nanoseconds(),
+            frontier.ticks
+        )));
     }
 
     let deadline = match stop {
