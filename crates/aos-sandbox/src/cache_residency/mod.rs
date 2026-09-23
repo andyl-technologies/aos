@@ -117,7 +117,8 @@ pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
 pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
-    CacheResidencyProtectedOwnerV1, PublicLogicalPinAcquisitionCommitV1,
+    CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
+    PublicLogicalPinAcquisitionCommitV1,
 };
 pub use public_pin::{PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};
 pub use read_authority::{

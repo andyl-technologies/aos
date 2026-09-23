@@ -123,6 +123,39 @@ pub enum CacheResidencyProtectedColdOutcomeV1<R> {
     Terminal(R),
 }
 
+/// Retains exact recovery custody across reopen and authority failures.
+#[must_use = "protected recovery must be classified or retried"]
+pub enum CacheResidencyProtectedOwnerRecoveryV1<R> {
+    /// Protected reopen or preflight failed before consuming the opaque token.
+    Pending {
+        /// Durable identity for a later cold lookup if the process restarts.
+        transaction_id: [u8; 16],
+        /// Exact ambiguous transaction for another recovery pass.
+        pending: CacheResidencyOutcomeUnknownV1,
+        /// Reopen or authority failure.
+        cause: CacheResidencyProtectedJournalErrorV1,
+    },
+    /// The token was classified, with any final authority failure still visible.
+    Classified {
+        /// Durable identity for revalidation when no handoff was returned.
+        transaction_id: [u8; 16],
+        /// Exact applied, retry, diverged, or indeterminate result.
+        recovery: CacheResidencyRecoveryV1,
+        /// Physical handoff result, if current postcommit reached the callback.
+        handoff: Option<R>,
+        /// Final currentness failed after classification or handoff.
+        authority_error: Option<CacheResidencyProtectedJournalErrorV1>,
+    },
+    /// An internal classification handoff could not return its opaque value.
+    /// The stable transaction identity is the only permitted cold fallback.
+    ColdLookupRequired {
+        /// Durable transaction identity supplied by the caller.
+        transaction_id: [u8; 16],
+        /// Failure that prevented exact in-process classification.
+        cause: CacheResidencyProtectedJournalErrorV1,
+    },
+}
+
 /// Classifies an exact cold pin change against current protected and owner state.
 #[cfg(target_os = "linux")]
 #[must_use = "cold pin recovery must be settled or retried"]
@@ -1447,42 +1480,103 @@ impl CacheResidencyProtectedOwnerV1 {
         })
     }
 
-    /// Reopens protected state and classifies one exact ambiguous transition.
+    /// Reopens protected state while retaining every ambiguous recovery result.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when protected reopen or complete typed replay fails.
+    /// The caller supplies the durable transaction identity for cold recovery
+    /// if an internal classification handoff cannot preserve its opaque token.
+    /// Reopen, replay, and final authority failures never turn a protected
+    /// result or physical callback into an unqualified public success.
     pub fn recover<R>(
         &mut self,
+        transaction_id: [u8; 16],
         pending: CacheResidencyOutcomeUnknownV1,
         handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
-    ) -> Result<(CacheResidencyRecoveryV1, Option<R>), CacheResidencyProtectedJournalErrorV1> {
-        self.reopen_state()?;
-        let authority = Arc::clone(&self.authority);
-        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
-            let journal = self
-                .state_journal
-                .as_mut()
-                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            let journal = CacheResidencyProtectedJournalV1::claim(journal, validator)?;
-            let mut recovery = journal.recover(pending);
-            let handoff_result = match &mut recovery {
-                CacheResidencyRecoveryV1::Applied(applied) => {
-                    if refresh().is_err() {
-                        return Ok((recovery, None));
-                    }
-                    let Some(capability) = applied.take_postcommit() else {
-                        return Ok((recovery, None));
-                    };
-                    let validated = capability.consume(&journal)?;
-                    Some(handoff(validated))
-                }
-                CacheResidencyRecoveryV1::Retry(_)
-                | CacheResidencyRecoveryV1::Diverged(_)
-                | CacheResidencyRecoveryV1::Indeterminate { .. } => None,
+    ) -> CacheResidencyProtectedOwnerRecoveryV1<R> {
+        if let Err(cause) = self.reopen_state() {
+            return CacheResidencyProtectedOwnerRecoveryV1::Pending {
+                transaction_id,
+                pending,
+                cause,
             };
-            Ok((recovery, handoff_result))
-        })
+        }
+
+        let mut pending = Some(pending);
+        let mut classified = None;
+        let authority = Arc::clone(&self.authority);
+        let result = authority.while_authority_current(
+            &[],
+            |_owner, _capabilities, _now, validator, refresh| {
+                let journal = self
+                    .state_journal
+                    .as_mut()
+                    .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let journal = CacheResidencyProtectedJournalV1::claim(journal, validator)?;
+                let exact = pending
+                    .take()
+                    .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let mut recovery = journal.recover(exact);
+                let handoff_result = match &mut recovery {
+                    CacheResidencyRecoveryV1::Applied(applied) => {
+                        if let Err(cause) = refresh() {
+                            classified = Some((recovery, None));
+                            return Err(cause);
+                        }
+                        let Some(capability) = applied.take_postcommit() else {
+                            classified = Some((recovery, None));
+                            return Ok(());
+                        };
+                        let validated = match capability.consume(&journal) {
+                            Ok(validated) => validated,
+                            Err(cause) => {
+                                classified = Some((recovery, None));
+                                return Err(cause);
+                            }
+                        };
+                        Some(handoff(validated))
+                    }
+                    CacheResidencyRecoveryV1::Retry(_)
+                    | CacheResidencyRecoveryV1::Diverged(_)
+                    | CacheResidencyRecoveryV1::Indeterminate { .. } => None,
+                };
+                classified = Some((recovery, handoff_result));
+                Ok(())
+            },
+        );
+
+        match (classified, pending, result) {
+            (Some((recovery, handoff)), _, Ok(())) => {
+                CacheResidencyProtectedOwnerRecoveryV1::Classified {
+                    transaction_id,
+                    recovery,
+                    handoff,
+                    authority_error: None,
+                }
+            }
+            (Some((recovery, handoff)), _, Err(cause)) => {
+                CacheResidencyProtectedOwnerRecoveryV1::Classified {
+                    transaction_id,
+                    recovery,
+                    handoff,
+                    authority_error: Some(cause),
+                }
+            }
+            (None, Some(pending), Err(cause)) => CacheResidencyProtectedOwnerRecoveryV1::Pending {
+                transaction_id,
+                pending,
+                cause,
+            },
+            (None, Some(pending), Ok(())) => CacheResidencyProtectedOwnerRecoveryV1::Pending {
+                transaction_id,
+                pending,
+                cause: ProtectedDomainJournalErrorV1::StaleAuthority,
+            },
+            (None, _, result) => CacheResidencyProtectedOwnerRecoveryV1::ColdLookupRequired {
+                transaction_id,
+                cause: result
+                    .err()
+                    .unwrap_or(ProtectedDomainJournalErrorV1::StaleAuthority),
+            },
+        }
     }
 
     /// Resolves one cold transaction without granting blind effect replay.
