@@ -303,16 +303,18 @@ the outstanding work concrete:
   into the request digest, and rechecks peer liveness before atomic admission.
   The worker registers a caller of this entry point and dispatches method-typed
   effects. The lifecycle, ownership retry, and cancellation paths have
-  production handlers; `ExecutionControl`, `CachePin`, and `CacheUnpin`
-  currently admit but fall through to a retry-only controller effect. Cache
-  pin/unpin admission and effect retry both fence the named view or attachment
-  to its project and current resource version; this is not a protected pin
-  transaction or proof that the object belongs to that consumer. Other
-  operator recovery actions other than ownership-gate Retry lack a completing
-  effect path and are rejected before new admission; Retry is admitted only for
-  an operation with a validated ownership gate. Connect the remaining methods
-  to their protected owners before claiming the public mutation family is
-  complete.
+  production handlers. `CacheUnpin` now drains every retained partition pin
+  through protected and physical owners, retains ambiguous in-process custody,
+  and cold-reconciles released tombstones before completing. `ExecutionControl`
+  and `CachePin` still admit but fall through to a retry-only controller effect.
+  Cache pin admission fences the named view or attachment to its project and
+  current resource version, and the source-membership and protected pin helpers
+  exist, but no production View source handoff or controller pin execution is
+  connected yet. Operator recovery actions other than ownership-gate Retry
+  lack a completing effect path and are rejected before new admission; Retry is
+  admitted only for an operation with a validated ownership gate. Connect the
+  remaining methods to their protected owners before claiming the public
+  mutation family is complete.
 - Execution control is not a same-process owner call. Public admission now
   separates OpenSSH attach from checked resize and signal effects, and the
   dormant Host backend can bind issued authorize, resize, signal, cancel, and
