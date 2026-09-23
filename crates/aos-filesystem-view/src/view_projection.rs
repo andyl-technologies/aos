@@ -218,6 +218,36 @@ pub struct ValidatedViewProjection<'index, 'bytes> {
     commitment: [u8; 32],
 }
 
+/// Retains proof that an exact portable object belongs to a validated View source.
+///
+/// This proof borrows the authenticated View projection and its source index;
+/// it cannot outlive either one. It does not establish that the View revision
+/// is still current or grant physical cache or runtime-read authority.
+pub struct ValidatedViewSourceObject<'projection, 'index, 'bytes> {
+    projection: &'projection ValidatedViewProjection<'index, 'bytes>,
+    object: &'projection ObjectDescriptor,
+}
+
+impl<'projection, 'index, 'bytes> ValidatedViewSourceObject<'projection, 'index, 'bytes> {
+    /// Returns the exact portable object covered by this membership proof.
+    #[must_use]
+    pub const fn object(&self) -> &ObjectDescriptor {
+        self.object
+    }
+
+    /// Returns the authenticated View revision that owns this source dependency.
+    #[must_use]
+    pub const fn view_descriptor(&self) -> &ObjectDescriptor {
+        self.projection.view_descriptor()
+    }
+
+    /// Returns the logical View identity and revision bound by the projection.
+    #[must_use]
+    pub const fn view_identity(&self) -> (ViewId, Revision) {
+        self.projection.view_identity()
+    }
+}
+
 impl<'index, 'bytes> ValidatedViewProjection<'index, 'bytes> {
     /// Returns the decoded View covered by the exact descriptor proof.
     #[must_use]
@@ -259,9 +289,32 @@ impl<'index, 'bytes> ValidatedViewProjection<'index, 'bytes> {
         &self,
         object: &ObjectDescriptor,
     ) -> Result<bool, ProjectionError> {
-        self.index
-            .references_portable_object(object)
-            .map_err(ProjectionError::Index)
+        Ok(self.prove_source_object(object)?.is_some())
+    }
+
+    /// Borrows proof that this authenticated View source references an object.
+    ///
+    /// Source membership includes objects hidden by presentation actions; it
+    /// establishes a retention dependency, not permission to read a path.
+    /// The caller must separately prove the View revision remains current.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectionError::Index`] if an authenticated index record
+    /// cannot be decoded, which safe callers cannot cause.
+    pub fn prove_source_object<'projection>(
+        &'projection self,
+        object: &'projection ObjectDescriptor,
+    ) -> Result<Option<ValidatedViewSourceObject<'projection, 'index, 'bytes>>, ProjectionError>
+    {
+        if !self.index.references_portable_object(object)? {
+            return Ok(None);
+        }
+
+        Ok(Some(ValidatedViewSourceObject {
+            projection: self,
+            object,
+        }))
     }
 
     /// Returns all mappings in byte-component path order.

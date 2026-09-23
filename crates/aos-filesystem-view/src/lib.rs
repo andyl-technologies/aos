@@ -53,7 +53,8 @@ pub use remote_source::{
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
 pub use view_projection::{
     ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
-    SyntheticDirectoryMetadata, ValidatedViewProjection, compile_view_projection,
+    SyntheticDirectoryMetadata, ValidatedViewProjection, ValidatedViewSourceObject,
+    compile_view_projection,
 };
 pub use worker::{
     AttachmentHealth, AuthenticatedConnectionJoin, BackingDisposition, BackingIdentity,
