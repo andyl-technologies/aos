@@ -231,12 +231,13 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     let mut restarted = start_packaged_service(&fixture, &authority)?;
     let paused = campaign_status(&fixture)?;
     assert_eq!(paused["state"], "paused");
-    attest_fingerprint_enabled_qemu_descendants(&restarted, "restarted paused exact restore")?;
-    println!("\nguest_choice_restarted_qemu_fingerprint_enabled=true");
 
     resume_campaign(&fixture, &next_command_identity(&mut checkpoint_command)?)?;
     let resumed = wait_for_resumed_attempt(&fixture, terminal_attempt, checkpoint)?;
     assert_eq!(resumed, checkpoint);
+    // A promoted paused root stays durable; its QEMU process starts on resume.
+    attest_fingerprint_enabled_qemu_descendants(&restarted, "restarted resumed exact restore")?;
+    println!("\nguest_choice_restarted_qemu_fingerprint_enabled=true");
 
     let after_resume_checkpoint = capture_checkpoint_after_progress(
         &fixture,
