@@ -289,11 +289,25 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
-    let controller = open_controller(&configuration, node_id, Arc::clone(&sessions))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(ControllerRuntimeError::Runtime)?;
+    let attachment_host = match runtime.block_on(attachment_target::observe_host_service_identity())
+    {
+        Ok(identity) => Some(identity),
+        Err(error) => {
+            // Unrelated controller work continues; attachment effects retain no target.
+            eprintln!("aos-sandboxd: Host attachment identity unavailable: {error}");
+            None
+        }
+    };
+    let controller = open_controller(
+        &configuration,
+        node_id,
+        Arc::clone(&sessions),
+        attachment_host,
+    )?;
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
         Some(runtime.block_on(public_api::bind(configuration.uid))?)
@@ -1389,6 +1403,7 @@ fn open_controller(
     configuration: &RuntimeConfiguration,
     node_id: [u8; 16],
     sessions: SharedControllerBrokerSessions,
+    attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     let (journal, _) = Journal::open_protected_at_for_uid(
         &configuration.state_directory,
@@ -1397,7 +1412,13 @@ fn open_controller(
         configuration.uid,
     )?;
 
-    controller_from_journal(journal, node_id, sessions, configuration.uid)
+    controller_from_journal(
+        journal,
+        node_id,
+        sessions,
+        configuration.uid,
+        attachment_host,
+    )
 }
 
 fn controller_from_journal(
@@ -1405,6 +1426,7 @@ fn controller_from_journal(
     node_id: [u8; 16],
     sessions: SharedControllerBrokerSessions,
     controller_uid: u32,
+    attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -1415,7 +1437,12 @@ fn controller_from_journal(
         ProductionOperationCompilerV1,
         Reconciler::new(
             journal,
-            ProductionEffectExecutor::open(sessions, controller_uid, NodeId::from_bytes(node_id))?,
+            ProductionEffectExecutor::open(
+                sessions,
+                controller_uid,
+                NodeId::from_bytes(node_id),
+                attachment_host,
+            )?,
         ),
     ))
 }
@@ -1583,6 +1610,7 @@ fn parse_identity(
 struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
+    attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
@@ -1620,6 +1648,7 @@ impl ProductionEffectExecutor {
         sessions: SharedControllerBrokerSessions,
         controller_uid: u32,
         node: NodeId,
+        attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     ) -> Result<Self, ControllerRuntimeError> {
         let broker_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
             .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
@@ -1631,6 +1660,7 @@ impl ProductionEffectExecutor {
         Ok(Self {
             sessions,
             broker_plan_signer,
+            attachment_host,
             source_domains,
             cache_inventory: None,
             cache_physical: None,
@@ -3473,6 +3503,17 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 |receipt| receipt.map_or(EffectObservation::Absent, EffectObservation::Applied),
             );
         }
+        if matches!(
+            plan.public_mutation_method(),
+            Some(
+                aos_sandbox::controller_query::PublicOperationMethodV1::AttachView
+                    | aos_sandbox::controller_query::PublicOperationMethodV1::ReplaceAttachment
+                    | aos_sandbox::controller_query::PublicOperationMethodV1::DetachView
+            )
+        ) {
+            // Generic lifecycle receipts do not prove an attachment or Mount effect.
+            return Ok(EffectObservation::Absent);
+        }
         if plan.public_mutation_method()
             != Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
         {
@@ -3648,6 +3689,38 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         if let DormantSandboxRequestKindV1::ViewRelease(release) = &request {
             return view_mutations::apply_release_view(operation_id, &context, release, journal);
+        }
+        if matches!(
+            &request,
+            DormantSandboxRequestKindV1::ViewAttach(_)
+                | DormantSandboxRequestKindV1::ViewReplace(_)
+                | DormantSandboxRequestKindV1::ViewDetach(_)
+        ) {
+            let sandbox = attachment_target::admitted_consumer_sandbox(
+                journal,
+                operation_id,
+                context.project(),
+                &request,
+            )?;
+            let host = self.attachment_host.as_ref().ok_or_else(|| {
+                EffectFailure::Retryable("exact Host attachment identity is unavailable".to_owned())
+            })?;
+            let inputs = attachment_target::ControllerAttachmentTargetInputsV1::from_protected_configuration(
+                host,
+                self.node,
+            )
+            .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+            let outcome = inputs
+                .acquire(journal, sandbox)
+                .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+            return Err(EffectFailure::Retryable(match outcome {
+                aos_sandbox::runtime_scope::NamespaceTargetOutcome::Current(_) => {
+                    "attachment desired-state and Mount effect is pending".to_owned()
+                }
+                aos_sandbox::runtime_scope::NamespaceTargetOutcome::AdvanceRequired(_) => {
+                    "attachment namespace assignment successor is pending".to_owned()
+                }
+            }));
         }
         let cache_consumer = if matches!(
             &request,
