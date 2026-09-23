@@ -1664,7 +1664,6 @@ impl ProductionVmLifecycleLoop {
         let mut boundaries = Vec::new();
         for vm in self.source.world().vm_nodes() {
             boundary()?;
-            let scheduler_time = self.inner.loop_impl().scheduler_time_for_node(&vm.id)?;
             if self.node_service_states.get(&vm.id)
                 == Some(&ProductionNodeServiceState::PermanentlyFailed)
             {
@@ -1689,7 +1688,7 @@ impl ProductionVmLifecycleLoop {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: format!("exact checkpoint has no service state for `{}`", vm.id.name),
                 })?;
-            boundaries.push((vm.id.clone(), physical.ticks, scheduler_time, service_state));
+            boundaries.push((vm.id.clone(), physical.ticks, service_state));
         }
 
         // Own every scheduler/controller input before the first QMP save can

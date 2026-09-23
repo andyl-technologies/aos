@@ -142,7 +142,7 @@ pub(in crate::vm_lifecycle) struct PendingExactCapture {
     pub(super) node: NodeId,
     /// Physical icount captured from the node.
     pub(super) counter: u64,
-    /// Scheduler time paired with the physical counter.
+    /// Shared scheduler frontier bound to the checkpoint.
     pub(super) scheduler_time: VirtualTime,
     /// Live QEMU snapshot deleted before publication or during rollback.
     pub(super) snapshot: ExactSnapshotHandle,
@@ -179,7 +179,7 @@ pub(super) struct PreparedExactCheckpointTarget {
     pub(super) node: NodeId,
     /// Physical icount paired with the exact snapshot.
     pub(super) counter: u64,
-    /// Scheduler time paired with the physical counter.
+    /// Shared scheduler frontier bound to the checkpoint.
     pub(super) scheduler_time: VirtualTime,
     /// Lifecycle state that selects the running or paused capture operation.
     pub(super) service_state: ProductionNodeServiceState,
@@ -209,7 +209,7 @@ pub(super) fn prepare_exact_checkpoint_targets(
     configuration: &Configuration,
     checkpoint_virtual_time: VirtualTime,
     node_icounts: &BTreeMap<NodeId, crucible::Icount>,
-    boundaries: Vec<(NodeId, u64, VirtualTime, ProductionNodeServiceState)>,
+    boundaries: Vec<(NodeId, u64, ProductionNodeServiceState)>,
     node_indexes: &BTreeMap<NodeId, usize>,
     node_run_directories: &BTreeMap<NodeId, PathBuf>,
     staging: &Path,
@@ -237,7 +237,7 @@ pub(super) fn prepare_exact_checkpoint_targets(
             message: format!("reserve exact checkpoint prepared targets: {error}"),
         })?;
 
-    for (node, counter, scheduler_time, service_state) in boundaries {
+    for (node, counter, service_state) in boundaries {
         let checkpoint = Checkpoint::from_recorded_configuration(
             configuration,
             parent.as_ref(),
@@ -268,7 +268,7 @@ pub(super) fn prepare_exact_checkpoint_targets(
         prepared.push(PreparedExactCheckpointTarget {
             node,
             counter,
-            scheduler_time,
+            scheduler_time: checkpoint_virtual_time,
             service_state,
             checkpoint,
             source_overlay: source_directory.join(DEFAULT_ROOT_OVERLAY_FILE_NAME),
