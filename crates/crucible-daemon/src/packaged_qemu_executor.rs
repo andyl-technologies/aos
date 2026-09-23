@@ -1078,6 +1078,7 @@ where
         build_promotions,
         |_store,
          _checkpoints,
+         finding_exact_retention,
          shared,
          worker_state_root,
          worker_count,
@@ -1103,7 +1104,10 @@ where
                                 fresh_lifecycles,
                             );
                         (
-                            QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver),
+                            QemuFreshExecutionRunner::new(fresh_lifecycles, QemuFreshModeledDriver)
+                                .with_terminal_exact_retention_source(Arc::clone(
+                                    finding_exact_retention,
+                                )),
                             evidence,
                         )
                     })
@@ -1137,6 +1141,7 @@ where
     I: FnOnce(
         &CampaignExecutorStore,
         &Arc<ExactCheckpointStore>,
+        &Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>,
         &SharedQemuAttemptHostResourceFactory<H>,
         &Path,
         usize,
@@ -1245,6 +1250,7 @@ where
     let initial_runner_build = build_initial_runners(
         &store,
         &checkpoints,
+        &finding_exact_retention,
         &shared,
         &worker_state_root,
         config.worker_count,

@@ -31,6 +31,7 @@ use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::crucible_execution::CrucibleAttemptOrigin;
@@ -665,6 +666,17 @@ pub trait QemuFreshAttemptDriver {
     /// Driver-specific modeled or result-construction failure.
     type Error;
 
+    /// Borrows the modeled stop's exact choice closure and terminal event count.
+    ///
+    /// Drivers without a durable terminal boundary leave auxiliary finding
+    /// capture unavailable; the semantic observation still seals normally.
+    fn terminal_checkpoint_choices(
+        &self,
+        _pending: &Self::Pending,
+    ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
+        None
+    }
+
     /// Drives the lifecycle to a modeled stop without returning an accepted product.
     ///
     /// `materialization` contains the bounded event history, terminal state,
@@ -729,6 +741,10 @@ impl QemuCheckpointChoiceProvenance {
         }
     }
 
+    pub(crate) fn configuration_id(&self) -> ConfigurationId {
+        ConfigurationId::from_hash(CampaignHash::from_bytes(self.configuration.id().bytes))
+    }
+
     pub(crate) fn bind_capture(
         self,
         source: &ScenarioDefForm,
@@ -768,6 +784,8 @@ pub(crate) struct QemuFreshExecutionRunner<F, D> {
     driver: D,
     finding_replay_capture:
         Option<crate::automatic_finding_runner::QemuFindingReplayCaptureProducer>,
+    terminal_exact_retention:
+        Option<Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>>,
 }
 
 /// Stable reasons an exact finding candidate cannot be reconstructed.
@@ -799,6 +817,7 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             lifecycles,
             driver,
             finding_replay_capture: None,
+            terminal_exact_retention: None,
         }
     }
 
@@ -807,6 +826,14 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
         producer: crate::automatic_finding_runner::QemuFindingReplayCaptureProducer,
     ) -> Self {
         self.finding_replay_capture = Some(producer);
+        self
+    }
+
+    pub(crate) fn with_terminal_exact_retention_source(
+        mut self,
+        source: Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>,
+    ) -> Self {
+        self.terminal_exact_retention = Some(source);
         self
     }
 

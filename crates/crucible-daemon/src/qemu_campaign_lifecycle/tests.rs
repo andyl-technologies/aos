@@ -1015,6 +1015,7 @@ struct BoundaryCaptureLifecycle {
     captured: Arc<Mutex<Vec<CapturedBoundary>>>,
     final_events: Vec<SchedulerEventLogEntry>,
     replay_decisions: VecDeque<Decision>,
+    terminal_failure: bool,
 }
 
 impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
@@ -1066,13 +1067,23 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
-        None
+        (self.terminal_failure && self.quanta > 0).then(|| {
+            crucible::QuantumTerminalVerdict::Failed(vec![String::from("retained assertion")])
+        })
     }
 
     fn prepare_terminal_checkpoint(
         &mut self,
-        _cause: crucible::CheckpointTerminalCause,
+        cause: crucible::CheckpointTerminalCause,
     ) -> Result<(), crucible::SchedulerError> {
+        if self.terminal_failure
+            && cause
+                == crucible::CheckpointTerminalCause::Failed(vec![String::from(
+                    "retained assertion",
+                )])
+        {
+            return Ok(());
+        }
         Err(crucible::SchedulerError::BoundaryViolation {
             message: String::from(
                 "boundary capture fixture cannot retain a terminal checkpoint cause",
@@ -1169,6 +1180,7 @@ struct BoundaryCaptureLifecycleFactory {
     captured: Arc<Mutex<Vec<CapturedBoundary>>>,
     final_events: Vec<SchedulerEventLogEntry>,
     replay_decisions: VecDeque<Decision>,
+    terminal_failure: bool,
 }
 
 struct SequencedBoundaryCaptureLifecycleFactory {
@@ -1197,6 +1209,7 @@ impl QemuFreshAttemptLifecycleFactory for BoundaryCaptureLifecycleFactory {
             captured: Arc::clone(&self.captured),
             final_events: self.final_events.clone(),
             replay_decisions: self.replay_decisions.clone(),
+            terminal_failure: self.terminal_failure,
         })
     }
 }
@@ -1233,6 +1246,7 @@ impl QemuFreshAttemptLifecycleFactory for SequencedBoundaryCaptureLifecycleFacto
             captured: Arc::clone(&self.captured),
             final_events,
             replay_decisions,
+            terminal_failure: false,
         })
     }
 }
@@ -1964,6 +1978,7 @@ fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown
         captured: Arc::new(Mutex::new(Vec::new())),
         final_events: Vec::new(),
         replay_decisions: VecDeque::new(),
+        terminal_failure: false,
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
@@ -2000,6 +2015,147 @@ fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown
         outcome.materialization(),
         CrucibleMaterializationTier::ThinReplay
     );
+}
+
+struct RecordingTerminalRetentionSource {
+    captures: Arc<Mutex<Vec<crate::automatic_finding_runner::FindingTerminalCheckpointIdentity>>>,
+    reject_capture: bool,
+}
+
+impl crucible_campaign::FindingExactCheckpointAuthenticator for RecordingTerminalRetentionSource {
+    fn authenticate_finding_exact_checkpoint(
+        &self,
+        _checkpoint: ExactCheckpointId,
+        _scenario: ScenarioDefId,
+        _scenario_artifact: crucible_campaign::ScenarioArtifactId,
+        _configuration: ConfigurationId,
+        _maximum_metadata_bytes: u64,
+    ) -> Result<
+        crucible_campaign::AuthenticatedFindingExactCheckpoint,
+        crucible_campaign::FindingExactCheckpointAuthenticationError,
+    > {
+        Err(crucible_campaign::FindingExactCheckpointAuthenticationError::AuthenticationFailed)
+    }
+}
+
+impl crate::automatic_finding_runner::FindingExactRetentionSource
+    for RecordingTerminalRetentionSource
+{
+    fn candidate_checkpoints(
+        &self,
+        _configuration: ConfigurationId,
+        _maximum_candidates: usize,
+    ) -> Result<
+        Vec<ExactCheckpointId>,
+        crate::automatic_finding_runner::FindingExactCandidateInventoryError,
+    > {
+        Ok(Vec::new())
+    }
+
+    fn exact_findings_enabled(
+        &self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+    ) -> bool {
+        true
+    }
+
+    fn retain_terminal_checkpoint(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+        _context: &AttemptExecutionContext,
+        identity: crate::automatic_finding_runner::FindingTerminalCheckpointIdentity,
+    ) -> Result<(), crate::automatic_finding_runner::FindingExactCandidateInventoryError> {
+        if self.reject_capture {
+            return Err(
+                crate::automatic_finding_runner::FindingExactCandidateInventoryError::Unavailable,
+            );
+        }
+        assert_eq!(
+            ConfigurationId::from_hash(CampaignHash::from_bytes(capture.configuration().bytes)),
+            identity.configuration
+        );
+        self.captures
+            .lock()
+            .expect("terminal captures")
+            .push(identity);
+        Ok(())
+    }
+}
+
+#[test]
+fn failed_observation_retains_terminal_boundary_without_replacing_semantic_result() {
+    let directory = tempfile::tempdir().expect("terminal checkpoint fixture directory");
+    let fixture =
+        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
+            .expect("terminal checkpoint fixture");
+    let input = modeled_fresh_runner_input_for_scenario(
+        fixture.source().clone(),
+        StopCondition::ExecutionQuanta(1),
+    );
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let source = Arc::new(RecordingTerminalRetentionSource {
+        captures: Arc::clone(&captures),
+        reject_capture: false,
+    });
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::RetainOnFailure,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    );
+    let mut runner = QemuFreshExecutionRunner::new(
+        BoundaryCaptureLifecycleFactory {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            final_events: Vec::new(),
+            replay_decisions: VecDeque::new(),
+            terminal_failure: true,
+        },
+        QemuFreshModeledDriver::new(),
+    )
+    .with_terminal_exact_retention_source(source);
+
+    let outcome = runner
+        .execute(&input, &context)
+        .expect("failed observation");
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::PreparedSemantic(_)
+    ));
+    let retained = captures.lock().expect("terminal captures");
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].scenario, input.lineage().scenario());
+    assert_eq!(
+        retained[0].scenario_artifact,
+        input.lineage().scenario_content()
+    );
+    assert_eq!(retained[0].event_count, 1);
+    drop(retained);
+
+    let failing_source = Arc::new(RecordingTerminalRetentionSource {
+        captures: Arc::clone(&captures),
+        reject_capture: true,
+    });
+    let mut runner = QemuFreshExecutionRunner::new(
+        BoundaryCaptureLifecycleFactory {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            final_events: Vec::new(),
+            replay_decisions: VecDeque::new(),
+            terminal_failure: true,
+        },
+        QemuFreshModeledDriver::new(),
+    )
+    .with_terminal_exact_retention_source(failing_source);
+
+    let outcome = runner
+        .execute(&input, &context)
+        .expect("optional capture failure");
+    assert!(matches!(
+        outcome.product(),
+        AttemptExecutionProduct::PreparedSemantic(_)
+    ));
+    assert_eq!(captures.lock().expect("terminal captures").len(), 1);
 }
 
 fn finding_candidate_artifact(input: &CrucibleAttemptExecution) -> ConfigurationArtifact {
@@ -2145,6 +2301,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: vec![final_event],
             replay_decisions: decisions,
+            terminal_failure: false,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2247,6 +2404,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                         captured: Arc::new(Mutex::new(Vec::new())),
                         final_events: vec![final_event],
                         replay_decisions: decisions,
+                        terminal_failure: false,
                     },
                     QemuFreshModeledDriver::new(),
                 );
@@ -2477,6 +2635,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
                 AssertionPhase::Violated,
             )],
             replay_decisions: replay_decisions.clone(),
+            terminal_failure: false,
         },
         QemuFreshSupplementalModeledDriver::new(Some(Arc::clone(&oracle))),
     );
@@ -2584,6 +2743,7 @@ fn finding_candidate_replay_evaluates_the_declared_stop_after_materialization() 
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: Vec::new(),
             replay_decisions: VecDeque::new(),
+            terminal_failure: false,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2615,6 +2775,7 @@ fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
                 stream: RngStreamId::from_name("fresh-runner-non-genesis"),
                 value: 7,
             })]),
+            terminal_failure: false,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2651,6 +2812,7 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
                 stream: RngStreamId::from_name("fresh-runner-non-genesis"),
                 value: 7,
             })]),
+            terminal_failure: false,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2716,6 +2878,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: vec![final_event],
             replay_decisions: VecDeque::from([decision]),
+            terminal_failure: false,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -3051,6 +3214,7 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
                 captured: Arc::new(Mutex::new(Vec::new())),
                 final_events: vec![final_event],
                 replay_decisions: VecDeque::new(),
+                terminal_failure: false,
             },
             QemuFreshModeledDriver::new(),
         );
