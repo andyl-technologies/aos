@@ -8,6 +8,7 @@
 //! the fixed replay factories under disjoint thin bindings.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use crucible::{
@@ -20,8 +21,8 @@ use crucible_api::{
 };
 use crucible_campaign::{AttemptResourceLimits, ExecutionRetentionIntent};
 use crucible_qemu::{
-    QemuBakedGenesisSnapshot, QemuReplayValidationExecutor, QemuReplayValidationThinAdmission,
-    QemuVmRealizationError,
+    QemuBakedGenesisSnapshot, QemuLiveNodeStepGateConfig, QemuReplayValidationExecutor,
+    QemuReplayValidationThinAdmission, QemuVmRealizationError,
 };
 use thiserror::Error;
 
@@ -547,8 +548,8 @@ where
     let mut thin_directory = guard.prepare_generation_run_directory(requirements)?;
     guard.check_operational_boundary()?;
 
-    let exact_config = profile.for_generation(exact_directory.path(), 1);
-    let thin_config = profile.for_generation(thin_directory.path(), 2);
+    let (exact_config, thin_config) =
+        replay_oracle_launch_configs(profile, exact_directory.path(), thin_directory.path());
     // The thin leg cold-boots QEMU, so its pinned directory needs the same
     // guarded VMState and root-overlay preparation as an ordinary fresh launch.
     let preparation = thin_directory.prepare_fresh_artifacts_guarded(
@@ -596,6 +597,21 @@ where
     );
     let executor = QemuReplayValidationExecutor::new(exact_launcher, thin_launcher)?;
     Ok((store, executor))
+}
+
+fn replay_oracle_launch_configs(
+    profile: &ProductionVmNodeReplayLaunchProfile,
+    exact_directory: &Path,
+    thin_directory: &Path,
+) -> (QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateConfig) {
+    // The legs run sequentially in separate guarded directories. Their
+    // lifecycle generation is continuation state compared by the oracle.
+    const PROCESS_GENERATION: u64 = 1;
+
+    (
+        profile.for_generation(exact_directory, PROCESS_GENERATION),
+        profile.for_generation(thin_directory, PROCESS_GENERATION),
+    )
 }
 
 fn map_replay_admission_error(error: LifecycleApiError) -> QemuVmRealizationError {
@@ -658,6 +674,30 @@ fn cancellation_boundary(cancellation: &ExecutionCancellation) -> Result<(), Lif
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_oracle_legs_share_lifecycle_generation_in_distinct_directories() {
+        let profile = ProductionVmNodeReplayLaunchProfile::new(
+            NodeId {
+                name: String::from("choice-node"),
+            },
+            QemuLiveNodeStepGateConfig::new(
+                "/qemu",
+                "/plugin",
+                "/kernel",
+                "/firmware",
+                "/run/source",
+            ),
+        );
+
+        let (exact, thin) =
+            replay_oracle_launch_configs(&profile, Path::new("/run/exact"), Path::new("/run/thin"));
+
+        assert_eq!(exact, profile.for_generation("/run/exact", 1));
+        assert_eq!(thin, exact.clone().with_run_directory("/run/thin"));
+        assert_ne!(thin, profile.for_generation("/run/thin", 2));
+        assert_ne!(exact.run_directory(), thin.run_directory());
+    }
 
     #[test]
     fn baked_catalog_routes_by_the_complete_world_scenario_basis() {
