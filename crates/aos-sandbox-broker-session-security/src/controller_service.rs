@@ -304,6 +304,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)?;
     let attach_credentials = ControllerAttachCredentialsV1::from_process_credentials_optional()
         .map_err(|_| ControllerRuntimeError::InvalidAttachCredential)?;
+    let attach_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+        .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -353,6 +355,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 node_id,
                 ownership,
                 attach_credentials,
+                attach_plan_signer,
                 worker_capabilities,
                 sessions,
                 commands_rx,
@@ -500,6 +503,7 @@ fn controller_worker(
     node_id: [u8; 16],
     ownership: Option<ControllerOwnershipConfigurationV1>,
     attach_credentials: Option<ControllerAttachCredentialsV1>,
+    attach_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
     commands: mpsc::Receiver<ControllerCommand>,
@@ -552,6 +556,8 @@ fn controller_worker(
                     &mut controller,
                     ownership.as_ref(),
                     attach_credentials.as_ref(),
+                    attach_plan_signer.as_ref(),
+                    NodeId::from_bytes(node_id),
                     command,
                 ) {
                     let _ = events.send(WorkerEvent::Fatal(message));
@@ -573,6 +579,8 @@ fn handle_controller_command(
     controller: &mut ProductionController,
     ownership: Option<&ControllerOwnershipConfigurationV1>,
     attach_credentials: Option<&ControllerAttachCredentialsV1>,
+    attach_plan_signer: Option<&ControllerBrokerPlanSignerV1>,
+    node: NodeId,
     command: ControllerCommand,
 ) -> Result<(), String> {
     match command {
@@ -866,6 +874,8 @@ fn handle_controller_command(
             let result = public_attach::admit_public_attach(
                 controller,
                 attach_credentials,
+                attach_plan_signer,
+                node,
                 &mut host,
                 &peer,
                 capability_id,

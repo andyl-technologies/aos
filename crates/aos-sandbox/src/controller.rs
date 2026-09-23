@@ -5226,6 +5226,59 @@ where
         Ok(grant)
     }
 
+    /// Prepares the exact signed Host-install plan for a protected ATTACH.
+    ///
+    /// This rechecks public authorization, pending custody, and current
+    /// assignment before returning either signed-grant or broker-plan inputs.
+    /// The caller must sign the plan under the separate broker-plan authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed public request, expired pending identity, stale
+    /// execution or lease, or missing current Host authority template.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_public_attach_host_install(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+        pending: &crate::public_attach_pending::PublicAttachPendingV1,
+        node: aos_sandbox_core::NodeId,
+        signing_key: &ed25519_dalek::SigningKey,
+        trust_digest: [u8; 32],
+        gate_config_digest: [u8; 32],
+        now_seconds: i64,
+    ) -> Result<crate::public_attach_pending::PublicAttachHostInstallDraftV1, ControllerServiceError>
+    {
+        let grant = self.sign_public_attach_pending_grant(
+            peer,
+            capability_id,
+            canonical_request,
+            pending,
+            signing_key,
+            trust_digest,
+            gate_config_digest,
+            now_seconds,
+        )?;
+        let grant_fields =
+            aos_sandbox_core::public_attach_grant::verify_public_attach_pending_grant_v1(
+                &grant,
+                &signing_key.verifying_key(),
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        crate::public_attach_pending::prepare_public_attach_host_install_v1(
+            self.reconciler.journal_mut(),
+            pending,
+            peer.project(),
+            node,
+            grant,
+            grant_fields,
+            now_seconds,
+        )
+        .map_err(|_| OperationCompilationError::Rejected.into())
+    }
+
     /// Admits a public attach using current authenticated Host OpenSSH evidence.
     ///
     /// The protected issuer and route evidence must come from the controller's

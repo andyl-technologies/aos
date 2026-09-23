@@ -5,12 +5,12 @@
 //! method. Its availability check precedes the durable reservation, so an
 //! unsupported deployment does not strand a public idempotency key.
 
-use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use aos_proto::aos::sandbox::local::v1::{BrokerAuthorizationArtifactsV1, BrokerMethod};
 use aos_sandbox::attach_route_issuer::AuthenticatedOpenSshRouteV1;
 use aos_sandbox::public_api_session::PublicApiPeer;
 use aos_sandbox::public_attach_pending::PublicAttachPendingV1;
 use aos_sandbox::{AcceptOutcome, ControllerServiceError, OperationCompilationError};
-use aos_sandbox_core::CapabilityId;
+use aos_sandbox_core::{CapabilityId, NodeId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
@@ -21,6 +21,7 @@ use aos_sandbox_protocol::{
 
 use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
 use crate::controller_ownership::sample_ownership_clock;
+use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 
 use super::{AdmittedPublicAttachV1, ControllerCommandFailure, ProductionController};
 
@@ -43,6 +44,7 @@ pub(super) trait AuthenticatedHostAttachRouteExchangeV1 {
     fn install_and_observe(
         &mut self,
         grant: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
     ) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure>;
 }
 
@@ -57,6 +59,7 @@ impl AuthenticatedHostAttachRouteExchangeV1 for UnavailableHostAttachRouteV1 {
     fn install_and_observe(
         &mut self,
         _grant: &[u8],
+        _authorization: &BrokerAuthorizationArtifactsV1,
     ) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure> {
         Err(ControllerCommandFailure::ControllerUnavailable)
     }
@@ -153,12 +156,15 @@ pub(super) fn route_from_authenticated_outcome(
 pub(super) fn admit_public_attach(
     controller: &mut ProductionController,
     credentials: Option<&ControllerAttachCredentialsV1>,
+    plan_signer: Option<&ControllerBrokerPlanSignerV1>,
+    node: NodeId,
     host: &mut impl AuthenticatedHostAttachRouteExchangeV1,
     peer: &PublicApiPeer,
     capability_id: CapabilityId,
     canonical_request: &[u8],
 ) -> Result<AdmittedPublicAttachV1, ControllerCommandFailure> {
     let credentials = credentials.ok_or(ControllerCommandFailure::ControllerUnavailable)?;
+    let plan_signer = plan_signer.ok_or(ControllerCommandFailure::ControllerUnavailable)?;
     if !host.is_available() {
         return Err(ControllerCommandFailure::ControllerUnavailable);
     }
@@ -166,25 +172,46 @@ pub(super) fn admit_public_attach(
     let pending = controller
         .reserve_public_attach(peer, capability_id, canonical_request)
         .map_err(classify_controller_error)?;
+    if controller
+        .public_operation(pending.operation_id())
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
+        .is_some()
+    {
+        // Accepted replay needs method-30 fresh read-only Host gate proof.
+        // The Vacant-only grant signer must never create another install.
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
     let now_seconds = sample_ownership_clock()
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
         .wall_seconds();
     let gate_config_digest = credentials
         .gate_config_digest(&pending)
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
-    let grant = controller
-        .sign_public_attach_pending_grant(
+    let draft = controller
+        .prepare_public_attach_host_install(
             peer,
             capability_id,
             canonical_request,
             &pending,
+            node,
             &credentials.signing_key(),
             credentials.trust_digest(),
             gate_config_digest,
             now_seconds,
         )
         .map_err(classify_controller_error)?;
-    let route = host.install_and_observe(&grant)?;
+    let (grant, plan, ownership_lease, ownership_lease_signature) = draft.into_parts();
+    let signed_plan = plan_signer
+        .sign_plan(plan, now_seconds)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let authorization = BrokerAuthorizationArtifactsV1 {
+        broker_plan: signed_plan.canonical_plan().to_vec(),
+        broker_plan_signature: signed_plan.canonical_signature().to_vec(),
+        ownership_lease,
+        ownership_lease_signature,
+        ..Default::default()
+    };
+    let route = host.install_and_observe(&grant, &authorization)?;
     let (outcome, access) = controller
         .admit_public_attach_route(
             peer,

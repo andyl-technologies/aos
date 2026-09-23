@@ -13,13 +13,18 @@ use aos_proto::aos::sandbox::v1::ExecutionPhase;
 use aos_sandbox_core::public_attach_grant::{
     PUBLIC_ATTACH_GRANT_BYTES, PublicAttachPendingGrantV1, sign_public_attach_pending_grant_v1,
 };
-use aos_sandbox_core::{OperationId, SandboxId};
+use aos_sandbox_core::{
+    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, NodeId, OperationId, ProjectId,
+    ProtocolId, ProtocolVersion, SandboxId,
+};
+use aos_sandbox_protocol::semantics::host_attach_gate::canonical_host_attach_gate_semantics_v1;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };
+use crate::publication::AuthorityPublicationStore;
 use crate::runtime_authority::{
     RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
 };
@@ -202,6 +207,189 @@ pub enum PublicAttachPendingErrorV1 {
     /// The protected journal cannot durably commit or recover the reservation.
     #[error("public attach reservation authority is unavailable")]
     Unavailable,
+}
+
+/// Carries one protected grant and its exact current Host-plan inputs.
+///
+/// The caller signs the plan under the independent broker-plan authority and
+/// attaches the returned lease bytes to the authenticated method-28 request.
+pub struct PublicAttachHostInstallDraftV1 {
+    grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
+    plan: BrokerAuthorizationPlan,
+    ownership_lease: Vec<u8>,
+    ownership_lease_signature: Vec<u8>,
+}
+
+impl PublicAttachHostInstallDraftV1 {
+    /// Returns the signed dedicated-key grant sent in the exact request body.
+    #[must_use]
+    pub const fn grant(&self) -> &[u8; PUBLIC_ATTACH_GRANT_BYTES] {
+        &self.grant
+    }
+
+    /// Consumes the draft into plan-signing and lease artifact inputs.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        [u8; PUBLIC_ATTACH_GRANT_BYTES],
+        BrokerAuthorizationPlan,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        (
+            self.grant,
+            self.plan,
+            self.ownership_lease,
+            self.ownership_lease_signature,
+        )
+    }
+}
+
+/// Derives one exact Host-install plan from the protected current publication.
+///
+/// The caller must first produce `grant` using the same protected pending
+/// record and current publication. This function rechecks the current lease,
+/// execution, and assignment before committing to the byte-exact packet.
+///
+/// # Errors
+///
+/// Rejects changed pending, admitted idempotency, stale execution or lease,
+/// missing Host template, or invalid grant-plan semantics.
+pub(crate) fn prepare_public_attach_host_install_v1(
+    journal: &mut Journal,
+    pending: &PublicAttachPendingV1,
+    project: ProjectId,
+    node: NodeId,
+    grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
+    grant_fields: PublicAttachPendingGrantV1,
+    now_seconds: i64,
+) -> Result<PublicAttachHostInstallDraftV1, PublicAttachPendingErrorV1> {
+    let stored = load_public_attach_pending_v1(journal, &pending.key)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    if stored != *pending
+        || pending.expires_at <= now_seconds
+        || journal.check_idempotency(&pending.key, pending.request_digest)
+            != IdempotencyOutcome::Vacant
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Execution, pending.execution)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let PublicProjectionResourceV1::Execution(execution) = projection.resource() else {
+        return Err(PublicAttachPendingErrorV1::Corrupt);
+    };
+    if projection.project() != project
+        || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+        || !pending.matches_execution(
+            &execution.execution_id,
+            &execution.sandbox_incarnation_id,
+            execution.assignment_epoch,
+            &pending.principal,
+            &execution.audit_id,
+        )
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let sandbox = SandboxId::from_bytes(
+        execution
+            .sandbox_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicAttachPendingErrorV1::Corrupt)?,
+    );
+    let current = AuthorityPublicationStore::new(journal)
+        .current(sandbox)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let manifest = current.manifest().manifest();
+    let assignment = current
+        .manifest()
+        .broker_assignment()
+        .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let lease_assignment = current.lease().lease().assignment();
+    if manifest.project() != project
+        || manifest.node() != node
+        || manifest.incarnation().as_bytes() != &pending.incarnation
+        || manifest.epoch().get() != pending.assignment_epoch
+        || lease_assignment.sandbox() != assignment.sandbox()
+        || lease_assignment.incarnation() != assignment.incarnation()
+        || lease_assignment.epoch() != assignment.epoch()
+        || lease_assignment.digest() != assignment.digest()
+        || current.lease().lease().node() != node
+        || current.lease().lease().authority_expires_seconds() < pending.expires_at
+        || grant_fields.operation_id != *pending.operation.as_bytes()
+        || grant_fields.execution_id != pending.execution
+        || grant_fields.sandbox_id != *sandbox.as_bytes()
+        || grant_fields.incarnation_id != pending.incarnation
+        || grant_fields.node_id != *node.as_bytes()
+        || grant_fields.assignment_epoch != pending.assignment_epoch
+        || grant_fields.desired_generation != manifest.desired_generation().get()
+        || grant_fields.namespace_generation != manifest.namespace_generation().get()
+        || grant_fields.assignment_digest != *assignment.digest().as_bytes()
+        || grant_fields.lease_generation != current.lease_generation()
+        || grant_fields.lease_digest != *current.lease_digest().as_bytes()
+        || grant_fields.principal_id != pending.principal
+        || grant_fields.audit_id != pending.audit
+        || grant_fields.expires_at != pending.expires_at
+        || grant_fields.request_digest != pending.request_digest
+        || grant_fields.pending_digest != pending.record_digest()
+    {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let semantics = canonical_host_attach_gate_semantics_v1(assignment, &grant)
+        .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let template = current
+        .templates()
+        .iter()
+        .find(|candidate| candidate.audience() == BrokerAudience::Host)
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let parent = template.plan();
+    if parent.assignment() != assignment || parent.node() != node {
+        return Err(PublicAttachPendingErrorV1::Conflict);
+    }
+    let expires = now_seconds
+        .checked_add(30)
+        .map(|limit| {
+            limit
+                .min(parent.expires_seconds())
+                .min(current.lease().lease().authority_expires_seconds())
+                .min(pending.expires_at)
+        })
+        .filter(|expiry| *expiry > now_seconds && now_seconds >= parent.issued_seconds())
+        .ok_or(PublicAttachPendingErrorV1::Conflict)?;
+    let broker_grant = BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        64 * 1024,
+        0,
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 0),
+        assignment,
+        node,
+        parent.ownership_authority().clone(),
+        vec![broker_grant],
+        parent.policy_commitment(),
+        parent.revocation_scope(),
+        now_seconds,
+        expires,
+        Vec::new(),
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+
+    Ok(PublicAttachHostInstallDraftV1 {
+        grant,
+        plan,
+        ownership_lease: current.lease().canonical_lease().to_vec(),
+        ownership_lease_signature: current.lease().canonical_signature().to_vec(),
+    })
 }
 
 /// Signs the exact protected reservation for one current Host assignment.
