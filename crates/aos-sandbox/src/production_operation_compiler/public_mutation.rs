@@ -6,6 +6,8 @@
 //! ownership, and broker-domain work without confusing a public RPC with a
 //! privileged broker request.
 
+#[cfg(target_os = "linux")]
+use aos_proto::aos::sandbox::v1::ExecutionControlRequest;
 use aos_proto::aos::sandbox::v1::{
     Attachment, AttachmentPhase, DesiredLifecycle, Execution, ExecutionIoMode, ExecutionPhase,
     FilesystemView, Sandbox, SandboxDesiredState, SandboxObservedState, SandboxPhase, Snapshot,
@@ -42,12 +44,9 @@ use crate::{
 use super::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 
 #[cfg(target_os = "linux")]
-pub(super) fn prepare_authorized_attach_readiness(
-    journal: &mut Journal,
+fn authorized_attach_control(
     authorized: &AuthorizedPublicMutationRequestV1,
-    node: NodeId,
-    now_seconds: i64,
-) -> Result<PublicAttachHostQueryDraftV1, OperationCompilationError> {
+) -> Result<&ExecutionControlRequest, OperationCompilationError> {
     let Request::ExecutionControl(control) = authorized.request().request() else {
         return Err(OperationCompilationError::Malformed);
     };
@@ -56,6 +55,17 @@ pub(super) fn prepare_authorized_attach_readiness(
     }
     crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
         .map_err(|_| OperationCompilationError::Malformed)?;
+    Ok(control)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn prepare_authorized_attach_readiness(
+    journal: &mut Journal,
+    authorized: &AuthorizedPublicMutationRequestV1,
+    node: NodeId,
+    now_seconds: i64,
+) -> Result<PublicAttachHostQueryDraftV1, OperationCompilationError> {
+    let control = authorized_attach_control(authorized)?;
     let execution = load_execution_for_mutation(
         journal,
         authorized.project(),
@@ -93,14 +103,7 @@ pub(super) fn lookup_authorized_attach_existing(
     authorized: &AuthorizedPublicMutationRequestV1,
     request_digest: [u8; 32],
 ) -> Result<Option<(PublicAttachPendingV1, bool)>, OperationCompilationError> {
-    let Request::ExecutionControl(control) = authorized.request().request() else {
-        return Err(OperationCompilationError::Malformed);
-    };
-    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
-        return Err(OperationCompilationError::Malformed);
-    }
-    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
-        .map_err(|_| OperationCompilationError::Malformed)?;
+    let control = authorized_attach_control(authorized)?;
     let Some(pending) = crate::public_attach_pending::load_public_attach_pending_v1(
         journal,
         authorized.request().idempotency_key(),
@@ -130,14 +133,7 @@ pub(super) fn reserve_authorized_attach(
     authorized: &AuthorizedPublicMutationRequestV1,
     request_digest: [u8; 32],
 ) -> Result<PublicAttachPendingV1, OperationCompilationError> {
-    let Request::ExecutionControl(control) = authorized.request().request() else {
-        return Err(OperationCompilationError::Malformed);
-    };
-    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
-        return Err(OperationCompilationError::Malformed);
-    }
-    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
-        .map_err(|_| OperationCompilationError::Malformed)?;
+    let control = authorized_attach_control(authorized)?;
     if let Some(pending) = crate::public_attach_pending::load_public_attach_pending_v1(
         journal,
         authorized.request().idempotency_key(),
@@ -232,14 +228,7 @@ pub(super) fn compile_authorized_attach_route(
     route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
     issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
 ) -> Result<OperationPlan, OperationCompilationError> {
-    let Request::ExecutionControl(control) = authorized.request().request() else {
-        return Err(OperationCompilationError::Malformed);
-    };
-    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
-        return Err(OperationCompilationError::Malformed);
-    }
-    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
-        .map_err(|_| OperationCompilationError::Malformed)?;
+    let control = authorized_attach_control(authorized)?;
     let stored = crate::public_attach_pending::load_public_attach_pending_v1(
         journal,
         authorized.request().idempotency_key(),
