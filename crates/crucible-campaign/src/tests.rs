@@ -2256,7 +2256,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     );
     let envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::Observation,
-        12,
+        13,
         super::object::content_children(observation.content_children())
             .expect("observation children"),
         observation.canonical_bytes(),
@@ -2806,7 +2806,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
             .expect("finding id")
             .content_id()
             .schema_version(),
-        5
+        4
     );
     assert_eq!(
         finding.exact_pin_retention().pre_failure(),

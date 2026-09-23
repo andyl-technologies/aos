@@ -1973,7 +1973,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&bytes).as_bytes()),
-            "7e4fe96a82d9573e035d6aaf103334fa277183884a03e41c70c13676c0b87b8e"
+            "5d2a17f1d07b74f440d7568936504419c1f900ea7023ad50e89482a2fa8eeb72"
         );
         let retained = ObjectEnvelope::for_record(
             crate::CampaignRecordKind::RetainedPlannerRequest,
@@ -2014,7 +2014,7 @@ mod tests {
         );
         assert_eq!(
             encode_hex(blake3::hash(&response_bytes).as_bytes()),
-            "de4992d317ab869d23b90497de4256e8d970b68e7f0c4dc40962d1a7ad6e0881"
+            "5bc0ed80948118e079adb1048916c73026bfa529cba4c809917aa41cc4b5663a"
         );
 
         let mut wrong_version = bytes.clone();

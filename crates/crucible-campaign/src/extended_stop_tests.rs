@@ -88,6 +88,46 @@ fn campaign_policy_deadlines_are_bounded_and_preserve_primary_precedence() {
         quanta_timeout
     );
     assert!(decode::<StopOutcome>(&codec::encode(&StopOutcome::Reached(stop))).is_err());
+
+    let choice_or_fallback = StopCondition::bounded(
+        StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        },
+        Some(20),
+        Some(10),
+    )
+    .expect("bounded choice or fallback");
+    let choice = StopOutcome::BoundedPrimaryReached {
+        stop: choice_or_fallback.clone(),
+        proof: BoundedStopProof::new(6, 6),
+    };
+    assert!(choice.reaches(&choice_or_fallback));
+    assert!(choice.reached_next_choice());
+
+    let fallback = StopOutcome::BoundedPrimaryTimeout {
+        stop: choice_or_fallback.clone(),
+        proof: BoundedStopProof::new(7, 7),
+    };
+    assert!(fallback.authenticates_requested_stop(&choice_or_fallback));
+    assert!(!fallback.reaches(&choice_or_fallback));
+    assert!(!fallback.reached_next_choice());
+    assert_eq!(
+        decode::<StopOutcome>(&codec::encode(&fallback)).expect("intrinsic fallback"),
+        fallback
+    );
+
+    let forged_choice = StopOutcome::BoundedPrimaryReached {
+        stop: choice_or_fallback.clone(),
+        proof: BoundedStopProof::new(7, 7),
+    };
+    assert!(!forged_choice.authenticates_requested_stop(&choice_or_fallback));
+    assert!(decode::<StopOutcome>(&codec::encode(&forged_choice)).is_err());
+
+    let early_fallback = StopOutcome::BoundedPrimaryTimeout {
+        stop: choice_or_fallback,
+        proof: BoundedStopProof::new(6, 6),
+    };
+    assert!(decode::<StopOutcome>(&codec::encode(&early_fallback)).is_err());
 }
 
 #[test]
@@ -355,7 +395,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     .expect("service request");
     assert_eq!(
         &service_request.canonical_bytes()[..4],
-        &3_u32.to_be_bytes()
+        &4_u32.to_be_bytes()
     );
     assert_eq!(
         SubmitCampaignDiscoveryRequest::from_canonical_bytes(&service_request.canonical_bytes())
@@ -390,13 +430,13 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
     assert_eq!(
         golden_digests,
         [
-            "b0ed027903ad6ee53ff16770cbea7221db343ce284a5e01b927ed46aff2cc3c0",
-            "9f4b1ee50c0cd915fe9bf55fa9a2b765b0da73607fe794406ffd58cf9680fc6e",
-            "2c33f5842cc9ed13e921d287b34c5776385503e3feac253c4c4993b0cee7f36c",
-            "75500f41fc4855fd239cb03132231482eb085438511ef2b57a5e39631fbd31aa",
-            "8e60273d4936917295147d076e5b068fc9f12b77082fd107c1d4cb12cec092de",
-            "f3b1d09d16ab6aa112e584b8eda01f7abe8414bff8a97a3a15cf29efe6ddd03e",
-            "dcb5d010f97bfbda6697408bcd9c456031be8eb7316d49202cb0b11a98b2cbeb",
+            "bc145ec18271f78ff9f324c305856fd18152b93bab4e7e07a8a88accc8ef64e9",
+            "d4754100d75c1d9aff859cfe7e51a6bd72019abb88470969b219acfe0ebc4585",
+            "068991a7d83aed2584a57bb9baa6d4fc79012963ecfa195737479258a50c0211",
+            "d3b780564d4b0ca868586ae378d99d9f0ca24191cb262a08e473105ab4c2b988",
+            "d11fbbdd04882c242620aae2bb355719b3348729cc49c284542ff9905c0bc3c6",
+            "77d184206bea6bea5cc19d3831c4f5f73c75c884821c8dca52d10ca149afbc7e",
+            "196a26d78fa08a0775a71cd23682712965fde66f8b5921c6121582cb38d40e3f",
         ]
     );
 }

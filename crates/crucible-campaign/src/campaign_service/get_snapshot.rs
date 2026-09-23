@@ -263,8 +263,8 @@ mod tests {
                     .to_string(),
             ],
             [
-                String::from("01843c768919e715e4bc9a2c3d4d09cfc7058da77fa1ed2528832fee7ede7f2b"),
-                String::from("98737b1ddc3b8c4228638b24986242f04581852eb7f06e7b3993775d6d565254"),
+                String::from("99f9d0c5f3919827759090ae67808b9520c08185c7d256d08de06ebc36c7a769"),
+                String::from("aec79c662c8810e0941b468d44a8d40422320baf029700547caec84a8e063b26"),
             ]
         );
 

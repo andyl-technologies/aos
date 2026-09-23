@@ -1633,7 +1633,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         )
         .to_hex(),
         // Current snapshots bind the indexed budget ledger and current identities.
-        "e48d664c4be78a532e827e7e66c14ad7e975d0364ababfa5d32547ad801eb0e9",
+        "2c415412e45e5a275db196c49b4e15a1ab89d559ea5a4eb6744df5b3385d0f19",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");
@@ -1746,7 +1746,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
         // Current snapshots bind the indexed budget ledger and current identities.
-        "ed9befed91b2f4ee383f164a86a3d11d8fdd7dc4f2a21aa4cffd08e6fd905c1f",
+        "f302ed8b47d1cb7ef8885198b7c35589914619566e0a97e5fa4ecc1b5aa7fba9",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");

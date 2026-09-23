@@ -367,8 +367,8 @@ mod tests {
                     .to_string(),
             ],
             [
-                String::from("d84356d3c167c0258b616b3803b1874dceaef9d81e420085dd08f30c60b67537"),
-                String::from("6163f69741b8ee3224489d7a762e09f90a170ec7f3c0f01b4824f5140a5bcf09"),
+                String::from("5d2dec5ae4b4e1b3eea71cd931180521ede8f9023fe1fbba3611020f06aa300f"),
+                String::from("76004a5215fa89bc3264e03d7fc769a671556725e19e4c289f65c6adbc80e6b9"),
             ]
         );
     }

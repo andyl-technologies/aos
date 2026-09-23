@@ -649,7 +649,7 @@ mod tests {
                 .expect("SMC policy ID")
                 .content_id()
                 .schema_version(),
-            4
+            5
         );
     }
 

@@ -218,6 +218,48 @@ fn get_campaign_messages_are_canonical_and_request_bound() {
     response.validate_for(&request).expect("request binding");
     assert!(response.validate_for(&get_request("other")).is_err());
 
+    let timed_policy = response_policy()
+        .with_attempt_timeout_policy(
+            crate::CampaignAttemptTimeoutPolicy::new(Some(10), Some(4), Some(240_000))
+                .expect("attempt timeout policy"),
+        )
+        .expect("timed campaign policy");
+    assert_ne!(timed_policy.id().expect("timed ID"), response.policy());
+    assert!(
+        GetCampaignResponse::new(
+            &request,
+            response.snapshot(),
+            response.lineage(),
+            response.policy(),
+            timed_policy.clone(),
+            CampaignState::Running,
+        )
+        .is_err()
+    );
+    let timed_response = GetCampaignResponse::new(
+        &request,
+        response.snapshot(),
+        response.lineage(),
+        timed_policy.id().expect("timed ID"),
+        timed_policy.clone(),
+        CampaignState::Running,
+    )
+    .expect("timed response");
+    assert_eq!(timed_response.policy_body(), &timed_policy);
+    assert_eq!(
+        GetCampaignResponse::from_canonical_bytes(&timed_response.canonical_bytes())
+            .expect("timed policy response round trip"),
+        timed_response
+    );
+    assert_eq!(
+        timed_response
+            .policy_body()
+            .bound_stop(StopCondition::NextChoice)
+            .expect("bound stop")
+            .bounded_deadlines(),
+        Some((Some(10), Some(4)))
+    );
+
     assert_eq!(
         [
             blake3::hash(&request.canonical_bytes())
@@ -1132,8 +1174,8 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("ac57a4b4eb3e5780675ad023667ca406b2fddbd5693924659c1bbd581eb5e87e"),
-            String::from("18f053b14db2c9d55c37ebcb789246ae76190a17af42177c070298a556f49773"),
+            String::from("5c73704c5d3273aac2f95395f181a646110deef8d0c7326e50ab9814258d65a7"),
+            String::from("c0dee581355d2ce75f52d14f90a3338dbd30353b405f69e99e3899aaeb1143dd"),
         ]
     );
 }
@@ -1287,8 +1329,8 @@ fn discovery_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("269a135008ecab22d20877fa82820a698f54d389198f080ccd971f5421cf8a1b"),
-            String::from("f81ba154cee99a40f079be79a5e47584126ddad740d7c9e327cd4eb50baba725"),
+            String::from("3c5f6e8cb138c61f0d5166718e04a3f4531f8d44d17a5ad525c8593f80361842"),
+            String::from("4ec88d3103957d2cc90c76d5aff9c75d64601802940583d23d5d76876142fffc"),
         ]
     );
 }

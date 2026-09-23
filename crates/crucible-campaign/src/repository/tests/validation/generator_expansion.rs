@@ -832,7 +832,7 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["delta", "beta", "alpha", "gamma"]
+        vec!["beta", "delta", "gamma", "alpha"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(

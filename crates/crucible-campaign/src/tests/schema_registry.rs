@@ -234,8 +234,9 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
         let expected_version = match schema {
             "crucible.campaign.explain-campaign-attempt-response"
-            | "crucible.campaign.submit-campaign-branch-response" => "2",
-            "crucible.campaign.submit-campaign-discovery-request" => "3",
+            | "crucible.campaign.submit-campaign-branch-response"
+            | "crucible.campaign.get-campaign-response" => "2",
+            "crucible.campaign.submit-campaign-discovery-request" => "4",
             _ => "1",
         };
         assert_eq!(message[1], expected_version);
