@@ -1353,8 +1353,8 @@ branch on the verdict without parsing output:
   campaign seed into
   `CoverageGuidedFuzzConfig`, loads file-backed `crucible.scenario-family.v3`
   families with a finite `fault_densities` axis and an inline canonical
-  `fault_plan_toml` when any density is nonzero, executes local
-  `--backend double fuzz` through
+  `fault_plan_toml` when any density is nonzero. The test-only
+  `--backend double fuzz` path executes
   `ScenarioFamily::fuzz_coverage_guided` or
   `ScenarioFamily::fuzz_coverage_guided_corpus`, persists retained corpus
   artifacts through `LocalDagStore`, loads stored family hashes as strict
