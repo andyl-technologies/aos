@@ -324,7 +324,7 @@
     runtimeConditions = interface {
       inherit (facets.runtimeConditions) alias;
       name = "aos.service.runtime-conditions";
-      description = "Contributes semantic privilege-availability conditions to a service resource.";
+      description = "Requests semantic privilege-availability conditions for a service resource.";
       requestType = runtimeConditions;
       observationType = runtimeConditionsObservation;
       guarantees = [privilegeGuaranteeIdentity];
@@ -333,14 +333,14 @@
     hardening = interface {
       inherit (facets.hardening) alias;
       name = "aos.service.hardening";
-      description = "Contributes provider-neutral privilege and isolation policy to a service resource.";
+      description = "Requests provider-neutral privilege and isolation policy for a service resource.";
       requestType = hardening;
       observationType = hardeningObservation;
     };
     devicePolicy = interface {
       inherit (facets.devicePolicy) alias;
       name = "aos.service.device-policy";
-      description = "Contributes provider-neutral device-class and device-number access policy to a service resource.";
+      description = "Requests provider-neutral device-class and device-number access policy for a service resource.";
       requestType = devicePolicy;
       observationType = devicePolicyObservation;
     };

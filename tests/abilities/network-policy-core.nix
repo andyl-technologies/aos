@@ -2,7 +2,7 @@
 {lib}: let
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   networkPolicy = lib.abilities.interfaces.networkPolicy;
-  contributions = lib.mkMerge [
+  definitions = lib.mkMerge [
     {instances.workload = {};}
     (serviceManagement.forProducer {
       consumerInstance = "workload";
@@ -53,7 +53,7 @@
     packageModules = [
       {
         name = "consumer";
-        module.config.aos.abilities = contributions;
+        module.config.aos.abilities = definitions;
       }
     ];
   };

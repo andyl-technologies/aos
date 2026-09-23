@@ -153,10 +153,10 @@
     guarantees = [];
   };
   ingressMethods =
-    facetMethod ingressRequest "Observes the aggregate containing this ingress contribution.";
+    facetMethod ingressRequest "Observes the aggregate containing this ingress request.";
   ingressDeclaration = declareInterface {
     name = "aos.network.ingress-policy";
-    description = "Contributes an exact set of provider-neutral host ingress endpoints.";
+    description = "Requests an exact set of provider-neutral host ingress endpoints.";
     abi = 1;
     requestType = ingressRequest;
     methods = ingressMethods;
@@ -167,10 +167,10 @@
     guarantees = [];
   };
   forwardingMethods =
-    facetMethod forwardingRequest "Observes the aggregate containing this forwarding-policy contribution.";
+    facetMethod forwardingRequest "Observes the aggregate containing this forwarding-policy request.";
   forwardingDeclaration = declareInterface {
     name = "aos.network.forwarding-policy";
-    description = "Contributes a provider-neutral host packet-forwarding policy.";
+    description = "Requests a provider-neutral host packet-forwarding policy.";
     abi = 1;
     requestType = forwardingRequest;
     methods = forwardingMethods;
