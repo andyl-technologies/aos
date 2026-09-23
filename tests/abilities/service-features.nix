@@ -26,13 +26,10 @@
   ];
 
   systemdDevicePolicy = policyInterfaces.devicePolicy;
-  expectedDevicePolicySelector = {
-    inherit (systemdDevicePolicy.declaration) name abi;
-  };
   polkitDevicePolicies =
     builtins.filter
-    (requirement: builtins.elem expectedDevicePolicySelector requirement.accepted_interfaces)
-    (builtins.attrValues pkgs.polkit.abilities.requirementTemplates);
+    (requirement: (requirement.interface or null) == systemdDevicePolicy.declaration.name)
+    (builtins.attrValues selected.config.aos.abilities.requirementTemplates);
   polkitDevicePolicy =
     if builtins.length polkitDevicePolicies == 1
     then builtins.head polkitDevicePolicies
@@ -51,11 +48,8 @@
       }
     ];
     packageModules = [
-      {
-        name = "systemd";
-        version = pkgs.systemd.version;
-        module = ../../pkgs/system/_systemd-abilities/module.nix;
-      }
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
+      (lib.abilities.authenticatedPackageModuleRecordFor pkgs.polkit)
     ];
   };
   selectedInterfaces = selected.config.aos.abilities.interfaces;
@@ -66,8 +60,8 @@ in
   (name: policyInterfaces.${name}.declaration.name)
   (builtins.attrNames policyInterfaces)
   == expectedInterfaceNames;
-  assert polkitDevicePolicy.accepted_interfaces
-  == [expectedDevicePolicySelector];
+  assert polkitDevicePolicy.abi == systemdDevicePolicy.declaration.abi;
+  assert polkitDevicePolicy.descriptor == systemdDevicePolicy.identity.descriptor;
   assert builtins.all
   (selected: selectedInterfaces ? "${selected.alias}")
   (builtins.attrValues policyInterfaces);
