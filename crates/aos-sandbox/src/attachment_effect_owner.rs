@@ -6,9 +6,10 @@
 //! inventory alone. A mutation still requires a freshly bound namespace target;
 //! reconciliation requires an authenticated current-target Mount inventory.
 
+use aos_sandbox_core::model::{AttachmentLease, InvalidDomainModel};
 use aos_sandbox_core::{
-    AttachmentId, AttachmentSlotId, BrokerAuthorizationPlan, OperationId, RawPairedClockSample,
-    RevocationScopeId,
+    AttachmentId, AttachmentSlotId, BrokerAuthorizationPlan, LeaseId, OperationId,
+    RawPairedClockSample, RevocationScopeId,
 };
 
 use crate::attachment_reconciliation::{
@@ -59,6 +60,20 @@ pub enum ProtectedAttachmentTargetErrorV1 {
     Target(#[from] NamespaceTargetError),
 }
 
+/// Reports why a live namespace target cannot issue a bounded attachment lease.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectedAttachmentLeaseErrorV1 {
+    /// The target no longer matches protected namespace or signed authority.
+    #[error(transparent)]
+    Target(#[from] NamespaceTargetError),
+    /// The observation or ownership lease expired before issue.
+    #[error(transparent)]
+    Runtime(#[from] CurrentRuntimeScopeError),
+    /// The resulting lease interval is not representable.
+    #[error(transparent)]
+    Model(#[from] InvalidDomainModel),
+}
+
 /// Borrows protected controller custody for one attachment effect step.
 pub struct ProtectedAttachmentEffectOwnerV1<'journal> {
     journal: &'journal mut Journal,
@@ -73,6 +88,34 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     pub fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
         journal.ensure_protected_authority()?;
         Ok(Self { journal })
+    }
+
+    /// Issues one attachment lease within a fresh verified Host window.
+    ///
+    /// The current namespace target rechecks protected assignment and Host
+    /// scope while the signed ownership lease supplies the exclusive expiry
+    /// after clock skew and safety margin. The caller must atomically commit
+    /// this lease within exact desired state;
+    /// replay must reuse the committed lease, never issue a replacement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale namespace or ownership authority, clock disagreement,
+    /// expired observation, or an invalid lease interval.
+    pub fn issue_current_lease<T>(
+        &mut self,
+        target: &CurrentNamespaceTarget,
+        clock: &mut T,
+    ) -> Result<AttachmentLease, ProtectedAttachmentLeaseErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        target.recheck(self.journal, clock)?;
+        let scope = target.runtime_generation().scope();
+        let (issued, expires) = scope.attachment_lease_bounds(self.journal, clock)?;
+        let lease = AttachmentLease::new(LeaseId::new(), issued, expires)?;
+        target.recheck(self.journal, clock)?;
+        Ok(lease)
     }
 
     /// Binds a fresh authenticated Host observation to its signed namespace target.

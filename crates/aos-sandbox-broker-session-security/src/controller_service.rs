@@ -114,6 +114,7 @@ use aos_sandbox::{
 };
 
 mod attachment_slot_effect;
+mod attachment_desired;
 mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
@@ -3787,7 +3788,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 | DormantSandboxRequestKindV1::ViewReplace(_)
                 | DormantSandboxRequestKindV1::ViewDetach(_)
         ) {
-            let (sandbox, slot) = attachment_target::admitted_consumer_slot(
+            let (sandbox, slot, attachment) = attachment_target::admitted_attachment(
                 journal,
                 operation_id,
                 context.project(),
@@ -3802,6 +3803,29 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 slot,
                 journal,
             )?;
+            if let DormantSandboxRequestKindV1::ViewAttach(attach) = &request {
+                attachment_desired::advance_immutable_attach(
+                    self,
+                    operation_id,
+                    &context,
+                    attach,
+                    &attachment,
+                    sandbox,
+                    slot,
+                    journal,
+                )?;
+            } else {
+                attachment_desired::advance_existing(
+                    self,
+                    operation_id,
+                    &context,
+                    &request,
+                    &attachment,
+                    sandbox,
+                    slot,
+                    journal,
+                )?;
+            }
             return Err(EffectFailure::Retryable(
                 "attachment desired-state and Mount source effect is pending".to_owned(),
             ));

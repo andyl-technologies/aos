@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use aos_proto::aos::sandbox::v1::{Attachment, AttachmentPhase};
 use aos_sandbox::Journal;
 use aos_sandbox::attachment_effect_owner::{
     ProtectedAttachmentEffectOwnerV1, ProtectedAttachmentTargetErrorV1,
@@ -45,12 +46,12 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SERVICE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Selects the admitted consumer without treating the public projection as authority.
-pub(super) fn admitted_consumer_slot(
+pub(super) fn admitted_attachment(
     journal: &Journal,
     operation: OperationId,
     project: ProjectId,
     request: &DormantSandboxRequestKindV1,
-) -> Result<(SandboxId, AttachmentSlotId), EffectFailure> {
+) -> Result<(SandboxId, AttachmentSlotId, Attachment), EffectFailure> {
     let projections = PublicProjectionStoreV1::new(journal)
         .list_operation(operation)
         .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
@@ -75,14 +76,18 @@ pub(super) fn admitted_consumer_slot(
                 && value.destination_slot_id == attachment.destination_slot_id
                 && value.view_id == attachment.source_view_id
                 && value.view_revision == attachment.view_revision
+                && value.mutation_mode == attachment.mutation
+                && attachment.phase.as_known() == Some(AttachmentPhase::ATTACHMENT_PHASE_REQUESTED)
         }
         DormantSandboxRequestKindV1::ViewReplace(value) => {
             value.attachment_id == attachment.attachment_id
                 && value.new_view_id == attachment.source_view_id
                 && value.new_view_revision == attachment.view_revision
+                && attachment.phase.as_known() == Some(AttachmentPhase::ATTACHMENT_PHASE_REPLACING)
         }
         DormantSandboxRequestKindV1::ViewDetach(value) => {
             value.attachment_id == attachment.attachment_id
+                && attachment.phase.as_known() == Some(AttachmentPhase::ATTACHMENT_PHASE_DETACHING)
         }
         _ => false,
     };
@@ -104,6 +109,7 @@ pub(super) fn admitted_consumer_slot(
     Ok((
         SandboxId::from_bytes(sandbox),
         AttachmentSlotId::from_bytes(slot),
+        attachment.clone(),
     ))
 }
 

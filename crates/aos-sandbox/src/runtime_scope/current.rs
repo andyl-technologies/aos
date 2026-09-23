@@ -169,6 +169,41 @@ impl CurrentRuntimeScope {
         self.validity.expires_wall_seconds()
     }
 
+    /// Derives a desired attachment lease interval from current signed ownership.
+    ///
+    /// The short Host observation must remain current while issuing, but it
+    /// does not truncate the durable attachment lease. The latter expires at
+    /// the signed ownership boundary after skew and safety margin.
+    pub(crate) fn attachment_lease_bounds<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(i64, i64), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let fresh = read_clock(&self.policy, clock)?;
+        self.validity.check(fresh)?;
+        let publication =
+            select_exact_current(journal, self.selection, &self.policy, &self.binding)?;
+        let lease = verify_lease(journal, &self.binding, &publication, &self.policy, fresh)?;
+        let guard = lease
+            .maximum_clock_skew_seconds()
+            .checked_add(aos_sandbox_core::ownership_lease::LEASE_SAFETY_MARGIN_SECONDS)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or(CurrentRuntimeScopeError::Clock)?;
+        let expires = lease
+            .authority_expires_seconds()
+            .checked_sub(guard)
+            .ok_or(CurrentRuntimeScopeError::Clock)?;
+        if expires <= fresh.wall_seconds() {
+            return Err(CurrentRuntimeScopeError::Clock);
+        }
+        self.recheck(journal, clock)?;
+        Ok((fresh.wall_seconds(), expires))
+    }
+
     /// Borrows the exact protected holder decision selected during acquisition.
     #[must_use]
     pub const fn binding(&self) -> &RuntimeAuthorityBindingV1 {

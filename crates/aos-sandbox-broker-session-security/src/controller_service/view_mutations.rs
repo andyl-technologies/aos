@@ -362,7 +362,9 @@ fn requested_descriptor(
     Ok(descriptor)
 }
 
-fn portable_descriptor(value: &ProtoObjectDescriptor) -> Result<ObjectDescriptor, EffectFailure> {
+pub(super) fn portable_descriptor(
+    value: &ProtoObjectDescriptor,
+) -> Result<ObjectDescriptor, EffectFailure> {
     let digest: [u8; 32] =
         value.sha256.as_slice().try_into().map_err(|_| {
             EffectFailure::Permanent("View descriptor digest is invalid".to_owned())
