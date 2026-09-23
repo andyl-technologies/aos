@@ -119,9 +119,9 @@ impl<F, D> std::fmt::Display for QemuHotForkWorldExecutionRunnerError<F, D> {
             Self::Cleanup(error) => {
                 write!(formatter, "clean up production hot-fork world: {error}")
             }
-            Self::CleanupAfterRunner { cleanup, .. } => write!(
+            Self::CleanupAfterRunner { failure, cleanup } => write!(
                 formatter,
-                "production hot-fork cleanup failed after a prior runner failure: {cleanup}"
+                "production hot-fork cleanup failed after runner error ({failure}): {cleanup}"
             ),
             Self::Reconciliation(error) => {
                 write!(
@@ -481,6 +481,7 @@ mod tests {
         };
 
         assert!(error.to_string().contains("incomplete child shutdown"));
+        assert!(error.to_string().contains("prior semantic reconciliation"));
         assert!(
             error
                 .source()
