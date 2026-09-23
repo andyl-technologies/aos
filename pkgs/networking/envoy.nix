@@ -675,6 +675,7 @@
       # placing the exception after all Bazel-provided arguments.
       printf '%s\n' '  exec "$driver" "''${common_flags[@]}" "$@" -Wno-error=unknown-warning-option'
       printf '%s\n' 'fi'
+      printf '%s\n' 'export LD_PRELOAD="$TMPDIR/linker-mmap-sync.so''${LD_PRELOAD:+:$LD_PRELOAD}"'
       printf '%s\n' 'exec "$driver" "''${common_flags[@]}" "$@" \'
       printf '%s\n' '  -fuse-ld=lld \'
       printf '%s\n' '  -L"$target_libc/lib" -L"$target_gcc_dir" -L"$target_cxx_lib_dir" \'
@@ -1306,17 +1307,65 @@ in
       ];
     preBazelBuild = ''
                 ${lib.optionalString isSameTripleLinuxCross ''
-          # Execution-platform generators linked by rules_go do not retain
-          # the compiler launcher's runtime RPATH. The Bazel shell wrapper
-          # supplies the matching GCC runtime when those generators execute.
-          sed -i \
-            's|export LD_LIBRARY_PATH="|export LD_LIBRARY_PATH="${targetCxxLibraryDirectory}:|' \
-            "$TMPDIR/bazel-tools/bash-with-path"
-        ''}
+        # Execution-platform generators linked by rules_go do not retain
+        # the compiler launcher's runtime RPATH. The Bazel shell wrapper
+        # supplies the matching GCC runtime when those generators execute.
+        sed -i \
+          's|export LD_LIBRARY_PATH="|export LD_LIBRARY_PATH="${targetCxxLibraryDirectory}:|' \
+          "$TMPDIR/bazel-tools/bash-with-path"
+      ''}
                 # GCC 16 no longer supplies integer types through transitive headers.
                 yaml_emitter="$TMPDIR/repo-overrides/com_github_jbeder_yaml_cpp/src/emitterutils.cpp"
                 test -f "$yaml_emitter"
                 sed -i '1i#include <cstdint>' "$yaml_emitter"
+
+                # Both supported Linux targets are little-endian. The MaxMind
+                # CMake probe cannot link its test binary in this Bazel action.
+                maxmind_cmake="$TMPDIR/repo-overrides/com_github_maxmind_libmaxminddb/CMakeLists.txt"
+                test "$(grep -Fc 'TEST_BIG_ENDIAN(IS_BIG_ENDIAN)' "$maxmind_cmake")" = 1
+                sed -i 's/TEST_BIG_ENDIAN(IS_BIG_ENDIAN)/set(IS_BIG_ENDIAN 0)/' "$maxmind_cmake"
+
+                # POSIX headers define ssize_t even when this restricted
+                # CMake probe cannot link; retain the fallback for Windows.
+                nghttp2_cmake="$TMPDIR/repo-overrides/com_github_nghttp2_nghttp2/CMakeLists.txt"
+                test "$(grep -Fc 'if(SIZEOF_SSIZE_T STREQUAL "")' "$nghttp2_cmake")" = 1
+                sed -i 's/if(SIZEOF_SSIZE_T STREQUAL "")/if(WIN32 AND SIZEOF_SSIZE_T STREQUAL "")/' "$nghttp2_cmake"
+
+                # Bootstrap a linker that flushes mapped outputs, including
+                # intermediates created during external Go linking.
+                go_sdk="$TMPDIR/repo-overrides/go_sdk"
+                go_linker="$go_sdk/pkg/tool/linux_amd64/link"
+                test -x "$go_linker"
+                mv "$go_linker" "$go_linker.real"
+                printf '#!%s/bin/python3\n' '${buildPython}' > "$go_linker"
+                cat ${./envoy-patches/go-link-memfd.py} >> "$go_linker"
+                chmod +x "$go_linker"
+                ${buildPatch}/bin/patch -d "$go_sdk" -p1 < ${./envoy-patches/go-link-sync.patch}
+                (
+                  cd "$go_sdk/src"
+                  export HOME="$TMPDIR/go-link-bootstrap-home"
+                  export GOTOOLCHAIN=local GO111MODULE=off GOTELEMETRY=off GOENV=off
+                  mkdir -p "$HOME"
+                  "$go_sdk/bin/go" build -trimpath -ldflags=-buildid= \
+                    -o "$go_linker.patched" cmd/link
+                )
+                ${buildBinutils}/bin/readelf -h "$go_linker.patched" >/dev/null
+                mv "$go_linker.patched" "$go_linker"
+                rm "$go_linker.real"
+
+                # CEL's descriptor embedder is an exec tool. Generate the
+                # same initializer with AOS Python so it runs on the builder.
+                cel_embed_repo="$TMPDIR/repo-overrides/com_google_cel_cpp/bazel"
+                cel_embed_rule="$cel_embed_repo/cel_cc_embed.bzl"
+                cel_embed_build="$cel_embed_repo/BUILD"
+                test "$(grep -Fc '$(location //bazel:cel_cc_embed)' "$cel_embed_rule")" = 1
+                test "$(grep -Fc 'tools = ["//bazel:cel_cc_embed"]' "$cel_embed_rule")" = 1
+                cp ${./envoy-patches/cel-cc-embed.py} "$cel_embed_repo/cel-cc-embed.py"
+                sed -i \
+                  -e 's|$(location //bazel:cel_cc_embed)|${buildPython}/bin/python3 $(location //bazel:cel-cc-embed.py)|' \
+                  -e 's|tools = \["//bazel:cel_cc_embed"\]|tools = ["//bazel:cel-cc-embed.py"]|' \
+                  "$cel_embed_rule"
+                printf '\nexports_files(["cel-cc-embed.py"], visibility = ["//visibility:public"])\n' >> "$cel_embed_build"
 
                 for integer_header in envoy/common/random_generator.h \
                     envoy/stream_info/stream_id_provider.h; do
@@ -1365,7 +1414,16 @@ in
                 find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
                   while read f; do
                     sed -i "1s|^#!/bin/sh|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
-                  done${lib.optionalString isDarwinCross ''
+                  done${lib.optionalString (!isDarwinCross) ''
+
+                # LuaJIT runs minilua during its build. Keep that helper native
+                # and omit target linker flags from its host link command.
+                luajit_build="$TMPDIR/repo-overrides/com_github_luajit_luajit/luajit_build.sh"
+                test -f "$luajit_build"
+                test "$(grep -Fc 'EXTRA_MAKE_ARGS=()' "$luajit_build")" = 1
+                sed -i '/^EXTRA_MAKE_ARGS=()$/a\
+        EXTRA_MAKE_ARGS+=("HOST_CC=${buildPackages.cc}/bin/cc" "HOST_ALDFLAGS=")' "$luajit_build"
+      ''}${lib.optionalString isDarwinCross ''
 
                 # LuaJIT uses small generators while producing its target library.
                 # Keep target flags captured by its configure wrapper, but build and
@@ -1547,11 +1605,23 @@ in
                 # Create fake-bin with tools that GCC/Go need to find
                 mkdir -p "$TMPDIR/fake-bin"
 
-                # GCC's collect2 needs to find the linker (ld.lld since we use -fuse-ld=lld).
-                # Go's builder-cc wrapper restricts PATH, so collect2 can't find it normally.
-                # Provide symlinks and tell GCC via -B and COMPILER_PATH.
-                ln -sf ${buildLlvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
-                ln -sf ${buildLlvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
+                # GCC's collect2 needs to find LLD inside Bazel's restricted
+                # PATH. Sync mapped linker output before it is unmapped.
+                (
+                  unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS NIX_CFLAGS_COMPILE NIX_LDFLAGS
+                  unset AOS_HARDENING_ENABLE
+                  unset C_INCLUDE_PATH LIBRARY_PATH PKG_CONFIG_PATH
+                  ${buildPackages.cc}/bin/cc -shared -fPIC -fuse-ld=bfd \
+                    -o "$TMPDIR/linker-mmap-sync.so" \
+                    ${./envoy-patches/linker-mmap-sync.c}
+                )
+                {
+                  printf '%s\n' '#!${buildBash}/bin/bash'
+                  printf '%s\n' 'export LD_PRELOAD="$TMPDIR/linker-mmap-sync.so''${LD_PRELOAD:+:$LD_PRELOAD}"'
+                  printf '%s\n' 'exec ${buildLlvm}/bin/ld.lld "$@"'
+                } > "$TMPDIR/fake-bin/ld.lld"
+                chmod +x "$TMPDIR/fake-bin/ld.lld"
+                ln -sf ld.lld "$TMPDIR/fake-bin/ld"
                 echo "build --linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
                 echo "build --host_linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
                 echo "build --action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
@@ -1695,6 +1765,7 @@ in
 
         cp "$ENVOY_BIN" $out/bin/envoy
         chmod +x $out/bin/envoy
+        ${buildBinutils}/bin/readelf -h "$out/bin/envoy" >/dev/null
 
         ${
           if isLinuxCross
