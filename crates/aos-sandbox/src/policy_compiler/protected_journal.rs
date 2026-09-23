@@ -1984,45 +1984,7 @@ fn decode_diagnostics_payload(bytes: &[u8]) -> Result<&[u8], PolicyCompilerJourn
 }
 
 fn validate_canonical_diagnostics(bytes: &[u8]) -> Result<(), PolicyCompilerJournalErrorV1> {
-    if bytes.len() < 16 {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let domain_length = usize::try_from(u64::from_be_bytes(
-        bytes[..8]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-    ))
-    .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let domain_end = 8_usize
-        .checked_add(domain_length)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let payload_length_end = domain_end
-        .checked_add(8)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if payload_length_end > bytes.len() || bytes.get(8..domain_end) != Some(DIAGNOSTICS_DOMAIN) {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let payload_length = usize::try_from(u64::from_be_bytes(
-        bytes[domain_end..payload_length_end]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-    ))
-    .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let payload_end = payload_length_end
-        .checked_add(payload_length)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if payload_length == 0 || payload_end != bytes.len() {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let value: serde_json::Value = serde_json::from_slice(&bytes[payload_length_end..])
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if serde_json::to_vec(&value)
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
-        != bytes[payload_length_end..]
-    {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    Ok(())
+    validate_canonical_json_domain(bytes, DIAGNOSTICS_DOMAIN)
 }
 
 fn encode_effect_payload(
@@ -2528,4 +2490,36 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
     hasher.update((bytes.len() as u64).to_be_bytes());
     hasher.update(bytes);
     ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+#[cfg(test)]
+mod canonical_diagnostics_tests {
+    use super::{DIAGNOSTICS_DOMAIN, PolicyCompilerJournalErrorV1, validate_canonical_diagnostics};
+
+    fn frame(domain: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(domain.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(domain);
+        bytes.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn diagnostics_require_the_exact_domain_and_canonical_json() {
+        let valid = frame(DIAGNOSTICS_DOMAIN, b"{}");
+        assert!(validate_canonical_diagnostics(&valid).is_ok());
+
+        for invalid in [
+            frame(b"wrong", b"{}"),
+            frame(DIAGNOSTICS_DOMAIN, b"{ }"),
+            frame(DIAGNOSTICS_DOMAIN, b""),
+            valid[..valid.len() - 1].to_vec(),
+        ] {
+            assert!(matches!(
+                validate_canonical_diagnostics(&invalid),
+                Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication)
+            ));
+        }
+    }
 }
