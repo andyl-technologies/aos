@@ -66,6 +66,9 @@ use sha2::{Digest as _, Sha256};
 use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
+use aos_sandbox::cache_residency::{
+    CacheReplayControllerBootstrapOwnerV1, CacheResidencyProtectedOwnerV1,
+};
 use aos_sandbox::cli_model::{
     AuditAuthorizationV1, DormantSandboxRequestKindV1, PublicApiAuditMethodV1,
     PublicMutationRequestV1,
@@ -1472,7 +1475,8 @@ struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
-    cache_inventory: Option<aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1>,
+    cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
+    controller_uid: u32,
     transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
     node: NodeId,
     process_start: Option<([u8; 16], u64)>,
@@ -1515,6 +1519,7 @@ impl ProductionEffectExecutor {
             broker_plan_signer,
             source_domains,
             cache_inventory: None,
+            controller_uid,
             transfer_inventory: None,
             node,
             process_start: current_boot_and_boottime(),
@@ -2559,13 +2564,40 @@ impl ProductionEffectExecutor {
     }
 
     fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
+        let (mut cache_source, _) =
+            CacheReplayControllerBootstrapOwnerV1::open_fixed_protected_for_uid(
+                self.controller_uid,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
         if self.cache_inventory.is_none() {
-            let (owner, _) =
-                aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1::open_fixed_protected(
-                )
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            let owner = match CacheResidencyProtectedOwnerV1::open_fixed_protected_for_uid(
+                self.controller_uid,
+            ) {
+                Ok((owner, _)) => owner,
+                Err(open_error) => {
+                    let first = cache_source.partitions().next().ok_or_else(|| {
+                        EffectFailure::Permanent(
+                            "controller Cache bootstrap source has no partitions".to_owned(),
+                        )
+                    })?;
+                    let (owner, _) = cache_source
+                        .bootstrap_fixed_cache(first)
+                        .map_err(|error| {
+                            EffectFailure::Permanent(format!(
+                                "protected Cache replay failed: {open_error}; clean bootstrap failed: {error}"
+                            ))
+                        })?;
+                    owner
+                }
+            };
             self.cache_inventory = Some(owner);
         }
+        let cache = self.cache_inventory.as_mut().ok_or_else(|| {
+            EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+        })?;
+        cache_source
+            .reconcile_fixed_cache(cache)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
         if self.transfer_inventory.is_none() {
             let (mut owner, _, initial) =
                 aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected()

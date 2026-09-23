@@ -1,6 +1,6 @@
 //! Protected controller source for cache Replay authority bootstrap.
 //!
-//! A dedicated root-owned journal contains one immutable canonical replay
+//! A dedicated owner-checked controller journal contains one immutable canonical replay
 //! manifest per partition. Each record is a single transaction under a key
 //! made from the exact partition digest. Replacements, deletions, foreign
 //! namespaces, and partial recovery are rejected before any target authority
@@ -25,7 +25,7 @@ use super::{
     CacheResidencyProtectedJournalErrorV1, CacheResidencyReplayPartitionEvidenceV1,
 };
 
-const CONTROLLER_CACHE_ROOT: &str = "/var/lib/aos/controller/cache-residency-authority";
+const CONTROLLER_CACHE_ROOT: &str = "/var/lib/aos/sandboxd/cache-residency-authority";
 const CONTROLLER_CACHE_JOURNAL: &str = "bootstrap-v1.journal";
 const SOURCE_KEY_PREFIX: &[u8] = b"\0aos-cache-controller-bootstrap-v1\0";
 const AUTHORITY_KEY_PREFIX: &[u8] = b"\0aos-cache-replay-authority-v1\0";
@@ -34,7 +34,7 @@ const MAXIMUM_SOURCE_PARTITIONS: usize = 4_096;
 /// Reports a missing, modified, or noncanonical protected cache source.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheReplayControllerBootstrapErrorV1 {
-    /// Fixed root-owned journal access or replay failed.
+    /// Fixed owner-checked journal access or replay failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
     /// The target cache owner rejected an authority or manifest operation.
@@ -49,6 +49,7 @@ pub enum CacheReplayControllerBootstrapErrorV1 {
 pub struct CacheReplayControllerBootstrapOwnerV1 {
     journal: Journal,
     records: BTreeMap<ObjectDigest, Vec<u8>>,
+    owner_uid: u32,
 }
 
 impl CacheReplayControllerBootstrapOwnerV1 {
@@ -60,10 +61,23 @@ impl CacheReplayControllerBootstrapOwnerV1 {
     /// missing partitions, noncanonical manifests, or mutable source history.
     pub fn open_fixed_protected()
     -> Result<(Self, RecoveryReport), CacheReplayControllerBootstrapErrorV1> {
-        let (mut journal, report) = Journal::open_protected_at(
+        Self::open_fixed_protected_for_uid(0)
+    }
+
+    /// Opens the fixed source under an exact configured service UID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheReplayControllerBootstrapErrorV1`] for unsafe ownership,
+    /// invalid source history, or noncanonical partition evidence.
+    pub fn open_fixed_protected_for_uid(
+        owner_uid: u32,
+    ) -> Result<(Self, RecoveryReport), CacheReplayControllerBootstrapErrorV1> {
+        let (mut journal, report) = Journal::open_protected_at_for_uid(
             Path::new(CONTROLLER_CACHE_ROOT),
             CONTROLLER_CACHE_JOURNAL,
             controller_cache_journal_limits(),
+            owner_uid,
         )?;
         if report.truncated_bytes != 0 {
             return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
@@ -75,7 +89,24 @@ impl CacheReplayControllerBootstrapOwnerV1 {
         {
             return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
         }
-        Ok((Self { journal, records }, report))
+        Ok((
+            Self {
+                journal,
+                records,
+                owner_uid,
+            },
+            report,
+        ))
+    }
+
+    /// Lists the exact partitions retained by this immutable controller source.
+    #[must_use]
+    pub fn partitions(&self) -> impl Iterator<Item = ObjectDigest> + '_ {
+        self.records.keys().copied()
+    }
+
+    pub(crate) const fn owner_uid(&self) -> u32 {
+        self.owner_uid
     }
 
     /// Rechecks the exact retained controller record for one partition.

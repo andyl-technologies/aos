@@ -209,6 +209,8 @@ in {
         StateDirectory = [
           "aos/sandboxd"
           "aos/sandbox/source-domains"
+          "aos/sandbox/cache-residency"
+          "aos/sandboxd/cache-residency-authority"
         ];
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandboxd";

@@ -312,6 +312,23 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
 }
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    pub(crate) fn current_replay_partition_evidence(
+        &self,
+    ) -> Result<Vec<CacheResidencyReplayPartitionEvidenceV1>, CacheResidencyProtectedJournalErrorV1>
+    {
+        self.while_authority_current(&[], |_owner, _capabilities, _now, _validator, refresh| {
+            let evidence = self
+                .partitions
+                .lock()
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
+                .values()
+                .cloned()
+                .collect();
+            refresh()?;
+            Ok(evidence)
+        })
+    }
+
     pub(crate) fn while_authority_current<T>(
         &self,
         requests: &[(CacheAuthorityPurposeV1, Vec<u8>)],

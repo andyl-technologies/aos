@@ -1,6 +1,6 @@
-//! Fixed-root ownership for dormant cache-residency durability.
+//! Fixed-path ownership for dormant cache-residency durability.
 //!
-//! The owner opens three independent root-owned journals: cache state, cache
+//! The owner opens three independent owner-checked journals: cache state, cache
 //! authority manifests, and a monotone wall-clock floor. Authority manifests
 //! carry the complete checkpoint/floor evidence needed for cold replay. The
 //! clock journal prevents a copied or expired manifest from becoming current
@@ -61,6 +61,15 @@ const CACHE_MANIFEST_FIXED_BYTES: usize = 555;
 pub(super) const MAXIMUM_CACHE_MANIFESTS: usize = 4_096;
 const MAXIMUM_AUTHORITY_RECORD_BYTES: usize = 1024 * 1024;
 
+fn open_cache_journal(
+    root: &Path,
+    name: &str,
+    limits: JournalLimits,
+    owner_uid: u32,
+) -> Result<(Journal, RecoveryReport), crate::journal::JournalError> {
+    Journal::open_protected_at_for_uid(root, name, limits, owner_uid)
+}
+
 /// Reports the three protected journal replays performed by the fixed owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CacheResidencyProtectedOpenReportV1 {
@@ -80,6 +89,7 @@ pub struct CacheResidencyProtectedOpenReportV1 {
 pub struct CacheResidencyProtectedOwnerV1 {
     state_journal: Option<Journal>,
     authority: Arc<ProtectedCacheResidencyReplayAuthorityV1>,
+    owner_uid: u32,
 }
 
 /// Carries one complete protected Cache currentness root and its actionable resources.
@@ -660,15 +670,32 @@ impl CacheResidencyProtectedOwnerV1 {
     pub fn open_fixed_protected()
     -> Result<(Self, CacheResidencyProtectedOpenReportV1), CacheResidencyProtectedJournalErrorV1>
     {
+        Self::open_fixed_protected_for_uid(0)
+    }
+
+    /// Opens fixed cache journals for the configured service UID.
+    ///
+    /// The fixed path is unchanged; only the exact filesystem owner accepted
+    /// by the protected journal opener differs from the root-owned variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe ownership, malformed replay, stale time,
+    /// rollback, or invalid cache history.
+    pub fn open_fixed_protected_for_uid(
+        owner_uid: u32,
+    ) -> Result<(Self, CacheResidencyProtectedOpenReportV1), CacheResidencyProtectedJournalErrorV1>
+    {
         let root = Path::new(PROTECTED_CACHE_ROOT);
         let owner_scope = cache_owner_scope();
-        let (clock, clock_report) = ProtectedCacheClockV1::open(root, owner_scope)?;
+        let (clock, clock_report) = ProtectedCacheClockV1::open(root, owner_scope, owner_uid)?;
         let clock: Arc<dyn CacheResidencyCurrentTimeAuthorityV1> = Arc::new(clock);
 
-        let (mut authority_journal, authority_report) = Journal::open_protected_at(
+        let (mut authority_journal, authority_report) = open_cache_journal(
             root,
             CACHE_AUTHORITY_JOURNAL,
             cache_authority_journal_limits(),
+            owner_uid,
         )?;
         let evidence = recover_cache_replay_evidence(
             &mut authority_journal,
@@ -684,11 +711,16 @@ impl CacheResidencyProtectedOwnerV1 {
             clock,
         )?;
 
-        let (state_journal, state_report) =
-            Journal::open_protected_at(root, CACHE_STATE_JOURNAL, cache_state_journal_limits())?;
+        let (state_journal, state_report) = open_cache_journal(
+            root,
+            CACHE_STATE_JOURNAL,
+            cache_state_journal_limits(),
+            owner_uid,
+        )?;
         let mut owner = Self {
             state_journal: Some(state_journal),
             authority,
+            owner_uid,
         };
         owner.replay()?;
 
@@ -1402,10 +1434,11 @@ impl CacheResidencyProtectedOwnerV1 {
 
     fn reopen_state(&mut self) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         drop(self.state_journal.take());
-        let (journal, _) = Journal::open_protected_at(
+        let (journal, _) = open_cache_journal(
             Path::new(PROTECTED_CACHE_ROOT),
             CACHE_STATE_JOURNAL,
             cache_state_journal_limits(),
+            self.owner_uid,
         )?;
         self.state_journal = Some(journal);
         Ok(())
@@ -1452,6 +1485,7 @@ fn authority_request_keys(
 struct ProtectedCacheClockV1 {
     state: Mutex<ProtectedCacheClockStateV1>,
     owner_scope: ObjectDigest,
+    owner_uid: u32,
 }
 
 struct ProtectedCacheClockStateV1 {
@@ -1471,9 +1505,14 @@ impl ProtectedCacheClockV1 {
     fn open(
         root: &Path,
         owner_scope: ObjectDigest,
+        owner_uid: u32,
     ) -> Result<(Self, RecoveryReport), CacheResidencyProtectedJournalErrorV1> {
-        let (mut journal, report) =
-            Journal::open_protected_at(root, CACHE_CLOCK_JOURNAL, cache_clock_journal_limits())?;
+        let (mut journal, report) = open_cache_journal(
+            root,
+            CACHE_CLOCK_JOURNAL,
+            cache_clock_journal_limits(),
+            owner_uid,
+        )?;
         let retained = {
             let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
             authority
@@ -1496,7 +1535,7 @@ impl ProtectedCacheClockV1 {
                     observed_unix_seconds: sampled,
                     predecessor_unix_seconds: 0,
                 };
-                let (reopened, applied) = persist_cache_clock(journal, None, genesis)?;
+                let (reopened, applied) = persist_cache_clock(journal, None, genesis, owner_uid)?;
                 if !applied {
                     return Err(ProtectedDomainJournalErrorV1::CompareAndSwapFailed);
                 }
@@ -1511,6 +1550,7 @@ impl ProtectedCacheClockV1 {
                     floor,
                 }),
                 owner_scope,
+                owner_uid,
             },
             report,
         ))
@@ -1546,7 +1586,8 @@ impl CacheResidencyCurrentTimeAuthorityV1 for ProtectedCacheClockV1 {
             .journal
             .take()
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        let (reopened, applied) = persist_cache_clock(journal, Some(state.floor), successor)?;
+        let (reopened, applied) =
+            persist_cache_clock(journal, Some(state.floor), successor, self.owner_uid)?;
         state.journal = Some(reopened);
         if !applied {
             return Err(ProtectedDomainJournalErrorV1::CompareAndSwapFailed);
@@ -1560,6 +1601,7 @@ fn persist_cache_clock(
     mut journal: Journal,
     predecessor: Option<CacheClockFloorV1>,
     successor: CacheClockFloorV1,
+    owner_uid: u32,
 ) -> Result<(Journal, bool), CacheResidencyProtectedJournalErrorV1> {
     let encoded = encode_cache_clock_floor(successor);
     let transaction_id = cache_clock_transaction_id(&encoded)?;
@@ -1584,10 +1626,11 @@ fn persist_cache_clock(
     }
     drop(journal);
 
-    let (mut reopened, _) = Journal::open_protected_at(
+    let (mut reopened, _) = open_cache_journal(
         Path::new(PROTECTED_CACHE_ROOT),
         CACHE_CLOCK_JOURNAL,
         cache_clock_journal_limits(),
+        owner_uid,
     )?;
     let readback = {
         let authority = reopened.claim_protected_authority(RecordNamespace::DesiredState)?;
