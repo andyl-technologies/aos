@@ -572,18 +572,23 @@ fn campaign_resume_status(
 ) -> Result<(BackendCommandStatus, OutcomeKind), CliError> {
     Ok(match stop {
         StopOutcome::TerminalSuccess => (BackendCommandStatus::Passed, OutcomeKind::Passed),
-        StopOutcome::ModeledTimeout(_) => (BackendCommandStatus::Timeout, OutcomeKind::Timeout),
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. } => {
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        }
         StopOutcome::GuestCrash(_) => (BackendCommandStatus::Crashed, OutcomeKind::Crashed),
         StopOutcome::AssertionFailure(_) | StopOutcome::ScenarioFailure(_) => {
             (BackendCommandStatus::Failed, OutcomeKind::Failed)
         }
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
-            if plan.terminal_condition == RunTerminalCondition::VirtualTime
-                && plan.max_virtual_time_ticks == Some(*deadline) =>
+        StopOutcome::Reached(stop) | StopOutcome::BoundedPrimaryReached { stop, .. }
+            if matches!(stop.primary(), StopCondition::VirtualTimeNanoseconds(deadline)
+                if plan.terminal_condition == RunTerminalCondition::VirtualTime
+                    && plan.max_virtual_time_ticks == Some(*deadline)) =>
         {
             (BackendCommandStatus::Passed, OutcomeKind::Passed)
         }
-        StopOutcome::Reached(_) => {
+        StopOutcome::Reached(_) | StopOutcome::BoundedPrimaryReached { .. } => {
             return Err(campaign_run_error_message(
                 "campaign resume ended at an unexpected nonterminal boundary",
             ));
@@ -627,6 +632,11 @@ fn campaign_resume_final_state(
             RunTerminalCondition::VirtualTime,
             StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(_)),
         ) => String::from("virtual-time"),
+        (RunTerminalCondition::VirtualTime, StopOutcome::BoundedPrimaryReached { stop, .. })
+            if matches!(stop.primary(), StopCondition::VirtualTimeNanoseconds(_)) =>
+        {
+            String::from("virtual-time")
+        }
         (RunTerminalCondition::Stopped, _) => String::from("stopped"),
         _ => terminal_outcome_label(Some(outcome)).to_owned(),
     }
@@ -656,18 +666,38 @@ fn validate_campaign_resume_frontier(
         return Ok(());
     }
 
-    let StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline)) = stop else {
-        return Ok(());
+    if let StopOutcome::BoundedPrimaryReached { proof, .. }
+    | StopOutcome::BoundedPrimaryTimeout { proof, .. }
+    | StopOutcome::PolicyTimeout { proof, .. } = stop
+    {
+        if proof.frontier_nanoseconds() != frontier.ticks {
+            return Err(CliError::Identity(format!(
+                "campaign resume bounded proof frontier {} differs from terminal frontier {}",
+                proof.frontier_nanoseconds(),
+                frontier.ticks
+            )));
+        }
+    }
+
+    let deadline = match stop {
+        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline)) => *deadline,
+        StopOutcome::BoundedPrimaryReached { stop, .. } => {
+            let StopCondition::VirtualTimeNanoseconds(deadline) = stop.primary() else {
+                return Ok(());
+            };
+            *deadline
+        }
+        _ => return Ok(()),
     };
     if plan.terminal_condition != RunTerminalCondition::VirtualTime
-        || plan.max_virtual_time_ticks != Some(*deadline)
+        || plan.max_virtual_time_ticks != Some(deadline)
     {
         return Ok(());
     }
 
     // Resuming cannot rewind an already-reached source. A deadline behind the
     // source applies to the continuation and therefore completes at the source.
-    let expected_frontier = source_frontier.ticks.max(*deadline);
+    let expected_frontier = source_frontier.ticks.max(deadline);
     if frontier.ticks != expected_frontier {
         return Err(CliError::Identity(format!(
             "campaign resume virtual-time boundary produced frontier {}, expected {} from source {} and deadline {}",
@@ -1083,29 +1113,20 @@ fn campaign_stop_status(
 ) -> Result<(BackendCommandStatus, OutcomeKind), CliError> {
     Ok(match stop {
         StopOutcome::TerminalSuccess => (BackendCommandStatus::Passed, OutcomeKind::Passed),
-        StopOutcome::ModeledTimeout(_) => (BackendCommandStatus::Timeout, OutcomeKind::Timeout),
+        StopOutcome::ModeledTimeout(_)
+        | StopOutcome::BoundedPrimaryTimeout { .. }
+        | StopOutcome::PolicyTimeout { .. } => {
+            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+        }
         StopOutcome::GuestCrash(_) => (BackendCommandStatus::Crashed, OutcomeKind::Crashed),
         StopOutcome::AssertionFailure(_) => (BackendCommandStatus::Failed, OutcomeKind::Failed),
         StopOutcome::ScenarioFailure(_) => (BackendCommandStatus::Failed, OutcomeKind::Failed),
-        StopOutcome::Reached(StopCondition::VirtualTimeNanoseconds(deadline))
-            if run_plan.max_virtual_time_ticks == Some(*deadline) =>
+        StopOutcome::Reached(stop) | StopOutcome::BoundedPrimaryReached { stop, .. }
+            if campaign_run_primary_boundary_matches(run_plan, stop.primary()) =>
         {
             (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
         }
-        StopOutcome::Reached(StopCondition::ExecutionQuanta(bound))
-            if run_plan.max_quanta == Some(*bound) =>
-        {
-            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
-        }
-        StopOutcome::Reached(StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
-            execution_quanta,
-        }) if run_plan.max_virtual_time_ticks == Some(*virtual_time_nanoseconds)
-            && run_plan.max_quanta == Some(*execution_quanta) =>
-        {
-            (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
-        }
-        StopOutcome::Reached(_) => {
+        StopOutcome::Reached(_) | StopOutcome::BoundedPrimaryReached { .. } => {
             return Err(backend_error(
                 "campaign default run ended at an unexpected nonterminal boundary",
             ));
@@ -1116,6 +1137,26 @@ fn campaign_stop_status(
             ));
         }
     })
+}
+
+fn campaign_run_primary_boundary_matches(
+    run_plan: &RunInvocationPlan,
+    stop: &StopCondition,
+) -> bool {
+    match stop {
+        StopCondition::VirtualTimeNanoseconds(deadline) => {
+            run_plan.max_virtual_time_ticks == Some(*deadline)
+        }
+        StopCondition::ExecutionQuanta(bound) => run_plan.max_quanta == Some(*bound),
+        StopCondition::VirtualTimeOrExecutionQuanta {
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => {
+            run_plan.max_virtual_time_ticks == Some(*virtual_time_nanoseconds)
+                && run_plan.max_quanta == Some(*execution_quanta)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn campaign_run_report(
@@ -1248,6 +1289,24 @@ fn campaign_watch_status(
 fn campaign_stop_label(stop: &StopOutcome) -> String {
     match stop {
         StopOutcome::Reached(boundary) => format!("reached:{boundary:?}"),
+        StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
+            "bounded-primary-reached:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
+            "bounded-primary-timeout:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
+            "policy-timeout:{kind:?}:{:?}:frontier-ns={}:quanta={}",
+            stop.primary(),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),
         StopOutcome::ModeledTimeout(name) => format!("timeout:{name}"),
         StopOutcome::GuestCrash(class) => format!("crash:{class}"),
