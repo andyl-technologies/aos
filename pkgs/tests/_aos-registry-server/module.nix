@@ -65,49 +65,44 @@
       };
     };
   serviceFor = name: lifecycle: features:
-    serviceManagement.forService {
-      inherit serviceTypes;
+    {
       consumerInstance = "aos-registry-server";
-      declaration =
+      service = name;
+      lifecycle =
         {
-          service = name;
-          enabled = true;
-          lifecycle =
-            {
-              environment_files = [];
-              condition = [];
-              pre_start = [];
-              post_start = [];
-              stop = [];
-              post_stop = [];
-              restart = "on-failure";
-              restart_token = cfg.restartToken;
-              restart_delay_millis = 5000;
-              configuration_change_action = "restart";
-              remain_after_exit = false;
-              start_timeout_millis = 90000;
-              stop_timeout_millis = 90000;
-            }
-            // lifecycle;
-          identity = {
-            supplementary_groups = [];
-            ephemeral = true;
-            file_creation_mask = "0022";
-          };
-          isolation = {
-            privilege = "unprivileged";
-            filesystem = "read-only-system";
-            network = "host";
-            process_visibility = "private";
-            termination_scope = "all-processes";
-            temporary_directory = "private";
-            devices = [];
-            host_paths = [];
-            permit_core_dumps = false;
-          };
+          environment_files = [];
+          condition = [];
+          pre_start = [];
+          post_start = [];
+          stop = [];
+          post_stop = [];
+          restart = "on-failure";
+          restart_token = cfg.restartToken;
+          restart_delay_millis = 5000;
+          configuration_change_action = "restart";
+          remain_after_exit = false;
+          start_timeout_millis = 90000;
+          stop_timeout_millis = 90000;
         }
-        // features;
-    };
+        // lifecycle;
+      identity = {
+        supplementary_groups = [];
+        ephemeral = true;
+        file_creation_mask = "0022";
+      };
+      isolation = {
+        privilege = "unprivileged";
+        filesystem = "read-only-system";
+        network = "host";
+        process_visibility = "private";
+        termination_scope = "all-processes";
+        temporary_directory = "private";
+        devices = [];
+        host_paths = [];
+        permit_core_dumps = false;
+      };
+    }
+    // features;
 
   registryStorage = serviceManagement.forProducer {
     consumerInstance = "aos-registry-server";
@@ -316,30 +311,15 @@
       ];
     };
 
-  allFragments = [
-    registryStorage
+  gitProducers = [registryStorage gitConfiguration gitIngress];
+  cacheProducers = [
     cacheStorage
     storeStorage
     runtimeStorage
-    gitConfiguration
     cacheConfiguration
     serveConfiguration
-    gitIngress
     cacheIngress
-    gitService
-    cacheService
   ];
-  enabledFragments =
-    lib.optionals cfg.git.enable [registryStorage gitConfiguration gitIngress gitService]
-    ++ lib.optionals cfg.cache.enable [
-      cacheStorage
-      storeStorage
-      runtimeStorage
-      cacheConfiguration
-      serveConfiguration
-      cacheIngress
-      cacheService
-    ];
 in {
   options.aos-registry-server = {
     enable = lib.mkOption {
@@ -421,17 +401,20 @@ in {
           message = "aos-registry-server.enable requires git.enable or cache.enable";
         }
       ];
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).declarations)
-        allFragments);
+      aos.services = {
+        "aos-registry-server.git" = gitService // {enable = cfg.enable && cfg.git.enable;};
+        "aos-registry-server.cache" = cacheService // {enable = cfg.enable && cfg.cache.enable;};
+      };
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.aos-registry-server = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        enabledFragments
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = gitProducers;
+      enabled = cfg.enable && cfg.git.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = cacheProducers;
+      enabled = cfg.enable && cfg.cache.enable;
     })
   ];
 }
