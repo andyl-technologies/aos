@@ -272,6 +272,8 @@ pub(super) async fn dispatch_mutation(
             .await?;
         }
         DormantSandboxRequestKindV1::Exec(message) => {
+            aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(message)
+                .context("execution creation proof does not match the final request")?;
             let response =
                 ExecutionServiceClient::new(endpoint.connection.clone(), endpoint.config()?)
                     .create_execution(message.clone())

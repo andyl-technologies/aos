@@ -308,7 +308,8 @@ the outstanding work concrete:
   and cold-reconciles released tombstones before completing. Resize and signal
   `ExecutionControl` still admit but fall through to a retry-only controller
   effect. Attach verifies the holder proof but is rejected before admission
-  until bound OpenSSH certificate and route issuance are active.
+  until bound OpenSSH certificate and route issuance are active; the production
+  compiler also rejects attach, including replay, while no issuer exists.
   `CreateExecution` now verifies the holder proof over the complete command
   and mutation fence before admission and again in production compilation.
   `CachePin` cold-recovers an existing

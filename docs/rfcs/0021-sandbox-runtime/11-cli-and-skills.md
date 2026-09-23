@@ -83,6 +83,9 @@ authority; it is never trusted merely because a sandbox process supplied it.
 vector, working-directory handle, environment overlay, terminal mode, timeout,
 and declared endpoint capabilities. A shell string is CLI sugar interpreted
 only when the caller explicitly requests a sandbox-resident shell.
+The public client verifies that its supplied holder proof signs the final
+creation request before sending it; the controller verifies it again before
+admission. The holder private key never enters the public API.
 
 The command supports:
 

@@ -45,6 +45,17 @@ pub(super) fn compile_public_mutation(
     request_digest: [u8; 32],
 ) -> Result<OperationPlan, OperationCompilationError> {
     let request = authorized.request();
+    if let Request::ExecutionControl(control) = request.request() {
+        if control.action.as_known()
+            == Some(
+                aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH,
+            )
+        {
+            // A projection cannot stand in for the separately issued,
+            // holder-bound route, including during idempotent replay.
+            return Err(OperationCompilationError::Rejected);
+        }
+    }
     match journal.check_idempotency(request.idempotency_key(), request_digest) {
         IdempotencyOutcome::Replay(operation_id) => {
             return replay_public_mutation(
