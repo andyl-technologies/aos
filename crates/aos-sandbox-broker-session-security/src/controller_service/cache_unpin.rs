@@ -5,9 +5,7 @@
 //! and rechecks every partition before publishing one public receipt.
 
 use aos_sandbox::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerOutcomeUnknownV1, CacheOwnerPinSettlementErrorV1, CachePinV1,
-    CacheResidencyCommitOutcomeV1, CacheResidencyOutcomeUnknownV1,
-    CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyRecoveryV1,
+    CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1, CacheResidencyCommitOutcomeV1,
 };
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 
@@ -20,16 +18,22 @@ use crate::{
     public_cache_unpin_transaction_id_v1,
 };
 
-pub(super) struct PendingControllerCacheUnpinV1 {
-    operation_id: OperationId,
-    pin: CachePinV1,
-    custody: PendingCacheUnpinCustodyV1,
-}
+use super::cache_pin::cache_custody::{
+    CacheCustodyMessages, CacheCustodyV1, PendingControllerCacheCustodyV1,
+    recover_pending_cache_custody,
+};
 
-enum PendingCacheUnpinCustodyV1 {
-    Protected(CacheResidencyOutcomeUnknownV1),
-    Physical(CacheOwnerOutcomeUnknownV1),
-}
+pub(super) type PendingControllerCacheUnpinV1 = PendingControllerCacheCustodyV1<CachePinV1>;
+
+const UNPIN_CUSTODY_MESSAGES: CacheCustodyMessages = CacheCustodyMessages {
+    owners_unavailable: "Cache owners are unavailable while exact unpin custody is retained",
+    another_operation: "another public Cache unpin still requires exact recovery",
+    physical_unresolved: "physical Cache unpin recovery remains unresolved",
+    protected_pending: "protected Cache unpin recovery remains unresolved",
+    protected_indeterminate: "protected Cache unpin replay remains indeterminate",
+    protected_diverged: "protected Cache unpin transaction diverged",
+    physical_unknown: "physical Cache unpin durability remains unknown",
+};
 
 impl ProductionEffectExecutor {
     pub(super) fn apply_public_cache_unpin(
@@ -67,8 +71,8 @@ impl ProductionEffectExecutor {
                     | CacheResidencyCommitOutcomeV1::ValidationUnknown { pending, .. } => {
                         self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
                             operation_id,
-                            pin,
-                            custody: PendingCacheUnpinCustodyV1::Protected(pending),
+                            payload: pin,
+                            custody: CacheCustodyV1::Protected(pending),
                         });
                     }
                     CacheResidencyCommitOutcomeV1::Applied(_) => {
@@ -78,8 +82,8 @@ impl ProductionEffectExecutor {
                         {
                             self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
                                 operation_id,
-                                pin,
-                                custody: PendingCacheUnpinCustodyV1::Physical(pending),
+                                payload: pin,
+                                custody: CacheCustodyV1::Physical(pending),
                             });
                         }
                     }
@@ -97,8 +101,8 @@ impl ProductionEffectExecutor {
                 {
                     self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
                         operation_id,
-                        pin,
-                        custody: PendingCacheUnpinCustodyV1::Physical(pending),
+                        payload: pin,
+                        custody: CacheCustodyV1::Physical(pending),
                     });
                 }
                 Err(EffectFailure::Retryable(
@@ -115,126 +119,14 @@ impl ProductionEffectExecutor {
         &mut self,
         operation_id: OperationId,
     ) -> Result<(), EffectFailure> {
-        if self.pending_cache_unpin.is_some()
-            && (self.cache_inventory.is_none() || self.cache_physical.is_none())
-        {
-            return Err(EffectFailure::Retryable(
-                "Cache owners are unavailable while exact unpin custody is retained".to_owned(),
-            ));
-        }
-        let Some(pending) = self.pending_cache_unpin.take() else {
-            return Ok(());
-        };
-        if pending.operation_id != operation_id {
-            self.pending_cache_unpin = Some(pending);
-            return Err(EffectFailure::Retryable(
-                "another public Cache unpin still requires exact recovery".to_owned(),
-            ));
-        }
-
-        match pending.custody {
-            PendingCacheUnpinCustodyV1::Physical(token) => {
-                let physical = self.cache_physical.as_mut().ok_or_else(|| {
-                    EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
-                })?;
-                match physical.recover_outcome_unknown(token) {
-                    Ok(_) => Ok(()),
-                    Err(failure) => {
-                        let (token, cause) = failure.into_parts();
-                        self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                            custody: PendingCacheUnpinCustodyV1::Physical(token),
-                            ..pending
-                        });
-                        Err(EffectFailure::Retryable(format!(
-                            "physical Cache unpin recovery remains unresolved: {cause}"
-                        )))
-                    }
-                }
-            }
-            PendingCacheUnpinCustodyV1::Protected(token) => {
-                let recovery = {
-                    let protected = self.cache_inventory.as_mut().ok_or_else(|| {
-                        EffectFailure::Permanent(
-                            "protected Cache inventory is unavailable".to_owned(),
-                        )
-                    })?;
-                    let physical = self.cache_physical.as_mut().ok_or_else(|| {
-                        EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
-                    })?;
-                    protected.recover(
-                        public_cache_unpin_transaction_id_v1(&pending.pin),
-                        token,
-                        |postcommit| postcommit.settle_cache_owner_pin_change(physical),
-                    )
-                };
-                match recovery {
-                    CacheResidencyProtectedOwnerRecoveryV1::Pending {
-                        pending: token,
-                        cause,
-                        ..
-                    } => {
-                        self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                            custody: PendingCacheUnpinCustodyV1::Protected(token),
-                            ..pending
-                        });
-                        Err(EffectFailure::Retryable(format!(
-                            "protected Cache unpin recovery remains unresolved: {cause}"
-                        )))
-                    }
-                    CacheResidencyProtectedOwnerRecoveryV1::Classified {
-                        recovery: CacheResidencyRecoveryV1::Diverged(token),
-                        ..
-                    } => {
-                        self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                            custody: PendingCacheUnpinCustodyV1::Protected(token),
-                            ..pending
-                        });
-                        Err(EffectFailure::Permanent(
-                            "protected Cache unpin transaction diverged".to_owned(),
-                        ))
-                    }
-                    CacheResidencyProtectedOwnerRecoveryV1::Classified {
-                        recovery:
-                            CacheResidencyRecoveryV1::Indeterminate {
-                                pending: token,
-                                cause,
-                            },
-                        ..
-                    } => {
-                        self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                            custody: PendingCacheUnpinCustodyV1::Protected(token),
-                            ..pending
-                        });
-                        Err(EffectFailure::Retryable(format!(
-                            "protected Cache unpin replay remains indeterminate: {cause}"
-                        )))
-                    }
-                    CacheResidencyProtectedOwnerRecoveryV1::Classified {
-                        recovery: CacheResidencyRecoveryV1::Applied(_),
-                        handoff:
-                            Some(Err(CacheOwnerPinSettlementErrorV1::Owner(
-                                CacheOwnerErrorV1::OutcomeUnknown(token),
-                            ))),
-                        ..
-                    } => {
-                        self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                            custody: PendingCacheUnpinCustodyV1::Physical(token),
-                            ..pending
-                        });
-                        Err(EffectFailure::Retryable(
-                            "physical Cache unpin durability remains unknown".to_owned(),
-                        ))
-                    }
-                    CacheResidencyProtectedOwnerRecoveryV1::Classified { .. }
-                    | CacheResidencyProtectedOwnerRecoveryV1::ColdLookupRequired { .. } => {
-                        // An exact predecessor permits a fresh release; an
-                        // applied transaction is checked against its tombstone
-                        // and physical owner by the next batch pass.
-                        Ok(())
-                    }
-                }
-            }
-        }
+        recover_pending_cache_custody(
+            &mut self.pending_cache_unpin,
+            &mut self.cache_inventory,
+            &mut self.cache_physical,
+            operation_id,
+            public_cache_unpin_transaction_id_v1,
+            &UNPIN_CUSTODY_MESSAGES,
+        )
     }
 }
 
