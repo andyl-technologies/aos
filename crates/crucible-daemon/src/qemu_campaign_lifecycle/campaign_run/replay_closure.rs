@@ -367,7 +367,10 @@ impl GuardedCampaignReplayClosure {
                 });
             }
             record.validate_references()?;
+            // Model-sampled app-random choices use the white-box doorbell rather
+            // than the guest selectable catalog; their provenance is checked below.
             if matches!(record.opportunity.source(), ChoiceSource::Guest { .. })
+                && !matches!(selection.origin(), SelectionOrigin::ModelSample(_))
                 && scenario
                     .selectables()
                     .declaration(record.declaration.name())

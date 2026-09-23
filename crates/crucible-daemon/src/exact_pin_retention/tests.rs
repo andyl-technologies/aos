@@ -166,17 +166,21 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         &admin,
     )
     .expect("plan with exact materialization");
+    let exact_closure = fixture
+        .checkpoints
+        .authenticated_production_closure_ids(fixture.checkpoint)
+        .expect("complete exact checkpoint closure");
+    assert!(exact_closure.len() > 1);
     assert!(
-        planned
-            .roots()
+        exact_closure
             .iter()
-            .any(|root| root == fixture.checkpoint.content_id())
+            .all(|id| planned.roots().iter().any(|root| root == *id))
     );
     assert!(
-        !planned
+        planned
             .candidates()
             .iter()
-            .any(|candidate| candidate.id() == fixture.checkpoint.content_id())
+            .all(|candidate| !exact_closure.contains(&candidate.id()))
     );
     let (mut journal, _) =
         crate::DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &planned)
@@ -283,7 +287,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         .to_hex(),
         // The digest pins the canonical retained bytes only after their current
         // campaign fact and exact-checkpoint closure authenticate above.
-        "a647b4e074835898c21c3e694aeeb420c6f1f3e71fbae12a14780f6b11726217"
+        "48e59f2e1b072bacdb5b7d490274138971bb864fc29618f5c500d6d5ba05af02"
     );
     drop(store);
 

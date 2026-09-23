@@ -297,7 +297,12 @@ fn current_exact_pin_fact(
     })
 }
 
-fn load_checkpoint_for_configuration(
+/// Loads a production checkpoint and checks its pinned configuration.
+///
+/// # Errors
+///
+/// Returns an error if the root is incomplete or names another configuration.
+pub(crate) fn load_checkpoint_for_configuration(
     checkpoints: &ExactCheckpointStore,
     checkpoint: ExactCheckpointId,
     configuration: ConfigurationId,
