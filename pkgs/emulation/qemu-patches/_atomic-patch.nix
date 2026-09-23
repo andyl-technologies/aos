@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "c32a6e0c92de3605350a3ecd56615f0258c4ba25263f902b7d6e04f73f111821";
+  sha256 = "f6c7111ad5353c83b67a53378a46e948056e08e51d7e3a12eb1c442d174d5a4d";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -24,12 +24,15 @@
     "guest-visible and active device state. Keep ordinary non-sim virtio ioeventfd"
     "policy unchanged."
     ""
+    "Preserve each virtqueue's notification latch in the current Crucible-only"
+    "checkpoint subsection so sim RX polling resumes with the source state."
+    ""
     "Adopt pinned launch images into live block roots before hot fork,"
     "retiring verified startup fdset bookkeeping without closing the"
     "block-owned descriptors."
   ];
-  commit = "e72ecd59057a7e6dfe5b61d26826b28533489785";
-  tree = "8c9323f7253fc3e6b7bed23c6d09b3cc2fd1b1c6";
+  commit = "e3bec8e0aaefa6188c0cdf52fe823e9560b870ea";
+  tree = "ba1fc715983ba88526e1c51542084b4b04b58230";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -38,7 +41,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "208b726ebaff1933b6107fcb25427c517fdb3b44437c106430dbbcc4a4b8f3e7";
+  bundleSha256 = "619bdabe486eb37a14a606b5a9bc9c79cef4d3f5df42d6c3c316dc6cfcf152cd";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
