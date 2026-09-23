@@ -15,6 +15,7 @@ use aos_sandbox_broker_session_protocol::{
 use aos_sandbox_protocol::PeerCredentials;
 use sha2::{Digest as _, Sha256};
 
+use super::{read_u16, read_u32};
 use crate::BrokerSessionSecurityError;
 
 const MAGIC: &[u8; 8] = b"AOSBSCP1";
@@ -178,22 +179,4 @@ impl HistoricalSessionCheckpointV1 {
         }
         Ok(checkpoint)
     }
-}
-
-fn read_u16(bytes: &[u8], start: usize) -> Result<u16, BrokerSessionSecurityError> {
-    Ok(u16::from_be_bytes(read_array(bytes, start)?))
-}
-
-fn read_u32(bytes: &[u8], start: usize) -> Result<u32, BrokerSessionSecurityError> {
-    Ok(u32::from_be_bytes(read_array(bytes, start)?))
-}
-
-fn read_array<const N: usize>(
-    bytes: &[u8],
-    start: usize,
-) -> Result<[u8; N], BrokerSessionSecurityError> {
-    bytes
-        .get(start..start + N)
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(BrokerSessionSecurityError::Currentness)
 }

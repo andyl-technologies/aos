@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     BROKER_SESSION_DURABLE_RECORD_MAXIMUM_BYTES, BrokerSessionDurableError,
-    BrokerSessionDurablePhaseV1, BrokerSessionDurableRecordV1,
+    BrokerSessionDurablePhaseV1, BrokerSessionDurableRecordV1, read_u16, read_u32,
 };
 
 const MAGIC: &[u8; 8] = b"AOSBSH01";
@@ -249,22 +249,4 @@ fn validate_chain(
         }
     }
     Ok(())
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, BrokerSessionDurableError> {
-    let value = bytes
-        .get(offset..offset.saturating_add(2))
-        .ok_or(BrokerSessionDurableError::InvalidLength)?
-        .try_into()
-        .map_err(|_| BrokerSessionDurableError::InvalidLength)?;
-    Ok(u16::from_be_bytes(value))
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, BrokerSessionDurableError> {
-    let value = bytes
-        .get(offset..offset.saturating_add(4))
-        .ok_or(BrokerSessionDurableError::InvalidLength)?
-        .try_into()
-        .map_err(|_| BrokerSessionDurableError::InvalidLength)?;
-    Ok(u32::from_be_bytes(value))
 }
