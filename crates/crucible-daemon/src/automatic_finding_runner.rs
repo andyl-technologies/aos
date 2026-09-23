@@ -40,7 +40,8 @@ mod exact_retention;
 use exact_retention::prepare_finding_exact_retention;
 pub(crate) use exact_retention::{
     CampaignRunFindingExactRetentionSource, FindingExactCandidateInventoryError,
-    FindingExactRetentionSource,
+    FindingExactRetentionSource, FindingTerminalCheckpointIdentity, exact_findings_enabled,
+    publish_authenticated_terminal_checkpoint,
 };
 
 #[cfg(test)]

@@ -25,6 +25,8 @@ use crucible_cas::content_store::{BlobHandle, ContentId};
 
 use crate::automatic_finding_runner::{
     FindingExactCandidateInventoryError, FindingExactRetentionSource,
+    FindingTerminalCheckpointIdentity, exact_findings_enabled,
+    publish_authenticated_terminal_checkpoint,
 };
 use crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator;
 use crate::executor_pool::PausedCheckpointObserver;
@@ -90,6 +92,10 @@ enum MaterializerCommand {
         configuration: ConfigurationId,
         maximum_candidates: usize,
         response: SyncSender<Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError>>,
+    },
+    FindingTerminalCheckpoint {
+        checkpoint: ExactCheckpointId,
+        response: SyncSender<Result<(), FindingExactCandidateInventoryError>>,
     },
     Shutdown,
 }
@@ -279,6 +285,33 @@ impl PreparedPackagedExactPinMaterializer {
                     let _ = response.try_send(result);
                     continue;
                 }
+                Ok(MaterializerCommand::FindingTerminalCheckpoint {
+                    checkpoint,
+                    response,
+                }) => {
+                    let result = insert_checkpoint(
+                        &self.checkpoints,
+                        &mut self.catalog,
+                        &mut self.catalog_roots,
+                        checkpoint,
+                    );
+                    match result {
+                        Ok(()) => {
+                            let _ = response.try_send(Ok(()));
+                            continue;
+                        }
+                        Err(PackagedExactPinMaterializerError::CheckpointLimit) => {
+                            let _ = response
+                                .try_send(Err(FindingExactCandidateInventoryError::LimitExceeded));
+                            continue;
+                        }
+                        Err(error) => {
+                            let _ = response
+                                .try_send(Err(FindingExactCandidateInventoryError::Unavailable));
+                            return Err(error);
+                        }
+                    }
+                }
                 Ok(MaterializerCommand::Shutdown) => {
                     reconcile_exact_pins(
                         &self.repository,
@@ -326,6 +359,54 @@ impl FindingExactRetentionSource for PackagedFindingExactRetentionSource {
         completed
             .recv_timeout(STATUS_TIMEOUT)
             .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?
+    }
+
+    fn exact_findings_enabled(
+        &self,
+        input: &crate::CrucibleAttemptExecution,
+        context: &crate::AttemptExecutionContext,
+    ) -> bool {
+        exact_findings_enabled(&self.store, input, context)
+    }
+
+    fn retain_terminal_checkpoint(
+        &self,
+        capture: &crate::CapturedAttemptCheckpoint,
+        context: &crate::AttemptExecutionContext,
+        identity: FindingTerminalCheckpointIdentity,
+    ) -> Result<(), FindingExactCandidateInventoryError> {
+        let checkpoint = publish_authenticated_terminal_checkpoint(
+            self,
+            &self.checkpoints,
+            capture,
+            context.cancellation(),
+            identity,
+        )?;
+        let (response, completed) = sync_channel(1);
+        self.sender
+            .try_send(MaterializerCommand::FindingTerminalCheckpoint {
+                checkpoint,
+                response,
+            })
+            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+        loop {
+            if context.cancellation().is_canceled() {
+                return Err(FindingExactCandidateInventoryError::Unavailable);
+            }
+            let wait = context
+                .remaining_host_watchdog()
+                .map_or(STATUS_TIMEOUT, |remaining| remaining.min(STATUS_TIMEOUT));
+            if wait.is_zero() {
+                return Err(FindingExactCandidateInventoryError::Unavailable);
+            }
+            match completed.recv_timeout(wait) {
+                Ok(result) => return result,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(FindingExactCandidateInventoryError::Unavailable);
+                }
+            }
+        }
     }
 }
 
