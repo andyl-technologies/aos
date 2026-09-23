@@ -23,7 +23,7 @@ use crate::{
     validate_request_header,
 };
 
-/// Bounds the complete encoded Host gate-install request body.
+/// Bounds the complete encoded Host attach-gate request body.
 pub const HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES: usize = 1024;
 const MAXIMUM_RESPONSE_BODY_BYTES: usize = 8192;
 
@@ -89,7 +89,7 @@ pub fn decode_host_attach_readiness_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHostAttachReadinessRequestV1, ProtocolValidationError> {
-    if bytes.len() > MAXIMUM_REQUEST_BODY_BYTES {
+    if bytes.len() > HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let request = QueryHostAttachGateReadinessRequestV1::decode_from_slice(bytes)
@@ -121,7 +121,7 @@ pub fn decode_host_attach_route_query_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHostAttachRouteQueryV1, ProtocolValidationError> {
-    if bytes.len() > MAXIMUM_REQUEST_BODY_BYTES {
+    if bytes.len() > HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
     let request = QueryHostAttachGateRouteRequestV1::decode_from_slice(bytes)
