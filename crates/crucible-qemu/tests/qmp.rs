@@ -29,6 +29,9 @@ use crucible_qemu::{
 use crucible_shmem::mmap_setup_region;
 use serde_json::Value;
 
+#[path = "qmp/schema_registry.rs"]
+mod schema_registry;
+
 #[test]
 fn qmp_connect_reads_greeting_and_negotiates_capabilities() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
