@@ -22,6 +22,29 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
+    if let Some(input) = std::env::var_os("CRUCIBLE_FINDING_BUNDLE_CHILD") {
+        for minimized in [false, true] {
+            let mut arguments = vec![
+                std::ffi::OsString::from("crucible"),
+                std::ffi::OsString::from("--format"),
+                std::ffi::OsString::from("json"),
+                std::ffi::OsString::from("campaign"),
+                std::ffi::OsString::from("finding-bundle"),
+                std::ffi::OsString::from("verify"),
+                input.clone(),
+            ];
+            if minimized {
+                arguments.push(std::ffi::OsString::from("--minimized"));
+            }
+            let cli = <crate::Cli as clap::Parser>::try_parse_from(arguments)?;
+            let crate::Commands::Campaign(campaign) = &cli.command else {
+                return Err(std::io::Error::other("missing parsed campaign command").into());
+            };
+            crate::cli_campaign::run_campaign_invocation(&cli, campaign)?;
+        }
+        return Ok(());
+    }
+
     use crucible_campaign::{
         BudgetGrant, CampaignClient, CampaignCommandId, CampaignControlAction, CampaignHash,
         CampaignLineage, CampaignMode, CampaignName, CampaignPolicy, CampaignPrincipal,
@@ -81,8 +104,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         )),
         Arc::new(MemoryRefBackend::new()),
     );
-    let scenario =
-        ScenarioDefId::from_hash(CampaignHash::from_bytes(form.scenario_def().id().bytes));
+    let scenario = ScenarioDefId::from_hash(CampaignHash::from_bytes(form.id().bytes));
     let scenario_artifact =
         repository.publish_scenario_artifact(scenario, 1, form.to_compact_binary())?;
     let genesis = ConfigurationId::from_hash(CampaignHash::derive(
@@ -213,13 +235,22 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     let observed = repository.publish_observation(CAMPAIGN, observation_snapshot, &observation)?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
     let reproduction_payload = model_finding.artifact.to_compact_binary();
+    assert_eq!(
+        model_finding.artifact.scenario_form().id().to_hex(),
+        scenario.to_hex()
+    );
+    assert_eq!(configuration.id().to_hex(), child.to_hex());
+    assert_eq!(
+        model_finding.artifact.id().to_hex(),
+        crucible::ContentHash::from_bytes(&reproduction_payload).to_hex()
+    );
     let original = repository.publish_reproduction_artifact(
         scenario,
         scenario_artifact,
         child,
         child_artifact,
         campaign_fingerprint,
-        1,
+        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
         reproduction_payload.clone(),
     )?;
     let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
@@ -249,7 +280,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         minimized_child,
         minimized_child_artifact,
         campaign_fingerprint,
-        1,
+        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
         minimized_model_finding.artifact.to_compact_binary(),
         minimization.clone(),
     )?;
@@ -362,6 +393,65 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         &repository,
         AllowCampaignFindingExport,
     ));
+    let portable_root = tempfile::tempdir()?;
+    let portable_bundle = portable_root.path().join("finding");
+    let exported = crate::cli_campaign::finding_bundle::export_finding_bundle(
+        &client,
+        CampaignPrincipal::new("operator:cli-campaign-findings")?,
+        &crate::CampaignFindingBundleExportArgs {
+            name: CAMPAIGN.to_owned(),
+            snapshot: published.new_snapshot.to_string(),
+            finding: published.finding.to_string(),
+            output: portable_bundle.clone(),
+        },
+        OutputFormat::Json,
+    )?;
+    assert!(exported.contains("\"native_signature_verified\":true"));
+    assert!(exported.contains("\"minimized\":true"));
+    let child = std::process::Command::new(std::env::current_exe()?)
+        .arg("campaign_findings_round_trip_authenticates_occurrence_objects_and_tampering")
+        .arg("--test-threads=1")
+        .env("CRUCIBLE_FINDING_BUNDLE_CHILD", &portable_bundle)
+        .output()?;
+    assert!(
+        child.status.success() && String::from_utf8_lossy(&child.stdout).contains("1 passed"),
+        "fresh-process finding verification failed: {}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let original_response = portable_bundle.join("ledger");
+    let authenticated_bytes = std::fs::read(&original_response)?;
+    let mut tampered_bytes = authenticated_bytes.clone();
+    let proof_field = b".campaign_membership_response_hex=";
+    let proof_start = tampered_bytes
+        .windows(proof_field.len())
+        .position(|window| window == proof_field)
+        .ok_or_else(|| std::io::Error::other("missing portable membership proof"))?
+        + proof_field.len();
+    let proof_end = tampered_bytes[proof_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or_else(|| std::io::Error::other("unterminated portable membership proof"))?
+        + proof_start;
+    let last_digit = proof_end - 1;
+    tampered_bytes[last_digit] = if tampered_bytes[last_digit] == b'0' {
+        b'1'
+    } else {
+        b'0'
+    };
+    std::fs::write(&original_response, tampered_bytes)?;
+    assert!(
+        crate::cli_campaign::finding_bundle::verify_exported_finding(
+            &crate::CampaignFindingBundleVerifyArgs {
+                input: portable_bundle.clone(),
+                minimized: false,
+            },
+            OutputFormat::Json,
+        )
+        .is_err()
+    );
+    std::fs::write(&original_response, authenticated_bytes)?;
+
     let evidence = crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
         &client,
         CampaignPrincipal::new("operator:cli-campaign-findings")?,
