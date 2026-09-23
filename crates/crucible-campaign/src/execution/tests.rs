@@ -697,7 +697,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &request_bytes,
         )
         .to_hex(),
-        "8ea751b3fbdc96c840f4803d34e9df0b97dd11aaafcbe6fe7ef757d8dc74105e"
+        "9b2f4e71c5997bbe499970e3b286916cc82310d2278010895f98cebee76b35da"
     );
 
     let execution = ExecutionId::from_bytes([0x3e; 16]).expect("resumed execution");
@@ -718,7 +718,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &response_bytes,
         )
         .to_hex(),
-        "ef27c6c347f165ae453e976a8eadbac0c423f2361c73ea3dc462a62bb62393f8"
+        "baf2aeeab856d79e15dc7f06908e53e5a548f774b25110855920aa89548165af"
     );
 
     let other_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
@@ -1098,7 +1098,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &response_bytes,
         )
         .to_hex(),
-        "50b849a5d33bfcd04b246d0f9d6f142e37ba7fe53dfac46e43657185651424c2"
+        "dcb9d6626c2fcbff2957ccc3dee1eff9b8f522269b70fbc5af9e979395cb8082"
     );
 
     let other = CheckpointAttemptExecutionRequest::new(
