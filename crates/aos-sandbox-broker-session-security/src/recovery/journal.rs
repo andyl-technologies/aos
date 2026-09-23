@@ -1,6 +1,7 @@
 //! Concrete protected storage for authenticated broker-session histories.
 //!
-//! Each namespace-47 value is one canonical, bounded full history. The owner
+//! Each namespace-47 value is one canonical, bounded full history. Namespace
+//! 55 retains an immutable original Storage group history across rollover. The owner
 //! consumes the protected endpoint that defines its stable role/manifest
 //! identity and its process-specific publication. Reopen accepts an earlier
 //! process publication only as an authenticated terminal rollover predecessor;
@@ -65,7 +66,17 @@ const ENDPOINT_PUBLICATION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.endpoint
 const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.stable-endpoint-identity.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.journal-transaction.v2\0";
+const STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.storage-group-archive.v1\0";
+const STORAGE_GROUP_ARCHIVE_RETIRE_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.storage-group-archive-retire.v1\0";
+const STORAGE_GROUP_ARCHIVE_MAGIC: &[u8; 8] = b"AOSASAH1";
+const STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.storage-group-archive-value.v1\0";
+const STORAGE_GROUP_ARCHIVE_HEADER_BYTES: usize = 8 + 2 + 16 + 4;
+const STORAGE_GROUP_ARCHIVE_TRAILER_BYTES: usize = 32;
 const MAXIMUM_PROTOCOL_RECORDS: usize = 4;
+const MAXIMUM_STORAGE_GROUP_ARCHIVES: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
 
 /// Carries one terminal client exchange recovered from protected history.
@@ -264,12 +275,13 @@ fn protected_session_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
         maximum_record_bytes,
-        maximum_key_bytes: KEY_MAGIC.len() + 1,
+        maximum_key_bytes: 16,
         maximum_records_per_transaction: 1,
         maximum_transaction_bytes: maximum_record_bytes + 1024,
         maximum_transactions: 65_536,
-        maximum_materialized_bytes: MAXIMUM_PROTOCOL_RECORDS * maximum_record_bytes,
-        maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS,
+        maximum_materialized_bytes: (MAXIMUM_PROTOCOL_RECORDS + MAXIMUM_STORAGE_GROUP_ARCHIVES)
+            * maximum_record_bytes,
+        maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS + MAXIMUM_STORAGE_GROUP_ARCHIVES,
     }
 }
 
@@ -554,6 +566,41 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Retires an archived group only after its protected source is complete.
+    pub(crate) fn retire_atomic_storage_archive(
+        &mut self,
+        request_id: [u8; 16],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        self.journal.retire_atomic_storage_archive(request_id)?;
+        self.revalidate_transport(transcript, connection_peer)
+    }
+
+    /// Retains the already verified original signed session before rollover.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn archive_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        self.journal.archive_verified_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            checkpoint_digest,
+        )?;
+        self.revalidate_transport(transcript, connection_peer)
+    }
+
     /// Reauthenticates the old Storage trio without granting live traffic authority.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prior_verified_atomic_storage_history(
@@ -1230,6 +1277,182 @@ fn reconstruct_retained_server_request(
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    fn read_atomic_storage_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let value = {
+            let authority = self
+                .journal_mut()?
+                .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            authority
+                .get(&request_id)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .map(<[u8]>::to_vec)
+        };
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let stored_bytes = open_atomic_storage_archive_frame(request_id, &value)?;
+        let stored = StoredProtocolHistoryV1::decode(
+            &protocol_key(BrokerSessionProtocolV1::Storage),
+            stored_bytes,
+        )?;
+        if stored.endpoint != BrokerSessionDurableEndpointV1::Client
+            || stored.checkpoint.is_none()
+            || stored.stable_endpoint_identity
+                != self.stable_endpoint_identity(BrokerSessionProtocolV1::Storage)?
+            || !stored.history_model()?.records().iter().any(|record| {
+                record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                    && record.request_id() == request_id
+            })
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(Some(stored))
+    }
+
+    fn atomic_storage_history_for_request(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        if let Some(archive) = self.read_atomic_storage_archive(request_id)? {
+            Ok(Some(archive))
+        } else {
+            self.read_optional(BrokerSessionProtocolV1::Storage)
+        }
+    }
+
+    fn archive_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if !matches!(
+            self.prior_verified_atomic_storage_history(
+                request_id,
+                request_packet,
+                predecessor_packet,
+                session_binding,
+                checkpoint_digest,
+            )?,
+            ProtectedVerifiedAtomicStorageHistoryV1::GroupCommitted { .. }
+                | ProtectedVerifiedAtomicStorageHistoryV1::Complete { .. }
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        if self.read_atomic_storage_archive(request_id)?.is_some() {
+            return Ok(());
+        }
+        let current = self
+            .read_optional(BrokerSessionProtocolV1::Storage)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let value = encode_atomic_storage_archive_frame(request_id, &current.encode()?)?;
+        let digest: [u8; 32] = Sha256::new()
+            .chain_update(STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN)
+            .chain_update(request_id)
+            .chain_update(Sha256::digest(&value))
+            .finalize()
+            .into();
+        let transaction_id: [u8; 16] = digest[..16]
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if transaction_id == [0; 16] {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                request_id.to_vec(),
+                value,
+            )],
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let mut authority = self
+            .journal_mut()?
+            .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if authority
+            .get(&request_id)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            .is_some()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let preflight = authority
+            .preflight_transactions(core::slice::from_ref(&transaction))
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        authority
+            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        authority
+            .commit(&transaction)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let _ = self
+            .read_atomic_storage_archive(request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        Ok(())
+    }
+
+    fn retire_atomic_storage_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let Some(stored) = self.read_atomic_storage_archive(request_id)? else {
+            return Ok(());
+        };
+        let value = encode_atomic_storage_archive_frame(request_id, &stored.encode()?)?;
+        let digest: [u8; 32] = Sha256::new()
+            .chain_update(STORAGE_GROUP_ARCHIVE_RETIRE_DOMAIN)
+            .chain_update(request_id)
+            .chain_update(Sha256::digest(&value))
+            .finalize()
+            .into();
+        let transaction_id: [u8; 16] = digest[..16]
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if transaction_id == [0; 16] {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::delete(
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                request_id.to_vec(),
+            )],
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let mut authority = self
+            .journal_mut()?
+            .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if authority
+            .get(&request_id)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            != Some(value.as_slice())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let preflight = authority
+            .preflight_transactions(core::slice::from_ref(&transaction))
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        authority
+            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        authority
+            .commit(&transaction)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if self.read_atomic_storage_archive(request_id)?.is_some() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(())
+    }
+
     fn prior_verified_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],
@@ -1286,7 +1509,7 @@ impl ProtectedBrokerSessionJournalV1 {
             ),
         };
         let stored = self
-            .read_optional(BrokerSessionProtocolV1::Storage)?
+            .atomic_storage_history_for_request(request_id)?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         let checkpoint = stored
             .checkpoint
@@ -1366,7 +1589,11 @@ impl ProtectedBrokerSessionJournalV1 {
         session_binding: [u8; 32],
         protocol: BrokerSessionProtocolV1,
     ) -> Result<ProtectedPriorAtomicStorageHistoryV1, BrokerSessionSecurityError> {
-        let Some(stored) = self.read_optional(protocol)? else {
+        let Some(stored) = (if protocol == BrokerSessionProtocolV1::Storage {
+            self.atomic_storage_history_for_request(request_id)?
+        } else {
+            self.read_optional(protocol)?
+        }) else {
             return Ok(ProtectedPriorAtomicStorageHistoryV1::Absent);
         };
         let history = stored.history_model()?;
@@ -2906,6 +3133,69 @@ fn decode_endpoint(code: u8) -> Result<BrokerSessionDurableEndpointV1, BrokerSes
     }
 }
 
+fn encode_atomic_storage_archive_frame(
+    request_id: [u8; 16],
+    stored_history: &[u8],
+) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+    let stored_length =
+        u32::try_from(stored_history.len()).map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    if request_id == [0; 16] || stored_history.is_empty() {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    let mut value = Vec::with_capacity(
+        STORAGE_GROUP_ARCHIVE_HEADER_BYTES
+            + stored_history.len()
+            + STORAGE_GROUP_ARCHIVE_TRAILER_BYTES,
+    );
+    value.extend_from_slice(STORAGE_GROUP_ARCHIVE_MAGIC);
+    value.extend_from_slice(&1_u16.to_be_bytes());
+    value.extend_from_slice(&request_id);
+    value.extend_from_slice(&stored_length.to_be_bytes());
+    value.extend_from_slice(stored_history);
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN)
+        .chain_update(&value)
+        .finalize()
+        .into();
+    value.extend_from_slice(&digest);
+    Ok(value)
+}
+
+fn open_atomic_storage_archive_frame<'a>(
+    request_id: [u8; 16],
+    value: &'a [u8],
+) -> Result<&'a [u8], BrokerSessionSecurityError> {
+    if request_id == [0; 16]
+        || value.len() <= STORAGE_GROUP_ARCHIVE_HEADER_BYTES + STORAGE_GROUP_ARCHIVE_TRAILER_BYTES
+        || value.get(..8) != Some(STORAGE_GROUP_ARCHIVE_MAGIC.as_slice())
+        || read_u16(value, 8)? != 1
+        || read_array::<16>(value, 10)? != request_id
+    {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    let stored_length = usize::try_from(read_u32(value, 26)?)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let stored_end = STORAGE_GROUP_ARCHIVE_HEADER_BYTES
+        .checked_add(stored_length)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    if stored_length == 0
+        || stored_end.checked_add(STORAGE_GROUP_ARCHIVE_TRAILER_BYTES) != Some(value.len())
+    {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    let actual: [u8; 32] = Sha256::new()
+        .chain_update(STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN)
+        .chain_update(&value[..stored_end])
+        .finalize()
+        .into();
+    if read_array::<32>(value, stored_end)? != actual {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    value
+        .get(STORAGE_GROUP_ARCHIVE_HEADER_BYTES..stored_end)
+        .ok_or(BrokerSessionSecurityError::Currentness)
+}
+
 fn value_digest(value_without_digest: &[u8], version: u16) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(if version == VALUE_VERSION_V3 {
@@ -2951,6 +3241,83 @@ fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, BrokerSessionSecurityError
         .get(offset)
         .copied()
         .ok_or(BrokerSessionSecurityError::Currentness)
+}
+
+#[cfg(test)]
+mod storage_group_archive_tests {
+    use super::*;
+
+    #[test]
+    fn archive_frame_binds_request_and_rejects_tampering() {
+        let request_id = [7; 16];
+        let frame =
+            encode_atomic_storage_archive_frame(request_id, b"original-signed-history").unwrap();
+        assert_eq!(
+            open_atomic_storage_archive_frame(request_id, &frame).unwrap(),
+            b"original-signed-history"
+        );
+        assert!(open_atomic_storage_archive_frame([8; 16], &frame).is_err());
+
+        let mut tampered = frame.clone();
+        tampered[STORAGE_GROUP_ARCHIVE_HEADER_BYTES] ^= 1;
+        assert!(open_atomic_storage_archive_frame(request_id, &tampered).is_err());
+        assert!(open_atomic_storage_archive_frame(request_id, &frame[..frame.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn archived_original_survives_current_session_rollover_and_reopen() {
+        let temporary = tempfile::tempdir().unwrap();
+        let journal_path = temporary.path().join("session.journal");
+        let request_id = [9; 16];
+        let archive =
+            encode_atomic_storage_archive_frame(request_id, b"original-signed-history").unwrap();
+        let (mut journal, _) =
+            Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
+        let current_key = protocol_key(BrokerSessionProtocolV1::Storage);
+        for (id, namespace, key, value) in [
+            (
+                1,
+                RecordNamespace::BrokerSessionTraffic,
+                current_key.clone(),
+                b"original-session".to_vec(),
+            ),
+            (
+                2,
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                request_id.to_vec(),
+                archive.clone(),
+            ),
+            (
+                3,
+                RecordNamespace::BrokerSessionTraffic,
+                current_key.clone(),
+                b"new-session".to_vec(),
+            ),
+        ] {
+            let transaction =
+                JournalTransaction::new([id; 16], vec![JournalRecord::put(namespace, key, value)])
+                    .unwrap();
+            journal.commit(&transaction).unwrap();
+        }
+        drop(journal);
+
+        let (journal, _) =
+            Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
+        assert_eq!(
+            journal.get(RecordNamespace::BrokerSessionTraffic, &current_key),
+            Some(b"new-session".as_slice())
+        );
+        let retained = journal
+            .get(
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                &request_id,
+            )
+            .unwrap();
+        assert_eq!(
+            open_atomic_storage_archive_frame(request_id, retained).unwrap(),
+            b"original-signed-history"
+        );
+    }
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, BrokerSessionSecurityError> {

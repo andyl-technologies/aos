@@ -109,6 +109,8 @@ pub enum LifecycleAtomicSnapshotSourceRecoveryV1 {
     },
     /// The original request and adjacent inventory transition are durable.
     Complete {
+        /// The original request whose optional signed-history archive can retire.
+        request_id: [u8; 16],
         /// The signed group request commitment.
         signed_request: ObjectDigest,
         /// The whole post-effect Storage inventory commitment.
@@ -163,6 +165,29 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
             }
         }
         Ok(pending)
+    }
+
+    /// Lists completed original request IDs whose temporary history may retire.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protected authority is absent or any source record
+    /// is corrupt. This never changes a source or grants dispatch authority.
+    pub fn completed_request_ids(
+        &self,
+    ) -> Result<Vec<[u8; 16]>, LifecycleAtomicSnapshotSourceErrorV1> {
+        self.journal.ensure_protected_authority()?;
+        let mut completed = Vec::new();
+        for (key, bytes) in self.journal.records(NAMESPACE) {
+            let record = SourceRecord::decode(bytes)?;
+            if key != record.operation.as_slice() {
+                return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+            }
+            if record.completion.is_some() {
+                completed.push(record.request_id);
+            }
+        }
+        Ok(completed)
     }
 
     /// Durably reserves the exact selected Storage group before broker I/O.
@@ -603,6 +628,7 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         };
         match record.completion {
             Some(completion) => Ok(LifecycleAtomicSnapshotSourceRecoveryV1::Complete {
+                request_id: record.request_id,
                 signed_request: ObjectDigest::from_bytes(completion.signed_request),
                 successor: ObjectDigest::from_bytes(completion.successor),
                 record: ObjectDigest::from_bytes(record.digest()),

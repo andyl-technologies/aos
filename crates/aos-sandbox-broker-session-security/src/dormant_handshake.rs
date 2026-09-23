@@ -1300,6 +1300,30 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
+    pub(crate) fn archive_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.archive_verified_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            checkpoint_digest,
+        )
+    }
+
+    pub(crate) fn retire_atomic_storage_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.retire_atomic_storage_archive(request_id)
+    }
+
     pub(crate) fn prior_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],

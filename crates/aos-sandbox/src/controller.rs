@@ -2787,6 +2787,18 @@ where
             .pending_reservations()
     }
 
+    /// Lists completed Storage request IDs for authenticated archive cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protected source custody is unavailable or corrupt.
+    pub fn completed_atomic_snapshot_source_request_ids(
+        &mut self,
+    ) -> Result<Vec<[u8; 16]>, crate::lifecycle::LifecycleAtomicSnapshotSourceErrorV1> {
+        crate::lifecycle::LifecycleAtomicSnapshotSourceStoreV1::new(self.reconciler.journal_mut())
+            .completed_request_ids()
+    }
+
     /// Borrows the sole protected journal for a dormant operator-recovery transition.
     ///
     /// The returned owner dispatches no runtime action and registers no route;

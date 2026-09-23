@@ -1145,6 +1145,48 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             })
     }
 
+    /// Preserves the verified original signed session before a status query.
+    ///
+    /// The immutable archive is keyed by the original request ID and checked
+    /// against the source reservation's packet, session, and hello checkpoint.
+    /// A fresh inventory may roll the live session history only after this
+    /// write is durably committed and reread.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn archive_verified_atomic_snapshot_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: aos_sandbox_core::ObjectDigest,
+        predecessor_packet: aos_sandbox_core::ObjectDigest,
+        session_binding: aos_sandbox_core::ObjectDigest,
+        checkpoint: aos_sandbox_core::ObjectDigest,
+    ) -> Result<(), EffectFailure> {
+        self.0
+            .session
+            .archive_verified_atomic_storage_history(
+                request_id,
+                *request_packet.as_bytes(),
+                *predecessor_packet.as_bytes(),
+                *session_binding.as_bytes(),
+                *checkpoint.as_bytes(),
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable("original Storage group archive is unavailable".to_owned())
+            })
+    }
+
+    /// Removes temporary old-session bytes after protected source completion.
+    pub(crate) fn retire_atomic_snapshot_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<(), EffectFailure> {
+        self.0
+            .session
+            .retire_atomic_storage_archive(request_id)
+            .map_err(|_| {
+                EffectFailure::Retryable("Storage group archive retirement failed".to_owned())
+            })
+    }
+
     /// Reattests a fully verified old trio with the current fixed Storage key.
     ///
     /// This issues no broker request. The fresh signature binds the current

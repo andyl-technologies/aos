@@ -209,6 +209,8 @@ pub enum RecordNamespace {
     PublicAttachRoute = 53,
     /// Durable, non-admitted public attach identity awaiting Host gate readback.
     PublicAttachPending = 54,
+    /// Immutable signed Storage group history retained across session rollover.
+    BrokerSessionStorageGroupArchive = 55,
 }
 
 impl RecordNamespace {
@@ -268,6 +270,7 @@ impl RecordNamespace {
             52 => Ok(Self::LifecycleAtomicSnapshotSource),
             53 => Ok(Self::PublicAttachRoute),
             54 => Ok(Self::PublicAttachPending),
+            55 => Ok(Self::BrokerSessionStorageGroupArchive),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -3655,13 +3658,14 @@ mod tests {
             RecordNamespace::LifecycleAtomicSnapshotSource,
             RecordNamespace::PublicAttachRoute,
             RecordNamespace::PublicAttachPending,
+            RecordNamespace::BrokerSessionStorageGroupArchive,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 55, 255] {
+        for code in [0, 56, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }

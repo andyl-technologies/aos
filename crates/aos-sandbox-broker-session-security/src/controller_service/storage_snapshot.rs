@@ -195,16 +195,23 @@ impl ProductionEffectExecutor {
                             crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::GroupCommitted {
                                 predecessor,
                                 group,
-                            } => (
-                                storage.recover_verified_atomic_snapshot_status(
+                            } => {
+                                storage.archive_verified_atomic_snapshot_history(
+                                    request_id,
+                                    request_packet,
+                                    predecessor_packet,
+                                    session,
+                                    checkpoint,
+                                )?;
+                                let completion = storage.recover_verified_atomic_snapshot_status(
                                     predecessor,
                                     group,
                                     &challenge,
                                     &current,
                                     &plan,
-                                )?,
-                                true,
-                            ),
+                                )?;
+                                (completion, true)
+                            }
                             _ => return Err(retryable("protected Storage history changed")),
                         };
                         drop(sessions);
@@ -238,6 +245,9 @@ impl ProductionEffectExecutor {
                         drop(current);
                         drop(coordination);
                         drop(owner);
+                        if status {
+                            self.retire_completed_atomic_snapshot_archive(request_id)?;
+                        }
                         return self.commit_storage_snapshot_progress(
                             operation_id,
                             operation_key,
@@ -245,7 +255,7 @@ impl ProductionEffectExecutor {
                             observation,
                         );
                     }
-                    LifecycleAtomicSnapshotSourceRecoveryV1::Complete { .. } => {
+                    LifecycleAtomicSnapshotSourceRecoveryV1::Complete { request_id, .. } => {
                         let observation = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
                             .recover_complete_observation(&current, &barrier)
                             .map_err(permanent)?;
@@ -253,6 +263,7 @@ impl ProductionEffectExecutor {
                         drop(current);
                         drop(coordination);
                         drop(owner);
+                        self.retire_completed_atomic_snapshot_archive(request_id)?;
                         return self.commit_storage_snapshot_progress(
                             operation_id,
                             operation_key,
@@ -527,6 +538,21 @@ impl ProductionEffectExecutor {
         self.settle_lifecycle_progress(operation_id, outcome)?;
         self.pending_atomic_snapshot = None;
         Ok(true)
+    }
+
+    fn retire_completed_atomic_snapshot_archive(
+        &self,
+        request_id: [u8; 16],
+    ) -> Result<(), EffectFailure> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| retryable("broker session lock is poisoned"))?;
+        let storage = sessions
+            .storage
+            .as_mut()
+            .ok_or_else(missing_broker_session)?;
+        storage.retire_atomic_snapshot_archive(request_id)
     }
 }
 

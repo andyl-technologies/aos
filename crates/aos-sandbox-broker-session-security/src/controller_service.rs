@@ -1020,15 +1020,27 @@ fn audit_pending_atomic_snapshot_sources(
     // Historical group success may recover from a fresh read-only status only
     // when Storage attests the original protected post-head is still current.
     // An absent or incomplete group has no such authority.
+    let completed = if before_reconciliation {
+        controller
+            .completed_atomic_snapshot_source_request_ids()
+            .map_err(|error| CycleFailure::Fatal(error.to_string()))?
+    } else {
+        Vec::new()
+    };
     let pending = controller
         .pending_atomic_snapshot_sources()
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-    if pending.is_empty() {
+    if pending.is_empty() && completed.is_empty() {
         return Ok(());
     }
     let storage = sessions.storage.as_mut().ok_or_else(|| {
         CycleFailure::Retryable("protected Storage session is unavailable".to_owned())
     })?;
+    for request_id in completed {
+        storage
+            .retire_atomic_snapshot_archive(request_id)
+            .map_err(|error| CycleFailure::Retryable(format!("{error:?}")))?;
+    }
     for (_, source) in pending {
         let aos_sandbox::lifecycle::LifecycleAtomicSnapshotSourceRecoveryV1::Pending {
             request_id,
@@ -1060,6 +1072,15 @@ fn audit_pending_atomic_snapshot_sources(
                 "pending Storage source lacks a verified group result".to_owned(),
             ));
         }
+        storage
+            .archive_verified_atomic_snapshot_history(
+                request_id,
+                request_packet,
+                predecessor_packet,
+                session,
+                checkpoint,
+            )
+            .map_err(|error| CycleFailure::Retryable(format!("{error:?}")))?;
         if !before_reconciliation {
             return Err(CycleFailure::Retryable(
                 "verified Storage source awaits lifecycle completion".to_owned(),
