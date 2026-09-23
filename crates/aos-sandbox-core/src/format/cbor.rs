@@ -274,6 +274,76 @@ impl Encoder {
     }
 }
 
+/// Shares CBOR primitive sequencing between byte encoding and exact counting.
+pub(super) trait CborSink {
+    fn head(&mut self, major: u8, argument: u64);
+    fn payload(&mut self, value: &[u8]);
+
+    fn array(&mut self, length: usize) {
+        self.head(4, length as u64);
+    }
+
+    fn bytes(&mut self, value: &[u8]) {
+        self.head(2, value.len() as u64);
+        self.payload(value);
+    }
+
+    fn text(&mut self, value: &str) {
+        self.head(3, value.len() as u64);
+        self.payload(value.as_bytes());
+    }
+
+    fn unsigned(&mut self, value: u64) {
+        self.head(0, value);
+    }
+}
+
+impl CborSink for Encoder {
+    fn head(&mut self, major: u8, argument: u64) {
+        Self::head(self, major, argument);
+    }
+
+    fn payload(&mut self, value: &[u8]) {
+        Self::raw(self, value);
+    }
+}
+
+/// Counts a canonical encoding with checked arithmetic before allocation.
+pub(super) struct LengthCounter {
+    length: Option<usize>,
+}
+
+impl LengthCounter {
+    pub(super) fn new() -> Self {
+        Self { length: Some(0) }
+    }
+
+    pub(super) fn finish(self) -> Result<usize, CanonicalCborError> {
+        self.length.ok_or(CanonicalCborError::ObjectTooLarge)
+    }
+
+    fn add(&mut self, amount: usize) {
+        self.length = self.length.and_then(|length| length.checked_add(amount));
+    }
+}
+
+impl CborSink for LengthCounter {
+    fn head(&mut self, _major: u8, argument: u64) {
+        // Definite CBOR heads have the same width for every major type.
+        self.add(match argument {
+            0..=23 => 1,
+            24..=0xff => 2,
+            0x100..=0xffff => 3,
+            0x1_0000..=0xffff_ffff => 5,
+            _ => 9,
+        });
+    }
+
+    fn payload(&mut self, value: &[u8]) {
+        self.add(value.len());
+    }
+}
+
 /// Reads already profile-validated bytes through schema-specific expectations.
 pub(crate) struct Decoder<'a> {
     bytes: &'a [u8],

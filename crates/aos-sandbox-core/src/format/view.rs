@@ -7,7 +7,7 @@ use crate::model::{
 use crate::registry::DescriptorRole;
 use crate::{CacheDomainId, ExportId, ObjectDescriptor, Revision, SandboxId};
 
-use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
+use super::cbor::{CanonicalCborError, CborSink, DecodeLimits, Decoder, Encoder, LengthCounter};
 use super::tree::{
     decode_descriptor_for_role, decode_feature, decode_path, decode_vec, encode_descriptor,
     encode_feature, encode_path, encode_slice, exact_bytes, semantics,
@@ -111,7 +111,9 @@ pub fn encode_environment(environment: &Environment) -> Vec<u8> {
 /// overflows `usize`, or [`CanonicalCborError::AllocationFailed`] if the exact
 /// output reservation cannot be satisfied.
 pub fn try_encode_environment(environment: &Environment) -> Result<Vec<u8>, CanonicalCborError> {
-    let encoded_length = environment_encoded_length(environment)?;
+    let mut counter = LengthCounter::new();
+    encode_environment_into(&mut counter, environment);
+    let encoded_length = counter.finish()?;
     let mut encoder = Encoder::with_capacity(encoded_length)?;
     encode_environment_into(&mut encoder, environment);
     let encoded = encoder.finish();
@@ -121,101 +123,13 @@ pub fn try_encode_environment(environment: &Environment) -> Result<Vec<u8>, Cano
     Ok(encoded)
 }
 
-fn encode_environment_into(encoder: &mut Encoder, environment: &Environment) {
+fn encode_environment_into<E: CborSink>(encoder: &mut E, environment: &Environment) {
     encoder.array(5);
     encoder.unsigned(1);
     encode_slice(encoder, environment.closure(), encode_descriptor);
     encode_slice(encoder, environment.variables(), encode_environment_entry);
     encode_slice(encoder, environment.command_search_path(), encode_path);
     encode_slice(encoder, environment.required_features(), encode_feature);
-}
-
-fn environment_encoded_length(environment: &Environment) -> Result<usize, CanonicalCborError> {
-    let closure = environment.closure().iter().try_fold(
-        cbor_head_length(environment.closure().len()),
-        |total, descriptor| {
-            total
-                .checked_add(descriptor_encoded_length(descriptor))
-                .ok_or(CanonicalCborError::ObjectTooLarge)
-        },
-    )?;
-    let variables = environment.variables().iter().try_fold(
-        cbor_head_length(environment.variables().len()),
-        |total, entry| {
-            let length = 1_usize
-                .checked_add(text_encoded_length(entry.name()))
-                .and_then(|value| value.checked_add(text_encoded_length(entry.value())))
-                .ok_or(CanonicalCborError::ObjectTooLarge)?;
-            total
-                .checked_add(length)
-                .ok_or(CanonicalCborError::ObjectTooLarge)
-        },
-    )?;
-    let paths = environment.command_search_path().iter().try_fold(
-        cbor_head_length(environment.command_search_path().len()),
-        |total, path| {
-            let length = path.components().iter().try_fold(
-                cbor_head_length(path.components().len()),
-                |path_total, component| {
-                    path_total
-                        .checked_add(bytes_encoded_length(component.as_bytes()))
-                        .ok_or(CanonicalCborError::ObjectTooLarge)
-                },
-            )?;
-            total
-                .checked_add(length)
-                .ok_or(CanonicalCborError::ObjectTooLarge)
-        },
-    )?;
-    let features = environment.required_features().iter().try_fold(
-        cbor_head_length(environment.required_features().len()),
-        |total, feature| {
-            let length = 1_usize
-                .checked_add(text_encoded_length(feature.namespace()))
-                .and_then(|value| value.checked_add(cbor_head_length(feature.major() as usize)))
-                .and_then(|value| value.checked_add(cbor_head_length(feature.minor() as usize)))
-                .ok_or(CanonicalCborError::ObjectTooLarge)?;
-            total
-                .checked_add(length)
-                .ok_or(CanonicalCborError::ObjectTooLarge)
-        },
-    )?;
-
-    2_usize
-        .checked_add(closure)
-        .and_then(|value| value.checked_add(variables))
-        .and_then(|value| value.checked_add(paths))
-        .and_then(|value| value.checked_add(features))
-        .ok_or(CanonicalCborError::ObjectTooLarge)
-}
-
-fn descriptor_encoded_length(descriptor: &ObjectDescriptor) -> usize {
-    1 + text_encoded_length(descriptor.media_type().as_str())
-        + 1
-        + bytes_encoded_length(descriptor.digest().as_bytes())
-        + cbor_head_length_u64(descriptor.encoded_size())
-}
-
-fn text_encoded_length(value: &str) -> usize {
-    cbor_head_length(value.len()) + value.len()
-}
-
-fn bytes_encoded_length(value: &[u8]) -> usize {
-    cbor_head_length(value.len()) + value.len()
-}
-
-fn cbor_head_length(value: usize) -> usize {
-    cbor_head_length_u64(value as u64)
-}
-
-const fn cbor_head_length_u64(value: u64) -> usize {
-    match value {
-        0..=23 => 1,
-        24..=0xff => 2,
-        0x100..=0xffff => 3,
-        0x1_0000..=0xffff_ffff => 5,
-        _ => 9,
-    }
 }
 
 /// Decodes and validates one exact portable v1 project environment.
@@ -410,7 +324,7 @@ fn decode_view_consistency(
     })
 }
 
-fn encode_environment_entry(encoder: &mut Encoder, entry: &EnvironmentEntry) {
+fn encode_environment_entry<E: CborSink>(encoder: &mut E, entry: &EnvironmentEntry) {
     encoder.array(2);
     encoder.text(entry.name());
     encoder.text(entry.value());
@@ -495,6 +409,21 @@ mod tests {
             decode_environment(&encoded, DecodeLimits::default()),
             Ok(environment)
         );
+    }
+
+    #[test]
+    fn fallible_environment_encoding_matches_wire_bytes_at_length_boundaries() {
+        for value_length in [0, 23, 24, 255, 256] {
+            let entry = EnvironmentEntry::new("V".to_owned(), "x".repeat(value_length)).unwrap();
+            let environment =
+                Environment::new(vec![descriptor()], vec![entry], Vec::new(), vec![feature()])
+                    .unwrap();
+
+            assert_eq!(
+                try_encode_environment(&environment),
+                Ok(encode_environment(&environment))
+            );
+        }
     }
 
     #[test]

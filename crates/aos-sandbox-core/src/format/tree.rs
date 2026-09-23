@@ -8,7 +8,7 @@ use crate::registry::{DescriptorRole, validate_descriptor_role, validate_require
 use crate::{FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName};
 use sha2::{Digest, Sha256};
 
-use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
+use super::cbor::{CanonicalCborError, CborSink, DecodeLimits, Decoder, Encoder};
 
 /// Encodes one directory object in its exact portable v1 CBOR form.
 #[must_use]
@@ -221,7 +221,7 @@ pub fn decode_delta(bytes: &[u8], limits: DecodeLimits) -> Result<Delta, Canonic
         .map_err(|error| semantics("delta", error))
 }
 
-pub(super) fn encode_descriptor(encoder: &mut Encoder, descriptor: &ObjectDescriptor) {
+pub(super) fn encode_descriptor<E: CborSink>(encoder: &mut E, descriptor: &ObjectDescriptor) {
     encoder.array(4);
     encoder.text(descriptor.media_type().as_str());
     encoder.unsigned(1);
@@ -265,7 +265,7 @@ fn decode_delta_added_object(
     decode_descriptor_for_role(decoder, DescriptorRole::DeltaAddedObject)
 }
 
-pub(super) fn encode_feature(encoder: &mut Encoder, feature: &FeatureRef) {
+pub(super) fn encode_feature<E: CborSink>(encoder: &mut E, feature: &FeatureRef) {
     encoder.array(3);
     encoder.text(feature.namespace());
     encoder.unsigned(u64::from(feature.major()));
@@ -283,7 +283,7 @@ pub(super) fn decode_feature(decoder: &mut Decoder<'_>) -> Result<FeatureRef, Ca
     Ok(feature)
 }
 
-pub(super) fn encode_path(encoder: &mut Encoder, path: &crate::RelativePath) {
+pub(super) fn encode_path<E: CborSink>(encoder: &mut E, path: &crate::RelativePath) {
     encoder.array(path.components().len());
     for component in path.components() {
         encoder.bytes(component.as_bytes());
@@ -544,7 +544,7 @@ fn decode_extent(decoder: &mut Decoder<'_>) -> Result<Extent, CanonicalCborError
     Extent::new(offset, length, content).map_err(|error| semantics("sparse extent", error))
 }
 
-pub(super) fn encode_slice<T>(encoder: &mut Encoder, values: &[T], encode: fn(&mut Encoder, &T)) {
+pub(super) fn encode_slice<T, E: CborSink>(encoder: &mut E, values: &[T], encode: fn(&mut E, &T)) {
     encoder.array(values.len());
     for value in values {
         encode(encoder, value);
