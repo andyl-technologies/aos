@@ -44,6 +44,7 @@ use super::{
     decode_typed_checkpoint, encode_floor,
 };
 
+mod pin_lookup;
 mod provisioning;
 
 pub(crate) use provisioning::validate_genesis_checkpoint;
