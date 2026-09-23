@@ -1227,6 +1227,8 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
@@ -1296,6 +1298,8 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
@@ -1806,6 +1810,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY

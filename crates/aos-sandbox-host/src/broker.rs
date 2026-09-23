@@ -25,16 +25,19 @@ use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_protocol::semantics::{
     CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionSemanticsV1,
-    canonical_host_attach_gate_semantics_v1, canonical_host_execution_apply_semantics_v1,
+    canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
+    canonical_host_attach_route_query_semantics_v1, canonical_host_execution_apply_semantics_v1,
     canonical_host_execution_query_semantics_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     HistoricalRuntimeRequestCandidateV1, PeerCredentials, PeerPolicy,
-    ValidatedHostAttachGateRequestV1, ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
+    ValidatedHostAttachGateRequestV1, ValidatedHostAttachReadinessRequestV1,
+    ValidatedHostAttachRouteQueryV1, ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
     ValidatedQueryRuntimeEffectRequestV1, ValidatedRuntimeRequest,
     classify_historical_runtime_request_v1, decode_grandfathered_runtime_request_replay_v1,
-    decode_host_attach_gate_request_v1, decode_host_execution_apply_v1,
+    decode_host_attach_gate_request_v1, decode_host_attach_readiness_request_v1,
+    decode_host_attach_route_query_v1, decode_host_execution_apply_v1,
     decode_host_execution_query_v1, decode_runtime_request,
 };
 use aos_systemd::{
@@ -107,6 +110,44 @@ pub struct HostExecutionGrantReservationV1 {
     request: HostExecutionGrantRequestV1,
     effect: BrokerEffectIntentV1,
     verified_lease: VerifiedOwnershipLease,
+}
+
+/// Retains only authenticated read-only ATTACH query authority and selectors.
+pub struct HostAttachReadOnlyProofV1 {
+    request: HostAttachReadOnlyRequestV1,
+    verified_lease: VerifiedOwnershipLease,
+    assignment: BrokerAssignment,
+    runtime_handle: ObjectDigest,
+}
+
+/// Names the two distinct read-only attach operations.
+pub enum HostAttachReadOnlyRequestV1 {
+    /// Advisory signed-session and lease readiness.
+    Readiness(ValidatedHostAttachReadinessRequestV1),
+    /// Fresh readback of one accepted route.
+    Route(ValidatedHostAttachRouteQueryV1),
+}
+
+impl HostAttachReadOnlyProofV1 {
+    /// Returns the exact validated request and selectors.
+    #[must_use]
+    pub const fn request(&self) -> &HostAttachReadOnlyRequestV1 {
+        &self.request
+    }
+
+    /// Returns the signature-verified current ownership lease.
+    #[must_use]
+    pub const fn verified_lease(&self) -> &VerifiedOwnershipLease {
+        &self.verified_lease
+    }
+
+    /// Checks the protected runtime assignment at the observation boundary.
+    #[must_use]
+    pub fn matches_claim(&self, claim: &DormantRuntimeExecutionClaimV1<'_>) -> bool {
+        execution_assignment(claim).is_ok_and(|assignment| assignment == self.assignment)
+            && claim.currentness().runtime().handle() == self.runtime_handle
+            && claim.revalidate().is_ok()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -272,6 +313,112 @@ where
                 .guardian
                 .as_ref()
                 .is_some_and(|guardian| guardian.revalidate().is_ok())
+    }
+
+    /// Verifies one read-only attach query without advancing the Host fence.
+    ///
+    /// The returned lease proof is useful only while the protected runtime,
+    /// guest session, and broker request remain current. No route is installed
+    /// and no guest packet is sent here.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed selectors, wrong verb, stale Host runtime/boot,
+    /// invalid signed plan or lease, or a missing protected base fence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_host_attach_query<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protected_boot_id: [u8; 16],
+        mut trusted_clock: F,
+    ) -> Result<HostAttachReadOnlyProofV1>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        self.ensure_healthy()?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected runtime claim is stale"))?;
+        let admission_clock = trusted_clock()?;
+        if admission_clock.host_boot_id() != protected_boot_id
+            || claim.host_verifier().boot_id() != protected_boot_id
+        {
+            return Err(HostError::Fence("Host attach query boot changed"));
+        }
+        let assignment = execution_assignment(claim)?;
+        let (header, semantics, request) = match method {
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS => {
+                let request = decode_host_attach_readiness_request_v1(
+                    request_body,
+                    peer,
+                    policy,
+                    admission_clock.boottime_nanoseconds(),
+                )?;
+                (
+                    *request.header(),
+                    canonical_host_attach_readiness_semantics_v1(assignment),
+                    HostAttachReadOnlyRequestV1::Readiness(request),
+                )
+            }
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => {
+                let request = decode_host_attach_route_query_v1(
+                    request_body,
+                    peer,
+                    policy,
+                    admission_clock.boottime_nanoseconds(),
+                )?;
+                let semantics = canonical_host_attach_route_query_semantics_v1(
+                    assignment,
+                    request.operation_id(),
+                    request.execution_id(),
+                )
+                .map_err(|_| HostError::Fence("Host attach route query is invalid"))?;
+                (
+                    *request.header(),
+                    semantics,
+                    HostAttachReadOnlyRequestV1::Route(request),
+                )
+            }
+            _ => return Err(HostError::Fence("Host attach query method is invalid")),
+        };
+        if header.request_id() != &request_id {
+            return Err(HostError::Fence(
+                "Host attach query request identity differs",
+            ));
+        }
+        let prior_fence = self
+            .state
+            .prior_authorization(assignment.sandbox().as_bytes())
+            .ok_or(HostError::Fence("Host attach query base fence is absent"))?;
+        let admitted = self.authority.admit_attach_query(
+            artifacts,
+            assignment,
+            request_id,
+            request_body,
+            semantics,
+            header.deadline_boottime_nanoseconds(),
+            &admission_clock,
+            prior_fence,
+        )?;
+        self.authority
+            .check_before_effect(&admitted.effect, &mut || {
+                trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
+            })?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected runtime changed after query admission"))?;
+        Ok(HostAttachReadOnlyProofV1 {
+            request,
+            verified_lease: admitted.verified_lease,
+            assignment,
+            runtime_handle: claim.currentness().runtime().handle(),
+        })
     }
 
     /// Reserves one signed Host execution grant in the shared Host lease fence.

@@ -115,6 +115,10 @@ pub enum BrokerVerb {
     HostQueryExecution,
     /// Installs one exact pending public OpenSSH attach gate.
     HostInstallAttachGate,
+    /// Queries whether a protected Host is ready for public attach admission.
+    HostQueryAttachGateReadiness,
+    /// Reads back one already accepted OpenSSH attach route.
+    HostQueryAttachGateRoute,
     /// Creates a detached mount and mints its handle.
     MountCreate,
     /// Installs an existing detached mount.
@@ -226,6 +230,8 @@ impl BrokerVerb {
             38 => Ok(Self::HostApplyExecution),
             39 => Ok(Self::HostQueryExecution),
             40 => Ok(Self::HostInstallAttachGate),
+            41 => Ok(Self::HostQueryAttachGateReadiness),
+            42 => Ok(Self::HostQueryAttachGateRoute),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -274,6 +280,8 @@ impl BrokerVerb {
             Self::HostApplyExecution => 38,
             Self::HostQueryExecution => 39,
             Self::HostInstallAttachGate => 40,
+            Self::HostQueryAttachGateReadiness => 41,
+            Self::HostQueryAttachGateRoute => 42,
         }
     }
 
@@ -290,7 +298,9 @@ impl BrokerVerb {
             | Self::HostInventory
             | Self::HostApplyExecution
             | Self::HostQueryExecution
-            | Self::HostInstallAttachGate => BrokerAudience::Host,
+            | Self::HostInstallAttachGate
+            | Self::HostQueryAttachGateReadiness
+            | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
             Self::MountCreate
             | Self::MountInstall
             | Self::MountReplace
@@ -331,6 +341,8 @@ impl BrokerVerb {
             | Self::HostApplyExecution
             | Self::HostQueryExecution
             | Self::HostInstallAttachGate
+            | Self::HostQueryAttachGateReadiness
+            | Self::HostQueryAttachGateRoute
             | Self::MountCreate
             | Self::MountInventorySummary
             | Self::MountInventoryResources
@@ -1496,6 +1508,8 @@ mod tests {
             (38, BrokerVerb::HostApplyExecution),
             (39, BrokerVerb::HostQueryExecution),
             (40, BrokerVerb::HostInstallAttachGate),
+            (41, BrokerVerb::HostQueryAttachGateReadiness),
+            (42, BrokerVerb::HostQueryAttachGateRoute),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)

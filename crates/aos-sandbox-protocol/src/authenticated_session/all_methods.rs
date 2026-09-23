@@ -245,6 +245,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostQueryExecution,
     /// Host OpenSSH forced-command installation and signed readback.
     HostInstallAttachGate,
+    /// Advisory current Host OpenSSH gate readiness.
+    HostQueryAttachGateReadiness,
+    /// Fresh physical readback of an accepted OpenSSH route.
+    HostQueryAttachGateRoute,
     /// Storage resource inventory.
     StorageInventoryResources,
     /// Network resource inventory.
@@ -363,6 +367,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             AuthenticatedBrokerMethodSemanticsV1::HostInstallAttachGate
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryAttachGateReadiness
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryAttachGateRoute
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             AuthenticatedBrokerMethodSemanticsV1::StorageInventoryResources
@@ -1045,6 +1055,8 @@ enum RequestOutcomeContextV1 {
     HostExecutionApply(crate::ValidatedHostExecutionApplyV1),
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
     HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
+    HostAttachReadiness,
+    HostAttachRoute(crate::ValidatedHostAttachRouteQueryV1),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1206,6 +1218,22 @@ fn validate_request_semantics(
                 None,
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS => {
+            let request = crate::decode_host_attach_readiness_request_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryAttachGateReadiness,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => {
+            let request = crate::decode_host_attach_route_query_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryAttachGateRoute,
+                *request.header(),
+                None,
+            )
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => (
             AuthenticatedBrokerMethodSemanticsV1::StorageInventoryResources,
             decode_storage_resource_inventory_request(body, peer, policy, now)?,
@@ -1363,6 +1391,15 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             RequestOutcomeContextV1::HostAttachGate(crate::decode_host_attach_gate_request_v1(
+                body, peer, policy, now,
+            )?)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS => {
+            crate::decode_host_attach_readiness_request_v1(body, peer, policy, now)?;
+            RequestOutcomeContextV1::HostAttachReadiness
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => {
+            RequestOutcomeContextV1::HostAttachRoute(crate::decode_host_attach_route_query_v1(
                 body, peer, policy, now,
             )?)
         }
@@ -1528,6 +1565,22 @@ fn validate_success_semantics(
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
             crate::decode_host_attach_gate_evidence_v1(body, original)?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS => {
+            if !matches!(
+                &request.outcome_context,
+                RequestOutcomeContextV1::HostAttachReadiness
+            ) {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            }
+            crate::decode_host_attach_readiness_v1(body)?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => {
+            let RequestOutcomeContextV1::HostAttachRoute(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::decode_host_attach_route_evidence_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             decode_storage_resource_inventory_response(body, maximum)?;

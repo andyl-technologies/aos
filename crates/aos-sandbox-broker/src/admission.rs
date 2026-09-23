@@ -183,6 +183,33 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Verifies a distinct read-only Host attach query against the shared fence.
+    ///
+    /// The returned records are not committed. Callers must check the effect
+    /// deadline and use them only for a current read-only observation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects wrong domain/verb or any signed plan, lease, semantic, or
+    /// current durable-fence mismatch.
+    pub fn admit_host_attach_query(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host
+            || !matches!(
+                request.verb,
+                BrokerVerb::HostQueryAttachGateReadiness | BrokerVerb::HostQueryAttachGateRoute
+            )
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
     fn admit_with_plan_rotation(
         &self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,

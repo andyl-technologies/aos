@@ -9,7 +9,8 @@
 use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerMethod, HostExecutionCompletionStatusV1, HostExecutionOutcomeV1, HostExecutionPhaseV1,
+    BrokerMethod, HostAttachGateReadinessV1, HostExecutionCompletionStatusV1,
+    HostExecutionOutcomeV1, HostExecutionPhaseV1,
 };
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
@@ -24,8 +25,9 @@ use aos_sandbox_core::runtime_backend::{
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 use aos_sandbox_host::DormantHostBrokerCallsiteV1;
 use aos_sandbox_host::attach_route::{
-    HostOpenSshAttachRouteErrorV1, HostOpenSshAttachRouteOwnerV1,
+    HostOpenSshAttachRouteErrorV1, HostOpenSshAttachRouteOwnerV1, HostOpenSshStaticTrustV1,
 };
+use aos_sandbox_host::broker::HostAttachReadOnlyRequestV1;
 use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
 use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -104,6 +106,68 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             .as_ref()
             .ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?
             .validate_claim(&claim)?;
+    }
+    if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+    ) {
+        let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+        agent.validate_claim(&claim)?;
+        let proof = host.verify_authenticated_attach_query(
+            &claim,
+            method,
+            body,
+            request_id,
+            artifacts,
+            peer,
+            policy,
+            protected_boot_id,
+        )?;
+        if !proof.matches_claim(&claim) {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
+        }
+        let binding = *agent.session_binding().digest().as_bytes();
+        let encoded = match proof.request() {
+            HostAttachReadOnlyRequestV1::Readiness(_) => {
+                let trust = HostOpenSshStaticTrustV1::load_protected()?;
+                let runtime = claim.currentness().runtime().currentness();
+                HostAttachGateReadinessV1 {
+                    session_binding: binding.to_vec(),
+                    incarnation_id: runtime.incarnation().as_bytes().to_vec(),
+                    assignment_epoch: runtime.assignment_epoch().get(),
+                    assignment_digest: runtime.assignment_digest().as_bytes().to_vec(),
+                    lease_generation: proof.verified_lease().lease().lease_generation(),
+                    lease_digest: proof.verified_lease().lease_digest().as_bytes().to_vec(),
+                    trust_digest: trust.credential_digest().to_vec(),
+                    ..Default::default()
+                }
+                .encode_to_vec()
+            }
+            HostAttachReadOnlyRequestV1::Route(request) => {
+                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                let runtime = claim.currentness().runtime().currentness();
+                let evidence = routes.observe_active_on_session(
+                    request.execution_id(),
+                    *runtime.incarnation().as_bytes(),
+                    runtime.assignment_epoch().get(),
+                    binding,
+                    agent,
+                )?;
+                if !evidence
+                    .matches_operation_execution(request.operation_id(), request.execution_id())
+                {
+                    return Err(HostExecutionHandoffErrorV1::Conflict);
+                }
+                evidence.encode_wire()
+            }
+        };
+        agent.validate_claim(&claim)?;
+        if !proof.matches_claim(&claim) {
+            return Err(HostExecutionHandoffErrorV1::Conflict);
+        }
+        check_kernel_boot(protected_boot_id)?;
+        return Ok(encoded);
     }
     let reservation = host.reserve_authenticated_execution(
         &claim,

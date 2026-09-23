@@ -277,6 +277,43 @@ impl HostAuthorityV1 {
         )
     }
 
+    /// Verifies a read-only attach query's distinct plan and current lease.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or unauthenticated signed plan/lease or base fence.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_attach_query(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        semantics: CanonicalHostAttachGateSemanticsV1,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.authority.admit_host_attach_query(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment,
+                request_id,
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     /// Advances the stable Host base-plan fence with a verified exact grant's lease.
     pub(crate) fn advance_base_execution_fence(
         &self,

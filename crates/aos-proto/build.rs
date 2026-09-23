@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x59b0_5852_d40e_9bb1;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x8f40_6cc4_4ab0_6ac2;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -152,6 +152,8 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
         &[
             "BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;",
             "BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;",
+            "BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;",
+            "BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;",
         ],
     )?;
     verify_scoped_declarations(
@@ -168,6 +170,29 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "bytes route_digest = 14;",
             "bytes gate_observation_commitment = 15;",
             "bytes signed_gate_readback = 16;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message QueryHostAttachGateReadinessRequestV1 {",
+        &["RequestHeader header = 1;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message HostAttachGateReadinessV1 {",
+        &[
+            "bytes session_binding = 1;",
+            "bytes lease_digest = 6;",
+            "bytes trust_digest = 7;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message QueryHostAttachGateRouteRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "bytes operation_id = 2;",
+            "bytes execution_id = 3;",
         ],
     )?;
     verify_scoped_declarations(

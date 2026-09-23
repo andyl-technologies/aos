@@ -30,6 +30,8 @@ BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
 BROKER_METHOD_HOST_APPLY_EXECUTION = 26;
 BROKER_METHOD_HOST_QUERY_EXECUTION = 27;
 BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;
+BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
+BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
 message InstallHostAttachGateRequestV1 {
 RequestHeader header = 1;
 bytes pending_grant = 2;
@@ -50,6 +52,20 @@ uint64 route_generation = 13;
 bytes route_digest = 14;
 bytes gate_observation_commitment = 15;
 bytes signed_gate_readback = 16;
+message QueryHostAttachGateReadinessRequestV1 {
+RequestHeader header = 1;
+message HostAttachGateReadinessV1 {
+bytes session_binding = 1;
+bytes incarnation_id = 2;
+uint64 assignment_epoch = 3;
+bytes assignment_digest = 4;
+uint64 lease_generation = 5;
+bytes lease_digest = 6;
+bytes trust_digest = 7;
+message QueryHostAttachGateRouteRequestV1 {
+RequestHeader header = 1;
+bytes operation_id = 2;
+bytes execution_id = 3;
 message ApplyHostExecutionRequestV1 {
 bytes source_operation_commitment = 5;
 message QueryHostExecutionRequestV1 {

@@ -62,6 +62,8 @@ const GRANT_KEY_CREDENTIAL_PATH: &str =
     "/run/credentials/aos-sandbox-hostd.service/openssh-attach-grant-public-key";
 const TRUST_MAGIC: &str = "AOSHAT01";
 const GRANT_RESERVATION_PREFIX: &[u8] = b"openssh-attach-grant-v1/";
+const REVOKED_ROUTE_PREFIX: &[u8] = b"openssh-attach-revoked-v1/";
+const REVOKED_ROUTE_MAGIC: &[u8; 8] = b"AOSHRV01";
 const O_NOFOLLOW: i32 = 0o400_000;
 const O_CLOEXEC: i32 = 0o2_000_000;
 const MAXIMUM_ROUTE_BYTES: usize = 2048;
@@ -155,6 +157,12 @@ impl HostOpenSshAttachRouteOwnerV1 {
         let mut authority = self
             .journal
             .claim_protected_authority(RecordNamespace::HostExecution)?;
+        if authority
+            .get(&revoked_route_key(grant.operation_id))?
+            .is_some()
+        {
+            return Err(HostOpenSshAttachRouteErrorV1::Revoked);
+        }
         let grant_digest = Sha256::digest(packet);
         if let Some(previous_digest) = authority.get(&reservation_key)? {
             let previous_route = authority
@@ -225,6 +233,57 @@ impl HostOpenSshAttachRouteOwnerV1 {
                     grant_digest.to_vec(),
                 ),
             ],
+        )?;
+        authority.commit(&transaction)?;
+        Ok(())
+    }
+
+    /// Permanently tombstones one locally owned attach operation.
+    ///
+    /// Only the protected Host owner may call this after authenticating a
+    /// terminal action. The marker is never removed, including after expiry,
+    /// so a renewed pending grant cannot resurrect the same operation.
+    /// There is not yet a controller-to-Host revocation relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the route is absent, belongs to another operation,
+    /// or protected storage cannot durably record the tombstone.
+    pub fn revoke_local_operation(
+        &mut self,
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+    ) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+        if operation_id == [0; 16] || execution_id == [0; 16] {
+            return Err(HostOpenSshAttachRouteErrorV1::Malformed);
+        }
+        let mut authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::HostExecution)?;
+        let revocation_key = revoked_route_key(operation_id);
+        if let Some(marker) = authority.get(&revocation_key)? {
+            return validate_revocation_marker(marker, operation_id, execution_id);
+        }
+
+        let mut route_key = ROUTE_KEY_PREFIX.to_vec();
+        route_key.extend_from_slice(&execution_id);
+        let route = authority
+            .get(&route_key)?
+            .ok_or(HostOpenSshAttachRouteErrorV1::Missing)
+            .and_then(decode_route_record)?;
+        if route.attach_operation_id != operation_id || route.execution_id != execution_id {
+            return Err(HostOpenSshAttachRouteErrorV1::Stale);
+        }
+
+        let marker = revocation_marker(operation_id, execution_id);
+        let transaction_id = revocation_transaction_id(operation_id, execution_id)?;
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::HostExecution,
+                revocation_key,
+                marker,
+            )],
         )?;
         authority.commit(&transaction)?;
         Ok(())
@@ -318,6 +377,10 @@ impl HostOpenSshAttachRouteOwnerV1 {
             .get(&key)?
             .ok_or(HostOpenSshAttachRouteErrorV1::Missing)?;
         let route = decode_route_record(bytes)?;
+        if let Some(marker) = authority.get(&revoked_route_key(route.attach_operation_id))? {
+            validate_revocation_marker(marker, route.attach_operation_id, route.execution_id)?;
+            return Err(HostOpenSshAttachRouteErrorV1::Revoked);
+        }
         if route.execution_id != execution_id
             || route.incarnation_id != incarnation_id
             || route.assignment_epoch != assignment_epoch
@@ -338,6 +401,44 @@ impl HostOpenSshAttachRouteOwnerV1 {
             route_digest: digest.finalize().into(),
         })
     }
+}
+
+fn revoked_route_key(operation_id: [u8; 16]) -> Vec<u8> {
+    let mut key = REVOKED_ROUTE_PREFIX.to_vec();
+    key.extend_from_slice(&operation_id);
+    key
+}
+
+fn revocation_marker(operation_id: [u8; 16], execution_id: [u8; 16]) -> Vec<u8> {
+    let mut marker = Vec::with_capacity(40);
+    marker.extend_from_slice(REVOKED_ROUTE_MAGIC);
+    marker.extend_from_slice(&operation_id);
+    marker.extend_from_slice(&execution_id);
+    marker
+}
+
+fn validate_revocation_marker(
+    marker: &[u8],
+    operation_id: [u8; 16],
+    execution_id: [u8; 16],
+) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+    if marker != revocation_marker(operation_id, execution_id) {
+        return Err(HostOpenSshAttachRouteErrorV1::Malformed);
+    }
+    Ok(())
+}
+
+fn revocation_transaction_id(
+    operation_id: [u8; 16],
+    execution_id: [u8; 16],
+) -> Result<[u8; 16], HostOpenSshAttachRouteErrorV1> {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.host.openssh-attach-revocation-transaction.v1\0");
+    hash.update(operation_id);
+    hash.update(execution_id);
+    hash.finalize()[..16]
+        .try_into()
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)
 }
 
 fn route_transaction_id_v1(
@@ -538,6 +639,16 @@ pub struct HostOpenSshAttachRouteEvidenceV1 {
 }
 
 impl HostOpenSshAttachRouteEvidenceV1 {
+    /// Checks the exact accepted operation and execution without exposing mutable fields.
+    #[must_use]
+    pub fn matches_operation_execution(
+        &self,
+        operation_id: [u8; 16],
+        execution_id: [u8; 16],
+    ) -> bool {
+        self.attach_operation_id == operation_id && self.execution_id == execution_id
+    }
+
     /// Encodes the full authenticated Host broker response for the controller.
     ///
     /// The signed readback remains present so a controller can retain the
@@ -884,6 +995,9 @@ pub enum HostOpenSshAttachRouteErrorV1 {
     /// The route expired before it was observed.
     #[error("protected OpenSSH attach-route expired")]
     Expired,
+    /// A protected terminal marker forbids this operation permanently.
+    #[error("protected OpenSSH attach operation was revoked")]
+    Revoked,
     /// The Host wall clock cannot be read as Unix seconds.
     #[error("Host wall clock is unavailable")]
     Clock,
@@ -931,7 +1045,8 @@ mod tests {
     use super::{
         DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC,
         RouteRecordV1, TRUST_MAGIC, decode_deployment_trust, decode_route_record,
-        route_matches_trust, verify_readback_binding,
+        revocation_marker, route_matches_trust, validate_revocation_marker,
+        verify_readback_binding,
     };
 
     fn route_record() -> RouteRecordV1 {
@@ -969,6 +1084,15 @@ mod tests {
         record.gate_config_digest =
             Sha256::digest(expected_openssh_gate_config_v1(&binding).unwrap()).into();
         record
+    }
+
+    #[test]
+    fn revocation_marker_is_bound_to_exact_operation_and_execution() {
+        let marker = revocation_marker([2; 16], [1; 16]);
+        assert_eq!(marker.len(), 40);
+        assert!(validate_revocation_marker(&marker, [2; 16], [1; 16]).is_ok());
+        assert!(validate_revocation_marker(&marker, [3; 16], [1; 16]).is_err());
+        assert!(validate_revocation_marker(&marker, [2; 16], [4; 16]).is_err());
     }
 
     #[test]

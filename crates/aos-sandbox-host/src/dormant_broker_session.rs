@@ -22,7 +22,7 @@ use aos_sandbox_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::HostError;
-use crate::broker::{HostBroker, HostExecutionGrantReservationV1};
+use crate::broker::{HostAttachReadOnlyProofV1, HostBroker, HostExecutionGrantReservationV1};
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
 use crate::worker::HostWorker;
@@ -185,6 +185,25 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1>;
+
+    /// Verifies a distinct read-only ATTACH plan and fresh ownership lease.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed selectors, stale protected runtime, signer, lease,
+    /// base fence, or request deadline.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_authenticated_attach_query(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protected_boot_id: [u8; 16],
+    ) -> Result<HostAttachReadOnlyProofV1, DormantHostBrokerCallErrorV1>;
 
     /// Completes an exact Host authorization reservation after protected readback.
     ///
@@ -414,6 +433,42 @@ where
                         || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
                     {
                         return Err(HostError::Fence("Host execution clock is stale"));
+                    }
+                    *last_boottime = Some(sample.boottime_nanoseconds());
+                    Ok(sample)
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    fn verify_authenticated_attach_query(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protected_boot_id: [u8; 16],
+    ) -> Result<HostAttachReadOnlyProofV1, DormantHostBrokerCallErrorV1> {
+        let last_boottime = &mut self.last_boottime_nanoseconds;
+        self.broker
+            .verify_host_attach_query(
+                claim,
+                method,
+                request_body,
+                request_id,
+                artifacts,
+                peer,
+                policy,
+                protected_boot_id,
+                || {
+                    let sample = crate::service::trusted_paired_clock_sample()?;
+                    if sample.host_boot_id() != protected_boot_id
+                        || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+                    {
+                        return Err(HostError::Fence("Host attach query clock is stale"));
                     }
                     *last_boottime = Some(sample.boottime_nanoseconds());
                     Ok(sample)

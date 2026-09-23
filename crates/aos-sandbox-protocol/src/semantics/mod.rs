@@ -30,7 +30,8 @@ pub use host::{
 };
 pub use host_attach_gate::{
     CanonicalHostAttachGateSemanticsV1, HostAttachGateSemanticErrorV1,
-    canonical_host_attach_gate_semantics_v1,
+    canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
+    canonical_host_attach_route_query_semantics_v1,
 };
 pub use host_execution::{
     CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1,

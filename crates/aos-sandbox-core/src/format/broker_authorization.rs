@@ -437,6 +437,8 @@ mod tests {
             BrokerVerb::HostApplyExecution,
             BrokerVerb::HostQueryExecution,
             BrokerVerb::HostInstallAttachGate,
+            BrokerVerb::HostQueryAttachGateReadiness,
+            BrokerVerb::HostQueryAttachGateRoute,
             BrokerVerb::MountCreate,
             BrokerVerb::MountInstall,
             BrokerVerb::MountReplace,
@@ -477,6 +479,8 @@ mod tests {
                 | BrokerVerb::HostApplyExecution
                 | BrokerVerb::HostQueryExecution
                 | BrokerVerb::HostInstallAttachGate
+                | BrokerVerb::HostQueryAttachGateReadiness
+                | BrokerVerb::HostQueryAttachGateRoute
                 | BrokerVerb::MountCreate
                 | BrokerVerb::MountInventorySummary
                 | BrokerVerb::MountInventoryResources

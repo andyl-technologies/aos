@@ -51,7 +51,7 @@ const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
 
 /// Lists every authenticated broker method in canonical numeric order.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 26] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 28] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -78,6 +78,8 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 26] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION,
     BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -342,7 +344,9 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
-        | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => BrokerSessionProtocolV1::Host,
+        | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => BrokerSessionProtocolV1::Host,
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -377,6 +381,8 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
