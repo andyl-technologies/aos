@@ -27,6 +27,14 @@ fn packaged_finding_bundle_replays_without_source_owner() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn packaged_finding_bundle_fork_write_is_noncanonical() -> Result<(), Box<dyn Error>> {
+    with_copied_bundle(
+        midpoint_debug::FindingScenario::MarkerOnly,
+        inspect_noncanonical_fork,
+    )
+}
+
+#[test]
 fn packaged_finding_bundle_retains_selected_fault_and_guest_response() -> Result<(), Box<dyn Error>>
 {
     with_copied_bundle(
@@ -79,7 +87,7 @@ fn with_copied_bundle(
             // Only the copied bundle and the immutable package closure survive
             // the handoff. A stale source path must be unusable by the verifier.
             fs::remove_dir_all(fixture._temporary.path())?;
-            inspect(&bundle, investigator.path(), &exported)
+            inspect(&bundle, investigator.path(), &exported["minimization"])
         },
     )
 }
@@ -87,8 +95,10 @@ fn with_copied_bundle(
 fn inspect_exact_read_only(
     bundle: &Path,
     working_directory: &Path,
-    _exported: &Value,
+    export_minimization: &Value,
 ) -> Result<(), Box<dyn Error>> {
+    assert_localized_minimization(export_minimization)?;
+    let pristine_bundle = bundle_fingerprints(bundle)?;
     let verified = run_json(
         &mut verify_command(bundle, working_directory)?,
         "verify exact finding in a fresh packaged process",
@@ -99,12 +109,12 @@ fn inspect_exact_read_only(
     );
     assert_eq!(verified["native_signature_verified"], true);
     assert_eq!(verified["model_replay"]["authenticated"], true);
+    assert_eq!(verified["minimization"], *export_minimization);
     assert_eq!(verified["exact_replay"]["role"], "verification-original");
     assert_eq!(verified["exact_replay"]["reproduced"], true);
     assert!(json_u64(&verified["exact_replay"], "completed_quanta")? > 0);
     assert!(json_u64(&verified["exact_replay"], "frontier_ticks")? > 0);
 
-    let pristine_bundle = bundle_fingerprints(bundle)?;
     inspect_read_only_midpoint(bundle, working_directory, false)?;
     for packet in ["G00", "M0,1:00", "c"] {
         reject_midpoint_mutation(bundle, working_directory, packet)?;
@@ -141,7 +151,7 @@ fn inspect_exact_read_only(
 fn inspect_signal_rich_bundle(
     bundle: &Path,
     working_directory: &Path,
-    _exported: &Value,
+    _export_minimization: &Value,
 ) -> Result<(), Box<dyn Error>> {
     let pristine_bundle = bundle_fingerprints(bundle)?;
     let verified = run_json(
@@ -163,6 +173,76 @@ fn inspect_signal_rich_bundle(
     );
     println!("finding_bundle_selected_fault_and_guest_response=true");
     println!("finding_bundle_signal_archive_unchanged=true");
+    Ok(())
+}
+
+fn inspect_noncanonical_fork(
+    bundle: &Path,
+    working_directory: &Path,
+    _export_minimization: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let pristine_bundle = bundle_fingerprints(bundle)?;
+    let (mut process, report, mut stream) = MidpointProcess::start_fork(bundle, working_directory)?;
+    assert_eq!(
+        report["schema"],
+        "crucible.cli.campaign-finding-bundle-fork-write.v1"
+    );
+    assert_eq!(report["read_only"], false);
+    assert_eq!(report["branch_classification"], "non-canonical");
+    assert_eq!(report["selection_sequence"], "fast,q7");
+    assert_eq!(report["canonical_session_unchanged"], true);
+    assert_eq!(report["archive_manifest_unchanged"], true);
+    assert_eq!(report["checkpoint_unchanged"], true);
+    assert!(report["checkpoint"].as_str().is_some());
+    assert!(report["archive_manifest"].as_str().is_some());
+
+    let original = report["canonical_register_hex"]
+        .as_str()
+        .ok_or("fork proof omitted canonical register")?;
+    let branch = report["branch_register_hex"]
+        .as_str()
+        .ok_or("fork proof omitted branch register")?;
+    assert_eq!(original.len(), branch.len());
+    assert!(original.len() >= 2 && original.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert!(branch.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_ne!(original, branch, "branch write did not change the register");
+    let branch_id = report["branch"]
+        .as_str()
+        .ok_or("fork proof omitted branch identity")?;
+    assert_eq!(branch_id.len(), 64);
+    assert!(branch_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    assert_socket_denies_other_uid(&process.socket)?;
+    let qemu_pids = packaged_qemu_pids()?;
+    assert_eq!(
+        qemu_pids.len(),
+        2,
+        "fork did not keep two distinct QEMUs live"
+    );
+    let observed_branch = rsp_request(&mut stream, "p0")?;
+    assert!(
+        observed_branch.eq_ignore_ascii_case(branch),
+        "live branch register differs from the write proof"
+    );
+    drop(stream);
+    let (status, stderr) = process.finish()?;
+    assert!(
+        status.success(),
+        "noncanonical fork exited unsuccessfully: {stderr}"
+    );
+    assert!(!process.socket.exists(), "fork relay socket survived exit");
+    assert_no_packaged_qemu()?;
+    assert_eq!(
+        bundle_fingerprints(bundle)?,
+        pristine_bundle,
+        "fork write modified the handed-off bundle"
+    );
+
+    println!("finding_bundle_fork_source_owner_absent=true");
+    println!("finding_bundle_two_live_packaged_qemu=true");
+    println!("finding_bundle_noncanonical_register_write=true");
+    println!("finding_bundle_canonical_checkpoint_and_bundle_unchanged=true");
+    println!("finding_bundle_fork_qemu_teardown=true");
     Ok(())
 }
 
@@ -193,6 +273,63 @@ fn grant_export_reads(policy: &Path) -> Result<(), Box<dyn Error>> {
         CampaignServiceOperation::GetCampaignFindingTriageReplaySegment,
     ] {
         policy.authorize(&principal, operation, &campaign, request)?;
+    }
+    Ok(())
+}
+
+fn assert_localized_minimization(report: &Value) -> Result<(), Box<dyn Error>> {
+    let retained = report["retained"]
+        .as_object()
+        .ok_or("finding bundle has no retained minimization outcome")?;
+    let original = retained["original_reproduction"]
+        .as_str()
+        .ok_or("minimization omitted original reproduction")?;
+    let minimized = retained["minimized_reproduction"]
+        .as_str()
+        .ok_or("minimization omitted selected reproduction")?;
+    assert_ne!(original, minimized);
+    assert!(json_u64(&report["retained"], "policy_schema")? > 0);
+
+    let original_decisions = json_u64(&report["retained"], "original_schedule_decisions")?;
+    let minimized_decisions = json_u64(&report["retained"], "minimized_schedule_decisions")?;
+    let original_selections = json_u64(&report["retained"], "original_selections")?;
+    let minimized_selections = json_u64(&report["retained"], "minimized_selections")?;
+    assert!(original_selections > 0);
+    assert!(minimized_selections <= original_selections);
+    let attempts = retained["attempts"]
+        .as_array()
+        .ok_or("minimization omitted candidate history")?;
+    match report["disposition"].as_str() {
+        Some("candidate-accepted") => {
+            assert_eq!(retained["schedule_reduced"], true);
+            assert!(minimized_decisions < original_decisions);
+            assert!(
+                attempts.iter().any(|attempt| attempt["accepted"] == true),
+                "accepted minimization has no accepted candidate"
+            );
+        }
+        Some("no-reduction") => {
+            assert_eq!(retained["schedule_reduced"], false);
+            assert_eq!(minimized_decisions, original_decisions);
+            assert!(
+                report["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty())
+            );
+            assert!(attempts.iter().all(|attempt| attempt["accepted"] == false));
+            if original_decisions > 0 {
+                assert!(
+                    attempts.iter().any(|attempt| {
+                        matches!(
+                            attempt["outcome"].as_str(),
+                            Some("no-fingerprint" | "different-fingerprint")
+                        )
+                    }),
+                    "no-reduction trace did not localize a rejected candidate"
+                );
+            }
+        }
+        _ => return Err("finding bundle has no localized minimization disposition".into()),
     }
     Ok(())
 }
@@ -243,10 +380,39 @@ impl MidpointProcess {
         bundle: &Path,
         working_directory: &Path,
     ) -> Result<(Self, Value, UnixStream), Box<dyn Error>> {
-        let mut child = packaged_command(working_directory)?
+        let mut command = packaged_command(working_directory)?;
+        command
             .args(["campaign", "finding-bundle", "midpoint"])
             .arg(bundle)
-            .args(["--node", "choice-node"])
+            .args(["--node", "choice-node"]);
+        Self::start_command(command, working_directory)
+    }
+
+    fn start_fork(
+        bundle: &Path,
+        working_directory: &Path,
+    ) -> Result<(Self, Value, UnixStream), Box<dyn Error>> {
+        let mut command = packaged_command(working_directory)?;
+        command
+            .args(["campaign", "finding-bundle", "fork-write"])
+            .arg(bundle)
+            .args([
+                "--node",
+                "choice-node",
+                "--register",
+                "0",
+                "--xor-mask",
+                "1",
+                "--serve",
+            ]);
+        Self::start_command(command, working_directory)
+    }
+
+    fn start_command(
+        mut command: Command,
+        working_directory: &Path,
+    ) -> Result<(Self, Value, UnixStream), Box<dyn Error>> {
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -298,7 +464,7 @@ impl MidpointProcess {
     }
 
     fn finish(&mut self) -> Result<(ExitStatus, String), Box<dyn Error>> {
-        let deadline = Instant::now() + Duration::from_secs(45);
+        let deadline = Instant::now() + Duration::from_secs(90);
         let status = loop {
             if let Some(status) = self.child.try_wait()? {
                 break status;
@@ -340,6 +506,7 @@ fn inspect_read_only_midpoint(
     assert_eq!(report["read_only"], true);
     assert_eq!(report["branch_classification"], "no-branch");
     assert_eq!(report["selection_sequence"], "fast,q7");
+    assert_eq!(report["selections"], serde_json::json!(["fast", "q7"]));
     assert!(
         report["failure_detail"]
             .as_str()
@@ -347,13 +514,17 @@ fn inspect_read_only_midpoint(
             .contains("selected-fast-q7")
     );
     assert!(json_u64(&report, "restore_bytes")? > 0);
-    assert!(
-        !report["events"]
-            .as_array()
-            .ok_or("midpoint event log is missing")?
-            .is_empty()
-    );
+    assert!(json_u64(&report, "causal_entries")? > 0);
+    let events = report["events"]
+        .as_array()
+        .ok_or("midpoint event log is missing")?;
+    assert!(!events.is_empty());
+    for (sequence, event) in events.iter().enumerate() {
+        assert_eq!(event["sequence"].as_u64(), Some(sequence as u64));
+    }
     assert!(json_u64(&report["metrics"], "payload_schema")? > 0);
+    assert!(report["metrics"]["payload_hex"].as_str().is_some());
+    assert!(report["metrics"]["evidence"].as_array().is_some());
     if signal_rich {
         assert_selected_cpu_fault_and_guest_response(&report)?;
     } else {
@@ -471,32 +642,9 @@ fn reject_midpoint_mutation(
 }
 
 fn assert_no_packaged_qemu() -> Result<(), Box<dyn Error>> {
-    let packaged_qemu = fs::canonicalize(
-        std::env::var_os("CRUCIBLE_FLIGHT_QEMU")
-            .ok_or("CRUCIBLE_FLIGHT_QEMU is required for the packaged gate")?,
-    )?;
-    let packaged_qemu_command = packaged_qemu.to_string_lossy().into_owned().into_bytes();
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let running = fs::read_dir("/proc")?
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
-            })
-            .any(|entry| {
-                let process = entry.path();
-                let executable = fs::read_link(process.join("exe")).ok();
-                let command = fs::read(process.join("cmdline")).ok();
-                executable.as_deref() == Some(packaged_qemu.as_path())
-                    || command.as_deref().is_some_and(|bytes| {
-                        bytes.split(|byte| *byte == 0).next()
-                            == Some(packaged_qemu_command.as_slice())
-                    })
-            });
-        if !running {
+        if packaged_qemu_pids()?.is_empty() {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -504,6 +652,35 @@ fn assert_no_packaged_qemu() -> Result<(), Box<dyn Error>> {
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn packaged_qemu_pids() -> Result<BTreeSet<u32>, Box<dyn Error>> {
+    let packaged_qemu = fs::canonicalize(
+        std::env::var_os("CRUCIBLE_FLIGHT_QEMU")
+            .ok_or("CRUCIBLE_FLIGHT_QEMU is required for the packaged gate")?,
+    )?;
+    let packaged_qemu_command = packaged_qemu.to_string_lossy().into_owned().into_bytes();
+    let mut pids = BTreeSet::new();
+    for entry in fs::read_dir("/proc")?.filter_map(Result::ok) {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let process = entry.path();
+        let executable = fs::read_link(process.join("exe")).ok();
+        let command = fs::read(process.join("cmdline")).ok();
+        if executable.as_deref() == Some(packaged_qemu.as_path())
+            || command.as_deref().is_some_and(|bytes| {
+                bytes.split(|byte| *byte == 0).next() == Some(packaged_qemu_command.as_slice())
+            })
+        {
+            pids.insert(pid);
+        }
+    }
+    Ok(pids)
 }
 
 fn assert_socket_denies_other_uid(socket: &Path) -> Result<(), Box<dyn Error>> {
