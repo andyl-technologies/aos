@@ -75,22 +75,14 @@ pub(super) fn observe(
     let fence = owner
         .begin_authenticated_mount_inventory()
         .map_err(|error| retryable(error.to_string()))?;
-    let snapshot = {
-        let mut sessions = executor
-            .sessions
-            .lock()
-            .map_err(|_| retryable("broker session lock is poisoned"))?;
-        let mount = sessions
-            .mount
-            .as_mut()
-            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?;
+    let snapshot = with_mount_session(executor, |mount| {
         let outcome = mount
             .current_inventory_observation()
             .map_err(|error| retryable(error.to_string()))?;
         owner
             .complete_authenticated_mount_inventory(fence, &outcome)
-            .map_err(|error| retryable(error.to_string()))?
-    };
+            .map_err(|error| retryable(error.to_string()))
+    })?;
     let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
     let (target, snapshot, source_action) = if matches!(
         desired.presence(),
@@ -99,22 +91,14 @@ pub(super) fn observe(
         let fence = owner
             .begin_authenticated_source_inventory()
             .map_err(|error| retryable(error.to_string()))?;
-        let sources = {
-            let mut sessions = executor
-                .sessions
-                .lock()
-                .map_err(|_| retryable("broker session lock is poisoned"))?;
-            let mount = sessions
-                .mount
-                .as_mut()
-                .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?;
+        let sources = with_mount_session(executor, |mount| {
             let outcome = mount
                 .current_source_inventory_observation()
                 .map_err(|error| retryable(error.to_string()))?;
             owner
                 .complete_authenticated_source_inventory(fence, &outcome)
-                .map_err(|error| retryable(error.to_string()))?
-        };
+                .map_err(|error| retryable(error.to_string()))
+        })?;
         let inventory = owner
             .join_current_mount_filesystem_inventory(snapshot, sources)
             .map_err(|error| retryable(error.to_string()))?;
@@ -147,18 +131,11 @@ pub(super) fn observe(
         }
         if action == AttachmentSourceActionV1::Acquire {
             ensure_mount_policy(executor)?;
-            let coordinates = {
-                let mut sessions = executor
-                    .sessions
-                    .lock()
-                    .map_err(|_| retryable("broker session lock is poisoned"))?;
-                sessions
-                    .mount
-                    .as_mut()
-                    .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+            let coordinates = with_mount_session(executor, |mount| {
+                mount
                     .mount_request_coordinates()
-                    .map_err(|error| retryable(error.to_string()))?
-            };
+                    .map_err(|error| retryable(error.to_string()))
+            })?;
             let prepared = owner
                 .prepare_current_source_acquire(
                     source,
@@ -284,18 +261,11 @@ pub(super) fn observe(
     }
 
     ensure_mount_policy(executor)?;
-    let coordinates = {
-        let mut sessions = executor
-            .sessions
-            .lock()
-            .map_err(|_| retryable("broker session lock is poisoned"))?;
-        sessions
-            .mount
-            .as_mut()
-            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+    let coordinates = with_mount_session(executor, |mount| {
+        mount
             .mount_request_coordinates()
-            .map_err(|error| retryable(error.to_string()))?
-    };
+            .map_err(|error| retryable(error.to_string()))
+    })?;
     let query = owner
         .prepare_authenticated_mount_catalog_query(
             reconciliation,
@@ -408,18 +378,11 @@ fn drain_pending_source_attempt(
         executor.pending_attachment_source_attempt = Some(attempt);
         return Err(retryable(error.to_string()));
     }
-    let outcome = (|| {
-        let mut sessions = executor
-            .sessions
-            .lock()
-            .map_err(|_| retryable("broker session lock is poisoned"))?;
-        sessions
-            .mount
-            .as_mut()
-            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+    let outcome = with_mount_session(executor, |mount| {
+        mount
             .authenticated_mount_source_effect(&attempt)
             .map_err(|error| retryable(error.to_string()))
-    })();
+    });
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -456,18 +419,11 @@ fn drain_pending_catalog_query(
         .pending_attachment_catalog_query
         .take()
         .ok_or_else(|| retryable("retained Mount catalog query is unavailable"))?;
-    let outcome = (|| {
-        let mut sessions = executor
-            .sessions
-            .lock()
-            .map_err(|_| retryable("broker session lock is poisoned"))?;
-        sessions
-            .mount
-            .as_mut()
-            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+    let outcome = with_mount_session(executor, |mount| {
+        mount
             .authenticated_mount_catalog_preparation(query.query())
             .map_err(|error| retryable(error.to_string()))
-    })();
+    });
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -524,18 +480,11 @@ fn drain_pending_mount_attempt(
         .pending_attachment_mount_attempt
         .take()
         .ok_or_else(|| retryable("retained Mount Apply attempt is unavailable"))?;
-    let outcome = (|| {
-        let mut sessions = executor
-            .sessions
-            .lock()
-            .map_err(|_| retryable("broker session lock is poisoned"))?;
-        sessions
-            .mount
-            .as_mut()
-            .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+    let outcome = with_mount_session(executor, |mount| {
+        mount
             .authenticated_mount_apply(attempt.attempt())
             .map_err(|error| retryable(error.to_string()))
-    })();
+    });
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -553,6 +502,21 @@ fn drain_pending_mount_attempt(
         executor.pending_attachment_source_consume = Some(completed);
     }
     Ok(())
+}
+
+fn with_mount_session<T>(
+    executor: &ProductionEffectExecutor,
+    action: impl FnOnce(&mut crate::DormantMountLifecycleInventoryOwnerV1) -> Result<T, EffectFailure>,
+) -> Result<T, EffectFailure> {
+    let mut sessions = executor
+        .sessions
+        .lock()
+        .map_err(|_| retryable("broker session lock is poisoned"))?;
+    let mount = sessions
+        .mount
+        .as_mut()
+        .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?;
+    action(mount)
 }
 
 fn retryable(message: impl Into<String>) -> EffectFailure {
