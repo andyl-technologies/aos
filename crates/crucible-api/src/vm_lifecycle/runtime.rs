@@ -17,6 +17,32 @@ mod control_boundary;
 use control_boundary::*;
 
 impl ProductionVmLifecycleLoop {
+    // Terminal firings already live in the checkpointed trigger state, so a
+    // restored lifecycle can recover the settlement point without new state.
+    fn terminal_settlement_target(&self) -> Option<VirtualTime> {
+        self.terminal_verdict.as_ref()?;
+
+        self.trigger_graph
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let mut passed = false;
+                let mut violations = Vec::new();
+                collect_terminal_actions(&event.action, &mut passed, &mut violations);
+                (passed || !violations.is_empty())
+                    .then(|| self.trigger_state.last_firing(&event.id))
+                    .flatten()
+            })
+            .max()
+    }
+
+    pub(super) fn terminal_stop_ready(&self) -> bool {
+        self.terminal_verdict.is_some()
+            && self
+                .terminal_settlement_target()
+                .is_some_and(|at| self.inner.loop_impl().frontier() >= at)
+    }
+
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// The returned requests remain untrusted guest input. Callers must bind
@@ -1104,7 +1130,18 @@ impl ProductionVmLifecycleLoop {
             // remain a stale blocker, and a newly armed timer must cap the next RUN.
             let scheduler = self.inner.loop_impl();
             let (wakeup, activation) = if self.terminal_verdict.is_some() {
-                (None, None)
+                let target = self.terminal_settlement_target().ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "terminal verdict has no checkpointed trigger firing",
+                        ),
+                    }
+                })?;
+                let wakeup = (target > scheduler.frontier()).then_some(target);
+                // A terminal pulse from a leading node is observable before the
+                // shared frontier reaches it. Keep the scheduler capped at that
+                // point until earlier network outputs are committed.
+                (wakeup, None)
             } else {
                 let wakeup = self.trigger_state.next_evaluation_deadline(
                     &self.trigger_graph,
@@ -1123,6 +1160,9 @@ impl ProductionVmLifecycleLoop {
             self.inner
                 .loop_impl_mut()
                 .set_trigger_wakeup(wakeup, activation)?;
+            if self.terminal_verdict.is_some() {
+                return Ok(appends);
+            }
             let assertion_outcomes = self.assertion_evaluator.observe_prefix(
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,

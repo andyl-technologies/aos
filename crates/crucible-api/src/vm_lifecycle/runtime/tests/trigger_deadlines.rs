@@ -102,3 +102,127 @@ fn restored_trigger_deadline(inactive: bool) -> Result<(), Box<dyn std::error::E
     ));
     Ok(())
 }
+
+#[test]
+fn terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let base = initially_violated_scenario();
+    let world = base.world();
+    let source_node = NodeId {
+        name: String::from("db-0"),
+    };
+    let peer_node = NodeId {
+        name: String::from("db-1"),
+    };
+    let link = crucible::LinkId::for_endpoints(&source_node, &peer_node);
+    let graph = EventGraph::builder()
+        .event("peer-observed")
+        .when(crucible::Predicate::network_match(
+            Some(link.clone()),
+            crucible::FramePredicate::contains(b"selected".to_vec()),
+        ))
+        .action(Action::Pass)
+        .build_for_world(world)?;
+    let plan = crucible::Plan::from_event_graph_for_world(world, graph)?;
+    let scenario = ScenarioDefForm::from_components(
+        world,
+        &plan,
+        &crucible::Properties::empty(),
+        Seed::from_u64(42),
+    )?;
+    let mut lifecycle = production_loop_without_backends(&scenario);
+    lifecycle.settle_genesis_entrypoints()?;
+    lifecycle.settle_trigger_graph()?;
+
+    let mut frame = vec![0_u8; 60];
+    frame[..6].copy_from_slice(&crucible::deterministic_node_mac(&peer_node));
+    frame[6..12].copy_from_slice(&crucible::deterministic_node_mac(&source_node));
+    frame[12..14].copy_from_slice(&[0x88, 0xb5]);
+    frame[14..26].copy_from_slice(b"prior-output");
+    let pending = crucible::BackendNetworkOutput {
+        source: source_node.clone(),
+        destination: peer_node,
+        emit_icount: Icount { retired: 2 },
+        sequence: 3,
+        payload: frame,
+        route: None,
+        fault_continuation: crucible::BackendNetworkFaultContinuation::default(),
+    };
+    lifecycle
+        .inner
+        .network_transaction_parts_mut()
+        .3
+        .push(pending);
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .append_observable_events(vec![ObservableEvent::network_delivered(
+            VirtualTime { ticks: 3 },
+            Some(link),
+            b"selected".to_vec(),
+        )])?;
+
+    lifecycle.settle_trigger_graph()?;
+
+    assert_eq!(lifecycle.inner.pending_network_output_count(), 1);
+    assert_eq!(
+        lifecycle.inner.loop_impl().frontier(),
+        VirtualTime { ticks: 0 }
+    );
+    assert_eq!(
+        lifecycle.inner.loop_impl().trigger_wakeup(),
+        Some(SimInstant { nanos: 3 })
+    );
+    assert!(lifecycle.terminal_verdict_for_stop().is_none());
+    assert!(matches!(
+        lifecycle.terminal_verdict,
+        Some(QuantumTerminalVerdict::Passed)
+    ));
+
+    // The cap lets every modeled node reach the pass point without running
+    // beyond it. The sender's earlier frame is admitted exactly once there.
+    for _ in 0..world.vm_nodes().len() {
+        let scheduler = lifecycle.inner.loop_impl_mut();
+        scheduler.drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })?;
+    }
+    assert_eq!(
+        lifecycle.inner.loop_impl().frontier(),
+        VirtualTime { ticks: 3 }
+    );
+
+    // This model-only test has no QEMU backend to publish a quantum. Restore
+    // the adapter at the scheduler's committed frontier with the same queued
+    // frame, then exercise its ordinary network settlement path.
+    let scheduler = lifecycle.inner.loop_impl().clone();
+    let interceptor = lifecycle.inner.network_output_interceptor().clone();
+    let pending = std::mem::take(lifecycle.inner.network_transaction_parts_mut().3);
+    lifecycle.inner = BackendQuantumLoop::from_restored_network_state(
+        scheduler,
+        QemuNodeSet::new(),
+        interceptor,
+        pending,
+        VirtualTime { ticks: 3 },
+    );
+    lifecycle
+        .inner
+        .settle_pending_network_outputs_at_current_frontier()?;
+    assert_eq!(lifecycle.inner.pending_network_output_count(), 0);
+    let repeated = lifecycle
+        .inner
+        .settle_pending_network_outputs_at_current_frontier()?;
+    let (decisions, configuration, appends) = repeated.into_parts();
+    assert!(decisions.is_empty());
+    assert!(configuration.is_none());
+    assert!(appends.is_empty());
+
+    lifecycle.settle_trigger_graph()?;
+    assert_eq!(lifecycle.inner.loop_impl().trigger_wakeup(), None);
+    assert!(matches!(
+        lifecycle.terminal_verdict_for_stop(),
+        Some(QuantumTerminalVerdict::Passed)
+    ));
+    Ok(())
+}
