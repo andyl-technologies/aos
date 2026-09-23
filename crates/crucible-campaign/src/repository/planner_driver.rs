@@ -155,8 +155,8 @@ impl<S> CampaignPlannerDriver<S> {
     /// repeated component calls until the authenticated head changes.
     ///
     /// Repository locks are not held across [`PlannerService::plan`]. A head
-    /// change during that call therefore fails at ordinary snapshot acceptance
-    /// instead of blocking unrelated owner mutations.
+    /// change during preparation or the call discards the obsolete invocation
+    /// and lets the next step inspect the new lifecycle and planning view.
     ///
     /// # Errors
     ///
@@ -232,7 +232,7 @@ impl<S> CampaignPlannerDriver<S> {
             self.budget.fuel(),
         )
         .map_err(CampaignRepositoryError::from)?;
-        let invocation = self.repository.prepare_planner_invocation(
+        let invocation = match self.repository.prepare_planner_invocation(
             campaign,
             snapshot,
             &self.engine,
@@ -241,7 +241,18 @@ impl<S> CampaignPlannerDriver<S> {
             after,
             self.scan_limit,
             budget,
-        )?;
+        ) {
+            Ok(invocation) => invocation,
+            Err(CampaignRepositoryError::Stale { expected, current })
+                if expected == snapshot && current != expected =>
+            {
+                return Ok(CampaignPlannerStepOutcome::Superseded {
+                    attempted: expected,
+                    current,
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
         let invocation_id = invocation.id().map_err(CampaignRepositoryError::from)?;
         let request = self
             .repository
@@ -288,6 +299,14 @@ impl<S> CampaignPlannerDriver<S> {
             )) => {
                 self.budget_blocked = Some((snapshot, reason));
                 return Ok(CampaignPlannerStepOutcome::BudgetBlocked { snapshot, reason });
+            }
+            Err(CampaignRepositoryError::Stale { expected, current })
+                if expected == snapshot && current != expected =>
+            {
+                return Ok(CampaignPlannerStepOutcome::Superseded {
+                    attempted: expected,
+                    current,
+                });
             }
             Err(error) => return Err(error.into()),
         };
@@ -399,6 +418,13 @@ enum PlannerResume {
 /// Result of one bounded coordinator planner step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CampaignPlannerStepOutcome {
+    /// A concurrent owner mutation replaced the planner's snapshot-bound work.
+    Superseded {
+        /// Snapshot that authenticated the discarded invocation.
+        attempted: CampaignSnapshotId,
+        /// Current authenticated head to inspect on the next step.
+        current: CampaignSnapshotId,
+    },
     /// Proposed work needs additional campaign funding before it can advance.
     BudgetBlocked {
         /// Exact authenticated snapshot whose allowance is exhausted.

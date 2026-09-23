@@ -487,6 +487,9 @@ fn supervisor_step_disposition(
             | CampaignExecutorCheckpointOutcome::Paused { .. },
         ) => CampaignRuntimeStepDisposition::Wait,
         CampaignSupervisorStepOutcome::InitialDiscovery { .. }
+        | CampaignSupervisorStepOutcome::Planner(CampaignPlannerStepOutcome::Superseded {
+            ..
+        })
         | CampaignSupervisorStepOutcome::Planner(CampaignPlannerStepOutcome::Advanced { .. })
         | CampaignSupervisorStepOutcome::Executor { .. }
         | CampaignSupervisorStepOutcome::Cancellation(

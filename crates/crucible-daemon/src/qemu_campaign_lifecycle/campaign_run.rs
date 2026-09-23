@@ -1966,6 +1966,7 @@ where
                     Some(*snapshot)
                 }
                 CampaignPlannerStepOutcome::Inactive { .. }
+                | CampaignPlannerStepOutcome::Superseded { .. }
                 | CampaignPlannerStepOutcome::Advanced { .. }
                 | CampaignPlannerStepOutcome::Settled { .. } => None,
             };

@@ -2724,7 +2724,10 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
         budget,
     )
     .expect("planner driver");
-    let drive = std::thread::spawn(move || driver.step("planner-driver-concurrency"));
+    let drive = std::thread::spawn(move || {
+        let outcome = driver.step("planner-driver-concurrency");
+        (outcome, driver)
+    });
     started_rx
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("planner component entered");
@@ -2753,12 +2756,20 @@ fn planner_driver_releases_repository_mutation_ownership_during_component_work()
     };
     release_tx.send(()).expect("release planner");
     mutation.join().expect("mutation thread");
-    let drive_result = drive.join().expect("planner driver thread");
+    let (drive_result, mut driver) = drive.join().expect("planner driver thread");
     assert!(matches!(
         drive_result,
-        Err(CampaignPlannerDriverError::Repository(
-            CampaignRepositoryError::Stale { expected, current }
-        )) if expected == running_snapshot && current == mutation_result.new_snapshot
+        Ok(CampaignPlannerStepOutcome::Superseded { attempted, current })
+            if attempted == running_snapshot && current == mutation_result.new_snapshot
+    ));
+    assert!(matches!(
+        driver
+            .step("planner-driver-concurrency")
+            .expect("paused campaign does not replay obsolete planner work"),
+        CampaignPlannerStepOutcome::Inactive {
+            snapshot,
+            state: CampaignState::Paused,
+        } if snapshot == mutation_result.new_snapshot
     ));
     assert_eq!(
         repository
