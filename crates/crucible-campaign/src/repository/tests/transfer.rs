@@ -257,6 +257,27 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             .inspect_campaign_archive_ref("policy")
             .expect("inspect transferred policy archive");
         assert_eq!(inspection.manifest().policy(), archive_policy);
+        let general_handoff =
+            destination.inspect_archived_finding(plan.manifest_id(), found.finding);
+        if matches!(
+            archive_policy,
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        ) {
+            assert_eq!(
+                general_handoff
+                    .expect("complete finding handoff")
+                    .id()
+                    .expect("retained finding ID"),
+                found.finding
+            );
+        } else {
+            assert!(matches!(
+                general_handoff,
+                Err(CampaignRepositoryError::InvalidRequest {
+                    reason: "finding handoff requires an executable archive"
+                })
+            ));
+        }
         let exact_handoff =
             destination.inspect_archived_exact_finding(plan.manifest_id(), found.finding);
         let expected_reason = if matches!(
@@ -265,7 +286,7 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
         ) {
             "archived finding has no retained exact checkpoint"
         } else {
-            "exact finding handoff requires an executable archive"
+            "finding handoff requires an executable archive"
         };
         assert!(matches!(
             exact_handoff,
