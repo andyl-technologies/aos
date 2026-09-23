@@ -17,14 +17,17 @@ use aos_sandbox::lifecycle::{
     LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox::{
-    AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
-    ValidatedAuthorityEffectReceiptV1,
+    AuthorityEffectObservationV1, EffectFailure, EffectObservation, EffectReceipt,
+    PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
 
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::controller_service::execution::{
+    ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
+};
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
     DormantBrokerDescriptorRequestPreparationV1, DormantBrokerDescriptorRequestSendProgressV1,
@@ -38,6 +41,7 @@ pub(crate) struct ControllerHostPublication {
     session: Option<DormantAuthenticatedBrokerSessionV1>,
     pending: Option<PendingPublication>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
+    execution_effects: ControllerExecutionExchangeV1,
     poisoned: bool,
 }
 
@@ -74,6 +78,7 @@ impl ControllerHostPublication {
             session: Some(session),
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+            execution_effects: ControllerExecutionExchangeV1::default(),
             poisoned: false,
         }
     }
@@ -83,7 +88,7 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
-        if self.pending.is_some() || self.poisoned {
+        if self.pending.is_some() || self.execution_effects.has_pending() || self.poisoned {
             return Err(EffectFailure::Retryable(
                 "Host session has retained catalog publication work".to_owned(),
             ));
@@ -99,6 +104,11 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        if self.execution_effects.has_pending() {
+            return Some(Err(EffectFailure::Retryable(
+                "Host session has retained execution work".to_owned(),
+            )));
+        }
         let session = self.session.as_mut()?;
         self.authority_effects.resume(session, effect)
     }
@@ -108,7 +118,11 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
-        if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending()
+            || self.poisoned
+        {
             return Err(EffectFailure::Retryable(
                 "Host session has retained recovery work".to_owned(),
             ));
@@ -126,7 +140,7 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
-        if self.pending.is_some() || self.poisoned {
+        if self.pending.is_some() || self.execution_effects.has_pending() || self.poisoned {
             return Err(EffectFailure::Retryable(
                 "Host session has retained catalog publication work".to_owned(),
             ));
@@ -135,6 +149,38 @@ impl ControllerHostPublication {
             EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
         })?;
         self.authority_effects.query_host(session, effect)
+    }
+
+    /// Queries Host's protected record for one exact admitted execution effect.
+    pub(crate) fn query_execution(
+        &mut self,
+        intent: &ControllerExecutionIntentV1,
+    ) -> Result<EffectObservation, EffectFailure> {
+        if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained non-execution work".to_owned(),
+            ));
+        }
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        self.execution_effects.query(session, intent)
+    }
+
+    /// Applies or resumes one exact source-bound execution effect through Host.
+    pub(crate) fn apply_execution(
+        &mut self,
+        intent: &ControllerExecutionIntentV1,
+    ) -> Result<EffectReceipt, EffectFailure> {
+        if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained non-execution work".to_owned(),
+            ));
+        }
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        self.execution_effects.apply(session, intent)
     }
 
     /// Applies one exact lifecycle runtime effect with adjacent Host inventory.
@@ -148,6 +194,7 @@ impl ControllerHostPublication {
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending()
             || self.poisoned
             || self.session.is_none()
         {
@@ -175,6 +222,7 @@ impl ControllerHostPublication {
     pub(crate) const fn lifecycle_runtime_ready(&self) -> bool {
         self.pending.is_none()
             && !self.authority_effects.has_pending()
+            && !self.execution_effects.has_pending()
             && !self.poisoned
             && self.session.is_some()
     }
@@ -202,7 +250,9 @@ impl ControllerHostPublication {
 
     /// Reports that the current authenticated session must be replaced.
     pub(crate) const fn requires_reconnect(&self) -> bool {
-        self.poisoned || self.authority_effects.requires_reconnect()
+        self.poisoned
+            || self.authority_effects.requires_reconnect()
+            || self.execution_effects.requires_reconnect()
     }
 
     /// Completes a publication without replacing any retained request identity.
@@ -211,6 +261,7 @@ impl ControllerHostPublication {
         draft: &HostCatalogPublicationDraftV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerHostPublicationError> {
         if self.authority_effects.has_pending()
+            || self.execution_effects.has_pending()
             || self.poisoned
             || self
                 .pending

@@ -114,6 +114,7 @@ use aos_sandbox::{
 
 mod cache_pin;
 mod cache_unpin;
+pub(crate) mod execution;
 mod public_api;
 mod public_hierarchy;
 mod public_services;
@@ -3390,6 +3391,20 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution)
+        {
+            let intent =
+                execution::ControllerExecutionIntentV1::from_control(operation_id, &context)?;
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+            })?;
+            return sessions
+                .host
+                .as_mut()
+                .ok_or_else(|| EffectFailure::Retryable("Host session is unavailable".to_owned()))?
+                .query_execution(&intent);
+        }
+        if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
         {
             return Self::ownership_recovery_receipt(operation_id, &context, journal).map(
@@ -3479,6 +3494,20 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.recover_pending_cache_pin(operation_id)?;
         }
         let context = self.public_mutation_context(plan)?;
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution)
+        {
+            let intent =
+                execution::ControllerExecutionIntentV1::from_control(operation_id, &context)?;
+            let mut sessions = self.sessions.lock().map_err(|_| {
+                EffectFailure::Retryable("broker session lock is poisoned".to_owned())
+            })?;
+            return sessions
+                .host
+                .as_mut()
+                .ok_or_else(|| EffectFailure::Retryable("Host session is unavailable".to_owned()))?
+                .apply_execution(&intent);
+        }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
         {
