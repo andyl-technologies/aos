@@ -524,6 +524,7 @@ let
     "aos-sandbox-guardian"
     "aos-sandbox-hostd"
     "aos-sandbox-mountd"
+    "aos-sandbox-ownershipd"
     "aos-sandbox-network-lease-gate"
     "aos-sandbox-network-lease-gate-loader"
     "aos-sandbox-network-observer"

@@ -1307,6 +1307,7 @@
     "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"
     "aos-sandboxd"
+    "aos-sandbox-ownershipd"
     "aos-hub"
     "aos-storaged"
     "aos-hub-cloudflare"
