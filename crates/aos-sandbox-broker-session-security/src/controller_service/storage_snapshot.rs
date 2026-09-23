@@ -34,12 +34,15 @@ pub(super) struct PendingAtomicSnapshotV1 {
     plan: LifecycleAtomicDatasetSnapshotPlanV1,
     fence: LiveRuntimeFenceV1,
     authority: PreparedAuthorityEffectV1,
+    checkpoint: ObjectDigest,
     predecessor_inventory: LifecycleAuthenticatedStorageInventoryV1,
     predecessor_outcome: AuthenticatedBrokerMethodOutcomeV1,
     phase: AtomicSnapshotPhaseV1,
 }
 
 enum AtomicSnapshotPhaseV1 {
+    // Local-only proof that no Method25 send followed an ambiguous source write.
+    Reserve(DormantAtomicStorageInventoryPredecessorV1),
     Group(DormantAtomicStorageInventoryPredecessorV1),
     Finish(DormantAtomicStorageInventoryFinishRecoveryV1),
     Complete(DormantAtomicStorageInventoryCompletionV1),
@@ -306,6 +309,8 @@ impl ProductionEffectExecutor {
                 )
                 .map_err(permanent)?;
                 let checkpoint = storage.historical_checkpoint_digest()?;
+                let predecessor_inventory = predecessor.inventory().clone();
+                let predecessor_outcome = predecessor.outcome().clone();
                 let admission = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
                     .reserve_with_checkpoint(
                         &current,
@@ -317,33 +322,61 @@ impl ProductionEffectExecutor {
                         &authority,
                         checkpoint,
                     );
-                let mut pending = PendingAtomicSnapshotV1 {
+                let (phase, failure) = match admission {
+                    Ok(LifecycleAtomicSnapshotSourceAdmissionV1::Reserved) => {
+                        (AtomicSnapshotPhaseV1::Group(predecessor), None)
+                    }
+                    Ok(_) => (
+                        AtomicSnapshotPhaseV1::Rejected,
+                        Some(retryable(
+                            "Storage source reservation already owns the exact group request",
+                        )),
+                    ),
+                    Err(aos_sandbox::lifecycle::LifecycleAtomicSnapshotSourceErrorV1::Journal(
+                        error,
+                    )) => (
+                        AtomicSnapshotPhaseV1::Reserve(predecessor),
+                        Some(retryable(error)),
+                    ),
+                    Err(error) => (AtomicSnapshotPhaseV1::Rejected, Some(permanent(error))),
+                };
+                self.pending_atomic_snapshot = Some(PendingAtomicSnapshotV1 {
                     operation: operation_id,
                     operation_record: operation_record.digest(),
                     plan,
                     fence,
                     authority,
-                    predecessor_inventory: predecessor.inventory().clone(),
-                    predecessor_outcome: predecessor.outcome().clone(),
-                    phase: AtomicSnapshotPhaseV1::Group(predecessor),
-                };
-                match admission {
-                    Ok(LifecycleAtomicSnapshotSourceAdmissionV1::Reserved) => {}
-                    Ok(_) => {
-                        return Err(retryable(
-                            "Storage source reservation already owns the exact group request",
-                        ));
-                    }
-                    Err(error) => {
-                        // The source commit may have succeeded despite its I/O error.
-                        pending.phase = AtomicSnapshotPhaseV1::Rejected;
-                        self.pending_atomic_snapshot = Some(pending);
-                        return Err(retryable(error));
-                    }
+                    checkpoint,
+                    predecessor_inventory,
+                    predecessor_outcome,
+                    phase,
+                });
+                if let Some(failure) = failure {
+                    return Err(failure);
                 }
-                self.pending_atomic_snapshot = Some(pending);
             }
 
+            // An ambiguous source write is locally retryable only while the
+            // original signed Storage session remains in custody.
+            let reserve_checkpoint = if self
+                .pending_atomic_snapshot
+                .as_ref()
+                .is_some_and(|pending| matches!(pending.phase, AtomicSnapshotPhaseV1::Reserve(_)))
+            {
+                let sessions = self
+                    .sessions
+                    .lock()
+                    .map_err(|_| retryable("broker session lock is poisoned"))?;
+                Some(
+                    sessions
+                        .storage
+                        .as_ref()
+                        .ok_or_else(missing_broker_session)?
+                        .historical_checkpoint_digest()?,
+                )
+            } else {
+                None
+            };
             let mut pending = self
                 .pending_atomic_snapshot
                 .take()
@@ -361,16 +394,74 @@ impl ProductionEffectExecutor {
                 ));
             }
 
+            if matches!(pending.phase, AtomicSnapshotPhaseV1::Reserve(_)) {
+                let reserved =
+                    std::mem::replace(&mut pending.phase, AtomicSnapshotPhaseV1::Rejected);
+                let AtomicSnapshotPhaseV1::Reserve(predecessor) = reserved else {
+                    self.pending_atomic_snapshot = Some(pending);
+                    return Err(permanent("Storage reservation custody changed"));
+                };
+                if reserve_checkpoint != Some(pending.checkpoint) {
+                    self.pending_atomic_snapshot = Some(pending);
+                    return Err(permanent("Storage reservation session changed"));
+                }
+                let admission = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
+                    .reserve_with_checkpoint(
+                        &current,
+                        &barrier,
+                        &pending.plan,
+                        &pending.predecessor_inventory,
+                        &pending.predecessor_outcome,
+                        fence,
+                        &pending.authority,
+                        pending.checkpoint,
+                    );
+                match admission {
+                    Ok(LifecycleAtomicSnapshotSourceAdmissionV1::Reserved)
+                    | Ok(LifecycleAtomicSnapshotSourceAdmissionV1::RecoverPending) => {
+                        pending.phase = AtomicSnapshotPhaseV1::Group(predecessor);
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(retryable("Storage source reservation is durable"));
+                    }
+                    Ok(LifecycleAtomicSnapshotSourceAdmissionV1::RecoverComplete) => {
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(permanent(
+                            "Storage source completed before local group dispatch",
+                        ));
+                    }
+                    Err(aos_sandbox::lifecycle::LifecycleAtomicSnapshotSourceErrorV1::Journal(
+                        error,
+                    )) => {
+                        pending.phase = AtomicSnapshotPhaseV1::Reserve(predecessor);
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(retryable(error));
+                    }
+                    Err(error) => {
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(permanent(error));
+                    }
+                }
+            }
+
             let phase = match pending.phase {
+                AtomicSnapshotPhaseV1::Reserve(_) => {
+                    self.pending_atomic_snapshot = Some(pending);
+                    return Err(permanent("Storage reservation custody was not reconciled"));
+                }
                 AtomicSnapshotPhaseV1::Group(mut predecessor) => {
-                    let mut sessions = self
-                        .sessions
-                        .lock()
-                        .map_err(|_| retryable("broker session lock is poisoned"))?;
-                    let storage = sessions
-                        .storage
-                        .as_mut()
-                        .ok_or_else(missing_broker_session)?;
+                    let mut sessions = match self.sessions.lock() {
+                        Ok(sessions) => sessions,
+                        Err(_) => {
+                            pending.phase = AtomicSnapshotPhaseV1::Group(predecessor);
+                            self.pending_atomic_snapshot = Some(pending);
+                            return Err(retryable("broker session lock is poisoned"));
+                        }
+                    };
+                    let Some(storage) = sessions.storage.as_mut() else {
+                        pending.phase = AtomicSnapshotPhaseV1::Group(predecessor);
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(missing_broker_session());
+                    };
                     match storage.apply_atomic_snapshot_group(
                         &effect,
                         &pending.plan,
@@ -424,14 +515,19 @@ impl ProductionEffectExecutor {
                     }
                 }
                 AtomicSnapshotPhaseV1::Finish(recovery) => {
-                    let mut sessions = self
-                        .sessions
-                        .lock()
-                        .map_err(|_| retryable("broker session lock is poisoned"))?;
-                    let storage = sessions
-                        .storage
-                        .as_mut()
-                        .ok_or_else(missing_broker_session)?;
+                    let mut sessions = match self.sessions.lock() {
+                        Ok(sessions) => sessions,
+                        Err(_) => {
+                            pending.phase = AtomicSnapshotPhaseV1::Finish(recovery);
+                            self.pending_atomic_snapshot = Some(pending);
+                            return Err(retryable("broker session lock is poisoned"));
+                        }
+                    };
+                    let Some(storage) = sessions.storage.as_mut() else {
+                        pending.phase = AtomicSnapshotPhaseV1::Finish(recovery);
+                        self.pending_atomic_snapshot = Some(pending);
+                        return Err(missing_broker_session());
+                    };
                     let group = recovery.group_outcome();
                     let (program, observation) = match snapshot_receipt_digests(
                         group,
