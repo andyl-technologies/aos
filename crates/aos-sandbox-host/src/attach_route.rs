@@ -289,6 +289,41 @@ impl HostOpenSshAttachRouteOwnerV1 {
         Ok(())
     }
 
+    /// Tombstones the current route for a successfully canceled execution.
+    ///
+    /// Absence is valid when the execution was never attached. A present route
+    /// is decoded and bound to the execution before its operation is revoked.
+    /// The caller must have authenticated the successful Cancel effect in the
+    /// protected Host execution ledger; a raw execution ID is not authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a present route is corrupt or its terminal marker
+    /// cannot be durably committed.
+    pub fn revoke_execution_route_if_present(
+        &mut self,
+        execution_id: [u8; 16],
+    ) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+        if execution_id == [0; 16] {
+            return Err(HostOpenSshAttachRouteErrorV1::Malformed);
+        }
+        let mut route_key = ROUTE_KEY_PREFIX.to_vec();
+        route_key.extend_from_slice(&execution_id);
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::HostExecution)?;
+        let route = match authority.get(&route_key)? {
+            Some(bytes) => decode_route_record(bytes)?,
+            None => return Ok(()),
+        };
+        if route.execution_id != execution_id {
+            return Err(HostOpenSshAttachRouteErrorV1::Stale);
+        }
+        drop(authority);
+
+        self.revoke_local_operation(route.attach_operation_id, execution_id)
+    }
+
     /// Reads one protected route and the live forced-command gate.
     ///
     /// The identity arguments select a record and must equal its protected

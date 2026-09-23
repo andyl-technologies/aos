@@ -18,7 +18,7 @@ use aos_sandbox::runtime_execution::{
 };
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitError, AdmissionIdempotencyV1, DurableExecutionEffectV1, EffectCommitError,
-    EffectCompletionStatusV1, EffectIdempotencyV1, EffectIssueV1, EffectPhaseV1,
+    EffectCompletionStatusV1, EffectIdempotencyV1, EffectIssueV1, EffectOperationV1, EffectPhaseV1,
     ExecutionAdmissionDraftV1, ExecutionAdmissionOutcomeV1, ExecutionEffectTransitionV1,
     admit_execution, prepare_effect,
 };
@@ -128,11 +128,11 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             return Err(HostExecutionHandoffErrorV1::Conflict);
         }
         let binding = *agent.session_binding().digest().as_bytes();
-        let encoded = match proof.request() {
+        match proof.request() {
             HostAttachReadOnlyRequestV1::Readiness(_) => {
                 let trust = HostOpenSshStaticTrustV1::load_protected()?;
                 let runtime = claim.currentness().runtime().currentness();
-                HostAttachGateReadinessV1 {
+                let encoded = HostAttachGateReadinessV1 {
                     session_binding: binding.to_vec(),
                     incarnation_id: runtime.incarnation().as_bytes().to_vec(),
                     assignment_epoch: runtime.assignment_epoch().get(),
@@ -142,32 +142,49 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                     trust_digest: trust.credential_digest().to_vec(),
                     ..Default::default()
                 }
-                .encode_to_vec()
+                .encode_to_vec();
+                agent.validate_claim(&claim)?;
+                if !proof.matches_claim(&claim) {
+                    return Err(HostExecutionHandoffErrorV1::Conflict);
+                }
+                check_kernel_boot(protected_boot_id)?;
+                return Ok(encoded);
             }
             HostAttachReadOnlyRequestV1::Route(request) => {
-                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                let execution_id = request.execution_id();
+                let operation_id = request.operation_id();
                 let runtime = claim.currentness().runtime().currentness();
+                let incarnation_id = *runtime.incarnation().as_bytes();
+                let assignment_epoch = runtime.assignment_epoch().get();
+
+                // Route readback opens the runtime journal to authenticate
+                // the guest peer. Release this claim's exclusive journal
+                // lock first, then prove the same Host runtime afterward.
+                drop(claim);
+                drop(owner);
+                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
                 let evidence = routes.observe_active_on_session(
-                    request.execution_id(),
-                    *runtime.incarnation().as_bytes(),
-                    runtime.assignment_epoch().get(),
+                    execution_id,
+                    incarnation_id,
+                    assignment_epoch,
                     binding,
                     agent,
                 )?;
-                if !evidence
-                    .matches_operation_execution(request.operation_id(), request.execution_id())
-                {
+                if !evidence.matches_operation_execution(operation_id, execution_id) {
                     return Err(HostExecutionHandoffErrorV1::Conflict);
                 }
-                evidence.encode_wire()
+                drop(routes);
+
+                let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
+                let claim = owner.claim()?;
+                agent.validate_claim(&claim)?;
+                if !proof.matches_claim(&claim) {
+                    return Err(HostExecutionHandoffErrorV1::Conflict);
+                }
+                check_kernel_boot(protected_boot_id)?;
+                return Ok(evidence.encode_wire());
             }
-        };
-        agent.validate_claim(&claim)?;
-        if !proof.matches_claim(&claim) {
-            return Err(HostExecutionHandoffErrorV1::Conflict);
         }
-        check_kernel_boot(protected_boot_id)?;
-        return Ok(encoded);
     }
     let reservation = host.reserve_authenticated_execution(
         &claim,
@@ -202,6 +219,7 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             } else {
                 effect
             };
+            revoke_route_after_successful_cancel(&effect)?;
             outcome(
                 request.operation_id(),
                 request.execution_id(),
@@ -231,6 +249,9 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                     None
                 }
             };
+            if let Some(effect) = effect.as_ref() {
+                revoke_route_after_successful_cancel(effect)?;
+            }
             outcome(
                 request.operation_id(),
                 request.execution_id(),
@@ -240,8 +261,12 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
         }
         HostExecutionGrantRequestV1::AttachGate(request) => {
             let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+            // The route owner independently opens the protected runtime
+            // journal for grant and guest-peer verification. Its lock cannot
+            // be reacquired while this handoff still holds a claim.
+            drop(claim);
+            drop(owner);
             let result = (|| -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
-                agent.validate_claim(&claim)?;
                 let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
                 routes.reserve_from_pending_grant(
                     request.pending_grant(),
@@ -257,9 +282,10 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                     binding,
                     agent,
                 )?;
-                agent.validate_claim(&claim)?;
                 Ok(evidence.encode_wire())
             })();
+            let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
+            let mut claim = owner.claim()?;
             let encoded = match result {
                 Ok(encoded) => encoded,
                 Err(error) => {
@@ -271,6 +297,10 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                     return Err(error);
                 }
             };
+            agent.validate_claim(&claim)?;
+            if !reservation.matches(method, request_id, body, &claim) {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
             claim.revalidate()?;
             check_kernel_boot(protected_boot_id)?;
             host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
@@ -282,6 +312,25 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     let encoded = result.encode_to_vec();
     host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
     Ok(encoded)
+}
+
+fn revoke_route_after_successful_cancel(
+    effect: &DurableExecutionEffectV1,
+) -> Result<(), HostExecutionHandoffErrorV1> {
+    if effect.issue().operation() != EffectOperationV1::Cancel
+        || !effect
+            .completion()
+            .is_some_and(|completion| completion.status() == EffectCompletionStatusV1::Succeeded)
+    {
+        return Ok(());
+    }
+
+    // The guest cancellation is durably complete, but an earlier OpenSSH
+    // certificate may still be valid. Close Host route replay and renewal
+    // before reporting the cancellation to its authenticated caller.
+    let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+    routes.revoke_execution_route_if_present(*effect.admission().execution().as_bytes())?;
+    Ok(())
 }
 
 fn check_kernel_boot(expected: [u8; 16]) -> Result<(), HostExecutionHandoffErrorV1> {
