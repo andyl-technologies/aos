@@ -232,6 +232,9 @@ fn lifecycle_activity_requirement_rejects_release_before_scheduler_publication()
 #[test]
 fn admitted_ready_counter_is_the_scheduler_epoch() {
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
+    let backend_node = NodeId {
+        name: String::from("node-a"),
+    };
     let ready = NodeCounter { ticks: 4_096 };
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "production-ready-counter-origin",
@@ -254,12 +257,7 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
     assert_eq!(scheduler.frontier(), VirtualTime { ticks: 0 });
     assert_eq!(
         scheduler
-            .backend_observation_time(
-                &NodeId {
-                    name: String::from("node-a"),
-                },
-                VirtualTime { ticks: 4_103 },
-            )
+            .backend_observation_time(&backend_node, VirtualTime { ticks: 4_103 })
             .unwrap_or_else(|error| panic!("backend observation should project: {error}")),
         VirtualTime { ticks: 7 }
     );
@@ -269,6 +267,21 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
             .unwrap_or_else(|error| panic!("relative node time should project: {error}")),
         SimInstant { nanos: 7 }
     );
+
+    let mut backend = MockSimulationBackend::new();
+    backend
+        .step_to(VirtualTime { ticks: 4_103 })
+        .unwrap_or_else(|error| panic!("backend should reach raw node counter: {error}"));
+    let raw = backend
+        .fingerprint(backend_node.clone())
+        .unwrap_or_else(|error| panic!("backend should sample raw fingerprint: {error}"));
+    let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+    let projected = adapter
+        .sample_fingerprint(backend_node)
+        .unwrap_or_else(|error| panic!("adapter should project fingerprint time: {error}"));
+
+    assert_eq!(projected.at, VirtualTime { ticks: 7 });
+    assert_eq!(projected.fingerprint, raw.fingerprint);
 }
 
 #[test]

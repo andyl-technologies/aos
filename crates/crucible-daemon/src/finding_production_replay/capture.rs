@@ -571,13 +571,15 @@ pub(super) fn validate_execution_side(
         .iter()
         .map(|sample| sample.node.clone())
         .collect::<BTreeSet<_>>();
+    // A paused node can precede the shared scheduler frontier. A future
+    // sample cannot belong to the completed execution side.
     if expected_nodes.is_empty()
         || actual_nodes != expected_nodes
         || actual_nodes.len() != side.terminal_fingerprints.len()
         || side
             .terminal_fingerprints
             .iter()
-            .any(|sample| sample.at != side.frontier)
+            .any(|sample| sample.at > side.frontier)
     {
         return Err(FindingProductionReplayCaptureError::InvalidTerminalFingerprints);
     }
