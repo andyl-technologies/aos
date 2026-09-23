@@ -781,16 +781,22 @@
     interfaceIdentity (
       interfaceDocumentFromDeclaration (semanticInterfaceDeclaration context declaration)
     );
+  configuredInterfaceRecords =
+    builtins.mapAttrs (_: declaration: {
+      inherit declaration;
+      identity = interfaceIdentityForDeclaration "interface declaration" declaration;
+    })
+    configuredInterfaces;
   interfaceDeclarationForReference = context: reference:
     if builtins.isString reference
     then configuredInterfaces.${reference} or (throw "${context} references absent interface declaration '${reference}'.")
     else let
-      matches = builtins.filter (declaration:
-        interfaceIdentityForDeclaration context declaration == reference)
-      (builtins.attrValues configuredInterfaces);
+      matches =
+        builtins.filter (record: record.identity == reference)
+        (builtins.attrValues configuredInterfaceRecords);
     in
       if builtins.length matches == 1
-      then builtins.head matches
+      then (builtins.head matches).declaration
       else throw "${context} must resolve its exact shared interface identity to one declaration.";
   interfacesNamed = name: abi:
     builtins.filter (
@@ -808,22 +814,25 @@
       })
       declarations));
   interfacesMatchingRequirement = requirement:
-    uniqueInterfaceDeclarations (builtins.filter (declaration: let
-      identity = interfaceIdentityForDeclaration "requirement interface" declaration;
-      selectorMatches = selector:
-        identity.name
-        == selector.name
-        && identity.abi == selector.abi
-        && (selector.descriptor == null || identity.descriptor == selector.descriptor);
-    in
-      if requirement ? accepted_interfaces
-      then builtins.any selectorMatches requirement.accepted_interfaces
-      else
-        identity.name
-        == requirement.interface
-        && identity.abi == requirement.abi
-        && (requirement.descriptor == null || identity.descriptor == requirement.descriptor))
-    (builtins.attrValues configuredInterfaces));
+    builtins.attrValues (builtins.listToAttrs (builtins.map (record: {
+        name = identityKeyFor "aos.ability.interface-catalog-key/v1" record.identity;
+        value = record.declaration;
+      }) (builtins.filter (record: let
+        identity = record.identity;
+        selectorMatches = selector:
+          identity.name
+          == selector.name
+          && identity.abi == selector.abi
+          && (selector.descriptor == null || identity.descriptor == selector.descriptor);
+      in
+        if requirement ? accepted_interfaces
+        then builtins.any selectorMatches requirement.accepted_interfaces
+        else
+          identity.name
+          == requirement.interface
+          && identity.abi == requirement.abi
+          && (requirement.descriptor == null || identity.descriptor == requirement.descriptor))
+      (builtins.attrValues configuredInterfaceRecords))));
   typeAccepts = optionType: value:
     abilityTypes.accepts "ability value" optionType value;
 

@@ -353,63 +353,6 @@
     path;
 
   # ---------------------------------------------------------------------------
-  # Internal: set a value at a given path in a nested attrset
-  # ---------------------------------------------------------------------------
-  setPath = path: value: let
-    len = builtins.length path;
-    go = i:
-      if i >= len
-      then value
-      else {${builtins.elemAt path i} = go (i + 1);};
-  in
-    if len == 0
-    then value
-    else go 0;
-
-  # ---------------------------------------------------------------------------
-  # Internal: collect definitions at a path, traversing mkIf and mkMerge nodes
-  # ---------------------------------------------------------------------------
-  #
-  # `provenance` is the engine-stamped, resolver-supplied origin marker for
-  # the module this def came from (`@base`, `@host`, or `package:<name>`).
-  # The host stamp is assigned only through resolver `operatorModules`. It is
-  # threaded onto every emitted def UNCHANGED — exactly like `file` — and is
-  # read ONLY at the priority-assignment step (phase 4) to lift operator defs
-  # to the reserved tier-75 band. It is deliberately NOT derived from any
-  # module-supplied attribute (`_file` / a module-body `_provenance`), so it
-  # cannot be forged by a package (review M-forgeable-file).
-  collectDefsAtPath = path: config: file: provenance:
-    if isMkMerge config
-    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file provenance) config._values)
-    else if isMkIf config
-    then
-      builtins.map (
-        d:
-          d
-          // {
-            condition =
-              if d ? condition
-              then d.condition && config._condition
-              else config._condition;
-          }
-      ) (collectDefsAtPath path config._value file provenance)
-    else if path == []
-    then [
-      {
-        inherit file provenance;
-        value = config;
-      }
-    ]
-    else if builtins.isAttrs config
-    then let
-      key = builtins.head path;
-    in
-      if builtins.hasAttr key config
-      then collectDefsAtPath (builtins.tail path) config.${key} file provenance
-      else []
-    else [];
-
-  # ---------------------------------------------------------------------------
   # Internal: deep merge two attrsets (for building the final config tree)
   # ---------------------------------------------------------------------------
   deepMerge = lhs: rhs:
@@ -435,49 +378,39 @@
     else rhs;
 
   # ---------------------------------------------------------------------------
-  # Internal: build a nested options tree from a flat list of option
-  # declarations, so module functions can take an `options` argument and
-  # do things like `options.services.foo.isDefined`.
+  # Internal: assemble a nested attrset from path/value pairs without
+  # repeatedly merging the entire prefix tree.
   # ---------------------------------------------------------------------------
-  #
-  # Each leaf in the produced tree is the raw option declaration decorated
-  # with module-system metadata:
-  #   {
-  #     _type = "option";   # from the original mkOption call
-  #     type; default; description; ...;
-  #     isDefined = <bool>;                 # any definition beyond the default?
-  #     definitions = [<raw def values>];   # unprocessed defs (pre-merge)
-  #     value = <merged result>;            # lazy — same as config.<path>
-  #   }
-  #
-  # The tree is lazy: walking it or looking up a specific leaf does not
-  # force sibling leaves, and forcing a leaf only runs the merge for that
-  # specific option. Module functions that don't ask for `options` in
-  # their signature never pay the cost.
-  mkOptionsTree = entries: let
-    setAtPath = path: leaf: acc:
-      if path == []
-      then leaf
-      else let
-        key = builtins.head path;
-        rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
-        existing = acc.${key} or {};
-      in
-        acc // {${key} = setAtPath rest leaf existing;};
+  nestByPath = mergeParent: entries: let
+    atCurrentPath = builtins.filter (entry: entry.path == []) entries;
+    childEntries = builtins.filter (entry: entry.path != []) entries;
+    children = builtins.groupBy (entry: builtins.head entry.path) childEntries;
+    childTree = builtins.mapAttrs (_: nested:
+      nestByPath mergeParent (builtins.map (entry:
+        entry // {path = builtins.tail entry.path;})
+      nested))
+    children;
   in
-    builtins.foldl' (
-      tree: entry: let
-        leaf =
+    if atCurrentPath == []
+    then childTree
+    else if childEntries == []
+    then (builtins.head atCurrentPath).value
+    else mergeParent (builtins.head atCurrentPath).value childTree;
+
+  # The options tree exposes declarations and lazily merged values to module
+  # functions without forcing unrelated config branches.
+  mkOptionsTree = entries:
+    nestByPath (parent: children: parent // children) (builtins.map (entry: {
+        inherit (entry) path;
+        value =
           entry.option
           // {
             inherit (entry) path definitions;
             isDefined = entry.definitions != [];
-            # `value` mirrors `config.<path>` — lazy, forced only on access.
             value = entry.finalValue;
           };
-      in
-        setAtPath entry.path leaf tree
-    ) {} (builtins.attrValues entries);
+      })
+      (builtins.attrValues entries));
 
   # ---------------------------------------------------------------------------
   # Internal: import and evaluate a single module
@@ -1892,59 +1825,81 @@
               };
           };
 
-      optionMap =
-        builtins.foldl' (
-          acc: decl: let
-            key = builtins.concatStringsSep "." decl.path;
-          in
-            acc
-            // {
-              ${key} =
-                if builtins.hasAttr key acc
-                then mergeOptionDeclarations acc.${key} decl
-                else decl;
-            }
-        ) {}
-        allOptionDecls;
+      declarationsByPath = builtins.groupBy (decl:
+        builtins.concatStringsSep "." decl.path)
+      allOptionDecls;
+
+      optionMap = builtins.mapAttrs (_: declarations:
+        builtins.foldl' mergeOptionDeclarations
+        (builtins.head declarations)
+        (builtins.tail declarations))
+      declarationsByPath;
 
       # --- Phase 3: Collect config definitions for each option ---
-      topLevelConfigDefs = config: conditions:
-        if isMkMerge config
-        then builtins.concatMap (value: topLevelConfigDefs value conditions) config._values
-        else if isMkIf config
-        then topLevelConfigDefs config._value (conditions ++ [config._condition])
-        else if builtins.isAttrs config
-        then
-          builtins.map (key: {
-            inherit key;
-            value =
-              lists.foldr (condition: value: {
-                _type = "if";
-                _condition = condition;
-                _value = value;
-              })
-              config.${key}
-              conditions;
-          }) (builtins.attrNames config)
-        else [];
+      # Keep resolver-stamped provenance on every fragment as it descends.
+      # Conditions remain thunks until the option merge decides whether a
+      # definition is active.
+      rootFragments =
+        builtins.map (module: {
+          value = module.config;
+          file = module._file;
+          provenance = module._provenance or null;
+          conditions = [];
+        })
+        evaluatedModules;
 
-      # Pull only the first component through root-level mkIf/mkMerge nodes.
-      # Reuse these roots for every option without forcing nested config.
-      configDefsByTopLevel = builtins.groupBy (record: record.key) (builtins.concatMap (module:
-        builtins.map (definition: definition // {inherit module;})
-        (topLevelConfigDefs module.config []))
-      evaluatedModules);
+      expandFragment = fragment: let
+        value = fragment.value;
+      in
+        if isMkMerge value
+        then
+          builtins.concatMap (branch:
+            expandFragment (fragment // {value = branch;}))
+          value._values
+        else if isMkIf value
+        then
+          expandFragment (fragment
+            // {
+              value = value._value;
+              conditions = fragment.conditions ++ [value._condition];
+            })
+        else [fragment];
+
+      definitionFromFragment = fragment:
+        {
+          inherit (fragment) file provenance value;
+        }
+        // (
+          if fragment.conditions == []
+          then {}
+          else {
+            condition = lists.foldr (outer: inner: inner && outer) true fragment.conditions;
+          }
+        );
+
+      definitionTree = fragments: paths: let
+        expanded = builtins.concatMap expandFragment fragments;
+        nestedPaths = builtins.filter (path: path != []) paths;
+        pathsByFirstKey = builtins.groupBy builtins.head nestedPaths;
+      in {
+        definitions = builtins.map definitionFromFragment expanded;
+        children = builtins.mapAttrs (key: nested:
+          definitionTree
+          (builtins.concatMap (fragment:
+            if builtins.isAttrs fragment.value && builtins.hasAttr key fragment.value
+            then [(fragment // {value = fragment.value.${key};})]
+            else [])
+          expanded)
+          (builtins.map builtins.tail nested))
+        pathsByFirstKey;
+      };
+
+      configDefinitions = definitionTree rootFragments (builtins.map (key:
+        optionMap.${key}.path)
+      (builtins.attrNames optionMap));
 
       configForOption = decl:
-        if decl.path == []
-        then
-          builtins.concatMap (module:
-            collectDefsAtPath [] module.config module._file (module._provenance or null))
-          evaluatedModules
-        else
-          builtins.concatMap (record:
-            collectDefsAtPath (builtins.tail decl.path) record.value record.module._file (record.module._provenance or null))
-          (configDefsByTopLevel.${builtins.head decl.path} or []);
+        (builtins.foldl' (node: key: node.children.${key}) configDefinitions decl.path).definitions;
 
       # --- Phase 4: Merge config values for each option ---
       mergedOptions = builtins.listToAttrs (
@@ -1975,7 +1930,7 @@
             # module) is lifted to the reserved priority-75 band, so the
             # operator deterministically beats any package's normal-tier
             # definition regardless of module order — without subtree-
-            # wrapping (the `collectDefsAtPath` override-marker trap). An
+            # wrapping (the definition-collection override-marker trap). An
             # operator def that DOES carry an explicit override marker keeps
             # that explicit priority (the operator can still `mkForce`/
             # `mkDefault` deliberately). With the default empty
@@ -2088,12 +2043,11 @@
       # `// { _module = { args = …; }; }` shim would have wiped the
       # sibling `_module.freeformType` / `_module.strict` values that
       # mergedOptions now places alongside `args`.
-      finalConfig = builtins.foldl' (
-        acc: key: let
-          entry = mergedOptions.${key};
-        in
-          deepMerge acc (setPath entry.path entry.finalValue)
-      ) {} (builtins.attrNames mergedOptions);
+      finalConfig = nestByPath deepMerge (builtins.map (key: {
+          path = mergedOptions.${key}.path;
+          value = mergedOptions.${key}.finalValue;
+        })
+        (builtins.attrNames mergedOptions));
 
       allConfigMerged =
         builtins.foldl' (
@@ -2106,7 +2060,7 @@
       # Opt-in per evaluation. When both `_module.freeformType` and
       # `_module.strict` are at their defaults (null / false), `config` is
       # exactly `finalConfig` — the per-option merge of every DECLARED option
-      # (each option resolves its own mkIf/mkMerge via `collectDefsAtPath`).
+      # (the definition tree resolves mkIf/mkMerge at each demanded path).
       #
       # We deliberately do NOT fold in `allConfigMerged` here. That value is a
       # structural `deepMerge` of the raw module configs (via `resolveIfs`),
