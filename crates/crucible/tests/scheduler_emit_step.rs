@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent,
+    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, Icount,
     NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
     ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
@@ -158,6 +158,62 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
         scheduler.configuration().schedule.decisions().len(),
         first.decisions.len() + second.decisions.len()
     );
+}
+
+#[test]
+fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "emit-physical-frame-counter",
+        shift(0),
+        8,
+        SimInstant { nanos: 20 },
+        vec![scenario_node("consumer", 0, finite_lookahead(10))],
+        vec![
+            backend_event(3, &consumer, &producer, 1, b"before-rebase"),
+            backend_event(6, &consumer, &producer, 2, b"after-rebase"),
+        ],
+    );
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+
+    let first = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("first frame should resolve");
+    let first_entry = &first.event_log_entries[0];
+    assert_eq!(first_entry.at(), VirtualTime { ticks: 3 });
+    assert_eq!(first_entry.time().icount.node, Some(consumer.node.clone()));
+    assert_eq!(first_entry.time().icount.icount, Icount { retired: 3 });
+    assert!(
+        first
+            .event_log_segment_text
+            .contains("entry.at_icount_retired=3")
+    );
+
+    scheduler
+        .rebase_restarted_backend_counter(&consumer.node, NodeCounter { ticks: 100 })
+        .expect("replacement backend should rebase");
+    let second = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("second frame should resolve");
+    let second_entry = &second.event_log_entries[0];
+
+    assert_eq!(first_entry.time().icount.icount, Icount { retired: 3 });
+    assert_eq!(second_entry.at(), VirtualTime { ticks: 6 });
+    assert_eq!(second_entry.time().icount.node, Some(consumer.node));
+    assert_eq!(second_entry.time().icount.icount, Icount { retired: 103 });
+    assert!(
+        second
+            .event_log_segment_text
+            .contains("entry.at_icount_retired=103")
+    );
+    assert_ne!(first_entry.content_hash(), second_entry.content_hash());
 }
 
 #[test]

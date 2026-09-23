@@ -1691,7 +1691,26 @@ impl SingleScheduler {
         let mut entries = Vec::with_capacity(payloads.len() + 1);
         for (entry_time, payload) in payloads {
             let sequence = self.event_log.next_sequence(entries.len())?;
-            entries.push(scheduler_event_log_entry(sequence, entry_time, payload));
+            let entry = if let SchedulerEventLogPayload::ResolvedHappening(event) = &payload
+                && let ScheduledEventPayload::BackendInput(input) = &event.payload
+            {
+                // The exact backend coordinate is fixed at RESOLVE. A later
+                // restart may rebase this VM without changing this delivery.
+                let node = input.node.clone();
+                let physical_time = self.backend_effect_time(&node, entry_time)?;
+                scheduler_event_log_entry_with_physical_icount(
+                    sequence,
+                    entry_time,
+                    payload,
+                    node,
+                    Icount {
+                        retired: physical_time.ticks,
+                    },
+                )
+            } else {
+                scheduler_event_log_entry(sequence, entry_time, payload)
+            };
+            entries.push(entry);
         }
         if emit_boundary {
             let sequence = self.event_log.next_sequence(entries.len())?;
