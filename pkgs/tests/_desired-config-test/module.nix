@@ -42,7 +42,7 @@
       name = "environment";
       source = {
         kind = "interpolated-text";
-        fragments = [
+        producers = [
           {
             kind = "literal";
             text = "TOKEN=${cfg.token}\n";
@@ -98,7 +98,7 @@
       }
     ];
   };
-  fragments = [state environment];
+  producers = [state environment];
 in {
   options.desired-config-test = {
     enable = lib.mkOption {
@@ -121,8 +121,8 @@ in {
       inherit config lib;
       name = "desired-config-test.main";
     })
-    (serviceManagement.projectContributions {
-      inherit config lib fragments;
+    (serviceManagement.producerModule {
+      inherit config lib producers;
       enabled = cfg.enable;
     })
   ];

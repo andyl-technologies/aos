@@ -109,7 +109,7 @@
     destination = resultOf gcRootDirectoryRequest "planned-path";
     options = ["bind"];
   };
-  runtimeContributions = builtins.map serviceManagement.splitContribution [
+  runtimeContributions = builtins.map serviceManagement.splitDefinition [
     runtimeConfiguration
     configurationEntry
     profileStorage
@@ -220,11 +220,11 @@ in {
           fallback = null;
         };
       }
-      (lib.mkMerge (builtins.map (contribution: contribution.declarations) runtimeContributions))
+      (lib.mkMerge (builtins.map (definition: definition.declarations) runtimeContributions))
       (lib.mkIf runtimeSelected
         (lib.mkMerge (
           [{instances.${runtimeConsumer} = {};}]
-          ++ builtins.map (contribution: contribution.configured) runtimeContributions
+          ++ builtins.map (definition: definition.configured) runtimeContributions
         )))
       (lib.mkIf runtimeSelected {
         runtimeChecks.nix-store = {

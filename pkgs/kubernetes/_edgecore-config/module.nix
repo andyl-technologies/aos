@@ -167,8 +167,8 @@
     };
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "device_policy";
         requirementAlias = "service-device-policy";
         description = "Requires the selected service-management provider to enforce the declared device access policy.";
@@ -195,7 +195,7 @@
             ];
         };
       })
-      (serviceManagement.featureContribution {
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -395,7 +395,7 @@
     credentialRequests
     service
   ];
-  contributions = map serviceManagement.splitContribution fragments;
+  definitions = map serviceManagement.splitDefinition fragments;
 in {
   options.edgecore = {
     enable = mkOption {
@@ -487,12 +487,12 @@ in {
       ];
     }
     (lib.mkMerge (
-      map (contribution: {aos.abilities = contribution.declarations;}) contributions
+      map (definition: {aos.abilities = definition.declarations;}) definitions
     ))
     (lib.mkIf cfg.enable (
       lib.mkMerge (
         [{aos.abilities.instances.service = {};}]
-        ++ map (contribution: {aos.abilities = contribution.configured;}) contributions
+        ++ map (definition: {aos.abilities = definition.configured;}) definitions
       )
     ))
   ];

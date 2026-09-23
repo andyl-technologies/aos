@@ -139,7 +139,7 @@
     virtualConsole
     serialConsole
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.serviceOptionModules.getty = lib.mkOption {
     type = lib.types.deferredModule;
@@ -161,21 +161,21 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [
           {instances.${consumerInstance} = {};}
-          (serviceManagement.splitContribution startupMilestone).configured
+          (serviceManagement.splitDefinition startupMilestone).configured
         ]
         ++ lib.optional (!isInitrd) (
-          (serviceManagement.splitContribution userSessionsMilestone).configured
+          (serviceManagement.splitDefinition userSessionsMilestone).configured
         )
         ++ [
-          (serviceManagement.splitContribution virtualConsole).configured
-          (serviceManagement.splitContribution serialConsole).configured
+          (serviceManagement.splitDefinition virtualConsole).configured
+          (serviceManagement.splitDefinition serialConsole).configured
         ]
       );
     })

@@ -371,7 +371,7 @@
         lib.evalModules {
           modules = [
             lib.abilities.module
-            ../modules/_package-contributions.nix
+            ../modules/_package-domain-options.nix
             ../modules/abilities/_service.nix
           ];
           packageModules = [

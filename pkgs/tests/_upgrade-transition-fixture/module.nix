@@ -102,7 +102,7 @@
     tunables
     service
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.upgrade-transition-fixture = {
     enable = lib.mkOption {
@@ -122,12 +122,12 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
+      aos.abilities = lib.mkMerge (builtins.map (definition: definition.declarations) definitions);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [{instances.upgrade-transition-fixture = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
       );
     })
   ];

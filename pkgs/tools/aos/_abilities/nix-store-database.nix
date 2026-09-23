@@ -21,14 +21,14 @@
       prerequisites = [];
     };
   };
-  contribution = serviceManagement.splitContribution database;
+  definition = serviceManagement.splitDefinition database;
 in {
   config = lib.mkMerge [
-    {aos.abilities = contribution.declarations;}
+    {aos.abilities = definition.declarations;}
     (lib.mkIf (config.aos.abilities.environment != null) {
       aos.abilities = lib.mkMerge [
         {instances.${consumerInstance} = {};}
-        contribution.configured
+        definition.configured
       ];
     })
   ];

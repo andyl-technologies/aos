@@ -1,4 +1,4 @@
-##! Stage-specific ability fixed-point contributions.
+##! Stage-specific ability fixed-point definitions.
 ##!
 ##! The system constructor evaluates each stage with the same authenticated
 ##! package modules selected by the parent system. Feature modules contribute

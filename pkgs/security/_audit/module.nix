@@ -248,7 +248,7 @@
     daemonService
     rulesService
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.security.audit = {
     enable = lib.mkOption {
@@ -301,7 +301,7 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);
+      aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
@@ -322,9 +322,9 @@ in {
             };
           }
         ]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
-      aos.contributions.kernelParameters.audit = ["audit=1"];
+      aos.kernel.commandLineParts.audit = ["audit=1"];
     })
   ];
 }

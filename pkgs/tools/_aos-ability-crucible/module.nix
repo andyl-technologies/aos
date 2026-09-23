@@ -148,7 +148,7 @@
   endpointInterface = lib.abilities.interfaces.executionObservationEndpoint.interfaces.endpoint;
   endpoint = producer "observer-endpoint" endpointInterface {endpoint = "default";};
   fragments = [runtimeStorage adapterConfiguration service endpoint];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./endpoint-implementation.nix
@@ -174,7 +174,7 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf cfg.enable {
@@ -182,7 +182,7 @@ in {
         [
           {instances.ability-crucible = {};}
         ]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
       );
     })
   ];

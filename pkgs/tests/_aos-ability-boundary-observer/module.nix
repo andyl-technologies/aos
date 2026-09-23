@@ -168,7 +168,7 @@
     socket_path = settings.socketPath;
   };
   fragments = [runtimeStorage stateStorage controllerService endpoint];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
   configuredFragments =
     [endpoint]
     ++ lib.optionals (cfg.mode == "managed-service") [
@@ -206,7 +206,7 @@ in {
         [
           {requirementTemplates.forward-endpoint = forwardEndpointRequirement;}
         ]
-        ++ builtins.map (contribution: contribution.declarations) contributions
+        ++ builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf cfg.enable {
@@ -220,7 +220,7 @@ in {
           })
         ]
         ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
+        (fragment: (serviceManagement.splitDefinition fragment).configured)
         configuredFragments
       );
     })

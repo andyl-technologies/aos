@@ -7,7 +7,6 @@
   cfg = config.aos.security.verityRootVerification;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "verity-root-verification";
@@ -38,74 +37,69 @@
   persistentState = systemMilestone "persistent-state" milestones.var;
   integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
 
-  verification = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "aos-verity-root-verify";
-      enabled = true;
-      lifecycle = {
-        description = "Verify the complete dm-verity root before persistent state";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [command];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      manager_identity = {
-        name = "aos-verity-root-verify";
-        aliases = [];
-      };
-      dependencies = {
-        prerequisites = [];
-        after = [
-          (resultOf "boot-identity" "resource")
-          (resultOf "verity-root-mapping" "resource")
-          (resultOf "initrd-stage" "resource")
-          (resultOf "device-events" "resource")
-        ];
-        before = [
-          (resultOf "persistent-state" "resource")
-          (resultOf "initrd-filesystems" "resource")
-        ];
-        requires = [
-          (resultOf "boot-identity" "resource")
-          (resultOf "verity-root-mapping" "resource")
-        ];
-        wants = [(resultOf "device-events" "resource")];
-        requisite = [];
-        conflicts = [];
-        binds_to = [];
-        part_of = [];
-        upholds = [];
-        required_by = [
-          (resultOf "persistent-state" "resource")
-          (resultOf "initrd-filesystems" "resource")
-        ];
-        wanted_by = [];
-        required_mounts = [];
-        implicit_dependencies = false;
-      };
-      failure_policy = {
-        handlers = [(resultOf "integrity-failure" "resource")];
-        dispatch = "isolate-active-goal";
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
+  verificationService = {
+    lifecycle = {
+      description = "Verify the complete dm-verity root before persistent state";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [command];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    manager_identity = {
+      name = "aos-verity-root-verify";
+      aliases = [];
+    };
+    dependencies = {
+      prerequisites = [];
+      after = [
+        (resultOf "boot-identity" "resource")
+        (resultOf "verity-root-mapping" "resource")
+        (resultOf "initrd-stage" "resource")
+        (resultOf "device-events" "resource")
+      ];
+      before = [
+        (resultOf "persistent-state" "resource")
+        (resultOf "initrd-filesystems" "resource")
+      ];
+      requires = [
+        (resultOf "boot-identity" "resource")
+        (resultOf "verity-root-mapping" "resource")
+      ];
+      wants = [(resultOf "device-events" "resource")];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [
+        (resultOf "persistent-state" "resource")
+        (resultOf "initrd-filesystems" "resource")
+      ];
+      wanted_by = [];
+      required_mounts = [];
+      implicit_dependencies = false;
+    };
+    failure_policy = {
+      handlers = [(resultOf "integrity-failure" "resource")];
+      dispatch = "isolate-active-goal";
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
     };
   };
-  fragments = [
+  producers = [
     bootIdentity
     verityRootMapping
     deviceEvents
@@ -113,9 +107,7 @@
     initrdFilesystems
     persistentState
     integrityFailure
-    verification
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
   options.aos.security.verityRootVerification.enable = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -125,15 +117,15 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
-      );
+      aos.services."verity-root-verification.aos-verity-root-verify" = verificationService // {enable = cfg.enable && initrdStage;};
     }
-    (lib.mkIf (cfg.enable && initrdStage) {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
-      );
+    (serviceManagement.projectService {
+      inherit config lib consumerInstance;
+      name = "verity-root-verification.aos-verity-root-verify";
+    })
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable && initrdStage;
     })
   ];
 }

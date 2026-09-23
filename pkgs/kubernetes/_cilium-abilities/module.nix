@@ -1,4 +1,4 @@
-##! Typed Cilium contribution to the versioned Kubernetes add-on interface.
+##! Typed Cilium definition to the versioned Kubernetes add-on interface.
 {
   config,
   lib,
@@ -86,7 +86,7 @@
       };
     };
   };
-  contributions = map serviceManagement.splitContribution [objects integration];
+  definitions = map serviceManagement.splitDefinition [objects integration];
 in {
   options.cilium = {
     enable = mkOption {
@@ -110,12 +110,12 @@ in {
   };
 
   config.aos.abilities = lib.mkMerge (
-    (map (contribution: contribution.declarations) contributions)
+    (map (definition: definition.declarations) definitions)
     ++ [
       (mkIf cfg.enable (
         lib.mkMerge (
           [{instances.integration = {};}]
-          ++ map (contribution: contribution.configured) contributions
+          ++ map (definition: definition.configured) definitions
         )
       ))
     ]

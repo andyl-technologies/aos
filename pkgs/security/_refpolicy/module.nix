@@ -323,7 +323,7 @@
     policyLoad
     autorelabel
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.security.selinux = {
     enable = lib.mkOption {
@@ -349,24 +349,22 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf cfg.enable {
-      aos.contributions = {
-        kernelParameters.refpolicy = [
-          "enforcing=0"
-          "security=selinux"
-          "selinux=1"
-        ];
-        filesystemTrees = [
-          {
-            target = "selinux/${cfg.policy}/contexts";
-            source = {
-              artifact = lib.abilities.packageOutput {package = packageName;};
-              path = "etc/selinux/refpolicy/contexts";
-            };
-          }
-        ];
-      };
+      aos.kernel.commandLineParts.refpolicy = [
+        "enforcing=0"
+        "security=selinux"
+        "selinux=1"
+      ];
+      aos.filesystems.etcTrees = [
+        {
+          target = "selinux/${cfg.policy}/contexts";
+          source = {
+            artifact = lib.abilities.packageOutput {package = packageName;};
+            path = "etc/selinux/refpolicy/contexts";
+          };
+        }
+      ];
       aos.abilities = lib.mkMerge (
         [
           {instances.${consumerInstance} = {};}
@@ -392,7 +390,7 @@ in {
             };
           }
         ]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];

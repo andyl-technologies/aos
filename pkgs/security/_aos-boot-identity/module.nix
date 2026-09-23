@@ -154,7 +154,7 @@
     identityGuard
     failureReport
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.security.bootIdentityServices.enable = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -166,13 +166,13 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf (initrdStage && cfg.enable) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
       );
     })
   ];

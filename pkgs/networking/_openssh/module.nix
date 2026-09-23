@@ -426,7 +426,7 @@
     hostPolicyReadiness
     daemon
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.serviceOptionModules.ssh = lib.mkOption {
     type = lib.types.deferredModule;
@@ -516,15 +516,13 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf cfg.enable {
-      aos.contributions = {
-        pamServices = lib.mkIf cfg.usePAM {
-          sshd = {
-            unixAuth = cfg.passwordAuthentication;
-            startSession = true;
-            setLoginUid = true;
-          };
+      aos.pam.packageServices = lib.mkIf cfg.usePAM {
+        sshd = {
+          unixAuth = cfg.passwordAuthentication;
+          startSession = true;
+          setLoginUid = true;
         };
       };
       aos.abilities.runtimeChecks.ssh = {
@@ -618,7 +616,7 @@ in {
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];

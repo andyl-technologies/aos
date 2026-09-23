@@ -135,11 +135,11 @@
     (backendService "app-b" 19002)
     (backendService "app-c" 19003)
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   config.aos.abilities = lib.mkMerge (
     [{instances.runtime-services = {};}]
-    ++ builtins.map (contribution: contribution.declarations) contributions
-    ++ builtins.map (contribution: contribution.configured) contributions
+    ++ builtins.map (definition: definition.declarations) definitions
+    ++ builtins.map (definition: definition.configured) definitions
   );
 }

@@ -276,8 +276,8 @@
       dependencies = [];
     };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "device_policy";
         requirementAlias = "service-device-policy";
         description = "Requires the selected service-management provider to enforce the declared device access policy.";
@@ -304,7 +304,7 @@
             ];
         };
       })
-      (serviceManagement.featureContribution {
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -546,7 +546,7 @@
     ]
     ++ lib.optional roleSpec.acceptForwardedTraffic forwardingPolicy
     ++ lib.optional serverRole objectController;
-  contributions = map serviceManagement.splitContribution fragments;
+  definitions = map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./configuration-interface.nix
@@ -713,7 +713,7 @@ in {
           implementations = objectImplementations // configurationImplementations;
         }
       ]
-      ++ (map (contribution: contribution.declarations) contributions)
+      ++ (map (definition: definition.declarations) definitions)
       ++ [
         (mkIf cfg.enable (
           lib.mkMerge (
@@ -725,7 +725,7 @@ in {
                   // lib.optionalAttrs serverRole {object-controller = {};};
               }
             ]
-            ++ map (contribution: contribution.configured) contributions
+            ++ map (definition: definition.configured) definitions
           )
         ))
       ]

@@ -148,8 +148,8 @@
     };
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -282,11 +282,11 @@
   ];
   staticAbilityFragments =
     builtins.map
-    (fragment: (serviceManagement.splitContribution fragment).declarations)
+    (fragment: (serviceManagement.splitDefinition fragment).declarations)
     abilityFragments;
   configuredAbilityFragments =
     builtins.map
-    (fragment: (serviceManagement.splitContribution fragment).configured)
+    (fragment: (serviceManagement.splitDefinition fragment).configured)
     abilityFragments;
 in {
   options.conntrackd = {

@@ -293,7 +293,7 @@
     name: cfg.datasets.${name}.deduplicate
   ) (builtins.attrNames cfg.datasets);
   fragments = [pool] ++ datasets;
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./maintenance.nix
@@ -395,18 +395,18 @@ in {
         };
         "var/lib".mountPoint = "/var/lib";
       };
-      aos.storage.mountPointContributions.${packageName} = lib.mkIf cfg.enable (
+      aos.storage.mountPointsByProvider.${packageName} = lib.mkIf cfg.enable (
         builtins.filter (mountPoint: mountPoint != null) (
           builtins.map (dataset: dataset.mountPoint or null) (builtins.attrValues configuredDatasets)
         )
       );
-      aos.storage.policyContributions.${packageName} = lib.mkIf cfg.enable {
+      aos.storage.policyByProvider.${packageName} = lib.mkIf cfg.enable {
         compressedSwapRecommended = true;
         hardwareMonitoringRecommended = true;
       };
-      aos.storage.readinessContributions.${packageName} = lib.mkIf cfg.enable readinessResources;
-      aos.contributions.kernelPackages.${packageName} = lib.mkIf cfg.enable [zfsSelector];
-      aos.contributions.kernelParameters.${packageName} = lib.mkIf cfg.enable cfg.moduleParameters;
+      aos.storage.readinessByProvider.${packageName} = lib.mkIf cfg.enable readinessResources;
+      aos.kernel.externalPackages.${packageName} = lib.mkIf cfg.enable [zfsSelector];
+      aos.kernel.commandLineParts.${packageName} = lib.mkIf cfg.enable cfg.moduleParameters;
     }
     {
       aos.abilities = lib.mkMerge ([
@@ -419,10 +419,10 @@ in {
             implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
           }
         ]
-        ++ builtins.map (contribution: contribution.declarations) contributions
+        ++ builtins.map (definition: definition.declarations) definitions
         ++ lib.optional cfg.enable (lib.mkMerge (
           [{instances.${consumerInstance} = {};}]
-          ++ builtins.map (contribution: contribution.configured) contributions
+          ++ builtins.map (definition: definition.configured) definitions
         )));
     }
     (lib.mkIf cfg.enable {

@@ -129,7 +129,7 @@ flags. Configured instances and requests refer to those declarations by typed
 identity instead of copying their contents.
 
 Option reference annotations are fields of the same `mkOption` declaration.
-Visibility, contribution policy, deprecation and replacement information, and
+Visibility, extension policy, deprecation and replacement information, and
 declaration provenance are projected with the option's path, type,
 description, default, and example. Publication signs that complete projection.
 Documentation and registry clients consume the signed projection directly;
@@ -226,7 +226,7 @@ different fields of one named service. Normal module defaults, priorities,
 conditions, provenance, type checks, and option documentation apply at each
 field. The domain projection derives static requirement templates even when a
 service is disabled, then derives concrete instances and requests when it is
-enabled. Package authors do not call `splitContribution`, copy the service
+enabled. Package authors do not call `splitDefinition`, copy the service
 declaration into requirement and request maps, or add an empty instance solely
 to make resolution work.
 
@@ -407,7 +407,7 @@ service. A package can offer more than one deployment form, such as a rich
 managed service and a foreground process, when it implements and declares both
 contracts.
 
-Configuration contributions, service declarations, and ability requirements
+Configuration definitions, service declarations, and ability requirements
 retain package, instance, request, and option provenance through module
 evaluation. They are operational inputs used for ownership and resolution;
 documentation consumes that provenance but does not create a documentation-only
@@ -423,7 +423,7 @@ Imports do not depend on the final `config` value.
 
 The AOS module fixed point then composes all deploy-time configuration: base
 features, the system variant, operator and runtime modules, admitted package
-configuration modules, admitted provider modules, contributions, and policy.
+configuration modules, admitted provider modules, and policy definitions.
 It produces concrete instances, provider definitions, desired resources, and
 conditional requirements. No second ability-specific module set owns or merges
 configuration.
@@ -469,7 +469,7 @@ do not require production code to maintain a fixture-name exclusion list.
 
 The validator accepts normalized package documents, the target environment,
 operator bindings, and evaluated requests. It checks interface compatibility,
-guarantees, phases, lifetimes, ownership, contribution scopes, and bounded
+guarantees, phases, lifetimes, ownership, module definition scopes, and bounded
 composition before constructing checked values.
 
 The resolver operates on provider declarations rather than built-in package
@@ -611,7 +611,7 @@ manager instance is running or selected.
 Package ability modules use the restricted module evaluation boundary. Their
 ordinary package settings and their ability declarations share one `options`
 and `config` graph, and the resulting fixed point preserves definition and
-option provenance. Ability outputs may feed authorized option contributions.
+option provenance. Ability outputs may feed authorized option definitions.
 Runtime-produced values remain typed deferred results rather than being read
 during pure Nix evaluation.
 
@@ -633,7 +633,7 @@ model rather than implementing their own joins.
 
 Package reference documentation reads the checked package option declarations
 and canonical package projection and shows every provided and consumed
-interface, method, guarantee, configuration option, contribution, handler
+interface, method, guarantee, configuration option, handler
 artifact, and supported environment. Deployment documentation adds the
 selected provider for each requirement, effects, current observations, and the
 typed values and provider realizations of resolved resources from the checked

@@ -14,7 +14,7 @@
     source = name;
   };
 in {
-  config.aos.nsswitch.contributions = lib.mkIf selected {
+  config.aos.nsswitch.sources = lib.mkIf selected {
     systemd-passwd = source "passwd" "systemd" 200 [];
     systemd-group = source "group" "systemd" 200 [
       {

@@ -47,12 +47,12 @@
     else
       lib.flatten (
         builtins.attrValues
-        initrdAbilityEvaluation.config.aos.contributions.initrdRuntimeArtifacts
+        initrdAbilityEvaluation.config.aos.initrdRuntime.artifacts
       );
 in {
   imports = [
-    ./_initrd-runtime-artifact-contributions.nix
-    ./_kernel-parameter-contributions.nix
+    ./_initrd-runtime-options.nix
+    ./_kernel-command-line-options.nix
   ];
 
   options.aos.boot = {
@@ -217,8 +217,8 @@ in {
         "root=${config.aos.filesystems.rootDevice}"
         "ro"
       ]
-      ++ lib.concatMap (name: config.aos.contributions.kernelParameters.${name})
-      (builtins.attrNames config.aos.contributions.kernelParameters);
+      ++ lib.concatMap (name: config.aos.kernel.commandLineParts.${name})
+      (builtins.attrNames config.aos.kernel.commandLineParts);
 
     aos.boot.initrd.loadModules = lib.mkDefault (
       lib.filter (

@@ -12,7 +12,7 @@
     inherit lib pkgs;
     modules = [
       ../../modules/abilities/default.nix
-      ../../modules/_package-contributions.nix
+      ../../modules/_package-domain-options.nix
       {
         aos.security.sudo.enable = true;
         aos.abilities.environment = {

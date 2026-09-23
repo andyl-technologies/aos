@@ -62,8 +62,8 @@
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
       declaration = builtins.removeAttrs declaration ["hardening"];
-      featureContributions = [
-        (serviceManagement.featureContribution {
+      featureRequests = [
+        (serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected platform to enforce the service isolation policy.";

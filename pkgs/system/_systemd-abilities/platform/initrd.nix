@@ -208,7 +208,7 @@ in {
   };
 
   config = lib.mkIf selected {
-    aos.contributions.kernelParameters.systemd-manager = [
+    aos.kernel.commandLineParts.systemd-manager = [
       "systemd.unified_cgroup_hierarchy=1"
       "systemd.gpt-auto=0"
       "systemd.mask=systemd-boot-random-seed.service"

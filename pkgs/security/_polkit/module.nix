@@ -156,8 +156,8 @@
       ];
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "device_policy";
         requirementAlias = "service-device-policy";
         description = "Requires the selected service-management provider to enforce the declared device access policy.";
@@ -180,7 +180,7 @@
           ];
         };
       })
-      (serviceManagement.featureContribution {
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -334,7 +334,7 @@
     privilegedWrappers
     service
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./availability-interface.nix
@@ -361,14 +361,12 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf active {
-      aos.contributions = {
-        pamServices."polkit-1" = {
-          unixAuth = true;
-          startSession = false;
-          setLoginUid = false;
-        };
+      aos.pam.packageServices."polkit-1" = {
+        unixAuth = true;
+        startSession = false;
+        setLoginUid = false;
       };
       aos.abilities = lib.mkMerge (
         [
@@ -406,7 +404,7 @@ in {
             };
           }
         ]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];

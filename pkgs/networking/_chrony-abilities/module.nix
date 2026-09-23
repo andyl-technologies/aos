@@ -116,8 +116,8 @@
     };
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "runtime_conditions";
         requirementAlias = "service-runtime-conditions";
         description = "Requires the selected service-management provider to evaluate declared capability conditions.";
@@ -130,7 +130,7 @@
           }
         ];
       })
-      (serviceManagement.featureContribution {
+      (serviceManagement.featureRequest {
         key = "device_policy";
         requirementAlias = "service-device-policy";
         description = "Requires the selected service-management provider to enforce the declared device access policy.";
@@ -153,7 +153,7 @@
             ["precision-time" "pulse-per-second" "real-time-clock"];
         };
       })
-      (serviceManagement.featureContribution {
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -308,7 +308,7 @@
     };
   };
   abilityFragments = [group principal networkReadiness configuration service];
-  contributions = builtins.map serviceManagement.splitContribution abilityFragments;
+  definitions = builtins.map serviceManagement.splitDefinition abilityFragments;
   boundedString = abilityTypes.refined {
     name = "non-empty chrony value";
     description = "a non-empty chrony configuration value";
@@ -420,8 +420,8 @@ in {
 
   config = lib.mkMerge [
     (lib.mkMerge (builtins.map
-      (contribution: {aos.abilities = contribution.declarations;})
-      contributions))
+      (definition: {aos.abilities = definition.declarations;})
+      definitions))
     (lib.mkIf cfg.enable (lib.mkMerge (
       [
         {
@@ -458,8 +458,8 @@ in {
         }
       ]
       ++ builtins.map
-      (contribution: {aos.abilities = contribution.configured;})
-      contributions
+      (definition: {aos.abilities = definition.configured;})
+      definitions
     )))
   ];
 }

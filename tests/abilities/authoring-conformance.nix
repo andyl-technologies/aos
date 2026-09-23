@@ -1418,7 +1418,7 @@
     _type = "aos-package-output-selector";
     inherit package output;
   };
-  selectedManagerModule = import ../../modules/base/_manager-contributions.nix;
+  selectedManagerModule = import ../../modules/base/_manager-selection.nix;
   selectedManagerProjection = {
     _type = "aos-selected-manager";
     name = "test-manager";
@@ -1972,9 +1972,9 @@ in
     groups = {};
     users = {};
   };
-  assert selectedNss.aos.nsswitch.contributions ? systemd-host-resolve;
+  assert selectedNss.aos.nsswitch.sources ? systemd-host-resolve;
   assert lib.hasInfix "hosts: files myhostname resolve [!UNAVAIL=return] dns" selectedNss.environment.etc."nsswitch.conf".text;
-  assert !(unselectedNss.aos.nsswitch.contributions ? systemd-host-resolve);
+  assert !(unselectedNss.aos.nsswitch.sources ? systemd-host-resolve);
   assert lib.hasInfix "hosts: files dns" unselectedNss.environment.etc."nsswitch.conf".text;
   assert !lib.hasInfix "systemd" unselectedNss.environment.etc."nsswitch.conf".text;
   assert validExecutableRequest.config.aos.abilities.requests."authoring:executable".parameters.executable.entry_point == "bin/server";

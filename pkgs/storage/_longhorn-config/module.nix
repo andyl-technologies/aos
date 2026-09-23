@@ -86,7 +86,7 @@
       };
     };
   };
-  contributions = map serviceManagement.splitContribution [objects integration];
+  definitions = map serviceManagement.splitDefinition [objects integration];
 in {
   options.longhorn = {
     enable = mkOption {
@@ -123,12 +123,12 @@ in {
   };
 
   config.aos.abilities = lib.mkMerge (
-    (map (contribution: contribution.declarations) contributions)
+    (map (definition: definition.declarations) definitions)
     ++ [
       (mkIf cfg.enable (
         lib.mkMerge (
           [{instances.integration = {};}]
-          ++ map (contribution: contribution.configured) contributions
+          ++ map (definition: definition.configured) definitions
         )
       ))
     ]

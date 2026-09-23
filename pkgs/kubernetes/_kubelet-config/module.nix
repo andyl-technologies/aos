@@ -117,8 +117,8 @@
       (resultOf "kubeconfig" "credential-path")
     ];
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "device_policy";
         requirementAlias = "service-device-policy";
         description = "Requires the selected service-management provider to enforce the declared device access policy.";
@@ -140,7 +140,7 @@
           ];
         };
       })
-      (serviceManagement.featureContribution {
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -327,9 +327,9 @@
   ];
   credentialFragments = [credential];
   fragments = serviceFragments ++ credentialFragments;
-  contributions = map serviceManagement.splitContribution fragments;
-  serviceContributions = map serviceManagement.splitContribution serviceFragments;
-  credentialContributions = map serviceManagement.splitContribution credentialFragments;
+  definitions = map serviceManagement.splitDefinition fragments;
+  serviceContributions = map serviceManagement.splitDefinition serviceFragments;
+  credentialContributions = map serviceManagement.splitDefinition credentialFragments;
 in {
   options.kubelet = {
     enable = mkOption {
@@ -438,17 +438,17 @@ in {
       ];
     }
     (lib.mkMerge (
-      map (contribution: {aos.abilities = contribution.declarations;}) contributions
+      map (definition: {aos.abilities = definition.declarations;}) definitions
     ))
     (lib.mkIf cfg.enable (
       lib.mkMerge (
         [{aos.abilities.instances.service = {};}]
-        ++ map (contribution: {aos.abilities = contribution.configured;}) serviceContributions
+        ++ map (definition: {aos.abilities = definition.configured;}) serviceContributions
       )
     ))
     (lib.mkIf (cfg.enable && kubeconfigRef != null) (
       lib.mkMerge (
-        map (contribution: {aos.abilities = contribution.configured;}) credentialContributions
+        map (definition: {aos.abilities = definition.configured;}) credentialContributions
       )
     ))
   ];

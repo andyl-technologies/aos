@@ -223,8 +223,8 @@
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
       declaration = builtins.removeAttrs declaration ["hardening"];
-      featureContributions = lib.optional (declaration ? hardening) (
-        serviceManagement.featureContribution {
+      featureRequests = lib.optional (declaration ? hardening) (
+        serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -500,7 +500,7 @@
       localFilesystems
     ]
     ++ allowedPrincipals ++ directories ++ [virtlogd virtlockd libvirtd];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [./dbus-registration.nix];
 
@@ -556,7 +556,7 @@ in {
               };
           }
         ]
-        ++ builtins.map (value: value.declarations) contributions
+        ++ builtins.map (value: value.declarations) definitions
       );
     }
     (lib.mkIf cfg.enable {
@@ -597,7 +597,7 @@ in {
             };
           }
         ]
-        ++ builtins.map (value: value.configured) contributions
+        ++ builtins.map (value: value.configured) definitions
       );
     })
   ];

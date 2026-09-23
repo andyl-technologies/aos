@@ -343,8 +343,8 @@
       isolated_identity_mapping = "none";
     };
     initializeService = serviceManagement.forService {
-      featureContributions = [
-        (serviceManagement.featureContribution {
+      featureRequests = [
+        (serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -401,8 +401,8 @@
       };
     };
     mainService = serviceManagement.forService {
-      featureContributions = [
-        (serviceManagement.featureContribution {
+      featureRequests = [
+        (serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -499,7 +499,7 @@
       initializeService
     ];
     mainServiceConfigured = let
-      configured = (serviceManagement.splitContribution mainService).configured;
+      configured = (serviceManagement.splitDefinition mainService).configured;
     in
       configured
       // {
@@ -512,15 +512,15 @@
   in {
     declarations =
       builtins.map
-      (fragment: (serviceManagement.splitContribution fragment).declarations)
+      (fragment: (serviceManagement.splitDefinition fragment).declarations)
       all;
     configuredBase =
       builtins.map
-      (fragment: (serviceManagement.splitContribution fragment).configured)
+      (fragment: (serviceManagement.splitDefinition fragment).configured)
       base
       ++ [mainServiceConfigured];
-    credentialRequests = (serviceManagement.splitContribution credentialRequests).configured;
-    bootstrapConfiguration = (serviceManagement.splitContribution bootstrapConfiguration).configured;
+    credentialRequests = (serviceManagement.splitDefinition credentialRequests).configured;
+    bootstrapConfiguration = (serviceManagement.splitDefinition bootstrapConfiguration).configured;
   };
 in {
   options.mariadb = {

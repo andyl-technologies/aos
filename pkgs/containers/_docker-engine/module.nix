@@ -46,8 +46,8 @@
     address_families = ["ipv4" "ipv6"];
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -186,7 +186,7 @@
     };
   };
   abilityFragments = [dataStorage runtimeStorage networkReadiness service];
-  contributions = builtins.map serviceManagement.splitContribution abilityFragments;
+  definitions = builtins.map serviceManagement.splitDefinition abilityFragments;
 in {
   options.aos.serviceOptionModules.docker = lib.mkOption {
     type = lib.types.deferredModule;
@@ -231,7 +231,7 @@ in {
 
   config = lib.mkMerge [
     (lib.mkMerge (
-      builtins.map (contribution: {aos.abilities = contribution.declarations;}) contributions
+      builtins.map (definition: {aos.abilities = definition.declarations;}) definitions
     ))
     (lib.mkIf cfg.enable (lib.mkMerge (
       [
@@ -256,7 +256,7 @@ in {
           };
         }
       ]
-      ++ builtins.map (contribution: {aos.abilities = contribution.configured;}) contributions
+      ++ builtins.map (definition: {aos.abilities = definition.configured;}) definitions
     )))
   ];
 }

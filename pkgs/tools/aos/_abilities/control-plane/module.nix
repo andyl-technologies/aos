@@ -149,8 +149,8 @@
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
       declaration = builtins.removeAttrs declaration ["hardening"];
-      featureContributions = lib.optional (declaration ? hardening) (
-        serviceManagement.featureContribution {
+      featureRequests = lib.optional (declaration ? hardening) (
+        serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -256,7 +256,7 @@
   };
 
   fragments = [hostStageReceived configGroup activationPreflight activate];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.config.unitGraph = {
     enable = lib.mkOption {
@@ -272,11 +272,11 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf (cfg.enable && hostStage) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];
