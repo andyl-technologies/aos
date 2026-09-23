@@ -339,7 +339,10 @@
             exit 1
           fi
 
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
+          # KVM reached the first finding replay after about 224 seconds;
+          # this selector also performs independent minimization, verification,
+          # exact debug, and GC after that point.
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
             ${flight}/bin/campaign-store-process-flight --exact \
             "$midpoint_selector" --nocapture > "$midpoint_log" 2>&1; then
             cat "$midpoint_log"
