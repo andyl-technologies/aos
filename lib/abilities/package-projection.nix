@@ -41,6 +41,7 @@
     != null
     || implementation.transition != null
     || implementation.provide != null
+    || implementation.providerModule != null
     || implementation.handlerDescriptor != null)
   implementationNames;
 

@@ -47,6 +47,15 @@ impl fmt::Display for ValidationErrors {
         if count != 1 {
             formatter.write_str("s")?;
         }
+        for diagnostic in &self.diagnostics {
+            write!(
+                formatter,
+                "\n  {:?} at /{}: {}",
+                diagnostic.code,
+                diagnostic.path.join("/"),
+                diagnostic.message
+            )?;
+        }
         Ok(())
     }
 }
