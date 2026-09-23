@@ -744,12 +744,14 @@ pub fn authorize_cache_read_v1<'authority>(
             && entry.root_generation == root.generation()
     });
     if grant.state != ReadGrantStateV1::Active
+        || grant.holder != request.holder
         || grant.grant_digest != request.read_authority_digest
         || authority.registry.checkpoint_digest != authority.checkpoint_digest
         || grant.project != request.project
         || grant.project != entry.project
         || grant.resource != entry.resource
         || grant.domain != entry.domain
+        || entry.object != request.object
         || request.catalog_generation != catalog.catalog.generation
         || catalog.catalog.checkpoint_digest != catalog.checkpoint_digest
         || !root_is_current
