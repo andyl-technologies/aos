@@ -1,11 +1,13 @@
 {
   pkgs,
   selectable ? false,
+  campaignFlight ? false,
 }:
 # A diskless Linux initramfs whose PID 1 exchanges a raw Ethernet probe,
 # acknowledgement, and checkpoint-continuation stream. The guest creates all
 # application traffic; the host gate only routes guest-originated frames and
 # schedules deterministic responses.
+assert !campaignFlight || selectable;
 pkgs.mkDerivation {
   pname = "crucible-live-network-io-initramfs";
   version = "0";
@@ -78,7 +80,9 @@ pkgs.mkDerivation {
             if (dup2(output_pipe[1], STDOUT_FILENO) < 0) {
               _exit(126);
             }
-            close(output_pipe[1]);
+            if (output_pipe[1] != STDOUT_FILENO) {
+              close(output_pipe[1]);
+            }
             execv(argv[0], argv);
             _exit(127);
           }
@@ -192,6 +196,41 @@ pkgs.mkDerivation {
           *retry_quanta = (uint64_t)parsed;
           return 0;
         }
+
+        #if CRUCIBLE_CAMPAIGN_FLIGHT
+        static int emit_campaign_event(const char *marker,
+                                       const char *detail) {
+          char empty[1];
+          char *event[] = {
+            "/crucible-guest", "event", (char *)marker, (char *)detail, 0
+          };
+          return run_crucible_guest(event, empty, sizeof(empty));
+        }
+
+        static void emit_campaign_progress(const char *selection) {
+          const struct timespec interval = {0, 1000000};
+          uint64_t sequence = 1;
+
+          for (;;) {
+            (void)nanosleep(&interval, 0);
+
+            char marker[96];
+            char detail[32];
+            int marker_len = snprintf(marker, sizeof(marker),
+                                      "%s-progress-%06llu", selection,
+                                      (unsigned long long)sequence);
+            int detail_len = snprintf(detail, sizeof(detail), "sequence=%llu",
+                                      (unsigned long long)sequence);
+            if (marker_len <= 0 || marker_len >= (int)sizeof(marker) ||
+                detail_len <= 0 || detail_len >= (int)sizeof(detail) ||
+                emit_campaign_event(marker, detail) != 0 ||
+                sequence == UINT64_MAX) {
+              _exit(1);
+            }
+            ++sequence;
+          }
+        }
+        #endif
         #endif
 
         static void park_forever(void) {
@@ -359,6 +398,26 @@ pkgs.mkDerivation {
               (ssize_t)sizeof(frame)) {
             park_forever();
           }
+
+          #if CRUCIBLE_CAMPAIGN_FLIGHT
+          char selection[40];
+          int selection_len = snprintf(selection, sizeof(selection),
+                                       "selected-%s-q%llu", policy,
+                                       (unsigned long long)retry_quanta);
+          if (selection_len <= 0 || selection_len >= (int)sizeof(selection) ||
+              emit_campaign_event(selection, "network-frame=sent") != 0) {
+            park_forever();
+          }
+
+          pid_t progress = fork();
+          if (progress < 0) {
+            park_forever();
+          }
+          if (progress == 0) {
+            close(fd);
+            emit_campaign_progress(selection);
+          }
+          #endif
           #endif
           build_frame(frame, broadcast, guest_mac, probe_payload,
                       sizeof(probe_payload) - 1);
@@ -454,6 +513,11 @@ pkgs.mkDerivation {
           then "1"
           else "0"
         } \
+          -DCRUCIBLE_CAMPAIGN_FLIGHT=${
+          if campaignFlight
+          then "1"
+          else "0"
+        } \
           -o init init.c
         strip --strip-all init
 
@@ -501,6 +565,11 @@ pkgs.mkDerivation {
           if selectable
           then "crucible-guest-typed-cli"
           else "disabled"
+        }
+        campaign_flight=${
+          if campaignFlight
+          then "true"
+          else "false"
         }
         initramfs_encoding=${
           if selectable
