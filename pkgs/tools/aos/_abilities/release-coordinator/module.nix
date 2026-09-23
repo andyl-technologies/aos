@@ -9,10 +9,9 @@
   lib,
   ...
 }: let
-  cfg = config.aos.services.releaseCoordinator;
+  cfg = config.aos.release.coordinator;
   inherit (lib.abilities) resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   abilityTypes = lib.abilities.types;
   consumerInstance = "release-coordinator";
 
@@ -305,19 +304,11 @@
   };
 
   service = declaration:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = builtins.removeAttrs declaration ["hardening"];
-      featureRequests = lib.optional (declaration ? hardening) (
-        serviceManagement.featureRequest {
-          key = "hardening";
-          requirementAlias = "service-hardening";
-          description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-          interface = "aos.service.hardening";
-          abi = 1;
-          parameters = declaration.hardening;
-        }
-      );
+    (builtins.removeAttrs declaration ["hardening" "enabled"])
+    // {
+      inherit consumerInstance;
+      autoStart = declaration.enabled;
+      policy.hardening = declaration.hardening;
     };
   releaseService = programs: credentials:
     service {
@@ -463,7 +454,7 @@
       hardening = hardening true;
     };
 
-  fragmentsFor = programs: credentials:
+  producersFor = credentials:
     identityFragments
     ++ [
       (storage {
@@ -542,14 +533,6 @@
       (schedule "timestamp" cfg.timestampCalendar)
       (schedule "backup" cfg.backupCalendar)
       (schedule "restore-check" cfg.restoreCheckCalendar)
-      (releaseService programs credentials)
-      (timestampService programs credentials)
-      (backupService programs credentials)
-      (restoreService programs)
-      (alertService programs credentials "release")
-      (alertService programs credentials "timestamp")
-      (alertService programs credentials "backup")
-      (alertService programs credentials "restore-check")
     ]
     ++ credentialFragments "release" credentials.release
     ++ credentialFragments "timestamp" credentials.timestamp
@@ -569,104 +552,96 @@
     backup = cfg.backupCredentials;
     alert = cfg.alertCredentials;
   };
-  potentialCredentials = {
-    release = {};
-    timestamp = {};
-    backup = {};
-    alert = {};
+  configuredProducers = producersFor configuredCredentials;
+  configuredServices = {
+    release = releaseService configuredPrograms configuredCredentials;
+    timestamp = timestampService configuredPrograms configuredCredentials;
+    backup = backupService configuredPrograms configuredCredentials;
+    restore-check = restoreService configuredPrograms;
+    alert-release = alertService configuredPrograms configuredCredentials "release";
+    alert-timestamp = alertService configuredPrograms configuredCredentials "timestamp";
+    alert-backup = alertService configuredPrograms configuredCredentials "backup";
+    alert-restore-check = alertService configuredPrograms configuredCredentials "restore-check";
   };
-  potentialFragments =
-    fragmentsFor {
-      release = declarationProgram;
-      timestamp = declarationProgram;
-      backup = declarationProgram;
-      restoreCheck = declarationProgram;
-      alert = declarationProgram;
-    }
-    potentialCredentials;
-  configuredFragments = fragmentsFor configuredPrograms configuredCredentials;
   allCredentialSources =
     builtins.attrValues cfg.releaseCredentials
     ++ builtins.attrValues cfg.timestampCredentials
     ++ builtins.attrValues cfg.backupCredentials
     ++ builtins.attrValues cfg.alertCredentials;
 in {
-  options.aos.services = lib.mkOption {
-    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
-      options = lib.optionalAttrs (name == "releaseCoordinator") {
-        enable = lib.mkOption {
-          type = abilityTypes.boolean;
-          default = false;
-          description = "Enable the package-owned canonical release maintenance services.";
-        };
-        releaseProgram = lib.mkOption {
-          type = abilityTypes.optional abilityTypes.executableReference;
-          default = null;
-          description = "Authenticated executable for manually initiated content release operations.";
-        };
-        timestampProgram = lib.mkOption {
-          type = abilityTypes.optional abilityTypes.executableReference;
-          default = null;
-          description = "Authenticated executable for restricted TUF timestamp renewal.";
-        };
-        backupProgram = lib.mkOption {
-          type = abilityTypes.optional abilityTypes.executableReference;
-          default = null;
-          description = "Authenticated executable for encrypted release evidence backups.";
-        };
-        restoreCheckProgram = lib.mkOption {
-          type = abilityTypes.optional abilityTypes.executableReference;
-          default = null;
-          description = "Authenticated executable for clean-directory backup restore verification.";
-        };
-        alertProgram = lib.mkOption {
-          type = abilityTypes.optional abilityTypes.executableReference;
-          default = null;
-          description = "Authenticated executable for release operation failure alerts.";
-        };
-        releaseCredentials = lib.mkOption {
-          type = credentialSet;
-          default = {};
-          description = "System credential names delivered only to manual release operations.";
-        };
-        timestampCredentials = lib.mkOption {
-          type = credentialSet;
-          default = {};
-          description = "System credential names delivered only to timestamp renewal operations.";
-        };
-        backupCredentials = lib.mkOption {
-          type = credentialSet;
-          default = {};
-          description = "System credential names delivered only to encrypted backup operations.";
-        };
-        alertCredentials = lib.mkOption {
-          type = credentialSet;
-          default = {};
-          description = "System credential names delivered only to failure alert operations.";
-        };
-        timestampCalendar = lib.mkOption {
-          type = calendarExpression;
-          default = "*-*-* 00/12:00:00";
-          description = "Calendar schedule for short-lived TUF timestamp renewal.";
-        };
-        backupCalendar = lib.mkOption {
-          type = calendarExpression;
-          default = "*-*-* 02:00:00";
-          description = "Calendar schedule for encrypted release-state backups.";
-        };
-        restoreCheckCalendar = lib.mkOption {
-          type = calendarExpression;
-          default = "Mon *-*-* 04:00:00";
-          description = "Calendar schedule for unattended backup restore verification.";
-        };
-      };
-    }));
-    default = {};
+  options.aos.release.coordinator = {
+    enable = lib.mkOption {
+      type = abilityTypes.boolean;
+      default = false;
+      description = "Enable the package-owned canonical release maintenance services.";
+    };
+    releaseProgram = lib.mkOption {
+      type = abilityTypes.optional abilityTypes.executableReference;
+      default = null;
+      description = "Authenticated executable for manually initiated content release operations.";
+    };
+    timestampProgram = lib.mkOption {
+      type = abilityTypes.optional abilityTypes.executableReference;
+      default = null;
+      description = "Authenticated executable for restricted TUF timestamp renewal.";
+    };
+    backupProgram = lib.mkOption {
+      type = abilityTypes.optional abilityTypes.executableReference;
+      default = null;
+      description = "Authenticated executable for encrypted release evidence backups.";
+    };
+    restoreCheckProgram = lib.mkOption {
+      type = abilityTypes.optional abilityTypes.executableReference;
+      default = null;
+      description = "Authenticated executable for clean-directory backup restore verification.";
+    };
+    alertProgram = lib.mkOption {
+      type = abilityTypes.optional abilityTypes.executableReference;
+      default = null;
+      description = "Authenticated executable for release operation failure alerts.";
+    };
+    releaseCredentials = lib.mkOption {
+      type = credentialSet;
+      default = {};
+      description = "System credential names delivered only to manual release operations.";
+    };
+    timestampCredentials = lib.mkOption {
+      type = credentialSet;
+      default = {};
+      description = "System credential names delivered only to timestamp renewal operations.";
+    };
+    backupCredentials = lib.mkOption {
+      type = credentialSet;
+      default = {};
+      description = "System credential names delivered only to encrypted backup operations.";
+    };
+    alertCredentials = lib.mkOption {
+      type = credentialSet;
+      default = {};
+      description = "System credential names delivered only to failure alert operations.";
+    };
+    timestampCalendar = lib.mkOption {
+      type = calendarExpression;
+      default = "*-*-* 00/12:00:00";
+      description = "Calendar schedule for short-lived TUF timestamp renewal.";
+    };
+    backupCalendar = lib.mkOption {
+      type = calendarExpression;
+      default = "*-*-* 02:00:00";
+      description = "Calendar schedule for encrypted release-state backups.";
+    };
+    restoreCheckCalendar = lib.mkOption {
+      type = calendarExpression;
+      default = "Mon *-*-* 04:00:00";
+      description = "Calendar schedule for unattended backup restore verification.";
+    };
   };
 
   config = lib.mkMerge [
-    {aos.services.releaseCoordinator = {};}
     {
+      aos.services =
+        builtins.mapAttrs (_: value: value // {enable = cfg.enable;})
+        (lib.mapAttrs' (name: value: lib.nameValuePair "release-coordinator.${name}" value) configuredServices);
       assertions = [
         {
           assertion = !cfg.enable || cfg.releaseProgram != null;
@@ -695,19 +670,11 @@ in {
           message = "release maintenance roles must use disjoint named credentials";
         }
       ];
-      aos.abilities = lib.mkMerge (
-        builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).declarations)
-        potentialFragments
-      );
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        configuredFragments
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = configuredProducers;
+      enabled = cfg.enable;
     })
   ];
 }
