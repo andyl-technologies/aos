@@ -11,6 +11,7 @@ use crate::{
 
 const MAX_FINDING_EXACT_PIN_ROOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL: u64 = 64 * 1024 * 1024;
+const MAX_FINDING_ASSERTION_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 
 mod recovery;
 mod replay_evidence;
@@ -743,13 +744,30 @@ impl CampaignRepository {
         if let FindingCandidateValidation::Publication(authenticator) = validation {
             let authenticator = authenticator
                 .ok_or_else(|| integrity("finding-exact-checkpoint-authenticator-is-missing"))?;
+            let assertion_trace = match evidence.assertion_boundary() {
+                Some(boundary) => {
+                    let bytes = self
+                        .blobs
+                        .read(boundary.trace(), None)?
+                        .read_all(MAX_FINDING_ASSERTION_TRACE_BYTES)?;
+                    if !boundary.trace().authenticates(&bytes) {
+                        return Err(integrity("finding-assertion-trace-content-mismatch"));
+                    }
+                    Some(bytes)
+                }
+                None => None,
+            };
             let mut remaining = MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL;
             for candidate in evidence.candidates() {
                 if let Some(boundary) = evidence.assertion_boundary() {
+                    let trace_bytes = assertion_trace
+                        .as_deref()
+                        .ok_or_else(|| integrity("finding-assertion-trace-is-missing"))?;
                     authenticator
                         .authenticate_finding_assertion_boundary(
                             candidate.checkpoint(),
                             boundary,
+                            trace_bytes,
                             original.scenario(),
                             original.scenario_artifact(),
                             original.configuration(),

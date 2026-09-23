@@ -446,18 +446,20 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
         &self,
         checkpoint: ExactCheckpointId,
         boundary: &crucible_campaign::FindingAssertionFailureBoundary,
+        trace_bytes: &[u8],
         scenario: ScenarioDefId,
         scenario_artifact: ScenarioArtifactId,
         configuration: ConfigurationId,
     ) -> Result<(), FindingExactCheckpointAuthenticationError> {
-        let bytes = self
-            .campaign
-            .load_executor_trace_leaf(
-                boundary.trace(),
-                crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES as u64,
-            )
-            .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        let leaf = crate::CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
+        if ContentId::for_bytes(
+            ObjectKind::Trace,
+            boundary.trace().schema_version(),
+            trace_bytes,
+        ) != boundary.trace()
+        {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+        }
+        let leaf = crate::CrucibleMeasurementReplayEvidence::from_canonical_bytes(trace_bytes)
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
         if leaf.scenario() != scenario
             || leaf.configuration() != configuration
