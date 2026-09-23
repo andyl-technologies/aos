@@ -310,7 +310,16 @@ impl ProductionVmLifecycleLoop {
         }
         boundary()?;
         let configuration = self.inner.loop_impl().configuration().clone();
-        let identity = self.capture_exact_checkpoint_set_with_boundary(&configuration, boundary)?;
+        let identity = if matches!(
+            self.checkpoint_terminal_cause,
+            Some(CheckpointTerminalCause::Failed(_))
+        ) {
+            // A previous Snapshot may share this configuration but predate
+            // the failed observation's terminal scheduler events.
+            self.capture_fresh_exact_checkpoint_set_with_boundary(&configuration, boundary)?
+        } else {
+            self.capture_exact_checkpoint_set_with_boundary(&configuration, boundary)?
+        };
         boundary()?;
         let mut boundary_error = None;
         let closure = checkpoint_store::open_exact_checkpoint_closure_with_boundary(

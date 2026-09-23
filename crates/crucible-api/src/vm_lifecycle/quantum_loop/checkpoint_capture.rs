@@ -301,6 +301,61 @@ impl ProductionVmLifecycleLoop {
         self.capture_exact_checkpoint_set_with_boundary(configuration, &mut || Ok(()))
     }
 
+    /// Captures a new root when the same configuration has an earlier snapshot.
+    ///
+    /// A failed refresh retains the prior durable root unless publication or
+    /// cleanup is indeterminate and requires reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scheduler error when the live boundary or capture fails.
+    pub(in crate::vm_lifecycle) fn capture_fresh_exact_checkpoint_set_with_boundary(
+        &mut self,
+        configuration: &Configuration,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        boundary()?;
+        let configuration_id = configuration.id();
+        let previous = match self.checkpoint_targets.get(&configuration_id) {
+            Some(ExactCheckpointPublicationState::Published(identity)) => Some(*identity),
+            _ => None,
+        };
+        let Some(previous) = previous else {
+            return self.capture_exact_checkpoint_set_with_boundary(configuration, boundary);
+        };
+
+        // A Snapshot control may have retained this configuration before the
+        // terminal event log was complete. Keep its durable root and RAM parent
+        // until the fresh transaction has a definitive published outcome.
+        self.retain_exact_ram_parent_from_closure(configuration_id, previous)?;
+        let previous_parent = self
+            .exact_ram_parents
+            .get(&configuration_id)
+            .filter(|parent| parent.closure == previous)
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "published exact checkpoint has no matching retained RAM parent",
+                ),
+            })?;
+        self.checkpoint_targets.remove(&configuration_id);
+        let result = self.capture_exact_checkpoint_set_with_boundary(configuration, boundary);
+        if result.is_err()
+            && matches!(
+                self.checkpoint_targets.get(&configuration_id),
+                None | Some(ExactCheckpointPublicationState::Preparing)
+            )
+        {
+            self.checkpoint_targets.insert(
+                configuration_id,
+                ExactCheckpointPublicationState::Published(previous),
+            );
+            self.exact_ram_parents
+                .insert(configuration_id, previous_parent);
+        }
+        result
+    }
+
     pub(in crate::vm_lifecycle) fn capture_exact_checkpoint_set_with_boundary(
         &mut self,
         configuration: &Configuration,
@@ -1158,6 +1213,51 @@ mod tests {
         assert_eq!(
             exact_ram_capture_kind_for_parent(Some(&restored)),
             ProductionExactRamKind::Delta
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn failed_terminal_capture_refreshes_same_configuration_snapshot() {
+        let root = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create refresh fixture store: {error}"));
+        let fixture =
+            checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())
+                .unwrap_or_else(|error| panic!("build refresh fixture: {error}"));
+        let configuration = fixture.configuration().id();
+        let previous = fixture.closure().identity();
+        let mut lifecycle =
+            crate::vm_lifecycle::runtime::tests::production_loop_without_backends(fixture.source());
+        lifecycle.config =
+            ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", root.path());
+        lifecycle.checkpoint_targets.insert(
+            configuration,
+            ExactCheckpointPublicationState::Published(previous),
+        );
+
+        assert_eq!(
+            lifecycle.capture_exact_checkpoint_set(fixture.configuration()),
+            Ok(previous)
+        );
+        assert!(
+            lifecycle
+                .capture_fresh_exact_checkpoint_set_with_boundary(
+                    fixture.configuration(),
+                    &mut || Ok(())
+                )
+                .is_err(),
+            "fresh capture must reach the unavailable live backend, not reuse the snapshot"
+        );
+        assert!(matches!(
+            lifecycle.checkpoint_targets.get(&configuration),
+            Some(ExactCheckpointPublicationState::Published(identity)) if *identity == previous
+        ));
+        assert_eq!(
+            lifecycle
+                .exact_ram_parents
+                .get(&configuration)
+                .map(|parent| parent.closure),
+            Some(previous)
         );
     }
 
