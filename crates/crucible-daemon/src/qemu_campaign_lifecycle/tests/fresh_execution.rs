@@ -693,19 +693,21 @@ fn cleanup_failure_overrides_terminal_fingerprint_capture_failure() {
         .execute(&fresh_runner_input(), &fresh_runner_context())
         .expect_err("cleanup failure must retain precedence");
 
-    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterRunner {
-        failure,
-        ..
-    }) = error
-    else {
+    let AttemptWorkerFailure::Terminal(runner_error) = &error else {
+        panic!("cleanup failure must retain the prior capture failure");
+    };
+    let QemuFreshExecutionRunnerError::CleanupAfterRunner { failure, .. } = runner_error else {
         panic!("cleanup failure must retain the prior capture failure");
     };
     assert!(matches!(
-        *failure,
+        failure.as_ref(),
         QemuFreshExecutionRunnerError::TerminalFingerprintCapture(
             SchedulerError::BoundaryViolation { .. }
         )
     ));
+    let message = runner_error.to_string();
+    assert!(message.contains("injected fresh lifecycle cleanup failure"));
+    assert!(message.contains("TerminalFingerprintCapture"));
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "drive", "shutdown"]
