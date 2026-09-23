@@ -294,6 +294,13 @@ pub(super) async fn dispatch_mutation(
             .await?;
         }
         DormantSandboxRequestKindV1::ExecutionControl(message) => {
+            let holder_key = if message.action.as_known()
+                == Some(aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
+            {
+                Some(ssh_attach::load_holder_key(args, &message.execution_id)?)
+            } else {
+                None
+            };
             let response =
                 ExecutionServiceClient::new(endpoint.connection.clone(), endpoint.config()?)
                     .control_execution(message.clone())
@@ -302,10 +309,8 @@ pub(super) async fn dispatch_mutation(
                     .into_owned();
             let checked = CheckedExecutionControlResultV1::try_from(response)
                 .context("controller returned an invalid execution control result")?;
-            if message.action.as_known()
-                == Some(aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
-            {
-                ssh_attach::attach(args, &endpoint, message, &checked).await?;
+            if let Some(holder_key) = holder_key {
+                ssh_attach::attach(&endpoint, message, &checked, &holder_key).await?;
                 return Ok(true);
             }
             finish_operation::<CheckedExecutionResourceV1>(

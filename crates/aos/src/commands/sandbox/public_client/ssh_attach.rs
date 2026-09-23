@@ -15,11 +15,28 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox::cli_model::CheckedExecutionControlResultV1;
 use aos_sandbox::controller_query::CheckedExecutionResourceV1;
+use zeroize::Zeroizing;
 
 use crate::cli::sandbox::SandboxArgs;
 use crate::commands::sandbox::SandboxAttachExitCode;
 
 use super::AuthorizedEndpoint;
+
+/// Loads the execution-specific holder key before admitting an attach mutation.
+///
+/// # Errors
+///
+/// Rejects missing credentials, an invalid execution ID, or unsafe key custody.
+pub(super) fn load_holder_key(
+    args: &SandboxArgs,
+    execution_id: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    let credential_path = args
+        .public_credentials
+        .as_deref()
+        .context("--public-api requires --public-credentials")?;
+    super::super::public_transport::load_execution_private_key(credential_path, execution_id)
+}
 
 /// Opens the checked, separately authorized execution stream.
 ///
@@ -28,10 +45,10 @@ use super::AuthorizedEndpoint;
 /// Rejects missing or expired access, contradictory execution metadata, unsafe
 /// credentials, OpenSSH transport failure, or a nonzero remote exit status.
 pub(super) async fn attach(
-    args: &SandboxArgs,
     endpoint: &AuthorizedEndpoint,
     request: &ExecutionControlRequest,
     result: &CheckedExecutionControlResultV1,
+    private_key: &Zeroizing<Vec<u8>>,
 ) -> Result<()> {
     let access = result
         .access_endpoint()
@@ -68,11 +85,6 @@ pub(super) async fn attach(
         bail!("detached-capture execution has no interactive attachment");
     }
 
-    let credential_path = args
-        .public_credentials
-        .as_deref()
-        .context("--public-api requires --public-credentials")?;
-    let private_key = super::super::public_transport::load_execution_private_key(credential_path)?;
     let custody = tempfile::Builder::new()
         .prefix("aos-execution-")
         .tempdir_in("/tmp")
@@ -82,7 +94,7 @@ pub(super) async fn attach(
     let known_hosts_path = custody.path().join("known_hosts");
     let host_alias = format!("aos-execution-{}", hex::encode(&access.execution_id));
 
-    write_private_file(&key_path, &private_key)?;
+    write_private_file(&key_path, private_key)?;
     write_private_file(
         &certificate_path,
         canonical_public_line(&access.client_certificate, true)?.as_bytes(),

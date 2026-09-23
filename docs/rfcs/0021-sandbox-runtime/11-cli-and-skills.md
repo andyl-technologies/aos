@@ -102,6 +102,9 @@ uses the authorized OpenSSH route. The in-sandbox agent is an internal control
 participant, not a client-selectable stream transport.
 `attach-exec` supplies `--client-public-key` and `--proof-of-possession` as
 hex-encoded evidence for the holder key; no private key enters the public API.
+The holder's private key is read from the protected credential file named
+`sandbox-execution-<32 lowercase hex execution ID>-key`, so a separate ephemeral
+key can be retained for each execution.
 
 ## Tree inspection
 

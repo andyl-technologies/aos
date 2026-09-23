@@ -6,11 +6,12 @@
 //! sandbox-server-ca
 //! sandbox-client-cert
 //! sandbox-client-key
-//! sandbox-execution-key
 //! ```
 //!
 //! Authorized operation reads additionally load `sandbox-capability-id`, whose
 //! canonical UUID is a protected lookup key rather than bearer authority.
+//! Execution attachment additionally loads one private file named
+//! `sandbox-execution-<32 lowercase hex execution ID>-key`.
 //!
 //! Ancestors must not be group- or world-writable, the ownership chain cannot
 //! return to root after entering user custody, and the private key is accepted
@@ -37,7 +38,6 @@ const PUBLIC_SOCKET: &str = "/run/aos/sandboxd/public.sock";
 const SERVER_CA: &str = "sandbox-server-ca";
 const CLIENT_CERTIFICATE: &str = "sandbox-client-cert";
 const CLIENT_KEY: &str = "sandbox-client-key";
-const EXECUTION_KEY: &str = "sandbox-execution-key";
 const CAPABILITY_ID: &str = "sandbox-capability-id";
 const MAXIMUM_CREDENTIAL_BYTES: u64 = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -174,19 +174,24 @@ pub(super) fn load_capability_id(path: &Path) -> Result<CapabilityId> {
     parse_capability_id(&capability)
 }
 
-/// Loads the holder's OpenSSH key from the same protected credential custody.
+/// Loads the holder's execution-specific OpenSSH key from protected custody.
 ///
 /// # Errors
 ///
-/// Rejects an absent key or unsafe directory or file custody.
-pub(super) fn load_execution_private_key(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+/// Rejects an invalid execution identity, absent key, or unsafe directory or
+/// file custody.
+pub(super) fn load_execution_private_key(
+    path: &Path,
+    execution_id: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    if execution_id.len() != 16 || execution_id.iter().all(|byte| *byte == 0) {
+        bail!("sandbox execution private key requires an exact execution identity");
+    }
+    let name = format!("sandbox-execution-{}-key", hex::encode(execution_id));
     let uid = rustix::process::geteuid().as_raw();
     let directory = open_protected_directory(path, uid)?;
     Ok(Zeroizing::new(read_credential(
-        &directory,
-        uid,
-        EXECUTION_KEY,
-        true,
+        &directory, uid, &name, true,
     )?))
 }
 
