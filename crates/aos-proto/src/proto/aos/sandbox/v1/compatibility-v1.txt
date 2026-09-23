@@ -48,6 +48,7 @@ message ExecutionControlRequest {
 MutationContext mutation = 6;
 message ExecutionControlResult {
 Operation operation = 4;
+OpenSshAccessEndpoint access = 5;
 rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
 service FilesystemViewService {
 rpc CreateView(CreateViewRequest) returns (CreateViewResponse);

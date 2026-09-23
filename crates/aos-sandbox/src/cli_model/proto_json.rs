@@ -3,10 +3,10 @@
 use std::fmt;
 
 use aos_proto::aos::sandbox::v1::{
-    CacheStatus, Event, ExecutionControlResult, ListAncestorsResponse, ListChildrenResponse,
-    ListDescendantsRequest, ListDescendantsResponse, ListExecutionsResponse, ListSandboxesResponse,
-    ListSnapshotsResponse, ListViewsResponse, OperatorRecoveryResult, PageInfo, PolicyPlan,
-    PublicFeatureRegistry, SandboxTreePreorderState,
+    CacheStatus, Event, ExecutionControlAction, ExecutionControlResult, ListAncestorsResponse,
+    ListChildrenResponse, ListDescendantsRequest, ListDescendantsResponse, ListExecutionsResponse,
+    ListSandboxesResponse, ListSnapshotsResponse, ListViewsResponse, OpenSshAccessEndpoint,
+    OperatorRecoveryResult, PageInfo, PolicyPlan, PublicFeatureRegistry, SandboxTreePreorderState,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -17,6 +17,7 @@ use crate::controller_query::model::MAXIMUM_OPAQUE_RESPONSE_BYTES;
 use crate::controller_query::portable_resource::{
     CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
     CheckedFilesystemViewResourceV1, CheckedNodeCapabilitiesV1, CheckedSnapshotResourceV1,
+    validate_execution_access_endpoint_v1,
 };
 use crate::controller_query::resource::{
     CheckedOperationResourceV1, CheckedSandboxResourceV1, InvalidPublicResource,
@@ -120,8 +121,21 @@ established_resource!(CheckedCapabilityResourceV1, Capability);
 established_resource!(CheckedNodeCapabilitiesV1, NodeCapabilities);
 
 /// Stores one semantically checked execution-control result.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CheckedExecutionControlResultV1(ExecutionControlResult);
+#[derive(Clone, PartialEq)]
+pub struct CheckedExecutionControlResultV1 {
+    wire: ExecutionControlResult,
+    public_wire: ExecutionControlResult,
+}
+
+impl fmt::Debug for CheckedExecutionControlResultV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CheckedExecutionControlResultV1")
+            .field("action", &self.public_wire.action)
+            .field("holder_credentials", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
 
 impl TryFrom<ExecutionControlResult> for CheckedExecutionControlResultV1 {
     type Error = InvalidProtoJson;
@@ -133,6 +147,16 @@ impl TryFrom<ExecutionControlResult> for CheckedExecutionControlResultV1 {
             .ok_or(InvalidProtoJson::InvalidResource)?;
         CheckedOperationResourceV1::try_from(operation.clone())
             .map_err(|_| InvalidProtoJson::InvalidResource)?;
+        if let Some(access) = value.access.as_option() {
+            if value.action.as_known()
+                != Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
+                || !value.accepted
+            {
+                return Err(InvalidProtoJson::InvalidResource);
+            }
+            validate_execution_access_endpoint_v1(access, &value.execution_id, None, None)
+                .map_err(|_| InvalidProtoJson::InvalidResource)?;
+        }
         if value.execution_id.len() != 16
             || value.execution_id.iter().all(|byte| *byte == 0)
             || !(1..=3).contains(&value.action.to_i32())
@@ -140,7 +164,12 @@ impl TryFrom<ExecutionControlResult> for CheckedExecutionControlResultV1 {
         {
             Err(InvalidProtoJson::InvalidResource)
         } else {
-            Ok(Self(value))
+            let mut public_wire = value.clone();
+            public_wire.access = Default::default();
+            Ok(Self {
+                wire: value,
+                public_wire,
+            })
         }
     }
 }
@@ -153,15 +182,21 @@ impl EstablishedProtoJson for CheckedExecutionControlResultV1 {
     }
 
     fn render_established(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self.0.operation.as_option())
+        serde_json::to_string(&self.public_wire.operation.as_option())
     }
 }
 
 impl CheckedExecutionControlResultV1 {
-    /// Returns the checked established execution-control result.
+    /// Returns the checked execution-control result with holder credentials removed.
     #[must_use]
     pub const fn as_proto(&self) -> &ExecutionControlResult {
-        &self.0
+        &self.public_wire
+    }
+
+    /// Borrows an explicitly checked holder-bound attach endpoint.
+    #[must_use]
+    pub fn access_endpoint(&self) -> Option<&OpenSshAccessEndpoint> {
+        self.wire.access.as_option()
     }
 }
 

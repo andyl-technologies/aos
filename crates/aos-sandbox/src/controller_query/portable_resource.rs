@@ -5,8 +5,8 @@
 
 use aos_proto::aos::sandbox::v1::{
     Attachment, AttachmentPhase, Capability, Execution, ExecutionIoMode, ExecutionPhase,
-    ExecutionSignal, ExecutionTerminationKind, FilesystemView, NodeCapabilities, Snapshot,
-    SnapshotAvailability, SnapshotPhase, ViewMutation, ViewPhase,
+    ExecutionSignal, ExecutionTerminationKind, FilesystemView, NodeCapabilities,
+    OpenSshAccessEndpoint, Snapshot, SnapshotAvailability, SnapshotPhase, ViewMutation, ViewPhase,
 };
 use buffa::Message as _;
 
@@ -107,32 +107,12 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
             .filter(|phase| *phase != ExecutionPhase::EXECUTION_PHASE_UNSPECIFIED)
             .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
         if let Some(access) = value.access.as_option() {
-            if access.port == 0
-                || access.port > u32::from(u16::MAX)
-                || !safe_text(&access.host, MAXIMUM_ENDPOINT_TEXT_BYTES)
-                || !safe_text(&access.user, MAXIMUM_ENDPOINT_TEXT_BYTES)
-                || access.host_public_key.is_empty()
-                || access.client_certificate.is_empty()
-            {
-                return Err(InvalidPublicResource::InvalidScalar);
-            }
-            checked_timestamp(
-                access
-                    .expires_at
-                    .as_option()
-                    .ok_or(InvalidPublicResource::Unspecified)?,
+            validate_execution_access_endpoint_v1(
+                access,
+                &value.execution_id,
+                Some(&value.sandbox_incarnation_id),
+                Some(&value.audit_id),
             )?;
-            if exact_nonzero_id(&access.execution_id)? != exact_nonzero_id(&value.execution_id)?
-                || exact_nonzero_id(&access.sandbox_incarnation_id)?
-                    != exact_nonzero_id(&value.sandbox_incarnation_id)?
-            {
-                return Err(InvalidPublicResource::InvalidPlacement);
-            }
-            exact_nonzero_id(&access.principal_id)?;
-            if exact_nonzero_id(&access.audit_id)? != exact_nonzero_id(&value.audit_id)? {
-                return Err(InvalidPublicResource::InvalidPlacement);
-            }
-            validate_features(&access.stream_features)?;
         }
         let is_terminal = matches!(
             phase,
@@ -222,6 +202,52 @@ impl CheckedExecutionResourceV1 {
     pub fn into_proto(self) -> Execution {
         self.public_wire
     }
+}
+
+/// Checks a holder-bound OpenSSH route without exposing it in a read projection.
+///
+/// # Errors
+///
+/// Rejects malformed routing, credential, identity, expiry, or feature fields.
+pub(crate) fn validate_execution_access_endpoint_v1(
+    access: &OpenSshAccessEndpoint,
+    expected_execution: &[u8],
+    expected_incarnation: Option<&[u8]>,
+    expected_audit: Option<&[u8]>,
+) -> Result<(), InvalidPublicResource> {
+    if access.port == 0
+        || access.port > u32::from(u16::MAX)
+        || !safe_text(&access.host, MAXIMUM_ENDPOINT_TEXT_BYTES)
+        || !safe_text(&access.user, MAXIMUM_ENDPOINT_TEXT_BYTES)
+        || access.host_public_key.is_empty()
+        || access.client_certificate.is_empty()
+    {
+        return Err(InvalidPublicResource::InvalidScalar);
+    }
+    checked_timestamp(
+        access
+            .expires_at
+            .as_option()
+            .ok_or(InvalidPublicResource::Unspecified)?,
+    )?;
+    let execution = exact_nonzero_id(&access.execution_id)?;
+    let incarnation = exact_nonzero_id(&access.sandbox_incarnation_id)?;
+    let audit = exact_nonzero_id(&access.audit_id)?;
+    exact_nonzero_id(&access.principal_id)?;
+    if execution != exact_nonzero_id(expected_execution)?
+        || expected_incarnation
+            .map(exact_nonzero_id)
+            .transpose()?
+            .is_some_and(|expected| incarnation != expected)
+        || expected_audit
+            .map(exact_nonzero_id)
+            .transpose()?
+            .is_some_and(|expected| audit != expected)
+    {
+        return Err(InvalidPublicResource::InvalidPlacement);
+    }
+    validate_features(&access.stream_features)?;
+    Ok(())
 }
 
 /// Stores one deeply checked established filesystem-view resource.

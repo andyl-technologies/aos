@@ -964,6 +964,8 @@ message ExecutionControlResult {
   ExecutionControlAction action = 2;
   bool accepted = 3;
   Operation operation = 4;
+  // Present only after an authorized attach route is issued.
+  OpenSshAccessEndpoint access = 5;
 }
 
 service ExecutionService {

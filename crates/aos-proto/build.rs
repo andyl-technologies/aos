@@ -262,7 +262,10 @@ fn verify_sandbox_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     verify_scoped_declarations(
         &source_declarations,
         "message ExecutionControlResult {",
-        &["Operation operation = 4;"],
+        &[
+            "Operation operation = 4;",
+            "OpenSshAccessEndpoint access = 5;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,

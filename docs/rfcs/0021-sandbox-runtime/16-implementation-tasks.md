@@ -333,6 +333,8 @@ the outstanding work concrete:
   recovery, fixed-owner provisioning and guest-agent activation, then a
   completing controller effect and public projection. Attach requires its
   separately authorized OpenSSH data route; it is not an agent control effect.
+  `ExecutionControlResult` can carry a checked holder-bound attach endpoint,
+  but the service still returns admission alone and does not issue that route.
 - Grouped Storage snapshots are not production-dispatchable yet. Method 25 is
   deliberately absent from the authenticated broker profile even though the
   Storage owner, session adapter, lifecycle plan codec, and predecessor/successor
@@ -386,6 +388,8 @@ the outstanding work concrete:
   the exact canonical capability ID from the protected credential directory.
   With `--public-api`, the packaged CLI dispatches read, mutation, and watch
   routes through generated clients; without it, those routes fail closed.
+  `attach-exec` currently admits a control RPC but does not launch the OpenSSH
+  data route or manage the holder's private key, so `SBX-CLI-01` remains open.
   Qualify the packaged CLI against the deployed endpoint for each route,
   including operation waits, structured output, watch, and the separately
   authorized execution data plane.
