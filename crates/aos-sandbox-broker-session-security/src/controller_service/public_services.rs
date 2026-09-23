@@ -785,12 +785,27 @@ impl ExecutionService for CapabilityService {
                     "execution attachment holder proof is invalid",
                 )
             })?;
-            // Admission cannot claim success before the holder proof is verified
-            // and a short-lived OpenSSH route is actually issued.
-            return Err(ConnectError::new(
-                ErrorCode::Unavailable,
-                "execution attachment route is not available",
-            ));
+            let envelope = PublicMutationRequestV1::new(
+                PublicApiAuditMethodV1::ControlExecution,
+                request.bytes(),
+            )
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::InvalidArgument,
+                    "public attachment request envelope is invalid",
+                )
+            })?;
+            let admitted = self
+                .admit_public_attach(&context, envelope.encode())
+                .await?;
+            return Response::ok(ExecutionControlResult {
+                execution_id,
+                action,
+                accepted: true,
+                operation: Some(admitted.operation).into(),
+                access: Some(admitted.access).into(),
+                ..Default::default()
+            });
         }
         let admitted = self
             .admit_public_command(

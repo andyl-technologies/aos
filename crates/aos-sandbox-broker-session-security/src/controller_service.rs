@@ -42,9 +42,9 @@ use aos_proto::aos::sandbox::v1::{
     DiscoveryService, DiscoveryServiceExt, Event, ExecutionServiceExt, FilesystemViewServiceExt,
     GetNodeCapabilitiesRequest, GetNodeCapabilitiesRequestView, GetNodeCapabilitiesResponse,
     GetOperationRequest, GetOperationResponse, GetPublicFeatureRegistryRequest,
-    GetPublicFeatureRegistryResponse, NodeCapabilities, Operation, OperationPhase,
-    OperationService, OperationServiceExt, OperatorRecoveryAction, OperatorServiceExt, PolicyPlan,
-    SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
+    GetPublicFeatureRegistryResponse, NodeCapabilities, OpenSshAccessEndpoint, Operation,
+    OperationPhase, OperationService, OperationServiceExt, OperatorRecoveryAction,
+    OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
     CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
@@ -65,6 +65,7 @@ use rustix::net::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
 use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
@@ -117,6 +118,7 @@ mod cache_pin;
 mod cache_unpin;
 pub(crate) mod execution;
 mod public_api;
+mod public_attach;
 mod public_hierarchy;
 mod public_services;
 mod public_watch;
@@ -213,11 +215,23 @@ enum ControllerCommand {
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<AdmittedPublicMutationV1>>,
     },
+    AdmitPublicAttach {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        capability_id: CapabilityId,
+        canonical_request: Vec<u8>,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<AdmittedPublicAttachV1>>,
+    },
 }
 
 struct AdmittedPublicMutationV1 {
     operation: Operation,
     projections: Vec<PublicProjectionRecordV1>,
+}
+
+struct AdmittedPublicAttachV1 {
+    operation: Operation,
+    access: OpenSshAccessEndpoint,
 }
 
 type ControllerCommandResponse<T> = Result<T, ControllerCommandFailure>;
@@ -287,6 +301,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     }
     let ownership = ControllerOwnershipConfigurationV1::from_process_credentials_optional()
         .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)?;
+    let attach_credentials = ControllerAttachCredentialsV1::from_process_credentials_optional()
+        .map_err(|_| ControllerRuntimeError::InvalidAttachCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -326,6 +342,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 controller,
                 node_id,
                 ownership,
+                attach_credentials,
                 worker_capabilities,
                 sessions,
                 commands_rx,
@@ -472,6 +489,7 @@ fn controller_worker(
     mut controller: ProductionController,
     node_id: [u8; 16],
     ownership: Option<ControllerOwnershipConfigurationV1>,
+    attach_credentials: Option<ControllerAttachCredentialsV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
     commands: mpsc::Receiver<ControllerCommand>,
@@ -520,9 +538,12 @@ fn controller_worker(
         let wait = next_cycle.saturating_duration_since(Instant::now());
         match commands.recv_timeout(wait) {
             Ok(command) => {
-                if let Err(message) =
-                    handle_controller_command(&mut controller, ownership.as_ref(), command)
-                {
+                if let Err(message) = handle_controller_command(
+                    &mut controller,
+                    ownership.as_ref(),
+                    attach_credentials.as_ref(),
+                    command,
+                ) {
                     let _ = events.send(WorkerEvent::Fatal(message));
                     return;
                 }
@@ -541,6 +562,7 @@ fn controller_worker(
 fn handle_controller_command(
     controller: &mut ProductionController,
     ownership: Option<&ControllerOwnershipConfigurationV1>,
+    attach_credentials: Option<&ControllerAttachCredentialsV1>,
     command: ControllerCommand,
 ) -> Result<(), String> {
     match command {
@@ -817,6 +839,29 @@ fn handle_controller_command(
                 operation,
                 projections,
             }));
+            Ok(())
+        }
+        ControllerCommand::AdmitPublicAttach {
+            peer,
+            capability_id,
+            canonical_request,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            let mut host = public_attach::UnavailableHostAttachRouteV1;
+            let result = public_attach::admit_public_attach(
+                controller,
+                attach_credentials,
+                &mut host,
+                &peer,
+                capability_id,
+                &canonical_request,
+            );
+            let _ = reply.send(result);
             Ok(())
         }
     }
@@ -4578,6 +4623,72 @@ impl CapabilityService {
         }
     }
 
+    async fn admit_public_attach(
+        &self,
+        context: &RequestContext,
+        canonical_request: Vec<u8>,
+    ) -> Result<AdmittedPublicAttachV1, ConnectError> {
+        if !matches!(self.endpoint, ControllerEndpoint::RegisteredPublic) {
+            return Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public attachment is unavailable on the diagnostic endpoint",
+            ));
+        }
+        let peer = context
+            .extensions()
+            .get::<aos_sandbox::public_api_session::PublicApiPeer>()
+            .ok_or_else(|| {
+                ConnectError::new(
+                    ErrorCode::Unauthenticated,
+                    "public attachment requires registered TLS peer evidence",
+                )
+            })?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::AdmitPublicAttach {
+                peer: peer.clone(),
+                capability_id: public_capability_id(context)?,
+                canonical_request,
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::DeadlineExceeded,
+                    "controller attachment admission timed out",
+                )
+            })?
+            .map_err(|_| {
+                ConnectError::new(
+                    ErrorCode::Unavailable,
+                    "controller worker ended before replying",
+                )
+            })?;
+
+        match result {
+            Ok(admitted) => Ok(admitted),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "controller attachment admission expired",
+            )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "public attachment request is invalid",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "public attachment was rejected",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "authenticated Host attachment route is unavailable",
+            )),
+        }
+    }
+
     fn node_capabilities(
         &self,
         request: &GetNodeCapabilitiesRequestView<'_>,
@@ -4894,6 +5005,9 @@ pub enum ControllerRuntimeError {
     /// The optional ownership credential set is partial, unsafe, or inconsistent.
     #[error("protected controller ownership credentials are invalid")]
     InvalidOwnershipCredential,
+    /// The optional dedicated OpenSSH attach credential set is invalid.
+    #[error("protected controller OpenSSH attach credentials are invalid")]
+    InvalidAttachCredential,
     /// Controller journal identity or assignment validation failed.
     #[error(transparent)]
     ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),
@@ -5105,7 +5219,8 @@ mod tests {
                 }
                 ControllerCommand::PlanPublicPolicy { .. }
                 | ControllerCommand::AdmitPublicOperatorRecovery { .. }
-                | ControllerCommand::AdmitPublicMutation { .. } => {
+                | ControllerCommand::AdmitPublicMutation { .. }
+                | ControllerCommand::AdmitPublicAttach { .. } => {
                     panic!("root diagnostics must not enter public mutation services")
                 }
             };

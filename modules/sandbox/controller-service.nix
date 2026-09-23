@@ -67,6 +67,8 @@
   attachGrantPublicKeyCredential = brokers.hostBroker.credentials.opensshAttachGrantPublicKey or null;
   opensshAttachCredentials = lib.optionals (cfg.credentials.opensshAttachGrantSigningKey != null) (
     ["openssh-attach-grant-signing-key:/run/credentials/@system/${cfg.credentials.opensshAttachGrantSigningKey}"]
+    ++ lib.optional (cfg.credentials.opensshAttachCaSigningKey != null)
+    "openssh-attach-ca-signing-key:/run/credentials/@system/${cfg.credentials.opensshAttachCaSigningKey}"
     ++ lib.optional (attachTrustCredential != null)
     "openssh-attach-trust.json:/run/credentials/@system/${attachTrustCredential}"
     ++ lib.optional (attachGrantPublicKeyCredential != null)
@@ -120,6 +122,11 @@ in {
           default = null;
           description = "Optional external 32-byte seed for the dedicated signed public OpenSSH attach pending grant.";
         };
+        opensshAttachCaSigningKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional external Ed25519 OpenSSH user CA private key for authorized attachment certificate issuance.";
+        };
         cacheReplayBundle = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
@@ -162,9 +169,11 @@ in {
         {
           assertion =
             (cfg.credentials.opensshAttachGrantSigningKey == null
+              && cfg.credentials.opensshAttachCaSigningKey == null
               && attachTrustCredential == null
               && attachGrantPublicKeyCredential == null)
             || (cfg.credentials.opensshAttachGrantSigningKey != null
+              && cfg.credentials.opensshAttachCaSigningKey != null
               && attachTrustCredential != null
               && attachGrantPublicKeyCredential != null);
           message = "aos.sandbox.controllerService OpenSSH attach grants require the dedicated signing key and both Host attach trust credentials together";

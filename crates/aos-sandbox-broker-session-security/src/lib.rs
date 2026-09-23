@@ -50,6 +50,7 @@ mod cache_index_buffer;
 mod cache_public_pin;
 mod cache_source_membership;
 mod controller_authority_effect;
+mod controller_attach_credentials;
 mod controller_ownership;
 mod controller_plan_signer;
 mod controller_publication;
