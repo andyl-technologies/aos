@@ -11,8 +11,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -162,9 +178,14 @@ in
               [ -f "$out/bin/$script" ] || continue
               sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/$script"
             done
+            # The image finalizer executes an exact regular file, not a symlink.
+            rm "$out/bin/mcopy"
+            cp "$out/bin/mtools" "$out/bin/mcopy"
           ''
           else ''
             make install
+            rm "$out/bin/mcopy"
+            cp "$out/bin/mtools" "$out/bin/mcopy"
           '';
       }
     ];

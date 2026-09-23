@@ -250,8 +250,10 @@ fn validate_tool_file(tool: &AssemblyToolV1) -> Result<()> {
     let metadata = path
         .symlink_metadata()
         .with_context(|| format!("inspecting assembly tool {}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.nlink() != 1 || metadata.mode() & 0o022 != 0 {
-        bail!("assembly tool must be a single-link regular file without group/world writes");
+    // Store outputs may contain hard-linked executable aliases. The owner NAR
+    // hash is checked separately; writable permissions remain forbidden.
+    if !metadata.file_type().is_file() || metadata.mode() & 0o022 != 0 {
+        bail!("assembly tool must be a regular file without group/world writes");
     }
     Ok(())
 }
@@ -284,7 +286,7 @@ fn same_snapshot(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use aos_release::artifact::BundlePath;
     use aos_release::platform::Platform;
@@ -340,6 +342,37 @@ mod tests {
             digest_regular_file_beneath(&tree, Path::new("contract.json")).is_err(),
             "a FIFO must be rejected as a special file"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tool_accepts_read_only_hard_links_but_rejects_writable_files() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let executable = temporary.path().join("objcopy");
+        fs::write(&executable, b"tool")?;
+        fs::hard_link(&executable, temporary.path().join("objcopy-alias"))?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+
+        let tool = AssemblyToolV1 {
+            id: "objcopy".to_owned(),
+            executable: executable.to_string_lossy().into_owned(),
+            owner_nar_hash: "sha256:example".to_owned(),
+            environment: Default::default(),
+        };
+        assert_eq!(fs::metadata(&executable)?.nlink(), 2);
+        assert!(validate_tool_file(&tool).is_ok());
+
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o777))?;
+        assert!(validate_tool_file(&tool).is_err());
+
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+        let alias = temporary.path().join("objcopy-symlink");
+        symlink(&executable, &alias)?;
+        let symlinked_tool = AssemblyToolV1 {
+            executable: alias.to_string_lossy().into_owned(),
+            ..tool
+        };
+        assert!(validate_tool_file(&symlinked_tool).is_err());
         Ok(())
     }
 
