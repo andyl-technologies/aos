@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+use sha2::{Digest as _, Sha256};
 
 use crate::broker::FreshStorageEffectAuthority;
 use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
@@ -66,6 +67,22 @@ pub(crate) struct ZfsProcessOutput {
     stderr: Vec<u8>,
     success: bool,
     timed_out: bool,
+}
+
+/// Retains the exact observed group digest and each member's physical GUID.
+pub(crate) struct ObservedAtomicSnapshotGroupV1 {
+    digest: ObjectDigest,
+    member_guids: Vec<u64>,
+}
+
+impl ObservedAtomicSnapshotGroupV1 {
+    pub(crate) const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+
+    pub(crate) fn member_guids(&self) -> &[u64] {
+        &self.member_guids
+    }
 }
 
 pub(crate) struct ZfsPostconditionObservation {
@@ -424,25 +441,72 @@ impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
         &mut self,
         program: &crate::DormantAtomicDatasetSnapshotV1,
         mutate: bool,
-    ) -> Result<ObjectDigest, ZfsHelperError> {
+    ) -> Result<ObservedAtomicSnapshotGroupV1, ZfsHelperError> {
         let output = self
             .backend
             .atomic_snapshot_once(&self.contract, program, mutate)?;
+        let expected_length = 42_usize
+            .checked_add(program.member_count().saturating_mul(8))
+            .ok_or(ZfsHelperError::PostconditionMismatch)?;
         if output.timed_out
             || !output.success
-            || output.stdout.len() != 32
+            || output.stdout.len() != expected_length
             || !output.stderr.is_empty()
+            || output.stdout.get(..8) != Some(b"AOSASO02".as_slice())
         {
             return Err(ZfsHelperError::PostconditionMismatch);
         }
-        let digest: [u8; 32] = output
-            .stdout
+        let digest: [u8; 32] = output.stdout[8..40]
             .try_into()
             .map_err(|_| ZfsHelperError::PostconditionMismatch)?;
-        if digest == [0; 32] {
+        let count = u16::from_be_bytes(
+            output.stdout[40..42]
+                .try_into()
+                .map_err(|_| ZfsHelperError::PostconditionMismatch)?,
+        );
+        if digest == [0; 32] || usize::from(count) != program.member_count() {
             return Err(ZfsHelperError::PostconditionMismatch);
         }
-        Ok(ObjectDigest::from_bytes(digest))
+        let member_guids = output.stdout[42..]
+            .chunks_exact(8)
+            .map(|bytes| {
+                let guid = u64::from_be_bytes(
+                    bytes
+                        .try_into()
+                        .map_err(|_| ZfsHelperError::PostconditionMismatch)?,
+                );
+                (guid != 0)
+                    .then_some(guid)
+                    .ok_or(ZfsHelperError::PostconditionMismatch)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut observed = program
+            .members()
+            .iter()
+            .zip(&member_guids)
+            .map(|(member, guid)| (member.destination_name(), *guid))
+            .collect::<Vec<_>>();
+        observed.sort_unstable();
+        if !observed.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        let mut expected = Sha256::new()
+            .chain_update(b"aos.sandbox.storage.atomic-snapshot-observation.v1\0")
+            .chain_update(program.commitment().as_bytes())
+            .chain_update((observed.len() as u32).to_be_bytes());
+        for (name, guid) in observed {
+            expected = expected
+                .chain_update(name.as_bytes())
+                .chain_update([0])
+                .chain_update(guid.to_be_bytes());
+        }
+        if expected.finalize().as_slice() != digest {
+            return Err(ZfsHelperError::PostconditionMismatch);
+        }
+        Ok(ObservedAtomicSnapshotGroupV1 {
+            digest: ObjectDigest::from_bytes(digest),
+            member_guids,
+        })
     }
 
     /// Observes exact preconditions for the current persisted Prepared entry.

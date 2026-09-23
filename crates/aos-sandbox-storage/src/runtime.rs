@@ -332,7 +332,7 @@ impl StorageBrokerRuntime {
             self.finish_live_transaction_mutation(marked, StorageRuntimeError::Admission)?;
         self.latch_recovery_required();
         let observation = match self.helper.atomic_snapshot_once(&program, true) {
-            Ok(observation) => observation,
+            Ok(evidence) => evidence.digest(),
             Err(_) => {
                 return Ok(
                     AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
@@ -389,7 +389,7 @@ impl StorageBrokerRuntime {
             }
             crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
                 let observation = match self.helper.atomic_snapshot_once(&program, false) {
-                    Ok(observation) => observation,
+                    Ok(evidence) => evidence.digest(),
                     Err(_) => {
                         return Ok(
                             AtomicDatasetSnapshotMutationOutcomeV1::ObservationRequired {
@@ -1956,7 +1956,7 @@ pub(crate) fn reconcile_transaction_recovery<B: crate::helper::ZfsProcessBackend
             crate::state::AtomicDatasetSnapshotPhaseV1::Ambiguous => {
                 let program = record.program();
                 let observation = match helper.atomic_snapshot_once(program, false) {
-                    Ok(observation) => observation,
+                    Ok(evidence) => evidence.digest(),
                     Err(_) => {
                         pending += 1;
                         continue;

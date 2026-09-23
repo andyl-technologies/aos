@@ -24,6 +24,7 @@
 //! keeps a fast-success worker alive while the broker verifies that READY and
 //! RESPONSE came from the same still-live service execution.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read as _;
@@ -648,6 +649,7 @@ fn observe_atomic_snapshot_group(
         .chain_update(b"aos.sandbox.storage.atomic-snapshot-observation.v1\0")
         .chain_update(request.program.as_bytes())
         .chain_update((observed.len() as u32).to_be_bytes());
+    let mut guids = BTreeMap::new();
     for (line, expected_name) in observed.into_iter().zip(expected) {
         let (name, guid) = line.split_once('\t').ok_or(ZfsWorkerError::Protocol(
             "atomic snapshot observation row is invalid",
@@ -666,9 +668,26 @@ fn observe_atomic_snapshot_group(
             .chain_update(name.as_bytes())
             .chain_update([0])
             .chain_update(guid.to_be_bytes());
+        if guids.insert(name, guid).is_some() {
+            return Err(ZfsWorkerError::Protocol("atomic snapshot names repeat"));
+        }
+    }
+    let count = u16::try_from(request.members.len())
+        .map_err(|_| ZfsWorkerError::Protocol("atomic snapshot group is too large"))?;
+    let mut evidence = Vec::with_capacity(42 + request.members.len() * 8);
+    evidence.extend_from_slice(b"AOSASO02");
+    evidence.extend_from_slice(&digest.finalize());
+    evidence.extend_from_slice(&count.to_be_bytes());
+    for member in &request.members {
+        let guid = guids
+            .get(member.destination_name.as_str())
+            .ok_or(ZfsWorkerError::Protocol(
+                "atomic snapshot member observation is missing",
+            ))?;
+        evidence.extend_from_slice(&guid.to_be_bytes());
     }
     Ok(WorkerProcessOutput {
-        stdout: digest.finalize().to_vec(),
+        stdout: evidence,
         stderr: Vec::new(),
         success: true,
         timed_out: false,
