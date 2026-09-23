@@ -32,6 +32,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     admit_client_received_authenticated_broker_method_outcome_v1,
     authenticated_semantic_bindings_from_envelope_v1,
 };
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::handoff::{ProtectedBrokerEffectHandoffV1, effect_evidence};
@@ -214,6 +215,17 @@ fn successful_terminal(
     let outcome = decode_canonical_response_v1(packet)
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
     Ok(outcome.message().error.as_option().is_none())
+}
+
+// The source reservation commits the unsigned authority envelope before
+// session custody adds semantic bindings and its signed ClientRecord.
+fn authority_envelope_digest(packet: &[u8]) -> Result<[u8; 32], BrokerSessionSecurityError> {
+    let mut envelope = decode_canonical_request_v1(packet)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        .message()
+        .clone();
+    envelope.semantic_bindings = Default::default();
+    Ok(Sha256::digest(envelope.encode_to_vec()).into())
 }
 
 /// Classifies a broker-side packet before request installation or effect dispatch.
@@ -1275,9 +1287,11 @@ impl ProtectedBrokerSessionJournalV1 {
                 record.phase() == BrokerSessionDurablePhaseV1::Terminal
                     && record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
                     && record.request_id() == request_id
-                    && Sha256::digest(record.request_packet()).as_slice() == request_packet
             })
             .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if authority_envelope_digest(records[index].request_packet())? != request_packet {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
         let predecessor_index = index
             .checked_sub(2)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
@@ -1322,12 +1336,14 @@ impl ProtectedBrokerSessionJournalV1 {
             record.endpoint() == BrokerSessionDurableEndpointV1::Client
                 && record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
                 && record.request_id() == request_id
-                && Sha256::digest(record.request_packet()).as_slice() == request_packet
         });
         let mut matching = matching.peekable();
         let Some((index, group)) = matching.next() else {
             return Ok(ProtectedPriorAtomicStorageHistoryV1::Absent);
         };
+        if authority_envelope_digest(group.request_packet())? != request_packet {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
         let (group_index, group) = if group.phase() == BrokerSessionDurablePhaseV1::RequestPrepared
         {
             let Some((terminal_index, terminal)) = matching.next() else {
