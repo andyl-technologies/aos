@@ -912,7 +912,7 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             .map_err(Box::new)?;
             match outcome {
                 QemuFreshDriveOutcome::Observation(pending) => Ok(pending),
-                QemuFreshDriveOutcome::CheckpointRequested => {
+                QemuFreshDriveOutcome::CheckpointRequested(_) => {
                     Err(Box::new(AttemptWorkerFailure::Terminal(
                         QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
                     )))
