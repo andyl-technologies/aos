@@ -547,9 +547,23 @@ impl CacheResidencyReplayValidatorV1 {
                 {
                     return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
                 }
-                owner
+                let capability = owner
                     .verify_current_record(item.purpose, item.scope, &item.record_key)
                     .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+                // A newly provisioned partition has no state records yet, so
+                // its checkpoint and floor must be checked here as well.
+                CacheRecoveryInventoryV1::from_verified(
+                    &owner,
+                    &capability,
+                    item.partition,
+                    &item.typed_checkpoint,
+                    item.prior_typed_checkpoint.as_deref(),
+                    item.floor,
+                    std::iter::empty(),
+                    limits,
+                    now,
+                )
+                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
                 if partitions.insert(item.partition.digest(), item).is_some() {
                     return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
                 }

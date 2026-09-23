@@ -44,6 +44,8 @@ use super::{
     decode_typed_checkpoint, encode_floor,
 };
 
+mod provisioning;
+
 const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const CACHE_STATE_JOURNAL: &str = "state.journal";
 const CACHE_AUTHORITY_JOURNAL: &str = "authority.journal";
