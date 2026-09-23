@@ -3402,7 +3402,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 .host
                 .as_mut()
                 .ok_or_else(|| EffectFailure::Retryable("Host session is unavailable".to_owned()))?
-                .query_execution(&intent);
+                .query_execution(&intent, None);
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
@@ -3506,7 +3506,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 .host
                 .as_mut()
                 .ok_or_else(|| EffectFailure::Retryable("Host session is unavailable".to_owned()))?
-                .apply_execution(&intent);
+                .apply_execution(&intent, None);
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)

@@ -7,17 +7,17 @@
 //! operation is still pending.
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyHostExecutionRequestV1, BrokerMethod, BrokerRequestEnvelope, HostExecutionActionV1,
-    HostExecutionCompletionStatusV1, HostExecutionPhaseV1,
-    QueryHostExecutionRequestV1, RequestHeader,
+    ApplyHostExecutionRequestV1, BrokerAuthorizationArtifactsV1, BrokerMethod,
+    BrokerRequestEnvelope, HostExecutionActionV1, HostExecutionCompletionStatusV1,
+    HostExecutionPhaseV1, QueryHostExecutionRequestV1, RequestHeader,
 };
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
 use aos_sandbox::{EffectFailure, EffectObservation, EffectReceipt, PublicMutationEffectV1};
-use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
+use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -116,6 +116,7 @@ impl ControllerExecutionIntentV1 {
         &self,
         kind: ExecutionExchangeKindV1,
         coordinates: DormantBrokerRequestCoordinatesV1,
+        authorization: &BrokerAuthorizationArtifactsV1,
     ) -> BrokerRequestEnvelope {
         let header = RequestHeader {
             protocol_major: u32::from(coordinates.protocol_version().major()),
@@ -175,6 +176,7 @@ impl ControllerExecutionIntentV1 {
         BrokerRequestEnvelope {
             method: method.into(),
             body,
+            authorization: Some(authorization.clone()).into(),
             ..Default::default()
         }
     }
@@ -226,8 +228,14 @@ impl ControllerExecutionExchangeV1 {
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
         intent: &ControllerExecutionIntentV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<EffectObservation, EffectFailure> {
-        let outcome = self.exchange(session, intent, ExecutionExchangeKindV1::Query)?;
+        let outcome = self.exchange(
+            session,
+            intent,
+            ExecutionExchangeKindV1::Query,
+            authorization,
+        )?;
         let result = classify_outcome(intent, ExecutionExchangeKindV1::Query, &outcome);
         if matches!(&result, Err(EffectFailure::Permanent(_))) {
             self.failed = true;
@@ -239,8 +247,14 @@ impl ControllerExecutionExchangeV1 {
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
         intent: &ControllerExecutionIntentV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<EffectReceipt, EffectFailure> {
-        let outcome = self.exchange(session, intent, ExecutionExchangeKindV1::Apply)?;
+        let outcome = self.exchange(
+            session,
+            intent,
+            ExecutionExchangeKindV1::Apply,
+            authorization,
+        )?;
         let result = classify_outcome(intent, ExecutionExchangeKindV1::Apply, &outcome);
         if matches!(&result, Err(EffectFailure::Permanent(_))) {
             self.failed = true;
@@ -258,6 +272,7 @@ impl ControllerExecutionExchangeV1 {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         intent: &ControllerExecutionIntentV1,
         kind: ExecutionExchangeKindV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
         if self.failed {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
@@ -272,13 +287,19 @@ impl ControllerExecutionExchangeV1 {
             ));
         }
         if self.pending.is_none() {
+            // TODO: Production must prepare a current signed execution plan and
+            // ownership lease from the protected assignment authority. No
+            // transport custody may begin until those artifacts are available.
+            let authorization = authorization.ok_or_else(|| {
+                EffectFailure::Retryable("Host execution authorization is not installed".to_owned())
+            })?;
             let method = match kind {
                 ExecutionExchangeKindV1::Apply => BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
                 ExecutionExchangeKindV1::Query => BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION,
             };
             let preparation = session
                 .prepare_authenticated_request(method, |coordinates| {
-                    intent.envelope(kind, coordinates)
+                    intent.envelope(kind, coordinates, authorization)
                 })
                 .map_err(|_| {
                     self.failed = true;

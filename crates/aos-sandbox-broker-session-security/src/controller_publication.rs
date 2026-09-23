@@ -5,8 +5,8 @@
 //! move-only readback tokens. This owner never clears previous-process history.
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerDescriptorEntry, BrokerMethod, BrokerRequestEnvelope, PublishHostCatalogRequest,
-    RequestHeader, RuntimeAction,
+    BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry, BrokerMethod, BrokerRequestEnvelope,
+    PublishHostCatalogRequest, RequestHeader, RuntimeAction,
 };
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
@@ -155,6 +155,7 @@ impl ControllerHostPublication {
     pub(crate) fn query_execution(
         &mut self,
         intent: &ControllerExecutionIntentV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<EffectObservation, EffectFailure> {
         if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
             return Err(EffectFailure::Retryable(
@@ -164,13 +165,14 @@ impl ControllerHostPublication {
         let session = self.session.as_mut().ok_or_else(|| {
             EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
         })?;
-        self.execution_effects.query(session, intent)
+        self.execution_effects.query(session, intent, authorization)
     }
 
     /// Applies or resumes one exact source-bound execution effect through Host.
     pub(crate) fn apply_execution(
         &mut self,
         intent: &ControllerExecutionIntentV1,
+        authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<EffectReceipt, EffectFailure> {
         if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
             return Err(EffectFailure::Retryable(
@@ -180,7 +182,7 @@ impl ControllerHostPublication {
         let session = self.session.as_mut().ok_or_else(|| {
             EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
         })?;
-        self.execution_effects.apply(session, intent)
+        self.execution_effects.apply(session, intent, authorization)
     }
 
     /// Applies one exact lifecycle runtime effect with adjacent Host inventory.
