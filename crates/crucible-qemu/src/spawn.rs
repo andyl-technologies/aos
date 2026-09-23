@@ -40,9 +40,10 @@ pub use run_directory::QemuPreparedRunDirectory;
 use run_directory::{PinnedFileIdentity, open_prepared_root_overlay};
 
 const QEMU_VMSTATE_LAUNCH_FD: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
-const QEMU_ROOT_OVERLAY_LAUNCH_FD: RawFd = QEMU_VMSTATE_LAUNCH_FD + 1;
+const QEMU_ROOT_OVERLAY_READ_LAUNCH_FD: RawFd = QEMU_VMSTATE_LAUNCH_FD + 1;
+const QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD: RawFd = QEMU_ROOT_OVERLAY_READ_LAUNCH_FD + 1;
 // Every inherited source is relocated above all fixed exec targets before dup2.
-const CHILD_SOURCE_FD_MIN: RawFd = QEMU_ROOT_OVERLAY_LAUNCH_FD + 1;
+const CHILD_SOURCE_FD_MIN: RawFd = QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
@@ -953,7 +954,12 @@ struct QemuSpawnChildResources {
 
 struct GuardedLaunchImagePins {
     vmstate: OwnedFd,
-    overlay: Option<OwnedFd>,
+    overlay: Option<GuardedOverlayImagePins>,
+}
+
+struct GuardedOverlayImagePins {
+    read: OwnedFd,
+    write: OwnedFd,
 }
 
 impl GuardedLaunchImagePins {
@@ -962,16 +968,19 @@ impl GuardedLaunchImagePins {
             run_directory.vmstate.as_raw_fd(),
             "pin guarded VMState launch descriptor",
         )?;
-        let overlay = run_directory
-            .root_overlay
-            .as_ref()
-            .map(|overlay| {
-                duplicate_cloexec_fd(
-                    overlay.as_raw_fd(),
-                    "pin guarded root-overlay launch descriptor",
-                )
-            })
-            .transpose()?;
+        let overlay = match run_directory.open_direct_root_overlay_for_launch()? {
+            Some((read, write)) => Some(GuardedOverlayImagePins {
+                read: duplicate_cloexec_fd(
+                    read.as_raw_fd(),
+                    "pin read-only guarded root-overlay launch descriptor",
+                )?,
+                write: duplicate_cloexec_fd(
+                    write.as_raw_fd(),
+                    "pin read-write guarded root-overlay launch descriptor",
+                )?,
+            }),
+            None => None,
+        };
         Ok(Self { vmstate, overlay })
     }
 }
@@ -981,7 +990,7 @@ fn guarded_launch_args(args: &[String], has_overlay: bool) -> Result<Vec<String>
     let overlay_name = format!("file={}", crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
     let mut vmstate_count = 0;
     let mut overlay_count = 0;
-    let mut rewritten = Vec::with_capacity(args.len() + 4);
+    let mut rewritten = Vec::with_capacity(args.len() + 6);
 
     rewritten.extend([
         String::from("-add-fd"),
@@ -990,7 +999,13 @@ fn guarded_launch_args(args: &[String], has_overlay: bool) -> Result<Vec<String>
     if has_overlay {
         rewritten.extend([
             String::from("-add-fd"),
-            format!("fd={QEMU_ROOT_OVERLAY_LAUNCH_FD},set=2,opaque=crucible-root-overlay"),
+            format!(
+                "fd={QEMU_ROOT_OVERLAY_READ_LAUNCH_FD},set=2,opaque=crucible-root-overlay-read"
+            ),
+            String::from("-add-fd"),
+            format!(
+                "fd={QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD},set=2,opaque=crucible-root-overlay-write"
+            ),
         ]);
     }
 
@@ -1093,7 +1108,10 @@ fn spawn_process_with_resources(
         vmstate_inode: run_directory.vmstate_identity.inode,
     };
     let vmstate_fd = image_pins.vmstate.as_raw_fd();
-    let overlay_fd = image_pins.overlay.as_ref().map(AsRawFd::as_raw_fd);
+    let overlay_fds = image_pins
+        .overlay
+        .as_ref()
+        .map(|overlay| (overlay.read.as_raw_fd(), overlay.write.as_raw_fd()));
 
     let mut command = Command::new(executable);
     command
@@ -1120,7 +1138,7 @@ fn spawn_process_with_resources(
                 install_child_credentials(credentials)?;
             }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)?;
-            install_guarded_launch_image_pins(vmstate_fd, overlay_fd)
+            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)
         });
     }
 
@@ -1573,14 +1591,19 @@ fn install_prepared_run_directory(directory: PreparedRunDirectoryRaw) -> io::Res
     Ok(())
 }
 
-fn install_guarded_launch_image_pins(vmstate: RawFd, overlay: Option<RawFd>) -> io::Result<()> {
+fn install_guarded_launch_image_pins(
+    vmstate: RawFd,
+    overlay: Option<(RawFd, RawFd)>,
+) -> io::Result<()> {
     dup_to_fixed_child_fd(vmstate, QEMU_VMSTATE_LAUNCH_FD)?;
-    if let Some(overlay) = overlay {
-        dup_to_fixed_child_fd(overlay, QEMU_ROOT_OVERLAY_LAUNCH_FD)?;
+    if let Some((read, write)) = overlay {
+        dup_to_fixed_child_fd(read, QEMU_ROOT_OVERLAY_READ_LAUNCH_FD)?;
+        dup_to_fixed_child_fd(write, QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD)?;
     }
     close_child_source_fd(vmstate)?;
-    if let Some(overlay) = overlay {
-        close_child_source_fd(overlay)?;
+    if let Some((read, write)) = overlay {
+        close_child_source_fd(read)?;
+        close_child_source_fd(write)?;
     }
     Ok(())
 }
