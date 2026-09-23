@@ -578,6 +578,23 @@ fn controller_worker(
     }
 }
 
+fn reply_read_only_controller_result<T>(
+    reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<T>>,
+    result: Result<T, ControllerServiceError>,
+) -> Result<(), String> {
+    match result {
+        Ok(value) => {
+            let _ = reply.send(Ok(value));
+            Ok(())
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+            Err(message)
+        }
+    }
+}
+
 fn handle_controller_command(
     controller: &mut ProductionController,
     ownership: Option<&ControllerOwnershipConfigurationV1>,
@@ -597,17 +614,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            match controller.public_operation(operation_id) {
-                Ok(operation) => {
-                    let _ = reply.send(Ok(operation));
-                    Ok(())
-                }
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
-                    Err(message)
-                }
-            }
+            reply_read_only_controller_result(reply, controller.public_operation(operation_id))
         }
         ControllerCommand::GetAuthorizedOperation {
             peer,
@@ -621,22 +628,15 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            match controller.authorized_public_operation(
-                &peer,
-                capability_id,
-                operation_id,
-                &protobuf_body,
-            ) {
-                Ok(operation) => {
-                    let _ = reply.send(Ok(operation));
-                    Ok(())
-                }
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
-                    Err(message)
-                }
-            }
+            reply_read_only_controller_result(
+                reply,
+                controller.authorized_public_operation(
+                    &peer,
+                    capability_id,
+                    operation_id,
+                    &protobuf_body,
+                ),
+            )
         }
         ControllerCommand::AuthorizePublicRead {
             peer,
@@ -653,25 +653,18 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            match controller.authorize_public_read(
-                &peer,
-                capability_id,
-                method,
-                resource_kind,
-                operation,
-                selector,
-                &protobuf_body,
-            ) {
-                Ok(authorization) => {
-                    let _ = reply.send(Ok(authorization));
-                    Ok(())
-                }
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
-                    Err(message)
-                }
-            }
+            reply_read_only_controller_result(
+                reply,
+                controller.authorize_public_read(
+                    &peer,
+                    capability_id,
+                    method,
+                    resource_kind,
+                    operation,
+                    selector,
+                    &protobuf_body,
+                ),
+            )
         }
         ControllerCommand::ReadPublicProjection {
             peer,
@@ -689,26 +682,19 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            match controller.authorized_public_projection_read(
-                &peer,
-                capability_id,
-                method,
-                resource_kind,
-                operation,
-                selector,
-                &protobuf_body,
-                query,
-            ) {
-                Ok(read) => {
-                    let _ = reply.send(Ok(read));
-                    Ok(())
-                }
-                Err(error) => {
-                    let message = error.to_string();
-                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
-                    Err(message)
-                }
-            }
+            reply_read_only_controller_result(
+                reply,
+                controller.authorized_public_projection_read(
+                    &peer,
+                    capability_id,
+                    method,
+                    resource_kind,
+                    operation,
+                    selector,
+                    &protobuf_body,
+                    query,
+                ),
+            )
         }
         ControllerCommand::PlanPublicPolicy {
             peer,
