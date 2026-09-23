@@ -15,6 +15,7 @@ use aos_proto::aos::sandbox::local::v1::{
     HostCatalogPublicationStatus, PublishHostCatalogResponse, QueryRuntimeEffectRequest,
     RequestHeader,
 };
+use aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1;
 use aos_sandbox::{
     DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
     ValidatedAuthorityEffectReceiptV1,
@@ -5015,6 +5016,77 @@ impl DormantAuthenticatedBrokerSessionV1 {
             ));
         }
 
+        self.reserve_exact_authenticated_request(authenticated, initialize)
+    }
+
+    pub(crate) fn mount_catalog_request_coordinates(
+        &mut self,
+    ) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+        let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_coordinates()?;
+        if protocol_version != ProtocolVersion::new(2, 0)
+            || audience != Audience::AUDIENCE_NODE_CONTROLLER
+            || maximum_response_bytes < 16 * 1024
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "Mount catalog session coordinates",
+            ));
+        }
+        Ok(DormantBrokerRequestCoordinatesV1 {
+            request_id,
+            deadline_boottime_nanoseconds: deadline,
+            maximum_response_bytes,
+            protocol_version,
+            audience,
+        })
+    }
+
+    pub(crate) fn prepare_authenticated_mount_catalog_query(
+        &mut self,
+        query: &PreparedCurrentMountCatalogQueryV1,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let envelope = BrokerRequestEnvelope::decode_from_slice(query.packet())
+            .map_err(|_| BrokerSessionSecurityError::manifest("Mount catalog packet"))?;
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
+        if !envelope.__buffa_unknown_fields.is_empty()
+            || envelope.encode_to_vec() != query.packet()
+            || envelope.method.as_known() != Some(method)
+            || envelope.body != query.body()
+            || envelope.authorization.as_option().is_some()
+            || !envelope.descriptors.is_empty()
+            || !envelope.signed_session_request.is_empty()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "Mount catalog packet binding",
+            ));
+        }
+        let (maximum_deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_limits()?;
+        if query.deadline_boottime_nanoseconds() > maximum_deadline
+            || query.maximum_response_bytes() > maximum_response_bytes
+            || protocol_version != ProtocolVersion::new(2, 0)
+            || audience != Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "Mount catalog session bounds",
+            ));
+        }
+        let (authenticated, initialize) = self.0.prepare_client_request(
+            envelope,
+            method,
+            0,
+            query.request_id(),
+            query.deadline_boottime_nanoseconds(),
+            query.maximum_response_bytes(),
+        )?;
+        if authenticated.canonical_packet() != query.packet()
+            || authenticated.exact_body() != query.body()
+            || authenticated.authorization().is_some()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "authenticated Mount catalog query binding",
+            ));
+        }
         self.reserve_exact_authenticated_request(authenticated, initialize)
     }
 

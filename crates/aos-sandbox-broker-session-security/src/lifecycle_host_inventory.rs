@@ -22,6 +22,7 @@ use aos_sandbox::lifecycle::{
     LifecycleAuthenticatedStorageReadbackV1, LifecycleBootBootstrapEndpointV1,
     LifecycleBootInventoryBootstrapChallengeV1, LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
+use aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1;
 use aos_sandbox::{
     DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
     ValidatedAuthorityEffectReceiptV1,
@@ -284,6 +285,19 @@ domain_inventory_owner!(
 );
 
 impl DormantMountLifecycleInventoryOwnerV1 {
+    /// Supplies fresh session coordinates before the protected Host scope query.
+    pub(crate) fn mount_catalog_request_coordinates(
+        &mut self,
+    ) -> Result<DormantBrokerRequestCoordinatesV1, LifecyclePhase6ErrorV1> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        self.0
+            .session
+            .mount_catalog_request_coordinates()
+            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)
+    }
+
     /// Issues a fresh Mount query under protected terminal currentness.
     pub(crate) fn current_inventory_observation(
         &mut self,
@@ -314,6 +328,19 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         attempt: &DurableCurrentDestinationSlotAttemptV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
         let (outcome, currentness) = self.0.slot_effect_complete(attempt)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
+    /// Sends or drains an exact Host-authorized catalog query on retained Mount.
+    ///
+    /// A retained prior catalog request is drained first; its outcome may not
+    /// match the caller's newly prepared query and must fail the core binding.
+    pub(crate) fn authenticated_mount_catalog_preparation(
+        &mut self,
+        query: &PreparedCurrentMountCatalogQueryV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.catalog_query_complete(query)?;
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
@@ -644,10 +671,47 @@ impl DormantLifecycleInventorySessionV1 {
         ),
         LifecyclePhase6ErrorV1,
     > {
+        self.exact_request_complete(
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT,
+            |session| session.prepare_authenticated_destination_slot_effect(attempt),
+        )
+    }
+
+    fn catalog_query_complete(
+        &mut self,
+        query: &PreparedCurrentMountCatalogQueryV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        self.exact_request_complete(
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG,
+            |session| session.prepare_authenticated_mount_catalog_query(query),
+        )
+    }
+
+    fn exact_request_complete(
+        &mut self,
+        method: BrokerMethod,
+        prepare: impl FnOnce(
+            &mut DormantAuthenticatedBrokerSessionV1,
+        ) -> Result<
+            DormantBrokerRequestPreparationV1,
+            crate::BrokerSessionSecurityError,
+        >,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
         if self.authority_effects.has_pending() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT;
         if let Some(recovery) = self.pending.take() {
             if recovery.method != method {
                 self.pending = Some(recovery);
@@ -656,10 +720,8 @@ impl DormantLifecycleInventorySessionV1 {
             let progress = self.resume_query(recovery)?;
             return self.drive_complete(progress);
         }
-        let prepared = self
-            .session
-            .prepare_authenticated_destination_slot_effect(attempt)
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let prepared =
+            prepare(&mut self.session).map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
         let progress = match prepared {
             DormantBrokerRequestPreparationV1::Prepared(prepared) => {
                 self.send_query(method, prepared)?

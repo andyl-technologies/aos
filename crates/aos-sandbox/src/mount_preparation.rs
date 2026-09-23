@@ -32,6 +32,10 @@ use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
+    AuthenticatedBrokerOutcomeDirectionV1,
+};
 use aos_sandbox_protocol::mount_catalog::{
     ValidatedMountCatalogPreparation, decode_mount_catalog_preparation,
     decode_mount_catalog_preparation_response,
@@ -288,6 +292,91 @@ pub struct PreparedCurrentMountCatalogV1 {
     valid_until_boottime_nanoseconds: u64,
 }
 
+/// Retains one current Host-authorized Mount catalog query before transport.
+///
+/// The authenticated Mount session must reserve and send `packet` unchanged.
+/// Neither this query nor its Host authorization grants the eventual Apply.
+#[must_use = "send the exact query on the retained authenticated Mount session"]
+pub struct PreparedCurrentMountCatalogQueryV1 {
+    target: CurrentNamespaceTarget,
+    mount_request: ApplyMountRequest,
+    preparation: ValidatedMountCatalogPreparation,
+    body: Vec<u8>,
+    packet: Vec<u8>,
+}
+
+impl PreparedCurrentMountCatalogQueryV1 {
+    /// Returns the exact unauthenticated Mount envelope for session signing.
+    #[must_use]
+    pub fn packet(&self) -> &[u8] {
+        &self.packet
+    }
+
+    /// Returns the exact Mount preparation body nested in that envelope.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    /// Returns the request identity bound through Mount and Host preparations.
+    #[must_use]
+    pub fn request_id(&self) -> [u8; 16] {
+        *self.preparation.header().request_id()
+    }
+
+    /// Returns the exclusive deadline bound through Mount and Host preparations.
+    #[must_use]
+    pub fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.preparation.header().deadline_boottime_nanoseconds()
+    }
+
+    /// Returns the required signed response byte ceiling.
+    #[must_use]
+    pub fn maximum_response_bytes(&self) -> u32 {
+        self.preparation.header().maximum_response_bytes()
+    }
+
+    /// Completes an exact authenticated reply under fresh namespace currentness.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unrelated, failed, or stale outcome, invalid catalog response,
+    /// expired deadline, or changed protected namespace authority.
+    pub fn complete_authenticated<T>(
+        self,
+        journal: &mut Journal,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.target.recheck(journal, clock)?;
+        if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || outcome.method() != MOUNT_METHOD
+            || outcome.request().exact_body() != self.body
+        {
+            return Err(MountCatalogPreparationError::ReplayMismatch);
+        }
+        let response = match outcome.result() {
+            AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } => {
+                decode_mount_catalog_preparation_response(exact_body, &self.preparation)?
+            }
+            AuthenticatedBrokerMethodResultV1::Error(error) => {
+                return Err(ProtocolValidationError::BrokerRejected(error.code()).into());
+            }
+        };
+        complete_catalog_response(
+            journal,
+            self.target,
+            self.mount_request,
+            &self.preparation,
+            response,
+            clock,
+        )
+    }
+}
+
 /// Retains a current catalog and its separately verified signed Mount plan.
 ///
 /// This value is still not a dispatched effect. It keeps the live namespace
@@ -502,10 +591,74 @@ where
 fn prepare_catalog_request<T>(
     journal: &mut Journal,
     target: CurrentNamespaceTarget,
-    mut mount_request: ApplyMountRequest,
+    mount_request: ApplyMountRequest,
     client: MountCatalogClient,
     clock: &mut T,
 ) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let query = build_catalog_query(journal, target, mount_request, clock)?;
+    query.target.recheck(journal, clock)?;
+    let response = client.prepare(&query.body, &query.preparation)?;
+    complete_catalog_response(
+        journal,
+        query.target,
+        query.mount_request,
+        &query.preparation,
+        response,
+        clock,
+    )
+}
+
+/// Builds a current Host-authorized catalog query for a retained Mount session.
+///
+/// `session_deadline` is the protected session's maximum deadline, not a new
+/// grant. The query uses the shorter of that deadline and the live Host scope
+/// deadline, retaining the same identity across its nested Mount/Host packets.
+///
+/// # Errors
+///
+/// Rejects stale target authority, expired session or scope deadlines, invalid
+/// intent, or missing Host authorization for this exact query.
+pub fn prepare_current_authenticated_query<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    intent: &MountCatalogIntentV1,
+    request_id: [u8; 16],
+    session_deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogQueryV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let deadline = target
+        .runtime_generation()
+        .scope()
+        .deadline_boottime_nanoseconds()
+        .min(session_deadline_boottime_nanoseconds);
+    transport::check_deadline(deadline)?;
+
+    let mut mount_request = intent.request.clone();
+    mount_request.header = Some(request_header(
+        MOUNT_VERSION,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        request_id,
+        deadline,
+    ))
+    .into();
+    mount_request.fence = Some(current_fence(&target)).into();
+    mount_request.namespace_generation = target.target_generation();
+    build_catalog_query(journal, target, mount_request, clock)
+}
+
+fn build_catalog_query<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    mount_request: ApplyMountRequest,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogQueryV1, MountCatalogPreparationError>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
@@ -589,10 +742,30 @@ where
         transport::boottime()?,
     )?;
 
+    let packet =
+        encode_unauthed_request_envelope(ProtocolId::MountBroker, MOUNT_METHOD, &preparation_body)?;
     target.recheck(journal, clock)?;
-    let response = client.prepare(&preparation_body, &preparation)?;
-    target.recheck(journal, clock)?;
+    Ok(PreparedCurrentMountCatalogQueryV1 {
+        target,
+        mount_request,
+        preparation,
+        body: preparation_body,
+        packet,
+    })
+}
 
+fn complete_catalog_response<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    mut mount_request: ApplyMountRequest,
+    preparation: &ValidatedMountCatalogPreparation,
+    response: aos_sandbox_protocol::mount_catalog::ValidatedMountCatalogPreparationResponse,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
     let binding = MountCatalogBindingV1::from_verified_digest(response.catalog_commitment())?;
     let canonical = canonical_mount_semantics_v1(preparation.mount_request(), Some(binding), &[])?;
     let semantics = BrokerDispatchSemanticIdentityV1::new(
