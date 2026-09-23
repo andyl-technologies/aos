@@ -1,21 +1,23 @@
 # Sandbox controller endpoints
 
-The packaged controller currently publishes broker inventory and exposes
-discovery plus authorized reads of durable operation observations. It does not
-yet admit or execute public mutations. Controller readiness confirms its
-initial authenticated catalog cycle, not completion of RFC-0021 or readiness
-to run sandboxes.
+The packaged controller publishes broker inventory and exposes discovery,
+authorized resource and operation reads, watch, and public mutation admission.
+Some admitted mutations still lack a completing production effect. Controller
+readiness confirms its initial authenticated catalog cycle, not completion of
+RFC-0021 or readiness to run every sandbox feature.
 
-## Registered TLS discovery
+## Registered TLS public API
 
 The optional endpoint is `/run/aos/sandboxd/public.sock`. It carries TLS 1.3
 with mandatory client certificates and HTTP/2 ALPN; it is not a plaintext Unix
-HTTP endpoint. `DiscoveryService` and `OperationService` are registered there,
-but only `GetOperation` is active on the latter. The existing `diagnostics.sock`
+HTTP endpoint. Discovery, Sandbox, Execution, FilesystemView, Snapshot,
+Capability, Cache, Operator, and Operation services are registered there,
+including `CancelOperation` and `Watch`. Registration does not establish that
+each admitted mutation has a terminal effect. The existing `diagnostics.sock`
 remains restricted to root by kernel peer credentials.
 
 After configuring the controller, its node identity, and all four broker
-sessions, enable public discovery with external system credentials:
+sessions, enable the public endpoint with external system credentials:
 
 ```nix
 aos.sandbox.controllerService = {
@@ -81,9 +83,12 @@ external credential mechanism and restart the controller. Before restarting,
 reconcile pending protected broker-session history; never erase its journal to
 bypass recovery.
 
-The public endpoint has no active mutation handlers. The packaged CLI and
-direct public API clients may use the authorized `GetOperation` read described
-above. `CancelOperation` and `Watch` remain unavailable.
+The packaged CLI and direct registered clients can use public reads, watch,
+and mutation admission through this endpoint. `CacheUnpin` has a completing
+controller effect, while `CachePin` and `ExecutionControl` still admit without
+one; other effect paths require their own production and qualification checks.
+Do not infer operation completion from an accepted mutation response.
+
 The service-UID VM qualification exercises protected credential loading,
 registered and rejected TLS clients, real HTTP/2 discovery, credential
 rotation, and permanent retirement of stale peer evidence. Installed systemd
@@ -128,4 +133,5 @@ aos sandbox \
 
 Without `--public-api`, the same `get --resource operation` command uses the
 root-only diagnostic socket and does not load a capability credential. These
-options do not activate mutation routes that the controller has not registered.
+options select the registered public endpoint; they do not turn an admitted
+but unfinished effect path into a completed operation.

@@ -309,12 +309,13 @@ the outstanding work concrete:
   and `CachePin` still admit but fall through to a retry-only controller effect.
   Cache pin admission fences the named view or attachment to its project and
   current resource version, and the source-membership and protected pin helpers
-  exist, but no production View source handoff or controller pin execution is
-  connected yet. Operator recovery actions other than ownership-gate Retry
-  lack a completing effect path and are rejected before new admission; Retry is
-  admitted only for an operation with a validated ownership gate. Connect the
-  remaining methods to their protected owners before claiming the public
-  mutation family is complete.
+  exist. A protected, project-scoped sealed source adapter can stream exact
+  portable objects, but no authenticated source producer or bounded controller
+  worker connects it to public `CachePin` execution yet. Operator recovery
+  actions other than ownership-gate Retry lack a completing effect path and are
+  rejected before new admission. Retry is admitted only for an operation with
+  a validated ownership gate. Connect the remaining methods to their protected
+  owners before claiming the public mutation family is complete.
 - Execution control is not a same-process owner call. Public admission now
   separates OpenSSH attach from checked resize and signal effects, and the
   dormant Host backend can bind issued authorize, resize, signal, cancel, and
