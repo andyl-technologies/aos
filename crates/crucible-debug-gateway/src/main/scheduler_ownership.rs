@@ -11,10 +11,27 @@ pub(super) fn poll_scheduler_run_control(
         return Err(String::from("run-control poll payload must be empty"));
     }
     with_gateway(process, |gateway| {
+        if let Some(stream_id) = gateway.run_control_cancelled {
+            return response(DebugGatewayMessageKind::RunControl, stream_id, [0x03]);
+        }
+        if let Some((stream_id, _operator_epoch, packet)) =
+            gateway.run_control_inflight.as_ref().cloned()
+        {
+            if gateway
+                .run_control_requests
+                .front()
+                .is_some_and(|(_, epoch, queued)| {
+                    *epoch == gateway.operator_epoch && queued.as_slice() == [0x03]
+                })
+            {
+                return response(DebugGatewayMessageKind::RunControl, stream_id, [0x03]);
+            }
+            return response(DebugGatewayMessageKind::RunControl, stream_id, packet);
+        }
         if let Some((stream_id, operator_epoch, packet)) =
             gateway.run_control_requests.front().cloned()
         {
-            if gateway.scheduler_lease_active {
+            if gateway.scheduler_lease_active || gateway.rsp_responses_pending != 0 {
                 return response(
                     DebugGatewayMessageKind::RunControl,
                     frame.stream_id,
@@ -39,12 +56,9 @@ pub(super) fn poll_scheduler_run_control(
             }
             let _queued = gateway.run_control_requests.pop_front();
             gateway.run_control_inflight = Some((stream_id, operator_epoch, packet.clone()));
-            gateway.gdb_scheduler_run_active = Some(stream_id);
-            return response(DebugGatewayMessageKind::RunControl, stream_id, packet);
-        }
-        if let Some((stream_id, _operator_epoch, packet)) =
-            gateway.run_control_inflight.as_ref().cloned()
-        {
+            if packet != [0x03] {
+                gateway.gdb_scheduler_run_active = Some(stream_id);
+            }
             return response(DebugGatewayMessageKind::RunControl, stream_id, packet);
         }
         response(
@@ -78,6 +92,10 @@ pub(super) fn finish_gdb_scheduler_run(
     Ok(())
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "wall-clock deadline bounds gateway transport waiting, not simulation time"
+)]
 pub(super) fn scheduler_lease(
     process: &SharedGatewayProcess,
     payload: &[u8],
@@ -101,6 +119,7 @@ pub(super) fn scheduler_lease(
                 }
                 if !gateway.run_control_requests.is_empty()
                     || gateway.run_control_inflight.is_some()
+                    || gateway.run_control_cancelled.is_some()
                     || gateway.scheduler_response_pending.is_some()
                     || gateway.prepared.is_some()
                 {
