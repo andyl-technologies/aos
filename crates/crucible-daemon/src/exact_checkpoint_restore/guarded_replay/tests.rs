@@ -334,7 +334,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         )
         .is_err()
     );
-    for retry in 1..=MAX_REPLAY_STALLED_REISSUES {
+    for reissue in 1..=MAX_REPLAY_STALLED_REISSUES {
         assert_eq!(
             next_replay_ceiling(
                 Icount { retired: 5 },
@@ -349,7 +349,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
             .retired,
             10_000_005
         );
-        assert_eq!(stalled_reissues, retry);
+        assert_eq!(stalled_reissues, reissue);
     }
     assert!(
         next_replay_ceiling(
