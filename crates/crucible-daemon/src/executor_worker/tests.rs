@@ -165,8 +165,8 @@ fn host_watchdog_kills_live_child_and_reconciles_infrastructure_failure() {
 
     assert!(watchdog.stop());
     assert!(signaled.load(Ordering::Acquire));
-    let reap_deadline = ProcessDeadline::after(Duration::from_secs(2))
-        .expect("representable child reap deadline");
+    let reap_deadline =
+        ProcessDeadline::after(Duration::from_secs(2)).expect("representable child reap deadline");
     loop {
         if child
             .lock()
@@ -177,10 +177,7 @@ fn host_watchdog_kills_live_child_and_reconciles_infrastructure_failure() {
         {
             break;
         }
-        assert!(
-            !reap_deadline.expired(),
-            "watchdog did not reap child"
-        );
+        assert!(!reap_deadline.expired(), "watchdog did not reap child");
         std::thread::sleep(Duration::from_millis(5));
     }
     let failure = complete_host_watchdog::<_, std::io::Error>(
