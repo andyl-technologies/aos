@@ -368,6 +368,7 @@ fn lifecycle_config(
     )
     .with_root_image_format(QemuRootImageFormat::Raw)
     .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
+    .with_signal_artifacts(Arc::clone(&artifacts))
     .with_world_artifacts(artifacts)
     .with_run_ceiling_icount(50_000_000_000)
     .with_quantum_budget(MAX_SOURCE_QUANTA)
