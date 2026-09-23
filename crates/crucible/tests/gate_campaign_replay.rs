@@ -20,13 +20,14 @@ use crucible::test_support::{
     condition_observation_entry_for_test, condition_payload_entry_for_test,
 };
 use crucible::{
-    AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
-    Decision, FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION, FailureClusterReportFailure,
+    AssertionDef, AssertionId, AssertionPhase, ChoiceTag, Configuration, ContentHash, Decision,
+    FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION, FailureClusterReportFailure,
     FailureKind as NativeFailureKind, FailurePropertyViolationRecord, FailureTriageReplayEvidence,
-    FindingDiscoveryPath, FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId,
-    NodeId, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties, ReadyPoint,
-    ScenarioDefForm, Schedule, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint,
-    Seed, SignaturePolicy, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    FindingDiscoveryPath, FindingReproductionArtifact, Icount, MarkerId, NodeId, NodeTemplate,
+    ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties,
+    Property, ReadyPoint, ScenarioDefForm, Schedule, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
 use crucible_campaign::{
     AttemptAdmissionId, CampaignHash, CampaignPolicyId, CampaignSnapshotId,
@@ -697,23 +698,24 @@ fn native_evidence(
     decisions: &[Decision],
     frame: &[u8],
 ) -> Result<FailureTriageReplayEvidence, Box<dyn Error>> {
-    let failure = FailureClusterReportFailure::property(FailurePropertyViolationRecord::new(
-        HostAssertionViolation {
-            assertion: AssertionId::from_name("no-forbidden-marker"),
-            message: String::from("forbidden marker must stay absent"),
-            quantifier: AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(Icount { retired: 8 }),
-            at_virtual_time: VirtualTime { ticks: 8 },
-            node: Some(node_id()),
-            detail: String::from("observed forbidden marker"),
-            reproduction_artifact: finding.artifact.id(),
-        },
-    ));
+    let entries = recorded_entries(decisions);
+    let scenario = finding.artifact.scenario_form();
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .check_run(scenario.properties(), &entries)?;
+    let mut violation = report
+        .violations()
+        .iter()
+        .find(|violation| violation.assertion == AssertionId::from_name("no-forbidden-marker"))
+        .cloned()
+        .ok_or_else(|| invalid("fixture assertion did not fail at its recorded boundary"))?;
+    violation.reproduction_artifact = finding.artifact.id();
+    let failure =
+        FailureClusterReportFailure::property(FailurePropertyViolationRecord::new(violation));
     FailureTriageReplayEvidence::new(
         finding.clone(),
         failure,
-        recorded_entries(decisions),
+        entries,
         hash("portable-coverage"),
         vec![frame.to_vec()],
     )
@@ -786,12 +788,19 @@ fn scenario_form() -> Result<ScenarioDefForm, crucible::EngineError> {
         root_image: None,
         initrd: None,
     }])?;
-    ScenarioDefForm::from_components(
+    let properties = Properties::from_assertions_for_world(
         &world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::default(),
-    )
+        vec![AssertionDef {
+            id: AssertionId::from_name("no-forbidden-marker"),
+            message: String::from("forbidden marker must stay absent"),
+            property: Property::Always {
+                predicate: Predicate::not(Predicate::At {
+                    at: VirtualTime { ticks: 8 },
+                }),
+            },
+        }],
+    )?;
+    ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::default())
 }
 
 fn override_decision(point: &str, choice: &str) -> Decision {
