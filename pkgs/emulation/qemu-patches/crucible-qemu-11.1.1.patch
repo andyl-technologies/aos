@@ -1,3 +1,29 @@
+From e0ca7ee7610119b2f7e0b3f19e1751ce44d352b0 Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] crucible: integrate deterministic QEMU execution
+
+Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,
+asynchronous-worker, and device-fingerprint implementation as one atomic,
+reconstructible QEMU 11.1.1 integration boundary.
+
+Rearm pending main-loop work after a deferred reset consumes its original AIO
+wake, allowing repeated require-ready watchdog resets to complete without
+external QMP activity. Make the fingerprint projection test wait for an
+executed guest TB before checking the outside-boundary marker result.
+
+Preserve sim-only virtio-rng rate-limit and HPET comparator history across
+exact VMState restore. Version the continuation projections that canonicalize
+native QMP pause flags and disabled UART THRI state while retaining strict
+guest-visible and active device state. Keep ordinary non-sim virtio ioeventfd
+policy unchanged.
+
+Adopt pinned launch images into live block roots before hot fork,
+retiring verified startup fdset bookkeeping without closing the
+block-owned descriptors.
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+
 diff --git a/MAINTAINERS b/MAINTAINERS
 index 902db77218eacc2461b54fe675c9816b3d98aec6..179e04c425b5c11c034ec3406a8f23ee9d293540 100644
 --- a/MAINTAINERS
