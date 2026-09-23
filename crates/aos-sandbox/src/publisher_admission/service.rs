@@ -798,6 +798,47 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
         }
     }
 
+    /// Installs and returns the publisher's exact durable read-grant commitment.
+    ///
+    /// The request names the controller-minted execution instance, not an
+    /// object or a caller-chosen grant. No commitment is sent until protected
+    /// policy, durable readback, and the live channel have been rechecked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed or mismatched request, unavailable
+    /// current policy, unresolved durable append, or uncertain channel send.
+    pub fn serve_publisher_read_grant(
+        &mut self,
+        record: &mut AuthenticatedPublisherRecord<'_>,
+        current_policy: &CurrentPublisherReadAuthorityV1<'_>,
+    ) -> Result<(), PublisherDomainServiceErrorV1> {
+        let request = decode_local_message_v1(record.payload(), &[])?;
+        let PublisherLocalBodyV1::RequestReadGrant { publisher_instance } = request.body else {
+            return Err(PublisherLocalProtocolError::Malformed.into());
+        };
+        if publisher_instance != record.instance() {
+            return Err(PublisherDomainServiceErrorV1::SessionMismatch);
+        }
+
+        let grant = self.install_publisher_self_read_grant(record, current_policy)?;
+        let now = self
+            .clock
+            .sample()
+            .map_err(|_| PublisherDomainServiceErrorV1::Clock)?;
+        current_policy
+            .recheck(record, now)
+            .map_err(|_| PublisherDomainServiceErrorV1::ReadGrant)?;
+
+        let response = PublisherLocalBodyV1::ReadGrantResult {
+            publisher_instance,
+            grant_digest: grant.grant_digest,
+        };
+        let bytes = encode_local_message_v1(request.request_id, &response)?;
+        record.send_response(&bytes, None)?;
+        Ok(())
+    }
+
     /// Revokes one current publisher read grant under trusted controller custody.
     ///
     /// Revocation is denial-only and does not require a live publisher session

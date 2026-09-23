@@ -18,7 +18,9 @@
 //! magic "AOSPUBI1" (8 bytes) | publisher instance (16 bytes)
 //! ```
 //!
-//! A separately authorized `OpenForRead` request may receive one canonical
+//! A `RequestReadGrant` record may receive one canonical digest-only response
+//! after independent current policy and protected durability checks. A later
+//! separately authorized `OpenForRead` request may receive one canonical
 //! publisher-local response on the same channel. `OpenFound` carries exactly
 //! one read-only sealed backing descriptor atomically with its response body;
 //! concealed results carry none. The authenticated channel alone never grants

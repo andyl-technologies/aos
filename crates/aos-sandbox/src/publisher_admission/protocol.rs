@@ -9,6 +9,10 @@
 //! Descriptor observations contain no file-descriptor number. The carrier
 //! derives an immutable identity commitment and access class from each received
 //! description, in received order, and binds the set to the exact body digest.
+//! `RequestReadGrant` carries the controller-minted execution identity and
+//! `ReadGrantResult` returns only its independently authorized durable grant
+//! commitment. The grant does not itself authorize an `OpenForRead` result:
+//! current policy, catalog, root, and live-session checks still apply.
 
 use aos_sandbox_core::{
     MediaType, ObjectDescriptor, ObjectDigest, OperationId, PrincipalId, ProjectId,
@@ -55,6 +59,10 @@ pub enum PublisherLocalMethodV1 {
     OpenFound = 10,
     /// Returns the same result for absence and concealment.
     OpenNotFoundOrConcealed = 11,
+    /// Requests the publisher's independently authorized read-grant commitment.
+    RequestReadGrant = 12,
+    /// Returns the exact durable read-grant commitment for this execution.
+    ReadGrantResult = 13,
 }
 
 impl PublisherLocalMethodV1 {
@@ -71,6 +79,8 @@ impl PublisherLocalMethodV1 {
             9 => Self::OpenForRead,
             10 => Self::OpenFound,
             11 => Self::OpenNotFoundOrConcealed,
+            12 => Self::RequestReadGrant,
+            13 => Self::ReadGrantResult,
             _ => return Err(PublisherLocalProtocolError::UnknownMethod),
         })
     }
@@ -233,7 +243,19 @@ pub enum PublisherLocalBodyV1 {
         /// Exact observed-state commitment.
         observation_digest: ObjectDigest,
     },
-    /// Requests an independent current read authorization.
+    /// Requests a separate current-policy read grant for this execution.
+    RequestReadGrant {
+        /// Controller-minted publisher execution instance.
+        publisher_instance: PublisherInstanceId,
+    },
+    /// Returns one exact durable read-grant commitment without a descriptor.
+    ReadGrantResult {
+        /// Execution that requested the grant.
+        publisher_instance: PublisherInstanceId,
+        /// Current durable read-grant commitment.
+        grant_digest: ObjectDigest,
+    },
+    /// Presents an independent current read grant for one object open.
     OpenForRead {
         /// Authenticated requesting holder.
         holder: PrincipalId,
@@ -275,6 +297,8 @@ impl PublisherLocalBodyV1 {
             Self::CommitReceipt { .. } => PublisherLocalMethodV1::CommitReceipt,
             Self::ObserveRecovery { .. } => PublisherLocalMethodV1::ObserveRecovery,
             Self::RecoveryResult { .. } => PublisherLocalMethodV1::RecoveryResult,
+            Self::RequestReadGrant { .. } => PublisherLocalMethodV1::RequestReadGrant,
+            Self::ReadGrantResult { .. } => PublisherLocalMethodV1::ReadGrantResult,
             Self::OpenForRead { .. } => PublisherLocalMethodV1::OpenForRead,
             Self::OpenFound { .. } => PublisherLocalMethodV1::OpenFound,
             Self::OpenNotFoundOrConcealed { .. } => PublisherLocalMethodV1::OpenNotFoundOrConcealed,
@@ -575,6 +599,16 @@ fn encode_body(body: &PublisherLocalBodyV1) -> Result<Vec<u8>, PublisherLocalPro
             bytes.push(disposition_code(*disposition));
             bytes.extend_from_slice(observation_digest.as_bytes());
         }
+        PublisherLocalBodyV1::RequestReadGrant { publisher_instance } => {
+            bytes.extend_from_slice(publisher_instance.as_bytes());
+        }
+        PublisherLocalBodyV1::ReadGrantResult {
+            publisher_instance,
+            grant_digest,
+        } => {
+            bytes.extend_from_slice(publisher_instance.as_bytes());
+            bytes.extend_from_slice(grant_digest.as_bytes());
+        }
         PublisherLocalBodyV1::OpenForRead {
             holder,
             project,
@@ -625,6 +659,8 @@ fn encoded_body_size(body: &PublisherLocalBodyV1) -> Result<usize, PublisherLoca
         PublisherLocalBodyV1::CompletionPermit { .. }
         | PublisherLocalBodyV1::CommitReceipt { .. } => Some(64),
         PublisherLocalBodyV1::RecoveryResult { .. } => Some(49),
+        PublisherLocalBodyV1::RequestReadGrant { .. } => Some(16),
+        PublisherLocalBodyV1::ReadGrantResult { .. } => Some(48),
         PublisherLocalBodyV1::OpenForRead { object, .. } => {
             113_usize.checked_add(object.media_type().as_str().len())
         }
@@ -691,6 +727,13 @@ fn decode_body(
             operation: OperationId::from_bytes(cursor.array()?),
             disposition: decode_disposition(cursor.u8()?)?,
             observation_digest: cursor.digest()?,
+        },
+        PublisherLocalMethodV1::RequestReadGrant => PublisherLocalBodyV1::RequestReadGrant {
+            publisher_instance: PublisherInstanceId::from_bytes(cursor.array()?),
+        },
+        PublisherLocalMethodV1::ReadGrantResult => PublisherLocalBodyV1::ReadGrantResult {
+            publisher_instance: PublisherInstanceId::from_bytes(cursor.array()?),
+            grant_digest: cursor.digest()?,
         },
         PublisherLocalMethodV1::OpenForRead => PublisherLocalBodyV1::OpenForRead {
             holder: PrincipalId::from_bytes(cursor.array()?),
@@ -782,6 +825,13 @@ fn validate_body(body: &PublisherLocalBodyV1) -> Result<(), PublisherLocalProtoc
             observation_digest,
             ..
         } => operation.as_bytes() != &[0; 16] && observation_digest.as_bytes() != &[0; 32],
+        PublisherLocalBodyV1::RequestReadGrant { publisher_instance } => {
+            publisher_instance.as_bytes() != &[0; 16]
+        }
+        PublisherLocalBodyV1::ReadGrantResult {
+            publisher_instance,
+            grant_digest,
+        } => publisher_instance.as_bytes() != &[0; 16] && grant_digest.as_bytes() != &[0; 32],
         PublisherLocalBodyV1::OpenForRead {
             holder,
             project,
