@@ -67,8 +67,10 @@ const PUBLICATION_INTENT_DOMAIN: &[u8] = b"aos.sandbox.storage.publication-inten
 const PUBLICATION_INTENT_MAGIC: &[u8; 8] = b"AOSSPI01";
 const PUBLICATION_INTENT_VERSION: u16 = 1;
 const ATOMIC_SNAPSHOT_MAGIC: &[u8; 8] = b"AOSASR01";
-const ATOMIC_SNAPSHOT_VERSION: u16 = 2;
-const ATOMIC_SNAPSHOT_DOMAIN: &[u8] = b"aos.sandbox.storage.atomic-snapshot-state.v1\0";
+const ATOMIC_SNAPSHOT_VERSION_V2: u16 = 2;
+const ATOMIC_SNAPSHOT_VERSION_V3: u16 = 3;
+const ATOMIC_SNAPSHOT_DOMAIN_V2: &[u8] = b"aos.sandbox.storage.atomic-snapshot-state.v1\0";
+const ATOMIC_SNAPSHOT_DOMAIN_V3: &[u8] = b"aos.sandbox.storage.atomic-snapshot-state.v3\0";
 const ATOMIC_SNAPSHOT_KEY_PREFIX: &[u8; 16] = b"atomic-snapshot/";
 const MAXIMUM_RECORD_BYTES: usize = 64 * 1024;
 const MAXIMUM_PREPARATION_RECORD_BYTES: usize = 128 * 1024;
@@ -219,6 +221,7 @@ struct AtomicDatasetSnapshotRecordV1 {
     request_id: [u8; 16],
     semantic_digest: ObjectDigest,
     transport_digest: ObjectDigest,
+    post_head: Option<CatalogBindingV1>,
 }
 
 pub(crate) struct AtomicDatasetSnapshotInventoryV1 {
@@ -229,6 +232,7 @@ pub(crate) struct AtomicDatasetSnapshotInventoryV1 {
     request_id: [u8; 16],
     semantic_digest: ObjectDigest,
     transport_digest: ObjectDigest,
+    post_head: Option<CatalogBindingV1>,
 }
 
 impl AtomicDatasetSnapshotInventoryV1 {
@@ -258,6 +262,11 @@ impl AtomicDatasetSnapshotInventoryV1 {
 
     pub(crate) const fn observation(&self) -> Option<ObjectDigest> {
         self.observation
+    }
+
+    /// Returns the protected post-catalog head committed with the group result.
+    pub(crate) const fn post_head(&self) -> Option<CatalogBindingV1> {
+        self.post_head
     }
 }
 
@@ -672,6 +681,7 @@ impl StorageTransactionStore {
                 request_id: record.request_id,
                 semantic_digest: record.semantic_digest,
                 transport_digest: record.transport_digest,
+                post_head: record.post_head,
             })
             .collect())
     }
@@ -719,14 +729,31 @@ impl StorageTransactionStore {
             request_id,
             semantic_digest,
             transport_digest,
+            post_head: None,
         };
         let ambiguous = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Ambiguous,
             ..record.clone()
         };
+        let placeholder_head_digest = if record.program.catalog_source().as_bytes() == &[1; 32] {
+            [2; 32]
+        } else {
+            [1; 32]
+        };
         let committed = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Committed,
             observation: Some(ObjectDigest::from_bytes([1; 32])),
+            post_head: Some(
+                CatalogBindingV1::from_publisher(
+                    record
+                        .program
+                        .catalog_generation()
+                        .checked_add(1)
+                        .ok_or(StorageStateError::InvalidValue)?,
+                    ObjectDigest::from_bytes(placeholder_head_digest),
+                )
+                .map_err(|_| StorageStateError::InvalidValue)?,
+            ),
             ..record.clone()
         };
         let prepared = JournalTransaction::new(
@@ -835,6 +862,30 @@ impl StorageTransactionStore {
         program: ObjectDigest,
         observation: ObjectDigest,
     ) -> Result<(), StorageStateError> {
+        self.commit_atomic_dataset_snapshot_inner(operation, program, observation, None)
+    }
+
+    /// Commits the original result and an authenticated post-catalog head together.
+    ///
+    /// The caller must first install a verified grouped physical transition.
+    /// No unobserved or inferred head is accepted from the worker digest alone.
+    pub(crate) fn commit_atomic_dataset_snapshot_with_post_head(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        post_head: CatalogBindingV1,
+    ) -> Result<(), StorageStateError> {
+        self.commit_atomic_dataset_snapshot_inner(operation, program, observation, Some(post_head))
+    }
+
+    fn commit_atomic_dataset_snapshot_inner(
+        &mut self,
+        operation: [u8; 16],
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        post_head: Option<CatalogBindingV1>,
+    ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if observation.as_bytes() == &[0; 32] {
             return Err(StorageStateError::InvalidValue);
@@ -849,9 +900,25 @@ impl StorageTransactionStore {
             })
             .cloned()
             .ok_or(StorageStateError::InvalidTransition)?;
+        if let Some(post_head) = post_head {
+            let expected = current
+                .program
+                .catalog_generation()
+                .checked_add(1)
+                .ok_or(StorageStateError::InvalidTransition)?;
+            let physical = self.verified_resolver_journal()?.physical().binding();
+            if post_head.generation() != expected
+                || post_head.digest() == current.program.catalog_source()
+                || self.catalog_transitions.head_binding() != Some(post_head)
+                || physical != post_head
+            {
+                return Err(StorageStateError::InvalidTransition);
+            }
+        }
         let record = AtomicDatasetSnapshotRecordV1 {
             phase: AtomicDatasetSnapshotPhaseV1::Committed,
             observation: Some(observation),
+            post_head,
             ..current
         };
         self.publish_atomic_snapshot(&record)?;
@@ -3885,15 +3952,29 @@ fn encode_atomic_snapshot_record(
     record: &AtomicDatasetSnapshotRecordV1,
     key: &StorageStateKey,
 ) -> Result<Vec<u8>, StorageStateError> {
+    let version = if record.post_head.is_some() {
+        if record.phase != AtomicDatasetSnapshotPhaseV1::Committed
+            || record.observation.is_none()
+            || record.post_head.is_some_and(|head| {
+                record.program.catalog_generation().checked_add(1) != Some(head.generation())
+                    || record.program.catalog_source() == head.digest()
+            })
+        {
+            return Err(StorageStateError::InvalidValue);
+        }
+        ATOMIC_SNAPSHOT_VERSION_V3
+    } else {
+        ATOMIC_SNAPSHOT_VERSION_V2
+    };
     let program = record
         .program
         .canonical_bytes()
         .map_err(|_| StorageStateError::InvalidValue)?;
     let program_length =
         u32::try_from(program.len()).map_err(|_| StorageStateError::InvalidValue)?;
-    let mut bytes = Vec::with_capacity(64 + program.len());
+    let mut bytes = Vec::with_capacity(104 + program.len());
     bytes.extend_from_slice(ATOMIC_SNAPSHOT_MAGIC);
-    bytes.extend_from_slice(&ATOMIC_SNAPSHOT_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.push(record.phase as u8);
     bytes.extend_from_slice(&key.key_id);
     bytes.extend_from_slice(&record.sandbox_id);
@@ -3908,9 +3989,17 @@ fn encode_atomic_snapshot_record(
             .unwrap_or(ObjectDigest::from_bytes([0; 32]))
             .as_bytes(),
     );
+    if let Some(head) = record.post_head {
+        bytes.extend_from_slice(&head.generation().to_be_bytes());
+        bytes.extend_from_slice(head.digest().as_bytes());
+    }
     let mut mac =
         HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
-    mac.update(ATOMIC_SNAPSHOT_DOMAIN);
+    mac.update(if version == ATOMIC_SNAPSHOT_VERSION_V3 {
+        ATOMIC_SNAPSHOT_DOMAIN_V3
+    } else {
+        ATOMIC_SNAPSHOT_DOMAIN_V2
+    });
     mac.update(&record.program.operation());
     mac.update(&bytes);
     bytes.extend_from_slice(&mac.finalize().into_bytes());
@@ -3927,16 +4016,26 @@ fn decode_atomic_snapshot_record(
         .checked_sub(MAC_BYTES)
         .ok_or(StorageStateError::CorruptRecord)?;
     let (body, tag) = encoded.split_at(body_length);
+    let version = body
+        .get(8..10)
+        .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
+        .map(u16::from_be_bytes)
+        .ok_or(StorageStateError::CorruptRecord)?;
+    let domain = match version {
+        ATOMIC_SNAPSHOT_VERSION_V2 => ATOMIC_SNAPSHOT_DOMAIN_V2,
+        ATOMIC_SNAPSHOT_VERSION_V3 => ATOMIC_SNAPSHOT_DOMAIN_V3,
+        _ => return Err(StorageStateError::CorruptRecord),
+    };
     let mut mac =
         HmacSha256::new_from_slice(&key.secret).map_err(|_| StorageStateError::InvalidValue)?;
-    mac.update(ATOMIC_SNAPSHOT_DOMAIN);
+    mac.update(domain);
     mac.update(&operation);
     mac.update(body);
     mac.verify_slice(tag)
         .map_err(|_| StorageStateError::CorruptRecord)?;
     let mut body = body;
     if take(&mut body, 8)? != ATOMIC_SNAPSHOT_MAGIC
-        || u16::from_be_bytes(take_array(&mut body)?) != ATOMIC_SNAPSHOT_VERSION
+        || u16::from_be_bytes(take_array(&mut body)?) != version
     {
         return Err(StorageStateError::CorruptRecord);
     }
@@ -3968,6 +4067,16 @@ fn decode_atomic_snapshot_record(
     )?)
     .map_err(|_| StorageStateError::CorruptRecord)?;
     let observation = ObjectDigest::from_bytes(take_array(&mut body)?);
+    let post_head = if version == ATOMIC_SNAPSHOT_VERSION_V3 {
+        let generation = u64::from_be_bytes(take_array(&mut body)?);
+        let digest = ObjectDigest::from_bytes(take_array(&mut body)?);
+        Some(
+            CatalogBindingV1::from_publisher(generation, digest)
+                .map_err(|_| StorageStateError::CorruptRecord)?,
+        )
+    } else {
+        None
+    };
     if !body.is_empty() || program.operation() != operation {
         return Err(StorageStateError::CorruptRecord);
     }
@@ -3979,7 +4088,14 @@ fn decode_atomic_snapshot_record(
         ) => None,
         _ => return Err(StorageStateError::CorruptRecord),
     };
-    Ok(AtomicDatasetSnapshotRecordV1 {
+    if post_head.is_some_and(|head| {
+        phase != AtomicDatasetSnapshotPhaseV1::Committed
+            || program.catalog_generation().checked_add(1) != Some(head.generation())
+            || program.catalog_source() == head.digest()
+    }) {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    let record = AtomicDatasetSnapshotRecordV1 {
         phase,
         program,
         observation,
@@ -3987,7 +4103,12 @@ fn decode_atomic_snapshot_record(
         request_id,
         semantic_digest,
         transport_digest,
-    })
+        post_head,
+    };
+    if encode_atomic_snapshot_record(&record, key)? != encoded {
+        return Err(StorageStateError::CorruptRecord);
+    }
+    Ok(record)
 }
 
 fn load_atomic_snapshot_records(
@@ -5127,6 +5248,56 @@ mod tests {
 
     pub(super) fn key(byte: u8) -> StorageStateKey {
         StorageStateKey::new([byte; 16], [byte.wrapping_add(1); 32]).unwrap()
+    }
+
+    #[test]
+    fn atomic_snapshot_post_head_is_versioned_and_mac_bound() {
+        let key = key(61);
+        let program = crate::lifecycle_atomic_snapshot::sample_atomic_snapshot_program_for_test();
+        let record = AtomicDatasetSnapshotRecordV1 {
+            phase: AtomicDatasetSnapshotPhaseV1::Committed,
+            program,
+            observation: Some(ObjectDigest::from_bytes([62; 32])),
+            sandbox_id: [63; 16],
+            request_id: [64; 16],
+            semantic_digest: ObjectDigest::from_bytes([65; 32]),
+            transport_digest: ObjectDigest::from_bytes([66; 32]),
+            post_head: None,
+        };
+        let legacy = encode_atomic_snapshot_record(&record, &key).unwrap();
+        assert!(
+            decode_atomic_snapshot_record([1; 16], &legacy, &key)
+                .unwrap()
+                .post_head
+                .is_none()
+        );
+
+        let post_head =
+            CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([67; 32])).unwrap();
+        let checkpointed = AtomicDatasetSnapshotRecordV1 {
+            post_head: Some(post_head),
+            ..record
+        };
+        let encoded = encode_atomic_snapshot_record(&checkpointed, &key).unwrap();
+        assert_eq!(&encoded[8..10], &3_u16.to_be_bytes());
+        assert_eq!(
+            decode_atomic_snapshot_record([1; 16], &encoded, &key)
+                .unwrap()
+                .post_head,
+            Some(post_head)
+        );
+        let mut corrupted = encoded.clone();
+        let last_body_byte = corrupted.len() - MAC_BYTES - 1;
+        corrupted[last_body_byte] ^= 1;
+        assert!(decode_atomic_snapshot_record([1; 16], &corrupted, &key).is_err());
+
+        let wrong_generation = AtomicDatasetSnapshotRecordV1 {
+            post_head: Some(
+                CatalogBindingV1::from_publisher(11, ObjectDigest::from_bytes([67; 32])).unwrap(),
+            ),
+            ..checkpointed
+        };
+        assert!(encode_atomic_snapshot_record(&wrong_generation, &key).is_err());
     }
 
     fn resolver_policy_binding(

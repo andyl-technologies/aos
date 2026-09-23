@@ -366,6 +366,31 @@ fn grouped_program_commitment_fields(
     ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
+#[cfg(test)]
+pub(crate) fn sample_atomic_snapshot_program_for_test() -> DormantAtomicDatasetSnapshotV1 {
+    let plan = ObjectDigest::from_bytes([3; 32]);
+    let effect = ObjectDigest::from_bytes([4; 32]);
+    let catalog_source = ObjectDigest::from_bytes([5; 32]);
+    let members = vec![ProtectedAtomicDatasetSnapshotMemberV1 {
+        source_name: "tank/aos/dataset".to_owned(),
+        source_guid: 6,
+        destination_name: "tank/aos/dataset@aos-01".to_owned(),
+        storage_handle: ObjectDigest::from_bytes([7; 32]),
+        physical_identity: ObjectDigest::from_bytes([8; 32]),
+    }];
+    let commitment = grouped_program_commitment_fields(plan, effect, 9, catalog_source, &members);
+    DormantAtomicDatasetSnapshotV1 {
+        operation: [1; 16],
+        snapshot: [2; 16],
+        plan,
+        effect,
+        catalog_generation: 9,
+        catalog_source,
+        members,
+        commitment,
+    }
+}
+
 fn encode_text(bytes: &mut Vec<u8>, value: &str) -> Result<(), LifecyclePhase6ErrorV1> {
     let length = u16::try_from(value.len()).map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
     if value.is_empty() || value.as_bytes().contains(&0) {
