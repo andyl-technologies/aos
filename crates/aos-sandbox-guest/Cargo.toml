@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "aos-sandbox-guest-exec"
 path = "src/exec_child.rs"
 
+[[bin]]
+name = "aos-sandbox-guest-init"
+path = "src/init.rs"
+
 [dependencies]
 aos-sandbox-agent.workspace = true
 aos-sandbox-core.workspace = true

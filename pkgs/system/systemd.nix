@@ -125,6 +125,8 @@ in
     #          unprivileged client cannot prevent exact terminal collection.
     #   0013 — Route authenticated switch-root and daemon-reexec operations
     #          through the immutable AOS SELinux guard without init fallback.
+    #   0014 — Deliver only an exact named, sealed guest-agent descriptor set
+    #          to the fixed PID 1 bootstrap, never generic activation FDs.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -138,6 +140,7 @@ in
       ./patches/0011-nspawn-attachment-anchor-descriptor.patch
       ./patches/0012-restrict-unit-reference-methods.patch
       ./patches/0013-aos-selinux-root-handoff.patch
+      ./patches/0014-nspawn-guest-agent-descriptors.patch
     ];
 
     buildDeps = [

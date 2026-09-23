@@ -11,8 +11,8 @@
 //! Its public keys are independently pinned by the protected Host before
 //! construction; this format does not make a Host-selected key trustworthy.
 
-use ssh_key::{Algorithm, PrivateKey, PublicKey};
 use sha2::{Digest as _, Sha256};
+use ssh_key::{Algorithm, PrivateKey, PublicKey};
 use zeroize::Zeroizing;
 
 use crate::model::AgentRuntimeBindingV1;
@@ -82,7 +82,7 @@ impl GuestAttachTrustRecordV1 {
             .map_err(|_| GuestAttachTrustErrorV1::InvalidRecord)?;
         let mut cursor = 112;
         let private_length = read_length(bytes, &mut cursor, 4)?;
-        let private_key = read_field(bytes, &mut cursor, private_length)?.to_vec();
+        let private_key = Zeroizing::new(read_field(bytes, &mut cursor, private_length)?.to_vec());
         let host_public_length = read_length(bytes, &mut cursor, 2)?;
         let host_public_key = read_field(bytes, &mut cursor, host_public_length)?.to_vec();
         let ca_public_length = read_length(bytes, &mut cursor, 2)?;
@@ -93,7 +93,7 @@ impl GuestAttachTrustRecordV1 {
 
         let record = Self {
             runtime,
-            private_key: Zeroizing::new(private_key),
+            private_key,
             host_public_key,
             trusted_ca_public_key,
         };
@@ -180,7 +180,10 @@ fn canonical_public_key(bytes: &[u8]) -> Result<PublicKey, GuestAttachTrustError
     let key = PublicKey::from_openssh(text).map_err(|_| GuestAttachTrustErrorV1::InvalidKey)?;
     if key.algorithm() != Algorithm::Ed25519
         || !key.comment().is_empty()
-        || key.to_openssh().map_err(|_| GuestAttachTrustErrorV1::InvalidKey)? != text
+        || key
+            .to_openssh()
+            .map_err(|_| GuestAttachTrustErrorV1::InvalidKey)?
+            != text
     {
         return Err(GuestAttachTrustErrorV1::InvalidKey);
     }
@@ -224,4 +227,69 @@ pub enum GuestAttachTrustErrorV1 {
     /// The OpenSSH key material is invalid or inconsistent.
     #[error("guest attach-trust key material is invalid")]
     InvalidKey,
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::{
+        AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
+        SandboxId,
+    };
+    use ssh_key::{LineEnding, PrivateKey, private::Ed25519Keypair};
+
+    use super::*;
+
+    #[test]
+    fn exact_runtime_and_key_material_round_trip() {
+        let runtime = AgentRuntimeBindingV1::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            ObjectDigest::from_bytes([4; 32]),
+            DesiredGeneration::new(5),
+            NamespaceGeneration::new(6),
+            [7; 16],
+        )
+        .expect("valid runtime");
+        let host =
+            PrivateKey::new(Ed25519Keypair::from_seed(&[8; 32]).into(), "").expect("host key");
+        let ca = PrivateKey::new(Ed25519Keypair::from_seed(&[9; 32]).into(), "").expect("CA key");
+        let private = host
+            .to_openssh(LineEnding::LF)
+            .expect("OpenSSH private key")
+            .as_bytes()
+            .to_vec();
+        let host_public = host
+            .public_key()
+            .to_openssh()
+            .expect("host public key")
+            .into_bytes();
+        let ca_public = ca
+            .public_key()
+            .to_openssh()
+            .expect("CA public key")
+            .into_bytes();
+
+        let record = GuestAttachTrustRecordV1::new(
+            runtime,
+            private.clone(),
+            host_public.clone(),
+            ca_public.clone(),
+        )
+        .expect("matching canonical keys");
+        let bytes = record.encode();
+        let decoded = GuestAttachTrustRecordV1::decode(&bytes).expect("canonical record");
+        assert_eq!(
+            decoded.runtime_bytes(),
+            &encode_agent_runtime_binding_v1(runtime)
+        );
+        assert_eq!(decoded.private_key_bytes(), private);
+        assert_eq!(decoded.host_public_key_bytes(), host_public);
+        assert_eq!(decoded.trusted_ca_public_key_bytes(), ca_public);
+
+        let mut tampered = bytes.to_vec();
+        tampered[20] ^= 1;
+        assert!(GuestAttachTrustRecordV1::decode(&tampered).is_err());
+        assert!(GuestAttachTrustRecordV1::new(runtime, private, ca_public, host_public).is_err());
+    }
 }

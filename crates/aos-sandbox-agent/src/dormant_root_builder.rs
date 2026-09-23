@@ -17,7 +17,10 @@ const CREDENTIAL_RELATIVE_PATH: &str = "run/credentials/aos-sandbox-agent/guest-
 const CONCRETE_AGENT_PATH: &str = "usr/libexec/aos-sandbox-guest-agent";
 const CONCRETE_HELPER_PATH: &str = "usr/libexec/aos-sandbox-guest-exec";
 const CONCRETE_GATE_PATH: &str = "usr/libexec/aos-sandbox-exec-gate";
+const CONCRETE_INIT_PATH: &str = "usr/libexec/aos-sandbox-guest-init";
+const SSHD_MAIN_PATH: &str = "usr/sbin/sshd";
 const SSHD_SESSION_PATH: &str = "usr/libexec/sshd-session";
+const SYSTEMD_INIT_PATH: &str = "usr/lib/systemd/systemd";
 
 /// Pins one executable source to its expected package content digest.
 pub struct GuestExecutableInputV1 {
@@ -37,8 +40,14 @@ pub struct ConcreteGuestRootBuildPlanV1 {
     pub helper: GuestExecutableInputV1,
     /// Forced-command gate executable installed at its fixed path.
     pub gate: GuestExecutableInputV1,
+    /// Fixed PID 1 bootstrap for inherited agent and trust descriptors.
+    pub init: GuestExecutableInputV1,
+    /// AOS-built OpenSSH daemon installed at the gate's fixed path.
+    pub sshd: GuestExecutableInputV1,
     /// AOS OpenSSH session helper used for peer ancestry verification.
     pub sshd_session: GuestExecutableInputV1,
+    /// AOS-built guest PID 1 target used only after bootstrap succeeds.
+    pub systemd_init: GuestExecutableInputV1,
     /// Protected package binding carried by agent provisioning.
     pub credential_binding: ObjectDigest,
 }
@@ -64,7 +73,10 @@ pub fn build_concrete_guest_root_v1(
         (&plan.agent, CONCRETE_AGENT_PATH),
         (&plan.helper, CONCRETE_HELPER_PATH),
         (&plan.gate, CONCRETE_GATE_PATH),
+        (&plan.init, CONCRETE_INIT_PATH),
+        (&plan.sshd, SSHD_MAIN_PATH),
         (&plan.sshd_session, SSHD_SESSION_PATH),
+        (&plan.systemd_init, SYSTEMD_INIT_PATH),
     ] {
         if !input.source.is_absolute() || input.digest.as_bytes() == &[0; 32] {
             return Err(DormantGuestRootBuildErrorV1::InvalidPlan);
