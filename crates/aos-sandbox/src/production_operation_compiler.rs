@@ -83,6 +83,50 @@ pub struct PublicCapabilityAttenuationV1 {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProductionOperationCompilerV1;
 
+/// Compiles an authorized attach with an independently authenticated Host route.
+///
+/// The ordinary production compiler has no route evidence and remains closed.
+/// A controller worker may call this only after its separate Host route readback
+/// and protected CA custody are active. The endpoint is retained in the same
+/// durable operation transaction as admission, including for replay.
+///
+/// # Errors
+///
+/// Rejects malformed requests, invalid holder proof, missing public authority,
+/// stale execution or Host route evidence, and invalid certificate issuance.
+#[cfg(target_os = "linux")]
+pub fn compile_public_attach_route_v1(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+    route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
+    issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
+) -> Result<OperationPlan, OperationCompilationError> {
+    let authorized = AuthorizedPublicMutationRequestV1::authorize(
+        journal,
+        peer,
+        capability_id,
+        canonical_request,
+    )
+    .map_err(|error| match error {
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
+            OperationCompilationError::Malformed
+        }
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
+            OperationCompilationError::Rejected
+        }
+    })?;
+    public_mutation::compile_authorized_attach_route(
+        journal,
+        &authorized,
+        request_digest,
+        route,
+        issuer,
+    )
+}
+
 impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
     fn compile(
         &mut self,

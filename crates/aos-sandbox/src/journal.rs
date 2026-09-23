@@ -205,6 +205,8 @@ pub enum RecordNamespace {
     PublicOperationAuthorization = 51,
     /// Controller custody of one lifecycle atomic Storage snapshot exchange.
     LifecycleAtomicSnapshotSource = 52,
+    /// Holder-bound OpenSSH access issued by one authorized public operation.
+    PublicAttachRoute = 53,
 }
 
 impl RecordNamespace {
@@ -262,6 +264,7 @@ impl RecordNamespace {
             50 => Ok(Self::FilesystemWorkerRegistration),
             51 => Ok(Self::PublicOperationAuthorization),
             52 => Ok(Self::LifecycleAtomicSnapshotSource),
+            53 => Ok(Self::PublicAttachRoute),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

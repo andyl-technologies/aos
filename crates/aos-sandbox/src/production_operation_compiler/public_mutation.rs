@@ -33,6 +33,135 @@ use crate::{
 
 use super::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 
+#[cfg(target_os = "linux")]
+pub(super) fn compile_authorized_attach_route(
+    journal: &mut Journal,
+    authorized: &AuthorizedPublicMutationRequestV1,
+    request_digest: [u8; 32],
+    route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
+    issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
+) -> Result<OperationPlan, OperationCompilationError> {
+    let Request::ExecutionControl(control) = authorized.request().request() else {
+        return Err(OperationCompilationError::Malformed);
+    };
+    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
+        return Err(OperationCompilationError::Malformed);
+    }
+    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+
+    match journal.check_idempotency(authorized.request().idempotency_key(), request_digest) {
+        IdempotencyOutcome::Replay(operation_id) => {
+            let access = crate::attach_route_issuer::load_public_attach_route_v1(
+                journal,
+                operation_id,
+                request_digest,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+            let current = PublicProjectionStoreV1::new(journal)
+                .get(
+                    PublicProjectionKindV1::Execution,
+                    exact_id(&control.execution_id)?,
+                )
+                .map_err(|_| OperationCompilationError::Rejected)?
+                .ok_or(OperationCompilationError::Rejected)?;
+            let PublicProjectionResourceV1::Execution(current_execution) = current.resource()
+            else {
+                return Err(OperationCompilationError::Rejected);
+            };
+            if current.project() != authorized.project()
+                || current.operation() != operation_id
+                || current_execution.phase.as_known()
+                    != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+            {
+                return Err(OperationCompilationError::Rejected);
+            }
+            issuer
+                .validate_recovered(
+                    control,
+                    current_execution,
+                    &access,
+                    route,
+                    authorized.caller(),
+                    operation_id,
+                    request_digest,
+                    authorized.accepted_wall_seconds(),
+                )
+                .map_err(|_| OperationCompilationError::Rejected)?;
+            let record = crate::attach_route_issuer::public_attach_route_record_v1(
+                operation_id,
+                request_digest,
+                &access,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+            let desired = projection(
+                authorized.project(),
+                operation_id,
+                PublicProjectionResourceV1::Execution(current_execution.clone()),
+            )?;
+            let public =
+                crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
+                    .map_err(|_| OperationCompilationError::Rejected)?
+                    .ok_or(OperationCompilationError::Rejected)?;
+            return OperationPlan::completed_public_attach(
+                operation_id,
+                authorized.request().idempotency_key().clone(),
+                request_digest,
+                desired.0,
+                desired.1,
+                record,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .with_public_operation(public)
+            .map_err(|_| OperationCompilationError::Rejected);
+        }
+        IdempotencyOutcome::Conflict => return Err(OperationCompilationError::Rejected),
+        IdempotencyOutcome::Vacant => {}
+    }
+
+    let operation_id = OperationId::new();
+    let mut execution = load_execution_for_mutation(
+        journal,
+        authorized.project(),
+        &control.execution_id,
+        control.mutation.as_option(),
+    )?;
+    validate_execution_control(&execution, control)?;
+    let access = issuer
+        .issue(
+            control,
+            &execution,
+            route,
+            authorized.caller(),
+            operation_id,
+            request_digest,
+            authorized.accepted_wall_seconds(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    execution = next_controlled_execution(execution, operation_id, request_digest)?;
+    let desired = projection(
+        authorized.project(),
+        operation_id,
+        PublicProjectionResourceV1::Execution(execution),
+    )?;
+    let record = crate::attach_route_issuer::public_attach_route_record_v1(
+        operation_id,
+        request_digest,
+        &access,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let plan = OperationPlan::completed_public_attach(
+        operation_id,
+        authorized.request().idempotency_key().clone(),
+        request_digest,
+        desired.0,
+        desired.1,
+        record,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    super::attach_public_operation(plan, authorized, authorized.project(), operation_id)
+}
+
 const PUBLIC_MUTATION_INTENT_KEY: &[u8] = b"aos.public.mutation-intent.v1\0";
 const PUBLIC_MUTATION_INTENT_MAGIC: &[u8; 8] = b"AOSPMI01";
 const PUBLIC_RESOURCE_VERSION_DOMAIN: &[u8] = b"aos.sandbox.public-resource-version.v1\0";

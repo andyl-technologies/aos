@@ -5113,6 +5113,75 @@ where
         self.accept_compiled_plan(plan, request_digest)
     }
 
+    /// Admits a public attach using current authenticated Host OpenSSH evidence.
+    ///
+    /// The protected issuer and route evidence must come from the controller's
+    /// separate Host route readback. This path signs and retains the endpoint
+    /// in the same journal transaction as the public operation. The ordinary
+    /// public compiler remains closed when those dependencies are unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale peer evidence, invalid public authorization or holder
+    /// proof, stale Host route evidence, issuance failure, or durable admission
+    /// failure.
+    #[cfg(target_os = "linux")]
+    pub fn admit_public_attach_route(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+        route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
+        issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
+    ) -> Result<
+        (
+            AcceptOutcome,
+            aos_proto::aos::sandbox::v1::OpenSshAccessEndpoint,
+        ),
+        ControllerServiceError,
+    > {
+        if canonical_request.is_empty() {
+            return Err(ControllerServiceError::EmptyRequest);
+        }
+        if canonical_request.len() > self.limits.maximum_request_bytes {
+            return Err(ControllerServiceError::RequestTooLarge);
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+        let request_digest = public_controller_request_digest(
+            self.scope,
+            peer.principal(),
+            peer.project(),
+            canonical_request,
+        );
+        let plan = crate::production_operation_compiler::compile_public_attach_route_v1(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+            route,
+            issuer,
+        )?;
+
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let outcome = self.accept_compiled_plan(plan, request_digest)?;
+        let operation = match outcome {
+            AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation) => operation,
+        };
+        let access = crate::attach_route_issuer::load_public_attach_route_v1(
+            self.reconciler.journal_mut(),
+            operation,
+            request_digest,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok((outcome, access))
+    }
+
     /// Admits one public operator-recovery request with live transport evidence.
     ///
     /// The specialized compiler hook must derive whether the target is a

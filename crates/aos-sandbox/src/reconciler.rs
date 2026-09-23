@@ -202,6 +202,44 @@ impl OperationPlan {
         })
     }
 
+    /// Constructs an atomically completed public attach without an agent effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid desired state or an endpoint record for another operation.
+    pub(crate) fn completed_public_attach(
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        request_digest: [u8; 32],
+        desired_key: Vec<u8>,
+        desired_value: Vec<u8>,
+        route_record: JournalRecord,
+    ) -> Result<Self, ReconcilerError> {
+        if operation_id.as_bytes() == &[0; 16]
+            || desired_key.is_empty()
+            || desired_value.is_empty()
+            || route_record.namespace() != RecordNamespace::PublicAttachRoute
+            || route_record.key() != operation_id.as_bytes()
+            || route_record.value().is_none()
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "invalid completed public attach plan",
+            ));
+        }
+        Ok(Self {
+            operation_id,
+            idempotency_key,
+            request_digest,
+            desired_key,
+            desired_value,
+            effects: Vec::new(),
+            ownership_gate: None,
+            runtime_authority: None,
+            public_operation: None,
+            local_records: vec![route_record],
+        })
+    }
+
     /// Adds protected controller-local records to a still-active operation.
     ///
     /// These records are committed atomically with the operation and its
