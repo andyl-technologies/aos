@@ -870,6 +870,8 @@ impl LifecycleStorageTransitionEntryV1 {
 pub struct LifecycleAuthenticatedStorageInventoryV1 {
     generation: u64,
     source: ObjectDigest,
+    source_version: u32,
+    head: ObjectDigest,
     session: ObjectDigest,
     request: ObjectDigest,
     client_generation: u64,
@@ -1155,11 +1157,15 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
         if previous.commitment != plan.inventory()
             || previous.generation != plan.inventory_generation()
             || previous.source != plan.inventory_source()
+            || previous.source_version != 3
+            || previous.head != plan.inventory_head()
             || current.session != previous.session
             || current.client_generation != expected_client
             || current.broker_generation != expected_broker
             || current.generation != expected_catalog
             || current.source != previous.source
+            || current.source_version != 3
+            || current.head == previous.head
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
@@ -1336,6 +1342,14 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
         }
         let generation = inventory.catalog_generation;
         let source = exact_digest(&inventory.lifecycle_source)?;
+        let source_version = inventory.lifecycle_source_version;
+        let head = if source_version == 3 {
+            exact_digest(&inventory.lifecycle_catalog_head)?
+        } else if source_version == 0 && inventory.lifecycle_catalog_head.is_empty() {
+            source
+        } else {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        };
         let session = ObjectDigest::from_bytes(outcome.request().session_binding());
         let request = ObjectDigest::from_bytes(outcome.request().signed_request_digest());
         let client_generation = outcome.request().client_sequence();
@@ -1370,9 +1384,16 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         let mut hasher = Sha256::new()
-            .chain_update(b"aos.sandbox.lifecycle.complete-storage-inventory.v1\0")
+            .chain_update(if source_version == 3 {
+                b"aos.sandbox.lifecycle.complete-storage-inventory.v3\0".as_slice()
+            } else {
+                b"aos.sandbox.lifecycle.complete-storage-inventory.v1\0".as_slice()
+            })
             .chain_update(generation.to_be_bytes())
             .chain_update(source.as_bytes());
+        if source_version == 3 {
+            hasher = hasher.chain_update(head.as_bytes());
+        }
         // All five family discriminators are committed even when their count
         // is zero; absence is therefore authenticated rather than inferred
         // from the launch-only workspace list.
@@ -1416,6 +1437,8 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
         Ok(Self {
             generation,
             source,
+            source_version,
+            head,
             session,
             request,
             client_generation,
@@ -1456,6 +1479,18 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
         self.source
     }
 
+    /// Returns the immutable-source format used by the signed inventory.
+    #[must_use]
+    pub const fn source_version(&self) -> u32 {
+        self.source_version
+    }
+
+    /// Returns the changing protected physical catalog head.
+    #[must_use]
+    pub const fn head(&self) -> ObjectDigest {
+        self.head
+    }
+
     /// Returns the authenticated provider-session binding.
     #[must_use]
     pub const fn session(&self) -> ObjectDigest {
@@ -1488,6 +1523,8 @@ impl LifecycleAuthenticatedStorageInventoryV1 {
             || successor.broker_generation != expected_broker_generation
             || successor.generation != self.generation
             || successor.source != self.source
+            || successor.source_version != self.source_version
+            || successor.head != self.head
             || successor.entries != self.entries
             || successor.transitions != self.transitions
         {

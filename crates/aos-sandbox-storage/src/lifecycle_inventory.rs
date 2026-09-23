@@ -39,6 +39,8 @@ pub(crate) fn attach_complete_lifecycle_inventory(
         || !response.lifecycle_source.is_empty()
         || !response.lifecycle_resources.is_empty()
         || !response.lifecycle_transitions.is_empty()
+        || response.lifecycle_source_version != 0
+        || !response.lifecycle_catalog_head.is_empty()
     {
         return Err(LifecyclePhase6ErrorV1::InvalidInput);
     }
@@ -52,7 +54,9 @@ pub(crate) fn attach_complete_lifecycle_inventory(
     let atomic = coordinator
         .atomic_dataset_snapshot_inventory()
         .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-    response.lifecycle_source = journal.physical().binding().digest().as_bytes().to_vec();
+    response.lifecycle_source = journal.genesis().digest().as_bytes().to_vec();
+    response.lifecycle_source_version = 3;
+    response.lifecycle_catalog_head = journal.physical().binding().digest().as_bytes().to_vec();
     response.lifecycle_resources = project_complete_rows(&journal, &atomic)?;
     response.lifecycle_transitions = project_transitions(&journal, &atomic)?;
 

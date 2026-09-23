@@ -612,6 +612,7 @@ impl StorageAdmissionCoordinator {
             || program.effect() != plan.effect_commitment()
             || program.catalog_generation() != plan.inventory_generation()
             || program.catalog_source() != plan.inventory_source()
+            || program.catalog_head() != plan.inventory_head()
             || assignment.sandbox().as_bytes() != request.fence().sandbox_id()
             || assignment.incarnation().as_bytes() != request.fence().incarnation_id()
             || assignment.epoch().get() != request.fence().assignment_epoch()

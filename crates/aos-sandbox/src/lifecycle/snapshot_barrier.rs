@@ -66,6 +66,7 @@ pub struct LifecycleAtomicDatasetSnapshotPlanV1 {
     effect: super::LifecycleEffectRequestV1,
     inventory_generation: u64,
     inventory_source: ObjectDigest,
+    inventory_head: ObjectDigest,
     inventory: ObjectDigest,
     closed_resources: Vec<LifecycleResourceV1>,
     members: Vec<LifecycleAtomicDatasetSnapshotMemberV1>,
@@ -101,6 +102,12 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
     #[must_use]
     pub const fn inventory_source(&self) -> ObjectDigest {
         self.inventory_source
+    }
+
+    /// Returns the changing physical head paired with the immutable source.
+    #[must_use]
+    pub const fn inventory_head(&self) -> ObjectDigest {
+        self.inventory_head
     }
 
     /// Returns the complete authenticated pre-effect Storage inventory.
@@ -404,6 +411,10 @@ impl LifecycleSnapshotBarrierV1 {
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
+        if storage.source_version() != 3 {
+            // A legacy source names the changing head, not an immutable catalog.
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         let commitment = atomic_dataset_snapshot_plan_commitment(
             self.operation,
             snapshot,
@@ -411,6 +422,7 @@ impl LifecycleSnapshotBarrierV1 {
             effect,
             storage.generation(),
             storage.source(),
+            storage.head(),
             storage.commitment(),
             self.transaction.dependencies(),
             &members,
@@ -422,6 +434,7 @@ impl LifecycleSnapshotBarrierV1 {
             effect,
             inventory_generation: storage.generation(),
             inventory_source: storage.source(),
+            inventory_head: storage.head(),
             inventory: storage.commitment(),
             closed_resources: self.transaction.dependencies().to_vec(),
             members,
@@ -873,12 +886,13 @@ fn atomic_dataset_snapshot_plan_commitment(
     effect: super::LifecycleEffectRequestV1,
     inventory_generation: u64,
     inventory_source: ObjectDigest,
+    inventory_head: ObjectDigest,
     inventory: ObjectDigest,
     closed_resources: &[LifecycleResourceV1],
     members: &[LifecycleAtomicDatasetSnapshotMemberV1],
 ) -> ObjectDigest {
     let mut hasher = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.atomic-dataset-snapshot-plan.v1\0")
+        .chain_update(b"aos.sandbox.lifecycle.atomic-dataset-snapshot-plan.v2\0")
         .chain_update(operation.as_bytes())
         .chain_update(snapshot.as_bytes())
         .chain_update(transaction.get().as_bytes())
@@ -896,6 +910,7 @@ fn atomic_dataset_snapshot_plan_commitment(
         .chain_update(effect.payload().as_bytes())
         .chain_update(inventory_generation.to_be_bytes())
         .chain_update(inventory_source.as_bytes())
+        .chain_update(inventory_head.as_bytes())
         .chain_update(inventory.as_bytes())
         .chain_update((closed_resources.len() as u32).to_be_bytes());
     for resource in closed_resources {

@@ -598,9 +598,11 @@ message InventoryStorageResourcesResponse {
   uint64 catalog_generation = 3; // Nonzero protected storage catalog generation.
   repeated StorageWorkspaceInventoryRecord workspaces = 4; // At most 16384, strict handle order.
   bytes broker_instance_id = 5; // Exactly 16 bytes; changes on broker start.
-  bytes lifecycle_source = 6; // Exact protected five-family catalog digest, 32 bytes.
+  bytes lifecycle_source = 6; // V2: catalog head; V3: immutable protected catalog genesis, 32 bytes.
   repeated StorageLifecycleInventoryRecord lifecycle_resources = 7; // At most 16384, canonical order.
   repeated StorageLifecycleTransitionRecord lifecycle_transitions = 8; // At most 16384, canonical order.
+  uint32 lifecycle_source_version = 9; // Zero for legacy V2; exactly 3 for root/head split.
+  bytes lifecycle_catalog_head = 10; // V3 protected physical head digest, 32 bytes.
 }
 
 service StorageBroker {

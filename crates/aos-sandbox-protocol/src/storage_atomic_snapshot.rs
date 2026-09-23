@@ -19,10 +19,10 @@ use crate::{
 
 /// Largest canonical lifecycle plan accepted inside the ordinary local packet.
 pub const MAXIMUM_ATOMIC_STORAGE_SNAPSHOT_PLAN_BYTES: usize = 600_000;
-const MINIMUM_ATOMIC_STORAGE_SNAPSHOT_PLAN_BYTES: usize = 508;
-const PLAN_MAGIC: &[u8; 8] = b"AOSASP01";
+const MINIMUM_ATOMIC_STORAGE_SNAPSHOT_PLAN_BYTES: usize = 540;
+const PLAN_MAGIC: &[u8; 8] = b"AOSASP02";
 
-// The target follows the V1 prefix, operation, transaction, and effect fields
+// The target follows the V2 prefix, operation, transaction, and effect fields
 // preceding `target`; a changed plan layout must use a different magic.
 const PLAN_ROOT_TARGET_OFFSET: usize = 158;
 

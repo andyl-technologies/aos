@@ -24,12 +24,14 @@ use crate::state::{VerifiedStorageResolverJournalV1, VerifiedStorageResolverOper
 /// fixed backend adapter may consume the value and cross the mutation boundary.
 #[derive(Clone)]
 pub struct DormantAtomicDatasetSnapshotV1 {
+    format_version: u16,
     operation: [u8; 16],
     snapshot: [u8; 16],
     plan: ObjectDigest,
     effect: ObjectDigest,
     catalog_generation: u64,
     catalog_source: ObjectDigest,
+    catalog_head: ObjectDigest,
     members: Vec<ProtectedAtomicDatasetSnapshotMemberV1>,
     commitment: ObjectDigest,
 }
@@ -75,18 +77,29 @@ impl DormantAtomicDatasetSnapshotV1 {
         self.catalog_source
     }
 
+    pub(crate) const fn catalog_head(&self) -> ObjectDigest {
+        self.catalog_head
+    }
+
+    pub(crate) const fn format_version(&self) -> u16 {
+        self.format_version
+    }
+
     pub(crate) fn canonical_bytes(&self) -> Result<Vec<u8>, LifecyclePhase6ErrorV1> {
         let count =
             u16::try_from(self.members.len()).map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
-        let mut bytes = Vec::with_capacity(160 + self.members.len() * 192);
+        let mut bytes = Vec::with_capacity(192 + self.members.len() * 192);
         bytes.extend_from_slice(b"AOSASG01");
-        bytes.extend_from_slice(&1_u16.to_be_bytes());
+        bytes.extend_from_slice(&self.format_version.to_be_bytes());
         bytes.extend_from_slice(&self.operation);
         bytes.extend_from_slice(&self.snapshot);
         bytes.extend_from_slice(self.plan.as_bytes());
         bytes.extend_from_slice(self.effect.as_bytes());
         bytes.extend_from_slice(&self.catalog_generation.to_be_bytes());
         bytes.extend_from_slice(self.catalog_source.as_bytes());
+        if self.format_version == 2 {
+            bytes.extend_from_slice(self.catalog_head.as_bytes());
+        }
         bytes.extend_from_slice(&count.to_be_bytes());
         for member in &self.members {
             encode_text(&mut bytes, &member.source_name)?;
@@ -101,9 +114,11 @@ impl DormantAtomicDatasetSnapshotV1 {
 
     pub(crate) fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, LifecyclePhase6ErrorV1> {
         let mut bytes = bytes;
-        if take(&mut bytes, 8)? != b"AOSASG01"
-            || take_array::<2>(&mut bytes)? != 1_u16.to_be_bytes()
-        {
+        if take(&mut bytes, 8)? != b"AOSASG01" {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        let format_version = u16::from_be_bytes(take_array(&mut bytes)?);
+        if !matches!(format_version, 1 | 2) {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         let operation = take_array(&mut bytes)?;
@@ -112,6 +127,11 @@ impl DormantAtomicDatasetSnapshotV1 {
         let effect = ObjectDigest::from_bytes(take_array(&mut bytes)?);
         let catalog_generation = u64::from_be_bytes(take_array(&mut bytes)?);
         let catalog_source = ObjectDigest::from_bytes(take_array(&mut bytes)?);
+        let catalog_head = if format_version == 2 {
+            ObjectDigest::from_bytes(take_array(&mut bytes)?)
+        } else {
+            catalog_source
+        };
         let count = usize::from(u16::from_be_bytes(take_array(&mut bytes)?));
         if operation == [0; 16]
             || snapshot == [0; 16]
@@ -119,6 +139,7 @@ impl DormantAtomicDatasetSnapshotV1 {
             || effect.as_bytes() == &[0; 32]
             || catalog_generation == 0
             || catalog_source.as_bytes() == &[0; 32]
+            || catalog_head.as_bytes() == &[0; 32]
             || count == 0
             || count > aos_sandbox::lifecycle::MAXIMUM_LIFECYCLE_EXPECTATIONS
         {
@@ -153,22 +174,26 @@ impl DormantAtomicDatasetSnapshotV1 {
             })
             || commitment
                 != grouped_program_commitment_fields(
+                    format_version,
                     plan,
                     effect,
                     catalog_generation,
                     catalog_source,
+                    catalog_head,
                     &members,
                 )
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
         Ok(Self {
+            format_version,
             operation,
             snapshot,
             plan,
             effect,
             catalog_generation,
             catalog_source,
+            catalog_head,
             members,
             commitment,
         })
@@ -215,7 +240,8 @@ pub(crate) fn prepare_atomic_dataset_snapshot(
         .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
     let physical = journal.physical();
     if physical.binding().generation() != plan.inventory_generation()
-        || physical.binding().digest() != plan.inventory_source()
+        || physical.binding().digest() != plan.inventory_head()
+        || journal.genesis().digest() != plan.inventory_source()
     {
         return Err(LifecyclePhase6ErrorV1::StaleAuthority);
     }
@@ -275,12 +301,14 @@ pub(crate) fn prepare_atomic_dataset_snapshot(
     }
     let commitment = grouped_program_commitment(plan, &expected);
     Ok(DormantAtomicDatasetSnapshotV1 {
+        format_version: 2,
         operation: plan.operation().into_bytes(),
         snapshot: plan.snapshot().into_bytes(),
         plan: plan.commitment(),
         effect: plan.effect_commitment(),
         catalog_generation: plan.inventory_generation(),
         catalog_source: plan.inventory_source(),
+        catalog_head: plan.inventory_head(),
         members: expected,
         commitment,
     })
@@ -331,28 +359,39 @@ fn grouped_program_commitment(
     members: &[ProtectedAtomicDatasetSnapshotMemberV1],
 ) -> ObjectDigest {
     grouped_program_commitment_fields(
+        2,
         plan.commitment(),
         plan.effect_commitment(),
         plan.inventory_generation(),
         plan.inventory_source(),
+        plan.inventory_head(),
         members,
     )
 }
 
 fn grouped_program_commitment_fields(
+    format_version: u16,
     plan: ObjectDigest,
     effect: ObjectDigest,
     inventory_generation: u64,
     inventory_source: ObjectDigest,
+    inventory_head: ObjectDigest,
     members: &[ProtectedAtomicDatasetSnapshotMemberV1],
 ) -> ObjectDigest {
     let mut hasher = Sha256::new()
-        .chain_update(b"aos.sandbox.storage.lifecycle-atomic-snapshot-program.v1\0")
+        .chain_update(if format_version == 2 {
+            b"aos.sandbox.storage.lifecycle-atomic-snapshot-program.v2\0".as_slice()
+        } else {
+            b"aos.sandbox.storage.lifecycle-atomic-snapshot-program.v1\0".as_slice()
+        })
         .chain_update(plan.as_bytes())
         .chain_update(effect.as_bytes())
         .chain_update(inventory_generation.to_be_bytes())
-        .chain_update(inventory_source.as_bytes())
-        .chain_update((members.len() as u32).to_be_bytes());
+        .chain_update(inventory_source.as_bytes());
+    if format_version == 2 {
+        hasher = hasher.chain_update(inventory_head.as_bytes());
+    }
+    hasher = hasher.chain_update((members.len() as u32).to_be_bytes());
     for member in members {
         hasher = hasher
             .chain_update(member.storage_handle.as_bytes())
@@ -371,6 +410,7 @@ pub(crate) fn sample_atomic_snapshot_program_for_test() -> DormantAtomicDatasetS
     let plan = ObjectDigest::from_bytes([3; 32]);
     let effect = ObjectDigest::from_bytes([4; 32]);
     let catalog_source = ObjectDigest::from_bytes([5; 32]);
+    let catalog_head = ObjectDigest::from_bytes([9; 32]);
     let members = vec![ProtectedAtomicDatasetSnapshotMemberV1 {
         source_name: "tank/aos/dataset".to_owned(),
         source_guid: 6,
@@ -378,14 +418,24 @@ pub(crate) fn sample_atomic_snapshot_program_for_test() -> DormantAtomicDatasetS
         storage_handle: ObjectDigest::from_bytes([7; 32]),
         physical_identity: ObjectDigest::from_bytes([8; 32]),
     }];
-    let commitment = grouped_program_commitment_fields(plan, effect, 9, catalog_source, &members);
+    let commitment = grouped_program_commitment_fields(
+        2,
+        plan,
+        effect,
+        9,
+        catalog_source,
+        catalog_head,
+        &members,
+    );
     DormantAtomicDatasetSnapshotV1 {
+        format_version: 2,
         operation: [1; 16],
         snapshot: [2; 16],
         plan,
         effect,
         catalog_generation: 9,
         catalog_source,
+        catalog_head,
         members,
         commitment,
     }
@@ -433,4 +483,36 @@ fn lowercase_hex(bytes: [u8; 16]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_program_retains_legacy_head_source_without_upgrading_it() {
+        let current = sample_atomic_snapshot_program_for_test();
+        let encoded = current.canonical_bytes().unwrap();
+        let decoded = DormantAtomicDatasetSnapshotV1::from_canonical_bytes(&encoded).unwrap();
+        assert_eq!(decoded.format_version(), 2);
+        assert_eq!(decoded.catalog_source(), current.catalog_source());
+        assert_eq!(decoded.catalog_head(), current.catalog_head());
+
+        let mut legacy = current;
+        legacy.format_version = 1;
+        legacy.catalog_head = legacy.catalog_source;
+        legacy.commitment = grouped_program_commitment_fields(
+            1,
+            legacy.plan,
+            legacy.effect,
+            legacy.catalog_generation,
+            legacy.catalog_source,
+            legacy.catalog_head,
+            &legacy.members,
+        );
+        let encoded = legacy.canonical_bytes().unwrap();
+        let decoded = DormantAtomicDatasetSnapshotV1::from_canonical_bytes(&encoded).unwrap();
+        assert_eq!(decoded.format_version(), 1);
+        assert_eq!(decoded.catalog_head(), decoded.catalog_source());
+    }
 }

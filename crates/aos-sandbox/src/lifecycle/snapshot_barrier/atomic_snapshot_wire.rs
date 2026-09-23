@@ -12,7 +12,7 @@ use super::{
     distinct_snapshot_storage_handles,
 };
 
-const MAGIC: &[u8; 8] = b"AOSASP01";
+const MAGIC: &[u8; 8] = b"AOSASP02";
 const MAXIMUM_PLAN_BYTES: usize = 600_000;
 
 impl LifecycleAtomicDatasetSnapshotPlanV1 {
@@ -31,7 +31,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
             8 + 16 * 3
                 + 214
                 + 8
-                + 32 * 3
+                + 32 * 4
                 + 2
                 + 17 * self.closed_resources.len()
                 + 2
@@ -45,6 +45,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         bytes.extend_from_slice(&self.effect.atomic_snapshot_wire_bytes());
         bytes.extend_from_slice(&self.inventory_generation.to_be_bytes());
         bytes.extend_from_slice(self.inventory_source.as_bytes());
+        bytes.extend_from_slice(self.inventory_head.as_bytes());
         bytes.extend_from_slice(self.inventory.as_bytes());
         bytes.extend_from_slice(&closed_count.to_be_bytes());
         for resource in &self.closed_resources {
@@ -88,6 +89,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
         )?;
         let inventory_generation = u64::from_be_bytes(reader.take()?);
         let inventory_source = ObjectDigest::from_bytes(reader.take()?);
+        let inventory_head = ObjectDigest::from_bytes(reader.take()?);
         let inventory = ObjectDigest::from_bytes(reader.take()?);
         let closed_count = usize::from(u16::from_be_bytes(reader.take()?));
         if closed_count == 0 || closed_count > super::super::MAXIMUM_LIFECYCLE_EXPECTATIONS {
@@ -120,6 +122,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
             )))
             || inventory_generation == 0
             || inventory_source.as_bytes() == &[0; 32]
+            || inventory_head.as_bytes() == &[0; 32]
             || inventory.as_bytes() == &[0; 32]
             || !closed_resources.windows(2).all(|pair| pair[0] < pair[1])
             || !members.windows(2).all(|pair| pair[0] < pair[1])
@@ -139,6 +142,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
                     effect,
                     inventory_generation,
                     inventory_source,
+                    inventory_head,
                     inventory,
                     &closed_resources,
                     &members,
@@ -153,6 +157,7 @@ impl LifecycleAtomicDatasetSnapshotPlanV1 {
             effect,
             inventory_generation,
             inventory_source,
+            inventory_head,
             inventory,
             closed_resources,
             members,

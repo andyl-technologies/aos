@@ -530,6 +530,7 @@ struct DurableRecord {
 /// record directly from the protected journal and cross-validates them.
 pub(crate) struct VerifiedStorageResolverJournalV1 {
     physical: VerifiedPhysicalCatalogSnapshotV1,
+    genesis: CatalogBindingV1,
     records: BTreeMap<[u8; 16], VerifiedStorageResolverOperationV1>,
 }
 
@@ -544,6 +545,10 @@ pub(crate) struct VerifiedStorageResolverOperationV1 {
 impl VerifiedStorageResolverJournalV1 {
     pub(crate) const fn physical(&self) -> &VerifiedPhysicalCatalogSnapshotV1 {
         &self.physical
+    }
+
+    pub(crate) const fn genesis(&self) -> CatalogBindingV1 {
+        self.genesis
     }
 
     pub(crate) fn operation(
@@ -735,7 +740,7 @@ impl StorageTransactionStore {
             phase: AtomicDatasetSnapshotPhaseV1::Ambiguous,
             ..record.clone()
         };
-        let placeholder_head_digest = if record.program.catalog_source().as_bytes() == &[1; 32] {
+        let placeholder_head_digest = if record.program.catalog_head().as_bytes() == &[1; 32] {
             [2; 32]
         } else {
             [1; 32]
@@ -907,8 +912,9 @@ impl StorageTransactionStore {
                 .checked_add(1)
                 .ok_or(StorageStateError::InvalidTransition)?;
             let physical = self.verified_resolver_journal()?.physical().binding();
-            if post_head.generation() != expected
-                || post_head.digest() == current.program.catalog_source()
+            if current.program.format_version() != 2
+                || post_head.generation() != expected
+                || post_head.digest() == current.program.catalog_head()
                 || self.catalog_transitions.head_binding() != Some(post_head)
                 || physical != post_head
             {
@@ -2759,6 +2765,9 @@ impl StorageTransactionStore {
         if provider.head_binding() != Some(physical.binding()) {
             return Err(StorageStateError::CorruptRecord);
         }
+        let genesis = provider
+            .genesis_binding()
+            .ok_or(StorageStateError::CorruptRecord)?;
         let durable = load_durable_records(&self.journal, &self.key)?;
         validate_durable_records(&durable, &provider, &self.key)?;
         provider.validate_operation_set(durable.keys().copied())?;
@@ -2779,7 +2788,11 @@ impl StorageTransactionStore {
                 },
             );
         }
-        Ok(VerifiedStorageResolverJournalV1 { physical, records })
+        Ok(VerifiedStorageResolverJournalV1 {
+            physical,
+            genesis,
+            records,
+        })
     }
 
     pub(crate) fn catalog_preparation_record(
@@ -3956,8 +3969,9 @@ fn encode_atomic_snapshot_record(
         if record.phase != AtomicDatasetSnapshotPhaseV1::Committed
             || record.observation.is_none()
             || record.post_head.is_some_and(|head| {
-                record.program.catalog_generation().checked_add(1) != Some(head.generation())
-                    || record.program.catalog_source() == head.digest()
+                record.program.format_version() != 2
+                    || record.program.catalog_generation().checked_add(1) != Some(head.generation())
+                    || record.program.catalog_head() == head.digest()
             })
         {
             return Err(StorageStateError::InvalidValue);
@@ -4090,8 +4104,9 @@ fn decode_atomic_snapshot_record(
     };
     if post_head.is_some_and(|head| {
         phase != AtomicDatasetSnapshotPhaseV1::Committed
+            || program.format_version() != 2
             || program.catalog_generation().checked_add(1) != Some(head.generation())
-            || program.catalog_source() == head.digest()
+            || program.catalog_head() == head.digest()
     }) {
         return Err(StorageStateError::CorruptRecord);
     }

@@ -246,11 +246,24 @@ fn validate_lifecycle_inventory(
 ) -> Result<(), ProtocolValidationError> {
     let absent = response.lifecycle_source.is_empty()
         && response.lifecycle_resources.is_empty()
-        && response.lifecycle_transitions.is_empty();
+        && response.lifecycle_transitions.is_empty()
+        && response.lifecycle_source_version == 0
+        && response.lifecycle_catalog_head.is_empty();
     if absent {
         return Ok(());
     }
     exact_nonzero::<32>(&response.lifecycle_source, "storage lifecycle source")?;
+    match response.lifecycle_source_version {
+        0 if response.lifecycle_catalog_head.is_empty() => {}
+        3 => {
+            exact_nonzero::<32>(&response.lifecycle_catalog_head, "storage lifecycle head")?;
+        }
+        _ => {
+            return Err(ProtocolValidationError::InvalidField(
+                "storage lifecycle source version",
+            ));
+        }
+    }
     if response.lifecycle_resources.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
         || response.lifecycle_transitions.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
     {
@@ -636,6 +649,27 @@ mod tests {
         assert!(
             decode_storage_resource_inventory_response(&response(vec![incomplete]), 65_536)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn lifecycle_source_version_requires_an_explicit_head() {
+        let mut response =
+            InventoryStorageResourcesResponse::decode_from_slice(&response(Vec::new())).unwrap();
+        response.lifecycle_source = vec![13; 32];
+        response.lifecycle_source_version = 3;
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
+        );
+
+        response.lifecycle_catalog_head = vec![14; 32];
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_ok()
+        );
+
+        response.lifecycle_source_version = 0;
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
         );
     }
 }
