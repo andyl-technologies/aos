@@ -93,6 +93,11 @@ in
         script = ''
           tar xf $src
           cd cpio-${version}
+          # The trailing symlink-name buffer is larger than one byte. Give it
+          # a flexible-array type so Fortify 3 accepts valid link targets.
+          sed -i 's/char target\[1\];/char target[];/' src/copyin.c
+          sed -i 's/sizeof (\*p) + strlen (oldpath) + newlen + 1/sizeof (*p) + strlen (oldpath) + newlen + 2/' src/copyin.c
+          grep -Fq 'char target[];' src/copyin.c
         '';
       }
       {
