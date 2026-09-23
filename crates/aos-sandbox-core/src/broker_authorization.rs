@@ -782,6 +782,12 @@ pub struct BrokerPlanTrustAnchor {
 }
 
 impl BrokerPlanTrustAnchor {
+    /// Returns the independently pinned revocation scope accepted by this anchor.
+    #[must_use]
+    pub const fn revocation_scope(&self) -> RevocationScopeId {
+        self.revocation_scope
+    }
+
     /// Constructs one explicit trusted controller-plan anchor from local configuration.
     ///
     /// Broker code must call this only for protected local configuration. Trust

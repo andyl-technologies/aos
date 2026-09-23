@@ -20,7 +20,9 @@ use aos_proto::aos::sandbox::local::v1::{
     DestinationSlotLifecycle, RequestHeader,
 };
 use aos_sandbox_core::{
-    ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample, Revision,
+    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, InvalidBrokerAuthorizationPlan,
+    ObjectDigest, OperationId, ProtocolId, ProtocolVersion, RawPairedClockSample, Revision,
+    RevocationScopeId,
 };
 use aos_sandbox_protocol::semantics::canonical_destination_slot_semantics_v1;
 use aos_sandbox_protocol::{
@@ -82,6 +84,9 @@ pub enum DestinationSlotEffectError {
     /// Current assignment authority, its signed Mount plan, or lease is invalid.
     #[error(transparent)]
     Runtime(#[from] crate::runtime_scope::CurrentRuntimeScopeError),
+    /// The exact protected Mount plan cannot be represented.
+    #[error(transparent)]
+    Plan(#[from] InvalidBrokerAuthorizationPlan),
     /// The signed plan does not bind the exact destination-slot semantics.
     #[error(transparent)]
     Template(#[from] crate::BrokerDispatchTemplateError),
@@ -273,6 +278,61 @@ impl PreparedCurrentDestinationSlotV1 {
     #[must_use]
     pub const fn valid_until_boottime_nanoseconds(&self) -> u64 {
         self.operation.valid_until_boottime_nanoseconds
+    }
+
+    /// Constructs one Mount-only grant from protected slot, policy, and lease state.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected authority, an expired lease window, changed
+    /// prepared semantics, or an unrepresentable request bound.
+    pub(crate) fn plan_at<T>(
+        &self,
+        journal: &mut Journal,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let target = &self.operation.target;
+        let (lease, fresh) = target.verified_plan_lease(journal, clock)?;
+        let manifest = target.binding().manifest().manifest();
+        let request = crate::dispatch::durable_attempt_body(
+            &self.operation.body_without_deadline,
+            self.operation.valid_until_boottime_nanoseconds,
+        )
+        .map_err(|_| DestinationSlotEffectError::CorruptState)?;
+        let maximum_request_bytes =
+            u32::try_from(request.len()).map_err(|_| DestinationSlotEffectError::Capacity)?;
+        let grant = BrokerGrant::new(
+            self.operation.semantics.verb(),
+            self.operation.semantics.target(),
+            self.operation.semantics.argument_commitment(),
+            maximum_request_bytes,
+            0,
+        )?;
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Mount,
+            ProtocolId::MountBroker,
+            CARRIER_VERSION,
+            target
+                .binding()
+                .manifest()
+                .broker_assignment()
+                .map_err(|_| DestinationSlotEffectError::CorruptState)?,
+            manifest.node(),
+            lease.signer().clone(),
+            vec![grant],
+            manifest.policy().digest(),
+            mount_revocation_scope,
+            fresh.wall_seconds(),
+            target.expires_wall_seconds(),
+            Vec::new(),
+        )?;
+        self.recheck(journal, clock)?;
+        Ok(plan)
     }
 
     pub(crate) fn recheck<T>(

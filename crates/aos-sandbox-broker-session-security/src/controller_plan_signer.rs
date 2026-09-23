@@ -76,6 +76,12 @@ impl ControllerBrokerPlanSignerV1 {
         )
     }
 
+    /// Reads Mount's validated revocation scope for typed effect-plan construction.
+    pub(crate) fn mount_revocation_scope_from_process_credentials()
+    -> Result<RevocationScopeId, ControllerBrokerPlanSignerError> {
+        Ok(Self::mount_trust_anchor_from_process_credentials()?.revocation_scope())
+    }
+
     fn trust_anchor_from_credentials(
         policy_name: &str,
         public_key_name: &str,

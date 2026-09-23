@@ -402,6 +402,36 @@ impl CurrentAssignmentTarget {
         self.validity.deadline()
     }
 
+    /// Returns the short non-renewable wall-clock bound intersected with authority.
+    pub(crate) const fn expires_wall_seconds(&self) -> i64 {
+        self.validity.expires_wall_seconds()
+    }
+
+    /// Rechecks and returns the exact current signed lease and paired-clock sample.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale assignment, revoked or substituted lease authority,
+    /// invalid clock provenance, or an expired observation window.
+    pub(crate) fn verified_plan_lease<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(SignedOwnershipLease, RawPairedClockSample), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let fresh = read_clock(&self.policy, clock)?;
+        self.validity.check(fresh)?;
+        let (current, publication) = select_current(journal, self.selection, &self.policy)?;
+        RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
+            .validate_continuity(&self.binding, &current)?;
+        let lease = verify_lease(journal, &current, &publication, &self.policy, fresh)?;
+        self.recheck(journal, clock)?;
+        Ok((lease, fresh))
+    }
+
     pub(crate) const fn binding(&self) -> &RuntimeAuthorityBindingV1 {
         &self.binding
     }

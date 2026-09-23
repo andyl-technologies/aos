@@ -6,7 +6,10 @@
 //! inventory alone. A mutation still requires a freshly bound namespace target;
 //! reconciliation requires an authenticated current-target Mount inventory.
 
-use aos_sandbox_core::{AttachmentId, AttachmentSlotId, OperationId, RawPairedClockSample};
+use aos_sandbox_core::{
+    AttachmentId, AttachmentSlotId, BrokerAuthorizationPlan, OperationId, RawPairedClockSample,
+    RevocationScopeId,
+};
 
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
@@ -232,6 +235,29 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     {
         self.journal.ensure_protected_authority()?;
         destination_slot_effect::prepare_current(self.journal, reconciliation, target, clock)
+    }
+
+    /// Builds the sole Mount plan from a prepared slot request and live lease.
+    ///
+    /// The revocation scope must come from independently pinned Mount deployment
+    /// credentials, never a public request or the Host plan. The plan still
+    /// requires a signature and exact bind before an attempt may be admitted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale assignment, slot, inventory, or ownership authority,
+    /// expired time, and unrepresentable request bounds.
+    pub fn current_slot_plan<T>(
+        &mut self,
+        prepared: &PreparedCurrentDestinationSlotV1,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        prepared.plan_at(self.journal, mount_revocation_scope, clock)
     }
 
     /// Rebinds a pending slot effect to its original protected attempt bytes.
