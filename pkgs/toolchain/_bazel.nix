@@ -1424,6 +1424,20 @@ in
                   "$f" 2>/dev/null || true
               done
 
+            ${lib.optionalString (version == "8.6.0") ''
+              # The vendored Java aliases select ELF binaries that require
+              # /lib64. Use the vendored source targets in the AOS build.
+              RULES_JAVA_TOOLCHAINS=../vendor_dir/rules_java+/toolchains/BUILD
+              test "$(grep -Fc 'actual = ":ijar_prebuilt_binary_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
+              test "$(grep -Fc 'actual = ":singlejar_prebuilt_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
+              test "$(grep -Fc 'actual = ":one_version_prebuilt_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
+              sed -i \
+                -e 's|actual = ":ijar_prebuilt_binary_or_cc_binary"|actual = "@remote_java_tools//:ijar_cc_binary"|' \
+                -e 's|actual = ":singlejar_prebuilt_or_cc_binary"|actual = "@remote_java_tools//:singlejar_cc_bin"|' \
+                -e 's|actual = ":one_version_prebuilt_or_cc_binary"|actual = "@remote_java_tools//:one_version_cc_bin"|' \
+                "$RULES_JAVA_TOOLCHAINS"
+            ''}
+
             ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
               # compile.sh must retain its native platform for the bootstrap JDK
               # toolchains. Select BLAKE3's ARM implementation explicitly while
@@ -1502,10 +1516,25 @@ in
             VENDOR_ABS="$(cd ../vendor_dir && pwd)"
 
             # Bazel exec actions clear the environment before running C++ tools
-            # such as protoc, so their runtime library must be linked.
+            # such as protoc, so their runtime library must be linked. Bazel 8
+            # selects gold, which emits zero-filled executables with this
+            # toolchain; use BFD for both target and execution-tool links.
             export EXTRA_BAZEL_ARGS="
               --verbose_failures
               --curses=no
+              ${lib.optionalString (version == "7.7.1") ''
+              --nouse_ijars
+              --strict_java_deps=off
+              --nostart_end_lib
+              --linkopt=-fuse-ld=bfd
+              --host_linkopt=-fuse-ld=bfd
+            ''}
+              ${lib.optionalString (version == "8.6.0") ''
+              --nouse_ijars
+              --nostart_end_lib
+              --linkopt=-fuse-ld=bfd
+              --host_linkopt=-fuse-ld=bfd
+            ''}
               ${lib.optionalString stdenv.hostPlatform.isLinux ''
               --linkopt=-Wl,-rpath,${gcc-libs}/lib
               --host_linkopt=-Wl,-rpath,${bazelExecGccLibs}/lib

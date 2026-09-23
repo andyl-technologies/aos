@@ -96,6 +96,9 @@ in
         name = "install";
         script = ''
           make install
+          # Keep the FAT alias as a regular executable for image finalization.
+          rm "$out/sbin/mkfs.vfat"
+          cp "$out/sbin/mkfs.fat" "$out/sbin/mkfs.vfat"
         '';
       }
     ];
