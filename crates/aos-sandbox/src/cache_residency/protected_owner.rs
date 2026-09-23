@@ -268,6 +268,56 @@ impl<'session, 'authority, 'journal>
         )
     }
 
+    /// Seals one logical acquisition or renewal as a single durable Pin event.
+    ///
+    /// The selected PinAcquire record must have been issued only after current
+    /// View source membership and consumer authority were independently proved.
+    /// This constructor does not infer those facts from a public request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale acquisition authority, inconsistent retained
+    /// ledger state, invalid projections, or an unsealable successor.
+    pub fn seal_logical_pin_acquisition(
+        &self,
+        inventory: &CacheRecoveryInventoryV1,
+        pin: CachePinV1,
+        operation: OperationId,
+    ) -> Result<
+        Vec<CacheResidencyControllerRecordV1<'session>>,
+        CacheResidencyProtectedJournalErrorV1,
+    > {
+        let capability = self
+            .capability(0)
+            .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let payload = inventory
+            .plan_logical_pin_acquisition(
+                self.owner,
+                capability,
+                pin.clone(),
+                operation,
+                self.now,
+                CacheRecoveryLimitsV1::default(),
+            )
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let authorize = || {
+            self.authorize_pin_acquisition_payload(payload.clone(), 0, &pin)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
+        };
+        Ok(vec![
+            self.seal_pin(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_global_accounting(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_project_accounting(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_domain_accounting(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+            self.seal_current(authorize()?)
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?,
+        ])
+    }
+
     /// Seals one logical release as five aliases of the same durable Pin event.
     ///
     /// # Errors

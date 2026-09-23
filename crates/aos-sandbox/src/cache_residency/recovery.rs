@@ -59,6 +59,7 @@ mod checkpoint;
 mod classification;
 mod codec;
 mod global;
+mod logical_pin_acquisition;
 mod logical_pin_release;
 mod reducer;
 mod replay;
