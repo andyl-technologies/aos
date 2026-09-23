@@ -44,6 +44,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod cache_index_buffer;
 mod cache_public_pin;
 mod cache_source_membership;
 mod controller_authority_effect;
@@ -85,7 +86,7 @@ pub use cache_public_pin::{
     execute_public_cache_pin_v1, execute_public_cache_unpin_v1,
 };
 pub use cache_source_membership::{
-    CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
+    CacheCompiledSourceLimitsV1, CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
     CompiledCacheSourceMembershipErrorV1, join_cache_source_membership_v1,
     with_cache_source_membership_v1, with_compiled_cache_source_membership_v1,
 };

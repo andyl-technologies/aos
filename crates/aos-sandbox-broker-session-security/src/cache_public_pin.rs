@@ -1,6 +1,6 @@
 //! Joins public Cache source membership to protected and physical pin owners.
 
-use aos_filesystem_view_core::{ObjectSource, TreeCompileLimits};
+use aos_filesystem_view_core::ObjectSource;
 use aos_sandbox::Journal;
 use aos_sandbox::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1, CacheOwnerPinSettlementErrorV1,
@@ -14,7 +14,7 @@ use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};
 
 use crate::cache_source_membership::{
-    CacheSourceMembershipLimitsV1, CompiledCacheSourceMembershipErrorV1,
+    CacheCompiledSourceLimitsV1, CompiledCacheSourceMembershipErrorV1,
     with_compiled_cache_source_membership_v1,
 };
 
@@ -85,15 +85,13 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
     partition: PhysicalPartitionId,
     controller_node: NodeId,
     compiler_abi: [u8; 32],
-    tree_limits: TreeCompileLimits,
-    membership_limits: CacheSourceMembershipLimitsV1,
+    compilation_limits: CacheCompiledSourceLimitsV1,
 ) -> Result<PublicCachePinExecutionV1, PublicCachePinExecutionErrorV1<S::Error>> {
     with_compiled_cache_source_membership_v1(
         consumer,
         source,
         compiler_abi,
-        tree_limits,
-        membership_limits,
+        compilation_limits,
         |membership| {
             let acquisition = ValidatedPublicLogicalPinAcquisitionV1::new(
                 consumer,

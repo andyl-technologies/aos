@@ -1,7 +1,5 @@
 //! Joins a rechecked public Cache consumer to authenticated View source data.
 
-use std::io::Cursor;
-
 use aos_filesystem_view_core::{
     CompileError, INDEX_MEDIA_TYPE, IndexError, IndexExpectation, IndexStaging, ObjectSource,
     ProjectionError, ProjectionLimits, SourceError, TreeCompileLimits, TreeCompiler,
@@ -14,6 +12,8 @@ use aos_sandbox_core::{
     CanonicalCborError, MediaType, Revision, decode_view, descriptor_for_bytes,
 };
 
+use crate::cache_index_buffer::CacheIndexBuffer;
+
 /// Bounds structural-index validation and View projection for a public Cache pin.
 #[derive(Clone, Copy, Debug)]
 pub struct CacheSourceMembershipLimitsV1 {
@@ -23,6 +23,17 @@ pub struct CacheSourceMembershipLimitsV1 {
     pub maximum_index_working_bytes: u64,
     /// Limits for canonical View decoding and projected namespace expansion.
     pub projection: ProjectionLimits,
+}
+
+/// Bounds private tree compilation and its aggregate live memory envelope.
+#[derive(Clone, Copy, Debug)]
+pub struct CacheCompiledSourceLimitsV1 {
+    /// Exact-object and graph-wide compiler limits.
+    pub tree: TreeCompileLimits,
+    /// Limits for index validation and View projection.
+    pub membership: CacheSourceMembershipLimitsV1,
+    /// Maximum modeled live heap across View, index, compiler, and projection.
+    pub maximum_memory_bytes: u64,
 }
 
 /// Reports why an exact View source cannot authorize a requested Cache pin.
@@ -60,6 +71,9 @@ pub enum CompiledCacheSourceMembershipErrorV1<E: std::error::Error + 'static> {
     /// This helper only compiles immutable portable tree sources.
     #[error("cache source is not an immutable portable tree")]
     NonImmutableSource,
+    /// The combined View, compiler, index, and projection budgets exceed memory.
+    #[error("private Cache source compilation exceeds its memory budget")]
+    MemoryBudgetExceeded,
     /// The portable tree could not be compiled from exact source objects.
     #[error(transparent)]
     Compile(#[from] CompileError<E>),
@@ -152,6 +166,9 @@ pub fn with_cache_source_membership_v1<R>(
 /// compiler. This differs from validating an externally supplied index: no
 /// untrusted index header or candidate bytes supply the expectation. The
 /// caller must still recheck desired state at the protected pin commit.
+/// The aggregate preflight models up to twice the View and index byte lengths
+/// for `Vec` capacity, plus compiler or validation/projection working memory.
+/// It is not an allocator-exact cgroup guarantee; callers must leave headroom.
 ///
 /// # Errors
 ///
@@ -162,19 +179,28 @@ pub fn with_compiled_cache_source_membership_v1<S, R>(
     consumer: &RecheckedCacheConsumerV1,
     source: &mut S,
     compiler_abi: [u8; 32],
-    tree_limits: TreeCompileLimits,
-    membership_limits: CacheSourceMembershipLimitsV1,
+    limits: CacheCompiledSourceLimitsV1,
     use_membership: impl FnOnce(&ValidatedViewSourceObject<'_, '_, '_>) -> R,
 ) -> Result<R, CompiledCacheSourceMembershipErrorV1<S::Error>>
 where
     S: ObjectSource,
 {
+    let tree_limits = limits.tree;
+    let membership_limits = limits.membership;
     let fence = consumer
         .acquisition_fence()
         .ok_or(CompiledCacheSourceMembershipErrorV1::ReleaseOnly)?;
     let maximum_view_bytes = tree_limits
         .object_bytes
         .min(membership_limits.projection.decode.maximum_bytes);
+    let maximum_index_bytes = tree_limits
+        .index_bytes
+        .min(membership_limits.maximum_index_bytes);
+    preflight_compilation_memory(
+        fence.view_revision().encoded_size(),
+        maximum_index_bytes,
+        limits,
+    )?;
     let view_object = load_exact(source, fence.view_revision(), maximum_view_bytes)?;
     let view = decode_view(view_object.bytes(), membership_limits.projection.decode)?;
     let ViewSource::ImmutableTree { tree } = view.source() else {
@@ -182,16 +208,15 @@ where
     };
 
     let staging = IndexStaging::new(
-        Cursor::new(Vec::new()),
-        tree_limits
-            .index_bytes
-            .min(membership_limits.maximum_index_bytes),
+        CacheIndexBuffer::new(maximum_index_bytes)
+            .ok_or(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded)?,
+        maximum_index_bytes,
         tree_limits.index_record_bytes,
     );
     let (_, staged) =
         TreeCompiler::new(tree_limits).compile(source, staging, tree, compiler_abi)?;
     let (writer, _, binding) = staged.into_parts_with_binding();
-    let index_bytes = writer.into_inner();
+    let index_bytes = writer.into_bytes();
     let index_media = MediaType::new(INDEX_MEDIA_TYPE)
         .map_err(|_| CompiledCacheSourceMembershipErrorV1::InvalidIndexMediaType)?;
     let index_descriptor = descriptor_for_bytes(index_media, &index_bytes);
@@ -206,4 +231,34 @@ where
         use_membership,
     )
     .map_err(CompiledCacheSourceMembershipErrorV1::Membership)
+}
+
+fn preflight_compilation_memory<E: std::error::Error + 'static>(
+    view_bytes: u64,
+    maximum_index_bytes: u64,
+    limits: CacheCompiledSourceLimitsV1,
+) -> Result<(), CompiledCacheSourceMembershipErrorV1<E>> {
+    let tree_limits = limits.tree;
+    let membership_limits = limits.membership;
+    let budget = limits.maximum_memory_bytes;
+    let view_capacity = view_bytes
+        .checked_mul(2)
+        .ok_or(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded)?;
+    let index_capacity = maximum_index_bytes
+        .checked_mul(2)
+        .ok_or(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded)?;
+    let common = view_capacity
+        .checked_add(index_capacity)
+        .ok_or(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded)?;
+    let compiler_peak = common
+        .checked_add(tree_limits.working_bytes)
+        .ok_or(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded)?;
+    let projection_peak = common
+        .checked_add(membership_limits.maximum_index_working_bytes)
+        .and_then(|bytes| bytes.checked_add(membership_limits.projection.maximum_working_bytes))
+        .ok_or(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded)?;
+    if budget == 0 || compiler_peak.max(projection_peak) > budget {
+        return Err(CompiledCacheSourceMembershipErrorV1::MemoryBudgetExceeded);
+    }
+    Ok(())
 }
