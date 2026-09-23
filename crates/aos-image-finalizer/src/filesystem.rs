@@ -70,9 +70,11 @@ pub async fn rebuild_erofs(
     }
     let compression = format!("zstd,level={}", layout.erofs_compression_level);
     let output_text = path_text(output)?;
+    // Large root trees otherwise overflow the bounded stdout capture.
     let _ = mkfs_erofs
         .run(
             [
+                "--quiet",
                 "--all-root",
                 "-T0",
                 "-U",
