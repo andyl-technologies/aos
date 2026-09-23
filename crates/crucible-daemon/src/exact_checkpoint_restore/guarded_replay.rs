@@ -198,9 +198,18 @@ where
 
         let mut previous_ceiling = None;
         let mut stalled_reissues = 0;
+        let mut physical_steps = 0_u64;
+        eprintln!(
+            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-start target={}",
+            target_icount.retired
+        );
         loop {
             let at = self.current_icount(&thin)?;
             if at == target_icount {
+                eprintln!(
+                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-reached steps={physical_steps} at={}",
+                    at.retired
+                );
                 verify_target_pending_request(self, at, fat_pending.first())?;
                 if !self.executor.replay_selectable_reply_is_quiescent()? {
                     return Err(invalid_replay_selection(
@@ -212,8 +221,22 @@ where
             reject_unrecorded_local_request(self)?;
             let ceiling =
                 next_replay_ceiling(at, target_icount, previous_ceiling, &mut stalled_reissues)?;
+            let trace_step = physical_steps < 3 || physical_steps % 64 == 0;
+            if trace_step {
+                eprintln!(
+                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-before step={physical_steps} at={} ceiling={} target={}",
+                    at.retired, ceiling.retired, target_icount.retired
+                );
+            }
             thin = self.advance_to_ceiling(thin, ceiling)?;
+            if trace_step {
+                eprintln!(
+                    "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-after step={physical_steps} at={}",
+                    self.current_icount(&thin)?.retired
+                );
+            }
             previous_ceiling = Some(ceiling);
+            physical_steps += 1;
         }
 
         eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=compare-start");
