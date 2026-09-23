@@ -6,6 +6,8 @@
   cmake,
   ninja,
   llvm,
+  buildPackages,
+  gcc-libs,
   bison,
   flex,
   python3,
@@ -37,6 +39,7 @@ in
       cmake
       ninja
       llvm
+      gcc-libs
       bison
       flex
       python3
@@ -178,9 +181,12 @@ in
               printf '%s\n' 'if $darwin_target; then exec ${llvm}/bin/'"$compiler"' "$@"; fi'
               printf '%s\n' 'case " $* " in'
               printf '%s\n' '  *" -c "*|*" -E "*|*" -S "*|*" -fsyntax-only "*)'
-              printf '%s\n' '    exec ${llvm}/bin/'"$compiler"' --gcc-install-dir='"$GCC_DIR"' -idirafter '"$REAL_LIBC_DEV"'/include -B'"$REAL_LIBC"'/lib -B'"$GCC_DIR"' "$@" ;;'
+              # Raw Clang needs the native libbsd headers for ELF host tools.
+              printf '%s\n' '    exec ${llvm}/bin/'"$compiler"' --gcc-install-dir='"$GCC_DIR"' -isystem ${buildPackages.libbsd}/include -idirafter '"$REAL_LIBC_DEV"'/include -B'"$REAL_LIBC"'/lib -B'"$GCC_DIR"' "$@" ;;'
               printf '%s\n' 'esac'
-              printf '%s\n' 'exec ${llvm}/bin/'"$compiler"' -idirafter '"$REAL_LIBC_DEV"'/include -L'"$HOST_COMPAT_LIB"' -L'"$REAL_LIBC"'/lib --gcc-install-dir='"$GCC_DIR"' -B'"$REAL_LIBC"'/lib -B'"$GCC_DIR"' -Wl,-dynamic-linker='"$DL"' -Wl,-rpath,'"$REAL_LIBC"'/lib -Wl,-rpath,'"$REAL_CC"'/lib "$@"'
+              # ELF host tools need the native libbsd/libmd libraries and a
+              # C++ runtime search path when CMake executes its Clang probes.
+              printf '%s\n' 'exec ${llvm}/bin/'"$compiler"' -idirafter '"$REAL_LIBC_DEV"'/include -L'"$HOST_COMPAT_LIB"' -L'"$REAL_LIBC"'/lib -L${buildPackages.libbsd}/lib -L${buildPackages.libmd}/lib --gcc-install-dir='"$GCC_DIR"' -B'"$REAL_LIBC"'/lib -B'"$GCC_DIR"' -Wl,-dynamic-linker='"$DL"' -Wl,-rpath,'"$REAL_LIBC"'/lib -Wl,-rpath,'"$REAL_CC"'/lib -Wl,-rpath,${gcc-libs}/lib -Wl,-rpath,${buildPackages.libbsd}/lib -Wl,-rpath,${buildPackages.libmd}/lib "$@"'
             } > ".aos-toolchain/$compiler"
             chmod +x ".aos-toolchain/$compiler"
           done
