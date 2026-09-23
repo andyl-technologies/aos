@@ -373,15 +373,18 @@ fn is_canonical_genesis_reuse_boundary(source: &ProductionVmHotForkSourceWorld) 
 
     continuation.configuration().schedule.is_empty()
         && continuation.scheduler().frontier().ticks == 0
-        && event_log.bytes == 0
-        && event_log.events == 0
-        && event_log.appended_segment.is_none()
+        && is_canonical_genesis_event_log(event_log)
         && continuation.terminal_verdict().is_none()
         && continuation.initial_lifecycle_observations_pending()
         && continuation.nodes().iter().all(|node| {
             node.scheduler_time().ticks == 0
                 && node.physical_time().is_none_or(|time| time.ticks == 0)
         })
+}
+
+fn is_canonical_genesis_event_log(offset: crucible::EventLogOffset) -> bool {
+    // Counts alone cannot authenticate an empty log: its prefix is part of the boundary.
+    offset == crucible::EventLog::new().offset()
 }
 
 /// Reaps a complete source world after fallback reauthentication.

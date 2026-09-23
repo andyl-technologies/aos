@@ -3,6 +3,16 @@
 use super::*;
 
 #[test]
+fn genesis_reuse_requires_the_canonical_empty_event_prefix() {
+    let canonical = crucible::EventLog::new().offset();
+    let foreign =
+        crucible::EventLogOffset::new(ContentHash::from_bytes(b"foreign empty event log"), 0, 0);
+
+    assert!(is_canonical_genesis_event_log(canonical));
+    assert!(!is_canonical_genesis_event_log(foreign));
+}
+
+#[test]
 fn admission_uses_measured_world_resources_and_charges_only_matching_checkouts() {
     let source_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("scripted source");
