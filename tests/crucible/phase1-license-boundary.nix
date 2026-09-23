@@ -147,7 +147,10 @@ in
                 fuse3 = null;
                 gcc-libs = null;
                 bash = null;
-                stdenv = {isCross = false;};
+                stdenv = {
+                  isCross = false;
+                  hostPlatform.isLinux = true;
+                };
                 buildPackages = null;
                 pname = "qemu-crucible";
                 enablePlugins = true;
@@ -204,7 +207,9 @@ in
 
           suite_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/crucible.nix"
           release_nix="$CRUCIBLE_GATE_SOURCE/pkgs/tools/crucible/_release-manifest.nix"
-          grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];' "$suite_nix"
+          grep -Fq 'runtimeDeps =' "$suite_nix"
+          grep -Fq '[controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]' "$suite_nix"
+          grep -Fq '++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash];' "$suite_nix"
           grep -Fq 'license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later" "BSD-2-Clause" "BSD-3-Clause"];' "$suite_nix"
           grep -Fq 'correspondingSource = qemu-crucible-source;' "$suite_nix"
           grep -Fq 'standalone_release=false' "$CRUCIBLE_GATE_SOURCE/pkgs/emulation/qemu.nix"
