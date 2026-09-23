@@ -455,6 +455,7 @@ fn drive_fast_q7_failure(
     genesis: &str,
 ) -> Result<AuthenticatedFailureAttempt, Box<dyn Error>> {
     use super::packaged::guest_choice;
+    use crucible_campaign::{ObservationId, PropertyVerdict};
 
     let (discovery_attempt, discovery) =
         guest_choice::wait_for_initial_discovery(fixture, service, genesis)?;
@@ -526,6 +527,28 @@ fn drive_fast_q7_failure(
         return Err("q7 midpoint observation belongs to another attempt".into());
     }
     let observation = json_string(&q7["observation"], "id")?;
+    let repository = crucible_campaign::CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "midpoint-debug-verdict-inspection",
+            &fixture.objects,
+        )),
+        Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+            fixture._temporary.path().join("refs"),
+        )),
+    );
+    let observation_record = repository.load_observation(ObservationId::parse(&observation)?)?;
+    let verdicts = repository.load_property_verdict_set(observation_record.properties())?;
+    if verdicts
+        .properties()
+        .get("known-midpoint-failure")
+        .map(|evidence| evidence.verdict())
+        != Some(PropertyVerdict::Failed)
+    {
+        return Err(format!(
+            "q7 observation did not fail the expected property: {verdicts:?}"
+        )
+        .into());
+    }
 
     println!("midpoint_attempt={attempt}");
     Ok(AuthenticatedFailureAttempt {
