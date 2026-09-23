@@ -6,7 +6,11 @@
 //! handshake and bounded stop-and-wait exchanges. It never discovers an
 //! inherited descriptor, reconnects to a path, or activates nspawn.
 
+use std::fs::File;
+use std::io::Read as _;
 use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::unix::fs::MetadataExt as _;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use aos_sandbox::runtime_execution::{
@@ -23,8 +27,10 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_core::runtime_backend::AdmissionCurrentnessV1;
 use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
+use rustix::fs::{Mode, OFlags, open, openat};
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::attach_route::OpenSshGateAgentExchangeV1;
@@ -32,6 +38,10 @@ use crate::attach_route::OpenSshGateAgentExchangeV1;
 const PROVISIONING_BYTES: usize = 258;
 const RETRY_INTERVAL: Duration = Duration::from_millis(2);
 const GATE_TIMEOUT: Duration = Duration::from_secs(30);
+const SEED_DIRECTORY: &str = "/run/credentials/aos-sandbox-hostd.service";
+const SEED_FILE: &str = "guest-agent-signing-seed-v1";
+const SEED_MAGIC: &[u8; 8] = b"AOSGSK01";
+const SEED_CREDENTIAL_BYTES: usize = 72;
 
 /// Reports a stale launch binding or a failed authenticated channel exchange.
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +58,9 @@ pub enum HostAgentLiveErrorV1 {
     /// The agent answered with an unexpected frame or invalid signature.
     #[error("guest channel returned unauthenticated traffic")]
     Unauthenticated,
+    /// The fixed protected launch seed is absent or insecure.
+    #[error("protected guest signing seed is unavailable")]
+    SeedUnavailable,
     /// Protected runtime ownership changed or became unavailable.
     #[error(transparent)]
     Owner(#[from] DormantRuntimeExecutionOwnerErrorV1),
@@ -63,6 +76,123 @@ pub enum HostAgentLiveErrorV1 {
     /// A received frame was malformed.
     #[error(transparent)]
     Frame(#[from] AgentProtocolError),
+}
+
+/// Retains a zeroizing seed verified against the fixed protected agent peer.
+///
+/// The versioned credential is installed by trusted node provisioning, not
+/// derived from the public bootstrap manifest or supplied by a broker client:
+///
+/// ```text
+/// /run/credentials/aos-sandbox-hostd.service/guest-agent-signing-seed-v1
+/// AOSGSK01 || seed[32] || SHA256(magic || seed)[32]
+/// ```
+pub struct HostAgentProtectedSeedV1 {
+    seed: Zeroizing<[u8; 32]>,
+    runtime: AgentRuntimeBindingV1,
+    channel_binding: ObjectDigest,
+}
+
+impl HostAgentProtectedSeedV1 {
+    /// Opens the fixed root-protected credential and matches its public key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent, symlinked, non-root-owned, writable, multiply linked,
+    /// malformed, or mismatched credential and stale protected currentness.
+    pub fn open_for_claim(
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<Self, HostAgentLiveErrorV1> {
+        claim.revalidate()?;
+        let directory = open(
+            SEED_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
+        let directory = File::from(directory);
+        let directory_metadata = directory
+            .metadata()
+            .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
+        if !directory_metadata.is_dir()
+            || directory_metadata.uid() != 0
+            || directory_metadata.mode() & 0o022 != 0
+        {
+            return Err(HostAgentLiveErrorV1::SeedUnavailable);
+        }
+        let descriptor = openat(
+            &directory,
+            Path::new(SEED_FILE),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
+        let mut file = File::from(descriptor);
+        let metadata = file
+            .metadata()
+            .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
+        if !metadata.is_file()
+            || metadata.uid() != 0
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o277 != 0
+            || metadata.mode() & 0o400 == 0
+            || metadata.len() != SEED_CREDENTIAL_BYTES as u64
+        {
+            return Err(HostAgentLiveErrorV1::SeedUnavailable);
+        }
+        let mut bytes = Zeroizing::new([0; SEED_CREDENTIAL_BYTES]);
+        file.read_exact(&mut *bytes)
+            .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
+        let checksum: [u8; 32] = Sha256::digest(&bytes[..40]).into();
+        if &bytes[..8] != SEED_MAGIC || bytes[40..] != checksum {
+            return Err(HostAgentLiveErrorV1::SeedUnavailable);
+        }
+        let mut seed = Zeroizing::new([0; 32]);
+        seed.copy_from_slice(&bytes[8..40]);
+        if *seed == [0; 32]
+            || SigningKey::from_bytes(&seed).verifying_key().to_bytes()
+                != claim.agent_peer().public_key()
+        {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        let runtime = agent_runtime(claim.currentness())?;
+        let channel_binding = claim.agent_peer().channel_binding();
+        claim.revalidate()?;
+        Ok(Self {
+            seed,
+            runtime,
+            channel_binding,
+        })
+    }
+
+    /// Mints a transient launch record from the verified protected seed.
+    ///
+    /// The package commitment and advertised features must come from the
+    /// trusted launch plan. The caller still has to pass this record through
+    /// [`HostAgentLaunchHandoffV1::prepare`] under a current protected claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unavailable entropy or invalid launch parameters.
+    pub fn launch_record(
+        self,
+        features: aos_sandbox_agent::AgentFeatureSetV1,
+        package_binding: ObjectDigest,
+    ) -> Result<GuestAgentLaunchRecordV1, HostAgentLiveErrorV1> {
+        let mut instance = [0; 16];
+        OsRng
+            .try_fill_bytes(&mut instance)
+            .map_err(|_| HostAgentLiveErrorV1::Entropy)?;
+        GuestAgentLaunchRecordV1::new(
+            self.runtime,
+            self.channel_binding,
+            instance,
+            *self.seed,
+            features,
+            package_binding,
+        )
+        .map_err(|_| HostAgentLiveErrorV1::Binding)
+    }
 }
 
 /// Owns both launch descriptors before their explicit transfer to the guest.
