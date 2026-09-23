@@ -22,6 +22,7 @@ use super::*;
 const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
 const SOURCE_FDS_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SOURCE_FDS";
 const PINNED_CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_CWD_PROBE";
+const PINNED_BLOCK_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_BLOCK_PROBE";
 const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
 const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
 const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
@@ -943,11 +944,29 @@ fn prepared_run_directory_rejects_vmstate_replacement() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn prepared_run_directory_rejects_root_overlay_replacement() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared = open_prepared_run_directory_for_test(directory.path())?;
+    let overlay_path = directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+
+    std::fs::remove_file(&overlay_path)?;
+    std::fs::File::create(&overlay_path)?;
+
+    assert!(matches!(
+        prepared.revalidate(),
+        Err(QemuSpawnError::PreparedRootOverlayChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
 fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
     std::fs::File::create(&vmstate_path)?;
     let prepared = open_prepared_run_directory_for_test(directory.path())?;
+    let image_pins = GuardedLaunchImagePins::new(&prepared)?;
     std::fs::remove_file(&vmstate_path)?;
     std::fs::File::create(&vmstate_path)?;
 
@@ -959,8 +978,8 @@ fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
         &[],
         &prepared,
         child_resources,
+        &image_pins,
         &[],
-        "spawn replaced pinned VMState probe",
         None,
     ) {
         Err(error) => error,
@@ -988,6 +1007,7 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
     std::fs::create_dir(&diagnostic_path)?;
     std::fs::File::create(diagnostic_path.join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
     let prepared = open_prepared_run_directory_for_test(&diagnostic_path)?;
+    let image_pins = GuardedLaunchImagePins::new(&prepared)?;
 
     std::fs::rename(&diagnostic_path, &retained_path)?;
     std::fs::create_dir(&diagnostic_path)?;
@@ -1013,6 +1033,7 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
         &args,
         &prepared,
         child_resources,
+        &image_pins,
         &[
             (
                 PINNED_CWD_PROBE_ENV,
@@ -1020,11 +1041,152 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
             ),
             (SOURCE_FDS_ENV, &source_fds),
         ],
-        "spawn pinned child cwd probe",
         None,
     )?;
 
     assert!(child.wait()?.success());
+    Ok(())
+}
+
+#[test]
+fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<dyn Error>> {
+    if let Some(probe_root) = env::var_os(PINNED_BLOCK_PROBE_ENV) {
+        let probe_root = Path::new(&probe_root);
+        std::fs::write(probe_root.join("ready"), b"ready")?;
+        wait_for_probe_file(&probe_root.join("release"))?;
+
+        child_probe_fixed_fds()?;
+        assert_eq!(
+            std::fs::read(format!("/proc/self/fd/{QEMU_VMSTATE_LAUNCH_FD}"))?,
+            b"original-vmstate"
+        );
+        assert_eq!(
+            std::fs::read(format!("/proc/self/fd/{QEMU_ROOT_OVERLAY_LAUNCH_FD}"))?,
+            b"original-overlay"
+        );
+        return Ok(());
+    }
+
+    let probe_root = tempfile::tempdir()?;
+    let attempt = probe_root.path().join("attempt");
+    std::fs::create_dir(&attempt)?;
+    let vmstate = attempt.join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    let overlay = attempt.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    std::fs::write(&vmstate, b"original-vmstate")?;
+    std::fs::write(&overlay, b"original-overlay")?;
+
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        &attempt,
+        &contract,
+    )?;
+    let image_pins = GuardedLaunchImagePins::new(&prepared)?;
+    let overlay_pin = image_pins
+        .overlay
+        .as_ref()
+        .ok_or("root overlay pin missing")?;
+    assert!(image_pins.vmstate.as_raw_fd() >= CHILD_SOURCE_FD_MIN);
+    assert!(overlay_pin.as_raw_fd() >= CHILD_SOURCE_FD_MIN);
+
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    for source_fd in [
+        child_resources.control_socket.as_raw_fd(),
+        child_resources.shmem_fd.as_raw_fd(),
+        child_resources.wake_fd.as_raw_fd(),
+    ] {
+        assert!(source_fd >= CHILD_SOURCE_FD_MIN);
+    }
+    let source_fds = format!(
+        "{},{},{},{},{}",
+        child_resources.control_socket.as_raw_fd(),
+        child_resources.shmem_fd.as_raw_fd(),
+        child_resources.wake_fd.as_raw_fd(),
+        image_pins.vmstate.as_raw_fd(),
+        overlay_pin.as_raw_fd(),
+    );
+    let current_exe = env::current_exe()?;
+    let current_exe = current_exe.to_string_lossy().into_owned();
+    let probe_path = probe_root
+        .path()
+        .to_str()
+        .ok_or("probe path is not UTF-8")?;
+    let args = vec![
+        String::from("--exact"),
+        String::from("spawn::tests::inherited_block_roots_survive_names_replaced_after_exec"),
+    ];
+    let mut child = spawn_process_with_resources(
+        &current_exe,
+        &args,
+        &prepared,
+        child_resources,
+        &image_pins,
+        &[
+            (PINNED_BLOCK_PROBE_ENV, probe_path),
+            (SOURCE_FDS_ENV, &source_fds),
+        ],
+        None,
+    )?;
+
+    wait_for_probe_file(&probe_root.path().join("ready"))?;
+    std::fs::rename(&vmstate, attempt.join("old-vmstate"))?;
+    std::fs::rename(&overlay, attempt.join("old-overlay"))?;
+    std::fs::write(&vmstate, b"forged-vmstate")?;
+    std::fs::write(&overlay, b"forged-overlay")?;
+    std::fs::write(probe_root.path().join("release"), b"release")?;
+
+    assert!(child.wait()?.success());
+    assert_eq!(std::fs::read(&vmstate)?, b"forged-vmstate");
+    assert_eq!(std::fs::read(&overlay)?, b"forged-overlay");
+    Ok(())
+}
+
+#[test]
+fn guarded_launch_rewrites_only_authenticated_block_roots() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let canonical = command.args();
+    let guarded = guarded_launch_args(canonical, true)?;
+
+    assert_eq!(guarded[0], "-add-fd");
+    assert_eq!(guarded[2], "-add-fd");
+    assert!(
+        guarded
+            .iter()
+            .any(|arg| arg.contains("file.filename=/dev/fdset/1"))
+    );
+    assert!(guarded.iter().any(|arg| arg.contains("file=/dev/fdset/2")));
+    assert!(!guarded.iter().any(|arg| {
+        arg.contains("file.filename=crucible-vmstate.qcow2")
+            || arg.contains("file=crucible-root-overlay.qcow2")
+    }));
+
+    let vmstate_arg = canonical
+        .iter()
+        .find(|arg| arg.contains("file.filename=crucible-vmstate.qcow2"))
+        .ok_or("canonical VMState argument is missing")?;
+    let mut duplicated = canonical.to_vec();
+    duplicated.extend(["-blockdev".to_owned(), vmstate_arg.clone()]);
+    assert!(guarded_launch_args(&duplicated, true).is_err());
+    let missing_vmstate = canonical
+        .iter()
+        .filter(|arg| *arg != vmstate_arg)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(guarded_launch_args(&missing_vmstate, true).is_err());
+    Ok(())
+}
+
+// crucible-lint: allow clippy-disallowed-method -- test process handoff uses host time only.
+#[allow(clippy::disallowed_methods)]
+fn wait_for_probe_file(path: &Path) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for probe file {}", path.display()).into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     Ok(())
 }
 

@@ -135,6 +135,8 @@ pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
 pub const QMP_GETFD_COMMAND: &str = "getfd";
 /// Standard QMP command used to close one previously imported descriptor.
 pub const QMP_CLOSEFD_COMMAND: &str = "closefd";
+/// Patched QMP command that adopts the authenticated startup block roots.
+pub const QMP_ADOPT_LAUNCH_FDSETS_COMMAND: &str = "x-crucible-adopt-launch-fdsets";
 /// Maximum bytes in one descriptor name admitted by the typed QMP surface.
 pub const QMP_DESCRIPTOR_NAME_MAX_BYTES: usize = 128;
 /// Versioned token consumed by the dormant fixture-side debugger bootstrap.
@@ -304,6 +306,14 @@ where
     ) -> Result<QmpFingerprintProjectionManifest, QmpError> {
         let response = self.send_command_return(QmpCommand::QueryFingerprintProjectionManifest)?;
         parse_fingerprint_projection_manifest(&response.value)
+    }
+
+    pub(crate) fn adopt_guarded_launch_fdsets(
+        &mut self,
+        has_root_overlay: bool,
+    ) -> Result<(), QmpError> {
+        self.send_command(QmpCommand::AdoptLaunchFdsets { has_root_overlay })
+            .map(|_complete| ())
     }
 
     /// Returns a client whose launch already contains the fixed inert endpoint.
@@ -1370,6 +1380,8 @@ pub enum QmpCommandKind {
     GetFd,
     /// Close one previously imported Unix descriptor.
     CloseFd,
+    /// Adopt and retire the authenticated startup descriptor sets.
+    AdoptLaunchFdsets,
 }
 
 impl QmpCommandKind {
@@ -1413,6 +1425,7 @@ impl QmpCommandKind {
             Self::Quit => QMP_QUIT_COMMAND_NAME,
             Self::GetFd => QMP_GETFD_COMMAND,
             Self::CloseFd => QMP_CLOSEFD_COMMAND,
+            Self::AdoptLaunchFdsets => QMP_ADOPT_LAUNCH_FDSETS_COMMAND,
         }
     }
 }
@@ -1603,6 +1616,21 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    #[test]
+    fn launch_fdset_adoption_uses_the_typed_private_qmp_command() {
+        for has_root_overlay in [false, true] {
+            let command = QmpCommand::AdoptLaunchFdsets { has_root_overlay };
+            assert_eq!(command.kind(), QmpCommandKind::AdoptLaunchFdsets);
+            assert_eq!(
+                command.request(),
+                json!({
+                    "execute": "x-crucible-adopt-launch-fdsets",
+                    "arguments": { "root-overlay": has_root_overlay },
+                })
+            );
+        }
     }
 
     #[test]

@@ -39,7 +39,10 @@ pub(crate) use materialization::{
 pub use run_directory::QemuPreparedRunDirectory;
 use run_directory::{PinnedFileIdentity, open_prepared_root_overlay};
 
-const CHILD_SOURCE_FD_MIN: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
+const QEMU_VMSTATE_LAUNCH_FD: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
+const QEMU_ROOT_OVERLAY_LAUNCH_FD: RawFd = QEMU_VMSTATE_LAUNCH_FD + 1;
+// Every inherited source is relocated above all fixed exec targets before dup2.
+const CHILD_SOURCE_FD_MIN: RawFd = QEMU_ROOT_OVERLAY_LAUNCH_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
@@ -903,15 +906,17 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
     run_directory.validate_launch_basis(command, contract)?;
     run_directory.revalidate()?;
+    let image_pins = GuardedLaunchImagePins::new(run_directory)?;
+    let launch_args = guarded_launch_args(command.args(), image_pins.overlay.is_some())?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
     let child = spawn_process_with_resources(
         command.executable(),
-        command.args(),
+        &launch_args,
         run_directory,
         child_resources,
+        &image_pins,
         &[],
-        "spawn guarded QEMU child",
         Some(contract),
     )?;
     Ok(QemuSpawnedChild {
@@ -944,6 +949,71 @@ struct QemuSpawnChildResources {
     control_socket: OwnedFd,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
+}
+
+struct GuardedLaunchImagePins {
+    vmstate: OwnedFd,
+    overlay: Option<OwnedFd>,
+}
+
+impl GuardedLaunchImagePins {
+    fn new(run_directory: &QemuPreparedRunDirectory) -> Result<Self, QemuSpawnError> {
+        let vmstate = duplicate_cloexec_fd(
+            run_directory.vmstate.as_raw_fd(),
+            "pin guarded VMState launch descriptor",
+        )?;
+        let overlay = run_directory
+            .root_overlay
+            .as_ref()
+            .map(|overlay| {
+                duplicate_cloexec_fd(
+                    overlay.as_raw_fd(),
+                    "pin guarded root-overlay launch descriptor",
+                )
+            })
+            .transpose()?;
+        Ok(Self { vmstate, overlay })
+    }
+}
+
+fn guarded_launch_args(args: &[String], has_overlay: bool) -> Result<Vec<String>, QemuSpawnError> {
+    let vmstate_name = format!("file.filename={}", crate::DEFAULT_VMSTATE_FILE_NAME);
+    let overlay_name = format!("file={}", crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    let mut vmstate_count = 0;
+    let mut overlay_count = 0;
+    let mut rewritten = Vec::with_capacity(args.len() + 4);
+
+    rewritten.extend([
+        String::from("-add-fd"),
+        format!("fd={QEMU_VMSTATE_LAUNCH_FD},set=1,opaque=crucible-vmstate"),
+    ]);
+    if has_overlay {
+        rewritten.extend([
+            String::from("-add-fd"),
+            format!("fd={QEMU_ROOT_OVERLAY_LAUNCH_FD},set=2,opaque=crucible-root-overlay"),
+        ]);
+    }
+
+    for arg in args {
+        let mut value = arg.clone();
+        if value.contains(&vmstate_name) {
+            vmstate_count += value.matches(&vmstate_name).count();
+            value = value.replace(&vmstate_name, "file.filename=/dev/fdset/1");
+        }
+        if value.contains(&overlay_name) {
+            overlay_count += value.matches(&overlay_name).count();
+            value = value.replace(&overlay_name, "file=/dev/fdset/2");
+        }
+        rewritten.push(value);
+    }
+
+    if vmstate_count != 1 || overlay_count != usize::from(has_overlay) {
+        return Err(invalid_input(
+            "bind guarded QEMU block roots",
+            "canonical VMState or root-overlay launch path is missing or duplicated",
+        ));
+    }
+    Ok(rewritten)
 }
 
 fn create_spawn_resources(
@@ -1000,8 +1070,8 @@ fn spawn_process_with_resources(
     args: &[String],
     run_directory: &QemuPreparedRunDirectory,
     child_resources: QemuSpawnChildResources,
+    image_pins: &GuardedLaunchImagePins,
     envs: &[(&str, &str)],
-    operation: &'static str,
     process_contract: Option<&QemuChildProcessContract>,
 ) -> Result<Child, QemuSpawnError> {
     let control_fd = child_resources.control_socket.as_raw_fd();
@@ -1022,6 +1092,8 @@ fn spawn_process_with_resources(
         vmstate_device: run_directory.vmstate_identity.device,
         vmstate_inode: run_directory.vmstate_identity.inode,
     };
+    let vmstate_fd = image_pins.vmstate.as_raw_fd();
+    let overlay_fd = image_pins.overlay.as_ref().map(AsRawFd::as_raw_fd);
 
     let mut command = Command::new(executable);
     command
@@ -1047,13 +1119,15 @@ fn spawn_process_with_resources(
             if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
                 install_child_credentials(credentials)?;
             }
-            install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)
+            install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)?;
+            install_guarded_launch_image_pins(vmstate_fd, overlay_fd)
         });
     }
 
-    command
-        .spawn()
-        .map_err(|source| QemuSpawnError::Io { operation, source })
+    command.spawn().map_err(|source| QemuSpawnError::Io {
+        operation: "spawn guarded QEMU child",
+        source,
+    })
 }
 
 /// Runs the stopped QEMU setup probe through an admitted attempt contract.
@@ -1495,6 +1569,18 @@ fn install_prepared_run_directory(directory: PreparedRunDirectoryRaw) -> io::Res
         || u128::from(metadata.st_ino) != directory.vmstate_inode
     {
         return Err(changed());
+    }
+    Ok(())
+}
+
+fn install_guarded_launch_image_pins(vmstate: RawFd, overlay: Option<RawFd>) -> io::Result<()> {
+    dup_to_fixed_child_fd(vmstate, QEMU_VMSTATE_LAUNCH_FD)?;
+    if let Some(overlay) = overlay {
+        dup_to_fixed_child_fd(overlay, QEMU_ROOT_OVERLAY_LAUNCH_FD)?;
+    }
+    close_child_source_fd(vmstate)?;
+    if let Some(overlay) = overlay {
+        close_child_source_fd(overlay)?;
     }
     Ok(())
 }

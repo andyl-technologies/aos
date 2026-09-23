@@ -288,6 +288,9 @@ pub(super) enum QmpCommand<'a> {
     CloseFd {
         name: &'a QmpDescriptorName,
     },
+    AdoptLaunchFdsets {
+        has_root_overlay: bool,
+    },
 }
 
 impl QmpCommand<'_> {
@@ -331,6 +334,7 @@ impl QmpCommand<'_> {
             Self::Quit => QmpCommandKind::Quit,
             Self::GetFd { .. } => QmpCommandKind::GetFd,
             Self::CloseFd { .. } => QmpCommandKind::CloseFd,
+            Self::AdoptLaunchFdsets { .. } => QmpCommandKind::AdoptLaunchFdsets,
         }
     }
 
@@ -725,6 +729,10 @@ impl QmpCommand<'_> {
             Self::CloseFd { name } => json!({
                 "exec-oob": QMP_CLOSEFD_COMMAND,
                 "arguments": { "fdname": name.as_str() },
+            }),
+            Self::AdoptLaunchFdsets { has_root_overlay } => json!({
+                "execute": QMP_ADOPT_LAUNCH_FDSETS_COMMAND,
+                "arguments": { "root-overlay": has_root_overlay },
             }),
         }
     }

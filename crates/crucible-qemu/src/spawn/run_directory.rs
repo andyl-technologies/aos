@@ -922,6 +922,9 @@ impl QemuPreparedRunDirectory {
                 path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
             });
         }
+        if self.root_overlay_materialization == PreparedRootOverlayMaterialization::Provisioned {
+            self.revalidate_root_overlay_identity()?;
+        }
         if let PreparedDeviceStateMaterialization::Exact { bytes, .. } =
             self.exact_device_state_materialization
         {
