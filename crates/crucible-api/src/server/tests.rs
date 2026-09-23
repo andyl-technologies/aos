@@ -550,6 +550,10 @@ async fn controller_release_cannot_bypass_a_live_relay_holder() -> Result<(), Bo
         .register(session, lease.clone(), holder)?;
 
     let relay_directory = tempfile::tempdir()?;
+    std::fs::set_permissions(
+        relay_directory.path(),
+        std::fs::Permissions::from_mode(0o700),
+    )?;
     let relay_path = relay_directory.path().join("debug-relay.sock");
     let listener = tokio::net::UnixListener::bind(&relay_path)?;
     std::fs::set_permissions(&relay_path, std::fs::Permissions::from_mode(0o600))?;
