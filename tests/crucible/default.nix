@@ -1476,6 +1476,9 @@ in rec {
       campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
         inherit pkgs lib;
       };
+      campaignPolicyTimeoutVm = import ./phase5-campaign-policy-timeout-vm.nix {
+        inherit pkgs lib;
+      };
     };
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
       inherit pkgs lib;
