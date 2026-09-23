@@ -1,7 +1,7 @@
 //! Whole-world retained-source selection, launch, execution, and recovery.
 //!
 //! The production factory checks out one complete prepared source world before
-//! installing target resources, launches every running node into one atomic
+//! installing target resources, launches every retained node into one atomic
 //! assembly, and hands only the complete assembly to the production lifecycle
 //! installer. The runner starts from the captured scheduler boundary, performs
 //! ordinary modeled execution, shuts down every adopted node, and retains the
@@ -784,14 +784,6 @@ where
             self.sources.restore(source_lease);
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         }
-        if source.continuation().nodes().iter().any(|boundary| {
-            boundary.service_state() == ProductionVmHotForkNodeServiceState::PoweredOff
-        }) {
-            drop(source);
-            drop(source_world);
-            self.sources.restore(source_lease);
-            return Ok(QemuHotForkWorldLifecycleStart::Declined);
-        }
         let continuation = match source.fork_continuation() {
             Ok(continuation) => continuation,
             Err(error) => {
@@ -916,18 +908,8 @@ where
         for (node, (service_state, generation)) in boundaries {
             match service_state {
                 ProductionVmHotForkNodeServiceState::PermanentlyFailed => continue,
-                ProductionVmHotForkNodeServiceState::PoweredOff => {
-                    quarantine_failed_assembly(source_world, resources, assembly, None);
-                    return ProductionLifecycleStartOutcome::failed(
-                        AttemptWorkerFailure::Terminal(
-                            QemuProductionHotForkWorldLifecycleFactoryError::Source(String::from(
-                                "powered-off node passed the capability fallback boundary",
-                            )),
-                        ),
-                        CheckedOutSourceDisposition::OwnedByLifecycleOrQuarantine,
-                    );
-                }
-                ProductionVmHotForkNodeServiceState::Running => {}
+                ProductionVmHotForkNodeServiceState::Running
+                | ProductionVmHotForkNodeServiceState::PoweredOff => {}
             }
             let child_generation = match generation.checked_add(1) {
                 Some(generation) => generation,

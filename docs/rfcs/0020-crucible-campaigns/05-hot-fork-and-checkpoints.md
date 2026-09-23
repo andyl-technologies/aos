@@ -407,7 +407,7 @@ may record exact child cleanup, but only the aggregate owner can release the
 underlying attempt guard after all issued nodes finish. The lifecycle library
 now exposes the all-or-nothing adoption boundary for that private child set. It
 consumes the opaque host continuation and exactly one linear child process/lease
-for every running node, rejects powered-off or partial Worlds, requires each
+for every running or powered-off node, rejects partial Worlds, requires each
 child generation to be the checked immediate successor of its source, and
 reauthenticates every process incarnation before publication. The continuation,
 rather than a new caller-supplied launch configuration, retains the source
@@ -433,8 +433,9 @@ prepared worlds into the shared managed pool and routes compatible fresh work
 through this path. Scripted regressions cover successful multi-node publication
 and reuse, exact failed-node fingerprint retention, process-free failed-node
 host I/O, a proven first-child rejection with exact source recovery, and failure
-cases that retain or quarantine ownership. The real-QEMU atomic-world matrix
-remains mandatory before T-CAM-7.4 is marked complete.
+cases that retain or quarantine ownership. Scripted assembly also covers a
+powered-off retained source. The real-QEMU atomic-world matrix remains mandatory
+before T-CAM-7.4 is marked complete.
 
 - **[HFORK-13]** A campaign branch is a world, not a bag of independently
   visible node forks. No consumer may observe a partially forked world.

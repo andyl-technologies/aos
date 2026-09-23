@@ -1590,6 +1590,17 @@ impl ProductionVmLifecycleLoop {
         Ok(())
     }
 
+    /// Commits a selected modeled Boot request in production lifecycle tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node is not powered off or its scheduler
+    /// activity cannot become runnable at the current frontier.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn commit_modeled_boot_for_test(&mut self, node: &NodeId) -> Result<(), SchedulerError> {
+        self.commit_node_boot_requests(std::slice::from_ref(node))
+    }
+
     fn capture_reserved_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
