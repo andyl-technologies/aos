@@ -6,7 +6,7 @@
 
 use aos_sandbox_agent::{
     AgentExecutionOutcomeV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1,
-    AgentOperationRequestV1,
+    AgentOperationRequestV1, SignedAgentOutcomePacketV1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -24,10 +24,10 @@ use super::agent_process_effect::{
 };
 use super::agent_reducer::{
     AgentHandshakeSigner, AgentOperationRecoveryCas, AgentOperationReservationV1,
-    AgentOutcomeRecoveryTokenV1, AgentRecoveredOperationV1, AgentRecoveredOutcomeCommitV1,
-    AgentRecoveredReservationV1, AgentReducerError, AgentReplayDispositionV1,
-    AgentReservationDispositionV1, AgentReservationRecoveryTokenV1, GuestAgentReducerV1,
-    SignedRecoveredAgentOutcomeV1, recovered_agent_outcome_signing_message_v1,
+    AgentOutcomeRecoveryTokenV1, AgentOutcomeSigner, AgentRecoveredOperationV1,
+    AgentRecoveredOutcomeCommitV1, AgentRecoveredReservationV1, AgentReducerError,
+    AgentReplayDispositionV1, AgentReservationDispositionV1, AgentReservationRecoveryTokenV1,
+    GuestAgentReducerV1, SignedRecoveredAgentOutcomeV1, recovered_agent_outcome_signing_message_v1,
     verify_signed_recovered_agent_outcome_v1,
 };
 
@@ -508,6 +508,51 @@ impl<'claim, 'owner> DormantProtectedGuestExecutionControllerV1<'claim, 'owner> 
                 })
             }
         }
+    }
+
+    /// Signs one exact durably completed outcome for the Host/guest wire.
+    ///
+    /// The protected checkpoint must already contain this result. The supplied
+    /// request is checked against the completed outcome before its Host-bound
+    /// transcript is signed, and the signature must verify against the fixed
+    /// protected agent peer key. This method does not redispatch an effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantProtectedGuestExecutionErrorV1`] for stale protected
+    /// currentness, unresolved checkpoint durability, a foreign outcome, or
+    /// unavailable or mismatched signing custody.
+    pub fn sign_completed_outcome_packet<S: AgentOutcomeSigner>(
+        &mut self,
+        request: &AgentOperationRequestV1,
+        outcome: AgentExecutionOutcomeV1,
+        signer: &mut S,
+    ) -> Result<SignedAgentOutcomePacketV1, DormantProtectedGuestExecutionErrorV1> {
+        self.require_current_checkpoint()?;
+        self.owner.revalidate()?;
+        if outcome.session() != request.session()
+            || outcome.sequence() != request.sequence()
+            || outcome.operation_id() != request.operation_id()
+            || outcome.request_commitment() != request.request_commitment()
+            || !self.reducer.contains_completed_outcome(&outcome)
+        {
+            return Err(DormantProtectedGuestExecutionErrorV1::InvalidObservation);
+        }
+
+        let peer = self.owner.agent_peer();
+        let message = super::agent_reducer::agent_outcome_signing_message_v1(
+            peer.channel_binding(),
+            request,
+            &outcome,
+        );
+        let signature = signer.sign_outcome(&message)?;
+        let public_key = VerifyingKey::from_bytes(&peer.public_key())
+            .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)?;
+        public_key
+            .verify_strict(&message, &Signature::from_bytes(&signature))
+            .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)?;
+        SignedAgentOutcomePacketV1::new(outcome, signature)
+            .map_err(|_| DormantProtectedGuestExecutionErrorV1::InvalidObservation)
     }
 
     /// Reconciles a reservation ambiguity through a newly opened owner claim.

@@ -104,6 +104,17 @@ pub trait AgentHandshakeSigner {
     fn sign_handshake(&mut self, signing_message: &[u8]) -> Result<[u8; 64], AgentReducerError>;
 }
 
+/// Signs one durably completed agent outcome using protected peer key custody.
+pub trait AgentOutcomeSigner {
+    /// Signs the exact Host-bound outcome transcript without exposing the key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgentReducerError`] if protected key custody is unavailable
+    /// or refuses this outcome transcript.
+    fn sign_outcome(&mut self, signing_message: &[u8]) -> Result<[u8; 64], AgentReducerError>;
+}
+
 /// Records an atomic operation-sequence reservation from the durable agent store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentOperationReservationV1 {
