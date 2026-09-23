@@ -376,142 +376,103 @@
     stop_timeout_millis = 90000;
   };
 
-  initializeService = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = (hardening []) // {network_families = ["local"];};
-      })
-    ];
-    inherit serviceTypes;
+  initializeService = {
+    policy.hardening = (hardening []) // {network_families = ["local"];};
     consumerInstance = "krb5";
-    declaration = {
-      service = "initialize";
-      enabled = true;
-      lifecycle =
-        (lifecycle "Initialize the Kerberos KDC database" [
-          (command "bin/krb5-kdc-control" ["prepare" cfg.realm statePath passwordPath])
-        ])
-        // {
-          execution_model = "oneshot";
-          restart = "never";
-          restart_delay_millis = 0;
-          remain_after_exit = true;
-        };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
+    service = "initialize";
+    lifecycle =
+      (lifecycle "Initialize the Kerberos KDC database" [
+        (command "bin/krb5-kdc-control" ["prepare" cfg.realm statePath passwordPath])
+      ])
+      // {
+        execution_model = "oneshot";
+        restart = "never";
+        restart_delay_millis = 0;
+        remain_after_exit = true;
       };
-      credentials.views = [
-        {
-          name = "master-password";
-          reference = passwordPath;
-          encrypted = cfg.masterPassword.encrypted;
-          optional = false;
-        }
-      ];
-      configuration = commonConfiguration;
-      environment = commonEnvironment;
-      storage = commonStorage;
-      identity = commonIdentity;
-      isolation = commonIsolation // {network = "none";};
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
     };
+    credentials.views = [
+      {
+        name = "master-password";
+        reference = passwordPath;
+        encrypted = cfg.masterPassword.encrypted;
+        optional = false;
+      }
+    ];
+    configuration = commonConfiguration;
+    environment = commonEnvironment;
+    storage = commonStorage;
+    identity = commonIdentity;
+    isolation = commonIsolation // {network = "none";};
   };
-  kdcService = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = hardening ["bind-privileged-network-port"];
-      })
-    ];
-    inherit serviceTypes;
+  kdcService = {
+    policy.hardening = hardening ["bind-privileged-network-port"];
     consumerInstance = "krb5";
-    declaration = {
-      service = "kdc";
-      enabled = true;
-      lifecycle = lifecycle "Kerberos key distribution center" [
-        (command "bin/krb5-kdc-control" ["run-kdc" runtimePath])
-      ];
-      dependencies = {
-        prerequisites = [(resultOf "kdc-ingress" "resource")];
-        after = [(resultOf "initialize-lifecycle" "resource")];
-        requires = [(resultOf "initialize-lifecycle" "resource")];
-        before = [];
-        wants = [];
-      };
-      readiness = {
-        mechanism = "process-running";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      configuration = commonConfiguration;
-      environment = commonEnvironment;
-      storage = commonStorage;
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = commonIdentity;
-      isolation = commonIsolation;
+    service = "kdc";
+    lifecycle = lifecycle "Kerberos key distribution center" [
+      (command "bin/krb5-kdc-control" ["run-kdc" runtimePath])
+    ];
+    dependencies = {
+      prerequisites = [(resultOf "kdc-ingress" "resource")];
+      after = [(resultOf "initialize-lifecycle" "resource")];
+      requires = [(resultOf "initialize-lifecycle" "resource")];
+      before = [];
+      wants = [];
     };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    configuration = commonConfiguration;
+    environment = commonEnvironment;
+    storage = commonStorage;
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = commonIdentity;
+    isolation = commonIsolation;
   };
-  administrationService = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = hardening [];
-      })
-    ];
-    inherit serviceTypes;
+  administrationService = {
+    policy.hardening = hardening [];
     consumerInstance = "krb5";
-    declaration = {
-      service = "administration";
-      enabled = true;
-      lifecycle = lifecycle "Kerberos administration daemon" [
-        (command "bin/krb5-kdc-control" ["run-administration" runtimePath])
-      ];
-      dependencies = {
-        prerequisites = [(resultOf "administration-ingress" "resource")];
-        after = [(resultOf "initialize-lifecycle" "resource")];
-        requires = [(resultOf "initialize-lifecycle" "resource")];
-        before = [];
-        wants = [];
-      };
-      readiness = {
-        mechanism = "process-running";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      configuration = commonConfiguration;
-      environment = commonEnvironment;
-      storage = commonStorage;
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = commonIdentity;
-      isolation = commonIsolation;
+    service = "administration";
+    lifecycle = lifecycle "Kerberos administration daemon" [
+      (command "bin/krb5-kdc-control" ["run-administration" runtimePath])
+    ];
+    dependencies = {
+      prerequisites = [(resultOf "administration-ingress" "resource")];
+      after = [(resultOf "initialize-lifecycle" "resource")];
+      requires = [(resultOf "initialize-lifecycle" "resource")];
+      before = [];
+      wants = [];
     };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    configuration = commonConfiguration;
+    environment = commonEnvironment;
+    storage = commonStorage;
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = commonIdentity;
+    isolation = commonIsolation;
   };
 
-  staticFragments = [
+  producers = [
     persistentStorage
     runtimeStorage
     logStorage
@@ -525,25 +486,6 @@
     kdcConfiguration
     kdcIngress
     administrationIngress
-    initializeService
-    kdcService
-    administrationService
-  ];
-  enabledFragments = [
-    persistentStorage
-    runtimeStorage
-    logStorage
-    serviceGroup
-    servicePrincipal
-    networkReadiness
-    passwordResolution
-    passwordDelivery
-    clientConfiguration
-    administrationAcl
-    kdcConfiguration
-    kdcIngress
-    initializeService
-    kdcService
   ];
 in {
   options.krb5Kdc = {
@@ -617,21 +559,20 @@ in {
           message = "krb5Kdc.enableAdminServer requires krb5Kdc.enable";
         }
       ];
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).declarations)
-        staticFragments);
+      aos.services = {
+        "krb5.initialize" = initializeService // {enable = cfg.enable;};
+        "krb5.kdc" = kdcService // {enable = cfg.enable;};
+        "krb5.administration" = administrationService // {enable = cfg.enable && cfg.enableAdminServer;};
+      };
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.krb5 = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitDefinition fragment).configured)
-        enabledFragments
-        ++ lib.optionals cfg.enableAdminServer [
-          (serviceManagement.splitDefinition administrationIngress).configured
-          (serviceManagement.splitDefinition administrationService).configured
-        ]
-      );
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [administrationIngress];
+      enabled = cfg.enable && cfg.enableAdminServer;
     })
   ];
 }
