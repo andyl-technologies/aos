@@ -149,22 +149,14 @@ impl ProductionVmLifecycleLoop {
                     ),
                 }
             })?;
-            let operator_listen = self
-                .config
-                .debug
-                .as_ref()
-                .map(|debug| debug.operator_listen.clone())
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("selected lifecycle debugger lost its configuration"),
-                })?;
-            let gdbstub = QemuGdbstubChannelConfig::new(backend_listen, operator_listen).map_err(
-                |error| SchedulerError::BoundaryViolation {
+            let gdbstub = QemuGdbstubChannelConfig::new(backend_listen).map_err(|error| {
+                SchedulerError::BoundaryViolation {
                     message: format!(
                         "configure replacement QEMU gdbstub for `{}`: {error}",
                         node.name
                     ),
-                },
-            )?;
+                }
+            })?;
             launch = launch.with_gdbstub(gdbstub);
         }
         let debug_backend_path = self

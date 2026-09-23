@@ -559,6 +559,14 @@ fn read_only_gdb_command(payload: &[u8]) -> bool {
         | Some(b'T') => true,
         Some(b'q') => !payload.starts_with(b"qRcmd,") && !contains_bytes(payload, b":write:"),
         Some(b'Q') => payload == b"QStartNoAckMode",
+        // The gateway converts software requests to hardware breakpoints.
+        // Neither form may write guest memory on a canonical session.
+        Some(b'Z' | b'z') => {
+            payload.starts_with(b"Z0,")
+                || payload.starts_with(b"z0,")
+                || payload.starts_with(b"Z1,")
+                || payload.starts_with(b"z1,")
+        }
         Some(b'v') => matches!(payload, b"vCont?" | b"vMustReplyEmpty" | b"vStopped"),
         _ => false,
     }

@@ -116,7 +116,6 @@ crucible-qemu	src/supervision/bounded_scheduler_preemption/tests	thread::sleep	1
 crucible-api	src/vm_lifecycle/hot_fork	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/hot_fork	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
-crucible-qemu	src/gdbstub_proxy	thread::sleep	1
 crucible-qemu	src/live_plugin_gate/support	thread::sleep	1
 crucible-qemu	src/node	std::thread::sleep	1
 crucible-qemu	src/node	thread::sleep	1

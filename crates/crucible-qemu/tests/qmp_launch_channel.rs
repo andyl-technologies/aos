@@ -115,7 +115,7 @@ fn console_capture_uses_only_the_run_directory_output_socket() {
 fn qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels() {
     let qmp = QemuQmpChannelConfig::new("crucible-qmp.sock")
         .unwrap_or_else(|error| panic!("QMP socket config should be valid: {error}"));
-    let gdbstub = QemuGdbstubChannelConfig::new("tcp:127.0.0.1:9001", "127.0.0.1:9000")
+    let gdbstub = QemuGdbstubChannelConfig::new("unix:debug-rsp.sock,server=on,wait=off")
         .unwrap_or_else(|error| panic!("gdbstub config should be valid: {error}"));
     let command = QemuLaunchCommandBuilder::new(
         default_profile(),
@@ -138,7 +138,10 @@ fn qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels() {
         command.args()[qmp_index + 1],
         "unix:crucible-qmp.sock,server=on,wait=off"
     );
-    assert_eq!(command.args()[gdb_index + 1], "tcp:127.0.0.1:9001");
+    assert_eq!(
+        command.args()[gdb_index + 1],
+        "unix:debug-rsp.sock,server=on,wait=off"
+    );
     assert!(
         validate_pre_spawn_qemu_launch_args(command.args()).is_ok(),
         "QMP plus gdbstub launch command must remain accepted before spawn"

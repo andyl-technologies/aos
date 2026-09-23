@@ -524,7 +524,6 @@ shape-line|crates/crucible-qemu-plugin/src/vcpu_introspection.rs|774
 shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|2206
 shape-line|crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs|1817
 shape-line|crates/crucible-qemu/src/fault_capability.rs|1779
-shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/host_setup.rs|1914
 shape-line|crates/crucible-qemu/src/launch.rs|1758
 shape-line|crates/crucible-qemu/src/launch/plugin_config.rs|699

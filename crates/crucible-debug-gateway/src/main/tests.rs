@@ -84,6 +84,42 @@ fn configure_active_backend(process: &SharedGatewayProcess, endpoint: &str) -> U
 }
 
 #[test]
+fn canonical_software_breakpoint_reaches_qemu_only_as_hardware() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/private-qemu.sock");
+    let (_operator, writer) = UnixStream::pair().expect("operator stream pair");
+    backend
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("backend read timeout");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("operator writer setup");
+
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+    for (request, hardware) in [
+        (b"Z0,4000,1".as_slice(), b"Z1,4000,1".as_slice()),
+        (b"z0,4000,1".as_slice(), b"z1,4000,1".as_slice()),
+    ] {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encode_rsp_packet(request)),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("canonical breakpoint admission");
+
+        let expected = encode_rsp_packet(hardware);
+        let mut received = vec![0_u8; expected.len()];
+        backend.read_exact(&mut received).expect("QEMU breakpoint");
+        assert_eq!(received, expected);
+        assert_eq!(pending.pop_front(), Some(expected));
+    }
+}
+
+#[test]
 fn direct_operator_writes_require_private_branch_authorization() {
     let process = Arc::new(Mutex::new(GatewayProcess::new(Some(String::from(
         "unix:/tmp/private-gdb.sock",

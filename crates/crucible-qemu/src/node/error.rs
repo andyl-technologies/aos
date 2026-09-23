@@ -153,14 +153,6 @@ pub enum QemuNodeError {
         /// Shutdown escalation report.
         shutdown: Box<QemuShutdownReport>,
     },
-    /// The mediated gdbstub proxy failed.
-    #[error("gdbstub proxy operation {operation} failed: {message}")]
-    GdbstubProxy {
-        /// Proxy operation being attempted.
-        operation: &'static str,
-        /// Deterministic failure detail.
-        message: String,
-    },
     /// Coverage observations were produced through an API without an event-log owner.
     #[error("coverage-enabled QEMU execution requires a unified event-log sink")]
     CoverageEventLogRequired,
@@ -297,15 +289,6 @@ impl QemuNodeError {
     #[must_use]
     pub fn bounded_scheduler_preemption_message(message: impl Into<String>) -> Self {
         Self::BoundedSchedulerPreemption {
-            message: message.into(),
-        }
-    }
-
-    /// Attaches scheduler-node context to a gdbstub proxy failure.
-    #[must_use]
-    pub fn from_gdbstub_proxy(operation: &'static str, message: impl Into<String>) -> Self {
-        Self::GdbstubProxy {
-            operation,
             message: message.into(),
         }
     }

@@ -20,7 +20,7 @@ fn debug_cli_surface_contract_covers_t_dbg_8_policy() {
     assert!(contract.interactive_verbs.contains(&"reverse-continue"));
     assert!(!contract.cli_holds_debug_state);
     assert!(contract.delegates_to_session_commands);
-    assert!(contract.delegates_to_gdbstub_proxy);
+    assert!(contract.delegates_to_debug_gateway);
     assert!(
         contract
             .symbol_resolution

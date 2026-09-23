@@ -536,16 +536,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     .as_deref()
                     .map_or(index == 0, |selected| selected == vm.id.name)
         }) {
-            let debug = config.debug.as_ref().ok_or_else(|| {
-                loop_factory_error("debug configuration disappeared during QEMU launch")
-            })?;
             let backend_path = private_backend_gdbstub_path(&node_directory);
             let backend_listen = live_unix_gdbstub_endpoint(&backend_path)?;
-            let gdbstub =
-                QemuGdbstubChannelConfig::new(backend_listen, debug.operator_listen.clone())
-                    .map_err(|error| {
-                        loop_factory_error(format!("configure QEMU gdbstub: {error}"))
-                    })?;
+            let gdbstub = QemuGdbstubChannelConfig::new(backend_listen)
+                .map_err(|error| loop_factory_error(format!("configure QEMU gdbstub: {error}")))?;
             launch = launch.with_gdbstub(gdbstub);
             debug_backend_paths.insert(vm.id.clone(), backend_path);
         }
