@@ -113,6 +113,15 @@ in
           require_result_line \
             ${campaignMidpointDebug}/result \
             retry_session_identity_stable=true
+          require_result_line \
+            ${campaignMidpointDebug}/result \
+            finding_bundle_canonical_branch_executed=true
+          require_result_line \
+            ${campaignMidpointDebug}/result \
+            finding_bundle_source_owner_absent=true
+          require_result_line \
+            ${campaignMidpointDebug}/result \
+            finding_bundle_original_archive_unchanged=true
           test "$(grep -Ec '^authenticated_replay_causal_entries=[1-9][0-9]*$' ${campaignMidpointDebug}/result || true)" -eq 1
           test "$(grep -Ec '^minimization_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' ${campaignMidpointDebug}/result || true)" -eq 1
           test "$(grep -Ec '^verification_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' ${campaignMidpointDebug}/result || true)" -eq 1
