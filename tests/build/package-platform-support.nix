@@ -84,9 +84,21 @@
     names = packageNames;
     configurationBaseLib = configurationBaseProbe;
   };
+  releaseDerivationRoots = support.releaseDerivationRoots {
+    system = pkgs.stdenv.hostPlatform.system;
+    packages = pkgs;
+    names = packageNames;
+    configurationBaseLib = configurationBaseProbe;
+  };
   # A platform blocker must be retained without forcing an unbuildable package
   # or a Linux image's configuration base for a Darwin target.
   blockedDarwinDerivations = support.releaseDerivations {
+    system = "aarch64-darwin";
+    names = ["aos"];
+    packages.aos = throw "blocked package must not be evaluated";
+    configurationBaseLib = throw "blocked configuration base must not be evaluated";
+  };
+  blockedDarwinRoots = support.releaseDerivationRoots {
     system = "aarch64-darwin";
     names = ["aos"];
     packages.aos = throw "blocked package must not be evaluated";
@@ -169,6 +181,21 @@
   };
   sourceRoots = (builtins.head derivationProbe.packages).source_store_paths;
   nestedSourceRoot = builtins.unsafeDiscardStringContext (toString sourceTree);
+  pathSet = paths:
+    builtins.attrNames (builtins.listToAttrs (map (path: {
+        name = path;
+        value = true;
+      })
+      paths));
+  plannedDerivationPaths = pathSet (builtins.concatMap (
+      package:
+        [package.derivation]
+        ++ builtins.filter (path: path != null) (map (output: output.derivation or null) package.outputs)
+    )
+    releaseDerivations.packages);
+  rootDerivationPaths = pathSet (
+    map (root: builtins.unsafeDiscardStringContext root.drvPath) releaseDerivationRoots
+  );
   releasePackageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
   configuredPackage = releasePackageByName "k3s-worker";
@@ -227,6 +254,8 @@ in
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
   assert blockedDarwinDerivations.packages == [];
+  assert blockedDarwinRoots == [];
+  assert rootDerivationPaths == plannedDerivationPaths;
   assert releaseInventory.platforms == support.canonicalSystems;
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.canonicalSystems;
   assert x86LinuxPackages == support.targetPackageNames "x86_64-linux" packageNames;

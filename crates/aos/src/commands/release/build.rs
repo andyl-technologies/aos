@@ -15,6 +15,7 @@ use aos_release::build::{
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::ReleasePlanV1;
+use aos_release::platform::{MatrixCell, Platform};
 use aos_release::sbom::SpdxDocument;
 use aos_release::state::{JournalEntryV1, ReleaseState};
 use serde::Deserialize;
@@ -53,6 +54,8 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+
+    instantiate_planned_roots(nix, &plan, &derivations)?;
 
     printer.info(&format!(
         "Realizing {} exact outputs from {} derivations...",
@@ -165,6 +168,46 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         report.outputs.len(),
         args.output.display()
     ));
+    Ok(())
+}
+
+fn instantiate_planned_roots(
+    nix: &NixRunner,
+    plan: &ReleasePlanV1,
+    planned_derivations: &[PathBuf],
+) -> Result<()> {
+    let mut instantiated = BTreeSet::new();
+    for platform in Platform::ALL {
+        instantiated.extend(
+            nix.instantiate_all_for_target("releasePackageDerivationRoots", platform.as_str())?,
+        );
+    }
+
+    for image in &plan.images {
+        let attribute = format!(
+            "systems.{}.config.system.build.unsignedImageAssembly",
+            image.system_variant
+        );
+        for cell in &image.platforms {
+            if !matches!(cell.decision, MatrixCell::Artifact { .. }) {
+                continue;
+            }
+            instantiated.insert(nix.instantiate_for_target(&attribute, cell.platform.as_str())?);
+        }
+    }
+
+    let missing = planned_derivations
+        .iter()
+        .filter(|derivation| !instantiated.contains(*derivation))
+        .map(|derivation| derivation.display().to_string())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "current source did not instantiate planned derivations: {}",
+            missing.join(", ")
+        );
+    }
+
     Ok(())
 }
 

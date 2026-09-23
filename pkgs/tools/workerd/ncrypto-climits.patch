@@ -1,0 +1,10 @@
+--- a/src/ncrypto.cpp
++++ b/src/ncrypto.cpp
+@@ -17,6 +17,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <climits>
+ #include <cstring>
+ #include <string_view>
+ #include <vector>

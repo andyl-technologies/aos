@@ -30,24 +30,61 @@
     artifacts = config.aos.config.artifacts;
     version = config.aos.system.version;
     bootStorageSource = retainedSource "boot-storage" ../base/boot-storage.nix;
-  in [
-    {
-      output = artifacts.esp-mount;
-      outputName = "out";
-      pname = "aos-mount-esp";
-      inherit version;
-      licenses = ["Apache-2.0"];
-      sources = [bootStorageSource (retainedSource "mount-esp" ../base/mount-esp.sh.in)];
-    }
-    {
-      output = artifacts.esp-sync;
-      outputName = "out";
-      pname = "aos-sync-esps";
-      inherit version;
-      licenses = ["Apache-2.0"];
-      sources = [bootStorageSource (retainedSource "sync-esps" ../base/sync-esps.sh.in)];
-    }
-  ];
+    secureBootSource = retainedSource "secure-boot" ../base/secure-boot.nix;
+    firmwareEnrollmentSource = pkgs.mkDerivation {
+      pname = "aos-container-source-firmware-enrollment";
+      version = "1";
+      src = null;
+      buildDeps = [pkgs.coreutils];
+      runtimeDeps = [];
+      propagatedDeps = [];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out/source"
+            cp ${config.aos.boot.secureBoot.enrollAuthDir}/*.auth "$out/source/"
+          '';
+        }
+      ];
+    };
+  in
+    [
+      {
+        output = artifacts.esp-mount;
+        outputName = "out";
+        pname = "aos-mount-esp";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "mount-esp" ../base/mount-esp.sh.in)];
+      }
+      {
+        output = artifacts.esp-sync;
+        outputName = "out";
+        pname = "aos-sync-esps";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "sync-esps" ../base/sync-esps.sh.in)];
+      }
+    ]
+    ++ lib.optionals config.aos.boot.secureBoot.enable [
+      {
+        output = artifacts.secure-boot-enroll;
+        outputName = "out";
+        pname = "aos-sb-enroll";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [secureBootSource];
+      }
+      {
+        output = artifacts.secure-boot-enrollment-public;
+        outputName = "out";
+        pname = "aos-public-firmware-enrollment";
+        version = "1";
+        licenses = ["Apache-2.0"];
+        sources = [secureBootSource firmwareEnrollmentSource];
+      }
+    ];
   defaultAosDefinition =
     (import ../../containers/aos.nix {
       inherit lib pkgs evidenceOverrides;
