@@ -126,8 +126,8 @@ pub(crate) fn verify_exported_finding(
         ));
     }
     let archived_finding = archived
-        .inspect_archived_exact_finding(archive_id, finding_id)
-        .map_err(|error| backend_error(format!("finding archive lacks exact evidence: {error}")))?;
+        .inspect_archived_finding(archive_id, finding_id)
+        .map_err(|error| backend_error(format!("finding archive lacks finding: {error}")))?;
     if archived_finding != finding.finding {
         return Err(backend_error("finding ledger and archive record disagree"));
     }
@@ -237,7 +237,7 @@ pub(crate) fn export_finding_bundle(
             )
             .map_err(|error| backend_error(format!("finding archive transfer failed: {error}")))?;
         archive
-            .inspect_archived_exact_finding(plan.manifest_id(), finding)
+            .inspect_archived_finding(plan.manifest_id(), finding)
             .map_err(|error| backend_error(format!("transferred finding is invalid: {error}")))?;
         write_new_record(
             &staged.join("manifest"),
