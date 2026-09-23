@@ -14,9 +14,9 @@ fn empty_checkpoint(
     let mut checkpoint = ProductionFaultRuntimeCheckpoint {
         runtime: None,
         host: HostFaultActionState::default(),
-        qemu_fingerprints: QemuNodeMap::new(),
-        qemu_fault_sequences: QemuNodeMap::new(),
-        qemu_fault_event_sequences: QemuNodeMap::new(),
+        qemu_fingerprints: std::sync::Arc::new(QemuNodeMap::new()),
+        qemu_fault_sequences: std::sync::Arc::new(QemuNodeMap::new()),
+        qemu_fault_event_sequences: std::sync::Arc::new(QemuNodeMap::new()),
         qemu_issued_actions: QemuActionMap::new(),
         qemu_action_commits: QemuActionMap::new(),
         qemu_active_rule_ids: QemuActionSet::new(),
@@ -184,16 +184,16 @@ fn complete_production_checkpoint_round_trips_canonically() {
     let node = NodeId {
         name: String::from("node-a"),
     };
-    checkpoint
-        .qemu_fingerprints
+    std::sync::Arc::get_mut(&mut checkpoint.qemu_fingerprints)
+        .unwrap_or_else(|| panic!("checkpoint fingerprint fixture should be uniquely owned"))
         .try_insert(node.clone(), ContentHash::from_bytes(b"fingerprint"))
         .unwrap_or_else(|error| panic!("fingerprint fixture should allocate: {error}"));
-    checkpoint
-        .qemu_fault_sequences
+    std::sync::Arc::get_mut(&mut checkpoint.qemu_fault_sequences)
+        .unwrap_or_else(|| panic!("checkpoint command sequence fixture should be uniquely owned"))
         .try_insert(node.clone(), 1)
         .unwrap_or_else(|error| panic!("command sequence fixture should allocate: {error}"));
-    checkpoint
-        .qemu_fault_event_sequences
+    std::sync::Arc::get_mut(&mut checkpoint.qemu_fault_event_sequences)
+        .unwrap_or_else(|| panic!("checkpoint event sequence fixture should be uniquely owned"))
         .try_insert(node, 1)
         .unwrap_or_else(|error| panic!("event sequence fixture should allocate: {error}"));
     checkpoint.identity = production_checkpoint_identity(
@@ -238,6 +238,51 @@ fn complete_production_checkpoint_round_trips_canonically() {
             .to_canonical_bytes()
             .unwrap_or_else(|error| panic!("restored checkpoint should encode: {error}")),
         bytes
+    );
+}
+
+#[test]
+fn sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences() {
+    let plan = FaultSignalPlan::empty();
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let fingerprint = ContentHash::from_bytes(b"source qemu fingerprint");
+    let source = empty_checkpoint(&plan, None)
+        .with_unvalidated_test_node(&plan, node.clone(), fingerprint)
+        .expect("source checkpoint should admit one node");
+
+    let first = source.try_clone().expect("first sibling should clone");
+    let second = source.try_clone().expect("second sibling should clone");
+
+    assert!(std::sync::Arc::ptr_eq(
+        &first.qemu_fingerprints,
+        &second.qemu_fingerprints
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &source.qemu_fingerprints,
+        &first.qemu_fingerprints
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &first.qemu_fault_sequences,
+        &second.qemu_fault_sequences
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &first.qemu_fault_event_sequences,
+        &second.qemu_fault_event_sequences
+    ));
+    assert_eq!(first.qemu_fingerprint(&node), Some(fingerprint));
+
+    drop(source);
+    assert_eq!(second.qemu_fingerprint(&node), Some(fingerprint));
+    assert_eq!(first.id(), second.id());
+    assert_eq!(
+        first
+            .to_canonical_bytes()
+            .expect("first sibling should encode"),
+        second
+            .to_canonical_bytes()
+            .expect("second sibling should encode")
     );
 }
 

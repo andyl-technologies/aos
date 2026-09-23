@@ -215,7 +215,7 @@ impl ProductionFaultRuntime {
         )?;
         validate_pending_qemu_event_sequences(
             &checkpoint.pending_qemu_events,
-            &checkpoint.qemu_fault_event_sequences,
+            checkpoint.qemu_fault_event_sequences.as_ref(),
         )?;
         validate_qemu_action_ledger(
             &checkpoint.qemu_issued_actions,
