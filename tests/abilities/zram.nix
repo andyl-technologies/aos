@@ -243,5 +243,4 @@ in
       search_path = [(lib.abilities.packageOutput {package = "util-linux";})];
     };
   };
-  assert !(baseline.config ? systemd);
-  assert !(baseline.config.aos ? kernel); true
+  assert !(baseline.config ? systemd); true

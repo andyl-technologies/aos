@@ -36,7 +36,7 @@
       forwarding = {};
     };
   };
-  definition = lib.abilities.interfaces.serviceManagement.splitDefinition ruleset;
+  serviceManagement = lib.abilities.interfaces.serviceManagement;
   port = abilityTypes.integer {
     minimum = 1;
     maximum = 65535;
@@ -96,26 +96,24 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = definition.declarations;}
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [ruleset];
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge [
-        {instances.${consumerInstance} = {};}
-        definition.configured
-        {
-          runtimeChecks.firewall = {
-            description = "nftables firewall checks";
-            checks = [
-              {
-                name = "ruleset-loaded";
-                description = "nftables ruleset is loaded";
-                script = ''
-                  vm.succeed("nft list ruleset")
-                '';
-              }
-            ];
-          };
-        }
-      ];
+      aos.abilities.runtimeChecks.firewall = {
+        description = "nftables firewall checks";
+        checks = [
+          {
+            name = "ruleset-loaded";
+            description = "nftables ruleset is loaded";
+            script = ''
+              vm.succeed("nft list ruleset")
+            '';
+          }
+        ];
+      };
     })
   ];
 }

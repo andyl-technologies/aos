@@ -207,7 +207,6 @@
     })
     packagedUnit
   ];
-  definitions = builtins.map serviceManagement.splitDefinition abilityFragments;
 in {
   options.aos.zram = {
     enable = lib.mkOption {
@@ -244,32 +243,26 @@ in {
         enable = lib.mkDefault config.aos.storage.compressedSwapRecommended;
         size = lib.mkIf config.aos.storage.compressedSwapRecommended (lib.mkDefault "min(ram / 8, 2048)");
       };
-      aos.abilities = lib.mkMerge (
-        builtins.map (definition: definition.declarations) definitions
-      );
     }
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = abilityFragments;
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (definition: definition.configured) definitions
-        ++ [
+      aos.abilities.runtimeChecks.zram = {
+        description = "Compressed swap checks";
+        checks = [
           {
-            runtimeChecks.zram = {
-              description = "Compressed swap checks";
-              checks = [
-                {
-                  name = "zram-swap-device";
-                  description = "The configured zram swap device is initialized";
-                  script = ''
-                    vm.wait_until_succeeds("test -b /dev/zram0", timeout=30)
-                    vm.succeed("test $(cat /sys/block/zram0/disksize) -gt 0")
-                  '';
-                }
-              ];
-            };
+            name = "zram-swap-device";
+            description = "The configured zram swap device is initialized";
+            script = ''
+              vm.wait_until_succeeds("test -b /dev/zram0", timeout=30)
+              vm.succeed("test $(cat /sys/block/zram0/disksize) -gt 0")
+            '';
           }
-        ]
-      );
+        ];
+      };
     })
   ];
 }
