@@ -278,142 +278,135 @@
     ];
   };
 
-  keygen = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "sshd-keygen";
-      enabled = false;
-      lifecycle = serviceLifecycle {
-        description = "Generate SSH host keys";
-        executionModel = "oneshot";
-        remainAfterExit = true;
-        start = [
-          (command
-            (lib.abilities.packageOutput {})
-            "libexec/aos-openssh-host-key"
-            [])
-        ];
-      };
-      dependencies = {
-        prerequisites = [(resultOf "host-key-storage" "resource")];
-        after = [];
-        before = [];
-        requires = [];
-        wants = [];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      environment = {
-        variables = {};
-        search_path = [];
-      };
-    };
-  };
-  hostPolicyReadiness = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "aos-ssh-ready";
-      enabled = false;
-      lifecycle = serviceLifecycle {
-        description = "Wait for live AOS host authentication policy";
-        executionModel = "oneshot";
-        remainAfterExit = true;
-        start = [
-          (command
-            (lib.abilities.packageOutput {})
-            "libexec/aos-openssh-host-policy-wait"
-            [])
-        ];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 20000;
-      };
-      environment = {
-        variables = {};
-        search_path = [];
-      };
-    };
-  };
-  daemon = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "sshd";
-      enabled = true;
-      lifecycle = serviceLifecycle {
-        description = "OpenSSH daemon";
-        executionModel = "foreground";
-        restart = "on-failure";
-        restartDelayMillis = 5000;
-        start = [
-          (command
-            (lib.abilities.packageOutput {})
-            "sbin/sshd"
-            ["-D" "-f" "/etc/ssh/sshd_config"])
-        ];
-      };
-      dependencies = {
-        after = [
-          (resultOf "network-readiness" "resource")
-          (resultOf "sshd-keygen-lifecycle" "resource")
-          (resultOf "aos-ssh-ready-lifecycle" "resource")
-        ];
-        before = [];
-        requires = [(resultOf "sshd-keygen-lifecycle" "resource")];
-        wants = [
-          (resultOf "network-readiness" "resource")
-          (resultOf "aos-ssh-ready-lifecycle" "resource")
-        ];
-        prerequisites = [
-          (resultOf "authorized-keys-directory" "resource")
-          (resultOf "privilege-separation-directory" "resource")
-          (resultOf "sshd-config" "resource")
-        ];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "main-process";
-        timeout_millis = 90000;
-      };
-      reload = {
-        strategy = "signal";
-        commands = [];
-        signal = "HUP";
-        completion = "command-exit";
-      };
-      termination = {
-        signal = "TERM";
-        final_signal = "KILL";
-        send_to_all_processes = false;
-      };
-      directories.managed = [
-        {
-          path = "sshd";
-          purpose = "runtime";
-          mode = "0755";
-          retention = "restart";
-          owner = "root";
-          group = "root";
-        }
+  keygen = {
+    inherit consumerInstance;
+    service = "sshd-keygen";
+    autoStart = false;
+    lifecycle = serviceLifecycle {
+      description = "Generate SSH host keys";
+      executionModel = "oneshot";
+      remainAfterExit = true;
+      start = [
+        (command
+          (lib.abilities.packageOutput {})
+          "libexec/aos-openssh-host-key"
+          [])
       ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
+    };
+    dependencies = {
+      prerequisites = [(resultOf "host-key-storage" "resource")];
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    environment = {
+      variables = {};
+      search_path = [];
+    };
+  };
+  hostPolicyReadiness = {
+    inherit consumerInstance;
+    service = "aos-ssh-ready";
+    autoStart = false;
+    lifecycle = serviceLifecycle {
+      description = "Wait for live AOS host authentication policy";
+      executionModel = "oneshot";
+      remainAfterExit = true;
+      start = [
+        (command
+          (lib.abilities.packageOutput {})
+          "libexec/aos-openssh-host-policy-wait"
+          [])
+      ];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 20000;
+    };
+    environment = {
+      variables = {};
+      search_path = [];
+    };
+  };
+  daemon = {
+    inherit consumerInstance;
+    service = "sshd";
+    lifecycle = serviceLifecycle {
+      description = "OpenSSH daemon";
+      executionModel = "foreground";
+      restart = "on-failure";
+      restartDelayMillis = 5000;
+      start = [
+        (command
+          (lib.abilities.packageOutput {})
+          "sbin/sshd"
+          ["-D" "-f" "/etc/ssh/sshd_config"])
+      ];
+    };
+    dependencies = {
+      after = [
+        (resultOf "network-readiness" "resource")
+        (resultOf "sshd-keygen-lifecycle" "resource")
+        (resultOf "aos-ssh-ready-lifecycle" "resource")
+      ];
+      before = [];
+      requires = [(resultOf "sshd-keygen-lifecycle" "resource")];
+      wants = [
+        (resultOf "network-readiness" "resource")
+        (resultOf "aos-ssh-ready-lifecycle" "resource")
+      ];
+      prerequisites = [
+        (resultOf "authorized-keys-directory" "resource")
+        (resultOf "privilege-separation-directory" "resource")
+        (resultOf "sshd-config" "resource")
+      ];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    reload = {
+      strategy = "signal";
+      commands = [];
+      signal = "HUP";
+      completion = "command-exit";
+    };
+    termination = {
+      signal = "TERM";
+      final_signal = "KILL";
+      send_to_all_processes = false;
+    };
+    directories.managed = [
+      {
+        path = "sshd";
+        purpose = "runtime";
+        mode = "0755";
+        retention = "restart";
+        owner = "root";
+        group = "root";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
     };
   };
 
-  fragments = [
+  producers = [
     group
     principal
     localFilesystems
@@ -422,11 +415,7 @@
     ingress
     configurationSource
     filesystemEntries
-    keygen
-    hostPolicyReadiness
-    daemon
   ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
@@ -518,8 +507,17 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.ssh = {};}
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
+    {
+      aos.services = {
+        ssh = daemon;
+        "ssh.sshd-keygen" = keygen // {enable = cfg.enable;};
+        "ssh.aos-ssh-ready" = hostPolicyReadiness // {enable = cfg.enable;};
+      };
+    }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
       aos.pam.packageServices = lib.mkIf cfg.usePAM {
         sshd = {
@@ -615,12 +613,6 @@ in {
           }
         ];
       };
-    })
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
     })
   ];
 }
