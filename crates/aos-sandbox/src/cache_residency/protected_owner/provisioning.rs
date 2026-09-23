@@ -16,10 +16,11 @@ use super::{
     CACHE_AUTHORITY_JOURNAL, CACHE_MANIFEST_KEY_PREFIX, CACHE_STATE_JOURNAL, CacheAuthorityOwner,
     CacheAuthorityPurposeV1, CacheRecoveryLimitsV1, CacheResidencyCurrentTimeAuthorityV1,
     CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
-    CacheResidencyReplayPartitionEvidenceV1, MAXIMUM_AUTHORITY_RECORD_BYTES, PROTECTED_CACHE_ROOT,
-    PhysicalPartitionId, ProtectedCacheClockV1, ProtectedDomainJournalErrorV1,
-    cache_authority_journal_limits, cache_owner_scope, cache_state_journal_limits,
-    decode_typed_checkpoint, encode_cache_replay_manifest,
+    CacheResidencyProtectedRecordKindV1, CacheResidencyReplayPartitionEvidenceV1,
+    MAXIMUM_AUTHORITY_RECORD_BYTES, PROTECTED_CACHE_ROOT, PhysicalPartitionId,
+    ProtectedCacheClockV1, ProtectedDomainJournalErrorV1, cache_authority_journal_limits,
+    cache_owner_scope, cache_state_journal_limits, decode_typed_checkpoint,
+    encode_cache_replay_manifest,
 };
 
 impl CacheResidencyProtectedOwnerV1 {
@@ -63,23 +64,7 @@ impl CacheResidencyProtectedOwnerV1 {
             return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
         }
 
-        let checkpoint = decode_typed_checkpoint(partition, &typed_checkpoint, limits)
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        if checkpoint.checkpoint.sequence != 1
-            || floor.first_retained_sequence != 2
-            || floor.predecessor.as_bytes() != &[0; 32]
-            || !checkpoint.baselines.is_empty()
-            || !checkpoint.family_heads.is_empty()
-            || !checkpoint.global.watermarks.is_empty()
-            || !checkpoint.global.idempotency.is_empty()
-            || checkpoint.global.pin_floor.is_some()
-            || checkpoint.global.idempotency_floor.is_some()
-            || !checkpoint.global.handoffs.is_empty()
-            || !checkpoint.global.lookups.is_empty()
-            || checkpoint.global.poison.is_some()
-        {
-            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
-        }
+        validate_genesis_checkpoint(partition, &typed_checkpoint, floor, limits)?;
 
         let mut manifest_key = Vec::with_capacity(CACHE_MANIFEST_KEY_PREFIX.len() + 32);
         manifest_key.extend_from_slice(CACHE_MANIFEST_KEY_PREFIX);
@@ -190,4 +175,66 @@ impl CacheResidencyProtectedOwnerV1 {
         }
         Err(ProtectedDomainJournalErrorV1::DivergentRecovery.into())
     }
+
+    /// Adds an empty partition under a preexisting protected Replay record.
+    ///
+    /// Existing partitions and their state are replayed before the append. The
+    /// new manifest becomes available to this owner only after exact readback.
+    /// This method does not issue the Replay record or install cache policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if existing replay fails, the partition has records or
+    /// a manifest, the Replay record mismatches, or the append is indeterminate.
+    pub fn install_additional_replay_manifest(
+        &mut self,
+        partition: PhysicalPartitionId,
+        record_key: Vec<u8>,
+        typed_checkpoint: Vec<u8>,
+        floor: CacheHistoryFloorV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let projection = self.replay()?;
+        if projection.records().iter().any(|record| {
+            record.key().kind() != CacheResidencyProtectedRecordKindV1::EffectObservation
+                && record.key().identity().get(..32) == Some(partition.digest().as_bytes())
+        }) {
+            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+        }
+        validate_genesis_checkpoint(
+            partition,
+            &typed_checkpoint,
+            floor,
+            CacheRecoveryLimitsV1::default(),
+        )?;
+        self.authority
+            .install_replay_partition(partition, record_key, typed_checkpoint, floor)?;
+        self.replay()?;
+        Ok(())
+    }
+}
+
+fn validate_genesis_checkpoint(
+    partition: PhysicalPartitionId,
+    typed_checkpoint: &[u8],
+    floor: CacheHistoryFloorV1,
+    limits: CacheRecoveryLimitsV1,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    let checkpoint = decode_typed_checkpoint(partition, typed_checkpoint, limits)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    if checkpoint.checkpoint.sequence != 1
+        || floor.first_retained_sequence != 2
+        || floor.predecessor.as_bytes() != &[0; 32]
+        || !checkpoint.baselines.is_empty()
+        || !checkpoint.family_heads.is_empty()
+        || !checkpoint.global.watermarks.is_empty()
+        || !checkpoint.global.idempotency.is_empty()
+        || checkpoint.global.pin_floor.is_some()
+        || checkpoint.global.idempotency_floor.is_some()
+        || !checkpoint.global.handoffs.is_empty()
+        || !checkpoint.global.lookups.is_empty()
+        || checkpoint.global.poison.is_some()
+    {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+    }
+    Ok(())
 }

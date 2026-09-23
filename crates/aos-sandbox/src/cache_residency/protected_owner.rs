@@ -51,12 +51,12 @@ const CACHE_STATE_JOURNAL: &str = "state.journal";
 const CACHE_AUTHORITY_JOURNAL: &str = "authority.journal";
 const CACHE_CLOCK_JOURNAL: &str = "clock.journal";
 const CACHE_CLOCK_KEY: &[u8] = b"\0aos-cache-residency-clock-v1\0current";
-const CACHE_MANIFEST_KEY_PREFIX: &[u8] = b"\0aos-cache-replay-manifest-v1\0";
+pub(super) const CACHE_MANIFEST_KEY_PREFIX: &[u8] = b"\0aos-cache-replay-manifest-v1\0";
 const CACHE_MANIFEST_MAGIC: &[u8; 8] = b"AOSCRM01";
 const CACHE_CLOCK_MAGIC: &[u8; 8] = b"AOSCCL01";
 const CACHE_CLOCK_BYTES: usize = 104;
 const CACHE_MANIFEST_FIXED_BYTES: usize = 555;
-const MAXIMUM_CACHE_MANIFESTS: usize = 4_096;
+pub(super) const MAXIMUM_CACHE_MANIFESTS: usize = 4_096;
 const MAXIMUM_AUTHORITY_RECORD_BYTES: usize = 1024 * 1024;
 
 /// Reports the three protected journal replays performed by the fixed owner.
@@ -1708,7 +1708,7 @@ fn decode_cache_replay_manifest(
     Ok(evidence)
 }
 
-fn encode_cache_replay_manifest(
+pub(super) fn encode_cache_replay_manifest(
     evidence: &CacheResidencyReplayPartitionEvidenceV1,
     limits: CacheRecoveryLimitsV1,
 ) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {

@@ -35,6 +35,8 @@ use super::{
     decode_typed_checkpoint, encode_atomic_object_record, encode_typed_checkpoint,
 };
 
+mod provisioning;
+
 const PARTITION_DESCRIPTOR_MAGIC: &[u8; 8] = b"AOSCPP01";
 const PARTITION_DESCRIPTOR_BYTES: usize = 241;
 const EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX: &[u8] =
@@ -232,7 +234,7 @@ pub(crate) struct ProtectedCacheResidencyReplayAuthorityV1 {
     journal: Mutex<Journal>,
     owner_scope: ObjectDigest,
     maximum_record_bytes: usize,
-    partitions: BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>,
+    partitions: Mutex<BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>>,
     current_time: Arc<dyn CacheResidencyCurrentTimeAuthorityV1>,
     limits: CacheRecoveryLimitsV1,
 }
@@ -347,9 +349,14 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
             return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
         }
 
-        let mut replay_capabilities = Vec::with_capacity(self.partitions.len());
+        let partitions = self
+            .partitions
+            .lock()
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
+            .clone();
+        let mut replay_capabilities = Vec::with_capacity(partitions.len());
         let mut session_partitions = BTreeMap::new();
-        for evidence in self.partitions.values() {
+        for evidence in partitions.values() {
             let capability = owner
                 .verify_current_record(evidence.purpose, evidence.scope, &evidence.record_key)
                 .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
@@ -424,7 +431,10 @@ impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV
     ) -> Result<CacheRecoveryInventoryV1, RecoveryError> {
         let evidence = self
             .partitions
+            .lock()
+            .map_err(|_| RecoveryError::AnchorMismatch)?
             .get(&partition.digest())
+            .cloned()
             .ok_or(RecoveryError::AnchorMismatch)?;
         let now = self
             .current_time
@@ -573,7 +583,7 @@ impl CacheResidencyReplayValidatorV1 {
             journal: Mutex::new(journal),
             owner_scope,
             maximum_record_bytes,
-            partitions,
+            partitions: Mutex::new(partitions),
             current_time,
             limits,
         });
