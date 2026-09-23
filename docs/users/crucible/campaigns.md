@@ -297,13 +297,13 @@ identities, and invalid typed values before creating output. They write new
 owner-only files durably and never replace existing paths. Each report contains
 the exact canonical record ID and encoded byte count. The policy compiler reads
 at most 16 MiB and also rejects duplicate semantic keys, invalid exact
-arithmetic, and unsupported explorer parameters. A current version-two policy
+arithmetic, and unsupported explorer parameters. A current version-three policy
 manifest has the following field shape; replace the example scenario and
 artifact/generator identities with exact values derived from your verified
 import closure:
 
 ```toml
-schema_version = 2
+schema_version = 3
 scenario = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 mode = "strict"
@@ -340,6 +340,11 @@ weight_micros = 1000000
 signal = "coverage-rarity"
 weight_micros = 500000
 
+[attempt_timeout]
+virtual_time_nanoseconds = 10000000000
+execution_quanta = 1000000
+host_completion_watchdog_ms = 120000
+
 [fairness]
 breadth_first_percent = 10
 novelty_reserve = 4
@@ -351,14 +356,26 @@ exact_findings = true
 exact_user_pins = true
 ```
 
+`[attempt_timeout]` is optional. When present, it requires a positive virtual-time
+bound, a positive execution-quantum bound, or both. Reaching a modeled bound
+records a deterministic timeout stop in the campaign Observation, subject to
+terminal and assertion outcome precedence. Campaign policy and triage can
+inspect that normal result. `host_completion_watchdog_ms` is an optional
+operational safeguard for a stalled executor; it must accompany a modeled
+bound, be positive, and be at most 3,600,000 ms. Its expiry aborts the attempt
+as a host failure, not a guest timeout or a replayable campaign finding. The
+watchdog never decides a guest outcome. Version two authored policy TOML is
+rejected; compile the current version-three manifest to produce the canonical
+version-five policy record.
+
 The current format supports finite statistical sampling and optional sequential
 Monte Carlo stages. The ordinary policy fields remain required; statistical
 policies normally use an exhaustive explorer whose cardinality covers the
-declared support. The following optional fields belong to the same version-two
+declared support. The following optional fields belong to the same version-three
 manifest:
 
 ```toml
-schema_version = 2
+schema_version = 3
 mode = "statistical"
 
 [statistical_sampling]

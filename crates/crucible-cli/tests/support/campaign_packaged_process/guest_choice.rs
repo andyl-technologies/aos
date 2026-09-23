@@ -416,7 +416,7 @@ fn create_guest_choice_campaign(
     fs::write(
         &policy_input,
         format!(
-            r#"schema_version = 2
+            r#"schema_version = 3
 scenario = {:?}
 campaign_seed = "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
 mode = "strict"

@@ -6,21 +6,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::ScenarioDefForm;
 use crucible_campaign::{
-    AlternativeId, CampaignHash, CampaignMode, CampaignSeed, ChoiceClassContext, ChoiceDomainId,
-    ChoiceDomainSemanticId, ChoiceOpportunityId, ChoiceOpportunitySemanticId, ChoicePolicy,
-    ChoiceValue, ExactRational, ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerValue,
-    InterventionLearningPolicy, Objective, ObjectiveGoal, ProbabilityModelId,
-    ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy, ScenarioDefId, SelectableId,
-    SelectableSemanticId, SequentialMonteCarloDesign, SmcOpportunitySelector,
-    SmcResamplingAlgorithm, SmcResamplingPolicy, SmcStagePlan, StatisticalDistribution,
-    StatisticalDrawPlan, StatisticalSamplingDesign,
+    AlternativeId, CampaignAttemptTimeoutPolicy, CampaignHash, CampaignMode, CampaignSeed,
+    ChoiceClassContext, ChoiceDomainId, ChoiceDomainSemanticId, ChoiceOpportunityId,
+    ChoiceOpportunitySemanticId, ChoicePolicy, ChoiceValue, ExactRational, ExplorerPolicy,
+    FairnessPolicy, GuidanceWeight, IntegerValue, InterventionLearningPolicy, Objective,
+    ObjectiveGoal, ProbabilityModelId, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+    ScenarioDefId, SelectableId, SelectableSemanticId, SequentialMonteCarloDesign,
+    SmcOpportunitySelector, SmcResamplingAlgorithm, SmcResamplingPolicy, SmcStagePlan,
+    StatisticalDistribution, StatisticalDrawPlan, StatisticalSamplingDesign,
 };
 use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::authoring::{read_bounded_utf8, write_new_record};
 
-const CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION: u32 = 2;
+const CAMPAIGN_POLICY_AUTHORING_SCHEMA_VERSION: u32 = 3;
 const MAX_CAMPAIGN_POLICY_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const CAMPAIGN_POLICY_COMPILATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-policy-compilation.v1";
@@ -52,6 +52,8 @@ struct AuthoredCampaignPolicy {
     guidance: Vec<AuthoredGuidance>,
     #[serde(default)]
     stop_conditions: Vec<String>,
+    #[serde(default)]
+    attempt_timeout: Option<AuthoredCampaignAttemptTimeout>,
     fairness: AuthoredFairnessPolicy,
     retention: AuthoredRetentionPolicy,
     #[serde(default)]
@@ -159,6 +161,14 @@ struct AuthoredGuidance {
 struct AuthoredFairnessPolicy {
     breadth_first_percent: u8,
     novelty_reserve: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoredCampaignAttemptTimeout {
+    virtual_time_nanoseconds: Option<u64>,
+    execution_quanta: Option<u64>,
+    host_completion_watchdog_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -407,6 +417,12 @@ impl AuthoredCampaignPolicy {
                 .with_intervention_learning_policy(InterventionLearningPolicy::IncludeInGuidance)
                 .map_err(|error| usage_error(format!("invalid authored campaign policy: {error}"))),
         }?;
+        let policy = match self.attempt_timeout {
+            Some(timeout) => policy
+                .with_attempt_timeout_policy(timeout.into_policy()?)
+                .map_err(|error| usage_error(format!("invalid attempt timeout policy: {error}")))?,
+            None => policy,
+        };
         match (statistical_sampling, sequential_monte_carlo) {
             (None, None) => Ok(policy),
             (Some(initial), None) => {
@@ -423,6 +439,17 @@ impl AuthoredCampaignPolicy {
                 "sequential_monte_carlo requires statistical_sampling stage-zero design",
             )),
         }
+    }
+}
+
+impl AuthoredCampaignAttemptTimeout {
+    fn into_policy(self) -> Result<CampaignAttemptTimeoutPolicy, CliError> {
+        CampaignAttemptTimeoutPolicy::new(
+            self.virtual_time_nanoseconds,
+            self.execution_quanta,
+            self.host_completion_watchdog_ms,
+        )
+        .map_err(|error| usage_error(format!("invalid attempt timeout policy: {error}")))
     }
 }
 
@@ -844,7 +871,7 @@ mod tests {
             b"authored-policy-generator",
         );
         format!(
-            r#"schema_version = 2
+            r#"schema_version = 3
 scenario = "{scenario}"
 campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 mode = "strict"
@@ -984,7 +1011,7 @@ effective_sample_size_threshold = {{ numerator = 1, denominator = 2 }}
             String::new()
         };
         format!(
-            r#"schema_version = 2
+            r#"schema_version = 3
 scenario = "{scenario}"
 campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 mode = "statistical"
@@ -1103,6 +1130,61 @@ stop = "next-choice"
             policy.intervention_learning_policy(),
             InterventionLearningPolicy::Exclude
         );
+        assert!(policy.attempt_timeout_policy().is_none());
+    }
+
+    #[test]
+    fn authored_attempt_timeout_round_trips_through_canonical_policy() {
+        let temporary = tempdir().expect("temporary directory");
+        let input = temporary.path().join("policy.toml");
+        let output = temporary.path().join("policy.bin");
+        let authored = format!(
+            "{}\n[attempt_timeout]\nvirtual_time_nanoseconds = 1000000\nexecution_quanta = 500\nhost_completion_watchdog_ms = 30000\n",
+            manifest()
+        );
+        std::fs::write(&input, authored).expect("write bounded policy");
+
+        compile_campaign_policy(&input, None, &output).expect("compile bounded policy");
+        let policy = CampaignPolicy::from_canonical_bytes(
+            &std::fs::read(output).expect("read bounded policy"),
+        )
+        .expect("decode bounded policy");
+        let timeout = policy.attempt_timeout_policy().expect("attempt timeout");
+
+        assert_eq!(timeout.virtual_time_nanoseconds(), Some(1_000_000));
+        assert_eq!(timeout.execution_quanta(), Some(500));
+        assert_eq!(timeout.host_completion_watchdog_ms(), Some(30_000));
+        assert_eq!(
+            policy
+                .id()
+                .expect("bounded policy ID")
+                .content_id()
+                .schema_version(),
+            5
+        );
+    }
+
+    #[test]
+    fn authored_attempt_timeout_rejects_unbounded_or_invalid_watchdogs() {
+        let temporary = tempdir().expect("temporary directory");
+        let input = temporary.path().join("policy.toml");
+        let output = temporary.path().join("policy.bin");
+        for timeout in [
+            "host_completion_watchdog_ms = 1000",
+            "virtual_time_nanoseconds = 0",
+            "execution_quanta = 0",
+            "execution_quanta = 10\nhost_completion_watchdog_ms = 0",
+            "execution_quanta = 10\nhost_completion_watchdog_ms = 3600001",
+        ] {
+            std::fs::write(
+                &input,
+                format!("{}\n[attempt_timeout]\n{timeout}\n", manifest()),
+            )
+            .expect("write invalid timeout policy");
+
+            assert!(compile_campaign_policy(&input, None, &output).is_err());
+            assert!(!output.exists());
+        }
     }
 
     #[test]
@@ -1130,7 +1212,7 @@ stop = "next-choice"
                 .expect("opt-in policy ID")
                 .content_id()
                 .schema_version(),
-            4
+            5
         );
     }
 
@@ -1154,7 +1236,7 @@ stop = "next-choice"
                     .expect("statistical policy ID")
                     .content_id()
                     .schema_version(),
-                4
+                5
             );
             assert_eq!(
                 policy
@@ -1250,15 +1332,17 @@ proposal = [
         let temporary = tempdir().expect("temporary directory");
         let input = temporary.path().join("policy.toml");
         let output = temporary.path().join("policy.bin");
-        let manifest = statistical_manifest(false).replacen(
-            "schema_version = 2",
-            "schema_version = 4294967295",
-            1,
-        );
-        std::fs::write(&input, manifest).expect("write wrong-version manifest");
+        for version in ["2", "4294967295"] {
+            let manifest = statistical_manifest(false).replacen(
+                "schema_version = 3",
+                &format!("schema_version = {version}"),
+                1,
+            );
+            std::fs::write(&input, manifest).expect("write wrong-version manifest");
 
-        assert!(compile_campaign_policy(&input, None, &output).is_err());
-        assert!(!output.exists());
+            assert!(compile_campaign_policy(&input, None, &output).is_err());
+            assert!(!output.exists());
+        }
     }
 
     #[test]
