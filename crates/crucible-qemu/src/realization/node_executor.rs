@@ -289,6 +289,7 @@ trait QemuFailedLaunchChildSource {
 }
 
 mod admission;
+mod replay_physical;
 use admission::QemuReplayValidationNodeLauncher;
 pub use admission::{QemuReplayValidationExactAdmission, QemuReplayValidationThinAdmission};
 
