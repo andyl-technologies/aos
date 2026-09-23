@@ -175,7 +175,7 @@ fn hash_entry_header(state: &mut TreeHashState, path: &[u8], kind: EntryKind, mo
 }
 
 fn hash_file(path: &PathBuf, length: u64) -> Result<[u8; 32], GuestRootTreeErrorV1> {
-    if length == 0 || length > MAXIMUM_FILE_BYTES {
+    if length > MAXIMUM_FILE_BYTES {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
     let mut file = File::open(path)?;

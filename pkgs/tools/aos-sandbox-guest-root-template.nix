@@ -39,7 +39,7 @@ in
         script = ''
           set -eu
 
-          mkdir -p "$out/root/nix/store" "$out/root/etc" \
+          mkdir -p "$out/root/nix/store" "$out/root/etc/aos/sandbox-guest-root" \
             "$out/root/run" "$out/root/var/empty" \
             "$out/root/proc" "$out/root/sys" "$out/root/dev"
           grep -h '^/nix/store/' closure-guest-agent closure-openssh closure-systemd \

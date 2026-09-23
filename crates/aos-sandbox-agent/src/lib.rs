@@ -32,6 +32,8 @@ pub mod dormant_root_builder;
 pub mod guest_root_publication;
 #[cfg(target_os = "linux")]
 pub mod guest_root_marker;
+#[cfg(target_os = "linux")]
+pub mod guest_root_populate;
 #[cfg(unix)]
 pub mod guest_root_tree;
 pub mod model;
