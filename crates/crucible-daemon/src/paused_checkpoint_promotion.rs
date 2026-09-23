@@ -680,7 +680,7 @@ where
         crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
             installed.loaded().choice_closure(),
         )?;
-    let _choices = match target.replay_store {
+    let choices = match target.replay_store {
         Some(store) => owned_choices.complete_from_repository(
             store,
             target.source,

@@ -315,8 +315,8 @@ pub use realization::{
 pub(crate) use realization::{QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer};
 #[cfg(target_os = "linux")]
 pub use realization::{
-    QemuReplayValidationExactAdmission, QemuReplayValidationExecutor,
-    QemuReplayValidationThinAdmission,
+    QemuReplayOracleThinObservation, QemuReplayValidationExactAdmission,
+    QemuReplayValidationExecutor, QemuReplayValidationThinAdmission,
 };
 pub use shutdown::{
     QEMU_SHUTDOWN_ESCALATION_ORDER, QMP_QUIT_COMMAND, QemuChildWait, QemuReap, QemuShutdownAttempt,
