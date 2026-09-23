@@ -24,6 +24,7 @@ const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
 const MAX_DIAGNOSTIC_ENTRIES: usize = 256;
 const MAX_DIAGNOSTIC_FILE_BYTES: u64 = 8 * 1024;
+const MAX_STALE_BRANCH_RETRIES: usize = 8;
 const GUEST_SELECTABLE_BOUNDARY_PREFIX: &str = "CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ";
 const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
@@ -638,7 +639,7 @@ pub(crate) fn wait_for_choice(
                 "16",
             ])
             .output()?;
-        if is_stale_snapshot_read(&choices_output) {
+        if is_stale_snapshot_response(&choices_output) {
             return Ok(None);
         }
         let choices = parse_json_output(choices_output, "list guest-choice opportunities")?;
@@ -670,7 +671,7 @@ pub(crate) fn wait_for_choice(
                     "declaration",
                 ])
                 .output()?;
-            if is_stale_snapshot_read(&declaration_output) {
+            if is_stale_snapshot_response(&declaration_output) {
                 return Ok(None);
             }
             let declaration =
@@ -769,7 +770,7 @@ fn choice_is_authenticated_for_parent(
         ])
         .output()?;
     if !output.status.success() {
-        if is_stale_snapshot_read(&output) {
+        if is_stale_snapshot_response(&output) {
             return Ok(None);
         }
         require_success(&output, "authenticate guest-choice parent membership")?;
@@ -812,7 +813,7 @@ fn membership_key_is_in_authenticated_graph(
             "256",
         ])
         .output()?;
-    if is_stale_snapshot_read(&output) {
+    if is_stale_snapshot_response(&output) {
         return Ok(None);
     }
 
@@ -909,15 +910,15 @@ fn parent_membership_presence_requires_a_complete_authenticated_graph_scan() {
     );
 }
 
-fn is_stale_snapshot_read(output: &std::process::Output) -> bool {
-    // Live feedback may advance the head between watch and a proof-bound read.
-    // Only that exact consistency response restarts the bounded observation.
+fn is_stale_snapshot_response(output: &std::process::Output) -> bool {
+    // Live feedback may advance the head between reading it and a proof-bound
+    // request. Only that exact consistency response permits a retry.
     output.status.code() == Some(4)
         && String::from_utf8_lossy(&output.stderr).contains("campaign request used stale snapshot")
 }
 
 #[test]
-fn guest_choice_read_refresh_classifies_only_explicit_stale_snapshot_failures() {
+fn guest_choice_refresh_classifies_only_explicit_stale_snapshot_failures() {
     use std::os::unix::process::ExitStatusExt;
 
     let output = |status, stderr: &str| std::process::Output {
@@ -926,15 +927,19 @@ fn guest_choice_read_refresh_classifies_only_explicit_stale_snapshot_failures() 
         stderr: stderr.as_bytes().to_vec(),
     };
 
-    assert!(is_stale_snapshot_read(&output(
+    assert!(is_stale_snapshot_response(&output(
         4,
         "crucible: campaign choices query failed: campaign request used stale snapshot old; current snapshot is new",
     )));
-    assert!(!is_stale_snapshot_read(&output(
+    assert!(is_stale_snapshot_response(&output(
+        4,
+        "crucible: campaign branch failed: campaign request used stale snapshot old; current snapshot is new",
+    )));
+    assert!(!is_stale_snapshot_response(&output(
         4,
         "crucible: campaign choices query failed: proof validation failed",
     )));
-    assert!(!is_stale_snapshot_read(&output(
+    assert!(!is_stale_snapshot_response(&output(
         0,
         "campaign request used stale snapshot",
     )));
@@ -962,18 +967,17 @@ pub(crate) fn submit_choice(
     stop: &str,
     command_byte: u8,
 ) -> Result<Value, Box<dyn Error>> {
-    let head = campaign_status(fixture)?;
-    run_json(
-        connected_campaign(fixture)
+    let command = format!("{command_byte:02x}").repeat(32);
+    for _ in 0..MAX_STALE_BRANCH_RETRIES {
+        let head = campaign_status(fixture)?;
+        let output = connected_campaign(fixture)
             .args([
                 "branch",
                 CAMPAIGN,
                 "--expected",
                 &json_string(&head, "snapshot")?,
                 "--command",
-            ])
-            .arg(format!("{command_byte:02x}").repeat(32))
-            .args([
+                &command,
                 "--branch-point",
                 &choice.branch_point,
                 "--parent",
@@ -988,9 +992,18 @@ pub(crate) fn submit_choice(
                 "1",
                 "--stop",
                 stop,
-            ]),
-        "submit guest-choice branch",
+            ])
+            .output()?;
+        if is_stale_snapshot_response(&output) {
+            continue;
+        }
+        return parse_json_output(output, "submit guest-choice branch");
+    }
+
+    Err(format!(
+        "guest-choice branch remained stale across {MAX_STALE_BRANCH_RETRIES} snapshot reads"
     )
+    .into())
 }
 
 pub(crate) fn accepted_branch_request(submission: &Value) -> Result<String, Box<dyn Error>> {
