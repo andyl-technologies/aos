@@ -1288,6 +1288,8 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         | (BrokerDomain::Mount, BrokerVerb::MountDetach) => 4,
         (BrokerDomain::Host, BrokerVerb::HostKill)
         | (BrokerDomain::Mount, BrokerVerb::MountRelease) => 5,
+        (BrokerDomain::Host, BrokerVerb::HostApplyExecution) => 6,
+        (BrokerDomain::Host, BrokerVerb::HostQueryExecution) => 7,
         (BrokerDomain::Mount, BrokerVerb::MountMaterializeDestinationSlot) => 6,
         (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot) => 7,
         (BrokerDomain::Mount, BrokerVerb::MountRematerializeDestinationSlot) => 8,
@@ -1317,6 +1319,8 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Host, 3) => Ok(BrokerVerb::HostFreeze),
         (BrokerDomain::Host, 4) => Ok(BrokerVerb::HostThaw),
         (BrokerDomain::Host, 5) => Ok(BrokerVerb::HostKill),
+        (BrokerDomain::Host, 6) => Ok(BrokerVerb::HostApplyExecution),
+        (BrokerDomain::Host, 7) => Ok(BrokerVerb::HostQueryExecution),
         (BrokerDomain::Mount, 1) => Ok(BrokerVerb::MountCreate),
         (BrokerDomain::Mount, 2) => Ok(BrokerVerb::MountInstall),
         (BrokerDomain::Mount, 3) => Ok(BrokerVerb::MountReplace),
