@@ -127,6 +127,99 @@ pub(in crate::model) fn validate_violation_point(
     })
 }
 
+pub(in crate::model) fn validated_host_violation_cone(
+    finding: &FindingReproductionArtifact,
+    event_log: &FailureRecordedEventLog,
+    violation: &FailurePropertyViolationRecord,
+    canonicalizer: &FailureSymmetryCanonicalizer,
+) -> Result<FailureCausalCone, EngineError> {
+    let mismatch = || EngineError::UnifiedOperationEvidenceMismatch {
+        operation: "failure-signature.violation",
+        reason: "violation record is absent from recorded causal projection and host assertion replay",
+    };
+
+    // An existing transition with the same identity must pass the causal-site
+    // check; a bad physical stamp cannot be replaced by a different witness.
+    if event_log.projection.entries().iter().any(|entry| {
+        entry.entry.event_payload().kind() == violation.violation.event_kind
+            && entry.entry.at() == violation.violation.at_virtual_time
+            && violation_event_assertion_matches(entry.entry.event_payload(), &violation.violation)
+    }) {
+        return Err(mismatch());
+    }
+
+    let scenario = finding.artifact.scenario_form();
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&scenario.world)
+        .check_run(&scenario.properties, &event_log.raw_entries)
+        .map_err(|_| mismatch())?;
+    if !report.violations().iter().any(|replayed| {
+        let mut replayed = replayed.clone();
+        replayed.reproduction_artifact = finding.artifact.id();
+        replayed == violation.violation
+    }) {
+        return Err(mismatch());
+    }
+
+    let anchor = event_log
+        .projection
+        .entries()
+        .iter()
+        .enumerate()
+        .rfind(|(_, entry)| entry.entry.at() <= violation.violation.at_virtual_time)
+        .map(|(index, _)| index);
+    let mut material = anchor.map_or_else(
+        || String::from("causal_cone_events=0"),
+        |index| {
+            failure_causal_cone_through_index(event_log, index, canonicalizer)
+                .canonical_material()
+                .to_owned()
+        },
+    );
+
+    // The checker establishes the failed predicate from the exact raw log.
+    // Retain the physical marker coordinate independently of the scheduler
+    // boundary so replay cannot substitute a different guest observation.
+    let marker_witnesses = event_log
+        .raw_entries
+        .iter()
+        .filter_map(|entry| match entry.payload() {
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
+                retired_icount,
+                node,
+                marker,
+            }) if violation.violation.at_icount == Some(*retired_icount)
+                && violation.violation.node.as_ref() == Some(node) =>
+            {
+                Some((entry.at(), node, marker, retired_icount))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // The detail was regenerated and compared above, so its witness label is
+    // checker-owned rather than an unchecked claim from the replay payload.
+    let claims_guest_marker = violation.violation.node.is_some()
+        && violation.violation.detail.contains("guest marker marker=");
+    if marker_witnesses.len() > 1 || (claims_guest_marker && marker_witnesses.len() != 1) {
+        return Err(mismatch());
+    }
+    if let Some((at, node, marker, icount)) = marker_witnesses.first() {
+        let node = canonicalizer.canonical_node(node);
+        material.push_str(&format!(
+            "\nguest_marker_witness=marker:{:?};node:{:?};icount:{};at:{}",
+            marker.name, node.name, icount.retired, at.ticks
+        ));
+    }
+    material.push_str(&format!(
+        "\nhost_assertion_violation=assertion:{:?};quantifier:{:?};at:{};detail:{:?}",
+        violation.violation.assertion.name,
+        violation.violation.quantifier,
+        violation.violation.at_virtual_time.ticks,
+        violation.violation.detail
+    ));
+    Ok(FailureCausalCone::from_canonical_material(material))
+}
+
 pub(in crate::model) fn validate_timeout_point(
     event_log: &FailureRecordedEventLog,
     timeout: &FailureTimeoutRecord,

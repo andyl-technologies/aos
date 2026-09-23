@@ -105,7 +105,7 @@ impl FailureSymmetryCanonicalizer {
 ///
 /// This value binds the supplied event-log entries to the
 /// [`ReproductionEventLogArtifact`] recorded for the same reproduction artifact,
-/// and caches only deterministic projections used by signature construction.
+/// and retains the raw entries needed to recheck host-derived violations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailureRecordedEventLog {
     pub(in crate::model) artifact: ContentHash,
@@ -115,6 +115,7 @@ pub struct FailureRecordedEventLog {
     pub(in crate::model) coverage_fingerprint: ContentHash,
     pub(in crate::model) evidence_binding: ContentHash,
     pub(in crate::model) projection: EventLogCausalProjection,
+    pub(in crate::model) raw_entries: Vec<SchedulerEventLogEntry>,
 }
 
 fn failure_recorded_evidence_binding(
@@ -194,6 +195,7 @@ impl FailureRecordedEventLog {
                 recorded_frames,
             ),
             projection,
+            raw_entries: causal_entries.to_vec(),
         })
     }
 
@@ -259,6 +261,7 @@ impl FailureRecordedEventLog {
                 &[],
             ),
             projection,
+            raw_entries: event_log.to_vec(),
         })
     }
 
@@ -494,8 +497,9 @@ impl FailureSignature {
     /// Returns [`EngineError::ReplayTargetMismatch`] if the finding's embedded
     /// artifact, event-log metadata, violation record, replay metadata, and
     /// configuration id disagree before any signature field is read. Returns
-    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when the violation site
-    /// is absent from the checked recorded causal projection.
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when neither a causal
+    /// assertion transition nor an exact host-checked violation exists in the
+    /// retained log.
     pub fn from_recorded_property_violation_with_normalization(
         finding: &FindingReproductionArtifact,
         event_log: &FailureRecordedEventLog,
@@ -506,9 +510,12 @@ impl FailureSignature {
         validate_recorded_event_log_for_finding(finding, event_log)?;
         validate_violation_for_finding(finding, violation)?;
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
-        let causal_index = validate_violation_point(event_log, violation)?;
-        let causal_cone =
-            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
+        let causal_cone = match validate_violation_point(event_log, violation) {
+            Ok(causal_index) => {
+                failure_causal_cone_through_index(event_log, causal_index, &canonicalizer)
+            }
+            Err(_) => validated_host_violation_cone(finding, event_log, violation, &canonicalizer)?,
+        };
         Ok(Self {
             failure_kind: FailureKind::PropertyViolation,
             property: Some(violation.property_key()),
