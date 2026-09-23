@@ -998,6 +998,15 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
+        // A prior timed-out attempt may have left template-named partial
+        // files. Prove its whole systemd unit gone before a new signed effect
+        // can repair them; the old AOSGRA01 is never redispatched.
+        let mut publisher = SystemdGuestRootPublisherClientV1::new(
+            PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
+            open_cgroup_root()?,
+        )?;
+        publisher.recover_quiescence()?;
+
         let admitted = self.coordinator.begin_guest_root_publication(
             &semantics,
             request_body,
@@ -1012,10 +1021,6 @@ impl StorageBrokerRuntime {
         let (worker_request, effect_deadline) =
             self.finish_live_transaction_mutation(admitted, StorageRuntimeError::Admission)?;
         let publication = (|| {
-            let mut publisher = SystemdGuestRootPublisherClientV1::new(
-                PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
-                open_cgroup_root()?,
-            )?;
             let proof = publisher.publish(&worker_request, expected_proof, effect_deadline)?;
             let now = boottime_now_nanoseconds()?;
             let cutoff = guest_root_inventory_cutoff(now, request_deadline)?;

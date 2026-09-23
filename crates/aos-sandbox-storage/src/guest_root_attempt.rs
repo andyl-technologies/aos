@@ -70,6 +70,17 @@ pub(crate) struct GuestRootPublicationAttemptV1 {
 }
 
 impl GuestRootPublicationAttemptV1 {
+    /// Allows only a new effect to repair an expired, unmarked partial copy.
+    pub(crate) fn permits_fresh_retry(self, next: Self, current_boottime_nanoseconds: u64) -> bool {
+        self.phase == GuestRootAttemptPhaseV1::Ambiguous
+            && self.effect_operation != next.effect_operation
+            && self.expected_proof == next.expected_proof
+            && self.root_device == next.root_device
+            && self.root_inode == next.root_inode
+            && (self.kernel_boot != next.kernel_boot
+                || self.effect_deadline_boottime_nanoseconds <= current_boottime_nanoseconds)
+    }
+
     pub(crate) fn validate(self) -> Result<(), StorageStateError> {
         if self.effect_operation == [0; 16]
             || self.effect_operation == self.expected_proof.creation_operation
@@ -227,6 +238,28 @@ mod tests {
         assert!(decode_attempt(&bytes, [21; 16], [19; 16], &[20; 32]).is_err());
         bytes[130] ^= 1;
         assert!(decode_attempt(&bytes, original.effect_operation, [19; 16], &[20; 32]).is_err());
+    }
+
+    #[test]
+    fn retry_requires_stale_ambiguous_same_root_and_new_effect() {
+        let prior = attempt();
+        let mut next = prior;
+        next.effect_operation = [21; 16];
+        next.request_id = [22; 16];
+        next.effect_deadline_boottime_nanoseconds = 40;
+        assert!(!prior.permits_fresh_retry(next, 17));
+        assert!(prior.permits_fresh_retry(next, 18));
+
+        let mut moved = next;
+        moved.root_inode += 1;
+        assert!(!prior.permits_fresh_retry(moved, 18));
+        let mut repinned = next;
+        repinned.expected_proof.package_binding = [23; 32];
+        assert!(!prior.permits_fresh_retry(repinned, 18));
+        assert!(!prior.permits_fresh_retry(prior, 18));
+
+        let complete = prior.complete().unwrap();
+        assert!(!complete.permits_fresh_retry(next, 18));
     }
 
     #[test]

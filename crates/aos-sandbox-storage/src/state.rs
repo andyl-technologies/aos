@@ -708,16 +708,20 @@ impl StorageTransactionStore {
         &mut self,
         attempt: GuestRootPublicationAttemptV1,
         sealed: &SealedStorageAdmission,
+        current_boottime_nanoseconds: u64,
     ) -> Result<Vec<u8>, StorageStateError> {
         self.ensure_authority_readable()?;
         attempt.validate()?;
-        if attempt.phase != crate::guest_root_attempt::GuestRootAttemptPhaseV1::Ambiguous
+        if current_boottime_nanoseconds == 0
+            || attempt.effect_deadline_boottime_nanoseconds <= current_boottime_nanoseconds
+            || attempt.phase != crate::guest_root_attempt::GuestRootAttemptPhaseV1::Ambiguous
             || self
                 .guest_root_attempts
                 .contains_key(&attempt.effect_operation)
             || self.records.contains_key(&attempt.effect_operation)
             || self.guest_root_attempts.values().any(|existing| {
                 existing.expected_proof.workspace_handle == attempt.expected_proof.workspace_handle
+                    && !existing.permits_fresh_retry(attempt, current_boottime_nanoseconds)
             })
             || self
                 .journal

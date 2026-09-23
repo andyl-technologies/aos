@@ -525,9 +525,11 @@ impl StorageAdmissionCoordinator {
         };
         let request = encode_guest_root_worker_request(
             operation,
-            &self
-                .transactions
-                .begin_guest_root_publication_attempt(attempt, &sealed)?,
+            &self.transactions.begin_guest_root_publication_attempt(
+                attempt,
+                &sealed,
+                clock.boottime_nanoseconds(),
+            )?,
             &sealed.effect,
             &sealed.operation_fence,
         )
