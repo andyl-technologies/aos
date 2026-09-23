@@ -28,6 +28,7 @@ use crate::catalog_transition::{
     CatalogReservation, PhysicalWorkspaceProjection, StorageCatalogTransitionProvider,
     VerifiedPhysicalCatalogSnapshotV1,
 };
+use crate::guest_root_attempt::GuestRootPublicationAttemptV1;
 use crate::resolver::protected_catalog::{
     StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
 };
@@ -689,6 +690,7 @@ pub struct StorageTransactionStore {
     publication_intents: BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
     pin_attempts: BTreeMap<[u8; 16], WorkspacePinAttemptV1>,
     repair_intents: BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
+    guest_root_attempts: BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>,
     atomic_snapshots: BTreeMap<[u8; 16], AtomicDatasetSnapshotRecordV1>,
     commit_failed: bool,
     #[cfg(test)]
@@ -698,6 +700,105 @@ pub struct StorageTransactionStore {
 type CatalogPreparationRecord = ([u8; 16], Vec<u8>);
 
 impl StorageTransactionStore {
+    /// Durably consumes one admitted guest-root effect before worker dispatch.
+    ///
+    /// An uncertain commit poisons the transaction store. Reopen can observe
+    /// the exact attempt but never returns this effect as dispatchable again.
+    pub(crate) fn begin_guest_root_publication_attempt(
+        &mut self,
+        attempt: GuestRootPublicationAttemptV1,
+        sealed: SealedStorageAdmission,
+    ) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        attempt.validate()?;
+        if attempt.phase != crate::guest_root_attempt::GuestRootAttemptPhaseV1::Ambiguous
+            || self
+                .guest_root_attempts
+                .contains_key(&attempt.effect_operation)
+            || self.records.contains_key(&attempt.effect_operation)
+            || self.guest_root_attempts.values().any(|existing| {
+                existing.expected_proof.workspace_handle == attempt.expected_proof.workspace_handle
+            })
+            || self
+                .journal
+                .get(RecordNamespace::Effect, &attempt.request_id)
+                .is_some()
+            || self
+                .journal
+                .get(
+                    RecordNamespace::AuthorityPublication,
+                    &attempt.effect_operation,
+                )
+                .is_some()
+            || sealed.current_fence.is_empty()
+            || sealed.effect.is_empty()
+            || sealed.operation_fence.is_empty()
+            || sealed.current_fence.len() > MAXIMUM_RECORD_BYTES
+            || sealed.effect.len() > MAXIMUM_RECORD_BYTES
+            || sealed.operation_fence.len() > MAXIMUM_RECORD_BYTES
+            || Sha256::digest(&sealed.effect).as_slice() != attempt.sealed_effect_digest
+            || Sha256::digest(&sealed.operation_fence).as_slice() != attempt.operation_fence_digest
+        {
+            return Err(StorageStateError::Equivocation);
+        }
+        let proof = attempt.expected_proof;
+        let creation = self
+            .records
+            .get(&proof.creation_operation)
+            .filter(|record| record.phase == DurableStoragePhase::Committed)
+            .and_then(|record| record.result)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let publication = self
+            .publication_intents
+            .get(&proof.creation_operation)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if creation.storage_handle() != Some(proof.workspace_handle)
+            || creation.object_guid() != Some(proof.dataset_guid)
+            || publication.assignment_digest().as_bytes() != &proof.assignment_digest
+            || publication.root_image().digest().as_bytes() != &proof.root_image_digest
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+
+        let transaction = JournalTransaction::new(
+            guest_root_attempt_transaction_id(attempt.effect_operation),
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    proof.sandbox.to_vec(),
+                    sealed.current_fence,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    attempt.request_id.to_vec(),
+                    sealed.effect,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    attempt.effect_operation.to_vec(),
+                    sealed.operation_fence,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::StorageGuestRootPublicationAttempt,
+                    attempt.effect_operation.to_vec(),
+                    self.key.seal_guest_root_publication_attempt(attempt)?,
+                ),
+            ],
+        )?;
+        self.commit_journal(&transaction)?;
+        if transaction
+            .records()
+            .iter()
+            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
+        {
+            self.commit_failed = true;
+            return Err(aos_sandbox::JournalError::Poisoned.into());
+        }
+        self.guest_root_attempts
+            .insert(attempt.effect_operation, attempt);
+        Ok(())
+    }
+
     pub(crate) fn atomic_dataset_snapshot_inventory(
         &self,
     ) -> Result<Vec<AtomicDatasetSnapshotInventoryV1>, StorageStateError> {
@@ -1131,6 +1232,7 @@ impl StorageTransactionStore {
         let publication_intents = load_publication_intents(&journal, &key)?;
         let pin_attempts = load_attempts(&journal, key.key_id, &key.secret)?;
         let repair_intents = load_repair_intents(&journal, key.key_id, &key.secret)?;
+        let guest_root_attempts = load_guest_root_attempts(&journal, &key)?;
         let atomic_snapshots = load_atomic_snapshot_records(&journal, &key)?;
         let catalog_transitions =
             StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
@@ -1160,6 +1262,12 @@ impl StorageTransactionStore {
             &pin_attempts,
             &repair_intents,
         )?;
+        validate_guest_root_attempt_set(
+            &journal,
+            &records,
+            &publication_intents,
+            &guest_root_attempts,
+        )?;
         let store = Self {
             journal,
             key,
@@ -1170,6 +1278,7 @@ impl StorageTransactionStore {
             publication_intents,
             pin_attempts,
             repair_intents,
+            guest_root_attempts,
             atomic_snapshots,
             commit_failed: false,
             #[cfg(test)]
@@ -3954,6 +4063,73 @@ impl StorageTransactionStore {
     pub(crate) fn poison_after_committed_repair_failure(&mut self) {
         self.commit_failed = true;
     }
+}
+
+fn load_guest_root_attempts(
+    journal: &Journal,
+    key: &StorageStateKey,
+) -> Result<BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>, StorageStateError> {
+    let mut attempts = BTreeMap::new();
+    for (record_key, bytes) in journal.records(RecordNamespace::StorageGuestRootPublicationAttempt)
+    {
+        let operation: [u8; 16] = record_key
+            .try_into()
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+        let attempt = key.open_guest_root_publication_attempt(operation, bytes)?;
+        if attempts.insert(operation, attempt).is_some() {
+            return Err(StorageStateError::CorruptRecord);
+        }
+    }
+    Ok(attempts)
+}
+
+fn guest_root_attempt_transaction_id(effect_operation: [u8; 16]) -> [u8; 16] {
+    let mut hash = Sha256::new();
+    hash.update(b"aos.sandbox.storage.guest-root-attempt-transaction.v1\0");
+    hash.update(effect_operation);
+    let digest = hash.finalize();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&digest[..16]);
+    transaction_id
+}
+
+fn validate_guest_root_attempt_set(
+    journal: &Journal,
+    records: &BTreeMap<[u8; 16], DurableRecord>,
+    publications: &BTreeMap<[u8; 16], StorageWorkspacePublicationIntentV1>,
+    attempts: &BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>,
+) -> Result<(), StorageStateError> {
+    for attempt in attempts.values() {
+        let proof = attempt.expected_proof;
+        let creation = records
+            .get(&proof.creation_operation)
+            .filter(|record| record.phase == DurableStoragePhase::Committed)
+            .and_then(|record| record.result)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let publication = publications
+            .get(&proof.creation_operation)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let sealed_effect = journal
+            .get(RecordNamespace::Effect, &attempt.request_id)
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        let sealed_fence = journal
+            .get(
+                RecordNamespace::AuthorityPublication,
+                &attempt.effect_operation,
+            )
+            .ok_or(StorageStateError::MissingAuthorityLink)?;
+        if records.contains_key(&attempt.effect_operation)
+            || creation.storage_handle() != Some(proof.workspace_handle)
+            || creation.object_guid() != Some(proof.dataset_guid)
+            || publication.assignment_digest().as_bytes() != &proof.assignment_digest
+            || publication.root_image().digest().as_bytes() != &proof.root_image_digest
+            || Sha256::digest(sealed_effect).as_slice() != attempt.sealed_effect_digest
+            || Sha256::digest(sealed_fence).as_slice() != attempt.operation_fence_digest
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch);
+        }
+    }
+    Ok(())
 }
 
 fn committed_result_with_key(

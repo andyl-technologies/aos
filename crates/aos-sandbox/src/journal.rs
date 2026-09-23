@@ -211,6 +211,8 @@ pub enum RecordNamespace {
     PublicAttachPending = 54,
     /// Immutable signed Storage group history retained across session rollover.
     BrokerSessionStorageGroupArchive = 55,
+    /// Durable ambiguous or completed Storage guest-root population attempts.
+    StorageGuestRootPublicationAttempt = 58,
 }
 
 impl RecordNamespace {
@@ -271,6 +273,7 @@ impl RecordNamespace {
             53 => Ok(Self::PublicAttachRoute),
             54 => Ok(Self::PublicAttachPending),
             55 => Ok(Self::BrokerSessionStorageGroupArchive),
+            58 => Ok(Self::StorageGuestRootPublicationAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -3644,6 +3647,13 @@ mod tests {
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
         for code in [0, 56, 255] {
+            assert!(RecordNamespace::from_byte(code).is_err());
+        }
+        assert_eq!(
+            RecordNamespace::from_byte(58).unwrap(),
+            RecordNamespace::StorageGuestRootPublicationAttempt
+        );
+        for code in [56, 57] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
     }
