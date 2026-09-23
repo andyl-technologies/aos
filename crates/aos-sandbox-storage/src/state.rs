@@ -158,6 +158,28 @@ impl StorageStateKey {
         crate::workspace_repair::decode_intent(bytes, self.key_id, &self.secret)
     }
 
+    /// Seals an exact guest-root attempt at its effect-operation location.
+    pub(crate) fn seal_guest_root_publication_attempt(
+        &self,
+        attempt: crate::guest_root_attempt::GuestRootPublicationAttemptV1,
+    ) -> Result<Vec<u8>, StorageStateError> {
+        crate::guest_root_attempt::encode_attempt(attempt, self.key_id, &self.secret)
+    }
+
+    /// Authenticates a guest-root attempt against its journal key.
+    pub(crate) fn open_guest_root_publication_attempt(
+        &self,
+        effect_operation: [u8; 16],
+        bytes: &[u8],
+    ) -> Result<crate::guest_root_attempt::GuestRootPublicationAttemptV1, StorageStateError> {
+        crate::guest_root_attempt::decode_attempt(
+            bytes,
+            effect_operation,
+            self.key_id,
+            &self.secret,
+        )
+    }
+
     /// Authenticates one workspace publication intent at its exact location.
     pub(crate) fn open_workspace_publication_intent(
         &self,

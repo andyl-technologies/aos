@@ -31,6 +31,7 @@ pub mod catalog_preparation;
 mod catalog_transition;
 mod clone_identity;
 mod dormant_broker_session;
+mod guest_root_attempt;
 pub mod guest_root_inventory;
 #[allow(
     dead_code,
