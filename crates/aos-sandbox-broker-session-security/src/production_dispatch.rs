@@ -95,6 +95,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         event: ProductionHostBrokerRequestEventV1,
         host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
         publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         match event {
@@ -103,6 +104,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     request,
                     host,
                     publisher,
+                    agent,
                     deadline_boottime_nanoseconds,
                 )
                 .await
@@ -112,6 +114,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                     replay.into_recovery_request(),
                     host,
                     publisher,
+                    agent,
                     deadline_boottime_nanoseconds,
                 )
                 .await
@@ -266,11 +269,18 @@ impl DormantAuthenticatedBrokerSessionV1 {
         request: DormantReceivedBrokerDescriptorRequestV1,
         host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
         publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let artifacts = request.authorization_artifacts().cloned();
         let dispatched = self
-            .dispatch_host_request_and_commit(request, host, publisher)
+            .dispatch_host_request_and_commit(
+                request,
+                host,
+                publisher,
+                agent,
+                deadline_boottime_nanoseconds,
+            )
             .await;
 
         match dispatched {
@@ -426,6 +436,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         request: DormantReceivedBrokerDescriptorRequestV1,
         host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
         publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
+        deadline_boottime_nanoseconds: u64,
     ) -> Result<ProductionHostBrokerDispatchCommitV1, ProductionHostBrokerDispatchFailureV1> {
         if request.method() == BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG {
             return self
@@ -454,7 +466,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
             BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => self
-                .execute_host_execution_and_commit(request, host)
+                .execute_host_execution_and_commit(
+                    request,
+                    host,
+                    agent,
+                    deadline_boottime_nanoseconds,
+                )
                 .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
                 .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME

@@ -99,12 +99,19 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self,
         host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
         publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerServiceErrorV1> {
         let (session, event) =
             self.receive_production_host_request(deadline_boottime_nanoseconds)?;
         session
-            .complete_host_request_event(event, host, publisher, deadline_boottime_nanoseconds)
+            .complete_host_request_event(
+                event,
+                host,
+                publisher,
+                agent,
+                deadline_boottime_nanoseconds,
+            )
             .await
             .map_err(Into::into)
     }

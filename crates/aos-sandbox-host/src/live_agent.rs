@@ -15,16 +15,28 @@ use std::time::{Duration, Instant};
 
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    agent_handshake_signing_message_v1,
+    RuntimeExecutionEvidenceError, agent_handshake_signing_message_v1,
+    completion_from_backend_observation_v1,
 };
 use aos_sandbox_agent::protected_entry::GuestAgentLaunchRecordV1;
-use aos_sandbox_agent::{
-    AgentFrameV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentNonceV1,
-    AgentProtocolError, AgentRuntimeBindingV1, AgentSessionBindingV1, AgentSessionIdV1,
-    InvalidAgentModel, decode_frame_v1, encode_frame_v1,
+use aos_sandbox_agent::signed_outcome_packet::{
+    MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES, SignedAgentOutcomePacketErrorV1,
 };
-use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_core::runtime_backend::AdmissionCurrentnessV1;
+use aos_sandbox_agent::{
+    AgentExecutionOperationV1, AgentExecutionPhaseV1, AgentFeatureV1, AgentFrameV1,
+    AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentNonceV1, AgentOperationIdV1,
+    AgentOperationRequestV1, AgentOperationSequenceV1, AgentProtocolError, AgentRuntimeBindingV1,
+    AgentSessionBindingV1, AgentSessionIdV1, InvalidAgentModel, decode_frame_v1,
+    decode_signed_agent_outcome_packet_v1, encode_frame_v1,
+};
+use aos_sandbox_core::runtime_backend::{
+    AdmissionCurrentnessV1, BackendEvidenceVerifierV1, BackendExecutionInspectionInputV1,
+    BackendExecutionInspectionRequestV1, BackendExecutionPhaseV1, DurableExecutionEffectV1,
+    EffectCommitError, EffectOperationV1, EffectPhaseV1, ExecutionEffectTransitionV1,
+    SignedBackendExecutionInspectionV1, backend_execution_inspection_binding_v1,
+    reserve_effect_issue,
+};
+use aos_sandbox_core::{DecodeLimits, ObjectDigest, decode_execution_spec_v1};
 use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
@@ -76,6 +88,18 @@ pub enum HostAgentLiveErrorV1 {
     /// A received frame was malformed.
     #[error(transparent)]
     Frame(#[from] AgentProtocolError),
+    /// The guest returned a malformed signed packet.
+    #[error(transparent)]
+    Packet(#[from] SignedAgentOutcomePacketErrorV1),
+    /// Protected effect issuance was rejected or ambiguous.
+    #[error(transparent)]
+    Effect(#[from] EffectCommitError),
+    /// The signed outcome did not establish a valid backend observation.
+    #[error(transparent)]
+    Evidence(#[from] RuntimeExecutionEvidenceError),
+    /// One effect route or outcome requires cold protected recovery.
+    #[error("guest effect requires protected cold recovery")]
+    RecoveryRequired,
 }
 
 /// Retains a zeroizing seed verified against the fixed protected agent peer.
@@ -143,15 +167,9 @@ impl HostAgentProtectedSeedV1 {
         let mut bytes = Zeroizing::new([0; SEED_CREDENTIAL_BYTES]);
         file.read_exact(&mut *bytes)
             .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
-        let checksum: [u8; 32] = Sha256::digest(&bytes[..40]).into();
-        if &bytes[..8] != SEED_MAGIC || bytes[40..] != checksum {
-            return Err(HostAgentLiveErrorV1::SeedUnavailable);
-        }
-        let mut seed = Zeroizing::new([0; 32]);
-        seed.copy_from_slice(&bytes[8..40]);
-        if *seed == [0; 32]
-            || SigningKey::from_bytes(&seed).verifying_key().to_bytes()
-                != claim.agent_peer().public_key()
+        let seed = decode_seed_credential(&bytes)?;
+        if SigningKey::from_bytes(&seed).verifying_key().to_bytes()
+            != claim.agent_peer().public_key()
         {
             return Err(HostAgentLiveErrorV1::Binding);
         }
@@ -321,8 +339,14 @@ impl HostAgentPendingSessionV1 {
             &mut self.socket,
             &encode_frame_v1(&AgentFrameV1::HandshakeRequest(handshake.clone())),
             deadline,
+            None,
         )?;
-        let response = match decode_frame_v1(&receive_frame(&mut self.socket, deadline)?)? {
+        let response = match decode_frame_v1(&receive_record(
+            &mut self.socket,
+            aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES,
+            deadline,
+            None,
+        )?)? {
             AgentFrameV1::HandshakeResponse(response) => response,
             _ => return Err(HostAgentLiveErrorV1::Unauthenticated),
         };
@@ -355,6 +379,8 @@ impl HostAgentPendingSessionV1 {
             handshake,
             response,
             binding,
+            next_sequence: AgentOperationSequenceV1::new(1)?,
+            poisoned: false,
         })
     }
 
@@ -382,6 +408,8 @@ pub struct HostAgentLiveSessionV1 {
     handshake: AgentHandshakeRequestV1,
     response: AgentHandshakeResponseV1,
     binding: AgentSessionBindingV1,
+    next_sequence: AgentOperationSequenceV1,
+    poisoned: bool,
 }
 
 impl HostAgentLiveSessionV1 {
@@ -423,6 +451,152 @@ impl HostAgentLiveSessionV1 {
         &self.response
     }
 
+    /// Issues one Pending effect exactly once and settles its signed result.
+    ///
+    /// The request projection is nonauthorizing. The protected claim verifies
+    /// its exact action, specification, currentness, signed handshake, and
+    /// route before consuming dispatch in the journal. The socket is touched
+    /// only after the Issued transition and route consumption are durable.
+    /// Any subsequent failure poisons this session; recovery is read-only.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale currentness, an occupied session, invalid effect or guest
+    /// evidence, deadline, transport loss, or any ambiguous protected append.
+    pub fn issue_pending_effect(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        pending: &DurableExecutionEffectV1,
+        deadline: Instant,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DurableExecutionEffectV1, HostAgentLiveErrorV1> {
+        if self.poisoned {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+        check_deadline(deadline, Some(deadline_boottime_nanoseconds))?;
+        self.validate_claim(claim)?;
+        if pending.phase() != EffectPhaseV1::Pending
+            || pending.admission().currentness() != claim.currentness()
+            || claim.has_unsettled_host_agent_route()?
+        {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        let required_feature = match pending.issue().operation() {
+            EffectOperationV1::AuthorizeExecution => Some(AgentFeatureV1::ExecutionHandoff),
+            EffectOperationV1::ResizeTerminal { .. } => Some(AgentFeatureV1::TerminalResize),
+            EffectOperationV1::Signal { .. } => Some(AgentFeatureV1::ExecutionSignal),
+            EffectOperationV1::Observe => Some(AgentFeatureV1::ExecutionObservation),
+            EffectOperationV1::Cancel => None,
+        };
+        if required_feature.is_some_and(|feature| !self.response.features().contains(feature)) {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        let next_sequence = self.next_sequence.checked_next()?;
+        let request = project_agent_request(pending, self.binding, self.next_sequence, claim)?;
+        let verifier = BackendEvidenceVerifierV1::new(
+            claim.agent_peer().public_key(),
+            claim.agent_peer().trust_context(),
+            claim.agent_peer().channel_binding(),
+        )
+        .map_err(|_| HostAgentLiveErrorV1::Binding)?;
+        if verifier.authority_binding() != claim.agent_peer().authority_binding() {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        let observation_sequence = claim.next_observation_sequence();
+        if observation_sequence.get() == u64::MAX
+            || claim.committed_host_agent_outcome_at_observation_sequence(observation_sequence)?
+        {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+
+        self.poisoned = true;
+        let issued = match reserve_effect_issue(claim, pending)? {
+            ExecutionEffectTransitionV1::Committed(effect) => effect,
+            ExecutionEffectTransitionV1::RecoveryRequired(_)
+            | ExecutionEffectTransitionV1::NotCommitted => {
+                return Err(HostAgentLiveErrorV1::RecoveryRequired);
+            }
+        };
+        claim.consume_fresh_execution_for_authenticated_agent_route(
+            &self.handshake,
+            &self.response,
+            &request,
+            &issued,
+        )?;
+        let operation = *issued.issue().idempotency().operation().as_bytes();
+        let frame = encode_frame_v1(&AgentFrameV1::OperationRequest(request.clone()));
+        send_frame(
+            &mut self.socket,
+            &frame,
+            deadline,
+            Some(deadline_boottime_nanoseconds),
+        )?;
+        let bytes = receive_record(
+            &mut self.socket,
+            MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES,
+            deadline,
+            Some(deadline_boottime_nanoseconds),
+        )?;
+        let packet = decode_signed_agent_outcome_packet_v1(&bytes)?;
+        let authenticated = claim.authenticate_recovered_agent_outcome_packet(
+            &operation,
+            aos_sandbox_agent::SignedAgentOutcomePacketV1::new(
+                packet.outcome().clone(),
+                *packet.signature(),
+            )?,
+        )?;
+        let inspection_request = inspection_request(&issued, claim)?;
+        let outcome = authenticated.outcome();
+        let input = BackendExecutionInspectionInputV1 {
+            authority_binding: ObjectDigest::from_bytes([0; 32]),
+            operation: inspection_request.operation(),
+            operation_sequence: inspection_request.operation_sequence(),
+            effect_request_digest: inspection_request.effect_request_digest(),
+            execution: inspection_request.execution(),
+            specification_digest: inspection_request.specification_digest(),
+            admission_commitment: inspection_request.admission_commitment(),
+            runtime: *inspection_request.runtime(),
+            payload_boot_id: inspection_request.payload_boot_id(),
+            phase: core_phase(outcome.phase())?,
+            sequence: observation_sequence,
+            observation_commitment: ObjectDigest::from_bytes([0; 32]),
+        };
+        let signed = SignedBackendExecutionInspectionV1::new(
+            input,
+            outcome.session().digest(),
+            outcome.sequence().get(),
+            *outcome.operation_id().as_bytes(),
+            outcome.request_commitment(),
+            outcome.outcome_commitment(),
+            outcome.result_bytes().to_vec(),
+            outcome.result_digest(),
+            *authenticated.signature(),
+        );
+        let observation = verifier
+            .verify_execution_inspection(&inspection_request, observation_sequence, signed)
+            .map_err(|_| HostAgentLiveErrorV1::Unauthenticated)?;
+        let observation_commitment = observation.observation_commitment();
+        let completion = completion_from_backend_observation_v1(&issued, observation)?;
+
+        claim.commit_signed_host_agent_outcome_packet(
+            &operation,
+            &packet,
+            observation_sequence,
+            observation_commitment,
+        )?;
+        claim.consume_execution_observation(&observation)?;
+        let complete = match claim.commit_verified_completion(&issued, &completion)? {
+            ExecutionEffectTransitionV1::Committed(effect) => effect,
+            ExecutionEffectTransitionV1::RecoveryRequired(_)
+            | ExecutionEffectTransitionV1::NotCommitted => {
+                return Err(HostAgentLiveErrorV1::RecoveryRequired);
+            }
+        };
+        self.next_sequence = next_sequence;
+        self.poisoned = false;
+        Ok(complete)
+    }
+
     // Only a checked gate frame reaches this helper. Effect-bearing operations
     // need their own durable route consumption before sharing this socket.
     fn exchange_frame(
@@ -430,17 +604,24 @@ impl HostAgentLiveSessionV1 {
         request: &[u8],
         deadline: Instant,
     ) -> Result<Vec<u8>, HostAgentLiveErrorV1> {
-        send_frame(&mut self.socket, request, deadline)?;
-        receive_frame(&mut self.socket, deadline)
+        send_frame(&mut self.socket, request, deadline, None)?;
+        receive_record(
+            &mut self.socket,
+            aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES,
+            deadline,
+            None,
+        )
     }
 }
 
 impl OpenSshGateAgentExchangeV1 for HostAgentLiveSessionV1 {
     fn exchange(&mut self, request: &[u8]) -> std::io::Result<Vec<u8>> {
-        if !matches!(
-            decode_frame_v1(request),
-            Ok(AgentFrameV1::OpenSshGateObserveRequest(_))
-        ) {
+        if self.poisoned
+            || !matches!(
+                decode_frame_v1(request),
+                Ok(AgentFrameV1::OpenSshGateObserveRequest(_))
+            )
+        {
             return Err(std::io::Error::other(
                 "only gate observations use this exchange",
             ));
@@ -466,15 +647,124 @@ fn agent_runtime(
     )?)
 }
 
+fn decode_seed_credential(
+    bytes: &[u8; SEED_CREDENTIAL_BYTES],
+) -> Result<Zeroizing<[u8; 32]>, HostAgentLiveErrorV1> {
+    let checksum: [u8; 32] = Sha256::digest(&bytes[..40]).into();
+    if &bytes[..8] != SEED_MAGIC || bytes[40..] != checksum {
+        return Err(HostAgentLiveErrorV1::SeedUnavailable);
+    }
+    let mut seed = Zeroizing::new([0; 32]);
+    seed.copy_from_slice(&bytes[8..40]);
+    if *seed == [0; 32] {
+        return Err(HostAgentLiveErrorV1::SeedUnavailable);
+    }
+    Ok(seed)
+}
+
+fn inspection_request(
+    effect: &DurableExecutionEffectV1,
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+) -> Result<BackendExecutionInspectionRequestV1, HostAgentLiveErrorV1> {
+    let admission = effect.admission();
+    BackendExecutionInspectionRequestV1::new(
+        claim.agent_peer().authority_binding(),
+        effect.issue().idempotency().operation(),
+        effect.issue().sequence(),
+        effect.issue().idempotency().request_digest(),
+        admission.execution(),
+        admission.specification_digest(),
+        admission.admission_commitment(),
+        *claim.currentness().runtime(),
+        claim.currentness().payload_boot_id(),
+    )
+    .map_err(|_| HostAgentLiveErrorV1::Binding)
+}
+
+fn project_agent_request(
+    effect: &DurableExecutionEffectV1,
+    session: AgentSessionBindingV1,
+    sequence: AgentOperationSequenceV1,
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+) -> Result<AgentOperationRequestV1, HostAgentLiveErrorV1> {
+    let admission = effect.admission();
+    let operation = match effect.issue().operation() {
+        EffectOperationV1::AuthorizeExecution => {
+            let bytes = admission.specification_bytes();
+            let specification = decode_execution_spec_v1(
+                bytes,
+                DecodeLimits {
+                    maximum_bytes: bytes.len(),
+                    maximum_collection_items: 65_536,
+                    maximum_total_items: 262_144,
+                    maximum_byte_string_bytes: 15 * 1_048_576,
+                    maximum_text_bytes: 1_048_576,
+                    maximum_depth: 128,
+                },
+            )
+            .map_err(|_| HostAgentLiveErrorV1::Binding)?;
+            AgentExecutionOperationV1::Authorize {
+                execution: admission.execution(),
+                specification_bytes: bytes.to_vec(),
+                specification_digest: admission.specification_digest(),
+                admission_commitment: admission.admission_commitment(),
+                principal: specification.principal(),
+                audit: specification.audit(),
+            }
+        }
+        EffectOperationV1::ResizeTerminal { rows, columns } => {
+            AgentExecutionOperationV1::ResizeTerminal {
+                execution: admission.execution(),
+                rows,
+                columns,
+            }
+        }
+        EffectOperationV1::Signal { signal_code } => AgentExecutionOperationV1::Signal {
+            execution: admission.execution(),
+            signal_code,
+        },
+        EffectOperationV1::Cancel => AgentExecutionOperationV1::Cancel {
+            execution: admission.execution(),
+        },
+        EffectOperationV1::Observe => AgentExecutionOperationV1::Observe {
+            execution: admission.execution(),
+        },
+    };
+    let inspection = inspection_request(effect, claim)?;
+    Ok(AgentOperationRequestV1::new(
+        session,
+        sequence,
+        AgentOperationIdV1::new(*effect.issue().idempotency().operation().as_bytes())?,
+        backend_execution_inspection_binding_v1(&inspection),
+        operation,
+    )?)
+}
+
+fn core_phase(
+    phase: AgentExecutionPhaseV1,
+) -> Result<BackendExecutionPhaseV1, HostAgentLiveErrorV1> {
+    match phase {
+        AgentExecutionPhaseV1::Authorized => Ok(BackendExecutionPhaseV1::Authorized),
+        AgentExecutionPhaseV1::Starting => Ok(BackendExecutionPhaseV1::Starting),
+        AgentExecutionPhaseV1::Running => Ok(BackendExecutionPhaseV1::Running),
+        AgentExecutionPhaseV1::Exited => Ok(BackendExecutionPhaseV1::Exited),
+        AgentExecutionPhaseV1::Canceled => Ok(BackendExecutionPhaseV1::Canceled),
+        AgentExecutionPhaseV1::Failed => Ok(BackendExecutionPhaseV1::Failed),
+        AgentExecutionPhaseV1::Lost => Ok(BackendExecutionPhaseV1::Lost),
+        AgentExecutionPhaseV1::Quiesced | AgentExecutionPhaseV1::Ready => {
+            Err(HostAgentLiveErrorV1::Unauthenticated)
+        }
+    }
+}
+
 fn send_frame(
     socket: &mut SeqpacketSocket,
     bytes: &[u8],
     deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
 ) -> Result<(), HostAgentLiveErrorV1> {
     loop {
-        if Instant::now() >= deadline {
-            return Err(HostAgentLiveErrorV1::Deadline);
-        }
+        check_deadline(deadline, deadline_boottime_nanoseconds)?;
         match socket.send(bytes) {
             Ok(()) => return Ok(()),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
@@ -485,20 +775,72 @@ fn send_frame(
     }
 }
 
-fn receive_frame(
+fn receive_record(
     socket: &mut SeqpacketSocket,
+    maximum_bytes: usize,
     deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
 ) -> Result<Vec<u8>, HostAgentLiveErrorV1> {
     loop {
-        if Instant::now() >= deadline {
-            return Err(HostAgentLiveErrorV1::Deadline);
-        }
-        match socket.receive(aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES) {
+        check_deadline(deadline, deadline_boottime_nanoseconds)?;
+        match socket.receive(maximum_bytes) {
             Ok(record) => return Ok(record.payload().to_vec()),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 std::thread::sleep(RETRY_INTERVAL);
             }
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+fn check_deadline(
+    deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
+) -> Result<(), HostAgentLiveErrorV1> {
+    if Instant::now() >= deadline {
+        return Err(HostAgentLiveErrorV1::Deadline);
+    }
+    if let Some(deadline) = deadline_boottime_nanoseconds {
+        let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+        let seconds = u64::try_from(now.tv_sec).map_err(|_| HostAgentLiveErrorV1::Deadline)?;
+        let nanoseconds = u64::try_from(now.tv_nsec).map_err(|_| HostAgentLiveErrorV1::Deadline)?;
+        let now = seconds
+            .checked_mul(1_000_000_000)
+            .and_then(|value| value.checked_add(nanoseconds))
+            .ok_or(HostAgentLiveErrorV1::Deadline)?;
+        if now >= deadline {
+            return Err(HostAgentLiveErrorV1::Deadline);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credential(seed: [u8; 32]) -> [u8; SEED_CREDENTIAL_BYTES] {
+        let mut bytes = [0; SEED_CREDENTIAL_BYTES];
+        bytes[..8].copy_from_slice(SEED_MAGIC);
+        bytes[8..40].copy_from_slice(&seed);
+        let checksum: [u8; 32] = Sha256::digest(&bytes[..40]).into();
+        bytes[40..].copy_from_slice(&checksum);
+        bytes
+    }
+
+    #[test]
+    fn launch_seed_requires_exact_version_checksum_and_nonzero_secret() {
+        let valid = credential([7; 32]);
+        assert_eq!(*decode_seed_credential(&valid).unwrap(), [7; 32]);
+
+        let mut wrong_version = valid;
+        wrong_version[0] ^= 1;
+        assert!(decode_seed_credential(&wrong_version).is_err());
+
+        let mut wrong_checksum = valid;
+        wrong_checksum[40] ^= 1;
+        assert!(decode_seed_credential(&wrong_checksum).is_err());
+
+        assert!(decode_seed_credential(&credential([0; 32])).is_err());
     }
 }

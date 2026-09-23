@@ -1542,6 +1542,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         request: DormantReceivedBrokerRequestV1,
         host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
+        deadline_boottime_nanoseconds: u64,
     ) -> Result<
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>,
@@ -1568,6 +1570,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             request.0.peer(),
             request.0.peer_policy(),
             context.boot_id(),
+            agent,
+            deadline_boottime_nanoseconds,
         ) {
             Ok(body) => body,
             Err(error) => return Err(Self::unknown_domain(request, error)),

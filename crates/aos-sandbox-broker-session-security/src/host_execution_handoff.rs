@@ -6,6 +6,8 @@
 //! solely as an idempotency and readback binding. Pending work never crosses
 //! the guest boundary without a separately authenticated AOSAGE route.
 
+use std::time::{Duration, Instant};
+
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, HostExecutionCompletionStatusV1, HostExecutionOutcomeV1, HostExecutionPhaseV1,
 };
@@ -22,6 +24,7 @@ use aos_sandbox_core::runtime_backend::{
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 use aos_sandbox_host::DormantHostBrokerCallsiteV1;
 use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
+use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, ValidatedHostExecutionApplyV1};
@@ -54,13 +57,19 @@ pub enum HostExecutionHandoffErrorV1 {
     /// The execution has not been durably admitted by this Host.
     #[error("Host execution admission is absent")]
     MissingAdmission,
+    /// The authenticated guest session failed or requires protected recovery.
+    #[error(transparent)]
+    Agent(#[from] HostAgentLiveErrorV1),
+    /// The broker request deadline expired before guest dispatch.
+    #[error("Host execution guest dispatch deadline expired")]
+    Deadline,
 }
 
 /// Dispatches an authenticated Host execution method into the fixed owner.
 ///
-/// An Apply commits at most a Pending effect. Guest dispatch requires the
-/// separate live AOSAGE session and route permit; until that owner is active,
-/// Pending is the only successful new-effect outcome. Query never writes.
+/// An Apply commits Pending, then dispatches only through an installed signed
+/// AOSAGE session. Without a launch-owned session Pending remains the truthful
+/// durable outcome. Query reads protected state and never dispatches or writes.
 ///
 /// # Errors
 ///
@@ -75,6 +84,8 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     peer: PeerCredentials,
     policy: PeerPolicy,
     protected_boot_id: [u8; 16],
+    agent: Option<&mut HostAgentLiveSessionV1>,
+    deadline_boottime_nanoseconds: u64,
 ) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
     check_kernel_boot(protected_boot_id)?;
     let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
@@ -97,7 +108,31 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     }
 
     let result = match reservation.request() {
-        HostExecutionGrantRequestV1::Apply(request) => apply_execution(&mut claim, request)?,
+        HostExecutionGrantRequestV1::Apply(request) => {
+            let effect = apply_execution(&mut claim, request)?;
+            let effect = if effect.phase() == EffectPhaseV1::Pending {
+                match agent {
+                    Some(agent) => {
+                        let deadline = agent_dispatch_deadline(deadline_boottime_nanoseconds)?;
+                        agent.issue_pending_effect(
+                            &mut claim,
+                            &effect,
+                            deadline,
+                            deadline_boottime_nanoseconds,
+                        )?
+                    }
+                    None => effect,
+                }
+            } else {
+                effect
+            };
+            outcome(
+                request.operation_id(),
+                request.execution_id(),
+                request.source_commitment(),
+                Some(&effect),
+            )
+        }
         HostExecutionGrantRequestV1::Query(request) => {
             let effect = claim.load_effect(&request.operation_id())?;
             let effect = match effect {
@@ -145,10 +180,30 @@ fn check_kernel_boot(expected: [u8; 16]) -> Result<(), HostExecutionHandoffError
     Ok(())
 }
 
+fn agent_dispatch_deadline(
+    deadline_boottime_nanoseconds: u64,
+) -> Result<Instant, HostExecutionHandoffErrorV1> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec).map_err(|_| HostExecutionHandoffErrorV1::Deadline)?;
+    let nanoseconds =
+        u64::try_from(now.tv_nsec).map_err(|_| HostExecutionHandoffErrorV1::Deadline)?;
+    let now = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(HostExecutionHandoffErrorV1::Deadline)?;
+    let remaining = deadline_boottime_nanoseconds
+        .checked_sub(now)
+        .filter(|remaining| *remaining > 0)
+        .ok_or(HostExecutionHandoffErrorV1::Deadline)?;
+    Instant::now()
+        .checked_add(Duration::from_nanos(remaining))
+        .ok_or(HostExecutionHandoffErrorV1::Deadline)
+}
+
 fn apply_execution(
     claim: &mut DormantRuntimeExecutionClaimV1<'_>,
     request: &ValidatedHostExecutionApplyV1,
-) -> Result<HostExecutionOutcomeV1, HostExecutionHandoffErrorV1> {
+) -> Result<DurableExecutionEffectV1, HostExecutionHandoffErrorV1> {
     let operation =
         aos_sandbox_core::runtime_backend::BackendOperationIdV1::new(request.operation_id())
             .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
@@ -163,12 +218,7 @@ fn apply_execution(
         if effect.issue().operation() != request.action() {
             return Err(HostExecutionHandoffErrorV1::Conflict);
         }
-        return Ok(outcome(
-            request.operation_id(),
-            request.execution_id(),
-            request.source_commitment(),
-            Some(&effect),
-        ));
+        return Ok(effect);
     }
 
     let admission = match claim.load_admission(request.execution_id())? {
@@ -214,12 +264,7 @@ fn apply_execution(
             return Err(HostExecutionHandoffErrorV1::RecoveryRequired);
         }
     };
-    Ok(outcome(
-        request.operation_id(),
-        request.execution_id(),
-        request.source_commitment(),
-        Some(&effect),
-    ))
+    Ok(effect)
 }
 
 fn validate_effect_identity(

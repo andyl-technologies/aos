@@ -11,6 +11,7 @@ use crate::ProductionBrokerServiceErrorV1;
 pub struct ProductionHostBrokerServiceV1 {
     activation: ProductionBrokerSessionActivationV1,
     sessions: [Option<DormantAuthenticatedBrokerSessionV1>; 2],
+    agent: Option<aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
     next_role: usize,
 }
 
@@ -51,12 +52,31 @@ impl ProductionBrokerSessionActivationV1 {
         Ok(ProductionHostBrokerServiceV1 {
             activation: self,
             sessions: [None, None],
+            agent: None,
             next_role: 0,
         })
     }
 }
 
 impl ProductionHostBrokerServiceV1 {
+    /// Installs one launch-owned, signed guest session for execution and gates.
+    ///
+    /// # Errors
+    ///
+    /// Rejects replacement while an earlier live channel remains retained.
+    pub fn install_agent_session(
+        &mut self,
+        session: aos_sandbox_host::live_agent::HostAgentLiveSessionV1,
+    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        if self.agent.is_some() {
+            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                "guest agent session already retained",
+            ));
+        }
+        self.agent = Some(session);
+        Ok(())
+    }
+
     /// Serves at most one bounded request from the next ready Host peer role.
     ///
     /// An idle deadline preserves both sessions. A request failure consumes
@@ -103,7 +123,12 @@ impl ProductionHostBrokerServiceV1 {
         };
 
         let retained = session
-            .serve_production_host_request(host, publisher, deadline_boottime_nanoseconds)
+            .serve_production_host_request(
+                host,
+                publisher,
+                self.agent.as_mut(),
+                deadline_boottime_nanoseconds,
+            )
             .await?;
         self.sessions[role] = Some(retained);
         Ok(())
