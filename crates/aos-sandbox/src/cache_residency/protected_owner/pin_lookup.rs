@@ -5,13 +5,55 @@ use std::sync::Arc;
 use aos_sandbox_core::{AttachmentId, ObjectDescriptor, ProjectId, ViewId};
 
 use super::{
-    CachePinV1, CacheRecoveryInventoryV1, CacheResidencyProtectedJournalErrorV1,
+    CacheAuthorityPurposeV1, CachePinV1, CacheRecoveryInventoryV1,
+    CacheResidencyAuthorityRequestV1, CacheResidencyProtectedJournalErrorV1,
     CacheResidencyProtectedJournalV1, CacheResidencyProtectedOwnerV1, PhysicalPartitionId,
     ProtectedDomainJournalErrorV1,
 };
 use crate::cache_residency::{CachePinKindV1, protected_journal::reconstruct_cache_history};
+use crate::production_operation_compiler::RecheckedCacheConsumerV1;
 
 impl CacheResidencyProtectedOwnerV1 {
+    /// Issues bounded drain authority for an exact retained public logical pin.
+    ///
+    /// The consumer was independently rechecked against desired state. The
+    /// retained pin supplies the old physical partition and acquisition
+    /// evidence; a changed View or attachment does not erase that obligation.
+    /// This does not commit the release. The next protected transaction must
+    /// select and verify the returned PinDrain record before sealing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the consumer is a release request for this
+    /// exact protected pin, or when authority issuance cannot be confirmed.
+    pub fn prepare_logical_pin_drain(
+        &mut self,
+        consumer: &RecheckedCacheConsumerV1,
+        pin: &CachePinV1,
+    ) -> Result<CacheResidencyAuthorityRequestV1, CacheResidencyProtectedJournalErrorV1> {
+        if consumer.acquisition_fence().is_some()
+            || consumer.object() != &pin.object
+            || consumer.project() != pin.project
+            || consumer.view() != pin.view
+            || consumer.attachment() != pin.attachment
+        {
+            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+        }
+        let retained = self.retained_logical_pin(
+            pin.partition,
+            consumer.object(),
+            consumer.project(),
+            consumer.view(),
+            consumer.attachment(),
+        )?;
+        if retained.as_ref() != Some(pin) {
+            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+        }
+        let record_key = self.authority.issue_logical_pin_drain_record(pin)?;
+        CacheResidencyAuthorityRequestV1::new(CacheAuthorityPurposeV1::PinDrain, record_key)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord.into())
+    }
+
     /// Reconstructs one exact partition beneath current protected Replay authority.
     ///
     /// This is retained state, not permission to acquire or drain a pin. A

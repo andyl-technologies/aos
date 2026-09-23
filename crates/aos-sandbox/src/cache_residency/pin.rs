@@ -231,6 +231,16 @@ impl CachePinV1 {
         self.lease_valid_until
     }
 
+    pub(crate) fn logical_drain_scope(
+        &self,
+        valid_until: u64,
+    ) -> Result<CacheAuthorityScopeV1, PinError> {
+        if self.kind != CachePinKindV1::LogicalLease {
+            return Err(PinError::EvidenceMismatch);
+        }
+        pin_drain_scope(self, PinDrainOutcomeV1::NeverInstalled, valid_until)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn recover_historical(
         id: CachePinId,

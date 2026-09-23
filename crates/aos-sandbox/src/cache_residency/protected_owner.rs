@@ -279,7 +279,6 @@ impl<'session, 'authority, 'journal>
         inventory: &CacheRecoveryInventoryV1,
         pin: &CachePinV1,
         operation: OperationId,
-        valid_until: u64,
     ) -> Result<
         Vec<CacheResidencyControllerRecordV1<'session>>,
         CacheResidencyProtectedJournalErrorV1,
@@ -287,6 +286,7 @@ impl<'session, 'authority, 'journal>
         let capability = self
             .capability(0)
             .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let valid_until = capability.scope().valid_until();
         let (payload, released) = inventory
             .plan_logical_pin_release(
                 self.owner,
