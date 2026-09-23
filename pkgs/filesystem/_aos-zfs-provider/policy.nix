@@ -10,7 +10,6 @@
   failure = cfg.failurePolicy;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   consumerInstance = "zfs-storage";
   resultOf = lib.abilities.resultOf;
   mib = 1048576;
@@ -90,49 +89,45 @@
     (toString memory.systemFreeReserve)
     (toString memory.committedPercentLimit)
   ];
-  service = key: description: arguments: prerequisites:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = {
-        service = key;
-        enabled = true;
-        lifecycle = {
-          inherit description;
-          execution_model = "oneshot";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command arguments)];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "never";
-          restart_delay_millis = 0;
-          configuration_change_action = "restart";
-          remain_after_exit = true;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        };
-        dependencies = {
-          inherit prerequisites;
-          after = prerequisites;
-          before = [];
-          requires = prerequisites;
-          wants = [];
-        };
-        isolation = {
-          privilege = "privileged";
-          filesystem = "host";
-          network = "none";
-          process_visibility = "host";
-          termination_scope = "main-process";
-          temporary_directory = "private";
-          devices = [];
-          host_paths = [];
-          permit_core_dumps = false;
-        };
-      };
+  service = key: description: arguments: prerequisites: {
+    inherit consumerInstance;
+    service = key;
+    lifecycle = {
+      inherit description;
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command arguments)];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
+    dependencies = {
+      inherit prerequisites;
+      after = prerequisites;
+      before = [];
+      requires = prerequisites;
+      wants = [];
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "none";
+      process_visibility = "host";
+      termination_scope = "main-process";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
+    };
+  };
   memoryPolicy = service "zfs-memory-policy" "Apply the bounded OpenZFS memory policy" (["apply"] ++ policyArguments) [
     (resultOf "zfs-kernel-module" "resource")
     (resultOf "zfs-kernel-tunables" "resource")
@@ -140,8 +135,6 @@
   verification = service "zfs-verify-parameters" "Verify the running OpenZFS memory and failure policy" (["verify"] ++ policyArguments) [
     (resultOf "zfs-memory-policy-lifecycle" "resource")
   ];
-  fragments = [kernelModules tunables memoryPolicy] ++ lib.optional failure.verifyParameters verification;
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.filesystems.zfs = {
     memory = {
@@ -278,10 +271,19 @@ in {
         }
       ];
       aos.filesystems.zfs.moduleParameters = parameterArguments;
-      aos.abilities = lib.mkMerge (builtins.map (definition: definition.declarations) definitions);
+      aos.services = {
+        "zfs-storage.zfs-memory-policy" = memoryPolicy // {enable = cfg.enable;};
+        "zfs-storage.zfs-verify-parameters" =
+          verification
+          // {
+            enable = cfg.enable && failure.verifyParameters;
+          };
+      };
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (builtins.map (definition: definition.configured) definitions);
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [kernelModules tunables];
+      enabled = cfg.enable;
     })
   ];
 }
