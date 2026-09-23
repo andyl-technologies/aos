@@ -3347,12 +3347,7 @@ fn lifecycle_plan_resource_id(operation: OperationId, purpose: &[u8]) -> Resourc
         .chain_update(purpose)
         .finalize()
         .into();
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&digest[..16]);
-    if identity == [0; 16] {
-        identity[15] = 1;
-    }
-    ResourceId::from_bytes(identity)
+    ResourceId::from_bytes(nonzero_lifecycle_id_from_digest(digest))
 }
 
 fn lifecycle_progress_resource_id(
@@ -3368,12 +3363,7 @@ fn lifecycle_progress_resource_id(
         .chain_update(purpose)
         .finalize()
         .into();
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&digest[..16]);
-    if identity == [0; 16] {
-        identity[15] = 1;
-    }
-    ResourceId::from_bytes(identity)
+    ResourceId::from_bytes(nonzero_lifecycle_id_from_digest(digest))
 }
 
 fn lifecycle_plan_transaction_id(operation: OperationId, purpose: &[u8]) -> [u8; 16] {
@@ -3384,12 +3374,7 @@ fn lifecycle_plan_transaction_id(operation: OperationId, purpose: &[u8]) -> [u8;
         .chain_update(purpose)
         .finalize()
         .into();
-    let mut transaction = [0; 16];
-    transaction.copy_from_slice(&digest[..16]);
-    if transaction == [0; 16] {
-        transaction[15] = 1;
-    }
-    transaction
+    nonzero_lifecycle_id_from_digest(digest)
 }
 
 fn lifecycle_plan_binding_transaction_id(
@@ -3402,12 +3387,7 @@ fn lifecycle_plan_binding_transaction_id(
         .chain_update(current_record.as_bytes())
         .finalize()
         .into();
-    let mut transaction = [0_u8; 16];
-    transaction.copy_from_slice(&digest[..16]);
-    if transaction == [0; 16] {
-        transaction[15] = 1;
-    }
-    transaction
+    nonzero_lifecycle_id_from_digest(digest)
 }
 
 fn lifecycle_initial_reservation_transaction_id(
@@ -3420,12 +3400,7 @@ fn lifecycle_initial_reservation_transaction_id(
         .chain_update(current_record.as_bytes())
         .finalize()
         .into();
-    let mut transaction = [0; 16];
-    transaction.copy_from_slice(&digest[..16]);
-    if transaction == [0; 16] {
-        transaction[15] = 1;
-    }
-    transaction
+    nonzero_lifecycle_id_from_digest(digest)
 }
 
 fn lifecycle_progress_transaction_id(
@@ -3441,12 +3416,16 @@ fn lifecycle_progress_transaction_id(
         .chain_update(purpose)
         .finalize()
         .into();
-    let mut transaction = [0; 16];
-    transaction.copy_from_slice(&digest[..16]);
-    if transaction == [0; 16] {
-        transaction[15] = 1;
+    nonzero_lifecycle_id_from_digest(digest)
+}
+
+fn nonzero_lifecycle_id_from_digest(digest: [u8; 32]) -> [u8; 16] {
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&digest[..16]);
+    if identity == [0; 16] {
+        identity[15] = 1;
     }
-    transaction
+    identity
 }
 
 const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
@@ -5036,6 +5015,20 @@ mod tests {
 
     use super::*;
     use axum::serve::Listener as _;
+
+    #[test]
+    fn lifecycle_digest_id_uses_a_nonzero_prefix() {
+        let mut digest = [0; 32];
+        digest[31] = 7;
+        let mut expected = [0; 16];
+        expected[15] = 1;
+        assert_eq!(nonzero_lifecycle_id_from_digest(digest), expected);
+
+        digest[0] = 9;
+        let mut expected = [0; 16];
+        expected[0] = 9;
+        assert_eq!(nonzero_lifecycle_id_from_digest(digest), expected);
+    }
 
     fn diagnostic_configuration(directory: &tempfile::TempDir) -> RuntimeConfiguration {
         RuntimeConfiguration {
