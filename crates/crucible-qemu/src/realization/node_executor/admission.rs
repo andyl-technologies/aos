@@ -103,7 +103,7 @@ impl QemuReplayValidationExactAdmission {
                 })?;
         let result = request
             .launch()
-            .and_then(QemuProductionExactRestoreLaunch::into_running_parts);
+            .map(QemuProductionExactRestoreLaunch::into_paused_parts);
         let result = result.map(|(node, run_directory, target)| {
             self.run_directory = Some(run_directory);
             self.target = Some(target);
