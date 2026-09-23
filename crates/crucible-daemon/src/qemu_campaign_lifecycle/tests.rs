@@ -2128,7 +2128,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         1,
         VirtualTime { ticks: 1 },
         assertion.clone(),
-        AssertionPhase::Satisfied,
+        AssertionPhase::Violated,
     );
     let decisions = input
         .start()
@@ -2238,7 +2238,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                     1,
                     VirtualTime { ticks: 1 },
                     assertion.clone(),
-                    AssertionPhase::Satisfied,
+                    AssertionPhase::Violated,
                 );
                 let mut replay_runner = QemuFreshExecutionRunner::new(
                     BoundaryCaptureLifecycleFactory {

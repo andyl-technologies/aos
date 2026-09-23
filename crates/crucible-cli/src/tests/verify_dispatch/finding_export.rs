@@ -102,8 +102,28 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
 
     const CAMPAIGN: &str = "cli-campaign-findings-finding-export";
     const PROPERTY: &str = "cli-campaign-findings-property";
+    const FOREIGN_PROPERTY: &str = "cli-campaign-findings-foreign-property";
 
-    let form = search_frontier_scenario_form()?;
+    let world = search_frontier_world()?;
+    let assertions = [PROPERTY, FOREIGN_PROPERTY]
+        .into_iter()
+        .map(|name| crucible::AssertionDef {
+            id: crucible::AssertionId::from_name(name),
+            message: format!("{name} must not fail at the recorded boundary"),
+            property: crucible::Property::Always {
+                predicate: crucible::Predicate::not(crucible::Predicate::At {
+                    at: crucible::VirtualTime { ticks: 7 },
+                }),
+            },
+        })
+        .collect();
+    let properties = crucible::Properties::from_assertions_for_world(&world, assertions)?;
+    let form = crucible::ScenarioDefForm::from_components(
+        &world,
+        &crucible::Plan::empty(),
+        &properties,
+        crucible::Seed::default(),
+    )?;
     let configuration = crucible::Configuration {
         def: form.scenario_def(),
         schedule: crucible::Schedule::from_decisions(search_frontier_decisions()),
@@ -125,17 +145,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     )?;
     let report = triage_property_evidence_for_violation(
         model_finding.clone(),
-        crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name(PROPERTY),
-            message: String::from("CLI campaign findings property violated"),
-            quantifier: crucible::AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: 7 }),
-            at_virtual_time: crucible::VirtualTime { ticks: 7 },
-            node: None,
-            detail: String::from("retained campaign finding"),
-            reproduction_artifact: model_finding.artifact.id(),
-        },
+        finding_export_violation(&model_finding, PROPERTY)?,
     )?;
 
     let repository = CampaignRepository::new(
@@ -363,20 +373,16 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         minimized_report.recorded_event_log.coverage_fingerprint(),
         minimized_report.recorded_event_frames.clone(),
     )?;
-    let mut verification_failure = minimized_report.failure.clone();
-    let crucible::FailureClusterReportFailure::Property(verification_property) =
-        &mut verification_failure
-    else {
-        return Err(std::io::Error::other("expected property replay evidence").into());
-    };
-    verification_property
-        .violation
-        .message
-        .push_str(" during independent verification");
+    let mut verification_entries = minimized_report.causal_entries.clone();
+    // A later diagnostic distinguishes the independent replay's raw log while
+    // preserving the exact causal failure and its host-checked violation.
+    verification_entries.push(finding_export_observational_entry(
+        "finding-export-verification-complete",
+    ));
     let verification_selected_native_replay = crucible::FailureTriageReplayEvidence::new(
         minimized_report.finding.clone(),
-        verification_failure,
-        minimized_report.causal_entries.clone(),
+        minimized_report.failure.clone(),
+        verification_entries,
         minimized_report.recorded_event_log.coverage_fingerprint(),
         minimized_report.recorded_event_frames.clone(),
     )?;
@@ -651,20 +657,14 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         .is_err()
     );
 
-    let mut alternate_selected_failure = minimized_report.failure.clone();
-    let crucible::FailureClusterReportFailure::Property(alternate_property) =
-        &mut alternate_selected_failure
-    else {
-        return Err(std::io::Error::other("expected property replay evidence").into());
-    };
-    alternate_property
-        .violation
-        .message
-        .push_str(" from a second valid occurrence");
+    let mut alternate_selected_entries = minimized_report.causal_entries.clone();
+    alternate_selected_entries.push(finding_export_observational_entry(
+        "finding-export-second-valid-occurrence",
+    ));
     let alternate_selected_replay = crucible::FailureTriageReplayEvidence::new(
         minimized_report.finding.clone(),
-        alternate_selected_failure,
-        minimized_report.causal_entries.clone(),
+        minimized_report.failure.clone(),
+        alternate_selected_entries,
         minimized_report.recorded_event_log.coverage_fingerprint(),
         minimized_report.recorded_event_frames.clone(),
     )?;
@@ -789,17 +789,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
 
     let foreign_report = triage_property_evidence_for_violation(
         model_finding.clone(),
-        crucible_model::HostAssertionViolation {
-            assertion: crucible::AssertionId::from_name("cli-campaign-findings-foreign-property"),
-            message: String::from("foreign but internally valid native failure"),
-            quantifier: crucible::AssertionQuantifierKind::Always,
-            event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: 7 }),
-            at_virtual_time: crucible::VirtualTime { ticks: 7 },
-            node: None,
-            detail: String::from("must not supersede the campaign signature"),
-            reproduction_artifact: model_finding.artifact.id(),
-        },
+        finding_export_violation(&model_finding, FOREIGN_PROPERTY)?,
     )?;
     let foreign_native_replay = crucible::FailureTriageReplayEvidence::new(
         foreign_report.finding,
@@ -855,4 +845,36 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
             if message.contains("disagrees with its observed campaign signature")
     ));
     Ok(())
+}
+
+fn finding_export_violation(
+    finding: &crucible::FindingReproductionArtifact,
+    property: &str,
+) -> Result<crucible_model::HostAssertionViolation, Box<dyn Error>> {
+    let scenario = finding.artifact.scenario_form();
+    let entry = crucible::SchedulerEventLogEntry::assertion_state_observation(
+        0,
+        crucible::VirtualTime { ticks: 7 },
+        crucible::AssertionId::from_name(property),
+        crucible::AssertionPhase::Violated,
+    );
+    let report = crucible_core::OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .check_run(scenario.properties(), &[entry])?;
+    let mut violation = report
+        .violations()
+        .iter()
+        .find(|violation| violation.assertion.name == property)
+        .cloned()
+        .ok_or_else(|| std::io::Error::other("fixture assertion did not fail at its boundary"))?;
+    violation.reproduction_artifact = finding.artifact.id();
+    Ok(violation)
+}
+
+fn finding_export_observational_entry(name: &str) -> crucible::SchedulerEventLogEntry {
+    crucible::SchedulerEventLogEntry::diagnostic(
+        1,
+        crucible::VirtualTime { ticks: 8 },
+        crucible::EventDiagnosticPayload::new(name, crucible::EventLevel::Info, Default::default()),
+    )
 }
