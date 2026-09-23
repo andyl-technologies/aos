@@ -505,7 +505,7 @@
     lib,
     extraArgs,
   }: mod: let
-    file =
+    inputFile =
       if builtins.isPath mod
       then builtins.toString mod
       else if builtins.isString mod
@@ -569,8 +569,12 @@
 
     evaluated =
       if builtins.isFunction loaded
-      then loaded (args // proxyArgs // {_file = file;})
+      then loaded (args // proxyArgs // {_file = inputFile;})
       else loaded;
+    file =
+      if builtins.isFunction loaded && builtins.isAttrs evaluated && evaluated ? _file
+      then evaluated._file
+      else inputFile;
 
     # Accept `freeformType` and `strict` as top-level module attributes
     # and normalize them to `config._module.{freeformType,strict}`.
@@ -1816,6 +1820,7 @@
             (module: {
               inherit module;
               provenance = decl.provenance;
+              file = decl.file;
             })
             parts.modules;
         mergedSubmodule = types.submodule {
@@ -1836,16 +1841,20 @@
           else if isNoDefault earlierDefault || earlierDefault == laterDefault
           then laterDefault
           else throw "The option '${builtins.concatStringsSep "." later.path}' has conflicting submodule defaults.";
+        declaration =
+          if earlier.provenance == "@base" && earlier.option.extensible
+          then earlier
+          else later;
       in
         if !compatibleSubmodules
         then later
         else if earlier.option.apply != null && later.option.apply != null
         then throw "The option '${builtins.concatStringsSep "." later.path}' has multiple submodule apply functions."
         else
-          later
+          declaration
           // {
             option =
-              later.option
+              declaration.option
               // {
                 type = mergedType;
                 default = mergedDefault;

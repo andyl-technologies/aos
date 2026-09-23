@@ -294,48 +294,51 @@
   ];
   definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
-  options.aos.serviceOptionModules.bind = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Run the BIND DNS server.";
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "bind") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Run the BIND DNS server.";
+        };
+        port = lib.mkOption {
+          type = port;
+          default = 53;
+          description = "TCP and UDP port on which named listens.";
+        };
+        listenIPv4 = lib.mkOption {
+          type = addresses;
+          default = ["127.0.0.1"];
+          description = "Canonical IPv4 addresses on which named listens.";
+        };
+        listenIPv6 = lib.mkOption {
+          type = addresses;
+          default = ["::1"];
+          description = "Canonical IPv6 addresses on which named listens.";
+        };
+        recursion = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Answer recursive DNS queries.";
+        };
+        forwarders = lib.mkOption {
+          type = addresses;
+          default = [];
+          description = "Canonical upstream DNS servers used as forwarders.";
+        };
+        extraConfig = lib.mkOption {
+          type = configurationText;
+          default = "";
+          description = "Additional named.conf declarations, such as zone definitions.";
+        };
       };
-      port = lib.mkOption {
-        type = port;
-        default = 53;
-        description = "TCP and UDP port on which named listens.";
-      };
-      listenIPv4 = lib.mkOption {
-        type = addresses;
-        default = ["127.0.0.1"];
-        description = "Canonical IPv4 addresses on which named listens.";
-      };
-      listenIPv6 = lib.mkOption {
-        type = addresses;
-        default = ["::1"];
-        description = "Canonical IPv6 addresses on which named listens.";
-      };
-      recursion = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Answer recursive DNS queries.";
-      };
-      forwarders = lib.mkOption {
-        type = addresses;
-        default = [];
-        description = "Canonical upstream DNS servers used as forwarders.";
-      };
-      extraConfig = lib.mkOption {
-        type = configurationText;
-        default = "";
-        description = "Additional named.conf declarations, such as zone definitions.";
-      };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.bind = {};}
     {
       assertions = [
         {

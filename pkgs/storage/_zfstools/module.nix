@@ -228,77 +228,80 @@
     ++ lib.concatMap intervalFragments enabledIntervals;
   definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
-  options.aos.serviceOptionModules.zfsAutoSnapshot = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Create and expire retained ZFS snapshots on a schedule.";
-      };
-      datasets = lib.mkOption {
-        type = abilityTypes.list {
-          element = datasetName;
-          maxItems = 1024;
-          unique = true;
-          canonicalOrder = true;
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "zfsAutoSnapshot") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Create and expire retained ZFS snapshots on a schedule.";
         };
-        default = [];
-        description = "ZFS datasets marked for automatic snapshots.";
-      };
-      intervals = lib.mkOption {
-        type = abilityTypes.map {
-          keyMaxLength = 128;
-          keySyntax = "local-key-v1";
-          maxEntries = 64;
-          value = intervalType;
+        datasets = lib.mkOption {
+          type = abilityTypes.list {
+            element = datasetName;
+            maxItems = 1024;
+            unique = true;
+            canonicalOrder = true;
+          };
+          default = [];
+          description = "ZFS datasets marked for automatic snapshots.";
         };
-        default = {
-          frequent = {
-            calendar = "*:0/15";
-            keep = 4;
+        intervals = lib.mkOption {
+          type = abilityTypes.map {
+            keyMaxLength = 128;
+            keySyntax = "local-key-v1";
+            maxEntries = 64;
+            value = intervalType;
           };
-          hourly = {
-            calendar = "hourly";
-            keep = 24;
+          default = {
+            frequent = {
+              calendar = "*:0/15";
+              keep = 4;
+            };
+            hourly = {
+              calendar = "hourly";
+              keep = 24;
+            };
+            daily = {
+              calendar = "daily";
+              keep = 7;
+            };
+            weekly = {
+              calendar = "weekly";
+              keep = 4;
+            };
+            monthly = {
+              calendar = "monthly";
+              keep = 12;
+            };
           };
-          daily = {
-            calendar = "daily";
-            keep = 7;
-          };
-          weekly = {
-            calendar = "weekly";
-            keep = 4;
-          };
-          monthly = {
-            calendar = "monthly";
-            keep = 12;
-          };
+          description = "Named snapshot schedules and retention counts.";
         };
-        description = "Named snapshot schedules and retention counts.";
-      };
-      utc = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Use UTC in generated snapshot names.";
-      };
-      parallel = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Create independent dataset snapshots concurrently.";
-      };
-      randomizedDelayMillis = lib.mkOption {
-        type = abilityTypes.integer {
-          minimum = 0;
-          maximum = abilityTypes.limits.maxSafeInteger;
+        utc = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Use UTC in generated snapshot names.";
         };
-        default = 300000;
-        description = "Maximum randomized delay applied to scheduled snapshot runs.";
+        parallel = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Create independent dataset snapshots concurrently.";
+        };
+        randomizedDelayMillis = lib.mkOption {
+          type = abilityTypes.integer {
+            minimum = 0;
+            maximum = abilityTypes.limits.maxSafeInteger;
+          };
+          default = 300000;
+          description = "Maximum randomized delay applied to scheduled snapshot runs.";
+        };
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.zfsAutoSnapshot = {};}
     {
       aos.abilities = lib.mkMerge (
         builtins.map (definition: definition.declarations) definitions
