@@ -1250,6 +1250,9 @@ impl DormantCacheOwnerV1 {
             .disk
             .get_mut(&key)
             .ok_or(CacheOwnerErrorV1::NotResident)?;
+        if entry.pins.contains(&id) {
+            return Err(CacheOwnerErrorV1::InvalidPin);
+        }
         let next = self
             .pinned_bytes
             .checked_add(entry.bytes)
@@ -1277,7 +1280,8 @@ impl DormantCacheOwnerV1 {
         let key = self
             .pin_index
             .get(&id)
-            .ok_or(CacheOwnerErrorV1::InvalidPin)?;
+            .ok_or(CacheOwnerErrorV1::InvalidPin)?
+            .clone();
         if admission.action != CacheOwnerPinActionV1::Release
             || admission.id != id
             || admission.partition.digest() != key.partition
@@ -1288,21 +1292,25 @@ impl DormantCacheOwnerV1 {
         {
             return Err(CacheOwnerErrorV1::Stale);
         }
-        let key = self
-            .pin_index
-            .remove(&id)
+        let entry = self.disk.get(&key).ok_or(CacheOwnerErrorV1::InvalidPin)?;
+        if !entry.pins.contains(&id) {
+            return Err(CacheOwnerErrorV1::InvalidPin);
+        }
+        let remaining_pinned_bytes = self
+            .pinned_bytes
+            .checked_sub(entry.bytes)
             .ok_or(CacheOwnerErrorV1::InvalidPin)?;
+
         let entry = self
             .disk
             .get_mut(&key)
             .ok_or(CacheOwnerErrorV1::InvalidPin)?;
-        if !entry.pins.remove(&id) {
-            return Err(CacheOwnerErrorV1::InvalidPin);
-        }
-        self.pinned_bytes = self
-            .pinned_bytes
-            .checked_sub(entry.bytes)
-            .ok_or(CacheOwnerErrorV1::InvalidPin)?;
+
+        // All fallible consistency checks precede the coupled mutation.
+        // A failed persist fences the owner until recovery or reopen.
+        let _ = entry.pins.remove(&id);
+        let _ = self.pin_index.remove(&id);
+        self.pinned_bytes = remaining_pinned_bytes;
         self.persist(b"unpin", id.as_bytes())
     }
 
