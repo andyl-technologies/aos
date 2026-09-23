@@ -115,10 +115,6 @@ in {
     {
       aos.services."aos-credential-delivery-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.projectService {
-      inherit config lib;
-      name = "aos-credential-delivery-test.main";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

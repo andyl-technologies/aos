@@ -1,21 +1,13 @@
-##! Projects one evaluated service into package-owned ability definitions.
+##! Derives one evaluated service's ability graph from its typed configuration.
 {serviceManagement}: {
   config,
   lib,
   name,
-  consumerInstance ? null,
-  featureRequests ? [],
+  consumerInstance,
+  derivedProvenance,
 }: let
   service = config.aos.services.${name};
   servicePolicy = lib.abilities.interfaces.servicePolicy;
-  nameParts = lib.splitString "." name;
-  packageParts = builtins.genList (index: builtins.elemAt nameParts index) (builtins.length nameParts - 1);
-  localConsumerInstance =
-    if consumerInstance != null
-    then consumerInstance
-    else if packageParts == []
-    then name
-    else builtins.concatStringsSep "." packageParts;
   serviceFields =
     builtins.removeAttrs
     serviceManagement.types.serviceDeclarationFields
@@ -51,18 +43,32 @@
     then throw "Service '${name}' needs a lifecycle declaration before it can consume service abilities."
     else
       serviceManagement.forService {
-        consumerInstance = localConsumerInstance;
+        inherit consumerInstance;
         inherit declaration;
-        featureRequests = policyRequests ++ featureRequests;
+        featureRequests = policyRequests;
         serviceTypes = serviceManagement.types;
       };
-in
-  lib.mkMerge [
-    {aos.abilities.requirementTemplates = definition.requirementTemplates;}
-    (lib.mkIf (service.enable && config.aos.abilities.environment != null) {
-      aos.abilities = {
-        instances.${localConsumerInstance} = {};
-        requests = definition.requests;
+  projectEntries = entries:
+    builtins.mapAttrs (_: value:
+      lib.abilities.derivedDefinition {
+        provenance = derivedProvenance;
+        inherit value;
+      })
+    entries;
+  configured = service.enable && config.aos.abilities.environment != null;
+in {
+  requirementTemplates = projectEntries definition.requirementTemplates;
+  instances =
+    if configured
+    then {
+      ${consumerInstance} = lib.abilities.derivedDefinition {
+        provenance = derivedProvenance;
+        value = {};
       };
-    })
-  ]
+    }
+    else {};
+  requests =
+    if configured
+    then projectEntries definition.requests
+    else {};
+}

@@ -116,10 +116,6 @@ in {
     {
       aos.services."zfs-test-pool.pool" = serviceDefinition // {enable = cfg.enable;};
     }
-    (serviceManagement.projectService {
-      inherit config lib consumerInstance;
-      name = "zfs-test-pool.pool";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable;

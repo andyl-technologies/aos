@@ -119,10 +119,6 @@ in {
     {
       aos.services."verity-root-verification.aos-verity-root-verify" = verificationService // {enable = cfg.enable && initrdStage;};
     }
-    (serviceManagement.projectService {
-      inherit config lib consumerInstance;
-      name = "verity-root-verification.aos-verity-root-verify";
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = cfg.enable && initrdStage;
