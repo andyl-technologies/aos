@@ -13,17 +13,19 @@ use std::sync::{
 use std::time::Duration;
 
 use crucible::{
-    AssertionDef, AssertionId, Checkpoint, CheckpointKind, Configuration, ContentHash, EventLog,
-    ExecutionFingerprint, FingerprintSample, Icount, MarkerId, NodeId, NodeTemplate,
+    AssertionDef, AssertionId, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
+    EventLog, ExecutionFingerprint, FingerprintSample, Icount, MarkerId, NodeId, NodeTemplate,
     ObservableEvent, Plan, Properties, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
     ReadyPoint, ScenarioDef, ScenarioDefForm, ScenarioSelectableLimits, ScenarioSelectables,
-    SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    SchedulerError, SchedulerEventLogEntry, Seed, SelectionDecision, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmLifecycleConfig};
 use crucible_campaign::{
-    AttemptResourceLimits, BooleanDomain, CampaignState, ChoiceClassContext, ChoiceDomain,
-    ChoiceSource, ChoiceValue, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
-    ObservationCondition, PropertyVerdict, SelectableDeclaration, StopOutcome,
+    AttemptResourceLimits, BooleanDomain, CampaignState, ChoiceClassContext, ChoiceDiscovery,
+    ChoiceDomain, ChoiceSource, ChoiceValue, ExactRational, IntegerDomain, IntegerRepresentation,
+    IntegerValue, ObservationCondition, PropertyVerdict, SelectableDeclaration, Selection,
+    SelectionOrigin, StopOutcome,
 };
 use crucible_cas::content_store::{
     BlobHandle, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MutableRefBackend,
@@ -802,6 +804,82 @@ fn selected_schedule_replays_through_a_fresh_authenticated_repository() {
         closure_bytes
     );
     assert_eq!(replay_starts.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn unpublished_default_selection_survives_root_closure_restart_without_repository_records() {
+    let (request, node) = selectable_request();
+    let scenario = request.scenario.clone();
+    let completed = run_selectable_campaign(request, node.clone(), Arc::new(AtomicUsize::new(0)));
+    let branch_schedule = &completed.terminal_configuration().schedule;
+    let branch_record = completed
+        .replay_closure()
+        .selection_for_decision(0, branch_schedule)
+        .expect("read selected branch record")
+        .expect("branch schedule contains a selection");
+    let default = Selection::new(
+        branch_record.opportunity(),
+        branch_record.domain(),
+        branch_record.opportunity().default().clone(),
+        SelectionOrigin::Default,
+    )
+    .expect("default selection uses the offered value");
+    let default_schedule =
+        Schedule::from_decisions([Decision::Selection(SelectionDecision::new(&default))]);
+    let discovery = ChoiceDiscovery::new(
+        branch_record.declaration().clone(),
+        branch_record.domain().clone(),
+        branch_record.opportunity().clone(),
+    )
+    .expect("self-contained unpublished discovery");
+    let discoveries = BTreeMap::from([(
+        discovery.opportunity().id().expect("opportunity ID"),
+        discovery,
+    )]);
+
+    let owned = GuardedCampaignReplayClosure::from_owned_discoveries(
+        &scenario,
+        &default_schedule,
+        &discoveries,
+    )
+    .expect("checkpoint captures the unpublished default");
+    let restarted = GuardedCampaignReplayClosure::from_canonical_bytes(
+        &owned.to_canonical_bytes().expect("serialize owned closure"),
+    )
+    .expect("restart decodes owned closure");
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(
+            "unpublished-default-restart",
+            1024 * 1024,
+        )),
+        Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+    ));
+    let store = CampaignExecutorStore::new(repository);
+    let completed = restarted
+        .complete_from_repository(&store, &scenario, &default_schedule)
+        .expect("root-owned default needs no repository record");
+    let record = completed
+        .selection_for_decision(0, &default_schedule)
+        .expect("read default decision")
+        .expect("default decision has a root-owned record");
+    assert_eq!(record.selection(), &default);
+    assert_eq!(record.guest_owner(), Some(node.name.as_str()));
+
+    assert!(
+        GuardedCampaignReplayClosure::empty()
+            .selection_for_decision(0, &default_schedule)
+            .is_err()
+    );
+    assert!(
+        GuardedCampaignReplayClosure::empty()
+            .complete_from_repository(&store, &scenario, &default_schedule)
+            .is_err()
+    );
+    assert!(
+        completed
+            .validate_for_schedule(&scenario, branch_schedule)
+            .is_err()
+    );
 }
 
 #[test]

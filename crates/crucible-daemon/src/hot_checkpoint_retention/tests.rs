@@ -30,7 +30,7 @@ fn key(label: &str) -> HotCheckpointPoolKey {
 fn exact(label: &str) -> ExactCheckpointId {
     ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         label.as_bytes(),
     ))
     .expect("exact checkpoint")

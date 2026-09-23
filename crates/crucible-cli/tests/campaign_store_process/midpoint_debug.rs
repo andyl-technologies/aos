@@ -229,7 +229,7 @@ fn compile_lineage(fixture: &FlightFixture, compiled: &Value) -> Result<PathBuf,
     fs::write(
         &input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 4\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,

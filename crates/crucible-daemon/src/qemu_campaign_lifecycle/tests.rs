@@ -427,7 +427,7 @@ fn exact_resume_is_rejected_before_resource_installation() {
     let counters = Arc::new(GuardCounters::default());
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"fresh-lifecycle-resume-rejection",
     ))
     .expect("exact checkpoint fixture");
@@ -1372,11 +1372,16 @@ impl QemuFreshAttemptDriver for UnsolicitedCheckpointDriver {
     fn drive(
         &mut self,
         _lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
-        _input: &CrucibleAttemptExecution,
+        input: &CrucibleAttemptExecution,
         _context: &AttemptExecutionContext,
         _materialization: QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        Ok(QemuFreshDriveOutcome::CheckpointRequested)
+        Ok(QemuFreshDriveOutcome::CheckpointRequested(
+            QemuCheckpointChoiceProvenance::new(
+                input.start().configuration().clone(),
+                BTreeMap::new(),
+            ),
+        ))
     }
 
     fn seal(
@@ -1395,7 +1400,7 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
     fn drive(
         &mut self,
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
-        _input: &CrucibleAttemptExecution,
+        input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
         _materialization: QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
@@ -1410,7 +1415,12 @@ impl QemuFreshAttemptDriver for FakeFreshDriver {
                 .expect("checkpoint ready")
         );
         if context.checkpoint_request().is_requested() {
-            return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+            return Ok(QemuFreshDriveOutcome::CheckpointRequested(
+                QemuCheckpointChoiceProvenance::new(
+                    input.start().configuration().clone(),
+                    BTreeMap::new(),
+                ),
+            ));
         }
         match self.failure {
             None => Ok(QemuFreshDriveOutcome::Observation("pending modeled result")),
@@ -3501,7 +3511,7 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
     );
     let source_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"absent-selected-source-checkpoint",
     ))
     .expect("selected source checkpoint");
@@ -3610,7 +3620,7 @@ fn selected_after_two_controlled_generations() -> (
     );
     let source_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"two-control-selected-source-checkpoint",
     ))
     .expect("selected source checkpoint");

@@ -57,6 +57,7 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
             resources: basis.resources(),
             start_mode: basis.start_mode(),
             attempt,
+            replay_store: None,
             selected_checkpoint,
         }
     }

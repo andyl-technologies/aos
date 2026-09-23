@@ -82,7 +82,7 @@ fn exact_fallback(byte: u8) -> HotCheckpointFallback {
 
 fn exact_checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
         format!("{byte:02x}").repeat(32)
     ))
     .expect("exact checkpoint id")

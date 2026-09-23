@@ -141,8 +141,11 @@ fn campaign_hashes_are_domain_separated_and_text_is_canonical() {
 
 #[test]
 fn exact_checkpoint_identity_admits_only_the_current_schema() {
-    let current = ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"current exact root");
+    let current = ContentId::for_bytes(ObjectKind::ExactManifest, 5, b"current exact root");
     assert!(ExactCheckpointId::try_from(current).is_ok());
+
+    let pre_choice_root = ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"pre-choice root");
+    assert!(ExactCheckpointId::try_from(pre_choice_root).is_err());
 
     let wrong_version =
         ContentId::for_bytes(ObjectKind::ExactManifest, u32::MAX, b"wrong exact root");
@@ -2744,7 +2747,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     assert_eq!(decoded_minimization.policy(), current_policy);
 
     let checkpoint = |name: &[u8]| {
-        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 4, name))
+        ExactCheckpointId::from_content_id(ContentId::for_bytes(ObjectKind::ExactManifest, 5, name))
             .expect("exact checkpoint id")
     };
     let pre = checkpoint(b"pre-failure");

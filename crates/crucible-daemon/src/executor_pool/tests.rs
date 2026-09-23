@@ -2701,7 +2701,7 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let execution = ExecutionId::from_bytes([0xa3; 16]).expect("execution");
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
         "a4".repeat(32)
     ))
     .expect("checkpoint");
@@ -2832,7 +2832,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
     assert_eq!(calls.load(Ordering::Acquire), 1);
 
     let missing = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
         "c5".repeat(32)
     ))
     .expect("missing checkpoint");
@@ -3153,7 +3153,7 @@ fn raw_pause_recovery_for_request(
     let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
     let execution = ExecutionId::from_bytes([identity_byte; 16]).expect("execution");
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
         format!("{identity_byte:02x}").repeat(32)
     ))
     .expect("checkpoint");

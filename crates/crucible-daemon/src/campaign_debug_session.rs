@@ -808,7 +808,7 @@ mod tests {
     }
 
     fn checkpoint_id(label: &str) -> ExactCheckpointId {
-        let content = ContentId::for_bytes(ObjectKind::ExactManifest, 4, label.as_bytes());
+        let content = ContentId::for_bytes(ObjectKind::ExactManifest, 5, label.as_bytes());
         ExactCheckpointId::parse(&format!(
             "crucible.executor.exact-checkpoint-root@{}",
             content.encode()

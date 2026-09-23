@@ -704,7 +704,53 @@ pub enum QemuFreshDriveOutcome<P> {
     /// A modeled stop was reached and awaits final-drain sealing.
     Observation(P),
     /// The sticky checkpoint request reached an exact capture-ready boundary.
-    CheckpointRequested,
+    CheckpointRequested(QemuCheckpointChoiceProvenance),
+}
+
+/// In-attempt choices retained until the raw exact root owns their records.
+#[derive(Debug)]
+pub struct QemuCheckpointChoiceProvenance {
+    configuration: Configuration,
+    discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+}
+
+impl QemuCheckpointChoiceProvenance {
+    pub(crate) fn new(
+        configuration: Configuration,
+        discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+    ) -> Self {
+        Self {
+            configuration,
+            discoveries,
+        }
+    }
+
+    pub(crate) fn bind_capture(
+        self,
+        source: &ScenarioDefForm,
+        capture: CapturedAttemptCheckpoint,
+    ) -> Result<CapturedAttemptCheckpoint, SchedulerError> {
+        if capture.scenario() != source.id()
+            || capture.configuration() != self.configuration.id()
+            || self.configuration.def != source.scenario_def()
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "checkpoint choice records differ from the captured boundary",
+                ),
+            });
+        }
+        let closure = GuardedCampaignReplayClosure::from_owned_discoveries(
+            source,
+            &self.configuration.schedule,
+            &self.discoveries,
+        )
+        .and_then(|closure| closure.to_canonical_bytes())
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("authenticate checkpoint choice records: {error}"),
+        })?;
+        Ok(capture.with_choice_closure(closure))
+    }
 }
 
 /// Fresh-QEMU campaign runner with exact prefix replay and runner-owned teardown.

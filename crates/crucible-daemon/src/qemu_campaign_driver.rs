@@ -44,7 +44,7 @@ use crate::guest_selectable::{
 };
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
-    GuardedCampaignFindingOracleEvaluation,
+    GuardedCampaignFindingOracleEvaluation, QemuCheckpointChoiceProvenance,
 };
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
@@ -254,6 +254,12 @@ pub struct QemuFreshPendingObservation {
     terminal_at: VirtualTime,
     completed_quanta: u64,
     attempt_event_count: usize,
+}
+
+impl QemuFreshPendingObservation {
+    fn into_checkpoint_choices(self) -> QemuCheckpointChoiceProvenance {
+        QemuCheckpointChoiceProvenance::new(self.configuration, self.discoveries)
+    }
 }
 
 /// Private evidence evaluated at one exact finding-candidate boundary.
@@ -1214,7 +1220,9 @@ fn drive_modeled_attempt_inner(
         );
     }
     if checkpoint_is_ready(lifecycle, context)? {
-        return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+        return Ok(QemuFreshDriveOutcome::CheckpointRequested(
+            QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+        ));
     }
 
     let initial_choice_count = discoveries.discoveries.len();
@@ -1313,7 +1321,9 @@ fn drive_modeled_attempt_inner(
 
     loop {
         if check_operational_signals(lifecycle, context)? {
-            return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+            return Ok(QemuFreshDriveOutcome::CheckpointRequested(
+                QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+            ));
         }
         context.charge_execution_quantum().map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::ResourceRefusal(error))
@@ -1490,7 +1500,9 @@ fn drive_modeled_attempt_inner(
         }
         let Some(stop) = stop else {
             if checkpoint_is_ready(lifecycle, context)? {
-                return Ok(QemuFreshDriveOutcome::CheckpointRequested);
+                return Ok(QemuFreshDriveOutcome::CheckpointRequested(
+                    QemuCheckpointChoiceProvenance::new(configuration, discoveries.discoveries),
+                ));
             }
             continue;
         };
@@ -1567,7 +1579,9 @@ fn modeled_stop_outcome(
             },
         ));
     }
-    Ok(QemuFreshDriveOutcome::CheckpointRequested)
+    Ok(QemuFreshDriveOutcome::CheckpointRequested(
+        pending.into_checkpoint_choices(),
+    ))
 }
 
 fn resolve_pending_guest_choices(

@@ -258,7 +258,7 @@ where
                     QemuFreshDriveOutcome::Observation(pending) => {
                         Ok(HotForkRunnerResult::Observation(pending))
                     }
-                    QemuFreshDriveOutcome::CheckpointRequested => {
+                    QemuFreshDriveOutcome::CheckpointRequested(choices) => {
                         if !context.checkpoint_request().is_requested() {
                             return Err(AttemptWorkerFailure::Terminal(
                                 QemuHotForkWorldExecutionRunnerError::UnsolicitedCheckpoint,
@@ -267,6 +267,16 @@ where
                         let capture =
                             lifecycle
                                 .capture_attempt_checkpoint(context)
+                                .map_err(|error| {
+                                    AttemptWorkerFailure::Terminal(
+                                        QemuHotForkWorldExecutionRunnerError::CheckpointCapture(
+                                            error,
+                                        ),
+                                    )
+                                })?;
+                        let capture =
+                            choices
+                                .bind_capture(input.scenario(), capture)
                                 .map_err(|error| {
                                     AttemptWorkerFailure::Terminal(
                                         QemuHotForkWorldExecutionRunnerError::CheckpointCapture(
