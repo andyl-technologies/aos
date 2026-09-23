@@ -198,7 +198,7 @@ pub use model::{
     WorldNode, WorldNodeDef, WorldStaticTopology, WorldVmNodes, WorldWorkloadConfigTree,
     app_random_branch_decisions, bake, instantiate, lint_guidance_determinism_source,
     materialize_search_plans, preemption_branch_choices, reduce, run_adaptive_strategy_selection,
-    try_step,
+    try_step, validate_preemption_branch_schedule,
 };
 pub use node_time::NodeTimeMapping;
 #[cfg(feature = "test-double")]

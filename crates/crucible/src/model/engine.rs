@@ -1457,22 +1457,111 @@ pub(super) fn partial_order_canonical_representative(
     let mut swapped = true;
     while swapped {
         swapped = false;
+        // A typed selection binds the next preemption; any later selection
+        // names its exact parent. A bare swap cannot break either relationship.
         for index in 1..decisions.len() {
             let left = &decisions[index - 1];
             let right = &decisions[index];
             if right.reduction_order_key() < left.reduction_order_key()
                 && right.is_independent_from(left, policy)
+                && !matches!(
+                    index.checked_sub(2).and_then(|prior| decisions.get(prior)),
+                    Some(Decision::Selection(_))
+                )
+                && !decisions[index + 1..]
+                    .iter()
+                    .any(|decision| matches!(decision, Decision::Selection(_)))
             {
                 decisions.swap(index - 1, index);
                 changed = true;
                 swapped = true;
             }
         }
+        for index in 0..decisions.len().saturating_sub(3) {
+            if decisions[index + 4..]
+                .iter()
+                .any(|decision| matches!(decision, Decision::Selection(_)))
+            {
+                continue;
+            }
+            let [
+                Decision::Selection(first_selection),
+                first @ Decision::Preemption(_),
+                Decision::Selection(second_selection),
+                second @ Decision::Preemption(_),
+            ] = &decisions[index..index + 4]
+            else {
+                continue;
+            };
+            let (Some(first_config), Some(second_config)) = (
+                first_selection.preemption_config(),
+                second_selection.preemption_config(),
+            ) else {
+                continue;
+            };
+            if second.reduction_order_key() >= first.reduction_order_key()
+                || !second.is_independent_from(first, policy)
+            {
+                continue;
+            }
+
+            // Both original blocks must reproduce at their recorded prefixes.
+            // Their compact selections alone do not carry a producer domain.
+            let prefix = Configuration {
+                def: configuration.def.clone(),
+                schedule: schedule_from_decisions(decisions[..index].to_vec()),
+            };
+            let Some(original_first) = preemption_choice_at(&prefix, first_config, first) else {
+                continue;
+            };
+            if original_first.as_slice() != &decisions[index..index + 2] {
+                continue;
+            }
+            let Some(after_first) = append_decisions(&prefix, &original_first) else {
+                continue;
+            };
+            let Some(original_second) = preemption_choice_at(&after_first, second_config, second)
+            else {
+                continue;
+            };
+            if original_second.as_slice() != &decisions[index + 2..index + 4] {
+                continue;
+            }
+
+            // Reissue both selections against the new parents. Copying either
+            // original selection would retain the wrong opportunity/branch ID.
+            let Some(reordered_first) = preemption_choice_at(&prefix, second_config, second) else {
+                continue;
+            };
+            let Some(after_reordered_first) = append_decisions(&prefix, &reordered_first) else {
+                continue;
+            };
+            let Some(reordered_second) =
+                preemption_choice_at(&after_reordered_first, first_config, first)
+            else {
+                continue;
+            };
+            decisions.splice(
+                index..index + 4,
+                reordered_first.into_iter().chain(reordered_second),
+            );
+            changed = true;
+            swapped = true;
+        }
     }
     changed.then(|| Configuration {
         def: configuration.def.clone(),
         schedule: schedule_from_decisions(decisions),
     })
+}
+
+fn append_decisions(parent: &Configuration, decisions: &[Decision]) -> Option<Configuration> {
+    decisions
+        .iter()
+        .cloned()
+        .try_fold(parent.clone(), |current, decision| {
+            try_step(&current, decision).ok()
+        })
 }
 
 pub(super) fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
@@ -2215,5 +2304,8 @@ pub(super) fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &m
 }
 
 mod reduction_helpers;
+
+#[cfg(test)]
+mod typed_preemption_por_tests;
 
 pub(in crate::model) use reduction_helpers::*;

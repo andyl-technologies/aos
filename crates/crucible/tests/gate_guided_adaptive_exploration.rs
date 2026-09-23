@@ -34,9 +34,9 @@ use crucible::{
     NoveltyRarityGuidanceSignal, PartialOrderReductionPolicy, Plan, PreemptionBranchConfig,
     PreemptionKind, Properties, ReadyPoint, RngDecision, RngStreamId, ScenarioDef, ScenarioDefForm,
     SearchBudget, SearchFailureOracle, SearchStrategy, Seed, SelectionDecision, TemporalGraph,
-    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake,
+    VcpuId, WhiteBoxPolicy, World, WorldNode, app_random_branch_decisions, bake, instantiate,
     lint_guidance_determinism_source, preemption_branch_choices, reduce,
-    run_adaptive_strategy_selection, try_step,
+    run_adaptive_strategy_selection, try_step, validate_preemption_branch_schedule,
 };
 
 #[test]
@@ -362,6 +362,12 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
         );
         assert_eq!(child.configuration.id(), child.configuration.content_hash());
         assert!(reduce(&child.configuration.def, &child.configuration.schedule).is_ok());
+        assert_eq!(
+            crucible::Schedule::from_compact_binary(
+                &child.configuration.schedule.to_compact_binary()
+            )?,
+            child.configuration.schedule
+        );
     }
     assert!(choices.iter().any(|choice| matches!(
         choice.decisions(),
@@ -399,7 +405,7 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
 }
 
 #[test]
-fn gate_preemption_branching_keeps_parent_bound_typed_selections_distinct()
+fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
 -> Result<(), Box<dyn Error>> {
     let world = two_single_vcpu_node_world("preemption-por")?;
     let scenario = world.scenario_def();
@@ -407,38 +413,50 @@ fn gate_preemption_branching_keeps_parent_bound_typed_selections_distinct()
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
     let config_a = single_vcpu_preemption_config("guest-a");
     let config_b = single_vcpu_preemption_config("guest-b");
-    let decision_a = preemption_branch_choices(&root, &config_a)?
+    let branch_a = preemption_branch_choices(&root, &config_a)?
         .1
         .into_iter()
         .next()
-        .ok_or("guest-a should produce a preemption branch")?
-        .decisions()[1]
-        .clone();
-    let decision_b = preemption_branch_choices(&root, &config_b)?
+        .ok_or("guest-a should produce a preemption branch")?;
+    let branch_b = preemption_branch_choices(&root, &config_b)?
         .1
         .into_iter()
         .next()
-        .ok_or("guest-b should produce a preemption branch")?
-        .decisions()[1]
-        .clone();
-    let (frontier_decision, branch_decision, branch_config) =
+        .ok_or("guest-b should produce a preemption branch")?;
+    let decision_a = branch_a.decisions()[1].clone();
+    let decision_b = branch_b.decisions()[1].clone();
+    let (frontier_choice, frontier_decision, branch_decision, branch_config) =
         if decision_a.reduction_order_key() > decision_b.reduction_order_key() {
-            (decision_a, decision_b, config_b)
+            (branch_a, decision_a, decision_b, config_b)
         } else {
-            (decision_b, decision_a, config_a)
+            (branch_b, decision_b, decision_a, config_a)
         };
-    let frontier = accepted_step!(&root, frontier_decision.clone());
-    graph.record_step(&root, frontier_decision.clone())?;
+    let mut frontier = root.clone();
+    for decision in frontier_choice.decisions() {
+        graph.record_step(&frontier, decision.clone())?;
+        frontier = accepted_step!(&frontier, decision.clone());
+    }
     let policy = FrontierReductionPolicy::none().with_partial_order(
         PartialOrderReductionPolicy::new()
             .with_independent_pair(&frontier_decision, &branch_decision),
     );
-    let run = graph.branch_preemptions(&frontier, &branch_config, policy)?;
+    let run = graph.branch_preemptions(&frontier, &branch_config, policy.clone())?;
 
     assert_eq!(run.decisions.len(), 2);
-    assert!(run.report.covered.is_empty());
-    assert_eq!(run.report.explored.len(), 2);
+    assert_eq!(run.report.covered.len(), 1);
+    assert_eq!(run.report.explored.len(), 1);
     assert_eq!(run.materialized.len(), 2);
+    let covered = &run.report.covered[0];
+    let representative = graph
+        .checkpoint_configuration(covered.representative)
+        .ok_or("covered representative must be recorded")?;
+    assert_eq!(
+        covered.configuration.schedule.decisions()[1],
+        frontier_decision
+    );
+    assert_eq!(representative.schedule.decisions()[1], branch_decision);
+    assert_eq!(representative.schedule.decisions()[3], frontier_decision);
+    assert_ne!(covered.configuration.id(), representative.id());
     let materialized = run
         .materialized
         .iter()
@@ -450,6 +468,7 @@ fn gate_preemption_branching_keeps_parent_bound_typed_selections_distinct()
             .explored
             .iter()
             .map(|child| child.configuration.id())
+            .chain(std::iter::once(covered.representative))
             .collect::<BTreeSet<_>>()
     );
     assert!(
@@ -462,6 +481,114 @@ fn gate_preemption_branching_keeps_parent_bound_typed_selections_distinct()
             .checkpoint_configuration(checkpoint.id)
             .is_some_and(|configuration| graph.replay(configuration).is_ok())
     }));
+
+    let mut forged = serde_json::to_value(&frontier_choice.decisions()[0])?;
+    forged["Selection"]["preemption_config"]["node"]["name"] =
+        serde_json::Value::String(String::from("forged-node"));
+    let forged_selection: Decision = serde_json::from_value(forged)?;
+    let forged_parent = accepted_step!(&root, forged_selection);
+    let forged_frontier = accepted_step!(&forged_parent, frontier_decision.clone());
+    let forged_schedule = forged_frontier.schedule.to_compact_binary();
+    let mut forged_frontier = forged_frontier;
+    forged_frontier.schedule = crucible::Schedule::from_compact_binary(&forged_schedule)?;
+    assert!(matches!(
+        validate_preemption_branch_schedule(&forged_frontier),
+        Err(EngineError::ScenarioSerialization { .. })
+    ));
+    let forged_graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
+    assert!(matches!(
+        instantiate(&forged_graph, &forged_frontier),
+        Err(EngineError::ScenarioSerialization { .. })
+    ));
+    let scenario_form = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::default(),
+    )?;
+    assert_eq!(scenario_form.scenario_def(), root.def);
+    let forged_artifact = crucible::ReproductionArtifact::from_recorded_parts(
+        scenario_form.clone(),
+        forged_frontier.schedule.clone(),
+    );
+    assert!(matches!(
+        forged_artifact.replay(),
+        Err(EngineError::ScenarioSerialization { .. })
+    ));
+
+    let Decision::Selection(first_selection) = &frontier_choice.decisions()[0] else {
+        return Err("typed frontier should begin with a selection".into());
+    };
+    let stripped_selection =
+        Decision::Selection(SelectionDecision::new(&first_selection.selection()?));
+    let stripped_parent = accepted_step!(&root, stripped_selection);
+    let stripped_frontier = accepted_step!(&stripped_parent, frontier_decision.clone());
+    assert!(matches!(
+        validate_preemption_branch_schedule(&stripped_frontier),
+        Err(EngineError::ScenarioSerialization { .. })
+    ));
+    assert!(matches!(
+        instantiate(&forged_graph, &stripped_frontier),
+        Err(EngineError::ScenarioSerialization { .. })
+    ));
+    let stripped_artifact = crucible::ReproductionArtifact::from_recorded_parts(
+        scenario_form.clone(),
+        stripped_frontier.schedule.clone(),
+    );
+    assert!(matches!(
+        stripped_artifact.replay(),
+        Err(EngineError::ScenarioSerialization { .. })
+    ));
+
+    let app_random = AppRandomSelectable::new(
+        &scenario,
+        node("guest-a"),
+        RngStreamId::for_node("guest/raw-preemption"),
+        11,
+        16,
+    )?;
+    let raw_selection = Decision::Selection(SelectionDecision::new(
+        &app_random.branch_selection(&root, 7)?,
+    ));
+    let raw_parent = accepted_step!(&root, raw_selection);
+    let raw_frontier = accepted_step!(&raw_parent, frontier_decision.clone());
+    validate_preemption_branch_schedule(&raw_frontier)?;
+    let raw_artifact = crucible::ReproductionArtifact::from_recorded_parts(
+        scenario_form,
+        raw_frontier.schedule.clone(),
+    );
+    raw_artifact.replay()?;
+
+    let same_node_config = first_selection
+        .preemption_config()
+        .ok_or("typed frontier should retain its producer domain")?;
+    let other_preemption = preemption_branch_choices(&frontier, same_node_config)?
+        .1
+        .into_iter()
+        .map(|choice| choice.decisions()[1].clone())
+        .find(|decision| decision != &frontier_decision)
+        .ok_or("same-node domain should include another preemption")?;
+    let dependent_policy = FrontierReductionPolicy::none().with_partial_order(
+        PartialOrderReductionPolicy::new()
+            .with_independent_pair(&frontier_decision, &other_preemption),
+    );
+    let dependent_run = graph.branch_preemptions(&frontier, same_node_config, dependent_policy)?;
+    assert!(dependent_run.report.covered.is_empty());
+
+    let second_block = preemption_branch_choices(&frontier, &branch_config)?
+        .1
+        .into_iter()
+        .find(|choice| choice.decisions()[1] == branch_decision)
+        .ok_or("second typed block should remain selectable")?;
+    let after_two_blocks = second_block
+        .decisions()
+        .iter()
+        .cloned()
+        .try_fold(frontier.clone(), |parent, decision| {
+            try_step(&parent, decision)
+        })?;
+    let trailing_run = graph.branch_preemptions(&after_two_blocks, &branch_config, policy)?;
+    assert!(trailing_run.report.covered.is_empty());
 
     Ok(())
 }
@@ -495,13 +622,17 @@ fn gate_preemption_branching_reordering_requires_fresh_parent_bound_selection()
         .next()
         .ok_or("guest-b should produce a branch after guest-a")?;
 
-    let [Decision::Selection(at_root), Decision::Preemption(root_preemption)] =
-        branch_b_at_root.decisions()
+    let [
+        Decision::Selection(at_root),
+        Decision::Preemption(root_preemption),
+    ] = branch_b_at_root.decisions()
     else {
         return Err("expected typed root preemption branch".into());
     };
-    let [Decision::Selection(after_a), Decision::Preemption(after_a_preemption)] =
-        branch_b_after_a.decisions()
+    let [
+        Decision::Selection(after_a),
+        Decision::Preemption(after_a_preemption),
+    ] = branch_b_after_a.decisions()
     else {
         return Err("expected typed nested preemption branch".into());
     };

@@ -6,8 +6,8 @@
 //!
 //! ```text
 //! CrucibleScenarioPayloadV3      = ScenarioDefForm compact binary V7
-//! CrucibleConfigurationPayloadV2 = Schedule compact binary V2
-//! CrucibleReproductionPayloadV3  = ReproductionArtifact compact binary V7
+//! CrucibleConfigurationPayloadV3 = Schedule compact binary V3
+//! CrucibleReproductionPayloadV4  = ReproductionArtifact compact binary V8
 //! ```
 //!
 //! Decoding re-derives both semantic identities before a live session or QEMU
@@ -60,7 +60,7 @@ use crucible::{
     Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
     MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig,
     MinimizationRun, ScenarioDefForm, Schedule, SignalFaultCampaignReplayPlan,
-    SignalFaultSelectable,
+    SignalFaultSelectable, validate_preemption_branch_schedule,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
@@ -81,15 +81,15 @@ use crucible_cas::content_store::ContentId;
 /// Payload schema for a scenario form with typed selectable declarations.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3: u32 = 3;
 /// Payload schema for a compact canonical Crucible configuration schedule.
-pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V2: u32 = 2;
+pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V3: u32 = 3;
 /// Payload schema for a reproduction carrying scenario form version seven.
-pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3: u32 = 3;
+pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// Maximum bytes accepted from one pre-bind Crucible artifact import file.
 ///
 /// This matches the campaign artifact payload ceiling. Import callers should
 /// enforce it while reading, before retaining or decoding the complete body.
 pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
-const CRUCIBLE_SCHEDULE_V2_MAGIC: &[u8] = b"crucible.schedule.v2\0";
+const CRUCIBLE_SCHEDULE_V3_MAGIC: &[u8] = b"crucible.schedule.v3\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
 type RetainedConfigurationMemoryGuard<'a> =
@@ -1304,7 +1304,7 @@ impl CrucibleCampaignArtifactStore {
                 stored_configuration,
                 fingerprint,
             ),
-            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
             finding.artifact.to_compact_binary(),
         )?;
         let expected = artifact.id()?;
@@ -1364,7 +1364,7 @@ impl CrucibleCampaignArtifactStore {
             run.original.artifact.schedule(),
         )?;
         if decoded_original != run.original.artifact
-            || stored_original.payload_schema() != CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3
+            || stored_original.payload_schema() != CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4
             || stored_original.finding_fingerprint()
                 != CampaignHash::from_bytes(run.target_fingerprint.bytes)
             || stored_original.scenario() != original_scenario_record.scenario()
@@ -1436,7 +1436,7 @@ impl CrucibleCampaignArtifactStore {
                 stored_configuration,
                 fingerprint,
             ),
-            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
             minimized.artifact.to_compact_binary(),
             minimization.clone(),
         )?;

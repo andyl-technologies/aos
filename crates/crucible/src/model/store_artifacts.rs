@@ -116,7 +116,7 @@ pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
-    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V7);
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V8);
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()
@@ -247,7 +247,7 @@ pub(super) fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
 
 pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut lines = vec![
-        String::from("crucible.dag-store.schedule-delta.v1"),
+        String::from("crucible.dag-store.schedule-delta.v2"),
         format!("id={}", content_hash_hex(schedule.content_hash())),
         format!("decisions={}", schedule.decisions().len()),
     ];
@@ -370,6 +370,34 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
                 "{prefix}.canonical_selection={}",
                 bytes_hex(selection.canonical_bytes())
             ));
+            if let Some(config) = selection.preemption_config() {
+                lines.push(format!(
+                    "{prefix}.preemption_producer_node={}",
+                    bytes_hex(config.node.name.as_bytes())
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_deadline={}",
+                    config.deadline.retired
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_horizon={}",
+                    config.horizon.retired
+                ));
+                lines.push(format!("{prefix}.preemption_step={}", config.step));
+                lines.push(format!(
+                    "{prefix}.preemption_from_vcpu={}",
+                    config.switch_from_vcpu.index
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_to_vcpu={}",
+                    config.switch_to_vcpu.index
+                ));
+                lines.push(format!(
+                    "{prefix}.preemption_target_vcpu={}",
+                    config.target_vcpu.index
+                ));
+                lines.push(format!("{prefix}.preemption_irq={}", config.irq.vector));
+            }
         }
     }
 }

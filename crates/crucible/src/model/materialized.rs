@@ -1120,7 +1120,7 @@ impl Checkpoint {
     /// Serializes this checkpoint as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC_V4);
+        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC_V5);
         write_checkpoint_binary(self, &mut writer);
         writer.finish()
     }
@@ -1134,7 +1134,7 @@ impl Checkpoint {
     /// match their decoded components, or when the outer checkpoint shape is
     /// internally inconsistent.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC_V4)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC_V5)?;
         let checkpoint = read_checkpoint_binary(&mut reader)?;
         validate_checkpoint_binary_shape(&checkpoint)?;
         reader.finish()?;

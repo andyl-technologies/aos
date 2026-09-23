@@ -82,7 +82,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
 
     let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
     let encoded = schedule.to_compact_binary();
-    assert!(encoded.starts_with(b"crucible.schedule.v2\0"));
+    assert!(encoded.starts_with(b"crucible.schedule.v3\0"));
     assert_eq!(Schedule::from_compact_binary(&encoded)?, schedule);
     assert_ne!(schedule.content_hash(), Schedule::empty().content_hash());
 
@@ -97,7 +97,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     assert!(SelectionDecision::from_canonical_bytes(&corrupted).is_err());
 
     let mut noncurrent = encoded;
-    noncurrent[..b"crucible.schedule.v2\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
+    noncurrent[..b"crucible.schedule.v3\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
     assert!(Schedule::from_compact_binary(&noncurrent).is_err());
     Ok(())
 }
@@ -821,7 +821,7 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
     );
     let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
     let bytes = checkpoint.to_compact_binary();
-    assert!(bytes.starts_with(b"crucible.checkpoint.v4\0"));
+    assert!(bytes.starts_with(b"crucible.checkpoint.v5\0"));
     let restored = Checkpoint::from_compact_binary(&bytes)
         .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
     assert_eq!(restored, checkpoint);
@@ -839,10 +839,10 @@ fn compact_checkpoint_versions_campaign_selection_grammar() {
     };
     let checkpoint = fat_checkpoint_for(&config);
     let bytes = checkpoint.to_compact_binary();
-    assert!(bytes.starts_with(b"crucible.checkpoint.v4\0"));
+    assert!(bytes.starts_with(b"crucible.checkpoint.v5\0"));
     assert_eq!(
         Checkpoint::from_compact_binary(&bytes)
-            .unwrap_or_else(|error| panic!("V4 selection checkpoint should decode: {error}")),
+            .unwrap_or_else(|error| panic!("V5 selection checkpoint should decode: {error}")),
         checkpoint
     );
 }

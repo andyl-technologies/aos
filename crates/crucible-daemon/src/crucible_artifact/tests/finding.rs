@@ -61,7 +61,7 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
             stored.configuration(),
             stored.configuration_artifact(),
             stored.finding_fingerprint(),
-            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3 + 1,
+            CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4 + 1,
             stored.payload().to_vec(),
         )
         .expect("publish structurally valid mislabeled reproduction");

@@ -291,7 +291,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         child,
         child_artifact,
         campaign_fingerprint,
-        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
         reproduction_payload.clone(),
     )?;
     let replayed_state = CampaignHash::from_bytes(minimized_model_finding.replay.state.bytes);
@@ -321,7 +321,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         minimized_child,
         minimized_child_artifact,
         campaign_fingerprint,
-        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+        crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
         minimized_model_finding.artifact.to_compact_binary(),
         minimization.clone(),
     )?;

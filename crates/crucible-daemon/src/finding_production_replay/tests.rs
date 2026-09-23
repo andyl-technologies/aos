@@ -124,7 +124,7 @@ fn campaign_binding(
             configuration.id().expect("configuration id"),
             CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
         ),
-        crate::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V3,
+        crate::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
         finding.artifact.to_compact_binary(),
     )
     .expect("campaign reproduction")
