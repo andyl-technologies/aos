@@ -57,3 +57,4 @@ crucible-harness = { path = "../crucible-harness" }
 # Black-box guest protocol tests construct versioned observer frames directly.
 crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }
+sha2 = { workspace = true }
