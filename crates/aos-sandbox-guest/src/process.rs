@@ -499,7 +499,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             }
         };
         check_deadline(deadline).map_err(effect_error)?;
-        let phase = decode_phase(stored.phase).ok_or_else(|| {
+        let phase = AgentExecutionPhaseV1::from_code(stored.phase).ok_or_else(|| {
             ProtectedGuestAgentErrorV1::EffectFailed("invalid durable phase".into())
         })?;
         Ok((phase, stored.result))
@@ -560,37 +560,8 @@ fn outcome(phase: AgentExecutionPhaseV1, kind: u8, payload: &[u8]) -> StoredOutc
     result.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     result.extend_from_slice(payload);
     StoredOutcome {
-        phase: encode_phase(phase),
+        phase: phase.code(),
         result,
-    }
-}
-
-fn encode_phase(phase: AgentExecutionPhaseV1) -> u8 {
-    match phase {
-        AgentExecutionPhaseV1::Authorized => 1,
-        AgentExecutionPhaseV1::Starting => 2,
-        AgentExecutionPhaseV1::Running => 3,
-        AgentExecutionPhaseV1::Exited => 4,
-        AgentExecutionPhaseV1::Canceled => 5,
-        AgentExecutionPhaseV1::Failed => 6,
-        AgentExecutionPhaseV1::Lost => 7,
-        AgentExecutionPhaseV1::Quiesced => 8,
-        AgentExecutionPhaseV1::Ready => 9,
-    }
-}
-
-fn decode_phase(phase: u8) -> Option<AgentExecutionPhaseV1> {
-    match phase {
-        1 => Some(AgentExecutionPhaseV1::Authorized),
-        2 => Some(AgentExecutionPhaseV1::Starting),
-        3 => Some(AgentExecutionPhaseV1::Running),
-        4 => Some(AgentExecutionPhaseV1::Exited),
-        5 => Some(AgentExecutionPhaseV1::Canceled),
-        6 => Some(AgentExecutionPhaseV1::Failed),
-        7 => Some(AgentExecutionPhaseV1::Lost),
-        8 => Some(AgentExecutionPhaseV1::Quiesced),
-        9 => Some(AgentExecutionPhaseV1::Ready),
-        _ => None,
     }
 }
 
