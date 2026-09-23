@@ -15,16 +15,18 @@ use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignArchivePolicy, CampaignClient, CampaignClientError,
     CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
-    CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignServiceFailure,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse, CandidateGeneratorAlgorithm,
-    CandidateGeneratorSpec, CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse,
-    ConfigurationId, DaemonEpoch, ExecutorCapabilityService, ExecutorCapabilitySet,
-    ExecutorCapacityReport, ExecutorCompatibilityProfile, ExecutorControlService,
-    ExecutorDescription, ExecutorMaterializationCapability, ExecutorResumeService, ExecutorService,
-    ExecutorStatusService, ExplorerPolicy, FairnessPolicy, GetAttemptExecutionRequest,
-    GetAttemptExecutionResponse, GetCampaignRequest, ProgressiveWideningPolicy, PuctPolicy,
-    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, RetentionPolicy, ScenarioDefId,
-    SubmitAttemptRequest, SubmitAttemptResponse, WatchExecutorCapacityRequest,
+    CampaignPolicy, CampaignPrincipal, CampaignSeed, CampaignService, CampaignServiceFailure,
+    CampaignSnapshotId, CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
+    CandidateGeneratorAlgorithm, CandidateGeneratorSpec, CheckpointAttemptExecutionRequest,
+    CheckpointAttemptExecutionResponse, ConfigurationId, DaemonEpoch, ExecutorCapabilityService,
+    ExecutorCapabilitySet, ExecutorCapacityReport, ExecutorCompatibilityProfile,
+    ExecutorControlService, ExecutorDescription, ExecutorMaterializationCapability,
+    ExecutorResumeService, ExecutorService, ExecutorStatusService, ExplorerPolicy, FairnessPolicy,
+    GetAttemptExecutionRequest, GetAttemptExecutionResponse, GetCampaignRequest,
+    ProgressiveWideningPolicy, PuctPolicy, QueryCampaignFindingsRequest,
+    RepositoryCampaignServiceError, ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse,
+    RetentionPolicy, ScenarioDefId, SubmitAttemptRequest, SubmitAttemptResponse,
+    WatchExecutorCapacityRequest,
 };
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, DurabilityRequirement, ImmutableBlobBackend,
@@ -1088,8 +1090,11 @@ fn finding_export_authorizer_admits_only_ledger_reads() {
         }
     }
 
-    let authorizer = CampaignFindingExportAuthorizer(AllowAll);
     let principal = CampaignPrincipal::new("operator").expect("principal");
+    let authorizer = CampaignFindingExportAuthorizer {
+        inner: AllowAll,
+        principal: principal.clone(),
+    };
     let campaign = CampaignName::new("example").expect("campaign");
     let digest = CampaignHash::derive("campaign-finding-export-authorizer", b"request");
 
@@ -1111,6 +1116,91 @@ fn finding_export_authorizer_admits_only_ledger_reads() {
         ),
         Err(CampaignAuthorizationError::Unauthorized)
     );
+    assert_eq!(
+        authorizer.authorize(
+            &CampaignPrincipal::new("other").expect("other principal"),
+            CampaignServiceOperation::QueryCampaignFindings,
+            &campaign,
+            digest,
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+}
+
+#[test]
+fn stopped_owner_finding_read_rejects_an_ungranted_operation() {
+    let (_directory, config) = fixture();
+    let prepared = config.prepare().expect("prepare service");
+    let principal = prepared
+        .campaign_export_principal()
+        .expect("resolve effective Unix identity");
+    assert_eq!(
+        principal,
+        CampaignPrincipal::new("operator").expect("principal")
+    );
+
+    let request = QueryCampaignFindingsRequest::new(
+        principal,
+        CampaignName::new("absent").expect("campaign"),
+        absent_finding_snapshot_id(),
+        None,
+        1,
+    )
+    .expect("finding query");
+    let service = prepared
+        .campaign_read_service()
+        .expect("bound read service");
+
+    assert!(matches!(
+        service.query_campaign_findings(&request),
+        Err(RepositoryCampaignServiceError::Authorization(
+            CampaignAuthorizationError::Unauthorized
+        ))
+    ));
+}
+
+#[test]
+fn stopped_owner_finding_read_uses_its_granted_deployment_policy() {
+    let (_directory, config) = fixture();
+    let mut policy = fs::read_to_string(config.policy_path()).expect("read policy");
+    policy.push_str(
+        r#"
+[[grants]]
+principal = "operator"
+operation = "query-campaign-findings"
+campaign = "*"
+"#,
+    );
+    fs::write(config.policy_path(), policy).expect("grant finding query");
+
+    let prepared = config.prepare().expect("prepare service");
+    let principal = prepared
+        .campaign_export_principal()
+        .expect("resolve effective Unix identity");
+    let request = QueryCampaignFindingsRequest::new(
+        principal,
+        CampaignName::new("absent").expect("campaign"),
+        absent_finding_snapshot_id(),
+        None,
+        1,
+    )
+    .expect("finding query");
+    let service = prepared
+        .campaign_read_service()
+        .expect("bound read service");
+
+    assert!(matches!(
+        service.query_campaign_findings(&request),
+        Err(RepositoryCampaignServiceError::Repository(
+            CampaignRepositoryError::NotFound
+        ))
+    ));
+}
+
+fn absent_finding_snapshot_id() -> CampaignSnapshotId {
+    let content = ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, b"absent");
+    CampaignSnapshotId::parse(&format!("crucible.campaign.snapshot@{}", content.encode()))
+        .expect("snapshot ID")
 }
 
 #[test]

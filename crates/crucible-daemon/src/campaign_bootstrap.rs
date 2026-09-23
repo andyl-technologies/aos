@@ -42,8 +42,9 @@ use crate::{
     LocalComponentEndpointError, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
     MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor, PackagedQemuExecutorConfig,
     PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
-    PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
-    prepare_canonical_campaign_runtime, prepare_canonical_campaign_runtime_endpoint,
+    PreparedCanonicalCampaignRuntime, UnixPeerCampaignIdentity, UnixPeerCampaignPolicy,
+    UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
+    prepare_canonical_campaign_runtime_endpoint,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -532,8 +533,11 @@ pub struct PreparedCampaignLocalService {
     transfer_identity: String,
 }
 
-/// Principal policy restricted to the five finding-ledger read operations.
-pub struct CampaignFindingExportAuthorizer<A>(A);
+/// Exact-principal policy restricted to the five finding-ledger read operations.
+pub struct CampaignFindingExportAuthorizer<A> {
+    inner: A,
+    principal: CampaignPrincipal,
+}
 
 impl<A: CampaignPrincipalAuthorizer> CampaignPrincipalAuthorizer
     for CampaignFindingExportAuthorizer<A>
@@ -545,17 +549,19 @@ impl<A: CampaignPrincipalAuthorizer> CampaignPrincipalAuthorizer
         campaign: &CampaignName,
         request_digest: CampaignHash,
     ) -> Result<(), CampaignAuthorizationError> {
-        if !matches!(
-            operation,
-            CampaignServiceOperation::QueryCampaignFindings
-                | CampaignServiceOperation::QueryCampaignFindingOccurrences
-                | CampaignServiceOperation::GetCampaignFindingObject
-                | CampaignServiceOperation::GetCampaignFindingOccurrenceObject
-                | CampaignServiceOperation::GetCampaignFindingTriageReplaySegment
-        ) {
+        if principal != &self.principal
+            || !matches!(
+                operation,
+                CampaignServiceOperation::QueryCampaignFindings
+                    | CampaignServiceOperation::QueryCampaignFindingOccurrences
+                    | CampaignServiceOperation::GetCampaignFindingObject
+                    | CampaignServiceOperation::GetCampaignFindingOccurrenceObject
+                    | CampaignServiceOperation::GetCampaignFindingTriageReplaySegment
+            )
+        {
             return Err(CampaignAuthorizationError::Unauthorized);
         }
-        self.0
+        self.inner
             .authorize(principal, operation, campaign, request_digest)
     }
 }
@@ -730,20 +736,54 @@ impl CampaignLocalStoreGcAuthority<'_> {
 }
 
 impl PreparedCampaignLocalService {
+    /// Resolves this process's effective Unix identity through the deployment policy.
+    ///
+    /// The returned principal is the one a local socket connection from this
+    /// process would claim. Callers cannot select a different policy identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignAuthorizationError::Unauthorized`] when the effective
+    /// user/group pair has no exact binding in the loaded deployment policy.
+    pub fn campaign_export_principal(
+        &self,
+    ) -> Result<CampaignPrincipal, CampaignAuthorizationError> {
+        let identity = UnixPeerCampaignIdentity::new(
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
+        self.policy.principal_for_identity(identity)
+    }
+
     /// Borrows a typed read service from this stopped repository owner.
     ///
-    /// The caller supplies the same principal authorization policy used for
-    /// service queries. The borrow keeps the repository namespace lock alive
-    /// while a standalone export captures its native finding ledger.
-    #[must_use]
-    pub fn campaign_read_service<A: CampaignPrincipalAuthorizer>(
+    /// The deployment policy and service mode authorize every request, further
+    /// restricted to the current Unix identity and finding-ledger reads. The
+    /// borrow keeps the repository namespace lock alive during export.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignAuthorizationError::Unauthorized`] when the current
+    /// effective Unix identity has no deployment-policy binding.
+    pub fn campaign_read_service(
         &self,
-        authorizer: A,
-    ) -> crucible_campaign::RepositoryCampaignService<'_, CampaignFindingExportAuthorizer<A>> {
-        crucible_campaign::RepositoryCampaignService::new(
+    ) -> Result<
+        impl crucible_campaign::CampaignFindingOccurrenceService<
+            Error = crucible_campaign::RepositoryCampaignServiceError,
+        > + '_,
+        CampaignAuthorizationError,
+    > {
+        let principal = self.campaign_export_principal()?;
+        Ok(crucible_campaign::RepositoryCampaignService::new(
             self.repository.as_ref(),
-            CampaignFindingExportAuthorizer(authorizer),
-        )
+            CampaignFindingExportAuthorizer {
+                inner: CampaignLocalAuthorizer {
+                    policy: Arc::clone(&self.policy),
+                    mode: self.mode,
+                },
+                principal,
+            },
+        ))
     }
 
     /// Builds one authenticated archive plan under this repository owner.
