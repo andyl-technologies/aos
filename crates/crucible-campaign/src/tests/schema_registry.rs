@@ -547,6 +547,21 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[3], "administrative-record");
         owned_campaign_schemas.insert(schema);
     }
+    let finding_bundle_schema = "crucible.campaign.finding-bundle";
+    let finding_bundle = rows
+        .get(finding_bundle_schema)
+        .expect("missing portable finding bundle schema");
+    assert_eq!(finding_bundle[1], "2");
+    assert_eq!(
+        finding_bundle[2],
+        "crucible-cli::cli_campaign::finding_bundle"
+    );
+    assert_eq!(finding_bundle[3], "export-directory");
+    assert_eq!(
+        finding_bundle[4],
+        "gate:campaign-replay,gate:campaign-store-composition"
+    );
+    owned_campaign_schemas.insert(finding_bundle_schema);
     let scan_index_schema = "crucible.campaign.planner-scan-index";
     let scan_index = rows
         .get(scan_index_schema)

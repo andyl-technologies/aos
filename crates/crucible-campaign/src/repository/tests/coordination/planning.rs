@@ -2381,6 +2381,8 @@ fn campaign_supervisor_applies_cancel_and_checkpoint_pause_policies_without_plan
 #[test]
 fn campaign_supervisor_plans_only_after_executor_scan_proves_no_ready_attempt() {
     let (repository, lineage, policy, _, planner_authority, _) = authorized_fixture();
+    let (_, private_target, _) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "private-target-basis");
     let created = repository
         .create(
             "campaign-supervisor-planning",
@@ -2427,7 +2429,7 @@ fn campaign_supervisor_plans_only_after_executor_scan_proves_no_ready_attempt() 
     )
     .expect("executor driver");
     let mut supervisor = CampaignSupervisor::new(
-        repository,
+        Arc::clone(&repository),
         crate::CampaignName::new("campaign-supervisor-planning").expect("campaign name"),
         planner,
         executor,
@@ -2450,6 +2452,27 @@ fn campaign_supervisor_plans_only_after_executor_scan_proves_no_ready_attempt() 
             ..
         })
     ));
+    assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let (planner, executor) = supervisor.into_drivers();
+    let mut private = CampaignSupervisor::new(
+        repository,
+        crate::CampaignName::new("campaign-supervisor-planning").expect("campaign name"),
+        planner,
+        executor,
+        1,
+    )
+    .expect("private supervisor")
+    .for_private_target_attempt(private_target.attempt);
+    for _ in 0..3 {
+        assert!(matches!(
+            private.step().expect("scan private target only"),
+            CampaignSupervisorStepOutcome::Executor {
+                outcome: CampaignExecutorStepOutcome::Idle { .. },
+                ..
+            }
+        ));
+    }
     assert_eq!(planner_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 

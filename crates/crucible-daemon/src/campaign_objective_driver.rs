@@ -27,6 +27,7 @@ pub struct ObjectivePublishingCampaignDriver<D> {
     repository: Arc<CampaignRepository>,
     campaign: String,
     cursor: Option<ObjectiveEvaluationCursor>,
+    publish_objectives: bool,
     inner: D,
 }
 
@@ -40,8 +41,16 @@ impl<D> ObjectivePublishingCampaignDriver<D> {
             repository,
             campaign,
             cursor: None,
+            publish_objectives: true,
             inner,
         }
+    }
+
+    /// Skips inherited objective work for a private single-attempt finding run.
+    #[must_use]
+    pub fn without_background_evaluations(mut self) -> Self {
+        self.publish_objectives = false;
+        self
     }
 
     /// Consumes the wrapper and returns the underlying campaign driver.
@@ -59,7 +68,13 @@ where
 
     // crucible-lint: allow host-nondeterminism-state -- this owner advances only authenticated objective work before delegating the unchanged campaign step.
     fn step(&mut self) -> Result<CampaignRuntimeStepDisposition, Self::Error> {
-        if publish_next_objective_evaluation(&self.repository, &self.campaign, &mut self.cursor)? {
+        if self.publish_objectives
+            && publish_next_objective_evaluation(
+                &self.repository,
+                &self.campaign,
+                &mut self.cursor,
+            )?
+        {
             return Ok(CampaignRuntimeStepDisposition::Continue);
         }
         self.inner

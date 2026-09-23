@@ -649,6 +649,7 @@ where
             args,
             Some(&packaged_campaign_config),
             Some(campaign_debug_lifecycle),
+            None,
         )?;
         announce_campaign_service(cli, campaign_service.as_ref());
         return run_bound_daemon_services(
@@ -672,7 +673,7 @@ where
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
     let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
-    let campaign_service = open_local_campaign_service(args, None, None)?;
+    let campaign_service = open_local_campaign_service(args, None, None, None)?;
     announce_campaign_service(cli, campaign_service.as_ref());
     run_bound_daemon_services(
         listener,
@@ -750,6 +751,7 @@ pub(super) fn open_local_campaign_service(
     args: &ServeArgs,
     production_qemu: Option<&crucible_api::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
+    private_target_attempt: Option<crucible_campaign::AttemptId>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     validate_campaign_runtime_attachments(args)?;
     let (Some(socket), Some(state), Some(policy)) = (
@@ -822,6 +824,11 @@ pub(super) fn open_local_campaign_service(
             })
             .collect::<Result<std::collections::BTreeSet<_>, _>>()?
     };
+    if private_target_attempt.is_some() && selected_campaigns.len() != 1 {
+        return Err(serve_error(
+            "private finding target requires exactly one campaign runtime",
+        ));
+    }
     let packaged_executor = match args.campaign_packaged_executor.as_deref() {
         Some(deployment) => {
             let executor_socket = args.campaign_executor_socket.first().ok_or_else(|| {
@@ -875,6 +882,10 @@ pub(super) fn open_local_campaign_service(
                 serve_error(format!("campaign runtime configuration error: {error}"))
             })?,
         };
+        let runtime_config = match private_target_attempt {
+            Some(target) => runtime_config.for_private_finding_target(target),
+            None => runtime_config,
+        };
         runtimes.push(
             prepared
                 .prepare_runtime_endpoint(endpoint, &runtime_config)
@@ -917,6 +928,7 @@ pub(crate) struct PrivatePackagedCampaignRun<'a> {
     pub(crate) executor_socket: &'a Path,
     pub(crate) deployment: &'a Path,
     pub(crate) campaign: &'a str,
+    pub(crate) target_attempt: crucible_campaign::AttemptId,
     pub(crate) lifecycle: &'a crucible_api::ProductionVmLifecycleConfig,
     pub(crate) timeout: Duration,
 }
@@ -965,8 +977,9 @@ where
         campaign_packaged_executor: Some(run.deployment.to_path_buf()),
         campaign_socket_mode: 0o600,
     };
-    let prepared = open_local_campaign_service(&args, Some(run.lifecycle), None)?
-        .ok_or_else(|| serve_error("private packaged campaign service was not prepared"))?;
+    let prepared =
+        open_local_campaign_service(&args, Some(run.lifecycle), None, Some(run.target_attempt))?
+            .ok_or_else(|| serve_error("private packaged campaign service was not prepared"))?;
     let shutdown = prepared.service.shutdown_handle();
     let thread = std::thread::Builder::new()
         .name(String::from("crucible-private-campaign"))

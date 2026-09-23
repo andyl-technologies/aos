@@ -12,7 +12,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
 use crucible_campaign::{
-    AttemptResourceLimits, AuthorizedPlannerService, AuthorizedPlannerServiceError,
+    AttemptId, AttemptResourceLimits, AuthorizedPlannerService, AuthorizedPlannerServiceError,
     CampaignCodecError, CampaignExecutorDriver, CampaignExecutorDriverConfigError, CampaignName,
     CampaignPlannerDriver, CampaignPlannerDriverConfigError, CampaignPlannerDriverError,
     CampaignRepository, CampaignRepositoryError, CampaignSupervisor, CampaignSupervisorConfigError,
@@ -59,6 +59,7 @@ pub struct CanonicalCampaignRuntimeConfig {
     retention: ExecutionRetentionIntent,
     executor_scan_limit: usize,
     worker_slots: Option<u32>,
+    private_target_attempt: Option<AttemptId>,
     runtime: CampaignRuntimeConfig,
     executor_timeouts: crate::LoopbackExecutorTimeouts,
 }
@@ -107,6 +108,7 @@ impl CanonicalCampaignRuntimeConfig {
             retention,
             executor_scan_limit,
             worker_slots,
+            private_target_attempt: None,
             runtime,
             executor_timeouts: crate::LoopbackExecutorTimeouts::default(),
         })
@@ -122,6 +124,13 @@ impl CanonicalCampaignRuntimeConfig {
         executor_timeouts: crate::LoopbackExecutorTimeouts,
     ) -> Self {
         self.executor_timeouts = executor_timeouts;
+        self
+    }
+
+    /// Restricts an owner-private finding runtime to one admitted attempt.
+    #[must_use]
+    pub const fn for_private_finding_target(mut self, target: AttemptId) -> Self {
+        self.private_target_attempt = Some(target);
         self
     }
 
@@ -206,6 +215,12 @@ impl CanonicalCampaignRuntimeConfig {
     #[must_use]
     pub const fn worker_slots(&self) -> Option<u32> {
         self.worker_slots
+    }
+
+    /// Returns the sole private finding attempt, when this is a targeted runtime.
+    #[must_use]
+    pub const fn private_target_attempt(&self) -> Option<AttemptId> {
+        self.private_target_attempt
     }
 
     /// Returns the long-lived runtime cadence.
@@ -595,11 +610,20 @@ fn prepare_canonical_campaign_runtime_with_service(
         worker_slots,
     )
     .map_err(CanonicalCampaignRuntimeError::Supervisor)?;
+    let supervisor = match config.private_target_attempt() {
+        Some(target) => supervisor.for_private_target_attempt(target),
+        None => supervisor,
+    };
     let supervisor = ObjectivePublishingCampaignDriver::new(
         Arc::clone(&repository),
         config.campaign().as_str().to_owned(),
         supervisor,
     );
+    let supervisor = if config.private_target_attempt().is_some() {
+        supervisor.without_background_evaluations()
+    } else {
+        supervisor
+    };
     Ok(PreparedCanonicalCampaignRuntime {
         repository_identity: Arc::clone(&repository),
         campaign: config.campaign().clone(),
