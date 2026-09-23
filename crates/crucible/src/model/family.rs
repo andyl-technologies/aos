@@ -644,6 +644,7 @@ pub struct FamilySpace {
     pub(super) seeds: SeedSpace,
     pub(super) topology_size: TopologySizeRange,
     pub(super) topology_shapes: Vec<TopologyShape>,
+    pub(super) fault_densities: Vec<u32>,
 }
 
 impl FamilySpace {
@@ -675,7 +676,34 @@ impl FamilySpace {
             seeds,
             topology_size,
             topology_shapes,
+            fault_densities: vec![0],
         })
+    }
+
+    /// Sets the finite number of fault bindings retained from a family plan.
+    ///
+    /// Density zero pins an empty fault layer. Nonzero densities require a
+    /// [`ScenarioFamily::with_fault_plan`] template with enough bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] for an empty axis or
+    /// a density beyond the admitted fault-binding limit.
+    pub fn with_fault_densities(mut self, mut densities: Vec<u32>) -> Result<Self, EngineError> {
+        if densities.is_empty()
+            || densities.iter().any(|density| {
+                usize::try_from(*density).map_or(true, |value| value > HARD_FAULT_BINDING_LIMIT)
+            })
+        {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "fault-density axis is empty or exceeds the fault-binding limit",
+            });
+        }
+        densities.sort_unstable();
+        densities.dedup();
+        self.fault_densities = densities;
+        self.cardinality()?;
+        Ok(self)
     }
 
     /// Returns this space's seed axis.
@@ -696,6 +724,12 @@ impl FamilySpace {
         &self.topology_shapes
     }
 
+    /// Returns the canonical fault-density axis.
+    #[must_use]
+    pub fn fault_densities(&self) -> &[u32] {
+        &self.fault_densities
+    }
+
     /// Returns whether `params` lies inside this space.
     #[must_use]
     pub fn contains(&self, params: FamilyParams) -> bool {
@@ -704,6 +738,10 @@ impl FamilySpace {
             && self
                 .topology_shapes
                 .binary_search(&params.topology_shape)
+                .is_ok()
+            && self
+                .fault_densities
+                .binary_search(&params.fault_density)
                 .is_ok()
     }
 
@@ -720,6 +758,7 @@ impl FamilySpace {
         let total = seed_count
             .checked_mul(shape_count)
             .and_then(|count| count.checked_mul(size_count))
+            .and_then(|count| count.checked_mul(self.fault_densities.len() as u64))
             .ok_or(EngineError::ScenarioFamilyInvalidSpace {
                 reason: "family space cardinality overflows u64",
             })?;
@@ -734,7 +773,7 @@ impl FamilySpace {
 
     /// Deterministically samples one parameter point by cartesian index.
     ///
-    /// The finite axes are traversed in seed, shape, then size order.
+    /// The finite axes are traversed in seed, shape, size, then fault-density order.
     /// Callers that want an unbounded fuzz counter should explicitly wrap by
     /// [`Self::cardinality`] so exhaustive enumeration can still reject an
     /// out-of-space index.
@@ -760,11 +799,14 @@ impl FamilySpace {
         let topology_shape = self.topology_shapes[(index % shape_count) as usize];
         index /= shape_count;
         let topology_size = self.topology_size.at(index % size_count)?;
+        index /= size_count;
+        let fault_density = self.fault_densities[index as usize];
 
         Ok(FamilyParams {
             seed,
             topology_size,
             topology_shape,
+            fault_density,
         })
     }
 
@@ -786,6 +828,15 @@ impl FamilySpace {
                 parameter: "topology_shape",
             });
         }
+        if self
+            .fault_densities
+            .binary_search(&params.fault_density)
+            .is_err()
+        {
+            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
+                parameter: "fault_density",
+            });
+        }
 
         Ok(())
     }
@@ -800,6 +851,8 @@ pub struct FamilyParams {
     pub topology_size: u32,
     /// Concrete generated topology shape.
     pub topology_shape: TopologyShape,
+    /// Number of admitted fault bindings selected from the family plan.
+    pub fault_density: u32,
 }
 
 /// Parametric generator over concrete, validated scenario definitions.
@@ -808,6 +861,7 @@ pub struct ScenarioFamily {
     pub(super) space: FamilySpace,
     pub(super) node_template: NodeTemplate,
     pub(super) assertions: Vec<AssertionDef>,
+    pub(super) fault_plan: FaultSignalPlan,
 }
 
 impl ScenarioFamily {
@@ -818,6 +872,7 @@ impl ScenarioFamily {
             space,
             node_template,
             assertions: Vec::new(),
+            fault_plan: FaultSignalPlan::empty(),
         }
     }
 
@@ -832,6 +887,24 @@ impl ScenarioFamily {
     pub fn property(mut self, assertion: AssertionDef) -> Self {
         self.assertions.push(assertion);
         self
+    }
+
+    /// Supplies the validated fault programs and bindings sampled by density.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when an authored
+    /// density exceeds the number of available bindings.
+    pub fn with_fault_plan(mut self, plan: FaultSignalPlan) -> Result<Self, EngineError> {
+        if self.space.fault_densities.iter().any(|density| {
+            usize::try_from(*density).map_or(true, |value| value > plan.bindings().len())
+        }) {
+            return Err(EngineError::ScenarioFamilyInvalidSpace {
+                reason: "fault density exceeds the family plan binding count",
+            });
+        }
+        self.fault_plan = plan;
+        Ok(self)
     }
 
     /// Instantiates a concrete validated scenario at `params`.
@@ -920,8 +993,29 @@ impl ScenarioFamily {
         World::from_nodes_and_links(nodes, links)
     }
 
-    fn build_plan(&self, _world: &World, _params: FamilyParams) -> Result<Plan, EngineError> {
-        Ok(Plan::empty())
+    fn build_plan(&self, world: &World, params: FamilyParams) -> Result<Plan, EngineError> {
+        let density = usize::try_from(params.fault_density).map_err(|_| {
+            EngineError::ScenarioFamilyInvalidSpace {
+                reason: "fault density cannot be represented on this host",
+            }
+        })?;
+        if density == 0 {
+            return Ok(Plan::empty());
+        }
+        let selected = self.fault_plan.bindings().get(..density).ok_or(
+            EngineError::ScenarioFamilyInvalidSpace {
+                reason: "fault density exceeds the family plan binding count",
+            },
+        )?;
+        let faults = FaultSignalPlan::new(
+            self.fault_plan.programs().to_vec(),
+            selected.to_vec(),
+            self.fault_plan.resource_limits(),
+        )
+        .map_err(|error| {
+            scenario_serialization_error(format!("sample family fault plan: {error}"))
+        })?;
+        Plan::empty().with_fault_signals_for_world(world, faults)
     }
 }
 

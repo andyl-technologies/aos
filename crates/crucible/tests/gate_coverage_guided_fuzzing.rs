@@ -7,10 +7,19 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+use crucible::model::{
+    BindingMapping, BindingObservabilityPolicy, BindingSampling, BindingSearchPolicy,
+    CpuServiceDiscipline, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
+    EffectSpecification, ExactRatio, FaultBinding, FaultObjectId, FaultPhase, FaultResourceLimits,
+    FaultSignalPlan, NodeEffectSpecification, PositiveU64, ResolvedFaultTarget, ResolvedTargetSet,
+    SignalDomain, SignalId, SignalNode, SignalNodeKind, SignalProgram, SignalResourceLimits,
+    SignalShape, SignalUnit, SignalValue, SignalValueType, TargetSelector,
+};
 use crucible::{
     CoverageGuidedFuzzConfig, Decision, EngineError, EventLogCoverageFeedback,
     EventLogCoverageFeedbackConsumer, FamilySpace, Icount, MarkerId, NodeTemplate, ObservableEvent,
-    ScenarioFamily, Seed, SeedSpace, TopologyShape, TopologySizeRange, reduce,
+    ReproductionArtifact, ScenarioFamily, Schedule, Seed, SeedSpace, TopologyShape,
+    TopologySizeRange, reduce,
 };
 
 #[test]
@@ -111,6 +120,126 @@ fn gate_coverage_guided_fuzzing_prefers_first_seen_coverage() -> Result<(), Box<
     );
 
     Ok(())
+}
+
+#[test]
+fn gate_coverage_guided_fuzzing_pins_bounded_fault_plan_variants() -> Result<(), Box<dyn Error>> {
+    let invalid_space = FamilySpace::new(
+        SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
+        TopologySizeRange::new(2, 2)?,
+        vec![TopologyShape::Ring],
+    )?
+    .with_fault_densities(vec![2])?;
+    assert!(
+        ScenarioFamily::new(invalid_space, NodeTemplate::fixed_icount(icount(50)))
+            .with_fault_plan(family_fault_plan()?)
+            .is_err(),
+        "a density beyond the admitted binding set must fail closed"
+    );
+
+    let space = FamilySpace::new(
+        SeedSpace::explicit(vec![Seed::from_u64(0x11)])?,
+        TopologySizeRange::new(2, 2)?,
+        vec![TopologyShape::Ring],
+    )?
+    .with_fault_densities(vec![1, 0, 1])?;
+    let family = ScenarioFamily::new(space, NodeTemplate::fixed_icount(icount(50)))
+        .with_fault_plan(family_fault_plan()?)?;
+    let empty = family.instantiate_sample(0)?;
+    let faulted = family.instantiate_sample(1)?;
+
+    assert_eq!(family.space().cardinality()?, 2);
+    assert_eq!(empty.params().fault_density, 0);
+    assert_eq!(faulted.params().fault_density, 1);
+    assert!(empty.form().plan().fault_signals().bindings().is_empty());
+    assert_eq!(faulted.form().plan().fault_signals().bindings().len(), 1);
+    assert_ne!(
+        empty.form().plan().content_hash(),
+        faulted.form().plan().content_hash()
+    );
+    assert_ne!(empty.scenario_def().id(), faulted.scenario_def().id());
+    assert_eq!(faulted, family.instantiate_sample(1)?);
+    let artifact = ReproductionArtifact::capture(faulted.form(), &Schedule::empty())?;
+    let replay = artifact.replay()?;
+    assert_eq!(replay.scenario, faulted.scenario_def().id());
+    assert_eq!(artifact.scenario_form().plan(), faulted.form().plan());
+
+    let config = CoverageGuidedFuzzConfig::new(Seed::from_u64(0xbeef), 16);
+    let run = family.fuzz_coverage_guided(config, &[])?;
+    assert_eq!(run, family.fuzz_coverage_guided(config, &[])?);
+    assert_eq!(
+        run.iterations
+            .iter()
+            .map(|iteration| iteration.params.fault_density)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([0, 1]),
+    );
+    for iteration in &run.iterations {
+        assert_eq!(
+            iteration
+                .scenario
+                .form()
+                .plan()
+                .fault_signals()
+                .bindings()
+                .len(),
+            iteration.params.fault_density as usize,
+        );
+        assert!(reduce(&iteration.configuration.def, iteration.schedule()).is_ok());
+    }
+
+    Ok(())
+}
+
+fn family_fault_plan() -> Result<FaultSignalPlan, Box<dyn Error>> {
+    let output = SignalId::parse("cpu-limited")?;
+    let program = SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)?,
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Constant {
+                value: SignalValue::Bool(true),
+            },
+        }],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )?;
+    let targets = ResolvedTargetSet::new(
+        vec![ResolvedFaultTarget::Node {
+            node: FaultObjectId::parse("node-0")?,
+        }],
+        false,
+    )?;
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Node(NodeEffectSpecification::CpuService {
+            vcpus: vec![0],
+            capacity: ExactRatio::new(1, 2)?,
+            quantum_instructions: PositiveU64::new("quantum_instructions", 64)?,
+            service_rule: CpuServiceDiscipline::StrictCap,
+        }),
+    )?;
+    let binding = FaultBinding::new(
+        FaultObjectId::parse("family-cpu-limit")?,
+        vec![output],
+        BindingSampling::AtBoundary,
+        BindingMapping::ActiveWhenTrue { invert: false },
+        TargetSelector::Exact(targets),
+        BTreeSet::from([FaultPhase::Run]),
+        effect,
+        None,
+        BindingSearchPolicy::Fixed,
+        BindingObservabilityPolicy::default(),
+        &program,
+    )?;
+    Ok(FaultSignalPlan::new(
+        vec![program],
+        vec![binding],
+        FaultResourceLimits::default(),
+    )?)
 }
 
 fn fuzz_family() -> Result<ScenarioFamily, EngineError> {
