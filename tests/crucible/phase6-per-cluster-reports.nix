@@ -25,11 +25,16 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
+  reportMaterial = builtins.readFile ../../crates/crucible/src/model/failure/material.rs;
+  reportRenderer = builtins.readFile ../../crates/crucible/src/model/failure/model/reporting.rs;
   libSource = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/src/lib.rs;
   };
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  signatureTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/gate_failure_signature.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -312,7 +317,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ forbiddenFailuresFor "crates/crucible/src/model/failure report renderer" (reportMaterial + reportRenderer) [
       {
         label = "serde_json dependency in report renderer";
         needle = "serde_json";

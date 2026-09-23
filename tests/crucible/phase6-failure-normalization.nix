@@ -127,8 +127,8 @@
     ]
     ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
       {
-        label = "normalization regression test";
-        needle = "failure_signature_applies_t_tri_2_normalizations";
+        label = "property report-only icount and guest witness regression";
+        needle = "property_signature_excludes_report_only_icount_but_binds_guest_witness";
       }
       {
         label = "report-only icount regression";
@@ -136,11 +136,19 @@
       }
       {
         label = "icount not in key regression";
-        needle = "!replica_a_signature";
+        needle = "shifted_icount.content_hash(), base_signature.content_hash()";
       }
       {
-        label = "symmetry class regression";
-        needle = "symmetry-class:8:replicas";
+        label = "symmetric node normalization regression";
+        needle = "timeout_signature_validates_boundary_and_normalizes_symmetric_nodes";
+      }
+      {
+        label = "symmetric node equality assertion";
+        needle = "replica_a_signature.first_failing_point.faulting_node";
+      }
+      {
+        label = "recorded guest witness assertion";
+        needle = "guest_marker_witness=";
       }
       {
         label = "out-of-cone causal stability regression";
