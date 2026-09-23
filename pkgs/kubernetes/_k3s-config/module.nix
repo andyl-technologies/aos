@@ -275,233 +275,213 @@
       values = roleSpec.kernelTunables;
       dependencies = [];
     };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "device_policy";
-        requirementAlias = "service-device-policy";
-        description = "Requires the selected service-management provider to enforce the declared device access policy.";
-        interface = "aos.service.device-policy";
-        abi = 1;
-        parameters = {
-          baseline_access = "standard-runtime-devices";
-          rules =
-            map
-            (class: {
-              selector = {
-                kind = "class";
-                device_type = "character";
-                inherit class;
-              };
-              read = true;
-              write = true;
-              create = false;
-            })
-            [
-              "fuse"
-              "kernel-message"
-              "network-tunnel"
-            ];
-        };
-      })
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = true;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [
-              "administer-host"
-              "administer-network"
-              "raw-network"
-              "administer-resource-limits"
-              "inspect-processes"
+  service = {
+    policy.devicePolicy = {
+      baseline_access = "standard-runtime-devices";
+      rules =
+        map
+        (class: {
+          selector = {
+            kind = "class";
+            device_type = "character";
+            inherit class;
+          };
+          read = true;
+          write = true;
+          create = false;
+        })
+        [
+          "fuse"
+          "kernel-message"
+          "network-tunnel"
+        ];
+    };
+    policy.hardening = {
+      allow_privilege_escalation = true;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [
+          "administer-host"
+          "administer-network"
+          "raw-network"
+          "administer-resource-limits"
+          "inspect-processes"
+        ];
+      };
+      resource_control_delegation = true;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = [
+        "ipv4"
+        "ipv6"
+        "route-control"
+        "raw-packet"
+        "local"
+      ];
+      memory_pressure_adjustment = 0;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
+    };
+    consumerInstance = "service";
+    service = "k3s";
+    lifecycle = {
+      description = "${roleSpec.description} (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/k3s-role-start";
+            arguments = [
+              (resultOf "configuration-base" "planned-path")
+              (resultOf "token" "credential-path")
             ];
           };
-          resource_control_delegation = true;
-          resource_control_access = "host";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = true;
-          isolation_domains = [];
-          network_families = [
-            "ipv4"
-            "ipv6"
-            "route-control"
-            "raw-packet"
-            "local"
-          ];
-          memory_pressure_adjustment = 0;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "privileged";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      service = "k3s";
-      enabled = true;
-      lifecycle = {
-        description = "${roleSpec.description} (${packageName} ${packageVersion})";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/k3s-role-start";
-              arguments = [
-                (resultOf "configuration-base" "planned-path")
-                (resultOf "token" "credential-path")
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "always";
-        restart_delay_millis = 5000;
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        start_timeout_unbounded = true;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after =
-          [
-            (resultOf "network" "resource")
-            (resultOf "kernel-modules" "resource")
-            (resultOf "kernel-tunables" "resource")
-            (resultOf "configuration-base" "resource")
-          ]
-          ++ policyReadiness;
-        before = [];
-        requires =
-          [
-            (resultOf "kernel-modules" "resource")
-            (resultOf "kernel-tunables" "resource")
-            (resultOf "configuration-base" "resource")
-          ]
-          ++ policyReadiness;
-        wants = [(resultOf "network" "resource")];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "main-process";
-        timeout_millis = 90000;
-      };
-      resources = {
-        open_files = {
-          kind = "maximum";
-          value = 1048576;
-        };
-        processes.kind = "unbounded";
-        tasks.kind = "unbounded";
-      };
-      environment = {
-        variables = desiredEnv;
-        search_path = map (package: lib.abilities.packageOutput {inherit package;}) [
-          "k3s"
-          "containerd"
-          "runc"
-          "cni-plugins"
-          "iptables"
-          "ipset"
-          "conntrack-tools"
-          "socat"
-          "ethtool"
-          "iproute2"
-          "util-linux"
-          "kmod"
-          "coreutils"
-        ];
-      };
-      directories.managed =
-        map
-        (path: {
-          inherit path;
-          purpose = "state";
-          mode = "0755";
-          retention = "persistent";
-        })
-        roleSpec.stateDirectories
-        ++ map
-        (path: {
-          inherit path;
-          purpose = "configuration";
-          mode = "0755";
-          retention = "persistent";
-        }) [
-          "rancher/k3s"
-          "rancher/node"
-        ];
-      configuration.views = [];
-      credentials.views = [
-        {
-          name = "token";
-          reference = resultOf "token" "credential-path";
-          encrypted =
-            if cfg.token == null
-            then false
-            else cfg.token.encrypted;
-          optional = false;
+          ignore_failure = false;
         }
       ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      start_timeout_unbounded = true;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after =
+        [
+          (resultOf "network" "resource")
+          (resultOf "kernel-modules" "resource")
+          (resultOf "kernel-tunables" "resource")
+          (resultOf "configuration-base" "resource")
+        ]
+        ++ policyReadiness;
+      before = [];
+      requires =
+        [
+          (resultOf "kernel-modules" "resource")
+          (resultOf "kernel-tunables" "resource")
+          (resultOf "configuration-base" "resource")
+        ]
+        ++ policyReadiness;
+      wants = [(resultOf "network" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    resources = {
+      open_files = {
+        kind = "maximum";
+        value = 1048576;
       };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0022";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "main-process";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths =
-          map (entry: {
-            source = entry.path;
-            mode =
-              if entry.mode == "rw"
-              then "read-write"
-              else "read-only";
-          })
-          roleSpec.hostPaths;
-        permit_core_dumps = true;
-      };
+      processes.kind = "unbounded";
+      tasks.kind = "unbounded";
+    };
+    environment = {
+      variables = desiredEnv;
+      search_path = map (package: lib.abilities.packageOutput {inherit package;}) [
+        "k3s"
+        "containerd"
+        "runc"
+        "cni-plugins"
+        "iptables"
+        "ipset"
+        "conntrack-tools"
+        "socat"
+        "ethtool"
+        "iproute2"
+        "util-linux"
+        "kmod"
+        "coreutils"
+      ];
+    };
+    directories.managed =
+      map
+      (path: {
+        inherit path;
+        purpose = "state";
+        mode = "0755";
+        retention = "persistent";
+      })
+      roleSpec.stateDirectories
+      ++ map
+      (path: {
+        inherit path;
+        purpose = "configuration";
+        mode = "0755";
+        retention = "persistent";
+      }) [
+        "rancher/k3s"
+        "rancher/node"
+      ];
+    configuration.views = [];
+    credentials.views = [
+      {
+        name = "token";
+        reference = resultOf "token" "credential-path";
+        encrypted =
+          if cfg.token == null
+          then false
+          else cfg.token.encrypted;
+        optional = false;
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0022";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "main-process";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths =
+        map (entry: {
+          source = entry.path;
+          mode =
+            if entry.mode == "rw"
+            then "read-write"
+            else "read-only";
+        })
+        roleSpec.hostPaths;
+      permit_core_dumps = true;
     };
   };
   objectController = serviceManagement.forProducer {
@@ -534,19 +514,17 @@
       contributions = {};
     };
   };
-  fragments =
+  producers =
     [
       network
       modules
       tunables
       ingressPolicy
       tokenCredential
-      service
       configurationController
     ]
     ++ lib.optional roleSpec.acceptForwardedTraffic forwardingPolicy
     ++ lib.optional serverRole objectController;
-  definitions = map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./configuration-interface.nix
@@ -704,68 +682,57 @@ in {
     };
   };
 
-  config = {
-    k3s.role = role;
+  config = lib.mkMerge [
+    {
+      k3s.role = role;
+      aos.services."k3s.service" = service // {enable = cfg.enable;};
+      aos.abilities.implementations = objectImplementations // configurationImplementations;
 
-    aos.abilities = lib.mkMerge (
-      [
+      assertions = [
         {
-          implementations = objectImplementations // configurationImplementations;
+          assertion =
+            !cfg.enable
+            || (
+              cfg.token
+              != null
+              && serviceManagement.credentialReferenceConfigured cfg.token
+            );
+          message = "k3s.token must reference a credential when k3s is enabled";
         }
-      ]
-      ++ (map (definition: definition.declarations) definitions)
-      ++ [
-        (mkIf cfg.enable (
-          lib.mkMerge (
-            [
-              {
-                instances =
-                  {service = {};}
-                  // {configuration-controller = {};}
-                  // lib.optionalAttrs serverRole {object-controller = {};};
-              }
-            ]
-            ++ map (definition: definition.configured) definitions
-          )
-        ))
-      ]
-    );
-
-    assertions = [
-      {
-        assertion =
-          !cfg.enable
-          || (
-            cfg.token
-            != null
-            && serviceManagement.credentialReferenceConfigured cfg.token
-          );
-        message = "k3s.token must reference a credential when k3s is enabled";
-      }
-      {
-        assertion = !cfg.enable || role != "worker" || cfg.serverUrl != null;
-        message = "k3s.serverUrl is required for the worker role";
-      }
-      {
-        assertion = cfg.serverUrl == null || builtins.match "https://.+" cfg.serverUrl != null;
-        message = "k3s.serverUrl must use HTTPS";
-      }
-      {
-        assertion = !cfg.server.clusterInit || role != "worker";
-        message = "k3s.server.clusterInit is not valid for the worker role";
-      }
-      {
-        assertion = !cfg.server.clusterInit || cfg.serverUrl == null;
-        message = "k3s.server.clusterInit cannot be combined with k3s.serverUrl";
-      }
-      {
-        assertion = validLabels;
-        message = "k3s node label names and values must use Kubernetes label syntax";
-      }
-      {
-        assertion = builtins.all (taint: builtins.match taintRegex taint != null) cfg.node.taints;
-        message = "k3s.node.taints entries must use key[=value]:effect syntax";
-      }
-    ];
-  };
+        {
+          assertion = !cfg.enable || role != "worker" || cfg.serverUrl != null;
+          message = "k3s.serverUrl is required for the worker role";
+        }
+        {
+          assertion = cfg.serverUrl == null || builtins.match "https://.+" cfg.serverUrl != null;
+          message = "k3s.serverUrl must use HTTPS";
+        }
+        {
+          assertion = !cfg.server.clusterInit || role != "worker";
+          message = "k3s.server.clusterInit is not valid for the worker role";
+        }
+        {
+          assertion = !cfg.server.clusterInit || cfg.serverUrl == null;
+          message = "k3s.server.clusterInit cannot be combined with k3s.serverUrl";
+        }
+        {
+          assertion = validLabels;
+          message = "k3s node label names and values must use Kubernetes label syntax";
+        }
+        {
+          assertion = builtins.all (taint: builtins.match taintRegex taint != null) cfg.node.taints;
+          message = "k3s.node.taints entries must use key[=value]:effect syntax";
+        }
+      ];
+    }
+    (mkIf cfg.enable {
+      aos.abilities.instances =
+        {configuration-controller = {};}
+        // lib.optionalAttrs serverRole {object-controller = {};};
+    })
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
+  ];
 }
