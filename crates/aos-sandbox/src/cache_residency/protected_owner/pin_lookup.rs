@@ -64,15 +64,7 @@ impl CacheResidencyProtectedOwnerV1 {
         if let Some(previous) = previous
             && previous.lease_valid_until >= maximum_current_lease
         {
-            let current = recheck_cache_consumer_projection_v1(
-                source_journal,
-                acquisition.project(),
-                request,
-            )
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-            if current != *acquisition.consumer() {
-                return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
-            }
+            recheck_current_cache_consumer(source_journal, request, acquisition.consumer())?;
             let retained = self.retained_logical_pin(
                 acquisition.partition(),
                 acquisition.object(),
@@ -97,15 +89,7 @@ impl CacheResidencyProtectedOwnerV1 {
             transaction_id,
             vec![authority_request],
             |controller| {
-                let current = recheck_cache_consumer_projection_v1(
-                    source_journal,
-                    acquisition.project(),
-                    request,
-                )
-                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-                if current != *acquisition.consumer() {
-                    return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
-                }
+                recheck_current_cache_consumer(source_journal, request, acquisition.consumer())?;
                 let capability = controller
                     .capability(0)
                     .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
@@ -162,15 +146,7 @@ impl CacheResidencyProtectedOwnerV1 {
             transaction_id,
             vec![authority_request],
             |controller| {
-                let current = recheck_cache_consumer_projection_v1(
-                    source_journal,
-                    consumer.project(),
-                    request,
-                )
-                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-                if current != *consumer {
-                    return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
-                }
+                recheck_current_cache_consumer(source_journal, request, consumer)?;
                 controller.seal_logical_pin_release(&inventory, pin, operation)
             },
             handoff,
@@ -358,6 +334,20 @@ impl CacheResidencyProtectedOwnerV1 {
             Ok(released)
         })
     }
+}
+
+// The project selector comes from the exact expected consumer, not the caller.
+fn recheck_current_cache_consumer(
+    source_journal: &crate::Journal,
+    request: &crate::cli_model::DormantSandboxRequestKindV1,
+    expected: &RecheckedCacheConsumerV1,
+) -> Result<(), ProtectedDomainJournalErrorV1> {
+    let current = recheck_cache_consumer_projection_v1(source_journal, expected.project(), request)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    if current != *expected {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+    }
+    Ok(())
 }
 
 fn select_public_logical_pin_id(
