@@ -84,9 +84,11 @@ pub trait FindingExactCheckpointAuthenticator: Send + Sync {
 
     /// Replays the raw Trace for an assertion-failure retention attestation.
     ///
-    /// The repository cannot decode scheduler Trace leaves. Complete
-    /// assertion retention therefore requires the executor's typed verifier at
-    /// publication; later cold loads authenticate the immutable attestation.
+    /// The repository cannot decode scheduler Trace leaves. The producer
+    /// supplies prepared bytes before publication; the repository supplies
+    /// content-authenticated durable bytes at publication. Complete assertion
+    /// retention requires the executor's typed verifier in both stages; later
+    /// cold loads authenticate the immutable attestation.
     ///
     /// # Errors
     ///
@@ -96,6 +98,7 @@ pub trait FindingExactCheckpointAuthenticator: Send + Sync {
         &self,
         _checkpoint: crate::ExactCheckpointId,
         _boundary: &crate::FindingAssertionFailureBoundary,
+        _trace_bytes: &[u8],
         _scenario: ScenarioDefId,
         _scenario_artifact: ScenarioArtifactId,
         _configuration: ConfigurationId,
