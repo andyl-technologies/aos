@@ -13,8 +13,8 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
 use aos_sandbox_core::{
-    AttachmentId, ExecutionId, IncarnationId, ObjectDescriptor, OperationId, ProjectId, SandboxId,
-    SnapshotId, ViewId,
+    AttachmentId, ExecutionId, IncarnationId, NodeId, ObjectDescriptor, OperationId, ProjectId,
+    SandboxId, SnapshotId, ViewId,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -1401,6 +1401,7 @@ pub struct RecheckedCacheAcquisitionFenceV1 {
 pub struct RecheckedCacheRuntimeFenceV1 {
     sandbox: SandboxId,
     incarnation: IncarnationId,
+    node: NodeId,
     assignment_epoch: u64,
 }
 
@@ -1415,6 +1416,12 @@ impl RecheckedCacheRuntimeFenceV1 {
     #[must_use]
     pub const fn incarnation(&self) -> IncarnationId {
         self.incarnation
+    }
+
+    /// Returns the current observed assignment node.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.node
     }
 
     /// Returns the current observed assignment epoch.
@@ -1613,6 +1620,7 @@ fn validate_cache_consumer_projection(
             runtime = Some(RecheckedCacheRuntimeFenceV1 {
                 sandbox: SandboxId::from_bytes(exact_id(&attachment.sandbox_id)?),
                 incarnation: IncarnationId::from_bytes(exact_id(&observed.incarnation_id)?),
+                node: NodeId::from_bytes(exact_id(&observed.node_id)?),
                 assignment_epoch: attachment.assignment_epoch,
             });
         }
