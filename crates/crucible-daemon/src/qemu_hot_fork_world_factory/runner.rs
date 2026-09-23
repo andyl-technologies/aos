@@ -82,14 +82,19 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     SourceRecovery,
 }
 
-impl<F, D> std::fmt::Display for QemuHotForkWorldExecutionRunnerError<F, D> {
+impl<F: std::fmt::Display, D: std::fmt::Display> std::fmt::Display
+    for QemuHotForkWorldExecutionRunnerError<F, D>
+{
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PriorReconciliationPending => {
                 formatter.write_str("hot-fork world still awaits prior semantic reconciliation")
             }
-            Self::Factory(_) => {
-                formatter.write_str("construct production hot-fork world lifecycle")
+            Self::Factory(error) => {
+                write!(
+                    formatter,
+                    "construct production hot-fork world lifecycle: {error}"
+                )
             }
             Self::RuntimeBasisMismatch => formatter.write_str(
                 "production hot-fork world runtime basis differs from its worker reservation",
@@ -100,7 +105,7 @@ impl<F, D> std::fmt::Display for QemuHotForkWorldExecutionRunnerError<F, D> {
             Self::StartReplay(error) => {
                 write!(formatter, "apply production hot-fork branch start: {error}")
             }
-            Self::Driver(_) => formatter.write_str("drive production hot-fork world"),
+            Self::Driver(error) => write!(formatter, "drive production hot-fork world: {error}"),
             Self::UnsolicitedCheckpoint => {
                 formatter.write_str("production hot-fork driver returned an unsolicited checkpoint")
             }
