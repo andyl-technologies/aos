@@ -55,6 +55,84 @@ pub struct CacheOwnerLimitsV1 {
 }
 
 impl CacheOwnerLimitsV1 {
+    /// Derives one node-global physical owner envelope from protected quotas.
+    ///
+    /// The caller supplies only the separate heap-tier ceiling. Physical bytes,
+    /// resident entries, and pin obligations come from the complete protected
+    /// partition set. The negative cache is advisory and shares the resident
+    /// entry ceiling; it cannot expand correctness authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheOwnerErrorV1::InvalidLimits`] for absent, duplicate,
+    /// cross-node, invalid, or unrepresentable partition quotas.
+    pub fn from_node_quotas(
+        maximum_memory_bytes: u64,
+        quotas: impl IntoIterator<Item = super::NodeCacheQuotaV1>,
+    ) -> Result<Self, CacheOwnerErrorV1> {
+        let mut partitions = BTreeSet::new();
+        let mut node = None;
+        let mut maximum_disk_bytes = 0_u64;
+        let mut disk_low_water_bytes = 0_u64;
+        let mut maximum_positive_entries = 0_u64;
+        let mut maximum_pins = 0_u64;
+        let mut maximum_pinned_bytes = 0_u64;
+
+        for quota in quotas {
+            quota
+                .validate()
+                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?;
+            if !partitions.insert(*quota.partition.digest().as_bytes())
+                || node.is_some_and(|current| current != *quota.partition.node().as_bytes())
+            {
+                return Err(CacheOwnerErrorV1::InvalidLimits);
+            }
+            node = Some(*quota.partition.node().as_bytes());
+
+            let partition_pins = quota
+                .maximum_logical_pins
+                .checked_add(quota.maximum_source_retentions)
+                .and_then(|count| count.checked_add(quota.maximum_kernel_references))
+                .and_then(|count| count.checked_add(quota.maximum_backing_registrations))
+                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
+            maximum_disk_bytes = maximum_disk_bytes
+                .checked_add(quota.maximum_physical_bytes)
+                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
+            disk_low_water_bytes = disk_low_water_bytes
+                .checked_add(quota.low_water_bytes)
+                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
+            maximum_positive_entries = maximum_positive_entries
+                .checked_add(quota.maximum_resident_objects)
+                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
+            maximum_pins = maximum_pins
+                .checked_add(partition_pins)
+                .ok_or(CacheOwnerErrorV1::InvalidLimits)?;
+            // Each pin charges its object's bytes independently. Saturation
+            // keeps the owner bound representable without rejecting valid
+            // large protected quotas; checked runtime accounting still fails
+            // before u64 overflow.
+            maximum_pinned_bytes = maximum_pinned_bytes
+                .saturating_add(quota.maximum_physical_bytes.saturating_mul(partition_pins));
+        }
+
+        if partitions.is_empty() {
+            return Err(CacheOwnerErrorV1::InvalidLimits);
+        }
+        Self {
+            maximum_memory_bytes,
+            maximum_disk_bytes,
+            disk_low_water_bytes,
+            maximum_positive_entries: usize::try_from(maximum_positive_entries)
+                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?,
+            maximum_negative_entries: usize::try_from(maximum_positive_entries)
+                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?,
+            maximum_pins: usize::try_from(maximum_pins)
+                .map_err(|_| CacheOwnerErrorV1::InvalidLimits)?,
+            maximum_pinned_bytes,
+        }
+        .validate()
+    }
+
     fn validate(self) -> Result<Self, CacheOwnerErrorV1> {
         if self.maximum_memory_bytes == 0
             || self.maximum_disk_bytes == 0

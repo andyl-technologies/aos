@@ -856,6 +856,37 @@ impl CacheResidencyProtectedOwnerV1 {
         })
     }
 
+    /// Returns every authenticated node quota in the current protected replay.
+    ///
+    /// A node-global physical owner must derive its bounds from the complete
+    /// partition set, not from the partition named by one public request.
+    /// This is historical configuration, not pin or publication authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when protected time, authority, or full typed replay
+    /// cannot be validated at both ends of the observation.
+    pub fn reconstructed_node_quotas(
+        &mut self,
+    ) -> Result<Vec<super::NodeCacheQuotaV1>, CacheResidencyProtectedJournalErrorV1> {
+        let authority = Arc::clone(&self.authority);
+        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
+            let journal = self
+                .state_journal
+                .as_mut()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let projection =
+                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
+            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+            let quotas = inventories
+                .into_iter()
+                .map(|inventory| inventory.global.node_quota)
+                .collect();
+            refresh()?;
+            Ok(quotas)
+        })
+    }
+
     /// Finds the retained logical pin for one exact consumer and cache object.
     ///
     /// This query returns historical state, not current acquisition or drain
