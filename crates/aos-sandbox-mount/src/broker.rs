@@ -2553,17 +2553,7 @@ fn inventory_observation(value: &InstalledMountObservationV1) -> MountKernelObse
 }
 
 fn boot_fault_transaction(handle: [u8; 32], revision: u64) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(b"aos.mount.boot-fault.v1\0");
-    digest.update(handle);
-    digest.update(revision.to_le_bytes());
-    let output = digest.finalize();
-    let mut id = [0; 16];
-    id.copy_from_slice(&output[..16]);
-    if id == [0; 16] {
-        id[0] = 1;
-    }
-    id
+    derived_transaction_id(b"aos.mount.boot-fault.v1\0", handle, revision)
 }
 
 fn custody_fault_transaction(handle: [u8; 32], revision: u64) -> [u8; 16] {
@@ -2613,16 +2603,7 @@ fn validate_pending_action_state(action: MountAction, state: &MountResourceState
 }
 
 fn completion_transaction(request_digest: [u8; 32]) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.mount.completion.v1\0");
-    digest.update(request_digest);
-    let output = digest.finalize();
-    let mut id = [0; 16];
-    id.copy_from_slice(&output[..16]);
-    if id == [0; 16] {
-        id[0] = 1;
-    }
-    id
+    destination_slot_transaction(b"aos.sandbox.mount.completion.v1\0", &request_digest)
 }
 
 fn destination_slot_completion_transaction(request_digest: [u8; 32]) -> [u8; 16] {
@@ -2653,16 +2634,7 @@ fn destination_slot_transaction(domain: &[u8], identity: &[u8]) -> [u8; 16] {
 }
 
 fn intent_transaction(request_id: [u8; 16]) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(b"aos.sandbox.mount.intent.v1\0");
-    digest.update(request_id);
-    let output = digest.finalize();
-    let mut id = [0; 16];
-    id.copy_from_slice(&output[..16]);
-    if id == [0; 16] {
-        id[0] = 1;
-    }
-    id
+    destination_slot_transaction(b"aos.sandbox.mount.intent.v1\0", &request_id)
 }
 
 fn authority_refresh_transaction(
