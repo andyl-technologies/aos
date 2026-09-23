@@ -683,6 +683,7 @@
       # placing the exception after all Bazel-provided arguments.
       printf '%s\n' '  exec "$driver" "''${common_flags[@]}" "$@" -Wno-error=unknown-warning-option'
       printf '%s\n' 'fi'
+      printf '%s\n' 'export LD_PRELOAD="$TMPDIR/linker-mmap-sync.so''${LD_PRELOAD:+:$LD_PRELOAD}"'
       printf '%s\n' 'exec "$driver" "''${common_flags[@]}" "$@" \'
       printf '%s\n' '  -fuse-ld=lld \'
       printf '%s\n' '  -L"$target_libc/lib" -L"$target_gcc_dir" -L"$target_cxx_lib_dir" \'
@@ -1374,6 +1375,42 @@ in
                 test "$(grep -Fc 'if(SIZEOF_SSIZE_T STREQUAL "")' "$nghttp2_cmake")" = 1
                 sed -i 's/if(SIZEOF_SSIZE_T STREQUAL "")/if(WIN32 AND SIZEOF_SSIZE_T STREQUAL "")/' "$nghttp2_cmake"
 
+                # Bootstrap a linker that flushes mapped outputs, including
+                # intermediates created during external Go linking.
+                go_sdk="$TMPDIR/repo-overrides/go_sdk"
+                go_linker="$go_sdk/pkg/tool/linux_amd64/link"
+                test -x "$go_linker"
+                mv "$go_linker" "$go_linker.real"
+                printf '#!%s/bin/python3\n' '${buildPython}' > "$go_linker"
+                cat ${./envoy-patches/go-link-memfd.py} >> "$go_linker"
+                chmod +x "$go_linker"
+                ${buildPatch}/bin/patch -d "$go_sdk" -p1 < ${./envoy-patches/go-link-sync.patch}
+                (
+                  cd "$go_sdk/src"
+                  export HOME="$TMPDIR/go-link-bootstrap-home"
+                  export GOTOOLCHAIN=local GO111MODULE=off GOTELEMETRY=off GOENV=off
+                  mkdir -p "$HOME"
+                  "$go_sdk/bin/go" build -trimpath -ldflags=-buildid= \
+                    -o "$go_linker.patched" cmd/link
+                )
+                ${buildBinutils}/bin/readelf -h "$go_linker.patched" >/dev/null
+                mv "$go_linker.patched" "$go_linker"
+                rm "$go_linker.real"
+
+                # CEL's descriptor embedder is an exec tool. Generate the
+                # same initializer with AOS Python so it runs on the builder.
+                cel_embed_repo="$TMPDIR/repo-overrides/com_google_cel_cpp/bazel"
+                cel_embed_rule="$cel_embed_repo/cel_cc_embed.bzl"
+                cel_embed_build="$cel_embed_repo/BUILD"
+                test "$(grep -Fc '$(location //bazel:cel_cc_embed)' "$cel_embed_rule")" = 1
+                test "$(grep -Fc 'tools = ["//bazel:cel_cc_embed"]' "$cel_embed_rule")" = 1
+                cp ${./envoy-patches/cel-cc-embed.py} "$cel_embed_repo/cel-cc-embed.py"
+                sed -i \
+                  -e 's|$(location //bazel:cel_cc_embed)|${buildPython}/bin/python3 $(location //bazel:cel-cc-embed.py)|' \
+                  -e 's|tools = \["//bazel:cel_cc_embed"\]|tools = ["//bazel:cel-cc-embed.py"]|' \
+                  "$cel_embed_rule"
+                printf '\nexports_files(["cel-cc-embed.py"], visibility = ["//visibility:public"])\n' >> "$cel_embed_build"
+
                 for integer_header in envoy/common/random_generator.h \
                     envoy/stream_info/stream_id_provider.h; do
                   test -f "$integer_header"
@@ -1612,11 +1649,23 @@ in
                 # Create fake-bin with tools that GCC/Go need to find
                 mkdir -p "$TMPDIR/fake-bin"
 
-                # GCC's collect2 needs to find the linker (ld.lld since we use -fuse-ld=lld).
-                # Go's builder-cc wrapper restricts PATH, so collect2 can't find it normally.
-                # Provide symlinks and tell GCC via -B and COMPILER_PATH.
-                ln -sf ${buildLlvm}/bin/ld.lld "$TMPDIR/fake-bin/ld.lld"
-                ln -sf ${buildLlvm}/bin/ld.lld "$TMPDIR/fake-bin/ld"
+                # GCC's collect2 needs to find LLD inside Bazel's restricted
+                # PATH. Sync mapped linker output before it is unmapped.
+                (
+                  unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS NIX_CFLAGS_COMPILE NIX_LDFLAGS
+                  unset AOS_HARDENING_ENABLE
+                  unset C_INCLUDE_PATH LIBRARY_PATH PKG_CONFIG_PATH
+                  ${buildPackages.cc}/bin/cc -shared -fPIC -fuse-ld=bfd \
+                    -o "$TMPDIR/linker-mmap-sync.so" \
+                    ${./envoy-patches/linker-mmap-sync.c}
+                )
+                {
+                  printf '%s\n' '#!${buildBash}/bin/bash'
+                  printf '%s\n' 'export LD_PRELOAD="$TMPDIR/linker-mmap-sync.so''${LD_PRELOAD:+:$LD_PRELOAD}"'
+                  printf '%s\n' 'exec ${buildLlvm}/bin/ld.lld "$@"'
+                } > "$TMPDIR/fake-bin/ld.lld"
+                chmod +x "$TMPDIR/fake-bin/ld.lld"
+                ln -sf ld.lld "$TMPDIR/fake-bin/ld"
                 echo "build --linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
                 echo "build --host_linkopt=-B$TMPDIR/fake-bin" >> .bazelrc
                 echo "build --action_env=COMPILER_PATH=$TMPDIR/fake-bin" >> .bazelrc
@@ -1760,6 +1809,7 @@ in
 
         cp "$ENVOY_BIN" $out/bin/envoy
         chmod +x $out/bin/envoy
+        ${buildBinutils}/bin/readelf -h "$out/bin/envoy" >/dev/null
 
         ${
           if isLinuxCross
