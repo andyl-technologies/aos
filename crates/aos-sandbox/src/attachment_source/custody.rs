@@ -1315,7 +1315,7 @@ pub(super) fn record_current_attempt_with_dispatch<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    if packet.is_some() && kind != AttachmentSourceAttemptKindV1::Acquire {
+    if packet.is_some() && kind == AttachmentSourceAttemptKindV1::Consume {
         return Err(AttachmentSourceError::Conflict);
     }
     let history = CustodyHistory::load(journal)?;
@@ -1615,7 +1615,7 @@ fn validate_completion_action(
     }
 }
 
-fn decode_live_release(
+pub(super) fn decode_live_release(
     body: &[u8],
 ) -> Result<
     aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest,

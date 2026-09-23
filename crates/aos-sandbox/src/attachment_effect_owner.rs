@@ -28,7 +28,8 @@ use crate::attachment_source::{
     self, AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
     CurrentAttachmentSourcePlanV1, DurableAttachmentSourceCompletionV1,
     DurableCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceAcquireV1,
-    PreparedCurrentAttachmentSourceDispatchV1,
+    PreparedCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceReleaseDispatchV1,
+    PreparedCurrentAttachmentSourceReleaseV1,
 };
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
@@ -461,6 +462,109 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         if !matches!(
             plan.action(),
             AttachmentSourceActionV1::CompleteAcquire { .. }
+        ) {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let attachment = plan.desired().intent().id();
+        let attempt = attachment_source::recover_open_attempt(self.journal, attachment)?
+            .ok_or(AttachmentSourceError::Conflict)?;
+        attachment_source::record_completion(self.journal, attempt, plan, clock)
+    }
+
+    /// Prepares an exact current source Release request after resource drain.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale source, Host, or ownership state, invalid deadline, or a
+    /// source action other than Release.
+    pub fn prepare_current_source_release<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        operation_id: OperationId,
+        deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentSourceReleaseV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::prepare_current_release(
+            self.journal,
+            plan,
+            operation_id,
+            deadline_boottime_nanoseconds,
+            clock,
+        )
+    }
+
+    /// Builds the independent Mount plan for one exact protected Release.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed source or ownership state and invalid plan bounds.
+    pub fn current_source_release_plan<T>(
+        &mut self,
+        prepared: &PreparedCurrentAttachmentSourceReleaseV1,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.plan_at(self.journal, mount_revocation_scope, clock)
+    }
+
+    /// Binds an independent signed Mount plan to an exact Release request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected state or substituted Mount signature, scope,
+    /// grant, or request template.
+    pub fn bind_current_source_release<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentSourceReleaseV1,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentSourceReleaseDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.bind_signed_plan(self.journal, signed_plan, clock)
+    }
+
+    /// Atomically records exact Release custody and signed Mount packet.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed Host or Mount authority, a wrong packet, predecessor
+    /// conflict, or failed protected commit and readback.
+    pub fn admit_current_source_release<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentSourceReleaseDispatchV1,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.admit_current(self.journal, clock)
+    }
+
+    /// Closes exact Release custody only after fresh Released Mount inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Released source plan, missing exact durable attempt,
+    /// stale Host or paired inventory, or failed protected completion commit.
+    pub fn complete_current_source_release<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<DurableAttachmentSourceCompletionV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if !matches!(
+            plan.action(),
+            AttachmentSourceActionV1::CompleteRelease { .. }
         ) {
             return Err(AttachmentSourceError::Conflict);
         }

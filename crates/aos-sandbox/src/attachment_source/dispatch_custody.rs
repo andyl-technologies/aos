@@ -1,4 +1,4 @@
-//! Atomic exact-packet custody for authenticated Mount source Acquire.
+//! Atomic exact-packet custody for authenticated Mount source effects.
 //!
 //! ```text
 //! AOSASD01 | operation-id:16 | source-attempt-digest:32 |
@@ -11,6 +11,7 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceRequest, BrokerMethod, BrokerRequestEnvelope,
+    ReleaseMountSourceAcquisitionRequest,
 };
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -19,14 +20,13 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 };
 use aos_sandbox_protocol::{
     decode_acquire_mount_source_response, decode_historical_acquire_mount_source_request,
-    mount_source_acquisition_request_digest_v1,
+    decode_release_mount_source_acquisition_response, mount_source_acquisition_request_digest_v1,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::custody::{
-    AttachmentSourceAttemptKindV1, AttemptRecord, CustodyHistory,
-    DurableAttachmentSourceAttemptV1,
+    AttachmentSourceAttemptKindV1, AttemptRecord, CustodyHistory, DurableAttachmentSourceAttemptV1,
 };
 use super::planning::AttachmentSourceError;
 use crate::BrokerDispatchAttemptV1;
@@ -55,6 +55,12 @@ pub struct DurableCurrentAttachmentSourceDispatchV1 {
 }
 
 impl DurableCurrentAttachmentSourceDispatchV1 {
+    /// Returns the exact Mount source effect retained by this token.
+    #[must_use]
+    pub const fn kind(&self) -> AttachmentSourceAttemptKindV1 {
+        self.source.record.kind
+    }
+
     /// Borrows the exact durable source-custody attempt.
     #[must_use]
     pub const fn source_attempt(&self) -> &DurableAttachmentSourceAttemptV1 {
@@ -97,7 +103,7 @@ impl DurableCurrentAttachmentSourceDispatchV1 {
         Ok(())
     }
 
-    /// Validates one terminal signed Acquire outcome without claiming readiness.
+    /// Validates one terminal signed source outcome without claiming readiness.
     ///
     /// A later fresh paired Mount inventory must confirm Active custody before
     /// the protected source completion may be recorded.
@@ -110,8 +116,17 @@ impl DurableCurrentAttachmentSourceDispatchV1 {
         &self,
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<(), AttachmentSourceError> {
+        let method = match self.source.record.kind {
+            AttachmentSourceAttemptKindV1::Acquire => {
+                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            }
+            AttachmentSourceAttemptKindV1::Release => {
+                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            }
+            AttachmentSourceAttemptKindV1::Consume => return Err(AttachmentSourceError::Conflict),
+        };
         if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
-            || outcome.method() != BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            || outcome.method() != method
             || outcome.request().exact_body() != self.dispatch.body()
         {
             return Err(AttachmentSourceError::Conflict);
@@ -122,11 +137,24 @@ impl DurableCurrentAttachmentSourceDispatchV1 {
                 return Err(AttachmentSourceError::Faulted);
             }
         };
-        let request = decode_historical_acquire_mount_source_request(self.dispatch.body())
-            .map_err(|_| AttachmentSourceError::Protocol)?;
-        let response = decode_acquire_mount_source_response(exact_body, request.request())
-            .map_err(|_| AttachmentSourceError::Protocol)?;
-        if response.acquisition_id() != self.source.acquisition_id().as_bytes() {
+        let acquisition_id = match self.source.record.kind {
+            AttachmentSourceAttemptKindV1::Acquire => {
+                let request = decode_historical_acquire_mount_source_request(self.dispatch.body())
+                    .map_err(|_| AttachmentSourceError::Protocol)?;
+                let response = decode_acquire_mount_source_response(exact_body, request.request())
+                    .map_err(|_| AttachmentSourceError::Protocol)?;
+                *response.acquisition_id()
+            }
+            AttachmentSourceAttemptKindV1::Release => {
+                let request = super::custody::decode_live_release(self.dispatch.body())?;
+                let response =
+                    decode_release_mount_source_acquisition_response(exact_body, request.request())
+                        .map_err(|_| AttachmentSourceError::Protocol)?;
+                *response.acquisition_id()
+            }
+            AttachmentSourceAttemptKindV1::Consume => return Err(AttachmentSourceError::Conflict),
+        };
+        if acquisition_id != *self.source.acquisition_id().as_bytes() {
             return Err(AttachmentSourceError::Conflict);
         }
         Ok(())
@@ -235,7 +263,7 @@ impl DispatchRecord {
     }
 
     fn validate(&self, attempt: &AttemptRecord) -> Result<(), AttachmentSourceError> {
-        if attempt.kind != AttachmentSourceAttemptKindV1::Acquire
+        if attempt.kind == AttachmentSourceAttemptKindV1::Consume
             || self.operation_id != attempt.operation_id
             || self.source_attempt_digest != attempt.digest
             || self.packet.is_empty()
@@ -251,14 +279,38 @@ impl DispatchRecord {
             .authorization
             .as_option()
             .ok_or(AttachmentSourceError::CorruptState)?;
-        let request = AcquireMountSourceRequest::decode_from_slice(&envelope.body)
-            .map_err(|_| AttachmentSourceError::CorruptState)?;
-        let header = request
-            .header
-            .as_option()
-            .ok_or(AttachmentSourceError::CorruptState)?;
+        let (method, request_id) = match attempt.kind {
+            AttachmentSourceAttemptKindV1::Acquire => {
+                let request = AcquireMountSourceRequest::decode_from_slice(&envelope.body)
+                    .map_err(|_| AttachmentSourceError::CorruptState)?;
+                let header = request
+                    .header
+                    .as_option()
+                    .ok_or(AttachmentSourceError::CorruptState)?;
+                (
+                    BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+                    header.request_id.clone(),
+                )
+            }
+            AttachmentSourceAttemptKindV1::Release => {
+                let request =
+                    ReleaseMountSourceAcquisitionRequest::decode_from_slice(&envelope.body)
+                        .map_err(|_| AttachmentSourceError::CorruptState)?;
+                let header = request
+                    .header
+                    .as_option()
+                    .ok_or(AttachmentSourceError::CorruptState)?;
+                (
+                    BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+                    header.request_id.clone(),
+                )
+            }
+            AttachmentSourceAttemptKindV1::Consume => {
+                return Err(AttachmentSourceError::CorruptState);
+            }
+        };
         if envelope.encode_to_vec() != self.packet
-            || envelope.method.as_known() != Some(BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE)
+            || envelope.method.as_known() != Some(method)
             || envelope.body != attempt.request_body
             || !envelope.descriptors.is_empty()
             || !envelope.signed_session_request.is_empty()
@@ -267,7 +319,7 @@ impl DispatchRecord {
             || authorization.broker_plan_signature.is_empty()
             || authorization.ownership_lease.is_empty()
             || authorization.ownership_lease_signature.is_empty()
-            || header.request_id != attempt.operation_id
+            || request_id.as_slice() != attempt.operation_id
             || mount_source_acquisition_request_digest_v1(&envelope.body).as_bytes()
                 != &attempt.request_digest
         {
@@ -386,5 +438,30 @@ mod tests {
         let mut envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
         envelope.authorization = Default::default();
         assert!(DispatchRecord::new(&attempt, envelope.encode_to_vec()).is_err());
+    }
+
+    #[test]
+    fn release_sidecar_requires_exact_release_method_and_body() {
+        let (mut attempt, packet) = fixture();
+        let mut envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
+        let request = ReleaseMountSourceAcquisitionRequest {
+            header: Some(RequestHeader {
+                request_id: vec![1; 16],
+                deadline_boottime_nanoseconds: 7,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        attempt.kind = AttachmentSourceAttemptKindV1::Release;
+        attempt.request_body = request.encode_to_vec();
+        attempt.request_digest =
+            *mount_source_acquisition_request_digest_v1(&attempt.request_body).as_bytes();
+        envelope.body = attempt.request_body.clone();
+        assert!(DispatchRecord::new(&attempt, envelope.encode_to_vec()).is_err());
+
+        envelope.method = BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION.into();
+        let record = DispatchRecord::new(&attempt, envelope.encode_to_vec()).unwrap();
+        record.validate(&attempt).unwrap();
     }
 }
