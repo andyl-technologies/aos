@@ -44,7 +44,7 @@
     source = resultOf "encrypted-swap-format" "formatted-path";
   };
   fragments = [device mapping format swap];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
   configured =
     config.aos.abilities.environment
     != null
@@ -91,13 +91,13 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf (cfg.enable && configured) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
       );
     })
   ];

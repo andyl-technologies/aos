@@ -422,14 +422,14 @@ in {
         }
       ];
       aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
+        (fragment: (serviceManagement.splitDefinition fragment).declarations)
         allFragments);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [{instances.aos-registry-server = {};}]
         ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
+        (fragment: (serviceManagement.splitDefinition fragment).configured)
         enabledFragments
       );
     })

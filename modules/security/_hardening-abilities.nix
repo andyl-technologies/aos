@@ -24,7 +24,7 @@
       dependencies = [];
     };
   };
-  tunables = serviceManagement.splitContribution kernelTunables;
+  tunables = serviceManagement.splitDefinition kernelTunables;
   configured =
     enable
     && config.aos.abilities.environment

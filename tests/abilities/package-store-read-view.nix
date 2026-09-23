@@ -38,8 +38,8 @@
     enableAbilitySelection = true;
     modules = [
       ../../modules/abilities/default.nix
-      ../../modules/base/_kernel-parameter-contributions.nix
-      ../../modules/base/_manager-contributions.nix
+      ../../modules/base/_kernel-command-line-options.nix
+      ../../modules/base/_manager-selection.nix
       ../../modules/image/_platform.nix
       {
         options.system.build.staticAbilityContract = lib.mkOption {

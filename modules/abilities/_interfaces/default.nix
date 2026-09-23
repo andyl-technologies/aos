@@ -1,8 +1,8 @@
 ##! Auto-discovered canonical core ability interface modules.
 ##!
 ##! Each sibling module owns one provider-neutral interface family. Its
-##! ordinary module contribution is authoritative; the library view exposes
-##! constructors and typed schemas derived beside that same contribution.
+##! ordinary module definition is authoritative; the library view exposes
+##! constructors and typed schemas derived beside that same definition.
 args: let
   entries = builtins.readDir ./.;
   moduleFiles = builtins.filter (
@@ -27,7 +27,7 @@ args: let
         else if !(builtins.isAttrs (bundle.readView or null))
         then throw "core ability interface module '${bundle.name}' has no library read view"
         else if !(builtins.isAttrs (bundle.module or null))
-        then throw "core ability interface module '${bundle.name}' has no module contribution"
+        then throw "core ability interface module '${bundle.name}' has no module definition"
         else if builtins.hasAttr bundle.name result
         then throw "duplicate core ability interface library name '${bundle.name}'"
         else result // {${bundle.name} = bundle;}

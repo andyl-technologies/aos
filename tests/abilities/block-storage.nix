@@ -43,7 +43,7 @@
       inherit lib;
       modules = [
         ../../modules/abilities/default.nix
-        ../../modules/_package-contributions.nix
+        ../../modules/_package-domain-options.nix
         {
           options.system.build.staticAbilityContract = lib.mkOption {
             type = lib.types.package;

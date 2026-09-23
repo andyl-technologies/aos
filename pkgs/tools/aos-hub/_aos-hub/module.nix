@@ -178,8 +178,8 @@
     tls,
   }:
     serviceManagement.forService {
-      featureContributions = [
-        (serviceManagement.featureContribution {
+      featureRequests = [
+        (serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -415,7 +415,7 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
+        (fragment: (serviceManagement.splitDefinition fragment).declarations)
         potentialFragments);
 
       assertions = [
@@ -453,7 +453,7 @@ in {
       aos.abilities = lib.mkMerge (
         [{instances.service = {};}]
         ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
+        (fragment: (serviceManagement.splitDefinition fragment).configured)
         configuredFragments
       );
     })

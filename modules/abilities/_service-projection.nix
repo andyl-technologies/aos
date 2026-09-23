@@ -4,7 +4,7 @@
   lib,
   name,
   consumerInstance ? null,
-  featureContributions ? [],
+  featureRequests ? [],
 }: let
   service = config.aos.services.${name};
   nameParts = lib.splitString "." name;
@@ -28,22 +28,22 @@
     // lib.filterAttrs
     (field: value: builtins.hasAttr field serviceFields && value != null)
     service;
-  contribution =
+  definition =
     if service.lifecycle == null
     then throw "Service '${name}' needs a lifecycle declaration before it can consume service abilities."
     else
       serviceManagement.forService {
         consumerInstance = localConsumerInstance;
-        inherit declaration featureContributions;
+        inherit declaration featureRequests;
         serviceTypes = serviceManagement.types;
       };
 in
   lib.mkMerge [
-    {aos.abilities.requirementTemplates = contribution.requirementTemplates;}
+    {aos.abilities.requirementTemplates = definition.requirementTemplates;}
     (lib.mkIf (service.enable && config.aos.abilities.environment != null) {
       aos.abilities = {
         instances.${localConsumerInstance} = {};
-        requests = contribution.requests;
+        requests = definition.requests;
       };
     })
   ]

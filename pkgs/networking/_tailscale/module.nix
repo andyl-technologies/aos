@@ -33,8 +33,8 @@
     device = "/dev/net/tun";
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -161,7 +161,7 @@
       };
     };
   };
-  contributions = builtins.map serviceManagement.splitContribution [
+  definitions = builtins.map serviceManagement.splitDefinition [
     networkReadiness
     tunnelDevice
     service
@@ -198,8 +198,8 @@ in {
 
   config = lib.mkMerge [
     (lib.mkMerge (builtins.map
-      (contribution: {aos.abilities = contribution.declarations;})
-      contributions))
+      (definition: {aos.abilities = definition.declarations;})
+      definitions))
     (lib.mkIf cfg.enable (lib.mkMerge (
       [
         {
@@ -224,8 +224,8 @@ in {
         }
       ]
       ++ builtins.map
-      (contribution: {aos.abilities = contribution.configured;})
-      contributions
+      (definition: {aos.abilities = definition.configured;})
+      definitions
     )))
   ];
 }

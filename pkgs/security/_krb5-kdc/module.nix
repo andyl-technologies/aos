@@ -377,8 +377,8 @@
   };
 
   initializeService = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -423,8 +423,8 @@
     };
   };
   kdcService = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -467,8 +467,8 @@
     };
   };
   administrationService = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -618,18 +618,18 @@ in {
         }
       ];
       aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
+        (fragment: (serviceManagement.splitDefinition fragment).declarations)
         staticFragments);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [{instances.krb5 = {};}]
         ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
+        (fragment: (serviceManagement.splitDefinition fragment).configured)
         enabledFragments
         ++ lib.optionals cfg.enableAdminServer [
-          (serviceManagement.splitContribution administrationIngress).configured
-          (serviceManagement.splitContribution administrationService).configured
+          (serviceManagement.splitDefinition administrationIngress).configured
+          (serviceManagement.splitDefinition administrationService).configured
         ]
       );
     })

@@ -55,7 +55,7 @@
     (ownerService "configuration-evaluation")
     (ownerService "package-profile-convergence")
   ];
-  ownerContributions = builtins.map serviceManagement.splitContribution owners;
+  ownerContributions = builtins.map serviceManagement.splitDefinition owners;
   aosModule = {
     imports = [../../pkgs/tools/aos/_abilities/control-plane/module.nix];
     config.aos.abilities = lib.mkMerge (

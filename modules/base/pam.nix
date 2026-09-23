@@ -267,7 +267,7 @@
     )
     cfg.services;
 in {
-  imports = [./_pam-contributions.nix];
+  imports = [./_pam-service-options.nix];
 
   options.aos.pam = {
     enable = lib.mkOption {
@@ -342,7 +342,7 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.pam.services = config.aos.contributions.pamServices;}
+    {aos.pam.services = config.aos.pam.packageServices;}
     {environment.systemPackages = [pkgs.linux-pam];}
     (lib.mkIf cfg.enable {
       # Register every distinct non-empty limit set as an image-fixed config

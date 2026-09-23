@@ -89,7 +89,7 @@
       (resultOf "ingress" "resource")
     ];
   };
-  fragments = [content ingress];
+  producers = [content ingress];
 in {
   options.test-static-cache-server = {
     enable = lib.mkOption {
@@ -120,8 +120,8 @@ in {
       inherit config lib;
       name = "test-static-cache-server.main";
     })
-    (serviceManagement.projectContributions {
-      inherit config lib fragments;
+    (serviceManagement.producerModule {
+      inherit config lib producers;
       enabled = cfg.enable;
     })
   ];

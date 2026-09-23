@@ -19,24 +19,24 @@
   ...
 }: let
   selectedOutput = selector: let
-    package = pkgs.${selector.package} or (throw "unknown package in filesystem tree contribution: ${selector.package}");
+    package = pkgs.${selector.package} or (throw "unknown package in filesystem tree definition: ${selector.package}");
   in
     if selector.output == "out"
     then package
     else package.${selector.output} or (throw "package ${selector.package} has no ${selector.output} output");
-  treeContributions = config.aos.contributions.filesystemTrees;
-  treeTargets = builtins.map (entry: entry.target) treeContributions;
+  etcTrees = config.aos.filesystems.etcTrees;
+  treeTargets = builtins.map (entry: entry.target) etcTrees;
   uniqueTreeTargets = lib.unique treeTargets;
   uniquePackages = lib.uniqueBy (package: builtins.toString package);
-  treeContributionEntries =
+  etcTreeEntries =
     if builtins.length treeTargets != builtins.length uniqueTreeTargets
-    then throw "filesystem tree contributions must use distinct /etc target paths"
+    then throw "filesystem tree definitions must use distinct /etc target paths"
     else
       builtins.listToAttrs (builtins.map (entry: {
           name = entry.target;
           value.source = "${selectedOutput entry.source.artifact}/${entry.source.path}";
         })
-        treeContributions);
+        etcTrees);
   managerConfiguration = config.aos.manager.selected.configuration;
   managerConfigurationOutput = managerConfiguration.buildOutput {
     inherit (pkgs) runCommand writeTextFile;
@@ -76,7 +76,7 @@
   makeBinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/bin") pkgsList);
   makeSbinPath = pkgsList: builtins.concatStringsSep ":" (builtins.map (p: "${builtins.toString p}/sbin") pkgsList);
 in {
-  imports = [./_filesystem-tree-contributions.nix];
+  imports = [./_filesystem-tree-options.nix];
 
   options = {
     ## Assertions checked during system build. If any assertion is
@@ -429,7 +429,7 @@ in {
   };
 
   config = lib.mkMerge [
-    {environment.etc = treeContributionEntries;}
+    {environment.etc = etcTreeEntries;}
     {
       system.build.initrd = managerInitrd.artifact;
       system.build.initrdStaticAbilityContract = managerInitrd.staticAbilityContract;
@@ -670,7 +670,7 @@ in {
         # The login environment is rendered by image modules, but its bytes are
         # a projection of shared operator configuration. A package must not make
         # one of these global artifacts survive after that package is removed,
-        # so package-owned contributions fail closed instead of being promoted
+        # so package-owned definitions fail closed instead of being promoted
         # to host ownership.
         sharedArtifactOwner = description: owners: let
           uniqueOwners = lib.unique owners;

@@ -1,17 +1,17 @@
 ##! Projects producer declarations and configured requests in one module value.
-{splitContribution}: {
+{splitDefinition}: {
   config,
   lib,
-  fragments,
+  producers,
   enabled,
 }: let
-  contributions = builtins.map splitContribution fragments;
+  definitions = builtins.map splitDefinition producers;
   consumers = lib.unique (builtins.concatMap
-    (contribution:
+    (definition:
       builtins.map
       (request: request.consumer)
-      (builtins.attrValues (contribution.configured.requests or {})))
-    contributions);
+      (builtins.attrValues (definition.configured.requests or {})))
+    definitions);
   instances = builtins.listToAttrs (builtins.map
     (name: {
       inherit name;
@@ -21,14 +21,14 @@
 in
   lib.mkMerge [
     (lib.mkMerge (builtins.map
-      (contribution: {aos.abilities = contribution.declarations;})
-      contributions))
+      (definition: {aos.abilities = definition.declarations;})
+      definitions))
     (lib.mkIf (enabled && config.aos.abilities.environment != null) {
       aos.abilities = lib.mkMerge (
         [{inherit instances;}]
         ++ builtins.map
-        (contribution: contribution.configured)
-        contributions
+        (definition: definition.configured)
+        definitions
       );
     })
   ]

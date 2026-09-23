@@ -120,7 +120,7 @@ in
   assert config.aos.storage.managedMountPoints == ["/srv/data"];
   assert config.aos.storage.compressedSwapRecommended;
   assert config.aos.storage.hardwareMonitoringRecommended;
-  assert config.aos.contributions.kernelPackages.aos-zfs-provider
+  assert config.aos.kernel.externalPackages.aos-zfs-provider
   == [
     (lib.abilities.packageOutput {package = "zfs";})
   ];
@@ -142,5 +142,5 @@ in
   assert builtins.elem
   (builtins.head kernelIntegration.config.aos.kernel.modulePackages)
   kernelIntegration.config.environment.systemPackages;
-  assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.contributions.kernelParameters.aos-zfs-provider;
+  assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" config.aos.kernel.commandLineParts.aos-zfs-provider;
   assert requests."aos-zfs-provider:zfs-kernel-tunables".parameters.values."vm.defrag_mode" == "1"; true

@@ -113,7 +113,7 @@
       directory_mode = "0755";
     };
   };
-  fragments = [
+  producers = [
     bootIdentity
     deviceEvents
     initrdStageExecution
@@ -174,8 +174,8 @@ in {
       inherit config lib consumerInstance;
       name = "measured-var.aos-var-crypt";
     })
-    (serviceManagement.projectContributions {
-      inherit config lib fragments;
+    (serviceManagement.producerModule {
+      inherit config lib producers;
       enabled = cfg.enable && initrdStage;
     })
   ];

@@ -387,7 +387,7 @@
     fallback = null;
   };
 
-  featureContribution = {
+  featureRequest = {
     key,
     requirementAlias,
     description,
@@ -614,28 +614,28 @@
 
   # Package capability declarations remain visible when their configured
   # instances and requests are disabled.
-  splitContribution = contribution: let
+  splitDefinition = definition: let
     declarationFields = ["guarantees" "interfaces" "implementations" "requirementTemplates"];
     declarations = builtins.listToAttrs (builtins.concatMap (name:
-      if builtins.hasAttr name contribution
+      if builtins.hasAttr name definition
       then [
         {
           inherit name;
-          value = contribution.${name};
+          value = definition.${name};
         }
       ]
       else [])
     declarationFields);
   in {
     inherit declarations;
-    configured = builtins.removeAttrs contribution declarationFields;
+    configured = builtins.removeAttrs definition declarationFields;
   };
 
   forService = {
     serviceTypes,
     consumerInstance,
     declaration,
-    featureContributions ? [],
+    featureRequests ? [],
   }: let
     checked = validate serviceTypes declaration;
     staticTemplate =
@@ -680,13 +680,13 @@
         };
       })
       enabledFeatures);
-    featureKeys = builtins.map (feature: feature.key) featureContributions;
-    requirementAliases = builtins.map (feature: feature.requirementAlias) featureContributions;
+    featureKeys = builtins.map (feature: feature.key) featureRequests;
+    requirementAliases = builtins.map (feature: feature.requirementAlias) featureRequests;
     externalRequirementTemplates = builtins.listToAttrs (builtins.map (feature: {
         name = "${checked.service}-${feature.requirementAlias}";
         value = feature.requirement;
       })
-      featureContributions);
+      featureRequests);
     externalRequests = builtins.listToAttrs (builtins.map (feature: {
         name = "${checked.service}-${feature.key}";
         value = {
@@ -700,8 +700,8 @@
             // feature.parameters;
         };
       })
-      featureContributions);
-    contribution = {
+      featureRequests);
+    definition = {
       requirementTemplates = coreRequirementTemplates // externalRequirementTemplates;
       requests = coreRequests // externalRequests;
     };
@@ -710,7 +710,7 @@
     then throw "service '${checked.service}' has duplicate external feature keys"
     else if !uniqueBy "value" (builtins.map (value: {inherit value;}) requirementAliases)
     then throw "service '${checked.service}' has duplicate external feature requirements"
-    else contribution;
+    else definition;
 
   ## Derives a concrete instance from one checked static template declaration.
   instanceOf = {
@@ -776,7 +776,7 @@
       then throw "managed configuration '${declaration.name}' must pair each credential resource and path from one delivery request"
       else checked;
     interface = serviceInterfaces.managedConfiguration;
-    contribution = {
+    definition = {
       requirementTemplates.${interface.alias} = requirementFor interface interface.methods [];
       requests.${validated.name} = {
         requirement = interface.alias;
@@ -786,7 +786,7 @@
       };
     };
   in
-    contribution;
+    definition;
 
   forProducers = {
     consumerInstance,
@@ -814,7 +814,7 @@
         && source.output == "resource"
         && sourcePath.output == "planned-path")
       producers;
-    contribution =
+    definition =
       if !uniqueBy "key" producers
       then throw "producer request keys must be unique"
       else if !storageViewPairsValid
@@ -833,7 +833,7 @@
           producers);
       };
   in
-    contribution;
+    definition;
 
   forProducer = args:
     forProducers (
@@ -908,5 +908,5 @@
     requests = namedCredentials.requests // credentialDeliveries.requests;
   };
 in {
-  inherit credentialReferenceConfigured featureContribution featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
+  inherit credentialReferenceConfigured featureRequest featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitDefinition structuredSource validate valueFromStructuredSource;
 }

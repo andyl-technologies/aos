@@ -238,8 +238,8 @@
     ignore_failure = false;
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -402,7 +402,7 @@
     configuration
     service
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.containerd = {
     enable = mkOption {
@@ -490,12 +490,12 @@ in {
       ];
     }
     (lib.mkMerge (
-      builtins.map (contribution: {aos.abilities = contribution.declarations;}) contributions
+      builtins.map (definition: {aos.abilities = definition.declarations;}) definitions
     ))
     (lib.mkIf cfg.enable (
       lib.mkMerge (
         [{aos.abilities.instances.containerd = {};}]
-        ++ builtins.map (contribution: {aos.abilities = contribution.configured;}) contributions
+        ++ builtins.map (definition: {aos.abilities = definition.configured;}) definitions
       )
     ))
   ];

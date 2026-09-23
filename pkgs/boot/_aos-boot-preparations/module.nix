@@ -156,7 +156,7 @@
     runEtc
     configurationSeed
   ];
-  baseContributions = builtins.map serviceManagement.splitContribution baseFragments;
+  baseContributions = builtins.map serviceManagement.splitDefinition baseFragments;
   networkConfiguration = serviceManagement.forProducer {
     inherit consumerInstance;
     key = "bootstrap-network";
@@ -187,7 +187,7 @@
       prerequisites = [];
     };
   };
-  networkContribution = serviceManagement.splitContribution networkConfiguration;
+  networkContribution = serviceManagement.splitDefinition networkConfiguration;
 
   emptyDependencies = {
     prerequisites = [];
@@ -623,7 +623,7 @@
   handoffInitrdFragments = [initrdController initrdHandoffBarrier];
   handoffHostFragments = [localFilesystems hostStageReceived hostReceiver];
   lifecycleResourceFor = fragment: let
-    requests = (serviceManagement.splitContribution fragment).configured.requests or {};
+    requests = (serviceManagement.splitDefinition fragment).configured.requests or {};
     lifecycleRequests =
       builtins.filter
       (requestName: requests.${requestName}.requirement == interfaces.lifecycle.alias)
@@ -642,9 +642,9 @@
       (builtins.map lifecycleResourceFor (
         baseFragments ++ substrateFragments ++ handoffInitrdFragments
       )));
-  substrateContributions = builtins.map serviceManagement.splitContribution substrateFragments;
-  handoffInitrdContributions = builtins.map serviceManagement.splitContribution handoffInitrdFragments;
-  handoffHostContributions = builtins.map serviceManagement.splitContribution handoffHostFragments;
+  substrateContributions = builtins.map serviceManagement.splitDefinition substrateFragments;
+  handoffInitrdContributions = builtins.map serviceManagement.splitDefinition handoffInitrdFragments;
+  handoffHostContributions = builtins.map serviceManagement.splitDefinition handoffHostFragments;
 in {
   options.aos.boot.substrateServices = {
     enable = lib.mkOption {
@@ -713,7 +713,7 @@ in {
     {
       aos.abilities = lib.mkMerge (
         [handoffDeclaration networkContribution.declarations]
-        ++ builtins.map (contribution: contribution.declarations) (
+        ++ builtins.map (definition: definition.declarations) (
           baseContributions
           ++ substrateContributions
           ++ handoffInitrdContributions
@@ -724,25 +724,25 @@ in {
     (lib.mkIf initrdStage {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) baseContributions
+        ++ builtins.map (definition: definition.configured) baseContributions
       );
     })
     (lib.mkIf (initrdStage && cfg.enable) {
       aos.abilities = lib.mkMerge (
         [networkContribution.configured]
-        ++ builtins.map (contribution: contribution.configured) substrateContributions
+        ++ builtins.map (definition: definition.configured) substrateContributions
       );
     })
     (lib.mkIf (initrdStage && cfg.handoffEnabled) {
       aos.abilities = lib.mkMerge (
         [handoffRequest]
-        ++ builtins.map (contribution: contribution.configured) handoffInitrdContributions
+        ++ builtins.map (definition: definition.configured) handoffInitrdContributions
       );
     })
     (lib.mkIf (hostStage && cfg.handoffEnabled) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) handoffHostContributions
+        ++ builtins.map (definition: definition.configured) handoffHostContributions
       );
     })
   ];

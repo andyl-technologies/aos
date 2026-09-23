@@ -308,8 +308,8 @@
     serviceManagement.forService {
       inherit serviceTypes consumerInstance;
       declaration = builtins.removeAttrs declaration ["hardening"];
-      featureContributions = lib.optional (declaration ? hardening) (
-        serviceManagement.featureContribution {
+      featureRequests = lib.optional (declaration ? hardening) (
+        serviceManagement.featureRequest {
           key = "hardening";
           requirementAlias = "service-hardening";
           description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -694,7 +694,7 @@ in {
       ];
       aos.abilities = lib.mkMerge (
         builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
+        (fragment: (serviceManagement.splitDefinition fragment).declarations)
         potentialFragments
       );
     }
@@ -702,7 +702,7 @@ in {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
         ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
+        (fragment: (serviceManagement.splitDefinition fragment).configured)
         configuredFragments
       );
     })

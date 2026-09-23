@@ -14,7 +14,7 @@
   daemon = requests."audit:auditd-lifecycle".parameters;
   loader = requests."audit:audit-rules-lifecycle".parameters;
 in
-  assert config.aos.contributions.kernelParameters.audit == ["audit=1"];
+  assert config.aos.kernel.commandLineParts.audit == ["audit=1"];
   assert config.aos.abilities.runtimeChecks."audit:audit".description == "Audit policy checks";
   assert daemon.service == "auditd";
   assert daemon.execution_model == "foreground";

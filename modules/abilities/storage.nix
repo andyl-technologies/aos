@@ -11,14 +11,14 @@
   };
   canonicalReadiness = builtins.sort (
     left: right: builtins.toJSON left < builtins.toJSON right
-  ) (lib.unique (lib.concatLists (builtins.attrValues config.aos.storage.readinessContributions)));
+  ) (lib.unique (lib.concatLists (builtins.attrValues config.aos.storage.readinessByProvider)));
   canonicalMountPoints = builtins.sort builtins.lessThan (
-    lib.unique (lib.concatLists (builtins.attrValues config.aos.storage.mountPointContributions))
+    lib.unique (lib.concatLists (builtins.attrValues config.aos.storage.mountPointsByProvider))
   );
-  policyContributions = builtins.attrValues config.aos.storage.policyContributions;
+  policyByProvider = builtins.attrValues config.aos.storage.policyByProvider;
 in {
   options.aos.storage = {
-    mountPointContributions = lib.mkOption {
+    mountPointsByProvider = lib.mkOption {
       type = lib.types.attrsOf (lib.abilities.types.list {
         element = lib.abilities.types.executionPath;
         maxItems = 4096;
@@ -43,7 +43,7 @@ in {
       description = "Canonical mount points materialized by selected storage providers.";
     };
 
-    policyContributions = lib.mkOption {
+    policyByProvider = lib.mkOption {
       type = lib.types.attrsOf (lib.abilities.types.record {
         fields = {
           compressedSwapRecommended = lib.abilities.types.boolean;
@@ -70,7 +70,7 @@ in {
       description = "Whether a selected storage provider recommends hardware monitoring.";
     };
 
-    readinessContributions = lib.mkOption {
+    readinessByProvider = lib.mkOption {
       type = lib.types.attrsOf readinessList;
       default = {};
       internal = true;
@@ -100,8 +100,8 @@ in {
   };
 
   config.aos.storage = {
-    compressedSwapRecommended = builtins.any (policy: policy.compressedSwapRecommended) policyContributions;
-    hardwareMonitoringRecommended = builtins.any (policy: policy.hardwareMonitoringRecommended) policyContributions;
+    compressedSwapRecommended = builtins.any (policy: policy.compressedSwapRecommended) policyByProvider;
+    hardwareMonitoringRecommended = builtins.any (policy: policy.hardwareMonitoringRecommended) policyByProvider;
     managedMountPoints = canonicalMountPoints;
     readinessResources = canonicalReadiness;
   };

@@ -15,7 +15,7 @@ lib.evalModules {
   modules =
     [
       ../../modules/abilities/default.nix
-      ../../modules/_package-contributions.nix
+      ../../modules/_package-domain-options.nix
       module
       {
         options = {

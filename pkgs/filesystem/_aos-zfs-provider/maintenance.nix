@@ -252,7 +252,7 @@
     ++ lib.optionals cfg.trim.enable [trim trimSchedule]
     ++ lib.optionals cfg.healthCheck.enable [health healthSchedule]
     ++ lib.optionals cfg.metrics.enable [metrics metricsSchedule];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.serviceOptionModules.zfsMaintenance = lib.mkOption {
     type = lib.types.deferredModule;
@@ -344,10 +344,10 @@ in {
           message = "aos.services.zfsMaintenance requires aos.filesystems.zfs.enable";
         }
       ];
-      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions);
+      aos.abilities = lib.mkMerge (builtins.map (definition: definition.declarations) definitions);
     }
     (lib.mkIf (cfg.enable && zfs.enable) {
-      aos.abilities = lib.mkMerge (builtins.map (contribution: contribution.configured) contributions);
+      aos.abilities = lib.mkMerge (builtins.map (definition: definition.configured) definitions);
     })
   ];
 }

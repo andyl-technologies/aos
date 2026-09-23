@@ -36,7 +36,7 @@
       forwarding = {};
     };
   };
-  contribution = lib.abilities.interfaces.serviceManagement.splitContribution ruleset;
+  definition = lib.abilities.interfaces.serviceManagement.splitDefinition ruleset;
   port = abilityTypes.integer {
     minimum = 1;
     maximum = 65535;
@@ -96,11 +96,11 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = contribution.declarations;}
+    {aos.abilities = definition.declarations;}
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge [
         {instances.${consumerInstance} = {};}
-        contribution.configured
+        definition.configured
         {
           runtimeChecks.firewall = {
             description = "nftables firewall checks";

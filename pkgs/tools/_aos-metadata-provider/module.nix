@@ -328,13 +328,13 @@ in {
     lib.mkIf configured
     configuredAuthorization;
 
-  config.aos.contributions.initrdRuntimeFiles.aos-metadata-provider = lib.mkIf configured (
+  config.aos.initrdRuntime.files.aos-metadata-provider = lib.mkIf configured (
     lib.mapAttrs' (operator: keys:
       lib.nameValuePair "${operator}.pub" (keyFileContent keys))
     configKeys
   );
 
-  config.aos.contributions.initrdRuntimeArtifacts.aos-metadata-provider = lib.mkIf configured (
+  config.aos.initrdRuntime.artifacts.aos-metadata-provider = lib.mkIf configured (
     map
     (path:
       if abilityTypes.executionPath.check path

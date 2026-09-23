@@ -32,12 +32,12 @@
         kexec_timeout_millis = 60000;
       };
     };
-    contribution = serviceManagement.splitContribution request;
+    definition = serviceManagement.splitDefinition request;
   in {
     config.aos.abilities = lib.mkMerge [
       {instances.application = {};}
-      contribution.declarations
-      contribution.configured
+      definition.declarations
+      definition.configured
     ];
   };
   evaluate = {

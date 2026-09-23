@@ -53,7 +53,7 @@
       }
     ];
   };
-  fragments = [state];
+  producers = [state];
 in {
   options.desired-prune-test.enable = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -69,8 +69,8 @@ in {
       inherit config lib;
       name = "desired-prune-test.main";
     })
-    (serviceManagement.projectContributions {
-      inherit config lib fragments;
+    (serviceManagement.producerModule {
+      inherit config lib producers;
       enabled = cfg.enable;
     })
   ];

@@ -263,7 +263,7 @@
     consumerInstance = "consumer";
     declaration = minimalService;
   };
-  splitExpanded = serviceManagement.splitContribution expanded;
+  splitExpanded = serviceManagement.splitDefinition expanded;
   expandedWithReload = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "consumer";

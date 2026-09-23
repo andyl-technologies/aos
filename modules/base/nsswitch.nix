@@ -36,7 +36,7 @@
       };
     };
   };
-  contributionType = lib.types.submodule {
+  sourceType = lib.types.submodule {
     config._module.strict = true;
     options = {
       actions = lib.mkOption {
@@ -58,23 +58,23 @@
       };
     };
   };
-  baseContribution = database: source: order: {
+  baseSource = database: source: order: {
     inherit database source order;
     actions = [];
   };
-  baseContributions = {
-    passwd-files = baseContribution "passwd" "files" 100;
-    group-files = baseContribution "group" "files" 100;
-    shadow-files = baseContribution "shadow" "files" 100;
-    gshadow-files = baseContribution "gshadow" "files" 100;
-    hosts-files = baseContribution "hosts" "files" 100;
-    hosts-dns = baseContribution "hosts" "dns" 400;
-    networks-files = baseContribution "networks" "files" 100;
-    protocols-files = baseContribution "protocols" "files" 100;
-    services-files = baseContribution "services" "files" 100;
-    ethers-files = baseContribution "ethers" "files" 100;
-    rpc-files = baseContribution "rpc" "files" 100;
-    netgroup-files = baseContribution "netgroup" "files" 100;
+  baseSources = {
+    passwd-files = baseSource "passwd" "files" 100;
+    group-files = baseSource "group" "files" 100;
+    shadow-files = baseSource "shadow" "files" 100;
+    gshadow-files = baseSource "gshadow" "files" 100;
+    hosts-files = baseSource "hosts" "files" 100;
+    hosts-dns = baseSource "hosts" "dns" 400;
+    networks-files = baseSource "networks" "files" 100;
+    protocols-files = baseSource "protocols" "files" 100;
+    services-files = baseSource "services" "files" 100;
+    ethers-files = baseSource "ethers" "files" 100;
+    rpc-files = baseSource "rpc" "files" 100;
+    netgroup-files = baseSource "netgroup" "files" 100;
   };
   actionText = action: "[${lib.optionalString action.negated "!"}${lib.toUpper action.status}=${action.action}]";
   entriesFor = database:
@@ -82,11 +82,12 @@
     (left: right: left.order < right.order)
     (builtins.filter
       (entry: entry.database == database)
-      (builtins.attrValues cfg.contributions));
+      (builtins.attrValues cfg.sources));
   renderDatabase = database: let
     entries = entriesFor database;
     orders = builtins.map (entry: entry.order) entries;
-    tokens = builtins.concatMap
+    tokens =
+      builtins.concatMap
       (entry: [entry.source] ++ builtins.map actionText entry.actions)
       entries;
   in
@@ -100,20 +101,20 @@ in {
       default = true;
       description = "Whether to publish the aggregated NSS database configuration.";
     };
-    contributions = lib.mkOption {
-      type = lib.types.attrsOf contributionType;
+    sources = lib.mkOption {
+      type = lib.types.attrsOf sourceType;
       default = {};
       internal = true;
       contributable = true;
-      description = "Package-owned typed NSS source contributions.";
+      description = "Package-owned typed NSS source definitions.";
     };
   };
 
   config = lib.mkMerge [
-    {aos.nsswitch.contributions = baseContributions;}
+    {aos.nsswitch.sources = baseSources;}
     (lib.mkIf cfg.enable {
       environment.etc."nsswitch.conf".text = ''
-        # Generated from typed package NSS contributions. Do not edit.
+        # Generated from typed NSS source definitions. Do not edit.
         ${builtins.concatStringsSep "\n" (builtins.map renderDatabase databaseNames)}
       '';
     })

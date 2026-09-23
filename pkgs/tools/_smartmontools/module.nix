@@ -54,8 +54,8 @@
     };
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -160,7 +160,7 @@
     };
   };
   abilityFragments = [filesystems configuration service];
-  serviceContributions = builtins.map serviceManagement.splitContribution abilityFragments;
+  serviceContributions = builtins.map serviceManagement.splitDefinition abilityFragments;
   watchdog = serviceManagement.forProducer {
     consumerInstance = "watchdog";
     key = "manager-watchdog";
@@ -173,7 +173,7 @@
       kexec_timeout_millis = cfg.watchdogTimeout * 2000;
     };
   };
-  watchdogContribution = serviceManagement.splitContribution watchdog;
+  watchdogContribution = serviceManagement.splitDefinition watchdog;
 in {
   options.aos.monitoring.hardware = {
     enable = lib.mkOption {
@@ -214,13 +214,13 @@ in {
       aos.monitoring.hardware.enable = lib.mkDefault config.aos.storage.hardwareMonitoringRecommended;
       aos.abilities = lib.mkMerge (
         [watchdogContribution.declarations]
-        ++ builtins.map (contribution: contribution.declarations) serviceContributions
+        ++ builtins.map (definition: definition.declarations) serviceContributions
       );
     }
     (lib.mkIf (cfg.enable && cfg.smartd) {
       aos.abilities = lib.mkMerge (
         [{instances.service = {};}]
-        ++ builtins.map (contribution: contribution.configured) serviceContributions
+        ++ builtins.map (definition: definition.configured) serviceContributions
       );
     })
     (lib.mkIf (

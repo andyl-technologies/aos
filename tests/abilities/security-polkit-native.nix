@@ -66,7 +66,7 @@ in
   == "/etc/polkit-1/rules.d/10-aos.rules";
   assert requests."polkit:packaged-actions-file".parameters.destination
   == "/etc/polkit-1/actions/org.freedesktop.policykit.policy";
-  assert config.aos.contributions.pamServices."polkit-1"
+  assert config.aos.pam.packageServices."polkit-1"
   == {
     unixAuth = true;
     startSession = false;
@@ -81,7 +81,7 @@ in
   };
   assert config.aos.abilities.runtimeChecks."polkit:polkit".description
   == "polkit policy and privilege checks";
-  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
+  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.pam;
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "polkit-1/rules.d/10-aos.rules");
   assert !(config.environment.etc ? "polkit-1/actions/org.freedesktop.policykit.policy");

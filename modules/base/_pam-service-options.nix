@@ -1,7 +1,7 @@
-##! Package-authored PAM service contributions.
+##! Package-authored PAM service options.
 {lib, ...}: let
   types = lib.abilities.types;
-  contributionMap = import ../_package-contribution-map.nix {inherit lib;};
+  packageOwnedMap = import ../_package-owned-map.nix {inherit lib;};
   pamService = types.record {
     fields = {
       unixAuth = types.boolean;
@@ -21,8 +21,8 @@
     };
   };
 in {
-  options.aos.contributions.pamServices = lib.mkOption {
-    type = contributionMap pamService;
+  options.aos.pam.packageServices = lib.mkOption {
+    type = packageOwnedMap pamService;
     default = {};
     contributable = true;
     description = "Package-owned PAM service policies consumed by the host authentication module.";

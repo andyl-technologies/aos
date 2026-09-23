@@ -1,4 +1,4 @@
-##! Shared bounds for package-keyed feature contributions.
+##! Shared bounds for package-keyed domain options.
 {lib}: value:
 lib.abilities.types.map {
   keyMaxLength = 128;

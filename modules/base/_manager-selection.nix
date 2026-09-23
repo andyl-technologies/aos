@@ -1,32 +1,33 @@
 ##! Exact package-selected system manager projection.
 {lib, ...}: let
-  filesystemEntryType = lib.types.addCheck (lib.types.submodule {
-    config._module.strict = true;
-    options = {
-      kind = lib.mkOption {
-        type = lib.types.enum ["text" "symlink" "store-symlink"];
-        description = "Filesystem-entry representation.";
+  filesystemEntryType =
+    lib.types.addCheck (lib.types.submodule {
+      config._module.strict = true;
+      options = {
+        kind = lib.mkOption {
+          type = lib.types.enum ["text" "symlink" "store-symlink"];
+          description = "Filesystem-entry representation.";
+        };
+        mode = lib.mkOption {
+          type = lib.types.nullOr (lib.types.strMatching "[0-7]{3,4}");
+          default = null;
+          description = "Octal mode for an emitted text file.";
+        };
+        target = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Exact symlink target.";
+        };
+        text = lib.mkOption {
+          type = lib.types.nullOr lib.types.lines;
+          default = null;
+          description = "Exact emitted file contents.";
+        };
       };
-      mode = lib.mkOption {
-        type = lib.types.nullOr (lib.types.strMatching "[0-7]{3,4}");
-        default = null;
-        description = "Octal mode for an emitted text file.";
-      };
-      target = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Exact symlink target.";
-      };
-      text = lib.mkOption {
-        type = lib.types.nullOr lib.types.lines;
-        default = null;
-        description = "Exact emitted file contents.";
-      };
-    };
-  }) (entry:
-    if entry.kind == "text"
-    then entry.mode != null && entry.text != null && entry.target == null
-    else entry.target != null && entry.mode == null && entry.text == null);
+    }) (entry:
+      if entry.kind == "text"
+      then entry.mode != null && entry.text != null && entry.target == null
+      else entry.target != null && entry.mode == null && entry.text == null);
   executableScriptType = lib.types.submodule {
     config._module.strict = true;
     options = {

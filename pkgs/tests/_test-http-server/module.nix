@@ -98,7 +98,7 @@
       wants = [];
     };
   };
-  fragments = [content ingress];
+  producers = [content ingress];
 in {
   options.test-http-server = {
     enable = lib.mkOption {
@@ -129,8 +129,8 @@ in {
       inherit config lib;
       name = "test-http-server.main";
     })
-    (serviceManagement.projectContributions {
-      inherit config lib fragments;
+    (serviceManagement.producerModule {
+      inherit config lib producers;
       enabled = cfg.enable;
     })
   ];

@@ -80,8 +80,8 @@
     ignore_failure = false;
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -205,7 +205,7 @@
     };
   };
   fragments = [specification service];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.packageRuntime.packageProfile = {
     enable = lib.mkOption {
@@ -247,16 +247,16 @@ in {
             };
           }
         ]
-        ++ builtins.map (contribution: contribution.declarations) contributions
+        ++ builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf hostStage {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) (
+        ++ builtins.map (definition: definition.configured) (
           if cfg.enable
-          then contributions
-          else builtins.tail contributions
+          then definitions
+          else builtins.tail definitions
         )
       );
     })

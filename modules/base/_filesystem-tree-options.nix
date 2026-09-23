@@ -1,4 +1,4 @@
-##! Package-authored immutable filesystem-tree contributions.
+##! Package-authored immutable filesystem-tree options.
 {lib, ...}: let
   types = lib.abilities.types;
   filesystemTree = types.record {
@@ -8,7 +8,7 @@
     };
   };
 in {
-  options.aos.contributions.filesystemTrees = lib.mkOption {
+  options.aos.filesystems.etcTrees = lib.mkOption {
     type = types.list {
       element = filesystemTree;
       maxItems = 4096;

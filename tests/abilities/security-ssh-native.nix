@@ -108,14 +108,14 @@ in
     ];
     prerequisites = [];
   };
-  assert config.aos.contributions.pamServices.sshd
+  assert config.aos.pam.packageServices.sshd
   == {
     unixAuth = false;
     startSession = true;
     setLoginUid = true;
   };
   assert config.aos.abilities.runtimeChecks."openssh:ssh".description == "SSH server checks";
-  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
+  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.pam;
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "ssh/sshd_config");
   assert !(config.environment.etc ? "tmpfiles.d/aos-ssh.conf"); true

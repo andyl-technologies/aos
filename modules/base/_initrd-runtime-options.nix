@@ -6,7 +6,7 @@
   ...
 }: let
   types = lib.abilities.types;
-  contributionMap = import ../_package-contribution-map.nix {inherit lib;};
+  packageOwnedMap = import ../_package-owned-map.nix {inherit lib;};
   runtimeFileMap = types.map {
     keyMaxLength = 128;
     keySyntax = "local-key-v1";
@@ -29,9 +29,9 @@
     '';
 in {
   options = {
-    aos.contributions = {
-      initrdRuntimeArtifacts = lib.mkOption {
-        type = contributionMap (types.list {
+    aos.initrdRuntime = {
+      artifacts = lib.mkOption {
+        type = packageOwnedMap (types.list {
           element = types.executionPath;
           maxItems = 256;
           unique = true;
@@ -45,8 +45,8 @@ in {
         '';
       };
 
-      initrdRuntimeFiles = lib.mkOption {
-        type = contributionMap runtimeFileMap;
+      files = lib.mkOption {
+        type = packageOwnedMap runtimeFileMap;
         default = {};
         contributable = true;
         description = ''
@@ -60,10 +60,10 @@ in {
       type = lib.types.attrsOf lib.types.pathInStore;
       readOnly = true;
       internal = true;
-      description = "Immutable initrd file trees derived from package contributions.";
+      description = "Immutable initrd file trees derived from package file definitions.";
     };
   };
 
   config.aos.initrdRuntime.renderedFileTrees =
-    lib.mapAttrs runtimeFileTree config.aos.contributions.initrdRuntimeFiles;
+    lib.mapAttrs runtimeFileTree config.aos.initrdRuntime.files;
 }

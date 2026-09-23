@@ -1,10 +1,10 @@
 ##! Package-authored external kernel package requirements.
 {lib, ...}: let
   types = lib.abilities.types;
-  contributionMap = import ../_package-contribution-map.nix {inherit lib;};
+  packageOwnedMap = import ../_package-owned-map.nix {inherit lib;};
 in {
-  options.aos.contributions.kernelPackages = lib.mkOption {
-    type = contributionMap (types.list {
+  options.aos.kernel.externalPackages = lib.mkOption {
+    type = packageOwnedMap (types.list {
       element = types.packageOutputSelector;
       maxItems = 64;
       unique = true;

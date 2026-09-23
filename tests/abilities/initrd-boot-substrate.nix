@@ -9,7 +9,7 @@
     inherit lib;
     modules = [
       ../../modules/abilities/default.nix
-      ../../modules/_package-contributions.nix
+      ../../modules/_package-domain-options.nix
       {
         aos.abilities.environment = {
           authority = "test";

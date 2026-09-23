@@ -106,14 +106,14 @@
     integrityFailure
     setup
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf initrdStage {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];

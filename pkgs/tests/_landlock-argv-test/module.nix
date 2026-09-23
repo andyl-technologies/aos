@@ -6,7 +6,6 @@
 }: let
   cfg = config.landlock-argv-test;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   inherit (lib.abilities) resultOf;
 
   state = serviceManagement.forProducer {
@@ -19,55 +18,49 @@
       mode = "0750";
     };
   };
-  service = serviceManagement.forService {
-    inherit serviceTypes;
-    consumerInstance = "landlock-argv-test";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle = {
-        description = "AOS argument preservation test";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/landlock-argv-test-recorder";
-              arguments = [
-                (resultOf "state" "planned-path")
-                "plain"
-                "two words"
-                "semi;colon"
-                ''quote"inner''
-                "colon:value"
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      storage.mounts = [
+  serviceDefinition = {
+    lifecycle = {
+      description = "AOS argument preservation test";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
         {
-          name = "state";
-          source = resultOf "state" "planned-path";
-          access = "read-write";
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/landlock-argv-test-recorder";
+            arguments = [
+              (resultOf "state" "planned-path")
+              "plain"
+              "two words"
+              "semi;colon"
+              ''quote"inner''
+              "colon:value"
+            ];
+          };
+          ignore_failure = false;
         }
       ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
+    storage.mounts = [
+      {
+        name = "state";
+        source = resultOf "state" "planned-path";
+        access = "read-write";
+      }
+    ];
   };
-  fragments = [state service];
+  producers = [state];
 in {
   options.landlock-argv-test.enable = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -77,17 +70,15 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).declarations)
-        fragments);
+      aos.services."landlock-argv-test.main" = serviceDefinition // {enable = cfg.enable;};
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.landlock-argv-test = {};}]
-        ++ builtins.map
-        (fragment: (serviceManagement.splitContribution fragment).configured)
-        fragments
-      );
+    (serviceManagement.projectService {
+      inherit config lib;
+      name = "landlock-argv-test.main";
+    })
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
     })
   ];
 }

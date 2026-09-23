@@ -42,7 +42,7 @@
       );
     };
   };
-  contributions = builtins.map serviceManagement.splitContribution [
+  definitions = builtins.map serviceManagement.splitDefinition [
     kernelModules
     kernelTunables
   ];
@@ -52,12 +52,12 @@
     && config.aos.abilities.environment.stage == "host";
 in {
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf configured {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ lib.optional (moduleNames != []) (serviceManagement.splitContribution kernelModules).configured
-        ++ lib.optional (tunableValues != {}) (serviceManagement.splitContribution kernelTunables).configured
+        ++ lib.optional (moduleNames != []) (serviceManagement.splitDefinition kernelModules).configured
+        ++ lib.optional (tunableValues != {}) (serviceManagement.splitDefinition kernelTunables).configured
       );
     })
   ];

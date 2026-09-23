@@ -27,17 +27,17 @@
         maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
       };
     };
-  contributions = builtins.map serviceManagement.splitContribution [
+  definitions = builtins.map serviceManagement.splitDefinition [
     (wrapper "ping")
     (wrapper "ping6")
   ];
 in {
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf configured {
       aos.abilities = lib.mkMerge (
         [{instances.runtime = {};}]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];

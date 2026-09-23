@@ -27,8 +27,8 @@
     (owner:
       builtins.map
       (selector: {inherit owner selector;})
-      config.aos.contributions.kernelPackages.${owner})
-    (builtins.attrNames config.aos.contributions.kernelPackages);
+      config.aos.kernel.externalPackages.${owner})
+    (builtins.attrNames config.aos.kernel.externalPackages);
   kernelPackages = lib.uniqueBy builtins.toString (
     builtins.map
     (entry: (selectedPackage entry.owner entry.selector).override {kernel = config.system.build.kernel;})
@@ -37,7 +37,7 @@
 in {
   imports = [
     ./_kernel-abilities.nix
-    ./_kernel-package-contributions.nix
+    ./_kernel-package-options.nix
   ];
 
   options.aos.kernel = {

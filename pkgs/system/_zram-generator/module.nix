@@ -207,7 +207,7 @@
     })
     packagedUnit
   ];
-  contributions = builtins.map serviceManagement.splitContribution abilityFragments;
+  definitions = builtins.map serviceManagement.splitDefinition abilityFragments;
 in {
   options.aos.zram = {
     enable = lib.mkOption {
@@ -245,13 +245,13 @@ in {
         size = lib.mkIf config.aos.storage.compressedSwapRecommended (lib.mkDefault "min(ram / 8, 2048)");
       };
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) contributions
+        builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
         ++ [
           {
             runtimeChecks.zram = {

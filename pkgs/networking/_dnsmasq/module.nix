@@ -189,8 +189,8 @@
     prerequisites = [(resultOf "network-readiness" "resource")];
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -304,7 +304,7 @@
   };
 
   fragments = [runtimeStorage networkReadiness configuration ingress service];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.serviceOptionModules.dnsmasq = lib.mkOption {
     type = lib.types.deferredModule;
@@ -374,7 +374,7 @@ in {
             };
           }
         ]
-        ++ builtins.map (contribution: contribution.declarations) contributions
+        ++ builtins.map (definition: definition.declarations) definitions
       );
     }
     (lib.mkIf cfg.enable {
@@ -385,7 +385,7 @@ in {
             requests = listenerRequests;
           }
         ]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
         ++ [
           {
             runtimeChecks.dnsmasq = {

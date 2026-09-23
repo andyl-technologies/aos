@@ -65,13 +65,13 @@ in
   assert requests."refpolicy:semanage-config".parameters.destination == "/etc/selinux/semanage.conf";
   assert requests."refpolicy:early-system".parameters.milestone == "early-system";
   assert requests."refpolicy:runtime-entry-population".parameters.entries == [];
-  assert config.aos.contributions.kernelParameters.refpolicy
+  assert config.aos.kernel.commandLineParts.refpolicy
   == [
     "enforcing=0"
     "security=selinux"
     "selinux=1"
   ];
-  assert config.aos.contributions.filesystemTrees
+  assert config.aos.filesystems.etcTrees
   == [
     {
       target = "selinux/refpolicy/contexts";
@@ -82,7 +82,10 @@ in
     }
   ];
   assert config.aos.abilities.runtimeChecks."refpolicy:selinux".description == "SELinux checks";
-  assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.contributions;
+  assert lib.abilities.types.isPortableOptionTree {
+    inherit (evaluated.options.aos.kernel) commandLineParts;
+    inherit (evaluated.options.aos.filesystems) etcTrees;
+  };
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "selinux/config");
   assert !(config.environment.etc ? "selinux/semanage.conf"); true

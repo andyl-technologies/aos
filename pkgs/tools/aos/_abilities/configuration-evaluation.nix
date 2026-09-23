@@ -86,8 +86,8 @@
   };
   storeViewResource = resultOf "package-store-read-view" "resource";
   registrySynchronization = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -331,8 +331,8 @@
     ];
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -544,10 +544,10 @@
       then throw "measured boot requires aos.packageRuntime.configurationEvaluation.pcrPublicKey"
       else measurementFragments
     );
-  baseContributions = builtins.map serviceManagement.splitContribution declaredFragments;
-  storeDatabaseContribution = serviceManagement.splitContribution storeDatabase;
-  storeViewContribution = serviceManagement.splitContribution storeView;
-  contributions = builtins.map serviceManagement.splitContribution (configuredFragments ++ [storeDatabase storeView]);
+  baseContributions = builtins.map serviceManagement.splitDefinition declaredFragments;
+  storeDatabaseContribution = serviceManagement.splitDefinition storeDatabase;
+  storeViewContribution = serviceManagement.splitDefinition storeView;
+  definitions = builtins.map serviceManagement.splitDefinition (configuredFragments ++ [storeDatabase storeView]);
 in {
   options.aos.packageRuntime.configurationEvaluation = {
     enable = lib.mkOption {
@@ -606,7 +606,7 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge (
-        builtins.map (contribution: contribution.declarations) baseContributions
+        builtins.map (definition: definition.declarations) baseContributions
         ++ lib.optionals cfg.enable [
           storeDatabaseContribution.declarations
           storeViewContribution.declarations
@@ -616,7 +616,7 @@ in {
     (lib.mkIf (hostStage && cfg.enable) {
       aos.abilities = lib.mkMerge (
         [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (contribution: contribution.configured) contributions
+        ++ builtins.map (definition: definition.configured) definitions
       );
     })
   ];

@@ -287,7 +287,7 @@
     stageZfsCredential
     transactionStorageMount
   ];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.boot.storageServices = {
     espDevices = lib.mkOption {
@@ -350,7 +350,7 @@ in {
   config = lib.mkMerge [
     {
       aos.abilities = lib.mkMerge [
-        (lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions))
+        (lib.mkMerge (builtins.map (definition: definition.declarations) definitions))
         {
           requirementTemplates.${transactionStorageAlias} = {
             description = "Requires the selected ESP-backed initrd transaction journal.";
@@ -368,23 +368,23 @@ in {
     (lib.mkIf (stage == "host") {
       aos.abilities = lib.mkMerge [
         {instances.${consumerInstance} = {};}
-        (serviceManagement.splitContribution localFilesystems).configured
-        (serviceManagement.splitContribution multiUser).configured
-        (serviceManagement.splitContribution espReady).configured
-        (serviceManagement.splitContribution imageBootCommitted).configured
-        (serviceManagement.splitContribution mountEsp).configured
-        (serviceManagement.splitContribution syncEsps).configured
+        (serviceManagement.splitDefinition localFilesystems).configured
+        (serviceManagement.splitDefinition multiUser).configured
+        (serviceManagement.splitDefinition espReady).configured
+        (serviceManagement.splitDefinition imageBootCommitted).configured
+        (serviceManagement.splitDefinition mountEsp).configured
+        (serviceManagement.splitDefinition syncEsps).configured
       ];
     })
     (lib.mkIf (stage == "initrd" && cfg.zfs.enable) {
       aos.abilities = lib.mkMerge [
         {instances.${consumerInstance} = {};}
-        (serviceManagement.splitContribution earlySystem).configured
-        (serviceManagement.splitContribution sysroot).configured
-        (serviceManagement.splitContribution deviceSettle).configured
-        (serviceManagement.splitContribution kernelModules).configured
-        (serviceManagement.splitContribution stageZfsCredential).configured
-        (serviceManagement.splitContribution zfsUnlock).configured
+        (serviceManagement.splitDefinition earlySystem).configured
+        (serviceManagement.splitDefinition sysroot).configured
+        (serviceManagement.splitDefinition deviceSettle).configured
+        (serviceManagement.splitDefinition kernelModules).configured
+        (serviceManagement.splitDefinition stageZfsCredential).configured
+        (serviceManagement.splitDefinition zfsUnlock).configured
       ];
     })
     (lib.mkIf (stage == "initrd") {
@@ -401,11 +401,11 @@ in {
             };
           };
         }
-        (serviceManagement.splitContribution bootIdentity).configured
-        (serviceManagement.splitContribution deviceSettle).configured
-        (serviceManagement.splitContribution initrdStage).configured
-        (serviceManagement.splitContribution sysroot).configured
-        (serviceManagement.splitContribution transactionStorageMount).configured
+        (serviceManagement.splitDefinition bootIdentity).configured
+        (serviceManagement.splitDefinition deviceSettle).configured
+        (serviceManagement.splitDefinition initrdStage).configured
+        (serviceManagement.splitDefinition sysroot).configured
+        (serviceManagement.splitDefinition transactionStorageMount).configured
       ];
     })
   ];

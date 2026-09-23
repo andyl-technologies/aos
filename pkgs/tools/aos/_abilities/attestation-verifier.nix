@@ -55,8 +55,8 @@
     parameters.scope = "local-filesystems";
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -175,7 +175,7 @@
     };
   };
   fragments = [filesystems service];
-  contributions = builtins.map serviceManagement.splitContribution fragments;
+  definitions = builtins.map serviceManagement.splitDefinition fragments;
   inputPathList = abilityTypes.list {
     element = serviceTypes.hostPath;
     maxItems = 256;
@@ -236,11 +236,11 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);
+      aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);
     }
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
-        [{instances.service = {};}] ++ builtins.map (entry: entry.configured) contributions
+        [{instances.service = {};}] ++ builtins.map (entry: entry.configured) definitions
       );
     })
   ];

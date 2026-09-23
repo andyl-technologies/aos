@@ -60,7 +60,7 @@
       (wrapper "sudoedit" "bin/sudo")
     ];
   };
-  contributions = builtins.map serviceManagement.splitContribution [runtimeEntries wrappers];
+  definitions = builtins.map serviceManagement.splitDefinition [runtimeEntries wrappers];
   passwordTag =
     if cfg.wheelNeedsPassword
     then "PASSWD"
@@ -103,14 +103,14 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
       aos.abilities = lib.mkMerge (
         [{instances.runtime = {};}]
-        ++ builtins.map (entry: entry.configured) contributions
+        ++ builtins.map (entry: entry.configured) definitions
       );
 
-      aos.contributions.pamServices.sudo = {
+      aos.pam.packageServices.sudo = {
         unixAuth = true;
         startSession = true;
         setLoginUid = true;

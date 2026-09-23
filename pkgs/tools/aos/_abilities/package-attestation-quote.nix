@@ -25,8 +25,8 @@
     ignore_failure = false;
   };
   service = serviceManagement.forService {
-    featureContributions = [
-      (serviceManagement.featureContribution {
+    featureRequests = [
+      (serviceManagement.featureRequest {
         key = "hardening";
         requirementAlias = "service-hardening";
         description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
@@ -133,7 +133,7 @@
       };
     };
   };
-  contributions = builtins.map serviceManagement.splitContribution [service];
+  definitions = builtins.map serviceManagement.splitDefinition [service];
 in {
   options.aos.packageRuntime.packageAttestationQuote.packageProfileEnabled = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -143,7 +143,7 @@ in {
   };
 
   config.aos.abilities = lib.mkMerge [
-    (lib.mkMerge (builtins.map (contribution: contribution.declarations) contributions))
+    (lib.mkMerge (builtins.map (definition: definition.declarations) definitions))
     (lib.mkIf (hostStage && cfg.packageProfileEnabled) {
       requirementTemplates.package-profile-readiness = {
         description = "Require completion of the selected system package profile before producing a quote.";
@@ -163,7 +163,7 @@ in {
       };
     })
     (lib.mkIf hostStage (lib.mkMerge (
-      [{instances.package-attestation-quote = {};}] ++ builtins.map (contribution: contribution.configured) contributions
+      [{instances.package-attestation-quote = {};}] ++ builtins.map (definition: definition.configured) definitions
     )))
   ];
 }

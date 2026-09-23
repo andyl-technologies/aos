@@ -100,13 +100,13 @@
       group = "root";
     }
   ];
-  contributions = builtins.map serviceManagement.splitContribution [
+  definitions = builtins.map serviceManagement.splitDefinition [
     abilityRuntime
     apmRuntime
   ];
 in {
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) contributions);}
+    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf (
         config.aos.abilities.environment
         != null
@@ -117,7 +117,7 @@ in {
             {instances.ability-runtime = {};}
             {instances.apm-runtime = {};}
           ]
-          ++ builtins.map (entry: entry.configured) contributions
+          ++ builtins.map (entry: entry.configured) definitions
         );
       })
   ];

@@ -17,7 +17,7 @@
       modules =
         [
           ../../modules/abilities/default.nix
-          ../../modules/base/_kernel-parameter-contributions.nix
+          ../../modules/base/_kernel-command-line-options.nix
           {aos.abilities.environment = environment stage;}
         ]
         ++ modules;

@@ -27,8 +27,8 @@
   projectService = import ../_service-projection.nix {
     serviceManagement = readView;
   };
-  projectContributions = import ../_contribution-projection.nix {
-    inherit (constructors) splitContribution;
+  producerModule = import ../_producer-module.nix {
+    inherit (constructors) splitDefinition;
   };
   moduleDeclaration = interface:
     interface.declaration
@@ -56,8 +56,8 @@
     types = serviceTypes;
     inherit (interfaceCatalog) aggregation guaranteeAliases guaranteeDeclarations mergeContract milestones;
     inherit interfaces declarations moduleDeclarations guarantees;
-    inherit (constructors) credentialReferenceConfigured featureContribution featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
-    inherit projectContributions projectService;
+    inherit (constructors) credentialReferenceConfigured featureRequest featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitDefinition structuredSource validate valueFromStructuredSource;
+    inherit producerModule projectService;
   };
 in {
   name = "serviceManagement";
