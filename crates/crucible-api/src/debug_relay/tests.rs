@@ -1,5 +1,7 @@
 //! Relay ownership, replacement, and transport regressions.
 
+#![allow(clippy::expect_used)]
+
 use std::os::unix::fs::PermissionsExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -104,7 +106,7 @@ async fn relay_connects_only_to_private_unix_gateway_endpoint() {
     assert!(DebugRelayRegistry::connect(&endpoint).await.is_ok());
     let _accepted = listener.accept().await.expect("private relay connection");
 
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o666))
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o666))
         .expect("public socket fixture");
     assert!(matches!(
         DebugRelayRegistry::connect(&endpoint).await,
