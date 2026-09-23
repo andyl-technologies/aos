@@ -31,6 +31,11 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.default.overrides]]
 filter = "package(crucible-campaign) & test(distinct_request_transitions_keep_indexed_cap_queries_bounded)"
 slow-timeout = { period = "60s", terminate-after = 15 }
+
+# This channel test advances 256 signed partitions and reads them through a
+# loopback origin. Run it alone so concurrent tests cannot exhaust its deadline.
+[[profile.default.overrides]]
+filter = 'test(apr_release_channel_upload_supports_verified_consumer_sync)'
 threads-required = "num-test-threads"
 
 # This end-to-end registry test deliberately cancels an in-flight upload and

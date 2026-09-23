@@ -746,6 +746,8 @@ in rec {
               # turning diagnostic source paths into runtime Nix references.
               # `walk` also covers future Cargo message fields instead of
               # relying on a brittle list of currently path-bearing keys.
+              # Cargo emits these messages in completion order, which varies
+              # between otherwise identical parallel builds.
               jq -c '
                 walk(
                   if type == "string"
@@ -756,6 +758,7 @@ in rec {
                   end
                 )
               ' "$NIX_BUILD_TOP/cargo-build-messages.jsonl" \
+                | LC_ALL=C sort \
                 > "$out/nix-support/cargo-build-messages.jsonl"
             ''
             else ""
