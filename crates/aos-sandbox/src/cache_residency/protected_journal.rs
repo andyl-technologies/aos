@@ -1434,6 +1434,45 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
 
 #[cfg(target_os = "linux")]
 impl ValidatedCacheResidencyPostcommitV1<'_> {
+    /// Settles one current protected pin event against the durable physical owner.
+    ///
+    /// A renewal verifies its existing physical pin rather than acquiring a
+    /// second one. A stale historical transaction cannot authorize either
+    /// action because its current physical effect is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale protected authority, conflicting or absent
+    /// owner pins, exhausted limits, or a failed durable owner update.
+    pub fn settle_cache_owner_pin_change(
+        self,
+        owner: &mut super::DormantCacheOwnerV1,
+    ) -> Result<super::CacheOwnerPinSettlementV1, super::CacheOwnerPinSettlementErrorV1> {
+        if self.kind != CacheResidencyTransactionKindV1::PinChange {
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority.into());
+        }
+        let physical = self
+            .current_pin_effect
+            .as_ref()
+            .ok_or(CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+        if physical.action == CurrentPhysicalPinActionV1::Retain {
+            let partition = physical.pin.partition;
+            let id = super::CacheOwnerPinIdV1::for_cache_pin(partition, physical.pin.id)?;
+            if owner.observe_pin(id, partition, &physical.pin.object)?
+                != super::CacheOwnerPinPresenceV1::Present
+            {
+                return Err(super::CacheOwnerErrorV1::RecoveryMismatch.into());
+            }
+            return Ok(super::CacheOwnerPinSettlementV1::Retained(
+                owner.currentness(),
+            ));
+        }
+
+        let admission = self.into_cache_owner_pin_admission(owner)?;
+        let observation = owner.apply_pin_change(admission)?;
+        Ok(super::CacheOwnerPinSettlementV1::Changed(observation))
+    }
+
     /// Issues one single-use physical admission from an exact reserved record.
     ///
     /// # Errors
@@ -1459,41 +1498,37 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
     /// Consumes current postcommit authority into one physical pin transition.
     ///
     /// A logical renewal changes only lease authority and cannot acquire a
-    /// second physical owner pin. The requested pin must be the one changed by
-    /// this event, not an older active pin or retained release tombstone.
+    /// second physical owner pin. The owner admission derives its exact action,
+    /// partition, and object from this event, never from caller-supplied fields.
     ///
     /// # Errors
     ///
     /// Returns stale authority unless the committed transaction is a pin change.
     pub fn into_cache_owner_pin_admission(
         self,
-        action: super::CacheOwnerPinActionV1,
-        partition: PhysicalPartitionId,
-        descriptor: ObjectDescriptor,
         owner: &super::DormantCacheOwnerV1,
     ) -> Result<super::CacheOwnerPinAdmissionV1, CacheResidencyProtectedJournalErrorV1> {
-        let expected_action = match action {
-            super::CacheOwnerPinActionV1::Acquire => CurrentPhysicalPinActionV1::Acquire,
-            super::CacheOwnerPinActionV1::Release => CurrentPhysicalPinActionV1::Release,
+        let physical = self
+            .current_pin_effect
+            .as_ref()
+            .ok_or(CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+        let action = match physical.action {
+            CurrentPhysicalPinActionV1::Acquire => super::CacheOwnerPinActionV1::Acquire,
+            CurrentPhysicalPinActionV1::Release => super::CacheOwnerPinActionV1::Release,
+            CurrentPhysicalPinActionV1::Retain => {
+                return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
+            }
         };
-        let exact_pin = self.current_pin_effect.as_ref().is_some_and(|effect| {
-            effect.action == expected_action
-                && effect.pin.partition == partition
-                && effect.pin.object == descriptor
-        });
+        let partition = physical.pin.partition;
+        let descriptor = physical.pin.object.clone();
         let (predecessor, maximum_pins, maximum_pinned_bytes) = owner.pin_grant_context();
         if self.kind != CacheResidencyTransactionKindV1::PinChange
-            || !exact_pin
             || maximum_pins == 0
             || maximum_pinned_bytes < descriptor.encoded_size()
         {
             return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
         }
-        let pin = self
-            .current_pin_effect
-            .as_ref()
-            .ok_or(CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
-        let id = super::CacheOwnerPinIdV1::for_cache_pin(partition, pin.pin.id)
+        let id = super::CacheOwnerPinIdV1::for_cache_pin(partition, physical.pin.id)
             .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
         Ok(super::CacheOwnerPinAdmissionV1::from_verified(
             self.transaction_digest(),

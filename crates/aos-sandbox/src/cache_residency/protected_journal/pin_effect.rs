@@ -15,6 +15,7 @@ use super::{
 pub(super) enum CurrentPhysicalPinActionV1 {
     Acquire,
     Release,
+    Retain,
 }
 
 pub(super) struct CurrentPhysicalPinEffectV1 {
@@ -97,8 +98,19 @@ pub(super) fn current_physical_pin_effect(
             }
             (CurrentPhysicalPinActionV1::Release, released.pin.clone())
         }
-        // A renewal changes lease authority but never installs another owner pin.
-        3 => return Ok(None),
+        3 => {
+            let mut candidates = payload
+                .pins
+                .iter()
+                .filter(|pin| pin.evidence == payload.record.authority);
+            let pin = candidates
+                .next()
+                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+            if candidates.next().is_some() {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            (CurrentPhysicalPinActionV1::Retain, pin.clone())
+        }
         _ => return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord),
     };
 
@@ -114,6 +126,10 @@ pub(super) fn current_physical_pin_effect(
     let still_retained = current.is_some_and(|latest| match action {
         // Renewal changes the lease authority, not the physical obligation.
         CurrentPhysicalPinActionV1::Acquire => latest
+            .pins
+            .iter()
+            .any(|active| active == &pin || valid_logical_renewal(&pin, active)),
+        CurrentPhysicalPinActionV1::Retain => latest
             .pins
             .iter()
             .any(|active| active == &pin || valid_logical_renewal(&pin, active)),

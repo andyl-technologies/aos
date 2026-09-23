@@ -137,7 +137,9 @@ impl CacheResidencyProtectedOwnerV1 {
     ///
     /// The postcommit callback can turn a confirmed release into a physical
     /// Cache-owner admission. No public completion is implied by the journal
-    /// commit alone; ambiguous outcomes retain their recovery state.
+    /// commit alone; ambiguous outcomes retain their recovery state. The public
+    /// consumer is rechecked against the same source journal while protected
+    /// authority is held, including its current resource-version fence.
     ///
     /// # Errors
     ///
@@ -149,15 +151,28 @@ impl CacheResidencyProtectedOwnerV1 {
         consumer: &RecheckedCacheConsumerV1,
         pin: &CachePinV1,
         operation: OperationId,
+        source_journal: &crate::Journal,
+        request: &crate::cli_model::DormantSandboxRequestKindV1,
         handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
-        let request = self.prepare_logical_pin_drain(consumer, pin)?;
+        let authority_request = self.prepare_logical_pin_drain(consumer, pin)?;
         let inventory = self.reconstructed_partition(pin.partition)?;
         self.commit_authorized_pin_release(
             transaction_id,
-            vec![request],
-            |controller| controller.seal_logical_pin_release(&inventory, pin, operation),
+            vec![authority_request],
+            |controller| {
+                let current = recheck_cache_consumer_projection_v1(
+                    source_journal,
+                    consumer.project(),
+                    request,
+                )
+                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+                if current != *consumer {
+                    return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
+                }
+                controller.seal_logical_pin_release(&inventory, pin, operation)
+            },
             handoff,
         )
     }

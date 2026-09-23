@@ -417,6 +417,26 @@ pub enum CacheOwnerPinPresenceV1 {
     Absent,
 }
 
+/// Reports the durable physical result of one current protected pin event.
+#[must_use = "public completion must account for the exact physical pin result"]
+pub enum CacheOwnerPinSettlementV1 {
+    /// The owner durably acquired or released the exact protected pin.
+    Changed(CacheEffectObservationV1),
+    /// A renewal retained its one already-present physical pin.
+    Retained(CacheOwnerCurrentnessV1),
+}
+
+/// Reports a failed protected-to-physical Cache pin handoff.
+#[derive(Debug, thiserror::Error)]
+pub enum CacheOwnerPinSettlementErrorV1 {
+    /// The protected postcommit proof is stale or cannot authorize this effect.
+    #[error("protected Cache pin handoff failed: {0}")]
+    Protected(#[from] super::CacheResidencyProtectedJournalErrorV1),
+    /// Physical owner admission or durable observation failed.
+    #[error("physical Cache pin handoff failed: {0}")]
+    Owner(#[from] CacheOwnerErrorV1),
+}
+
 /// Borrows one validated, owner-locked durable manifest for batch pin observation.
 pub struct CacheOwnerPinSnapshotV1<'owner> {
     owner: &'owner DormantCacheOwnerV1,
@@ -1321,12 +1341,31 @@ impl DormantCacheOwnerV1 {
         })
     }
 
+    /// Applies the exact physical pin action sealed by a protected transaction.
+    ///
+    /// The admission supplies its own action, owner-local identity, partition,
+    /// and object. A caller cannot redirect it to another physical pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale owner state, absent residency, pin conflict,
+    /// exhausted budgets, or a failed durable manifest update.
+    pub fn apply_pin_change(
+        &mut self,
+        admission: CacheOwnerPinAdmissionV1,
+    ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
+        match admission.action {
+            CacheOwnerPinActionV1::Acquire => self.acquire_pin(admission),
+            CacheOwnerPinActionV1::Release => self.release_pin(admission),
+        }
+    }
+
     /// Acquires one durable pin within both count and byte budgets.
     ///
     /// # Errors
     ///
     /// Returns an error for duplicate/unknown pins or exhausted budgets.
-    pub fn acquire_pin(
+    fn acquire_pin(
         &mut self,
         admission: CacheOwnerPinAdmissionV1,
     ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
@@ -1373,7 +1412,7 @@ impl DormantCacheOwnerV1 {
     /// # Errors
     ///
     /// Returns an error for an unknown or inconsistent pin identity.
-    pub fn release_pin(
+    fn release_pin(
         &mut self,
         admission: CacheOwnerPinAdmissionV1,
     ) -> Result<CacheEffectObservationV1, CacheOwnerErrorV1> {
