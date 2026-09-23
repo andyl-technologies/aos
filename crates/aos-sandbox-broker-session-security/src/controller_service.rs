@@ -69,7 +69,8 @@ use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_own
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
 use aos_sandbox::cache_residency::{
-    CacheReplayControllerBootstrapOwnerV1, CacheResidencyProtectedOwnerV1,
+    CacheOwnerLimitsV1, CacheReplayControllerBootstrapOwnerV1, CacheResidencyProtectedOwnerV1,
+    DormantCacheOwnerV1,
 };
 use aos_sandbox::cli_model::{
     AuditAuthorizationV1, DormantSandboxRequestKindV1, PublicApiAuditMethodV1,
@@ -122,6 +123,7 @@ const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const NODE_ID_CREDENTIAL: &str = "node-id";
 const CACHE_REPLAY_BUNDLE_CREDENTIAL: &str = "cache-replay-bundle";
 const MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
+const CACHE_OWNER_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLER_COMMAND_CAPACITY: usize = 64;
@@ -1530,6 +1532,8 @@ struct ProductionEffectExecutor {
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
+    cache_physical: Option<DormantCacheOwnerV1>,
+    cache_physical_limits: Option<CacheOwnerLimitsV1>,
     controller_uid: u32,
     transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
     node: NodeId,
@@ -1573,6 +1577,8 @@ impl ProductionEffectExecutor {
             broker_plan_signer,
             source_domains,
             cache_inventory: None,
+            cache_physical: None,
+            cache_physical_limits: None,
             controller_uid,
             transfer_inventory: None,
             node,
@@ -2655,6 +2661,41 @@ impl ProductionEffectExecutor {
         Ok(())
     }
 
+    fn ensure_cache_physical_owner(&mut self) -> Result<(), EffectFailure> {
+        self.ensure_cache_inventory_owner()?;
+        let quotas = self
+            .cache_inventory
+            .as_mut()
+            .ok_or_else(|| {
+                EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+            })?
+            .reconstructed_node_quotas()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if quotas
+            .iter()
+            .any(|quota| quota.partition.node().as_bytes() != self.node.as_bytes())
+        {
+            return Err(EffectFailure::Permanent(
+                "protected Cache partition belongs to another controller node".to_owned(),
+            ));
+        }
+        let limits = CacheOwnerLimitsV1::from_node_quotas(CACHE_OWNER_MEMORY_BYTES, quotas)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if self.cache_physical_limits == Some(limits) && self.cache_physical.is_some() {
+            return Ok(());
+        }
+
+        // A changed protected partition set changes the owner-wide envelope.
+        // Release the old lock before reopening and validating that manifest.
+        self.cache_physical = None;
+        self.cache_physical_limits = None;
+        let physical = DormantCacheOwnerV1::open_fixed(limits)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        self.cache_physical = Some(physical);
+        self.cache_physical_limits = Some(limits);
+        Ok(())
+    }
+
     fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
         self.ensure_cache_inventory_owner()?;
 
@@ -3492,19 +3533,17 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let consumer = cache_consumer.as_ref().ok_or_else(|| {
                 EffectFailure::Permanent("cache unpin consumer is unavailable".to_owned())
             })?;
-            self.ensure_cache_inventory_owner()?;
+            self.ensure_cache_physical_owner()?;
             let cache = self.cache_inventory.as_mut().ok_or_else(|| {
                 EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
             })?;
-            let retained = cache
-                .retained_consumer_logical_pins(
-                    consumer.object(),
-                    consumer.project(),
-                    consumer.view(),
-                    consumer.attachment(),
-                )
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            if retained.is_empty() {
+            let physical = self.cache_physical.as_ref().ok_or_else(|| {
+                EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
+            })?;
+            let complete =
+                crate::observe_public_cache_unpin_completion_v1(cache, physical, consumer)
+                    .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+            if complete {
                 let mut receipt = Vec::with_capacity(24);
                 receipt.extend_from_slice(b"AOSCUN01");
                 receipt.extend_from_slice(operation_id.as_bytes());

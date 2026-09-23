@@ -218,6 +218,7 @@ in {
           "aos/sandboxd"
           "aos/sandbox/source-domains"
           "aos/sandbox/cache-residency"
+          "aos/sandbox/cache-residency/objects"
           "aos/sandboxd/cache-residency-authority"
         ];
         StateDirectoryMode = "0700";
