@@ -51,6 +51,7 @@ mod cache_public_pin;
 mod cache_source_membership;
 mod controller_authority_effect;
 mod controller_attach_credentials;
+mod controller_attach_exchange;
 mod controller_ownership;
 mod controller_plan_signer;
 mod controller_publication;

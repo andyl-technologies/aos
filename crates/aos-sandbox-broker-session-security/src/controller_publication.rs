@@ -24,6 +24,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
 
+use crate::controller_attach_exchange::ControllerHostAttachGateExchangeV1;
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
 use crate::controller_service::execution::{
     ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
@@ -42,6 +43,7 @@ pub(crate) struct ControllerHostPublication {
     pending: Option<PendingPublication>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
     execution_effects: ControllerExecutionExchangeV1,
+    attach_gate: ControllerHostAttachGateExchangeV1,
     poisoned: bool,
 }
 
@@ -79,6 +81,7 @@ impl ControllerHostPublication {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             execution_effects: ControllerExecutionExchangeV1::default(),
+            attach_gate: ControllerHostAttachGateExchangeV1::default(),
             poisoned: false,
         }
     }
@@ -87,12 +90,43 @@ impl ControllerHostPublication {
         self.execution_effects.needs_fresh_authorization()
     }
 
+    /// Sends one exact pending attach grant with current signed Host authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retryable failure while another exchange owns the session or
+    /// exact protected request recovery is required.
+    pub(crate) fn install_attach_gate(
+        &mut self,
+        grant: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending()
+            || self.poisoned
+        {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained non-attach work".to_owned(),
+            ));
+        }
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        self.attach_gate
+            .install(session, grant, Some(authorization))
+    }
+
     /// Applies or resumes one exact Host authority effect on this same session.
     pub(crate) fn apply_authority_effect(
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
-        if self.pending.is_some() || self.execution_effects.has_pending() || self.poisoned {
+        if self.pending.is_some()
+            || self.execution_effects.has_pending()
+            || self.attach_gate.has_pending()
+            || self.poisoned
+        {
             return Err(EffectFailure::Retryable(
                 "Host session has retained catalog publication work".to_owned(),
             ));
@@ -108,7 +142,7 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
-        if self.execution_effects.has_pending() {
+        if self.execution_effects.has_pending() || self.attach_gate.has_pending() {
             return Some(Err(EffectFailure::Retryable(
                 "Host session has retained execution work".to_owned(),
             )));
@@ -125,6 +159,7 @@ impl ControllerHostPublication {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.attach_gate.has_pending()
             || self.poisoned
         {
             return Err(EffectFailure::Retryable(
@@ -144,7 +179,11 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
-        if self.pending.is_some() || self.execution_effects.has_pending() || self.poisoned {
+        if self.pending.is_some()
+            || self.execution_effects.has_pending()
+            || self.attach_gate.has_pending()
+            || self.poisoned
+        {
             return Err(EffectFailure::Retryable(
                 "Host session has retained catalog publication work".to_owned(),
             ));
@@ -161,7 +200,11 @@ impl ControllerHostPublication {
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<EffectObservation, EffectFailure> {
-        if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.attach_gate.has_pending()
+            || self.poisoned
+        {
             return Err(EffectFailure::Retryable(
                 "Host session has retained non-execution work".to_owned(),
             ));
@@ -178,7 +221,11 @@ impl ControllerHostPublication {
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<EffectReceipt, EffectFailure> {
-        if self.pending.is_some() || self.authority_effects.has_pending() || self.poisoned {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.attach_gate.has_pending()
+            || self.poisoned
+        {
             return Err(EffectFailure::Retryable(
                 "Host session has retained non-execution work".to_owned(),
             ));
@@ -201,6 +248,7 @@ impl ControllerHostPublication {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.attach_gate.has_pending()
             || self.poisoned
             || self.session.is_none()
         {
@@ -229,6 +277,7 @@ impl ControllerHostPublication {
         self.pending.is_none()
             && !self.authority_effects.has_pending()
             && !self.execution_effects.has_pending()
+            && !self.attach_gate.has_pending()
             && !self.poisoned
             && self.session.is_some()
     }
@@ -259,6 +308,7 @@ impl ControllerHostPublication {
         self.poisoned
             || self.authority_effects.requires_reconnect()
             || self.execution_effects.requires_reconnect()
+            || self.attach_gate.requires_reconnect()
     }
 
     /// Completes a publication without replacing any retained request identity.
@@ -268,6 +318,7 @@ impl ControllerHostPublication {
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerHostPublicationError> {
         if self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.attach_gate.has_pending()
             || self.poisoned
             || self
                 .pending

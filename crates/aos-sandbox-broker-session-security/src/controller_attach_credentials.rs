@@ -137,6 +137,23 @@ impl ControllerAttachCredentialsV1 {
         self.trust_digest
     }
 
+    /// Checks an authenticated Host route against the deployed static pins.
+    #[must_use]
+    pub(crate) fn matches_route_pins(
+        &self,
+        host: &str,
+        port: u16,
+        user: &str,
+        host_public_key: &[u8],
+        trusted_user_ca_public_key: &[u8],
+    ) -> bool {
+        self.trust.host == host
+            && self.trust.port == port
+            && self.trust.user == user
+            && self.trust.host_public_key.as_bytes() == host_public_key
+            && self.trust.trusted_user_ca_public_key.as_bytes() == trusted_user_ca_public_key
+    }
+
     /// Derives the expected gate configuration for this protected operation.
     ///
     /// # Errors

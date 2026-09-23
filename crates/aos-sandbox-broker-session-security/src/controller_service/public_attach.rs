@@ -5,10 +5,19 @@
 //! method. Its availability check precedes the durable reservation, so an
 //! unsupported deployment does not strand a public idempotency key.
 
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::attach_route_issuer::AuthenticatedOpenSshRouteV1;
 use aos_sandbox::public_api_session::PublicApiPeer;
+use aos_sandbox::public_attach_pending::PublicAttachPendingV1;
 use aos_sandbox::{AcceptOutcome, ControllerServiceError, OperationCompilationError};
 use aos_sandbox_core::CapabilityId;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
+    AuthenticatedBrokerOutcomeDirectionV1,
+};
+use aos_sandbox_protocol::{
+    decode_host_attach_gate_evidence_v1, decode_host_attach_gate_request_v1,
+};
 
 use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
 use crate::controller_ownership::sample_ownership_clock;
@@ -51,6 +60,94 @@ impl AuthenticatedHostAttachRouteExchangeV1 for UnavailableHostAttachRouteV1 {
     ) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure> {
         Err(ControllerCommandFailure::ControllerUnavailable)
     }
+}
+
+/// Accepts only a signed-session Host success for the exact protected grant.
+///
+/// The shared protocol decoder checks the canonical request/response shape and
+/// the signed guest packet commitment. The Host must have verified the guest
+/// signature against its protected peer before signing this broker outcome.
+///
+/// # Errors
+///
+/// Rejects any failed, late, rebound, noncanonical, or unpinned response.
+pub(super) fn route_from_authenticated_outcome(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    grant: &[u8],
+    pending: &PublicAttachPendingV1,
+    credentials: &ControllerAttachCredentialsV1,
+) -> Result<AuthenticatedOpenSshRouteV1, ControllerCommandFailure> {
+    if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        || outcome.method() != BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    let now =
+        sample_ownership_clock().map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let request = decode_host_attach_gate_request_v1(
+        outcome.request().exact_body(),
+        outcome.request().peer(),
+        outcome.request().peer_policy(),
+        now.boottime_nanoseconds(),
+    )
+    .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    if request.pending_grant().as_slice() != grant
+        || request.operation_id() != *pending.operation_id().as_bytes()
+        || request.execution_id() != pending.execution_id()
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    };
+    let evidence = decode_host_attach_gate_evidence_v1(exact_body, &request)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let port = u16::try_from(evidence.port)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    if evidence.incarnation_id != pending.sandbox_incarnation_id()
+        || evidence.assignment_epoch != pending.assignment_epoch()
+        || evidence.principal_id != pending.principal_id()
+        || evidence.audit_id != pending.audit_id()
+        || evidence.expires_at != pending.expires_at()
+        || evidence.expires_at <= now.wall_seconds()
+        || !credentials.matches_route_pins(
+            &evidence.host,
+            port,
+            &evidence.user,
+            &evidence.host_public_key,
+            &evidence.trusted_user_ca_public_key,
+        )
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+
+    let route_digest = evidence
+        .route_digest
+        .as_slice()
+        .try_into()
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let gate_observation_commitment = evidence
+        .gate_observation_commitment
+        .as_slice()
+        .try_into()
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    Ok(AuthenticatedOpenSshRouteV1 {
+        execution_id: pending.execution_id(),
+        attach_operation_id: *pending.operation_id().as_bytes(),
+        sandbox_incarnation_id: pending.sandbox_incarnation_id(),
+        assignment_epoch: pending.assignment_epoch(),
+        principal_id: pending.principal_id(),
+        audit_id: pending.audit_id(),
+        host: evidence.host,
+        port,
+        user: evidence.user,
+        host_public_key: evidence.host_public_key,
+        trusted_user_ca_public_key: evidence.trusted_user_ca_public_key,
+        forced_command_gate_active: true,
+        route_digest,
+        gate_observation_commitment,
+        expires_at: evidence.expires_at,
+    })
 }
 
 pub(super) fn admit_public_attach(
