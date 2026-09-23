@@ -1269,7 +1269,7 @@ fn valid_state(kind: CacheRecordKindV1, state: u8) -> bool {
         CacheRecordKindV1::Reservation => (1..=5).contains(&state),
         CacheRecordKindV1::Admission => (1..=13).contains(&state),
         CacheRecordKindV1::Catalog => (1..=4).contains(&state),
-        CacheRecordKindV1::Pin => (1..=2).contains(&state),
+        CacheRecordKindV1::Pin => (1..=3).contains(&state),
         CacheRecordKindV1::EvictionPlan => state == 1,
         CacheRecordKindV1::EvictionProgress => (1..=8).contains(&state),
         CacheRecordKindV1::Scrub => (1..=3).contains(&state),

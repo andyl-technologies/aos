@@ -353,6 +353,10 @@ pub(super) fn valid_pin_atomic_transition(
                 .is_some_and(|pin| amount == pin.kind as u64)
         });
     }
+    if state == 3 && previous.released_pins == next.released_pins {
+        return one_renewed_logical_pin(&previous.pins, &next.pins)
+            .is_some_and(|_| amount == CachePinKindV1::LogicalLease as u64);
+    }
     if state != 2 {
         return false;
     }
@@ -373,6 +377,26 @@ pub(super) fn valid_pin_atomic_transition(
                 && amount == (((pin.kind as u64) << 8) | (released.drain.outcome() as u64))
         })
     })
+}
+
+fn one_renewed_logical_pin(
+    previous: &[CachePinV1],
+    next: &[CachePinV1],
+) -> Option<super::super::pin::CachePinId> {
+    if previous.len() != next.len() {
+        return None;
+    }
+    let mut renewed = None;
+    for (before, after) in previous.iter().zip(next) {
+        if before == after {
+            continue;
+        }
+        if renewed.is_some() || !super::super::pin::valid_logical_renewal(before, after) {
+            return None;
+        }
+        renewed = Some(after.id);
+    }
+    renewed
 }
 
 pub(super) fn one_added_active_pin(

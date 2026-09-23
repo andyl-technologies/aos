@@ -218,6 +218,14 @@ non-expiring kernel pin until the reference closes or the connection/consumer
 is authoritatively aborted. Unlinking an inode does not release or credit its
 physical bytes while such a reference exists.
 
+Public `PinObject` and `UnpinObject` name the consuming view and, when present,
+its attachment. One active logical pin exists for each physical partition,
+object, project, view, and optional attachment. Repeated pin requests renew
+that obligation under current authority rather than adding another pin count;
+unpin resolves the exact retained obligation without a caller-supplied pin ID.
+An attachment replacement does not erase the old view's pin before its drain.
+View-scoped logical pins block eviction but do not grant runtime read access.
+
 A valid attachment lease admits creation of the minimum metadata and kernel
 pins needed to honor active opens; expiry does not erase pins already held.
 Lazy views need not reserve an unknowable complete closure; they use a hard

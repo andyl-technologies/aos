@@ -21,7 +21,9 @@ use super::domain::{
     validate_object_descriptor,
 };
 use super::pin::{CachePinLedgerV1, CachePinV1, PinError};
-use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId, ProjectId};
+use aos_sandbox_core::{
+    AttachmentId, ObjectDescriptor, ObjectDigest, OperationId, ProjectId, ViewId,
+};
 
 mod digest;
 
@@ -1156,6 +1158,35 @@ impl CacheAdmissionStateV1 {
         self.catalog.get(object)
     }
 
+    /// Finds the sole active logical pin for one consumer and object.
+    ///
+    /// The returned state does not prove current source or drain authority.
+    #[must_use]
+    pub fn logical_consumer_pin(
+        &self,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+    ) -> Option<&CachePinV1> {
+        self.pins.logical_consumer_pin(
+            self.accounting.partition(),
+            object,
+            project,
+            view,
+            attachment,
+        )
+    }
+
+    /// Selects an unreserved pin ID above this partition's compaction floor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdmissionError`] if no further pin ID can be represented.
+    pub fn next_pin_id(&self) -> Result<super::pin::CachePinId, AdmissionError> {
+        Ok(self.pins.next_pin_id()?)
+    }
+
     /// Borrows checked accounting without allowing a partial mutation.
     #[must_use]
     pub const fn accounting(&self) -> &CacheAccountingV1 {
@@ -1196,6 +1227,41 @@ impl CacheAdmissionStateV1 {
         }
         let mut next = self.clone();
         next.pins.acquire(owner, capability, pin, now)?;
+        next.refresh_pin_accounting()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Atomically renews the sole logical pin for a consumer and object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdmissionError`] if the old pin is absent, the consumer or
+    /// runtime fence changed, the catalog is no longer committed, or current
+    /// pin-acquisition authority cannot validate the renewed lease.
+    pub fn renew_logical_pin(
+        &mut self,
+        owner: &CacheAuthorityOwner<'_, '_>,
+        capability: &VerifiedCacheCapabilityV1,
+        pin: CachePinV1,
+        now: u64,
+    ) -> Result<(), AdmissionError> {
+        pin.clone().validate()?;
+        if pin.kind != super::pin::CachePinKindV1::LogicalLease
+            || pin.partition != self.accounting.partition()
+        {
+            return Err(AdmissionError::PinMismatch);
+        }
+        let entry = self
+            .catalog
+            .get(&pin.object)
+            .ok_or(AdmissionError::UnknownObject)?;
+        if entry.partition != pin.partition || entry.presence != CatalogPresenceV1::Committed {
+            return Err(AdmissionError::PinMismatch);
+        }
+
+        let mut next = self.clone();
+        next.pins.renew_logical(owner, capability, pin, now)?;
         next.refresh_pin_accounting()?;
         *self = next;
         Ok(())

@@ -213,6 +213,24 @@ impl CachePinV1 {
         (self.authority_scope, self.evidence)
     }
 
+    /// Returns the durable identity retained across logical lease renewals.
+    #[must_use]
+    pub const fn id(&self) -> CachePinId {
+        self.id
+    }
+
+    /// Returns the exact acquisition evidence required by a later release.
+    #[must_use]
+    pub const fn evidence(&self) -> ObjectDigest {
+        self.evidence
+    }
+
+    /// Returns the deadline after which this lease permits no new use.
+    #[must_use]
+    pub const fn lease_valid_until(&self) -> u64 {
+        self.lease_valid_until
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn recover_historical(
         id: CachePinId,
@@ -407,9 +425,18 @@ impl CachePinV1 {
 pub struct CachePinLedgerV1 {
     maximum_records: usize,
     pins: BTreeMap<CachePinId, CachePinV1>,
+    logical_consumers: BTreeMap<LogicalPinConsumerKeyV1, CachePinId>,
     released: BTreeMap<CachePinId, ReleasedCachePinV1>,
     compacted_through: Option<PinCompactionFloorV1>,
 }
+
+type LogicalPinConsumerKeyV1 = (
+    ObjectDigest,
+    ObjectDigest,
+    ProjectId,
+    ViewId,
+    Option<AttachmentId>,
+);
 
 impl CachePinLedgerV1 {
     /// Constructs an empty bounded pin ledger.
@@ -424,6 +451,7 @@ impl CachePinLedgerV1 {
         Ok(Self {
             maximum_records,
             pins: BTreeMap::new(),
+            logical_consumers: BTreeMap::new(),
             released: BTreeMap::new(),
             compacted_through: None,
         })
@@ -452,6 +480,11 @@ impl CachePinLedgerV1 {
             }
             if ledger.pins.len() + ledger.released.len() >= ledger.maximum_records {
                 return Err(PinError::Capacity);
+            }
+            if let Some(key) = logical_consumer_key(&pin)
+                && ledger.logical_consumers.insert(key, pin.id).is_some()
+            {
+                return Err(PinError::Conflict);
             }
             if ledger.pins.insert(pin.id, pin).is_some() {
                 return Err(PinError::Conflict);
@@ -501,6 +534,14 @@ impl CachePinLedgerV1 {
         if self.released.contains_key(&pin.id) {
             return Err(PinError::Conflict);
         }
+        let logical_key = logical_consumer_key(&pin);
+        if logical_key.as_ref().is_some_and(|key| {
+            self.logical_consumers
+                .get(key)
+                .is_some_and(|id| *id != pin.id)
+        }) {
+            return Err(PinError::Conflict);
+        }
         if let Some(existing) = self.pins.get(&pin.id) {
             return if existing == &pin {
                 Ok(())
@@ -511,7 +552,44 @@ impl CachePinLedgerV1 {
         if self.pins.len() + self.released.len() >= self.maximum_records {
             return Err(PinError::Capacity);
         }
+        if let Some(key) = logical_key {
+            self.logical_consumers.insert(key, pin.id);
+        }
         self.pins.insert(pin.id, pin);
+        Ok(())
+    }
+
+    /// Renews the sole logical pin without changing its consumer identity.
+    ///
+    /// Renewal retains the original ID, so a later release names one exact
+    /// obligation even after the lease or its current authority changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PinError`] if the consumer has no pin, its runtime binding
+    /// changed, the lease shrinks, or the new acquisition authority is stale.
+    pub fn renew_logical(
+        &mut self,
+        owner: &CacheAuthorityOwner<'_, '_>,
+        capability: &VerifiedCacheCapabilityV1,
+        renewed: CachePinV1,
+        now: u64,
+    ) -> Result<(), PinError> {
+        let renewed = renewed.validate()?;
+        renewed.validate_current(owner, capability, now)?;
+        let existing = self
+            .logical_consumer_pin(
+                renewed.partition,
+                &renewed.object,
+                renewed.project,
+                renewed.view,
+                renewed.attachment,
+            )
+            .ok_or(PinError::Absent)?;
+        if !valid_logical_renewal(existing, &renewed) {
+            return Err(PinError::Conflict);
+        }
+        self.pins.insert(renewed.id, renewed);
         Ok(())
     }
 
@@ -554,7 +632,15 @@ impl CachePinLedgerV1 {
             return Err(PinError::DrainNotProved);
         }
         validate_release(pin, drain)?;
+        if let Some(key) = logical_consumer_key(pin)
+            && self.logical_consumers.get(&key) != Some(&id)
+        {
+            return Err(PinError::Conflict);
+        }
         let pin = self.pins.remove(&id).ok_or(PinError::Absent)?;
+        if let Some(key) = logical_consumer_key(&pin) {
+            self.logical_consumers.remove(&key);
+        }
         let released = ReleasedCachePinV1 { pin, drain };
         self.released.insert(id, released.clone());
         Ok(released)
@@ -625,6 +711,62 @@ impl CachePinLedgerV1 {
     #[must_use]
     pub fn pin(&self, id: CachePinId) -> Option<&CachePinV1> {
         self.pins.get(&id)
+    }
+
+    /// Finds the sole active logical pin for an exact consumer and object.
+    ///
+    /// The returned pin is retained state, not current acquisition or drain
+    /// authority. A release must separately prove its exact drain evidence.
+    #[must_use]
+    pub fn logical_consumer_pin(
+        &self,
+        partition: PhysicalPartitionId,
+        object: &ObjectDescriptor,
+        project: ProjectId,
+        view: ViewId,
+        attachment: Option<AttachmentId>,
+    ) -> Option<&CachePinV1> {
+        let key = (
+            partition.digest(),
+            object_descriptor_commitment(object),
+            project,
+            view,
+            attachment,
+        );
+        self.logical_consumers
+            .get(&key)
+            .and_then(|id| self.pins.get(id))
+            .filter(|pin| {
+                pin.partition == partition
+                    && &pin.object == object
+                    && pin.project == project
+                    && pin.view == view
+                    && pin.attachment == attachment
+                    && pin.kind == CachePinKindV1::LogicalLease
+            })
+    }
+
+    /// Selects the next unused identity above every retained or compacted pin.
+    ///
+    /// The caller must still commit under current protected state; this
+    /// selection alone does not reserve the identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PinError::Capacity`] if the 128-bit identity space is exhausted.
+    pub fn next_pin_id(&self) -> Result<CachePinId, PinError> {
+        let greatest = [
+            self.pins.last_key_value().map(|(id, _)| *id),
+            self.released.last_key_value().map(|(id, _)| *id),
+            self.compacted_through.map(|floor| floor.pin),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        let next = greatest.map_or(Some(1), |id| {
+            u128::from_be_bytes(*id.as_bytes()).checked_add(1)
+        });
+        CachePinId::from_bytes(next.ok_or(PinError::Capacity)?.to_be_bytes())
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &CachePinV1> {
@@ -782,7 +924,7 @@ pub enum PinError {
     /// A pin lacks a required identity, scope, or evidence binding.
     #[error("cache pin is invalid")]
     InvalidPin,
-    /// A pin identity was reused for different facts.
+    /// A pin identity or active logical consumer conflicts with retained facts.
     #[error("cache pin identity conflicts")]
     Conflict,
     /// No retained pin has the requested identity.
@@ -908,6 +1050,33 @@ fn pin_subject(pin: &CachePinV1) -> ObjectDigest {
         pin.assignment_epoch,
         pin.lease_valid_until,
     )
+}
+
+fn logical_consumer_key(pin: &CachePinV1) -> Option<LogicalPinConsumerKeyV1> {
+    (pin.kind == CachePinKindV1::LogicalLease).then(|| {
+        (
+            pin.partition.digest(),
+            object_descriptor_commitment(&pin.object),
+            pin.project,
+            pin.view,
+            pin.attachment,
+        )
+    })
+}
+
+pub(crate) fn valid_logical_renewal(previous: &CachePinV1, renewed: &CachePinV1) -> bool {
+    previous.kind == CachePinKindV1::LogicalLease
+        && renewed.kind == CachePinKindV1::LogicalLease
+        && previous.id == renewed.id
+        && previous.partition == renewed.partition
+        && previous.object == renewed.object
+        && previous.project == renewed.project
+        && previous.view == renewed.view
+        && previous.attachment == renewed.attachment
+        && previous.sandbox == renewed.sandbox
+        && previous.incarnation == renewed.incarnation
+        && previous.assignment_epoch == renewed.assignment_epoch
+        && previous.lease_valid_until <= renewed.lease_valid_until
 }
 
 #[allow(clippy::too_many_arguments)]
