@@ -81,9 +81,12 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
     let genesis = json_string(&compiled, "genesis_artifact")?;
     begin_initial_discovery(&fixture, &head)?;
     let failure_attempt = drive_fast_q7_failure(&fixture, &mut service, &genesis)?;
-    let (snapshot, finding, finding_before) = wait_for_retained_finding(&fixture, &failure_attempt)
-        .map_err(|error| format!("{error}; campaign service stderr={}", service.stderr_tail()))?;
-    let finding_proof = query_authenticated_finding_proof(&fixture, &snapshot, &finding)?;
+    let paused_snapshot = pause_campaign_for_debug(&fixture)?;
+    let (snapshot, finding, finding_before, finding_proof) =
+        wait_for_retained_finding(&fixture, &failure_attempt).map_err(|error| {
+            format!("{error}; campaign service stderr={}", service.stderr_tail())
+        })?;
+    assert_eq!(snapshot, paused_snapshot);
     let replay_evidence = validate_replayed_failure_boundary(&fixture, &finding_proof)?;
 
     let first = run_public_debug_client(&fixture, service.daemon_url(), &snapshot, &finding)?;
@@ -102,13 +105,15 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
 
     let finding_after = query_findings(&fixture, &snapshot)?;
     assert_eq!(finding_after, finding_before);
-    exercise_public_exact_pin_gc_flow(
+    let handoff_snapshot = exercise_public_exact_pin_gc_flow(
         &fixture,
         &mut service,
         &failure_attempt.pinnable_configuration,
+        &finding,
+        &finding_proof,
     )?;
     validate_imported_production_capture_handoff(&fixture, &finding)?;
-    handoff(&fixture, &snapshot, &finding)?;
+    handoff(&fixture, &handoff_snapshot, &finding)?;
 
     println!("public_finding_midpoint_debug=true");
     println!("authenticated_exact_checkpoint=true");
@@ -379,10 +384,88 @@ fn write_component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn
     Ok(authority)
 }
 
+fn pause_campaign_for_debug(fixture: &FlightFixture) -> Result<String, Box<dyn Error>> {
+    use crucible_campaign::{
+        ActiveAttemptPolicy, ApplyCampaignCommandRequest, CampaignCommandId, CampaignControlAction,
+        CampaignName, CampaignPrincipal, CampaignService, CampaignServiceFailure,
+        CampaignSnapshotId, ControlRequest,
+    };
+    use crucible_daemon::{LoopbackCampaignService, LoopbackCampaignServiceError};
+
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let command = CampaignCommandId::parse(&"67".repeat(32))?;
+    loop {
+        let head = campaign_status(fixture)?;
+        if head["state"] == "paused" {
+            break;
+        }
+        if head["state"] != "running" {
+            return Err(format!("q7 campaign cannot pause from this state: {head}").into());
+        }
+
+        let expected = CampaignSnapshotId::parse(&json_string(&head, "snapshot")?)?;
+        let request = ApplyCampaignCommandRequest::new(
+            CampaignPrincipal::new(PRINCIPAL)?,
+            CampaignName::new(CAMPAIGN)?,
+            ControlRequest {
+                command,
+                expected_snapshot: expected,
+                action: CampaignControlAction::Pause(ActiveAttemptPolicy::Drain),
+            },
+        )?;
+        let service = LoopbackCampaignService::new(UnixStream::connect(&fixture.socket)?)?;
+        match service.apply_campaign_command(&request) {
+            Ok(response) => {
+                response.validate_for(&request)?;
+                break;
+            }
+            Err(LoopbackCampaignServiceError::Remote(CampaignServiceFailure::Stale {
+                expected: rejected,
+                ..
+            })) if rejected == expected && Instant::now() < deadline => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    // A paused campaign issues no new work. Drain still lets accepted worlds
+    // finish, so require two consecutive idle observations at one head.
+    let mut previous_idle_snapshot = None;
+    let mut last_head = None;
+    let stable = wait_for_process_observation(deadline, || {
+        let head = campaign_status(fixture)?;
+        let active_worlds = [
+            "preparing_worlds",
+            "running_worlds",
+            "checkpointing_worlds",
+            "publishing_worlds",
+            "canceling_worlds",
+        ];
+        let idle = head["state"] == "paused"
+            && head["operational"]["availability"] == "observed"
+            && active_worlds
+                .iter()
+                .all(|field| head["operational"][field].as_u64() == Some(0));
+        let snapshot = json_string(&head, "snapshot")?;
+        let stable = idle && previous_idle_snapshot.as_deref() == Some(snapshot.as_str());
+        previous_idle_snapshot = idle.then_some(snapshot.clone());
+        last_head = Some(head);
+        Ok(stable.then_some(snapshot))
+    })?;
+    stable.ok_or_else(|| format!("q7 campaign did not pause and drain: {last_head:?}").into())
+}
+
 fn wait_for_retained_finding(
     fixture: &FlightFixture,
     failure: &AuthenticatedFailureAttempt,
-) -> Result<(String, String, Value), Box<dyn Error>> {
+) -> Result<
+    (
+        String,
+        String,
+        Value,
+        crucible_campaign::GetCampaignFindingObjectResponse,
+    ),
+    Box<dyn Error>,
+> {
     let deadline = Instant::now() + MIDPOINT_TIMEOUT;
     let mut last = None;
     let found = wait_for_process_observation(deadline, || {
@@ -407,7 +490,23 @@ fn wait_for_retained_finding(
             .into());
         }
         let finding = json_string(entry, "finding")?;
-        Ok(Some((snapshot, finding, findings)))
+        let proof = match query_authenticated_finding_proof(fixture, &snapshot, &finding) {
+            Ok(proof) => proof,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<crucible_daemon::LoopbackCampaignServiceError>(),
+                    Some(crucible_daemon::LoopbackCampaignServiceError::Remote(
+                        crucible_campaign::CampaignServiceFailure::Stale { .. }
+                    ))
+                ) =>
+            {
+                // Background publication can advance the head between two
+                // authenticated reads. Retry from a fresh snapshot instead.
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Some((snapshot, finding, findings, proof)))
     })?;
     if let Some(found) = found {
         return Ok(found);
@@ -584,7 +683,9 @@ fn exercise_public_exact_pin_gc_flow(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     configuration: &str,
-) -> Result<(), Box<dyn Error>> {
+    finding: &str,
+    original_proof: &crucible_campaign::GetCampaignFindingObjectResponse,
+) -> Result<String, Box<dyn Error>> {
     use crucible_campaign::{CampaignName, ConfigurationId};
     use crucible_daemon::{
         DirectoryExactPinMaterializationStore, EXACT_PIN_MATERIALIZATION_DIRECTORY,
@@ -681,6 +782,11 @@ fn exercise_public_exact_pin_gc_flow(
         "unpin exact materialization through public campaign service",
     )?;
     assert_eq!(unpinned["operation"], "unpin");
+    let handoff_snapshot = json_string(&unpinned, "new_snapshot")?;
+    let handoff_head = campaign_status(fixture)?;
+    assert_eq!(handoff_head["snapshot"], handoff_snapshot);
+    let handoff_proof = query_authenticated_finding_proof(fixture, &handoff_snapshot, finding)?;
+    assert_eq!(handoff_proof.finding(), original_proof.finding());
     unpin_service.stop()?;
 
     let after_unpin_journal = fixture._temporary.path().join("gc-after-public-unpin");
@@ -705,7 +811,7 @@ fn exercise_public_exact_pin_gc_flow(
         "unpin did not return the exact checkpoint to the deletion candidates"
     );
 
-    Ok(())
+    Ok(handoff_snapshot)
 }
 
 fn wait_for_process_observation<T>(
