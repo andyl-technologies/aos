@@ -56,11 +56,19 @@
     then schema
     else throw "Service '${name}' option module must contain only an options declaration.";
 
-  serviceModuleFor = name: {
+  serviceModuleFor = name: let
+    nameParts = lib.splitString "." name;
+    localName = builtins.elemAt nameParts (builtins.length nameParts - 1);
+  in {
     imports =
       [
         {
           config._module.strict = true;
+          options.service = lib.mkOption {
+            type = serviceManagement.types.serviceDeclarationFields.service;
+            default = localName;
+            description = "Runtime identity of this service.";
+          };
           options.enable = lib.mkOption {
             type = lib.types.bool;
             default = false;

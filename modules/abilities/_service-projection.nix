@@ -9,7 +9,6 @@
   service = config.aos.services.${name};
   servicePolicy = lib.abilities.interfaces.servicePolicy;
   nameParts = lib.splitString "." name;
-  localServiceName = builtins.elemAt nameParts (builtins.length nameParts - 1);
   packageParts = builtins.genList (index: builtins.elemAt nameParts index) (builtins.length nameParts - 1);
   localConsumerInstance =
     if consumerInstance != null
@@ -23,7 +22,7 @@
     ["service" "enabled"];
   declaration =
     {
-      service = localServiceName;
+      inherit (service) service;
       enabled = true;
     }
     // lib.filterAttrs
