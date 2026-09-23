@@ -91,8 +91,8 @@ pub use format::{
     encode_idempotency_floor, encode_record,
 };
 pub use pin::{
-    CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1, PinCompactionFloorV1,
-    PinDrainEvidenceV1, PinDrainOutcomeV1, PinError, ReleasedCachePinV1,
+    CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1,
+    PinCompactionFloorV1, PinDrainEvidenceV1, PinDrainOutcomeV1, PinError, ReleasedCachePinV1,
     decode_pin_compaction_floor, encode_pin_compaction_floor,
 };
 pub use protected_journal::{

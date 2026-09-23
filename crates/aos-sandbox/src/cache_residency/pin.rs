@@ -6,6 +6,7 @@
 //! sufficient for any active lazy view that can refetch the object.
 
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use aos_sandbox_core::{
     AttachmentId, IncarnationId, ObjectDescriptor, ObjectDigest, ProjectId, SandboxId, ViewId,
@@ -52,6 +53,33 @@ pub struct PinCompactionFloorV1 {
     checkpoint: ObjectDigest,
     generation: u64,
     digest: ObjectDigest,
+}
+
+/// Proves that one retained release prefix is absent from the locked owner.
+///
+/// The proof borrows an owner snapshot through its lifetime. Retained pin IDs
+/// are checked again against the ledger before any tombstone is discarded.
+#[must_use = "the owner-validated absence must be consumed by pin compaction"]
+pub struct CachePinCompactionPhysicalProofV1<'snapshot> {
+    partition: PhysicalPartitionId,
+    floor: CachePinId,
+    released: Vec<CachePinId>,
+    _snapshot: PhantomData<&'snapshot ()>,
+}
+
+impl<'snapshot> CachePinCompactionPhysicalProofV1<'snapshot> {
+    pub(in crate::cache_residency) fn from_verified(
+        partition: PhysicalPartitionId,
+        floor: CachePinId,
+        released: Vec<CachePinId>,
+    ) -> Self {
+        Self {
+            partition,
+            floor,
+            released,
+            _snapshot: PhantomData,
+        }
+    }
 }
 
 impl PinCompactionFloorV1 {
@@ -700,7 +728,8 @@ impl CachePinLedgerV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`PinError::Conflict`] for a non-monotone or active floor.
+    /// Returns [`PinError::Conflict`] for a non-monotone or active floor, or
+    /// when physical absence was not proved for the exact released prefix.
     #[allow(clippy::too_many_arguments)]
     pub fn compact_released_through(
         &mut self,
@@ -708,6 +737,7 @@ impl CachePinLedgerV1 {
         capability: &VerifiedCacheCapabilityV1,
         partition: PhysicalPartitionId,
         floor: CachePinId,
+        physical_absence: CachePinCompactionPhysicalProofV1<'_>,
         checkpoint: ObjectDigest,
         generation: u64,
         valid_until: u64,
@@ -721,6 +751,13 @@ impl CachePinLedgerV1 {
                 .released
                 .range(..=floor)
                 .any(|(_, released)| released.pin.partition != partition)
+            || physical_absence.partition != partition
+            || physical_absence.floor != floor
+            || !self
+                .released
+                .range(..=floor)
+                .map(|(id, _)| *id)
+                .eq(physical_absence.released.iter().copied())
             || checkpoint.as_bytes() == &[0; 32]
         {
             return Err(PinError::Conflict);

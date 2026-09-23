@@ -2,7 +2,7 @@
 
 use crate::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1, CacheOwnerPinSnapshotV1,
-    CachePinKindV1, CachePinV1,
+    CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinV1,
 };
 
 use super::CacheRecoveryInventoryV1;
@@ -19,6 +19,55 @@ pub struct CacheLogicalOwnerPinDiscrepancyV1 {
 }
 
 impl CacheRecoveryInventoryV1 {
+    /// Proves that every retained release through a proposed floor is absent.
+    ///
+    /// The resulting proof borrows this validated owner snapshot and can only
+    /// compact the exact released-ID prefix that the ledger still retains.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched partitions, conflicting owner pins, or
+    /// duplicate retained identities.
+    pub fn prove_released_pin_compaction_absence<'snapshot, 'owner>(
+        &self,
+        owner: &'snapshot CacheOwnerPinSnapshotV1<'owner>,
+        floor: CachePinId,
+    ) -> Result<CachePinCompactionPhysicalProofV1<'snapshot>, CacheOwnerErrorV1> {
+        if self.authority_poisoned {
+            return Err(CacheOwnerErrorV1::RecoveryMismatch);
+        }
+        let partition = self.global.node_quota.partition;
+        let mut released = Vec::new();
+        for payload in &self.reconstructed {
+            if payload.plan.partition != partition {
+                return Err(CacheOwnerErrorV1::RecoveryMismatch);
+            }
+            for tombstone in &payload.released_pins {
+                let pin = &tombstone.pin;
+                if pin.partition != partition {
+                    return Err(CacheOwnerErrorV1::RecoveryMismatch);
+                }
+                if pin.id > floor {
+                    continue;
+                }
+
+                let id = CacheOwnerPinIdV1::for_cache_pin(partition, pin.id)?;
+                if owner.observe_pin(id, partition, &pin.object)? != CacheOwnerPinPresenceV1::Absent
+                {
+                    return Err(CacheOwnerErrorV1::RecoveryMismatch);
+                }
+                released.push(pin.id);
+            }
+        }
+        released.sort_unstable();
+        if released.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(CacheOwnerErrorV1::RecoveryMismatch);
+        }
+        Ok(CachePinCompactionPhysicalProofV1::from_verified(
+            partition, floor, released,
+        ))
+    }
+
     /// Compares every logical pin and release tombstone with one owner snapshot.
     ///
     /// The inventory is retained state, not permission to acquire or release a
