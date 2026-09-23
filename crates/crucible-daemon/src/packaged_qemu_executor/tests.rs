@@ -1406,8 +1406,13 @@ fn packaged_attempt_failure_diagnostic_retains_prior_failure_after_cleanup_error
     );
 
     assert!(diagnostic.contains("hot-fork cleanup failure"));
-    assert!(diagnostic.contains("caused by [2]: construct production hot-fork world lifecycle"));
-    assert!(diagnostic.contains("caused by [3]: original hot-fork failure"));
+    assert!(
+        diagnostic
+            .contains("construct production hot-fork world lifecycle: original hot-fork failure")
+    );
+    assert!(diagnostic.lines().any(|line| {
+        line.starts_with("  caused by [2]: ") && line.contains("hot-fork cleanup failure")
+    }));
 }
 
 fn controlled_submit_request(epoch: DaemonEpoch) -> SubmitAttemptRequest {
