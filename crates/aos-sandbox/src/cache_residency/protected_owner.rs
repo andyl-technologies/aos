@@ -747,7 +747,12 @@ impl CacheResidencyProtectedOwnerV1 {
             }) {
                 let payload = decode_cache_payload_for_lifecycle(envelope, &validator)?
                     .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-                let key = (envelope.key().kind(), payload.record.subject);
+                // The same object may have independent obligations in multiple partitions.
+                let key = (
+                    envelope.key().kind(),
+                    payload.record.partition,
+                    payload.record.subject,
+                );
                 match latest.get(&key) {
                     Some((sequence, _, _)) if *sequence >= payload.record.sequence => {}
                     _ => {
@@ -757,7 +762,7 @@ impl CacheResidencyProtectedOwnerV1 {
             }
 
             let mut entries = Vec::new();
-            for ((kind, _), (_, _envelope, payload)) in latest {
+            for ((kind, _, _), (_, _envelope, payload)) in latest {
                 match kind {
                     CacheResidencyProtectedRecordKindV1::Reservation
                         if matches!(
@@ -808,11 +813,13 @@ impl CacheResidencyProtectedOwnerV1 {
                             } else {
                                 crate::lifecycle::LifecycleResourceV1::View(pin.view)
                             };
+                            // Physical obligations remain distinct across disclosure partitions.
                             let identity = ObjectDigest::from_bytes(
                                 Sha256::new()
                                     .chain_update(
-                                        b"aos.sandbox.lifecycle.cache-pin-physical-row.v1\0",
+                                        b"aos.sandbox.lifecycle.cache-pin-physical-row.v2\0",
                                     )
+                                    .chain_update(pin.partition.digest().as_bytes())
                                     .chain_update(pin.id.as_bytes())
                                     .chain_update(pin.object.digest().as_bytes())
                                     .chain_update([pin.kind as u8])
