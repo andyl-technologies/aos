@@ -1232,20 +1232,28 @@ impl<L, V> SharedExecutor<L, V> {
     }
 
     fn report_pending_cleanup(&self) {
-        let last_activity = match self.last_promotion_activity.lock() {
-            Ok(activity) => *activity,
-            Err(poisoned) => *poisoned.into_inner(),
+        let (phase, attempt) = match self.last_promotion_activity.try_lock() {
+            Ok(activity) => match *activity {
+                Some((key, phase)) => (format!("{phase:?}"), key.attempt().to_string()),
+                None => (String::from("none"), String::from("none")),
+            },
+            Err(std::sync::TryLockError::WouldBlock) => {
+                (String::from("busy"), String::from("busy"))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                (String::from("poisoned"), String::from("poisoned"))
+            }
         };
-        let (phase, attempt) = match last_activity {
-            Some((key, phase)) => (format!("{phase:?}"), key.attempt().to_string()),
-            None => (String::from("none"), String::from("none")),
+        let (active, queued) = match self.promotions.try_counts() {
+            Ok((active, queued)) => (active.to_string(), queued.to_string()),
+            Err(reason) => (String::from(reason), String::from(reason)),
         };
         eprintln!(
             "CRUCIBLE-EXECUTOR-CLEANUP-PENDING-V1 finished_workers={} total_workers={} promotion_active={} promotion_queued={} promotion_last_phase={} promotion_last_attempt={} checkpoints_paused={} publication_retries={}",
             self.completion.finished_worker_count(),
             self.worker_count + self.promotion_worker_count,
-            self.promotions.active_count(),
-            self.promotions.pending_count(),
+            active,
+            queued,
             phase,
             attempt,
             self.counters.checkpoints_paused.load(Ordering::Relaxed),
