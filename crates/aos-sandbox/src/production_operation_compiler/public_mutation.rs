@@ -1403,8 +1403,10 @@ fn cache_consumer_mutation_intent(
 ///
 /// # Errors
 ///
-/// Rejects a non-cache request, a missing or cross-project consumer, a
-/// mismatched attachment-to-view binding, or a stale resource version.
+/// Rejects a non-cache request, a missing or cross-project consumer, a stale
+/// resource version, or acquisition against a non-current view or attachment.
+/// Release may name an older attachment source; the protected Cache owner must
+/// still match the exact retained pin before it can change physical state.
 pub fn recheck_cache_consumer_projection_v1(
     journal: &Journal,
     project: ProjectId,
@@ -1457,14 +1459,22 @@ fn validate_cache_consumer_projection(
         let attachment = load_attachment(journal, exact_id(attachment_id)?)?;
         let sandbox = load_sandbox(journal, exact_id(&attachment.sandbox_id)?)?;
         ensure_sandbox_project(&sandbox, project)?;
-        if attachment.source_view_id != view_id {
-            return Err(OperationCompilationError::Rejected);
+        if matches!(mutation_kind, CacheConsumerMutationV1::Acquire) {
+            let observed = sandbox
+                .observed
+                .as_option()
+                .ok_or(OperationCompilationError::Rejected)?;
+            if attachment.source_view_id != view_id
+                || attachment.phase.as_known() != Some(AttachmentPhase::ATTACHMENT_PHASE_READY)
+                || attachment.assignment_epoch == 0
+                || attachment.assignment_epoch != observed.assignment_epoch
+                || exact_id(&observed.incarnation_id).is_err()
+                || exact_id(&observed.node_id).is_err()
+            {
+                return Err(OperationCompilationError::Rejected);
+            }
         }
-        if matches!(mutation_kind, CacheConsumerMutationV1::Acquire)
-            && attachment.phase.as_known() != Some(AttachmentPhase::ATTACHMENT_PHASE_READY)
-        {
-            return Err(OperationCompilationError::Rejected);
-        }
+        // A replacement can change the attachment's current source before an old pin drains.
         validate_resource_mutation(&attachment.resource_version, mutation)?;
     }
 
