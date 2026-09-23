@@ -369,6 +369,75 @@ where
             .ok_or(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)
     }
 
+    // Both publication paths must recheck the same owners around derivation
+    // before either can commit a boot-inventory root.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    fn checked_lifecycle_boot_inventory_source(
+        &mut self,
+        challenge: crate::lifecycle::LifecycleBootInventoryBootstrapChallengeV1,
+        runtime: &crate::lifecycle::LifecycleAuthenticatedRuntimeInventoryBootstrapV1,
+        mounts: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        storage: &crate::DurableStorageResourceInventorySnapshotV1,
+        storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventoryBootstrapV1,
+        network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
+        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        transfer: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
+    ) -> Result<
+        crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1,
+        crate::lifecycle::LifecyclePhase6ErrorV1,
+    > {
+        use crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority;
+
+        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| StaleAuthority)?
+            .into_bytes();
+        if boot_before != challenge.host_boot() {
+            return Err(StaleAuthority);
+        }
+        storage
+            .recheck(self.controller.reconciler.journal_mut())
+            .map_err(|_| StaleAuthority)?;
+        let cache_inventory = cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| StaleAuthority)?;
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| StaleAuthority)?;
+        let source =
+            crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1::from_protected_join(
+                challenge,
+                runtime,
+                mounts,
+                storage_inventory,
+                storage,
+                network,
+                &cache_inventory,
+                transfer_inventory,
+            )?;
+        storage
+            .recheck(self.controller.reconciler.journal_mut())
+            .map_err(|_| StaleAuthority)?;
+        if cache
+            .lifecycle_boot_inventory()
+            .map_err(|_| StaleAuthority)?
+            != cache_inventory
+        {
+            return Err(StaleAuthority);
+        }
+        transfer
+            .recheck_lifecycle_transfer_inventory(transfer_inventory)
+            .map_err(|_| StaleAuthority)?;
+        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+            .map_err(|_| StaleAuthority)?
+            .into_bytes();
+        if boot_before != boot_after {
+            return Err(StaleAuthority);
+        }
+        Ok(source)
+    }
+
     /// Publishes the absent first lifecycle boot root from protected owners.
     ///
     /// Host, Mount, Storage, and Network must be challenge-authenticated by
@@ -407,51 +476,17 @@ where
         crate::lifecycle::LifecycleProgressCommitOutcomeV1,
         crate::lifecycle::LifecyclePhase6ErrorV1,
     > {
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != challenge.host_boot() {
-            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        storage
-            .recheck(self.controller.reconciler.journal_mut())
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let cache_inventory = cache
-            .lifecycle_boot_inventory()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        transfer
-            .recheck_lifecycle_transfer_inventory(transfer_inventory)
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let source =
-            crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1::from_protected_join(
-                challenge,
-                runtime,
-                mounts,
-                storage_inventory,
-                storage,
-                network,
-                &cache_inventory,
-                transfer_inventory,
-            )?;
-        storage
-            .recheck(self.controller.reconciler.journal_mut())
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        if cache
-            .lifecycle_boot_inventory()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
-            != cache_inventory
-        {
-            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        transfer
-            .recheck_lifecycle_transfer_inventory(transfer_inventory)
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != boot_after {
-            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
-        }
+        let source = self.checked_lifecycle_boot_inventory_source(
+            challenge,
+            runtime,
+            mounts,
+            storage,
+            storage_inventory,
+            network,
+            cache,
+            transfer,
+            transfer_inventory,
+        )?;
         self.controller
             .commit_lifecycle_boot_inventory_bootstrap(
                 lifecycle,
@@ -503,52 +538,19 @@ where
         crate::lifecycle::LifecycleProgressCommitOutcomeV1,
         crate::lifecycle::LifecyclePhase6ErrorV1,
     > {
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != challenge.host_boot() {
-            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        storage
-            .recheck(self.controller.reconciler.journal_mut())
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let cache_inventory = cache
-            .lifecycle_boot_inventory()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        transfer
-            .recheck_lifecycle_transfer_inventory(transfer_inventory)
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let source =
-            crate::lifecycle::LifecycleBootInventoryBootstrapSourceV1::from_protected_join(
+        let source = self
+            .checked_lifecycle_boot_inventory_source(
                 challenge,
                 runtime,
                 mounts,
-                storage_inventory,
                 storage,
+                storage_inventory,
                 network,
-                &cache_inventory,
+                cache,
+                transfer,
                 transfer_inventory,
             )?
             .into_refresh_source();
-        storage
-            .recheck(self.controller.reconciler.journal_mut())
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        if cache
-            .lifecycle_boot_inventory()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
-            != cache_inventory
-        {
-            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        transfer
-            .recheck_lifecycle_transfer_inventory(transfer_inventory)
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
-            .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != boot_after {
-            return Err(crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority);
-        }
         self.controller
             .commit_lifecycle_boot_inventory_refresh(
                 lifecycle,
