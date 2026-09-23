@@ -10,6 +10,7 @@
 
 mod authority;
 mod binding;
+#[cfg(unix)]
 pub mod build_frontend;
 mod effect;
 mod error;
@@ -20,6 +21,8 @@ mod package_projection;
 mod projection;
 mod schema;
 mod static_contract;
+#[cfg(unix)]
+mod static_contract_store;
 mod transition_authority;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -50,6 +53,9 @@ pub use static_contract::{
     CheckedStaticAbilityContract, CheckedStaticAbilityPackage, CheckedStaticPackageManifest,
     StaticAbilityArtifactClass, StaticAbilityContractExpectation,
     StaticAbilityContractValidationError, StaticAbilityExecutionStage, StaticAbilityPlatform,
+};
+#[cfg(unix)]
+pub use static_contract_store::{
     validate_static_ability_artifacts, validate_static_ability_artifacts_at_store_root,
 };
 pub use transition_authority::{
@@ -98,8 +104,8 @@ pub enum AbilityContractValidationError {
 /// Validates package-source and static-artifact data through one semantic gate.
 ///
 /// Package publication and byte-only static callers use this dispatch point.
-/// Artifact builders use [`validate_static_ability_artifacts`], which applies
-/// the same static gate before checking the referenced package companions.
+/// Host artifact builders use the filesystem-backed static gate before checking
+/// the referenced package companions.
 ///
 /// # Errors
 ///

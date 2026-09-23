@@ -1,6 +1,7 @@
 //! Tests for static ability contracts.
 
 use super::*;
+use crate::static_contract_store::validate_static_ability_artifacts_at_store_root;
 use aos_ability_model::encode_canonical;
 use serde_json::{Value, json};
 
