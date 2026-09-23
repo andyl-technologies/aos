@@ -1891,7 +1891,6 @@ fn debug_relay_error_response(error: crate::DebugRelayError) -> Response {
         crate::DebugRelayError::NotFound => StatusCode::NOT_FOUND,
         crate::DebugRelayError::StaleOrForeignLease => StatusCode::FORBIDDEN,
         crate::DebugRelayError::InvalidGatewayEndpoint
-        | crate::DebugRelayError::GatewayEndpointNotLoopback
         | crate::DebugRelayError::ChunkTooLarge { .. }
         | crate::DebugRelayError::InvalidReadMaximum { .. }
         | crate::DebugRelayError::InvalidReadOnlyPacket => StatusCode::BAD_REQUEST,
