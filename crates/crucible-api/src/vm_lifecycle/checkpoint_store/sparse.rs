@@ -30,6 +30,7 @@ struct SparseArtifactIdentityMaterial<'a> {
 /// capture work proportional to changed state instead of silently scanning the
 /// complete virtual disk. Omitted chunks have the canonical meaning of zeroes.
 pub(crate) fn stage_sparse_checkpoint_artifact_chunks_with_boundary(
+    source_file: &File,
     source: &Path,
     object_directory: &Path,
     role: &str,
@@ -38,12 +39,6 @@ pub(crate) fn stage_sparse_checkpoint_artifact_chunks_with_boundary(
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<ProductionCheckpointArtifact, SchedulerError> {
     boundary()?;
-    let source_file = File::open(source).map_err(|error| {
-        store_error(format!(
-            "open stopped sparse exact-checkpoint {role} {}: {error}",
-            source.display()
-        ))
-    })?;
     let source_length = source_file
         .metadata()
         .map_err(|error| {

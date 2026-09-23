@@ -20,10 +20,8 @@ use std::time::Duration;
 
 use crate::supervision::HostSupervisionDeadline;
 
-#[cfg(any(test, feature = "test-support"))]
-use rustix::fs::open;
 use rustix::fs::{
-    FileType, Mode, OFlags, fchmod, fchown, fcntl_getfl, fcntl_setfl, fstat, fstatfs, openat,
+    FileType, Mode, OFlags, fchmod, fchown, fcntl_getfl, fcntl_setfl, fstat, fstatfs, open, openat,
 };
 use thiserror::Error;
 
@@ -849,6 +847,103 @@ impl QemuPreparedRunDirectory {
             self.root_overlay_materialization = PreparedRootOverlayMaterialization::HotForkChild;
         }
         Ok(())
+    }
+
+    /// Authenticates the sealed child files and named directory before adoption.
+    ///
+    /// The lifecycle receives the directory path while its lease retains this
+    /// pinned authority. The path must still resolve to the same directory so
+    /// later generation operations cannot use a substituted namespace. The
+    /// production attempt root is supervisor-owned mode `0700`; the QEMU user
+    /// cannot replace this directory's parent entry after adoption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the child files were not sealed, a
+    /// pinned file changed, or the named directory no longer matches its pin.
+    pub fn validate_hot_fork_adoption(&self) -> Result<(), QemuSpawnError> {
+        if self.exact_device_state_materialization
+            != PreparedDeviceStateMaterialization::HotForkChild
+            || (self.launch_resources.has_root_overlay()
+                && self.root_overlay_materialization
+                    != PreparedRootOverlayMaterialization::HotForkChild)
+        {
+            return Err(invalid_input(
+                "adopt hot-fork child files",
+                "child files have not been sealed for this run directory",
+            ));
+        }
+
+        self.revalidate()?;
+        let named_directory = open(
+            &self.path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_source| QemuSpawnError::PreparedRunDirectoryChanged {
+            path: self.path.clone(),
+        })?;
+        let named_metadata = fstat(&named_directory).map_err(|source| QemuSpawnError::Io {
+            operation: "reinspect named hot-fork run directory",
+            source: source.into(),
+        })?;
+        if !self.directory_identity.matches(&named_metadata) {
+            return Err(QemuSpawnError::PreparedRunDirectoryChanged {
+                path: self.path.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Opens the current root overlay through this pinned generation directory.
+    ///
+    /// The returned file has its own open-file description for sparse extent
+    /// scanning. The named entry must still match the originally pinned inode;
+    /// a replacement or symlink fails before checkpoint bytes are read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when the overlay is absent, unready, or its
+    /// named entry differs from the pinned regular file.
+    pub fn open_root_overlay_for_checkpoint(&self) -> Result<File, QemuSpawnError> {
+        if !self.launch_resources.has_root_overlay()
+            || matches!(
+                self.root_overlay_materialization,
+                PreparedRootOverlayMaterialization::Absent
+                    | PreparedRootOverlayMaterialization::Updating
+            )
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        let identity = self.root_overlay_identity.ok_or_else(|| {
+            QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            }
+        })?;
+        let overlay = openat(
+            &self.directory,
+            crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "open pinned checkpoint root overlay",
+            source: source.into(),
+        })?;
+        let metadata = fstat(&overlay).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect pinned checkpoint root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&metadata)
+            || FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+        Ok(File::from(overlay))
     }
 
     /// Invalidates destinations after any fork exchange without a success token.

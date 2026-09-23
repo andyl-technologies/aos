@@ -12,6 +12,12 @@ impl ProductionVmNodeLease for RetainedOwnershipLease {
         &self.identity
     }
 
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
+        Err(loop_factory_error(
+            "retained test owner has no pinned root overlay",
+        ))
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }

@@ -1060,7 +1060,9 @@ fn successful_child_file_proof_seals_only_its_exact_destination_pair() -> Result
     )?;
 
     assert!(second.seal_hot_fork_child_file_transfer(&launch).is_err());
+    assert!(first.validate_hot_fork_adoption().is_err());
     first.seal_hot_fork_child_file_transfer(&launch)?;
+    first.validate_hot_fork_adoption()?;
     let mut vmstate = String::new();
     let mut overlay = String::new();
     std::fs::File::open(first_root.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?
@@ -1085,6 +1087,41 @@ fn successful_child_file_proof_seals_only_its_exact_destination_pair() -> Result
         )?,
         b"foreign-overlay"
     );
+
+    let renamed_root = first_root.path().with_extension("renamed");
+    std::fs::rename(first_root.path(), &renamed_root)?;
+    assert!(matches!(
+        first.validate_hot_fork_adoption(),
+        Err(crate::QemuSpawnError::PreparedRunDirectoryChanged { .. })
+    ));
+    std::fs::rename(&renamed_root, first_root.path())?;
+    first.validate_hot_fork_adoption()?;
+
+    let overlay_path = first_root
+        .path()
+        .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    let retained_overlay = first_root.path().join("retained-overlay.qcow2");
+    std::fs::rename(&overlay_path, &retained_overlay)?;
+    std::os::unix::fs::symlink(
+        second_root
+            .path()
+            .join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+        &overlay_path,
+    )?;
+    assert!(first.open_root_overlay_for_checkpoint().is_err());
+    std::fs::remove_file(&overlay_path)?;
+    std::fs::write(&overlay_path, b"replacement-overlay")?;
+    assert!(matches!(
+        first.open_root_overlay_for_checkpoint(),
+        Err(crate::QemuSpawnError::PreparedRootOverlayChanged { .. })
+    ));
+    std::fs::remove_file(&overlay_path)?;
+    std::fs::rename(&retained_overlay, &overlay_path)?;
+    let mut checkpoint_overlay = String::new();
+    first
+        .open_root_overlay_for_checkpoint()?
+        .read_to_string(&mut checkpoint_overlay)?;
+    assert_eq!(checkpoint_overlay, "scripted-hot-fork-root-overlay-v1\n");
 
     drop(launch);
     node.shutdown_child()?;

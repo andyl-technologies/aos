@@ -337,6 +337,19 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
         self.inner.identity()
     }
 
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
+        let run_directories = self
+            .run_directories
+            .lock()
+            .map_err(|_| launcher_message("QEMU generation run-directory registry is poisoned"))?;
+        let directory = run_directories.get(self.inner.identity()).ok_or_else(|| {
+            launcher_message("QEMU generation lost its retained run-directory authority")
+        })?;
+        directory
+            .open_root_overlay_for_checkpoint()
+            .map_err(|error| launcher_message(format!("open pinned checkpoint overlay: {error}")))
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         if !self.directory_released {
             let mut run_directories = self.run_directories.lock().map_err(|_| {

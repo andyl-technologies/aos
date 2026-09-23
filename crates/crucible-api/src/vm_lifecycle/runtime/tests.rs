@@ -121,6 +121,12 @@ impl ProductionVmNodeLease for RecordingNodeLease {
         &self.identity
     }
 
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
+        Err(loop_factory_error(
+            "recording test lease has no pinned root overlay",
+        ))
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         self.finish_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

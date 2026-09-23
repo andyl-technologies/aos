@@ -1534,6 +1534,14 @@ pub trait ProductionVmNodeLease: Send {
     #[must_use]
     fn identity(&self) -> &ProductionVmNodeGeneration;
 
+    /// Opens the exact pinned root overlay for a stopped checkpoint capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] if the generation cannot prove that the
+    /// named overlay still matches its retained file authority.
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError>;
+
     /// Releases generation-specific authority after QEMU reap is attested.
     ///
     /// Implementations must be idempotent. An error must retain or transfer

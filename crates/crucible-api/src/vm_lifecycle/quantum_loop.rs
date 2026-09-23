@@ -1834,6 +1834,22 @@ impl ProductionVmLifecycleLoop {
                         });
                     }
                 };
+                let overlay_file = self
+                    .node_leases
+                    .get(&node)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "exact checkpoint has no generation lease for `{}`",
+                            node.name
+                        ),
+                    })?
+                    .open_checkpoint_root_overlay()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "open pinned exact-checkpoint overlay for `{}`: {error}",
+                            node.name
+                        ),
+                    })?;
                 captured.push(PendingExactCapture {
                     node,
                     counter,
@@ -1857,6 +1873,7 @@ impl ProductionVmLifecycleLoop {
                             ),
                         })?;
                 let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+                    &overlay_file,
                     &source_overlay,
                     &staged_overlay_chunks,
                     "root overlay",
