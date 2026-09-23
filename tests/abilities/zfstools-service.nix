@@ -18,7 +18,7 @@
             compression = "zstd";
           };
         };
-        aos.services.zfsAutoSnapshot = {
+        aos.filesystems.zfs.autoSnapshot = {
           enable = enabled;
           datasets = ["tank/data"];
           intervals.hourly = {
@@ -131,6 +131,6 @@ in
     io_class = "idle";
     io_priority = 7;
   };
-  assert portableOptionTree (builtins.removeAttrs (lib.submoduleOptions enabled.options.aos.services.type._elementType ["aos" "services" "zfsAutoSnapshot"]) ["_module"]);
+  assert portableOptionTree enabled.options.aos.filesystems.zfs.autoSnapshot;
   assert portableOptionTree enabled.options.aos.filesystems.zfs;
   assert !(enabled.config ? systemd); true
