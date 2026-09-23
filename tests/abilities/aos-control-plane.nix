@@ -3,8 +3,6 @@
   lib,
   pkgs,
 }: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   command = {
     executable = {
       artifact = lib.abilities.packageOutput {package = "coreutils";};
@@ -13,58 +11,46 @@
     };
     ignore_failure = false;
   };
-  ownerService = key:
-    serviceManagement.forService {
-      inherit serviceTypes;
-      consumerInstance = "readiness-owners";
-      declaration = {
-        service = key;
-        enabled = true;
-        lifecycle = {
-          description = "Test owner for ${key}";
-          execution_model = "oneshot";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [command];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "never";
-          restart_delay_millis = 0;
-          configuration_change_action = "restart";
-          remain_after_exit = true;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        };
-        dependencies = {
-          prerequisites = [];
-          after = [];
-          before = [];
-          requires = [];
-          wants = [];
-        };
-        readiness = {
-          mechanism = "successful-exit";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-      };
+  ownerService = key: {
+    consumerInstance = "readiness-owners";
+    service = key;
+    enable = true;
+    lifecycle = {
+      description = "Test owner for ${key}";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [command];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
-  owners = [
-    (ownerService "configuration-evaluation")
-    (ownerService "package-profile-convergence")
-  ];
-  ownerContributions = builtins.map serviceManagement.splitDefinition owners;
+    dependencies = {
+      prerequisites = [];
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+  };
   aosModule = {
     imports = [../../pkgs/tools/aos/_abilities/control-plane/module.nix];
-    config.aos.abilities = lib.mkMerge (
-      [
-        {instances.readiness-owners = {};}
-      ]
-      ++ builtins.map (entry: entry.declarations) ownerContributions
-      ++ builtins.map (entry: entry.configured) ownerContributions
-    );
+    config.aos.services = {
+      "readiness-owners.configuration-evaluation" = ownerService "configuration-evaluation";
+      "readiness-owners.package-profile-convergence" = ownerService "package-profile-convergence";
+    };
   };
   selectedSystemdProvider = import ./_selected-package-provider.nix {
     inherit lib;

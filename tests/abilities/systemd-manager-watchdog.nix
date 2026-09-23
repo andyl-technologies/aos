@@ -17,7 +17,7 @@
       slot = "watchdog";
     };
   };
-  consumer = {...}: let
+  consumer = {config, ...}: let
     serviceManagement = lib.abilities.interfaces.serviceManagement;
     managerWatchdog = lib.abilities.interfaces.managerWatchdog.interface;
     request = serviceManagement.forProducer {
@@ -32,13 +32,12 @@
         kexec_timeout_millis = 60000;
       };
     };
-    definition = serviceManagement.splitDefinition request;
   in {
-    config.aos.abilities = lib.mkMerge [
-      {instances.application = {};}
-      definition.declarations
-      definition.configured
-    ];
+    config = serviceManagement.producerModule {
+      inherit config lib;
+      producers = [request];
+      enabled = true;
+    };
   };
   evaluate = {
     bindings,

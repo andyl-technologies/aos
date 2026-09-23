@@ -1,7 +1,5 @@
 ##! Package-owned service declarations for native ability reference tests.
 {lib, ...}: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   inherit (lib.abilities) packageOutput resultOf;
 
   command = entryPoint: arguments: {
@@ -13,33 +11,30 @@
     ignore_failure = false;
   };
 
-  setupService = serviceManagement.forService {
-    inherit serviceTypes;
+  setupService = {
     consumerInstance = "runtime-services";
-    declaration = {
-      service = "setup";
-      enabled = true;
-      lifecycle = {
-        description = "Prepare native ability reference fixture state";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command "ability-reference-setup" [])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      manager_identity = {
-        name = "ability-reference-setup";
-        aliases = [];
-      };
+    service = "setup";
+    enable = true;
+    lifecycle = {
+      description = "Prepare native ability reference fixture state";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command "ability-reference-setup" [])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    manager_identity = {
+      name = "ability-reference-setup";
+      aliases = [];
     };
   };
 
@@ -59,46 +54,42 @@
     reload ? null,
     managerName ? name,
   }:
-    serviceManagement.forService {
-      inherit serviceTypes;
+    {
       consumerInstance = "runtime-services";
-      declaration =
-        {
-          service = name;
-          enabled = true;
-          lifecycle = {
-            inherit description;
-            execution_model = "foreground";
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            inherit start;
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart = "on-failure";
-            restart_delay_millis = 1000;
-            configuration_change_action =
-              if reload == null
-              then "restart"
-              else "reload";
-            remain_after_exit = false;
-            start_timeout_millis = 90000;
-            stop_timeout_millis = 90000;
-          };
-          inherit dependencies;
-          manager_identity = {
-            name = managerName;
-            aliases = [];
-          };
-        }
-        // lib.optionalAttrs (reload != null) {
-          reload = {
-            strategy = "command";
-            commands = reload;
-            completion = "command-exit";
-          };
-        };
+      enable = true;
+      service = name;
+      lifecycle = {
+        inherit description;
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        inherit start;
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_delay_millis = 1000;
+        configuration_change_action =
+          if reload == null
+          then "restart"
+          else "reload";
+        remain_after_exit = false;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      inherit dependencies;
+      manager_identity = {
+        name = managerName;
+        aliases = [];
+      };
+    }
+    // lib.optionalAttrs (reload != null) {
+      reload = {
+        strategy = "command";
+        commands = reload;
+        completion = "command-exit";
+      };
     };
 
   matrixService = name:
@@ -123,23 +114,18 @@
       start = [(command "ability-reference-http-backend" [name (builtins.toString port)])];
     };
 
-  fragments = [
-    setupService
-    (matrixService "aos-matrix-primary")
-    (matrixService "aos-matrix-secondary")
-    (matrixService "aos-matrix-witness")
-    (matrixService "aos-matrix-foreign")
-    (nginxService "nginx-main")
-    (nginxService "nginx-secondary")
-    (backendService "app-a" 19001)
-    (backendService "app-b" 19002)
-    (backendService "app-c" 19003)
-  ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
+  services = {
+    setup = setupService;
+    aos-matrix-primary = matrixService "aos-matrix-primary";
+    aos-matrix-secondary = matrixService "aos-matrix-secondary";
+    aos-matrix-witness = matrixService "aos-matrix-witness";
+    aos-matrix-foreign = matrixService "aos-matrix-foreign";
+    nginx-main = nginxService "nginx-main";
+    nginx-secondary = nginxService "nginx-secondary";
+    app-a = backendService "app-a" 19001;
+    app-b = backendService "app-b" 19002;
+    app-c = backendService "app-c" 19003;
+  };
 in {
-  config.aos.abilities = lib.mkMerge (
-    [{instances.runtime-services = {};}]
-    ++ builtins.map (definition: definition.declarations) definitions
-    ++ builtins.map (definition: definition.configured) definitions
-  );
+  config.aos.services = lib.mapAttrs' (name: value: lib.nameValuePair "runtime-services.${name}" value) services;
 }
