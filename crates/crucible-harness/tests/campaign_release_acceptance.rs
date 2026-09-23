@@ -59,6 +59,7 @@ const REQUIRED_CLAIM_GATES: &[&str] = &[
     "gate:campaign-policy-timeout-real-qemu",
     "gate:campaign-finding-exact-read-only",
     "gate:campaign-finding-signal-bundle",
+    "gate:campaign-finding-fork-write",
 ];
 const MANUAL_GATES: &[&str] = &[
     "gate:campaign-operator-acceptance",
