@@ -359,6 +359,31 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], owner);
         assert_eq!(record[3], kind);
     }
+    for (schema, version, owner, kind) in [
+        (
+            "crucible.executor.finding-production-replay-capture",
+            "2",
+            "crucible-daemon::finding_production_replay",
+            "trace",
+        ),
+        (
+            "crucible.executor.finding-replay-capture-chunk",
+            "1",
+            "crucible-daemon::finding_replay_capture_store",
+            "trace",
+        ),
+        (
+            "crucible.lifecycle.resume-observation-source",
+            "1",
+            "crucible-api::lifecycle::session_contract",
+            "component-message",
+        ),
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing current capture or resume schema {schema}"));
+        assert_eq!((record[1], record[2], record[3]), (version, owner, kind));
+    }
     let loopback = rows
         .get("crucible.executor.loopback-frame")
         .unwrap_or_else(|| panic!("missing executor loopback frame schema"));
