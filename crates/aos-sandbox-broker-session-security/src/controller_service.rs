@@ -3180,6 +3180,13 @@ impl ProductionEffectExecutor {
 
         let operation_lineage = lifecycle_plan_resource_id(operation_id, b"operation-lineage");
         if !boot_is_current {
+            // Another lifecycle bootstrap must not roll the Storage session
+            // while an exact grouped request still owns its signed history.
+            if self.pending_atomic_snapshot.is_some() {
+                return Err(EffectFailure::Retryable(
+                    "Storage session is reserved for an atomic snapshot".to_owned(),
+                ));
+            }
             self.ensure_lifecycle_inventory_owners()?;
             let challenge = {
                 let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
