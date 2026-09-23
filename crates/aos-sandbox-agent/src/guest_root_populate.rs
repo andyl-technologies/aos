@@ -157,7 +157,7 @@ fn copy_regular(
     metadata: &Metadata,
     before_deadline: &mut impl FnMut() -> bool,
 ) -> Result<(), GuestRootPopulateErrorV1> {
-    if metadata.len() > MAXIMUM_FILE_BYTES {
+    if metadata.len() > MAXIMUM_FILE_BYTES || metadata.nlink() != 1 {
         return Err(GuestRootPopulateErrorV1::InvalidRoot);
     }
     let input = OpenOptions::new()
@@ -179,16 +179,25 @@ fn copy_regular(
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let existing = fs::symlink_metadata(destination)?;
-            if !existing.is_file() || existing.uid() != 0 || existing.mode() & 0o022 != 0 {
+            if !existing.is_file()
+                || existing.uid() != 0
+                || existing.mode() & 0o022 != 0
+                || existing.nlink() != 1
+            {
                 return Err(GuestRootPopulateErrorV1::InvalidRoot);
             }
             check_deadline(before_deadline)?;
             fs::set_permissions(destination, fs::Permissions::from_mode(0o600))?;
-            OpenOptions::new()
+            let file = OpenOptions::new()
                 .write(true)
-                .truncate(true)
                 .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-                .open(destination)?
+                .open(destination)?;
+            if file.metadata()?.ino() != existing.ino() {
+                return Err(GuestRootPopulateErrorV1::InvalidRoot);
+            }
+            check_deadline(before_deadline)?;
+            file.set_len(0)?;
+            file
         }
         Err(error) => return Err(error.into()),
     };
