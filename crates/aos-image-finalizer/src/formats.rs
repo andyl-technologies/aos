@@ -33,14 +33,16 @@ pub struct DiskFormatsV1 {
 ///
 /// # Errors
 ///
-/// Returns an error when conversion/checking fails, an encoding exceeds the
-/// download budget, a format contains an unrecognized nondeterministic field,
-/// or any reconstruction differs in length or SHA-256 from `logical_disk`.
+/// Returns an error when conversion/checking fails, a compressed or converted
+/// encoding exceeds its respective download budget, a format contains an
+/// unrecognized nondeterministic field, or any reconstruction differs in
+/// length or SHA-256 from `logical_disk`.
 pub async fn build_disk_formats(
     logical_disk: &Path,
     output_directory: &Path,
     scratch: &Path,
-    download_budget_bytes: u64,
+    raw_download_budget_bytes: u64,
+    converted_download_budget_bytes: u64,
     zstd: &PinnedTool,
     qemu_img: &PinnedTool,
 ) -> Result<DiskFormatsV1> {
@@ -64,7 +66,7 @@ pub async fn build_disk_formats(
             ],
             None,
             &raw_zstd,
-            download_budget_bytes,
+            raw_download_budget_bytes,
         )
         .await?;
     verify_zstd_round_trip(&raw_zstd, logical_size, logical_digest, scratch, zstd).await?;
@@ -78,7 +80,7 @@ pub async fn build_disk_formats(
         &qcow2,
     )
     .await?;
-    require_bounded(&qcow2, download_budget_bytes)?;
+    require_bounded(&qcow2, converted_download_budget_bytes)?;
     verify_qemu_round_trip(
         &qcow2,
         "qcow2",
@@ -100,7 +102,7 @@ pub async fn build_disk_formats(
     )
     .await?;
     normalize_vmdk_cid(&vmdk, logical_digest)?;
-    require_bounded(&vmdk, download_budget_bytes)?;
+    require_bounded(&vmdk, converted_download_budget_bytes)?;
     verify_qemu_round_trip(
         &vmdk,
         "vmdk",
@@ -122,7 +124,7 @@ pub async fn build_disk_formats(
     )
     .await?;
     normalize_vhd_footers(&vhd, logical_digest)?;
-    require_bounded(&vhd, download_budget_bytes)?;
+    require_bounded(&vhd, converted_download_budget_bytes)?;
     verify_qemu_round_trip(
         &vhd,
         "vpc",
