@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "c3db011e1e3827bfa31d6a4be0f794728dc038066ca7fe6a35f97b8239f05614";
+  sha256 = "b9705de09439151f0fd2c765646ec4ffa313552096aa31d791eb02d9dc7afc47";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -17,9 +17,15 @@
     "wake, allowing repeated require-ready watchdog resets to complete without"
     "external QMP activity. Make the fingerprint projection test wait for an"
     "executed guest TB before checking the outside-boundary marker result."
+    ""
+    "Preserve sim-only virtio-rng rate-limit and HPET comparator history across"
+    "exact VMState restore. Version the continuation projections that canonicalize"
+    "native QMP pause flags and disabled UART THRI state while retaining strict"
+    "guest-visible and active device state. Keep ordinary non-sim virtio ioeventfd"
+    "policy unchanged."
   ];
-  commit = "fd00c3942f8a5af5250022988813bf1eb653b1db";
-  tree = "6e3fc84600db615f3e50cf095ab004e4a21df329";
+  commit = "643a345e14f046f7d71f4ec8bfeda49866ecfdd7";
+  tree = "39a84b2d09a5526e88dcb12c92e19d7aa627d806";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -28,7 +34,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "fe7f690feec1956b20d36901a2b8f385827dcb981e1bac8d7df9ae4b62f153f3";
+  bundleSha256 = "0a433f0dc3529dd561a75ac9901189219507dccabe3267cf82f8511bdcf11c8d";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
