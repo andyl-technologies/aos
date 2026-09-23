@@ -3,6 +3,8 @@
   mkDerivation,
   fetchurl,
   buildPackages,
+  lib,
+  stdenv,
   perl,
   gettext,
 }: let
@@ -19,42 +21,50 @@ in
     buildDeps = [buildPackages.gnumake buildPackages.perl];
     runtimeDeps = [perl gettext];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf "$src"
-          cd Locale-gettext-${version}
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          make -j"$NIX_BUILD_CORES" SHELL="$CONFIG_SHELL"
-        '';
-      }
-      {
-        name = "check";
-        script = ''
-          make test SHELL="$CONFIG_SHELL"
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          make install SHELL="$CONFIG_SHELL"
-          cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
-          mkdir -p "$out/share/licenses/perl-locale-gettext"
-          cp README "$out/share/licenses/perl-locale-gettext/"
-        '';
-      }
-    ];
+    # The XS tests load the compiled module, so they run only on native builds.
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf "$src"
+            cd Locale-gettext-${version}
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"
+          '';
+        }
+        {
+          name = "build";
+          script = ''
+            make -j"$NIX_BUILD_CORES" SHELL="$CONFIG_SHELL"
+          '';
+        }
+      ]
+      ++ lib.optionals (!stdenv.isCross) [
+        {
+          name = "check";
+          script = ''
+            make test SHELL="$CONFIG_SHELL"
+          '';
+        }
+      ]
+      ++ [
+        {
+          name = "install";
+          script = ''
+            make install SHELL="$CONFIG_SHELL"
+            cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
+            # MakeMaker stamps this install log with wall-clock time.
+            rm -f "$out"/lib/perl5/perllocal.pod "$out"/lib/perl5/*-thread-multi/perllocal.pod
+            mkdir -p "$out/share/licenses/perl-locale-gettext"
+            cp README "$out/share/licenses/perl-locale-gettext/"
+          '';
+        }
+      ];
 
     meta = {
       description = "Perl interface to gettext message translation";
