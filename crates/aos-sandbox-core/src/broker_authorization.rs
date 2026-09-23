@@ -165,6 +165,8 @@ pub enum BrokerVerb {
     StorageRepairWorkspacePin,
     /// Snapshots one closed owned dataset group in a single Storage mutation.
     StorageAtomicSnapshot,
+    /// Populates and physically publishes one pinned guest workspace root.
+    StoragePopulateGuestRoot,
     /// Prepares assignment networking and mints its network handle.
     NetworkPrepare,
     /// Arms the ownership-lease gate for an existing network.
@@ -232,6 +234,7 @@ impl BrokerVerb {
             40 => Ok(Self::HostInstallAttachGate),
             41 => Ok(Self::HostQueryAttachGateReadiness),
             42 => Ok(Self::HostQueryAttachGateRoute),
+            43 => Ok(Self::StoragePopulateGuestRoot),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -282,6 +285,7 @@ impl BrokerVerb {
             Self::HostInstallAttachGate => 40,
             Self::HostQueryAttachGateReadiness => 41,
             Self::HostQueryAttachGateRoute => 42,
+            Self::StoragePopulateGuestRoot => 43,
         }
     }
 
@@ -323,7 +327,8 @@ impl BrokerVerb {
             | Self::StorageInventory
             | Self::StoragePrepareCatalog
             | Self::StorageRepairWorkspacePin
-            | Self::StorageAtomicSnapshot => BrokerAudience::Storage,
+            | Self::StorageAtomicSnapshot
+            | Self::StoragePopulateGuestRoot => BrokerAudience::Storage,
             Self::NetworkPrepare
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
@@ -352,6 +357,7 @@ impl BrokerVerb {
             | Self::StorageInventory
             | Self::StoragePrepareCatalog
             | Self::StorageAtomicSnapshot
+            | Self::StoragePopulateGuestRoot
             | Self::NetworkPrepare
             | Self::NetworkInventory
             | Self::GuardianArm => BrokerGrantTargetShape::Assignment,
@@ -1510,6 +1516,7 @@ mod tests {
             (40, BrokerVerb::HostInstallAttachGate),
             (41, BrokerVerb::HostQueryAttachGateReadiness),
             (42, BrokerVerb::HostQueryAttachGateRoute),
+            (43, BrokerVerb::StoragePopulateGuestRoot),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)

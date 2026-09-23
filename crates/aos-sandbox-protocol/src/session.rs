@@ -1240,6 +1240,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
     )
 }
@@ -1316,6 +1317,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+        | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
@@ -1828,6 +1830,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
                 | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         ) | (
             ProtocolId::NetworkBroker,

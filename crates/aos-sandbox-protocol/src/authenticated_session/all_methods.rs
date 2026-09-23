@@ -31,11 +31,12 @@ use crate::payload_scope::{decode_payload_scope_request, decode_payload_scope_re
 use crate::semantics::mount_scope::canonical_mount_scope_semantics_v1;
 use crate::semantics::payload_scope::canonical_payload_scope_semantics_v1;
 use crate::semantics::{
-    CanonicalNetworkSemanticsV1, CanonicalStoragePreparationSemanticsV1,
-    CanonicalStorageRepairSemanticsV1, CanonicalStorageSemanticsV1, CatalogBindingV1,
-    MountCatalogBindingV1, canonical_acquire_mount_source_semantics_v1,
-    canonical_destination_slot_semantics_v1, canonical_host_semantics_v1,
-    canonical_mount_semantics_v1, canonical_release_mount_source_acquisition_semantics_v1,
+    CanonicalNetworkSemanticsV1, CanonicalStorageGuestRootSemanticsV1,
+    CanonicalStoragePreparationSemanticsV1, CanonicalStorageRepairSemanticsV1,
+    CanonicalStorageSemanticsV1, CatalogBindingV1, MountCatalogBindingV1,
+    canonical_acquire_mount_source_semantics_v1, canonical_destination_slot_semantics_v1,
+    canonical_host_semantics_v1, canonical_mount_semantics_v1,
+    canonical_release_mount_source_acquisition_semantics_v1, decode_storage_guest_root_response_v1,
 };
 use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedBrokerError,
@@ -259,6 +260,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     StorageRepairWorkspacePin,
     /// One complete grouped Storage dataset snapshot.
     StorageAtomicSnapshot,
+    /// One separately admitted physical guest-root publication.
+    StoragePopulateGuestRoot,
     /// Mount source acquisition.
     MountAcquireSource,
     /// Mount source-acquisition release.
@@ -397,6 +400,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
             AuthenticatedBrokerMethodSemanticsV1::StorageAtomicSnapshot
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
+            AuthenticatedBrokerMethodSemanticsV1::StoragePopulateGuestRoot
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
@@ -1049,6 +1055,7 @@ enum RequestOutcomeContextV1 {
     MountReleaseSource(crate::ValidatedReleaseMountSourceAcquisitionRequest),
     StoragePrepare(CanonicalStoragePreparationSemanticsV1),
     StorageRepair(CanonicalStorageRepairSemanticsV1),
+    StorageGuestRoot(CanonicalStorageGuestRootSemanticsV1),
     MountPrepareCatalog(crate::mount_catalog::ValidatedMountCatalogPreparation),
     MountDestinationSlot(crate::ValidatedDestinationSlotRequest),
     HostPublishCatalog(crate::host_catalog::ValidatedHostCatalogPublication),
@@ -1305,6 +1312,15 @@ fn validate_request_semantics(
                 Some(*commitment.digest().as_bytes()),
             )
         }
+        BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
+            let request = CanonicalStorageGuestRootSemanticsV1::decode(body, peer, policy, now)?;
+            let commitment = request.argument_commitment();
+            (
+                AuthenticatedBrokerMethodSemanticsV1::StoragePopulateGuestRoot,
+                *request.header(),
+                Some(*commitment.digest().as_bytes()),
+            )
+        }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
@@ -1363,6 +1379,11 @@ fn validate_request_semantics(
                 CanonicalStorageRepairSemanticsV1::decode(body, peer, policy, now)
                     .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?,
             )
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
+            RequestOutcomeContextV1::StorageGuestRoot(CanonicalStorageGuestRootSemanticsV1::decode(
+                body, peer, policy, now,
+            )?)
         }
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
             RequestOutcomeContextV1::MountPrepareCatalog(decode_mount_catalog_preparation(
@@ -1619,6 +1640,22 @@ fn validate_success_semantics(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
             decode_atomic_storage_snapshot_response(body)?;
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
+            let RequestOutcomeContextV1::StorageGuestRoot(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            let proof = decode_storage_guest_root_response_v1(body, maximum)?;
+            if proof.sandbox != *original.fence().sandbox_id()
+                || proof.incarnation != *original.fence().incarnation_id()
+                || proof.assignment_epoch != original.fence().assignment_epoch()
+                || proof.assignment_digest != *original.fence().assignment_digest()
+                || proof.workspace_handle != original.workspace_handle()
+                || proof.creation_operation != original.creation_operation_id()
+            {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            }
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

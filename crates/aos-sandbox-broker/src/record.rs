@@ -550,6 +550,7 @@ impl BrokerEffectIntentV1 {
                 BrokerVerb::StorageCreateWorkspace
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::StorageAtomicSnapshot
+                | BrokerVerb::StoragePopulateGuestRoot
                 | BrokerVerb::NetworkPrepare,
                 BrokerGrantTarget::Assignment,
             ) => true,
@@ -1310,6 +1311,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Storage, BrokerVerb::StoragePrepareCatalog) => 8,
         (BrokerDomain::Storage, BrokerVerb::StorageRepairWorkspacePin) => 9,
         (BrokerDomain::Storage, BrokerVerb::StorageAtomicSnapshot) => 10,
+        (BrokerDomain::Storage, BrokerVerb::StoragePopulateGuestRoot) => 11,
         _ => 0,
     }
 }
@@ -1342,6 +1344,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Storage, 8) => Ok(BrokerVerb::StoragePrepareCatalog),
         (BrokerDomain::Storage, 9) => Ok(BrokerVerb::StorageRepairWorkspacePin),
         (BrokerDomain::Storage, 10) => Ok(BrokerVerb::StorageAtomicSnapshot),
+        (BrokerDomain::Storage, 11) => Ok(BrokerVerb::StoragePopulateGuestRoot),
         (BrokerDomain::Network, 1) => Ok(BrokerVerb::NetworkPrepare),
         (BrokerDomain::Network, 2) => Ok(BrokerVerb::NetworkArmLease),
         (BrokerDomain::Network, 3) => Ok(BrokerVerb::NetworkRenewLease),

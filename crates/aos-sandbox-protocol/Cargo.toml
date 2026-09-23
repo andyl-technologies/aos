@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
+aos-sandbox-agent = { path = "../aos-sandbox-agent" }
 aos-sandbox-broker-session-protocol = { path = "../aos-sandbox-broker-session-protocol" }
 aos-sandbox-source-provider-protocol = { path = "../aos-sandbox-source-provider-protocol" }
 buffa.workspace = true

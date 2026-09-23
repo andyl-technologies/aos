@@ -1117,6 +1117,7 @@ name = "aos-sandbox-protocol"
 version = "0.1.0"
 dependencies = [
  "aos-proto",
+ "aos-sandbox-agent",
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
  "aos-sandbox-source-provider-protocol",

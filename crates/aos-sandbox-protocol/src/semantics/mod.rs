@@ -17,6 +17,7 @@ pub mod mount_source_acquisition;
 pub mod network;
 pub mod payload_scope;
 pub mod storage;
+pub mod storage_guest_root;
 pub mod storage_prepare;
 pub mod storage_repair;
 
@@ -54,6 +55,9 @@ pub use network::{
 };
 pub use storage::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageSemanticsError,
+};
+pub use storage_guest_root::{
+    CanonicalStorageGuestRootSemanticsV1, decode_storage_guest_root_response_v1,
 };
 pub use storage_prepare::{
     CanonicalStoragePreparationSemanticsV1, StoragePreparationOperationV1,

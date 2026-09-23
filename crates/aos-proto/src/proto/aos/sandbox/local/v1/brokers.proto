@@ -93,6 +93,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;
   BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
   BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
+  BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -562,6 +563,21 @@ message RepairStorageWorkspacePinRequest {
   bytes storage_handle = 4; // Exactly 32 bytes.
 }
 
+// A separate freshly admitted effect after a root pin exists. All physical
+// paths, dataset identity, template closure, and package binding come from
+// protected Storage state, never from this request.
+message PopulateStorageGuestRootRequestV1 {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes operation_id = 3; // Fresh 16-byte publication-effect operation.
+  bytes workspace_handle = 4; // Exact current 32-byte workspace handle.
+  bytes creation_operation_id = 5; // Exact original 16-byte Create operation.
+}
+
+message PopulateStorageGuestRootResponseV1 {
+  bytes publication_proof = 1; // Exact physically read-back 266-byte AOSGRP01.
+}
+
 message StorageResult {
   bytes storage_handle = 1;
   bytes immutable_version_handle = 2;
@@ -586,6 +602,8 @@ message StorageWorkspaceInventoryRecord {
   uint32 uid_range_start = 8;
   uint32 uid_range_size = 9;
   bytes resource_digest = 10; // Commitment to the complete broker observation.
+  bytes creation_operation_id = 11; // Exactly 16 bytes; original committed Create/Clone operation.
+  bytes guest_root_publication_proof = 12; // Empty until protected physical AOSGRP01 readback; otherwise exactly 266 bytes.
 }
 
 // One exact physical object from the protected Storage catalog. Resource and
@@ -650,6 +668,8 @@ message InventoryStorageResourcesResponse {
 service StorageBroker {
   rpc PrepareCatalog(PrepareStorageCatalogRequest) returns (PrepareStorageCatalogResponse);
   rpc RepairWorkspacePin(RepairStorageWorkspacePinRequest) returns (StorageResult);
+  rpc PopulateGuestRoot(PopulateStorageGuestRootRequestV1)
+      returns (PopulateStorageGuestRootResponseV1);
   rpc ApplyStorage(ApplyStorageRequest) returns (StorageResult);
   rpc ApplyAtomicSnapshot(ApplyAtomicStorageSnapshotRequest)
       returns (AtomicStorageSnapshotResponse);

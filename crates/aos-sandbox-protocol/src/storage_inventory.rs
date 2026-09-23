@@ -23,6 +23,7 @@ use aos_proto::aos::sandbox::local::v1::{
     StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
     StorageWorkspaceInventoryRecord,
 };
+use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion};
 use buffa::Message as _;
 
@@ -90,6 +91,8 @@ pub struct ValidatedStorageWorkspace {
     root_device: u64,
     root_inode: u64,
     dataset_guid: u64,
+    creation_operation_id: [u8; 16],
+    guest_root_publication_proof: Option<GuestRootPublicationProofV1>,
     uid_range_start: u32,
     uid_range_size: u32,
     resource_digest: [u8; 32],
@@ -142,6 +145,21 @@ impl ValidatedStorageWorkspace {
     #[must_use]
     pub const fn dataset_guid(&self) -> u64 {
         self.dataset_guid
+    }
+
+    /// Returns the operation that originally created this dataset and handle.
+    #[must_use]
+    pub const fn creation_operation_id(&self) -> &[u8; 16] {
+        &self.creation_operation_id
+    }
+
+    /// Returns protected Storage's physically read-back guest-root proof, if published.
+    ///
+    /// Absence is not launch readiness. Callers must compare this proof to the
+    /// current assignment and their independently pinned package binding.
+    #[must_use]
+    pub const fn guest_root_publication_proof(&self) -> Option<GuestRootPublicationProofV1> {
+        self.guest_root_publication_proof
     }
 
     /// Returns the first host identity mapped to guest identity zero.
@@ -503,6 +521,32 @@ fn validate_workspace(
     }
     let resource_digest =
         exact_nonzero::<32>(&record.resource_digest, "storage inventory resource_digest")?;
+    let creation_operation_id = exact_nonzero::<16>(
+        &record.creation_operation_id,
+        "storage inventory creation_operation_id",
+    )?;
+    let guest_root_publication_proof = if record.guest_root_publication_proof.is_empty() {
+        None
+    } else {
+        let proof = GuestRootPublicationProofV1::decode(&record.guest_root_publication_proof)
+            .map_err(|_| {
+                ProtocolValidationError::InvalidField("storage inventory guest root proof")
+            })?;
+        if proof.sandbox != *fence.sandbox_id()
+            || proof.incarnation != *fence.incarnation_id()
+            || proof.assignment_epoch != fence.assignment_epoch()
+            || proof.assignment_digest != *fence.assignment_digest()
+            || proof.creation_operation != creation_operation_id
+            || proof.workspace_handle != workspace_handle
+            || proof.dataset_guid != record.dataset_guid
+            || proof.root_image_digest != *root_image.digest().as_bytes()
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "storage inventory guest root binding",
+            ));
+        }
+        Some(proof)
+    };
 
     Ok(ValidatedStorageWorkspace {
         workspace_handle,
@@ -513,6 +557,8 @@ fn validate_workspace(
         root_device: record.root_device,
         root_inode: record.root_inode,
         dataset_guid: record.dataset_guid,
+        creation_operation_id,
+        guest_root_publication_proof,
         uid_range_start: record.uid_range_start,
         uid_range_size: record.uid_range_size,
         resource_digest,
@@ -583,6 +629,7 @@ mod tests {
             root_device: u64::from(handle),
             root_inode: u64::from(handle) + 10,
             dataset_guid: u64::from(handle) + 20,
+            creation_operation_id: vec![handle + 5; 16],
             uid_range_start: range_start,
             uid_range_size: MINIMUM_HOST_IDENTITY_RANGE,
             resource_digest: vec![handle + 4; 32],

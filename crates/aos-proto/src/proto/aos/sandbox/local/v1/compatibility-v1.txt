@@ -32,6 +32,17 @@ BROKER_METHOD_HOST_QUERY_EXECUTION = 27;
 BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
+BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
+message PopulateStorageGuestRootRequestV1 {
+RequestHeader header = 1;
+AssignmentFence fence = 2;
+bytes operation_id = 3;
+bytes workspace_handle = 4;
+bytes creation_operation_id = 5;
+message PopulateStorageGuestRootResponseV1 {
+bytes publication_proof = 1;
+rpc PopulateGuestRoot(PopulateStorageGuestRootRequestV1)
+returns (PopulateStorageGuestRootResponseV1);
 message InstallHostAttachGateRequestV1 {
 RequestHeader header = 1;
 bytes pending_grant = 2;

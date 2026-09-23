@@ -1721,6 +1721,7 @@ impl WorkspaceRecordV1 {
             root_device: self.root_device,
             root_inode: self.root_inode,
             dataset_guid: self.dataset_guid,
+            creation_operation_id: self.creation_operation_id.to_vec(),
             uid_range_start: self.uid_range_start,
             uid_range_size: self.uid_range_size,
             resource_digest: self.resource_digest.to_vec(),
