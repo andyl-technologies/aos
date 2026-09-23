@@ -30,6 +30,7 @@
     "gate:hot-fork-equivalence"
     "gate:hot-fork-isolation"
     "gate:hot-fork-scaling"
+    "gate:host-clone-cost"
     "gate:world-fork-atomicity"
     "gate:exact-closure-streaming"
     "gate:campaign-store-equivalence"
@@ -250,7 +251,7 @@ in
             cat > "$test_root/required-gates/result" <<RESULT
             PASS
             gate=gate:campaign-required-gates
-            required_claim_count=23
+            required_claim_count=24
             all_required_claims_authenticated=true
             manifest_sha256=$required_gates_manifest_sha
             required_claim_gates_sha256=$required_claim_gates_sha
@@ -260,7 +261,7 @@ in
             ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
               --probe-required-gates "$test_root/required-gates" \
               "$test_root/required-claim-gates.txt"
-            sed -i 's/^required_claim_count=23$/required_claim_count=22/' \
+            sed -i 's/^required_claim_count=24$/required_claim_count=23/' \
               "$test_root/required-gates/result"
             if ${pkgs.bash}/bin/bash ${./_phase9-campaign-release-acceptance.sh} \
               --probe-required-gates "$test_root/required-gates" \
@@ -368,7 +369,7 @@ in
             detached_signatures=required
             external_trusted_signers=required
             dogfood_scale_measurements=required
-            required_claim_count=23
+            required_claim_count=24
             required_claim_gates_sha256=$(sha256sum "$out/required-claim-gates.txt" | cut -d ' ' -f 1)
             acceptance=not-evaluated
             RESULT

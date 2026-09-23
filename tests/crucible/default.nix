@@ -1203,6 +1203,7 @@ in rec {
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
         "checks.crucible.phase7.gates.hotForkIsolation.rawGate" = phase7.gates.hotForkIsolation.rawGate;
         "checks.crucible.phase7.gates.hotForkScaling.rawGate" = phase7.gates.hotForkScaling.rawGate;
+        "checks.crucible.phase7.gates.hostCloneCost.rawGate" = phase7.gates.hostCloneCost.rawGate;
         "checks.crucible.phase7.gates.worldForkAtomicity" = phase7.gates.worldForkAtomicity;
         "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
         "checks.crucible.phase9.gates.campaignOperationalContinuity" = phase9.gates.campaignOperationalContinuity;
@@ -2888,6 +2889,16 @@ in rec {
         gateName = "gate:hot-fork-scaling";
         owner = "crucible-daemon";
       };
+      hostCloneCost = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase7.gates.hostCloneCost";
+        gate = import ./phase7-crucible-host-clone-cost.nix {
+          inherit pkgs;
+          attrPath = "checks.crucible.phase7.gates.hostCloneCost.rawGate";
+          taskIds = ["T-CAM-7.3"];
+          nativeScaling = phase7.gates.hotForkScaling.rawGate;
+        };
+        dependencies = [phase7.gates.hotForkScaling.rawGate];
+      };
       worldForkAtomicity = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.worldForkAtomicity";
         gate = phase7.qemuHotForkAtomicWorldVm;
@@ -3104,6 +3115,7 @@ in rec {
           phase5.gates.exactClosureStreaming
           phase7.gates.hotForkIsolation
           phase7.gates.hotForkScaling
+          phase7.gates.hostCloneCost
           phase7.gates.worldForkAtomicity
         ];
         requiredClaims = [
@@ -3168,6 +3180,11 @@ in rec {
             gate = "gate:hot-fork-scaling";
             result = phase7.gates.hotForkScaling.rawGate;
             requiredLines = ["gate=gate:hot-fork-scaling"];
+          }
+          {
+            gate = "gate:host-clone-cost";
+            result = phase7.gates.hostCloneCost.rawGate;
+            requiredLines = ["gate=gate:host-clone-cost"];
           }
           {
             gate = "gate:world-fork-atomicity";
