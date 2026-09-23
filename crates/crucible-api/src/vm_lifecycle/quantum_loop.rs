@@ -119,7 +119,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }
-            if self.terminal_verdict.is_some() {
+            if self.terminal_stop_ready() {
                 let scheduler = self.inner.loop_impl();
                 let mut outcome = QuantumOutcome {
                     configuration: scheduler.configuration().clone(),
@@ -744,11 +744,19 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     }
 
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
-        self.terminal_verdict.take()
+        if self.terminal_stop_ready() {
+            self.terminal_verdict.take()
+        } else {
+            None
+        }
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
-        self.terminal_verdict.clone()
+        if self.terminal_stop_ready() {
+            self.terminal_verdict.clone()
+        } else {
+            None
+        }
     }
 
     fn prepare_terminal_checkpoint(
