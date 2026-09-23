@@ -42,6 +42,7 @@ pub(super) struct PromotedNativeHotTemplate {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct NativeHotChildMeasurement {
     pub(super) world_launch_nanoseconds: u64,
+    pub(super) child_ready_nanoseconds: u64,
     pub(super) ready_nanoseconds: u64,
     pub(super) ready_millis: u64,
     pub(super) processes: usize,
@@ -252,6 +253,7 @@ fn start_hot_child_with_lineage(
     let materialization = lifecycle
         .start_materialization()
         .expect("inspect hot child materialization");
+    let child_ready_nanoseconds = operational_monotonic_nanoseconds().saturating_sub(fork_started);
     let processes = cgroup_processes(&paths.cgroup_root.join(lane));
     let memory = process_memory_evidence(&processes);
     let allocated_bytes = allocated_tree_bytes(&paths.storage_root.join(lane));
@@ -280,6 +282,7 @@ fn start_hot_child_with_lineage(
     let node_launch_count = factory.node_launch_nanoseconds().len();
     let measurement = NativeHotChildMeasurement {
         world_launch_nanoseconds,
+        child_ready_nanoseconds,
         ready_nanoseconds,
         ready_millis: ready_nanoseconds / 1_000_000,
         processes: processes.len(),

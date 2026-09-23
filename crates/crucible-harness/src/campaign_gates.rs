@@ -200,6 +200,10 @@ const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
     },
     ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
     },
     ExactSelector {

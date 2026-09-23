@@ -124,6 +124,8 @@ in
       for lane in source target; do
         setup_lane "$lane" 1073741824
       done
+      setup_lane child-ready-source 1073741824
+      setup_lane child-ready-target 1073741824
       for depth in 1 2 3; do
         setup_lane "depth-$depth-source" 536870912
         setup_lane "depth-$depth-target" 335544320
@@ -239,6 +241,39 @@ in
       ${pkgs.grep}/bin/grep -Fq 'child_allocated_bytes=' /tmp/daemon-scaling-result
       run_exact_lib_test \
         crucible-daemon \
+        qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds \
+        /tmp/child-ready-p95-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'child_ready_reference=single-vm-64mib-1vcpu' /tmp/child-ready-p95-result
+      ${pkgs.grep}/bin/grep -Fxq 'child_ready_sample_count=20' /tmp/child-ready-p95-result
+      ${pkgs.grep}/bin/grep -Fxq \
+        'child_ready_p95_limit_ns=100000000' /tmp/child-ready-p95-result
+      ${pkgs.gawk}/bin/awk -F= '
+        $1 == "child_ready_samples_ns" {
+          sample_lines++;
+          count = split($2, raw, ",");
+          if (count != 20) bad = 1;
+          for (i = 1; i <= count; i++) {
+            if (raw[i] !~ /^[0-9]+$/) bad = 1;
+            samples[i] = raw[i] + 0;
+          }
+          if (count == 20) {
+            asort(samples);
+            # Nearest-rank p95 of 20 measurements is the 19th ordered value.
+            computed_p95 = samples[19];
+          }
+        }
+        $1 == "child_ready_p95_ns" {
+          p95_lines++;
+          if ($2 !~ /^[0-9]+$/) bad = 1;
+          reported_p95 = $2 + 0;
+        }
+        END {
+          if (sample_lines != 1 || p95_lines != 1 || bad ||
+              computed_p95 != reported_p95 || computed_p95 >= 100000000) exit 1;
+        }' /tmp/child-ready-p95-result
+      run_exact_lib_test \
+        crucible-daemon \
         qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths \
         /tmp/depth-scaling-result
       ${pkgs.grep}/bin/grep -Fxq 'semantic_template_depth=3' /tmp/depth-scaling-result
@@ -303,6 +338,7 @@ in
       cat /tmp/host-clone-cost-result \
         /tmp/fault-clone-cost-result \
         /tmp/daemon-scaling-result \
+        /tmp/child-ready-p95-result \
         /tmp/depth-scaling-result \
         /tmp/memory-scaling-result \
         /tmp/production-stress-result \
