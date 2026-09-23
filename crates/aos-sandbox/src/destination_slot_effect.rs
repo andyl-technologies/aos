@@ -514,6 +514,18 @@ where
     completion::dispatch_current(journal, attempt, client, clock)
 }
 
+pub(crate) fn complete_authenticated_current<T>(
+    journal: &mut Journal,
+    attempt: DurableCurrentDestinationSlotAttemptV1,
+    outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    clock: &mut T,
+) -> Result<CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    completion::complete_authenticated_current(journal, attempt, outcome, clock)
+}
+
 pub(crate) fn validate_attempt_namespace(
     journal: &mut Journal,
 ) -> Result<(), DestinationSlotEffectError> {

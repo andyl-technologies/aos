@@ -20,13 +20,13 @@ use crate::attachment_state::{
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
 };
 use crate::destination_slot_effect::{
-    self, CompletedCurrentDestinationSlotAttemptV1, DestinationSlotDispatchClient,
-    DestinationSlotEffectError, DurableCurrentDestinationSlotAttemptV1,
-    PreparedCurrentDestinationSlotDispatchV1, PreparedCurrentDestinationSlotResumeDispatchV1,
-    PreparedCurrentDestinationSlotResumeV1, PreparedCurrentDestinationSlotV1,
+    self, CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError,
+    DurableCurrentDestinationSlotAttemptV1, PreparedCurrentDestinationSlotDispatchV1,
+    PreparedCurrentDestinationSlotResumeDispatchV1, PreparedCurrentDestinationSlotResumeV1,
+    PreparedCurrentDestinationSlotV1,
 };
 use crate::destination_slot_inventory::{
-    self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryClient,
+    self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryObservationFenceV1,
     DurableDestinationSlotInventorySnapshotV1,
 };
 use crate::mount_attempt::{CurrentMountInventoryReconciliationV1, MountAttemptError};
@@ -37,6 +37,7 @@ use crate::runtime_scope::{
     RuntimeGenerationError, RuntimeScopeClient, RuntimeScopeHolder,
 };
 use crate::{Journal, JournalError, SignedBrokerPlan};
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
 /// Reports failure to bind a fresh Host observation to protected namespace authority.
 #[derive(Debug, thiserror::Error)]
@@ -159,21 +160,38 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         attachment_slot_state::commit_current(self.journal, target, mutation, clock)
     }
 
-    /// Records one complete, freshly queried Mount destination-slot inventory.
-    ///
-    /// The snapshot is observation evidence; it cannot authorize a materialize
-    /// or reap effect without current signed assignment authority.
+    /// Captures controller state before an authenticated Mount slot query.
     ///
     /// # Errors
     ///
-    /// Rejects unprotected custody, unauthenticated or malformed broker state,
-    /// stale controller state, and failed durability.
-    pub fn record_slot_inventory(
+    /// Rejects unprotected custody or invalid prior inventory.
+    pub fn begin_authenticated_slot_inventory(
         &mut self,
-        client: DestinationSlotInventoryClient,
+    ) -> Result<DestinationSlotInventoryObservationFenceV1, MountAttemptError> {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_inventory::authenticated::begin_observation(self.journal)
+    }
+
+    /// Commits a complete Mount slot inventory from a current authenticated session.
+    ///
+    /// The session owner must recheck terminal currentness immediately before
+    /// completion. The snapshot remains nonauthorizing observation evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, changed controller state, a wrong method
+    /// or direction, malformed or regressing inventory, and failed durability.
+    pub fn complete_authenticated_slot_inventory(
+        &mut self,
+        fence: DestinationSlotInventoryObservationFenceV1,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
         self.journal.ensure_protected_authority()?;
-        destination_slot_inventory::record_snapshot(self.journal, client)
+        destination_slot_inventory::authenticated::complete_observation(
+            self.journal,
+            fence,
+            outcome,
+        )
     }
 
     /// Classifies an exact current logical slot against a retained Mount query.
@@ -320,26 +338,34 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         destination_slot_effect::resume_current(self.journal, prepared, clock)
     }
 
-    /// Dispatches a durable slot attempt through an authenticated Mount channel.
+    /// Commits one terminal result from the retained authenticated Mount session.
     ///
-    /// Success records the exact Mount receipt. A later fresh signed inventory
-    /// must still confirm physical Ready before an attachment may proceed.
+    /// The session owner must recheck terminal currentness immediately before
+    /// this call. Exact signed request bytes and the durable attempt are matched
+    /// before the receipt is committed. A subsequent fresh authenticated slot
+    /// inventory must confirm physical Ready independently.
     ///
     /// # Errors
     ///
-    /// Rejects unprotected custody, stale authority, broker or channel
-    /// failure, a mismatched receipt, and failed completion durability.
-    pub fn dispatch_current_slot_effect<T>(
+    /// Rejects unprotected custody, stale assignment or attempt authority,
+    /// wrong method, direction or request bytes, broker failure, a mismatched
+    /// receipt, or failed completion durability.
+    pub fn complete_authenticated_slot_effect<T>(
         &mut self,
         attempt: DurableCurrentDestinationSlotAttemptV1,
-        client: DestinationSlotDispatchClient,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
         clock: &mut T,
     ) -> Result<CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         self.journal.ensure_protected_authority()?;
-        destination_slot_effect::dispatch_current(self.journal, attempt, client, clock)
+        destination_slot_effect::complete_authenticated_current(
+            self.journal,
+            attempt,
+            outcome,
+            clock,
+        )
     }
 
     /// Loads the exact historical generation committed by an operation.

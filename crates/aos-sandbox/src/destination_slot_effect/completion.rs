@@ -374,11 +374,62 @@ where
 {
     attempt.recheck(journal, clock)?;
     let success = client.dispatch(&attempt)?;
-    let history = History::load(journal)?;
-    let (record, validated) = CompletionRecord::from_attempt(attempt.record(), success.receipt)?;
+    let validated = validate_receipt(attempt.record(), &success.receipt)?;
     if validated != success.result {
         return Err(DestinationSlotEffectError::CorruptState);
     }
+    commit_success(journal, attempt, success.receipt, clock)
+}
+
+pub(super) fn complete_authenticated_current<T>(
+    journal: &mut Journal,
+    attempt: DurableCurrentDestinationSlotAttemptV1,
+    outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    clock: &mut T,
+) -> Result<CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    use aos_sandbox_protocol::authenticated_session::all_methods::{
+        AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerOutcomeDirectionV1,
+    };
+
+    attempt.recheck(journal, clock)?;
+    let dispatch = attempt.dispatch_attempt();
+    let request = outcome.request();
+    if outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        || outcome.method() != METHOD
+        || request.canonical_packet() != dispatch.packet()
+        || request.exact_body() != dispatch.body()
+        || request.request_id() != attempt.request_id()
+        || request.deadline_boottime_nanoseconds() != dispatch.deadline_boottime_nanoseconds()
+        || request.authorization().is_none()
+    {
+        return Err(DestinationSlotEffectError::Conflict);
+    }
+    let receipt = match outcome.result() {
+        AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } => exact_body.clone(),
+        AuthenticatedBrokerMethodResultV1::Error(error) => {
+            return Err(DestinationSlotEffectError::BrokerRejected {
+                code: error.code(),
+                retryable: error.retryable(),
+            });
+        }
+    };
+    commit_success(journal, attempt, receipt, clock)
+}
+
+fn commit_success<T>(
+    journal: &mut Journal,
+    attempt: DurableCurrentDestinationSlotAttemptV1,
+    receipt: Vec<u8>,
+    clock: &mut T,
+) -> Result<CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let history = History::load(journal)?;
+    let (record, validated) = CompletionRecord::from_attempt(attempt.record(), receipt)?;
     let outcome = match history.records.get(&record.request_id) {
         Some(existing) if existing == &record => DestinationSlotCompletionOutcomeV1::Replay,
         Some(_) => return Err(DestinationSlotEffectError::Conflict),
