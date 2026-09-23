@@ -7,7 +7,6 @@
   cfg = config.aos.boot.substrateServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-preparations";
@@ -87,37 +86,33 @@
     description,
     operation,
     dependencies,
-  }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration = {
-        service = key;
-        enabled = true;
-        lifecycle = {
-          inherit description;
-          execution_model = "oneshot";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [(command operation)];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "never";
-          restart_delay_millis = 0;
-          configuration_change_action = "restart";
-          remain_after_exit = true;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        };
-        inherit dependencies;
-        readiness = {
-          mechanism = "successful-exit";
-          signal_scope = "none";
-          timeout_millis = 90000;
-        };
-      };
+  }: {
+    inherit consumerInstance;
+    service = key;
+    lifecycle = {
+      inherit description;
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command operation)];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
     };
+    inherit dependencies;
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+  };
 
   configurationSeed = service {
     key = "aos-config-seed";
@@ -146,7 +141,7 @@
       implicit_dependencies = false;
     };
   };
-  baseFragments = [
+  baseProducers = [
     earlySystem
     switchRoot
     sysroot
@@ -154,9 +149,8 @@
     nixOverlay
     etcOverlay
     runEtc
-    configurationSeed
   ];
-  baseContributions = builtins.map serviceManagement.splitDefinition baseFragments;
+  baseServices = [configurationSeed];
   networkConfiguration = serviceManagement.forProducer {
     inherit consumerInstance;
     key = "bootstrap-network";
@@ -187,7 +181,6 @@
       prerequisites = [];
     };
   };
-  networkContribution = serviceManagement.splitDefinition networkConfiguration;
 
   emptyDependencies = {
     prerequisites = [];
@@ -221,38 +214,34 @@
     dependencies,
     logging ? null,
   }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration =
-        {
-          service = key;
-          enabled = true;
-          lifecycle = {
-            inherit description;
-            execution_model = "oneshot";
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            start = [(handoffCommand arguments)];
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart = "never";
-            restart_delay_millis = 0;
-            configuration_change_action = "restart";
-            remain_after_exit = true;
-            start_timeout_millis = 90000;
-            stop_timeout_millis = 90000;
-          };
-          inherit dependencies;
-          readiness = {
-            mechanism = "successful-exit";
-            signal_scope = "none";
-            timeout_millis = 90000;
-          };
-        }
-        // lib.optionalAttrs (logging != null) {inherit logging;};
-    };
+    {
+      inherit consumerInstance;
+      service = key;
+      lifecycle = {
+        inherit description;
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(handoffCommand arguments)];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = true;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      inherit dependencies;
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+    }
+    // lib.optionalAttrs (logging != null) {inherit logging;};
 
   initrdController = handoffService {
     key = "aos-ability-initrd-controller";
@@ -377,40 +366,36 @@
     conditions ? null,
     logging ? null,
   }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration =
-        {
-          service = key;
-          enabled = true;
-          lifecycle = {
-            inherit description;
-            execution_model = "oneshot";
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            start = [(substrateCommand key)];
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart = "never";
-            restart_delay_millis = 0;
-            configuration_change_action = "restart";
-            remain_after_exit = true;
-            start_timeout_millis = 90000;
-            stop_timeout_millis = 90000;
-          };
-          inherit dependencies;
-          readiness = {
-            mechanism = "successful-exit";
-            signal_scope = "none";
-            timeout_millis = 90000;
-          };
-          environment = substrateEnvironment;
-        }
-        // lib.optionalAttrs (conditions != null) {inherit conditions;}
-        // lib.optionalAttrs (logging != null) {inherit logging;};
-    };
+    {
+      inherit consumerInstance;
+      service = key;
+      lifecycle = {
+        inherit description;
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(substrateCommand key)];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = true;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      inherit dependencies;
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+      environment = substrateEnvironment;
+    }
+    // lib.optionalAttrs (conditions != null) {inherit conditions;}
+    // lib.optionalAttrs (logging != null) {inherit logging;};
 
   mountVarPrerequisite =
     if cfg.zfsEnabled
@@ -606,13 +591,15 @@
       };
     };
   };
-  substrateFragments = [
+  substrateProducers = [
     initrdFilesystems
     initrdRootFilesystems
     deviceSettle
     initrdStageExecution
     bootIdentity
     bootStorageUnlocked
+  ];
+  substrateServices = [
     mountVar
     nixOverlaySetup
     seedProfiles
@@ -620,31 +607,22 @@
     machineId
     etcOverlaySetup
   ];
-  handoffInitrdFragments = [initrdController initrdHandoffBarrier];
-  handoffHostFragments = [localFilesystems hostStageReceived hostReceiver];
-  lifecycleResourceFor = fragment: let
-    requests = (serviceManagement.splitDefinition fragment).configured.requests or {};
-    lifecycleRequests =
-      builtins.filter
-      (requestName: requests.${requestName}.requirement == interfaces.lifecycle.alias)
-      (builtins.attrNames requests);
-  in
-    if lifecycleRequests == []
-    then null
-    else if builtins.length lifecycleRequests == 1
-    then resultOf (builtins.head lifecycleRequests) "resource"
-    else throw "one package-owned service fragment emitted several lifecycle requests";
+  handoffInitrdServices = [initrdController initrdHandoffBarrier];
+  handoffHostProducers = [localFilesystems hostStageReceived];
+  handoffHostServices = [hostReceiver];
   handoffPreparationResources =
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
-    (builtins.filter
-      (resource: resource != null)
-      (builtins.map lifecycleResourceFor (
-        baseFragments ++ substrateFragments ++ handoffInitrdFragments
-      )));
-  substrateContributions = builtins.map serviceManagement.splitDefinition substrateFragments;
-  handoffInitrdContributions = builtins.map serviceManagement.splitDefinition handoffInitrdFragments;
-  handoffHostContributions = builtins.map serviceManagement.splitDefinition handoffHostFragments;
+    (builtins.map
+      (serviceDefinition: serviceResource serviceDefinition.service)
+      (baseServices ++ substrateServices ++ handoffInitrdServices));
+  serviceConfigsFor = enabled: services:
+    builtins.listToAttrs (builtins.map
+      (serviceDefinition: {
+        name = "boot-preparations.${serviceDefinition.service}";
+        value = serviceDefinition // {enable = enabled;};
+      })
+      services);
 in {
   options.aos.boot.substrateServices = {
     enable = lib.mkOption {
@@ -711,39 +689,35 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        [handoffDeclaration networkContribution.declarations]
-        ++ builtins.map (definition: definition.declarations) (
-          baseContributions
-          ++ substrateContributions
-          ++ handoffInitrdContributions
-          ++ handoffHostContributions
-        )
-      );
+      aos.abilities = handoffDeclaration;
+      aos.services =
+        (serviceConfigsFor initrdStage baseServices)
+        // (serviceConfigsFor (initrdStage && cfg.enable) substrateServices)
+        // (serviceConfigsFor (initrdStage && cfg.handoffEnabled) handoffInitrdServices)
+        // (serviceConfigsFor (hostStage && cfg.handoffEnabled) handoffHostServices);
     }
-    (lib.mkIf initrdStage {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (definition: definition.configured) baseContributions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = baseProducers;
+      enabled = initrdStage;
     })
-    (lib.mkIf (initrdStage && cfg.enable) {
-      aos.abilities = lib.mkMerge (
-        [networkContribution.configured]
-        ++ builtins.map (definition: definition.configured) substrateContributions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = substrateProducers;
+      enabled = initrdStage && cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [networkConfiguration];
+      enabled = initrdStage && cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = handoffHostProducers;
+      enabled = hostStage && cfg.handoffEnabled;
     })
     (lib.mkIf (initrdStage && cfg.handoffEnabled) {
-      aos.abilities = lib.mkMerge (
-        [handoffRequest]
-        ++ builtins.map (definition: definition.configured) handoffInitrdContributions
-      );
-    })
-    (lib.mkIf (hostStage && cfg.handoffEnabled) {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (definition: definition.configured) handoffHostContributions
-      );
+      aos.abilities = handoffRequest;
     })
   ];
 }
