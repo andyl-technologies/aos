@@ -29,7 +29,7 @@ use crate::attachment_source::{
     CurrentAttachmentSourcePlanV1, DurableAttachmentSourceCompletionV1,
     DurableCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceAcquireV1,
     PreparedCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceReleaseDispatchV1,
-    PreparedCurrentAttachmentSourceReleaseV1,
+    PreparedCurrentAttachmentSourceReleaseV1, PreparedCurrentAttachmentSourceResumeV1,
 };
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
@@ -448,6 +448,57 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         prepared.admit_current(self.journal, clock)
     }
 
+    /// Prepares one exact rowless Acquire for verified cold recovery.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-rowless source action, stale paired Mount inventory,
+    /// changed desired or Host state, or missing original packet custody.
+    pub fn prepare_current_source_resume<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentSourceResumeV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::prepare_current_resume(self.journal, plan, clock)
+    }
+
+    /// Reads the exact open source-custody kind before a Release decision.
+    ///
+    /// # Errors
+    ///
+    /// Rejects corrupt protected attempt or completion history.
+    pub fn open_current_source_attempt_kind(
+        &mut self,
+        attachment: AttachmentId,
+    ) -> Result<Option<attachment_source::AttachmentSourceAttemptKindV1>, AttachmentSourceError>
+    {
+        Ok(
+            attachment_source::recover_open_attempt(self.journal, attachment)?
+                .map(|value| value.kind()),
+        )
+    }
+
+    /// Rebinds the independently verified original Mount plan and exact packet.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected authority, expired original lease/deadline,
+    /// wrong signed plan, or a byte-different regenerated packet.
+    pub fn bind_current_source_resume<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentSourceResumeV1,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.bind_signed_plan(self.journal, signed_plan, clock)
+    }
+
     /// Closes exact Acquire custody only after fresh Active Mount inventory.
     ///
     /// # Errors
@@ -471,6 +522,32 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         let attachment = plan.desired().intent().id();
         let attempt = attachment_source::recover_open_attempt(self.journal, attachment)?
             .ok_or(AttachmentSourceError::Conflict)?;
+        attachment_source::record_completion(self.journal, attempt, plan, clock)
+    }
+
+    /// Closes an observed Acquire before the same source can be released.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Release source plan, absent or different open Acquire,
+    /// stale paired inventory, or failed protected completion commit.
+    pub fn close_current_source_acquire_for_release<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<DurableAttachmentSourceCompletionV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if !matches!(plan.action(), AttachmentSourceActionV1::Release { .. }) {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let attachment = plan.desired().intent().id();
+        let attempt = attachment_source::recover_open_attempt(self.journal, attachment)?
+            .ok_or(AttachmentSourceError::Conflict)?;
+        if attempt.kind() != attachment_source::AttachmentSourceAttemptKindV1::Acquire {
+            return Err(AttachmentSourceError::Conflict);
+        }
         attachment_source::record_completion(self.journal, attempt, plan, clock)
     }
 

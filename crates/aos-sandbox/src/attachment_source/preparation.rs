@@ -4,9 +4,11 @@
 //! independent Mount-signed plan, durably record source custody, and carry the
 //! exact request through the retained authenticated Mount session.
 
-use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceRequest, Audience, ReleaseMountSourceAcquisitionRequest, RequestHeader,
+};
+use aos_proto::aos::sandbox::local::v1::{
+    BrokerMethod, BrokerRequestEnvelope, MountSourceAcquisitionPhase,
 };
 use aos_sandbox_core::model::AttachmentConsistency;
 use aos_sandbox_core::{
@@ -23,6 +25,7 @@ use aos_sandbox_protocol::{
 };
 use buffa::Message as _;
 
+use super::custody::DurableAttachmentSourceAttemptV1;
 use super::custody::{self, AttachmentSourceAttemptKindV1};
 use super::dispatch_custody::{self, DurableCurrentAttachmentSourceDispatchV1};
 use super::planning::{
@@ -72,6 +75,17 @@ pub struct PreparedCurrentAttachmentSourceReleaseV1 {
 pub struct PreparedCurrentAttachmentSourceReleaseDispatchV1 {
     prepared: PreparedCurrentAttachmentSourceReleaseV1,
     template: BrokerDispatchTemplateV1,
+}
+
+/// Retains a rowless original Acquire for independently verified cold resume.
+///
+/// Its historical signed artifacts and packet are correlation evidence only.
+/// Binding under current Host and Mount authority may still fail closed.
+#[must_use = "verify the original Mount plan before any exact replay"]
+pub struct PreparedCurrentAttachmentSourceResumeV1 {
+    plan: CurrentAttachmentSourcePlanV1,
+    attempt: DurableAttachmentSourceAttemptV1,
+    packet: Vec<u8>,
 }
 
 impl PreparedCurrentAttachmentSourceAcquireV1 {
@@ -430,6 +444,224 @@ impl PreparedCurrentAttachmentSourceReleaseDispatchV1 {
         live.recheck(journal, clock)?;
         Ok(live)
     }
+}
+
+impl PreparedCurrentAttachmentSourceResumeV1 {
+    /// Recovers the exact historical Mount plan and signature bytes.
+    ///
+    /// These bytes are nonauthorizing until verified by the independent Mount
+    /// signer and rebound under fresh protected Host and ownership authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or substituted protected sidecar.
+    pub fn original_plan_artifacts(&self) -> Result<(Vec<u8>, Vec<u8>), AttachmentSourceError> {
+        let envelope = BrokerRequestEnvelope::decode_from_slice(&self.packet)
+            .map_err(|_| AttachmentSourceError::CorruptState)?;
+        let authorization = envelope
+            .authorization
+            .as_option()
+            .ok_or(AttachmentSourceError::CorruptState)?;
+        Ok((
+            authorization.broker_plan.clone(),
+            authorization.broker_plan_signature.clone(),
+        ))
+    }
+
+    /// Rebinds an original source effect to current authority and exact bytes.
+    ///
+    /// No replacement plan, request ID, deadline, or lease is minted. If the
+    /// original lease or deadline is no longer current, recovery stays closed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired/source inventory or Host authority, an invalid
+    /// Mount signature or lease, and any regenerated packet mismatch.
+    pub fn bind_signed_plan<T>(
+        self,
+        journal: &mut Journal,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.plan.recheck(journal, clock)?;
+        let current = custody::recover_open_attempt(journal, self.plan.desired.intent().id())?
+            .ok_or(AttachmentSourceError::Changed)?;
+        if current.record != self.attempt.record
+            || dispatch_custody::current(journal, &current.record)?
+                .is_none_or(|sidecar| sidecar.packet != self.packet)
+        {
+            return Err(AttachmentSourceError::Changed);
+        }
+        let (canonical_plan, canonical_signature) = self.original_plan_artifacts()?;
+        if signed_plan.canonical_plan() != canonical_plan
+            || signed_plan.canonical_signature() != canonical_signature
+        {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let (method, deadline, body_without_deadline, canonical) = match self.attempt.kind() {
+            AttachmentSourceAttemptKindV1::Acquire => {
+                let request =
+                    AcquireMountSourceRequest::decode_from_slice(&self.attempt.record.request_body)
+                        .map_err(|_| AttachmentSourceError::CorruptState)?;
+                if request.fence.as_option() != Some(&current_fence(&self.plan.target)) {
+                    return Err(AttachmentSourceError::Changed);
+                }
+                let deadline = request
+                    .header
+                    .as_option()
+                    .ok_or(AttachmentSourceError::CorruptState)?
+                    .deadline_boottime_nanoseconds;
+                let mut deadline_free = request;
+                deadline_free
+                    .header
+                    .get_or_insert_default()
+                    .deadline_boottime_nanoseconds = 0;
+                let validated =
+                    aos_sandbox_protocol::decode_historical_acquire_mount_source_request(
+                        &self.attempt.record.request_body,
+                    )
+                    .map_err(|_| AttachmentSourceError::CorruptState)?;
+                let canonical = canonical_acquire_mount_source_semantics_v1(validated.request())
+                    .map_err(|_| AttachmentSourceError::Protocol)?;
+                (
+                    BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+                    deadline,
+                    deadline_free.encode_to_vec(),
+                    canonical,
+                )
+            }
+            AttachmentSourceAttemptKindV1::Release => {
+                let request = ReleaseMountSourceAcquisitionRequest::decode_from_slice(
+                    &self.attempt.record.request_body,
+                )
+                .map_err(|_| AttachmentSourceError::CorruptState)?;
+                if request.fence.as_option() != Some(&current_fence(&self.plan.target)) {
+                    return Err(AttachmentSourceError::Changed);
+                }
+                let deadline = request
+                    .header
+                    .as_option()
+                    .ok_or(AttachmentSourceError::CorruptState)?
+                    .deadline_boottime_nanoseconds;
+                let mut deadline_free = request;
+                deadline_free
+                    .header
+                    .get_or_insert_default()
+                    .deadline_boottime_nanoseconds = 0;
+                let validated = custody::decode_live_release(&self.attempt.record.request_body)?;
+                let canonical =
+                    canonical_release_mount_source_acquisition_semantics_v1(validated.request())
+                        .map_err(|_| AttachmentSourceError::Protocol)?;
+                (
+                    BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+                    deadline,
+                    deadline_free.encode_to_vec(),
+                    canonical,
+                )
+            }
+            AttachmentSourceAttemptKindV1::Consume => {
+                return Err(AttachmentSourceError::Conflict);
+            }
+        };
+        if crate::dispatch::durable_attempt_body(&body_without_deadline, deadline)
+            .map_err(|_| AttachmentSourceError::Protocol)?
+            != self.attempt.record.request_body
+        {
+            return Err(AttachmentSourceError::CorruptState);
+        }
+        let semantics = BrokerDispatchSemanticIdentityV1::new(
+            canonical.verb(),
+            canonical.target(),
+            canonical.commitment(),
+        );
+        let scope = self.plan.target.runtime_generation().scope();
+        scope.verify_mount_plan_version(
+            journal,
+            &signed_plan,
+            aos_sandbox_core::ProtocolVersion::new(2, 0),
+            clock,
+        )?;
+        let template = BrokerDispatchTemplateV1::new(
+            signed_plan,
+            method,
+            body_without_deadline,
+            Vec::new(),
+            semantics,
+        )?;
+        let dispatch = scope.prepare_mount_attempt_version(
+            journal,
+            &template,
+            deadline,
+            aos_sandbox_core::ProtocolVersion::new(2, 0),
+            clock,
+        )?;
+        if dispatch.body() != self.attempt.record.request_body || dispatch.packet() != self.packet {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let live = dispatch_custody::live_dispatch(
+            self.attempt,
+            dispatch,
+            self.plan.target,
+            self.plan.desired,
+        );
+        live.recheck(journal, clock)?;
+        Ok(live)
+    }
+}
+
+pub(crate) fn prepare_current_resume<T>(
+    journal: &mut Journal,
+    plan: CurrentAttachmentSourcePlanV1,
+    clock: &mut T,
+) -> Result<PreparedCurrentAttachmentSourceResumeV1, AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    plan.recheck(journal, clock)?;
+    let attempt = custody::recover_open_attempt(journal, plan.desired.intent().id())?
+        .ok_or(AttachmentSourceError::Conflict)?;
+    let matches = match (plan.action, attempt.kind()) {
+        (
+            AttachmentSourceActionV1::AwaitAcquisition {
+                acquisition_id,
+                phase: MountSourceAcquisitionPhase::MOUNT_SOURCE_ACQUISITION_PHASE_UNSPECIFIED,
+            },
+            AttachmentSourceAttemptKindV1::Acquire,
+        ) => {
+            attempt.acquisition_id().as_bytes() == &acquisition_id
+                && attempt.record.desired_digest == *plan.desired.record_digest().as_bytes()
+                && attempt.record.desired_generation
+                    == plan.desired.intent().desired_generation().get()
+        }
+        (
+            AttachmentSourceActionV1::Release {
+                acquisition_id,
+                revision,
+                record_digest,
+            },
+            AttachmentSourceAttemptKindV1::Release,
+        ) => {
+            let request = custody::decode_live_release(&attempt.record.request_body)?;
+            request.acquisition_id().as_bytes() == &acquisition_id
+                && request.expected_revision() == revision
+                && request.expected_record_digest().as_bytes() == &record_digest
+        }
+        _ => false,
+    };
+    if !matches {
+        return Err(AttachmentSourceError::Conflict);
+    }
+    let sidecar = dispatch_custody::current(journal, &attempt.record)?
+        .ok_or(AttachmentSourceError::CorruptState)?;
+    plan.recheck(journal, clock)?;
+    Ok(PreparedCurrentAttachmentSourceResumeV1 {
+        plan,
+        attempt,
+        packet: sidecar.packet,
+    })
 }
 
 pub(crate) fn prepare_current_release<T>(

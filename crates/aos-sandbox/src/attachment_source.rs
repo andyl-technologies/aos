@@ -31,6 +31,7 @@ pub use planning::{
 pub use preparation::{
     PreparedCurrentAttachmentSourceAcquireV1, PreparedCurrentAttachmentSourceDispatchV1,
     PreparedCurrentAttachmentSourceReleaseDispatchV1, PreparedCurrentAttachmentSourceReleaseV1,
+    PreparedCurrentAttachmentSourceResumeV1,
 };
 
 pub(crate) use custody::{
@@ -39,4 +40,6 @@ pub(crate) use custody::{
 };
 pub(crate) use dispatch_custody::validate_namespace as validate_dispatch_namespace;
 pub(crate) use planning::plan_current;
-pub(crate) use preparation::{prepare_current_acquire, prepare_current_release};
+pub(crate) use preparation::{
+    prepare_current_acquire, prepare_current_release, prepare_current_resume,
+};
