@@ -273,6 +273,14 @@ impl QemuFreshPendingObservation {
         ))
     }
 
+    fn has_terminal_assertion_failure(&self) -> Result<bool, QemuFreshModeledDriverError> {
+        if matches!(&self.stop, ModeledStop::ObservationReached { .. }) {
+            return Ok(false);
+        }
+        let report = check_pending_assertions(self)?;
+        Ok(!report.verdict().failures().is_empty())
+    }
+
     fn into_checkpoint_choices(self) -> QemuCheckpointChoiceProvenance {
         QemuCheckpointChoiceProvenance::new(self.configuration, self.discoveries)
     }
@@ -951,6 +959,10 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
         pending.terminal_checkpoint_choices()
     }
 
+    fn has_terminal_assertion_failure(&self, pending: &Self::Pending) -> Result<bool, Self::Error> {
+        pending.has_terminal_assertion_failure()
+    }
+
     fn drive(
         &mut self,
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
@@ -996,6 +1008,10 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
         pending: &Self::Pending,
     ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
         pending.terminal_checkpoint_choices()
+    }
+
+    fn has_terminal_assertion_failure(&self, pending: &Self::Pending) -> Result<bool, Self::Error> {
+        pending.has_terminal_assertion_failure()
     }
 
     fn drive(
@@ -2399,11 +2415,9 @@ struct QemuBoundaryProjection {
     stop: Option<StopOutcome>,
 }
 
-fn project_boundary(
-    mut pending: QemuFreshPendingObservation,
-    project_stop: bool,
-    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
-) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
+fn check_pending_assertions(
+    pending: &QemuFreshPendingObservation,
+) -> Result<crucible::HostAssertionReport, QemuFreshModeledDriverError> {
     let assertion_count = pending
         .input
         .scenario()
@@ -2422,13 +2436,23 @@ fn project_boundary(
         });
     }
 
-    let timeout = retain_modeled_timeout(&mut pending)?;
     let mut checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(pending.input.scenario().world());
     if let Some(quiescence) = pending.terminal_quiescence.clone() {
         checker = checker.with_terminal_scheduler_quiescence(quiescence);
     }
-    let report = checker.check_run(pending.input.scenario().properties(), &pending.event_log)?;
+    checker
+        .check_run(pending.input.scenario().properties(), &pending.event_log)
+        .map_err(Into::into)
+}
+
+fn project_boundary(
+    mut pending: QemuFreshPendingObservation,
+    project_stop: bool,
+    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
+) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
+    let timeout = retain_modeled_timeout(&mut pending)?;
+    let report = check_pending_assertions(&pending)?;
     let supplemental = supplemental_oracle
         .map(|(oracle, source)| {
             oracle
