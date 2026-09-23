@@ -61,6 +61,8 @@ in
   assert enabled.config.aos.services."configuration-evaluation.registry-synchronization".enable;
   assert enabled.config.aos.services."configuration-evaluation.image-boot-commit".enable;
   assert !(unmeasured.config.aos.abilities.requests ? "systemd:image-measurement-index-lifecycle");
+  assert !unmeasured.config.aos.services."systemd.image-measurement-index".enable;
+  assert enabled.config.aos.services."systemd.image-measurement-index".enable;
   assert !missingMeasurementKey.success;
   assert lifecycle.service == "configuration-evaluation";
   assert registryLifecycle.service == "registry-synchronization";
