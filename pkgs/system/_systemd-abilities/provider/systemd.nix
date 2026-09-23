@@ -3,6 +3,7 @@
   config,
   lib,
   packageArtifactFor ? _: throw "systemd provider composition requires authenticated package artifacts",
+  packageArtifactForRequest,
   packageName,
   ...
 }: let
@@ -1107,22 +1108,44 @@
       resource: qualificationChecks.unitIdentitiesFor resource != []
     )
     selectedServiceResources;
+  selectorsIn = value:
+    if builtins.isAttrs value && (value._type or null) == "aos-package-output-selector"
+    then [value]
+    else if builtins.isAttrs value
+    then builtins.concatMap selectorsIn (builtins.attrValues value)
+    else if builtins.isList value
+    then builtins.concatMap selectorsIn value
+    else [];
+  selectorPathsFor = resource: input: let
+    binding = config.aos.abilities.bindings.${resource.controller};
+    selectors = builtins.listToAttrs (builtins.map (selector: {
+      name = builtins.toJSON selector;
+      value = selector;
+    }) (selectorsIn input));
+  in
+    builtins.map (selector: {
+      inherit (selector) package output;
+      path = packageArtifactForRequest binding.request selector;
+    }) (builtins.attrValues selectors);
   staticPlanFor = resource: let
     realization = builtins.toJSON resource.realization;
   in {
     name = derivationDisplayName "systemd-ability" realization;
     input = realization;
+    selectors = selectorPathsFor resource resource.realization;
   };
   staticNativePlanFor = resource: let
-    input = builtins.toJSON {
+    symbolicInput = {
       schema = "aos.systemd.native-resource-static-input/v1";
       inherit (resource) kind;
       desired = resource.value;
       inherit (resource) realization;
     };
+    input = builtins.toJSON symbolicInput;
   in {
     name = derivationDisplayName "systemd-native-resource" input;
     inherit input;
+    selectors = selectorPathsFor resource symbolicInput;
   };
   staticPlans =
     if config.aos.abilities.compositionPendingRequests != {}
@@ -1139,14 +1162,16 @@
     then []
     else
       builtins.map (resource: let
-        input = builtins.toJSON {
+        symbolicInput = {
           schema = "aos.systemd.network-configuration-static-input/v1";
           desired = resource.value;
           inherit (resource) realization;
         };
+        input = builtins.toJSON symbolicInput;
       in {
         name = derivationDisplayName "systemd-network-configuration" input;
         inherit input;
+        selectors = selectorPathsFor resource symbolicInput;
         resolverEnabled = resource.value.resolver.enabled;
       })
       selectedNetworkConfigurationResources;

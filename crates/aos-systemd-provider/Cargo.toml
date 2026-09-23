@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 aos-ability-model.workspace = true
+aos-ability-validate.workspace = true
 aos-contract.workspace = true
 aos-net = { workspace = true, default-features = false }
 aos-provider-protocol.workspace = true

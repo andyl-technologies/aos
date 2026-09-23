@@ -7,7 +7,8 @@
 
   dependencyClosureFor = owner: let
     ownerName = packageNameFor owner;
-    selectedDependencyNames = builtins.filter
+    selectedDependencyNames =
+      builtins.filter
       (name: !builtins.elem name ["self" ownerName])
       (builtins.map
         (selector: selector.package)
@@ -65,7 +66,7 @@
   authenticatedPackageOutputsFor = package: let
     ownerName = packageNameFor package;
     closure = dependencyClosureFor package;
-    runtimeDependencies = builtins.listToAttrs (builtins.concatMap (name:
+    transitiveDependencies = builtins.listToAttrs (builtins.concatMap (name:
       if name == ownerName
       then []
       else let
@@ -81,6 +82,23 @@
         }
       ])
     (builtins.attrNames closure));
+    directRuntimeDependencies = builtins.foldl' (outputs: dependency: let
+      key = builtins.toJSON {
+        package = packageNameFor dependency;
+        output = dependency.outputName or "out";
+      };
+      path = builtins.toString dependency;
+    in
+      if builtins.hasAttr key outputs && outputs.${key} != path
+      then throw "package '${ownerName}' has conflicting direct runtime outputs for '${key}'"
+      else outputs // {${key} = path;}) {} (package.runtimeDeps or []);
+    ownNamedOutputs = builtins.listToAttrs (builtins.map (output: {
+      name = builtins.toJSON {
+        package = ownerName;
+        inherit output;
+      };
+      value = builtins.toString package.${output};
+    }) (builtins.filter (output: output != "out") (package.outputs or [])));
     declaredDependencies = builtins.listToAttrs (builtins.map (selector: {
         name = builtins.toJSON selector;
         value = builtins.toString (authenticatedPackageOutputFor {
@@ -89,8 +107,10 @@
       })
       package.contract.selectors);
   in {
-    self = builtins.toString package;
-    dependencies = runtimeDependencies // declaredDependencies;
+    self = builtins.toString (package.out or package);
+    # Direct runtime inputs are already authenticated by the package
+    # derivation. Explicit selectors additionally authorize transitive inputs.
+    dependencies = transitiveDependencies // directRuntimeDependencies // ownNamedOutputs // declaredDependencies;
   };
 
   authenticatedPackageModuleRecordFor = package: {

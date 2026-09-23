@@ -358,7 +358,7 @@ in
       [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd buildDbus remove-references-to]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl sqlite libssh2 zlib]
+      [coreutils openssl sqlite libssh2 zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools

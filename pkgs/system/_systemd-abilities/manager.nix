@@ -70,13 +70,9 @@
       type = "system";
       inherit (config.system.build.systemdMaterializationData) etc jobScripts;
     };
-    renderPlan = plan:
-      runCommand (builtins.unsafeDiscardStringContext plan.name) {
-        realization = plan.input;
-        passAsFile = ["realization"];
-      } ''
-        ${providerPackage}/bin/aos-systemd-provider render
-      '';
+    renderPlan = import ./platform/render-provider-plan.nix {
+      inherit runCommand providerPackage;
+    };
     providerArtifacts = builtins.map renderPlan config.systemd.providerUnitPlans;
     providerArtifactsJson = builtins.toJSON providerArtifacts;
     units =

@@ -1187,11 +1187,12 @@
     path,
     runtimeDeps ? [],
     selectors ? [],
+    outputName ? "out",
   }: {
     pname = name;
     version = "1";
     outPath = path;
-    outputName = "out";
+    inherit outputName;
     module = "${path}-module";
     inherit runtimeDeps;
     contract = {
@@ -1220,6 +1221,35 @@
     ];
   };
   transitiveOutputs = lib.abilities.authenticatedPackageOutputsFor transitiveOwner;
+  directRuntimeOutput = fakePackage {
+    name = "runtime";
+    outputName = "tools";
+    path = "/nix/store/cccccccccccccccccccccccccccccccc-runtime-tools";
+  };
+  directRuntimeOwner = fakePackage {
+    name = "direct-runtime-owner";
+    path = "/nix/store/dddddddddddddddddddddddddddddddd-direct-runtime-owner";
+    runtimeDeps = [directRuntimeOutput];
+  };
+  directRuntimeOutputs = lib.abilities.authenticatedPackageOutputsFor directRuntimeOwner;
+  ownNamedOutputOwner =
+    (fakePackage {
+      name = "own-output-owner";
+      path = "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-own-output-owner";
+    })
+    // {
+      outputs = ["out" "tools"];
+      tools = "/nix/store/ffffffffffffffffffffffffffffffff-own-output-tools";
+    };
+  ownNamedOutputs = lib.abilities.authenticatedPackageOutputsFor ownNamedOutputOwner;
+  selectedNamedOutputOwner =
+    ownNamedOutputOwner
+    // {
+      outputName = "tools";
+      outPath = ownNamedOutputOwner.tools;
+      out = ownNamedOutputOwner.outPath;
+    };
+  selectedNamedOutputs = lib.abilities.authenticatedPackageOutputsFor selectedNamedOutputOwner;
   uncontractedHelper = {
     pname = "helper-owner";
     outPath = "/nix/store/99999999999999999999999999999999-helper";
@@ -1274,6 +1304,9 @@
         output = "out";
       };
     })
+    true);
+  ambiguousDirectOutputs = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.authenticatedPackageOutputsFor ambiguousOwner)
     true);
   globallySelectedForeign = fakePackage {
     name = "foreign";
@@ -1822,11 +1855,20 @@ in
   assert !unrelatedArtifactSelection.success;
   assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
   == "/nix/store/33333333333333333333333333333333-leaf";
-  assert !(builtins.hasAttr "{\"output\":\"out\",\"package\":\"middle\"}" transitiveOutputs.dependencies);
+  assert transitiveOutputs.dependencies."{\"output\":\"out\",\"package\":\"middle\"}"
+  == "/nix/store/44444444444444444444444444444444-middle";
+  assert directRuntimeOutputs.dependencies."{\"output\":\"tools\",\"package\":\"runtime\"}"
+  == "/nix/store/cccccccccccccccccccccccccccccccc-runtime-tools";
+  assert ownNamedOutputs.dependencies."{\"output\":\"tools\",\"package\":\"own-output-owner\"}"
+  == "/nix/store/ffffffffffffffffffffffffffffffff-own-output-tools";
+  assert selectedNamedOutputs.self == ownNamedOutputOwner.outPath;
+  assert selectedNamedOutputs.dependencies."{\"output\":\"tools\",\"package\":\"own-output-owner\"}"
+  == ownNamedOutputOwner.tools;
   assert helperTraversalOutputs.dependencies."{\"output\":\"out\",\"package\":\"leaf\"}"
   == "/nix/store/33333333333333333333333333333333-leaf";
   assert !unrelatedOutput.success;
   assert !ambiguousOutput.success;
+  assert !ambiguousDirectOutputs.success;
   assert !globallySelectedForeignOutput.success;
   assert selectedCallerRecords == [callerModuleRecord];
   assert !mismatchedCallerRecord.success;

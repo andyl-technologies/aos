@@ -45,6 +45,14 @@
   };
 
   cfg = config.systemd;
+  providerRenderSelectorType = lib.types.submodule {
+    config._module.strict = true;
+    options = {
+      package = lib.mkOption {type = lib.types.nonEmptyStr;};
+      output = lib.mkOption {type = lib.types.nonEmptyStr;};
+      path = lib.mkOption {type = lib.types.nonEmptyStr;};
+    };
+  };
   providerRenderPlanType = lib.types.submodule {
     config._module.strict = true;
     options = {
@@ -55,6 +63,11 @@
       name = lib.mkOption {
         type = lib.types.nonEmptyStr;
         description = "Stable diagnostic name for the rendered artifact.";
+      };
+      selectors = lib.mkOption {
+        type = lib.types.listOf providerRenderSelectorType;
+        default = [];
+        description = "Authenticated package output paths used by symbolic render input.";
       };
     };
   };
@@ -115,6 +128,10 @@ in {
         options = {
           input = lib.mkOption {type = lib.types.str;};
           name = lib.mkOption {type = lib.types.nonEmptyStr;};
+          selectors = lib.mkOption {
+            type = lib.types.listOf providerRenderSelectorType;
+            default = [];
+          };
           resolverEnabled = lib.mkOption {
             type = lib.types.bool;
             description = "Whether the plan owns authoritative resolver configuration.";

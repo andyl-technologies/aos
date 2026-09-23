@@ -23,8 +23,8 @@ use serde_json::{Value, json};
 use crate::{
     AbilityContractData, PackageOutputSelector, ResolvedPackageOutput, StaticAbilityArtifactClass,
     StaticAbilityContractExpectation, StaticAbilityExecutionStage, StaticAbilityPlatform,
-    decode_package_projection, resolve_package_projection, validate_ability_contract,
-    validate_static_ability_artifacts,
+    decode_package_projection, resolve_artifact_selectors, resolve_package_projection,
+    validate_ability_contract, validate_static_ability_artifacts,
 };
 
 #[derive(Deserialize)]
@@ -44,6 +44,88 @@ struct SelectedArtifact {
     output: Option<String>,
     path: String,
     graph: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StaticRenderSelector {
+    package: String,
+    output: String,
+    path: String,
+}
+
+/// Resolves one provider render input against authenticated output paths and an exported graph.
+///
+/// # Errors
+///
+/// Returns an error if the selector inventory is duplicate or incomplete, an
+/// exported closure is malformed, or the input contains an invalid selector.
+pub fn resolve_static_render_input(
+    input_path: &Path,
+    selectors_path: &Path,
+    exported_graph_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let input: Value = serde_json::from_slice(&fs::read(input_path)?)
+        .context("decoding symbolic provider render input")?;
+    let selectors: Vec<StaticRenderSelector> =
+        serde_json::from_slice(&fs::read(selectors_path)?)
+            .context("decoding authenticated render selectors")?;
+    let graph: Value = serde_json::from_slice(&fs::read(exported_graph_path)?)
+        .context("decoding exported Nix graph")?;
+
+    let resolved = resolve_static_render_value(input, selectors, &graph)?;
+    fs::write(output_path, aos_contract::canonical::to_vec(&resolved)?).with_context(|| {
+        format!(
+            "writing resolved provider render input {}",
+            output_path.display()
+        )
+    })
+}
+
+fn resolve_static_render_value(
+    mut input: Value,
+    selectors: Vec<StaticRenderSelector>,
+    graph: &Value,
+) -> Result<Value> {
+    let mut paths = BTreeMap::new();
+    for selector in selectors {
+        let key = (selector.package, selector.output);
+        ensure!(
+            paths.insert(key.clone(), selector.path).is_none(),
+            "provider render selector repeats ({}, {})",
+            key.0,
+            key.1
+        );
+    }
+
+    let mut used = BTreeSet::new();
+    resolve_artifact_selectors(&mut input, |selector| {
+        let key = (
+            selector.package.as_str().to_string(),
+            selector.output.as_str().to_string(),
+        );
+        let path = paths
+            .get(&key)
+            .with_context(|| format!("provider render selector omits ({}, {})", key.0, key.1))?;
+        used.insert(key);
+        Ok(resolve_selected_artifact(
+            &SelectedArtifact {
+                package: None,
+                output: None,
+                path: path.clone(),
+                graph: "renderGraph".to_string(),
+            },
+            graph,
+        )?
+        .artifact)
+    })?;
+    ensure!(
+        used.len() == paths.len(),
+        "provider render selector inventory contains unused outputs"
+    );
+
+    Ok(input)
 }
 
 #[derive(Deserialize)]
@@ -878,6 +960,39 @@ mod tests {
                 },
             ],
         })
+    }
+
+    #[test]
+    fn static_render_resolves_only_authenticated_package_outputs() {
+        let input = json!({
+            "source": {
+                "artifact": {
+                    "_type": "aos-package-output-selector",
+                    "package": "self",
+                    "output": "out",
+                },
+            },
+        });
+        let selectors = || {
+            vec![StaticRenderSelector {
+                package: "self".to_string(),
+                output: "out".to_string(),
+                path: ROOT.to_string(),
+            }]
+        };
+        let graph = json!({"renderGraph": exported_graph()["runtimeGraph"]});
+
+        let resolved = resolve_static_render_value(input.clone(), selectors(), &graph)
+            .expect("authenticated selector should resolve");
+        assert_eq!(resolved["source"]["artifact"]["store_path"], ROOT);
+
+        let missing = resolve_static_render_value(input, Vec::new(), &graph)
+            .expect_err("undeclared selector must fail");
+        assert!(format!("{missing:#}").contains("omits (self, out)"));
+
+        let unused = resolve_static_render_value(json!({}), selectors(), &graph)
+            .expect_err("unused selector inventory must fail");
+        assert!(unused.to_string().contains("unused outputs"));
     }
 
     #[test]
