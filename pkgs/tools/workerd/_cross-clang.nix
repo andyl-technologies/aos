@@ -14,7 +14,7 @@ in
       pname = "workerd-cross-clang";
       inherit (compiler) version;
       targetPlatform = stdenv.hostPlatform;
-      runtimeDeps = [compiler bash targetGcc glibc glibc.dev glibc.static];
+      runtimeDeps = [compiler bash targetGcc stdenv.binutils glibc glibc.dev glibc.static];
 
       phases = [
         {
@@ -56,8 +56,11 @@ in
 
             # Prefer dynamic target glibc; use its static output only for the
             # compatibility archives of libraries merged into modern libc.
-            exec "$driver" "''${common_flags[@]}" "$@" \
-              -fuse-ld=lld \
+            # Bazel runs native generators and packages target binaries from
+            # these links, so both must be complete ELF files. Group Bazel's
+            # static archives to resolve cycles when linking with GNU BFD.
+            exec "$driver" "''${common_flags[@]}" -Wl,--start-group "$@" -Wl,--end-group \
+              -fuse-ld=${stdenv.binutils}/bin/${triple}-ld.bfd \
               -L${glibc}/lib -L"$gcc_directory" -L"$runtime_directory" \
               -L${glibc.static}/lib -latomic \
               -Wl,-dynamic-linker,${glibc}/lib/${stdenv.hostPlatform.dynamicLinker} \
