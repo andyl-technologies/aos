@@ -213,3 +213,4 @@ crucible.campaign.finding-triage-replay-evidence	2	crucible-campaign::finding_tr
 crucible.campaign.finding-triage-replay-evidence-chunk	1	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.archive-manifest	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
 crucible.campaign.archive-inventory-page	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
+crucible.campaign.finding-bundle	2	crucible-cli::cli_campaign::finding_bundle	export-directory	gate:campaign-replay,gate:campaign-store-composition

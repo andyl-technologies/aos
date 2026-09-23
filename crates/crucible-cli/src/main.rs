@@ -423,9 +423,9 @@ struct CampaignFindingBundleArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFindingBundleCommand {
-    /// Export one finding's authenticated triage evidence to a new directory.
+    /// Export one finding and its exact executable archive from a stopped owner.
     Export(CampaignFindingBundleExportArgs),
-    /// Verify native signature evidence and replay the pure model without a service.
+    /// Verify archived evidence offline; optionally reproduce in local QEMU.
     Verify(CampaignFindingBundleVerifyArgs),
 }
 
@@ -440,6 +440,18 @@ struct CampaignFindingBundleExportArgs {
     /// Exact finding identity retained by the snapshot.
     #[arg(long, value_name = "FINDING", required = true)]
     finding: String,
+    /// Exact durable source campaign state directory.
+    #[arg(long, value_name = "PATH", required = true)]
+    source_state: PathBuf,
+    /// Strict source peer-policy file.
+    #[arg(long, value_name = "PATH", required = true)]
+    source_policy: PathBuf,
+    /// Strict source composed-store deployment file.
+    #[arg(long, value_name = "PATH", required = true)]
+    source_store: PathBuf,
+    /// Maximum authenticated bytes admitted for one exact checkpoint closure.
+    #[arg(long, default_value_t = 1_073_741_824, value_name = "BYTES")]
+    maximum_checkpoint_bytes: u64,
     /// New directory for the portable finding bundle.
     #[arg(long, value_name = "DIR", required = true)]
     output: PathBuf,
@@ -450,9 +462,21 @@ struct CampaignFindingBundleVerifyArgs {
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
-    /// Replay the authenticated minimized model reproduction when present.
+    /// Retained replay pass and original or selected reproduction.
+    #[arg(long, value_enum, default_value_t = CampaignFindingBundleRole::VerificationOriginal)]
+    role: CampaignFindingBundleRole,
+    /// Repeat the retained production boundary in a fresh local QEMU lifecycle.
     #[arg(long, action = ArgAction::SetTrue)]
-    minimized: bool,
+    exact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum CampaignFindingBundleRole {
+    MinimizationOriginal,
+    MinimizationSelected,
+    #[default]
+    VerificationOriginal,
+    VerificationSelected,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
