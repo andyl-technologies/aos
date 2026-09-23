@@ -59,6 +59,9 @@ pub enum HostError {
     /// An opaque runtime handle or exact durable assignment is unknown.
     #[error("host runtime handle is unavailable")]
     UnknownHandle,
+    /// A protected live guest-agent session or fresh lease is unavailable.
+    #[error("OpenSSH attach gate live readback is unavailable")]
+    AttachGateUnavailable,
     /// A complete bounded response cannot represent current durable state.
     #[error("host runtime inventory exceeds its fixed bound")]
     ResourceExhausted,

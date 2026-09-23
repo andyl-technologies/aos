@@ -29,6 +29,27 @@ rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectRes
 BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
 BROKER_METHOD_HOST_APPLY_EXECUTION = 26;
 BROKER_METHOD_HOST_QUERY_EXECUTION = 27;
+BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;
+message InstallHostAttachGateRequestV1 {
+RequestHeader header = 1;
+bytes pending_grant = 2;
+message HostAttachGateEvidenceV1 {
+bytes operation_id = 1;
+bytes execution_id = 2;
+bytes incarnation_id = 3;
+uint64 assignment_epoch = 4;
+bytes principal_id = 5;
+bytes audit_id = 6;
+string host = 7;
+uint32 port = 8;
+string user = 9;
+bytes host_public_key = 10;
+bytes trusted_user_ca_public_key = 11;
+int64 expires_at = 12;
+uint64 route_generation = 13;
+bytes route_digest = 14;
+bytes gate_observation_commitment = 15;
+bytes signed_gate_readback = 16;
 message ApplyHostExecutionRequestV1 {
 bytes source_operation_commitment = 5;
 message QueryHostExecutionRequestV1 {

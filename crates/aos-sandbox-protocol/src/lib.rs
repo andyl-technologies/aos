@@ -16,6 +16,7 @@
 
 pub mod authenticated_session;
 pub mod fencing;
+pub mod host_attach_gate;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
 pub mod host_execution;
@@ -45,21 +46,24 @@ pub use authenticated_session::{
     AuthenticatedNetworkInventoryRequestAdmissionV1, AuthenticatedNetworkInventoryRequestV1,
     AuthenticatedNetworkInventoryResultV1,
 };
+pub use host_attach_gate::{
+    ValidatedHostAttachGateRequestV1, decode_host_attach_gate_evidence_v1,
+    decode_host_attach_gate_request_v1,
+};
 pub use host_catalog_snapshot::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
     CatalogIdentityAllocation, HostCatalogHandle, HostCatalogSnapshot, HostCatalogSnapshotError,
     MAXIMUM_HOST_CATALOG_ATTACHMENTS, MAXIMUM_HOST_CATALOG_ENTRIES, MINIMUM_HOST_IDENTITY_RANGE,
     NETWORK_PIN_PREFIX, NetworkCatalogEntry, WORKSPACE_PIN_PREFIX, WorkspaceCatalogEntry,
 };
+pub use host_execution::{
+    ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1, decode_host_execution_apply_v1,
+    decode_host_execution_outcome_v1, decode_host_execution_query_v1,
+};
 pub use host_observation::{
     ValidatedObserveRuntimeRequestV1, ValidatedQueryRuntimeEffectRequestV1,
     decode_inventory_runtime_request_v1, decode_observe_runtime_request_v1,
     decode_query_runtime_effect_request_v1,
-};
-pub use host_execution::{
-    ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
-    decode_host_execution_apply_v1, decode_host_execution_outcome_v1,
-    decode_host_execution_query_v1,
 };
 pub use inventory::{
     MAXIMUM_MOUNT_INVENTORY_RECORDS, ValidatedMountAssignmentBinding,

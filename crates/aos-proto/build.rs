@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x6461_70a8_16c8_c307;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x1c94_df7c_c0a8_7419;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -149,7 +149,26 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     verify_scoped_declarations(
         &source_declarations,
         "enum BrokerMethod {",
-        &["BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;"],
+        &[
+            "BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;",
+            "BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message InstallHostAttachGateRequestV1 {",
+        &["RequestHeader header = 1;", "bytes pending_grant = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message HostAttachGateEvidenceV1 {",
+        &[
+            "bytes operation_id = 1;",
+            "bytes execution_id = 2;",
+            "bytes route_digest = 14;",
+            "bytes gate_observation_commitment = 15;",
+            "bytes signed_gate_readback = 16;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,

@@ -26,10 +26,11 @@ use aos_sandbox_protocol::payload_scope::{
 use aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE;
 use aos_sandbox_protocol::{
     MAXIMUM_HANDSHAKE_BYTES, PeerPolicy, ProtocolValidationError,
-    classify_historical_runtime_request_v1, decode_inventory_runtime_request_v1,
-    decode_observe_runtime_request_v1, decode_query_runtime_effect_request_v1,
-    encode_error_response_envelope, encode_success_response_envelope, failed_server_hello,
-    negotiate_client_hello, validate_request_descriptor_roles,
+    classify_historical_runtime_request_v1, decode_host_attach_gate_request_v1,
+    decode_inventory_runtime_request_v1, decode_observe_runtime_request_v1,
+    decode_query_runtime_effect_request_v1, encode_error_response_envelope,
+    encode_success_response_envelope, failed_server_hello, negotiate_client_hello,
+    validate_request_descriptor_roles,
 };
 use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
@@ -347,6 +348,36 @@ where
                 },
             );
         }
+        if request.method() == BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE {
+            let now = trusted_paired_clock_sample()?.boottime_nanoseconds();
+            let Ok(validated) = decode_host_attach_gate_request_v1(
+                request.body(),
+                peer.credentials(),
+                self.peer_policy,
+                now,
+            ) else {
+                return Ok(ConnectionOutcome::RequestRejected);
+            };
+            if session.validate_header(validated.header()).is_err() {
+                return Ok(ConnectionOutcome::RequestRejected);
+            }
+            // No production launch currently retains the authenticated guest
+            // FD3 session and freshly verified lease together. A signed grant
+            // alone must never turn a stored route into active gate evidence.
+            let Ok(response) = encode_method_error(
+                validated.header().request_id(),
+                &request,
+                &HostError::AttachGateUnavailable,
+                validated.header().maximum_response_bytes(),
+            ) else {
+                return Ok(ConnectionOutcome::TransportRejected);
+            };
+            return Ok(if connection.send(&response).is_ok() {
+                ConnectionOutcome::RequestRejected
+            } else {
+                ConnectionOutcome::TransportRejected
+            });
+        }
         let dispatch = match request.method() {
             BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
                 let Some(artifacts) = request.authorization() else {
@@ -556,7 +587,7 @@ fn advertised_methods(
     launch_available: bool,
     catalog_publication_available: bool,
 ) -> Vec<BrokerMethod> {
-    let mut methods = Vec::with_capacity(6);
+    let mut methods = Vec::with_capacity(7);
     if launch_available {
         methods.push(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME);
     }
@@ -564,6 +595,7 @@ fn advertised_methods(
     methods.push(BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT);
     methods.push(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE);
+    methods.push(BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE);
     if catalog_publication_available {
         methods.push(BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG);
     }
@@ -576,6 +608,7 @@ fn valid_service_authorization_profile(method: BrokerMethod, has_authorization: 
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
     ) == has_authorization
 }
 
@@ -720,6 +753,11 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
         HostError::Catalog(_) | HostError::UnknownHandle => (
             BrokerErrorCode::BROKER_ERROR_CODE_UNKNOWN_HANDLE,
             "resource handle is unavailable",
+            true,
+        ),
+        HostError::AttachGateUnavailable => (
+            BrokerErrorCode::BROKER_ERROR_CODE_REQUIRED_FEATURE_UNAVAILABLE,
+            "OpenSSH attach gate readback is unavailable",
             true,
         ),
         HostError::Fence(_) => (

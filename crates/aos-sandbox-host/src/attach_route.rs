@@ -27,6 +27,7 @@ use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aos_proto::aos::sandbox::local::v1::HostAttachGateEvidenceV1;
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1,
 };
@@ -34,17 +35,18 @@ use aos_sandbox::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_agent::openssh_gate::{
-    OpenSshGateBindingV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackErrorV1,
-    OpenSshGateReadbackV1, verify_openssh_gate_readback_v1,
+    verify_openssh_gate_readback_v1, OpenSshGateBindingV1, OpenSshGateObserveRequestV1,
+    OpenSshGateReadbackErrorV1, OpenSshGateReadbackV1,
 };
 use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
-use aos_sandbox_agent::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
+use aos_sandbox_agent::{decode_frame_v1, encode_frame_v1, AgentFrameV1, AgentProtocolError};
 use aos_sandbox_core::public_attach_grant::{
-    PublicAttachGrantErrorV1, PublicAttachPendingGrantV1, verify_public_attach_pending_grant_v1,
+    verify_public_attach_pending_grant_v1, PublicAttachGrantErrorV1, PublicAttachPendingGrantV1,
 };
 use aos_sandbox_core::{ExecutionId, VerifiedOwnershipLease};
+use buffa::Message as _;
 use ed25519_dalek::VerifyingKey;
-use rand::{TryRngCore as _, rngs::OsRng};
+use rand::{rngs::OsRng, TryRngCore as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PublicKey};
@@ -414,6 +416,7 @@ impl PendingOpenSshGateObservationV1 {
             route_generation: route.route_generation,
             route_digest: latest.route_digest,
             gate_observation_commitment: commitment,
+            signed_gate_readback: packet.to_vec(),
             forced_command_gate_active: true,
         })
     }
@@ -468,8 +471,40 @@ pub struct HostOpenSshAttachRouteEvidenceV1 {
     pub(crate) route_digest: [u8; 32],
     /// Commitment to the signed, fresh physical gate observation.
     pub(crate) gate_observation_commitment: [u8; 32],
+    /// Exact signed physical readback packet authenticated on the retained guest session.
+    pub(crate) signed_gate_readback: Vec<u8>,
     /// True only when the physical gate readback matched this route.
     pub(crate) forced_command_gate_active: bool,
+}
+
+impl HostOpenSshAttachRouteEvidenceV1 {
+    /// Encodes the full authenticated Host broker response for the controller.
+    ///
+    /// The signed readback remains present so a controller can retain the
+    /// precise physical evidence rather than relying on a boolean claim.
+    #[must_use]
+    pub fn encode_wire(&self) -> Vec<u8> {
+        HostAttachGateEvidenceV1 {
+            operation_id: self.attach_operation_id.to_vec(),
+            execution_id: self.execution_id.to_vec(),
+            incarnation_id: self.incarnation_id.to_vec(),
+            assignment_epoch: self.assignment_epoch,
+            principal_id: self.principal_id.to_vec(),
+            audit_id: self.audit_id.to_vec(),
+            host: self.host.clone(),
+            port: u32::from(self.port),
+            user: self.user.clone(),
+            host_public_key: self.host_public_key.as_bytes().to_vec(),
+            trusted_user_ca_public_key: self.trusted_user_ca_public_key.as_bytes().to_vec(),
+            expires_at: self.expires_at,
+            route_generation: self.route_generation,
+            route_digest: self.route_digest.to_vec(),
+            gate_observation_commitment: self.gate_observation_commitment.to_vec(),
+            signed_gate_readback: self.signed_gate_readback.clone(),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -506,6 +541,51 @@ struct DeploymentTrustV1 {
     user: String,
     host_public_key: String,
     trusted_user_ca_public_key: String,
+}
+
+/// Exposes only canonical public OpenSSH pins from a protected Host credential.
+///
+/// This value is not live gate evidence. Consumers still verify current Host
+/// admission, an exact signed pending grant, and fresh guest readback.
+pub struct HostOpenSshStaticTrustV1 {
+    host_public_key: String,
+    trusted_user_ca_public_key: String,
+    credential_digest: [u8; 32],
+}
+
+impl HostOpenSshStaticTrustV1 {
+    /// Loads the fixed root-owned credential and validates its canonical pins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the credential is absent, mutable by untrusted
+    /// accounts, malformed, or contains noncanonical OpenSSH keys.
+    pub fn load_protected() -> Result<Self, HostOpenSshAttachRouteErrorV1> {
+        let (trust, credential_digest) = read_deployment_trust()?;
+        Ok(Self {
+            host_public_key: trust.host_public_key,
+            trusted_user_ca_public_key: trust.trusted_user_ca_public_key,
+            credential_digest,
+        })
+    }
+
+    /// Returns the exact canonical server host public key line.
+    #[must_use]
+    pub fn host_public_key(&self) -> &str {
+        &self.host_public_key
+    }
+
+    /// Returns the exact canonical trusted user CA public key line.
+    #[must_use]
+    pub fn trusted_user_ca_public_key(&self) -> &str {
+        &self.trusted_user_ca_public_key
+    }
+
+    /// Returns the SHA-256 digest of the canonical credential bytes.
+    #[must_use]
+    pub const fn credential_digest(&self) -> [u8; 32] {
+        self.credential_digest
+    }
 }
 
 struct ProtectedRouteV1 {
@@ -783,15 +863,15 @@ pub enum HostOpenSshAttachRouteErrorV1 {
 mod tests {
     use ed25519_dalek::SigningKey;
     use sha2::{Digest as _, Sha256};
-    use ssh_key::{PublicKey, public::Ed25519PublicKey};
+    use ssh_key::{public::Ed25519PublicKey, PublicKey};
 
     use aos_sandbox_agent::openssh_gate::{OpenSshGatePhysicalStateV1, OpenSshGateReadbackV1};
     use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
 
     use super::{
-        DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, ROUTE_MAGIC,
-        RouteRecordV1, TRUST_MAGIC, decode_deployment_trust, decode_route_record,
-        route_matches_trust, verify_readback_binding,
+        decode_deployment_trust, decode_route_record, route_matches_trust, verify_readback_binding,
+        DeploymentTrustV1, HostOpenSshAttachRouteErrorV1, ProtectedRouteV1, RouteRecordV1,
+        ROUTE_MAGIC, TRUST_MAGIC,
     };
 
     fn route_record() -> RouteRecordV1 {

@@ -243,6 +243,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostApplyExecution,
     /// Host protected execution outcome readback.
     HostQueryExecution,
+    /// Host OpenSSH forced-command installation and signed readback.
+    HostInstallAttachGate,
     /// Storage resource inventory.
     StorageInventoryResources,
     /// Network resource inventory.
@@ -358,6 +360,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecution
+        }
+        BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
+            AuthenticatedBrokerMethodSemanticsV1::HostInstallAttachGate
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             AuthenticatedBrokerMethodSemanticsV1::StorageInventoryResources
@@ -1039,6 +1044,7 @@ enum RequestOutcomeContextV1 {
     HostPublishCatalog(crate::host_catalog::ValidatedHostCatalogPublication),
     HostExecutionApply(crate::ValidatedHostExecutionApplyV1),
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
+    HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1188,6 +1194,14 @@ fn validate_request_semantics(
             let request = crate::decode_host_execution_query_v1(body, peer, policy, now)?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostQueryExecution,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
+            let request = crate::decode_host_attach_gate_request_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostInstallAttachGate,
                 *request.header(),
                 None,
             )
@@ -1347,6 +1361,11 @@ fn validate_request_semantics(
                 body, peer, policy, now,
             )?)
         }
+        BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
+            RequestOutcomeContextV1::HostAttachGate(crate::decode_host_attach_gate_request_v1(
+                body, peer, policy, now,
+            )?)
+        }
         _ => RequestOutcomeContextV1::None,
     };
     Ok(ValidatedRequestSemanticV1 {
@@ -1503,6 +1522,12 @@ fn validate_success_semantics(
                 original.execution_id(),
                 original.source_commitment(),
             )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
+            let RequestOutcomeContextV1::HostAttachGate(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::decode_host_attach_gate_evidence_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             decode_storage_resource_inventory_response(body, maximum)?;
