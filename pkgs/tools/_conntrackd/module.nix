@@ -147,147 +147,125 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = ["administer-network" "raw-network"];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = ["administer-network" "raw-network"];
-          };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "shared";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = true;
-          writable_executable_memory = false;
-          isolation_domains = [];
-          network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "all";
-          security_label = "aos-pkg-conntrackd";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = ["administer-network" "raw-network"];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = ["administer-network" "raw-network"];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "shared";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      security_label = "aos-pkg-conntrackd";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
     consumerInstance = "conntrack-tools";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle = {
-        description = "Connection tracking state daemon";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command ["-C" configPath "-d"])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_token = cfg.restartToken;
-        restart_delay_millis = 1000;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 60000;
-      };
-      dependencies = {
-        after = [(resultOf "network-readiness" "resource")];
-        before = [];
-        requires = [];
-        wants = [(resultOf "network-readiness" "resource")];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "main-process";
-        timeout_millis = 90000;
-      };
-      reload = {
-        strategy = "command";
-        commands = [(command ["-C" configPath "-R"])];
-        completion = "command-exit";
-      };
-      configuration.views = [
-        {
-          name = "daemon";
-          source = configPath;
-          optional = false;
-        }
-      ];
-      storage.mounts = [
-        {
-          name = "runtime";
-          source = runtimePath;
-          access = "read-write";
-        }
-        {
-          name = "logs";
-          source = logPath;
-          access = "read-write";
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0027";
-      };
-      isolation = {
-        privilege = "unprivileged";
-        filesystem = "read-only-system";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
-      };
+    service = "main";
+    lifecycle = {
+      description = "Connection tracking state daemon";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command ["-C" configPath "-d"])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_token = cfg.restartToken;
+      restart_delay_millis = 1000;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 60000;
+    };
+    dependencies = {
+      after = [(resultOf "network-readiness" "resource")];
+      before = [];
+      requires = [];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    reload = {
+      strategy = "command";
+      commands = [(command ["-C" configPath "-R"])];
+      completion = "command-exit";
+    };
+    configuration.views = [
+      {
+        name = "daemon";
+        source = configPath;
+        optional = false;
+      }
+    ];
+    storage.mounts = [
+      {
+        name = "runtime";
+        source = runtimePath;
+        access = "read-write";
+      }
+      {
+        name = "logs";
+        source = logPath;
+        access = "read-write";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0027";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
     };
   };
-  abilityFragments = [
+  producers = [
     runtimeStorage
     logStorage
     networkReadiness
     configuration
-    service
   ];
-  staticAbilityFragments =
-    builtins.map
-    (fragment: (serviceManagement.splitDefinition fragment).declarations)
-    abilityFragments;
-  configuredAbilityFragments =
-    builtins.map
-    (fragment: (serviceManagement.splitDefinition fragment).configured)
-    abilityFragments;
 in {
   options.conntrackd = {
     enable = mkOption {
@@ -374,32 +352,23 @@ in {
     };
   };
 
-  config = lib.mkMerge (
-    [
-      {
-        assertions = [
-          {
-            assertion = cfg.hashLimit >= cfg.hashSize;
-            message = "conntrackd.hashLimit must be at least conntrackd.hashSize";
-          }
-          {
-            assertion = cfg.mode != "sync" || cfg.sync.localAddress != cfg.sync.peerAddress;
-            message = "conntrackd sync localAddress and peerAddress must differ";
-          }
-        ];
-      }
-      (lib.mkMerge (builtins.map
-        (fragment: {aos.abilities = fragment;})
-        staticAbilityFragments))
-      (lib.mkIf cfg.enable {aos.abilities.instances."conntrack-tools" = {};})
-    ]
-    ++ builtins.map
-    (mode:
-      lib.mkIf
-      (cfg.enable && cfg.mode == mode)
-      (lib.mkMerge (builtins.map
-        (fragment: {aos.abilities = fragment;})
-        configuredAbilityFragments)))
-    ["stats" "sync"]
-  );
+  config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = cfg.hashLimit >= cfg.hashSize;
+          message = "conntrackd.hashLimit must be at least conntrackd.hashSize";
+        }
+        {
+          assertion = cfg.mode != "sync" || cfg.sync.localAddress != cfg.sync.peerAddress;
+          message = "conntrackd sync localAddress and peerAddress must differ";
+        }
+      ];
+      aos.services."conntrack-tools.main" = service // {enable = cfg.enable;};
+    }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
+  ];
 }
