@@ -143,17 +143,17 @@
       }
     ];
   };
+  ifdBashStorePath = builtins.unsafeDiscardStringContext (toString bash);
+  ifdBashBuilder = "${ifdBashStorePath}/bin/bash";
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
     system = stdenv.buildPlatform.system;
-    # The evaluator receives JSON strings without Nix dependency context. Keep
-    # the fixture's exact derivation identity reproducible from that same
-    # context-free builder path; buildNix remains an explicit test dependency.
-    builder = builtins.unsafeDiscardStringContext "${buildNix}/bin/nix-instantiate";
+    # JSON drops Nix string context; both sides attach the same store input.
+    builder = builtins.appendContext ifdBashBuilder {
+      "${ifdBashStorePath}" = {path = true;};
+    };
+    args = ["-c" "printf '{}' > \"$out\""];
   };
-  # Retain the .drv for the denial test without realizing its intentionally forbidden output.
-  abilityEvaluatorIfdDrvPath =
-    builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath;
   src = aosWorkspaceSource;
   applicationTestPackages = [
     "aos"
@@ -494,12 +494,17 @@ in
         NIX_LOG_DIR="$ability_nix_log" \
         NIX_REMOTE=local \
           ${buildNix}/bin/nix-store --init
+        # Nix denies IFD even when the referenced output is already built.
+        # Realize this test input so source-derivation graphs remain valid.
+        test -f ${abilityEvaluatorIfdFixture}
+        export AOS_TEST_ABILITY_IFD_DERIVATION="${builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath}"
+        export AOS_TEST_ABILITY_IFD_BUILDER="${ifdBashBuilder}"
+        export AOS_TEST_ABILITY_IFD_BASH_STORE_PATH="${ifdBashStorePath}"
         export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
         export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
         export AOS_TEST_ABILITY_NIX_LOG_DIR="$ability_nix_log"
         export AOS_TEST_ABILITY_NIX_REMOTE=local
       ''}
-      export AOS_TEST_ABILITY_IFD_DERIVATION="${abilityEvaluatorIfdDrvPath}"
       export AOS_TEST_ABILITY_IFD_SYSTEM="${stdenv.buildPlatform.system}"
       export AOS_ABILITY_EVALUATOR_SECRET="must-not-leak"
       ${lib.optionalString isCross ''

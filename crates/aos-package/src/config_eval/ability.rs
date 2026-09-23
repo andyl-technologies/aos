@@ -1441,13 +1441,15 @@ mod tests {
             return Ok(None);
         }
 
-        const REQUIRED_ENVIRONMENT: [&str; 7] = [
+        const REQUIRED_ENVIRONMENT: [&str; 9] = [
             "AOS_NIX_INSTANTIATE",
             "AOS_PRLIMIT",
             "AOS_TEST_ABILITY_CACHE",
             "AOS_TEST_ABILITY_FIXTURE",
             "AOS_TEST_ABILITY_FIXTURE_NAR_HASH",
             "AOS_TEST_ABILITY_IFD_DERIVATION",
+            "AOS_TEST_ABILITY_IFD_BASH_STORE_PATH",
+            "AOS_TEST_ABILITY_IFD_BUILDER",
             "AOS_TEST_ABILITY_IFD_SYSTEM",
         ];
         if REQUIRED_ENVIRONMENT
@@ -1482,11 +1484,15 @@ mod tests {
 
     fn fixture_arguments(mode: &str, executable: &str) -> AbilityValue {
         let ifd_derivation = std::env::var("AOS_TEST_ABILITY_IFD_DERIVATION").unwrap();
+        let ifd_bash_store_path = std::env::var("AOS_TEST_ABILITY_IFD_BASH_STORE_PATH").unwrap();
+        let ifd_builder = std::env::var("AOS_TEST_ABILITY_IFD_BUILDER").unwrap();
         let ifd_system = std::env::var("AOS_TEST_ABILITY_IFD_SYSTEM").unwrap();
         AbilityValue::new(serde_json::json!({
             "builder": executable,
             "enabled": true,
             "ifd_derivation": ifd_derivation,
+            "ifd_bash_store_path": ifd_bash_store_path,
+            "ifd_builder": ifd_builder,
             "ifd_system": ifd_system,
             "mode": mode,
             "outside_path": executable,
