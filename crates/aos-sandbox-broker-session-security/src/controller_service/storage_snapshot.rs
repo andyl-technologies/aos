@@ -22,7 +22,7 @@ use super::{
     ProductionEffectExecutor, current_lifecycle_time, lifecycle_plan_resource_id,
     lifecycle_progress_transaction_id, missing_broker_session, production_authority_effect_timing,
 };
-use crate::recovery::ProtectedPriorAtomicStorageHistoryV1;
+use crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1;
 use crate::{
     DormantAtomicStorageInventoryCompletionV1, DormantAtomicStorageInventoryFinishProgressV1,
     DormantAtomicStorageInventoryFinishRecoveryV1, DormantAtomicStorageInventoryPredecessorV1,
@@ -133,6 +133,7 @@ impl ProductionEffectExecutor {
                         request_packet,
                         predecessor_packet,
                         session,
+                        checkpoint,
                     } => {
                         let mut sessions = self
                             .sessions
@@ -142,23 +143,24 @@ impl ProductionEffectExecutor {
                             .storage
                             .as_mut()
                             .ok_or_else(missing_broker_session)?;
-                        let history = storage.recover_prior_atomic_snapshot_history(
+                        let history = storage.recover_verified_atomic_snapshot_history(
                             request_id,
                             request_packet,
                             predecessor_packet,
                             session,
+                            checkpoint,
                         )?;
                         return Err(match history {
-                            ProtectedPriorAtomicStorageHistoryV1::Absent
-                            | ProtectedPriorAtomicStorageHistoryV1::Incomplete => retryable(
+                            ProtectedVerifiedAtomicStorageHistoryV1::Absent
+                            | ProtectedVerifiedAtomicStorageHistoryV1::Incomplete => retryable(
                                 "reserved Storage group lacks an adjacent terminal successor",
                             ),
-                            ProtectedPriorAtomicStorageHistoryV1::Complete { .. } => {
-                                // The packet trio survives, but the old signed hello and
-                                // verified transcript do not. Do not treat raw history as a
-                                // newly authenticated successor or roll this session over.
+                            ProtectedVerifiedAtomicStorageHistoryV1::Complete { .. } => {
+                                // The old session is fully reauthenticated, but its fixed
+                                // endpoint attestation and durable authority must also be
+                                // recovered before source completion can progress.
                                 retryable(
-                                    "signed Storage trio awaits historical semantic reconstruction",
+                                    "verified Storage trio awaits authority and attestation recovery",
                                 )
                             }
                         });
@@ -200,15 +202,18 @@ impl ProductionEffectExecutor {
                     journal, self.node, fence, &plan, timing,
                 )
                 .map_err(permanent)?;
-                let admission = LifecycleAtomicSnapshotSourceStoreV1::new(journal).reserve(
-                    &current,
-                    &barrier,
-                    &plan,
-                    predecessor.inventory(),
-                    predecessor.outcome(),
-                    fence,
-                    &authority,
-                );
+                let checkpoint = storage.historical_checkpoint_digest()?;
+                let admission = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
+                    .reserve_with_checkpoint(
+                        &current,
+                        &barrier,
+                        &plan,
+                        predecessor.inventory(),
+                        predecessor.outcome(),
+                        fence,
+                        &authority,
+                        checkpoint,
+                    );
                 let mut pending = PendingAtomicSnapshotV1 {
                     operation: operation_id,
                     operation_record: operation_record.digest(),

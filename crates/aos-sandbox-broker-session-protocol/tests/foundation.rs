@@ -107,6 +107,27 @@ fn context(
     context_with_inactive_key(protocol, major, keys, None)
 }
 
+#[test]
+fn historical_context_checkpoint_round_trips_every_key_state() {
+    let keys = keys();
+    let context = context_with_inactive_key(
+        BrokerSessionProtocolV1::Storage,
+        1,
+        &keys,
+        Some((2, false, Some(23))),
+    );
+    let encoded = context.checkpoint_bytes();
+
+    assert_eq!(
+        ProtectedBrokerSessionVerificationContextV1::from_checkpoint_bytes(&encoded).unwrap(),
+        context
+    );
+
+    let mut corrupt = encoded;
+    corrupt[0] ^= 1;
+    assert!(ProtectedBrokerSessionVerificationContextV1::from_checkpoint_bytes(&corrupt).is_err());
+}
+
 fn context_with_inactive_key(
     protocol: BrokerSessionProtocolV1,
     major: u16,

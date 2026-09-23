@@ -6,18 +6,20 @@
 //! must use the broker-session journal's exact signed request and outcome.
 //!
 //! ```text
-//! AOSLSS01 | state:1 | operation:16 | operation-record:32 | projection:32 |
+//! AOSLSS01/AOSLSS02 | state:1 | operation:16 | operation-record:32 | projection:32 |
 //! plan:32 | effect:32 | publication:32 | template:32 | request-id:16 |
 //! request-body:32 | request-packet:32 | predecessor:32 |
 //! predecessor-packet:32 | generation:8 | source:32 | session:32 |
+//! [V2 only: historical-checkpoint:32] |
 //! signed-request:32 | signed-outcome:32 | successor:32 |
 //! successor-packet:32 | successor-generation:8 | program:32 | observation:32 |
 //! digest:32
 //! ```
 //!
 //! All integers are big endian. The terminal fields before `digest` are
-//! zero in a pending reservation. The digest covers a separate domain and all
-//! preceding bytes; a new record replaces only the same operation's key.
+//! zero in a pending reservation. V2 binds the broker journal's immutable
+//! signed-hello/context checkpoint; V1 remains readable but cannot cold-recover
+//! a historical trio. The versioned digest covers all preceding bytes.
 
 use aos_proto::aos::sandbox::local::v1::{ApplyAtomicStorageSnapshotRequest, BrokerMethod};
 use aos_sandbox_core::{ObjectDigest, OperationId};
@@ -37,10 +39,13 @@ use crate::PreparedAuthorityEffectV1;
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::LifecycleAtomicSnapshotSource;
-const MAGIC: &[u8; 8] = b"AOSLSS01";
-const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source.v1\0";
+const MAGIC_V1: &[u8; 8] = b"AOSLSS01";
+const MAGIC_V2: &[u8; 8] = b"AOSLSS02";
+const DIGEST_DOMAIN_V1: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source.v1\0";
+const DIGEST_DOMAIN_V2: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source-transaction.v1\0";
-const RECORD_BYTES: usize = 8 + 1 + 16 + (18 * 32) + 16 + 8 + 8 + 32;
+const RECORD_BYTES_V1: usize = 8 + 1 + 16 + (18 * 32) + 16 + 8 + 8 + 32;
+const RECORD_BYTES_V2: usize = RECORD_BYTES_V1 + 32;
 
 /// Reports a stale or malformed source attempt, or protected journal failure.
 #[derive(Debug, thiserror::Error)]
@@ -91,6 +96,8 @@ pub enum LifecycleAtomicSnapshotSourceRecoveryV1 {
         predecessor_packet: ObjectDigest,
         /// The original authenticated Storage session binding.
         session: ObjectDigest,
+        /// The immutable signed-hello and protected-context checkpoint.
+        checkpoint: ObjectDigest,
     },
     /// The original request and adjacent inventory transition are durable.
     Complete {
@@ -142,6 +149,7 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
                         request_packet: ObjectDigest::from_bytes(record.request_packet),
                         predecessor_packet: ObjectDigest::from_bytes(record.predecessor_packet),
                         session: ObjectDigest::from_bytes(record.session),
+                        checkpoint: ObjectDigest::from_bytes(record.checkpoint),
                     },
                 ));
             }
@@ -171,8 +179,67 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         authority: &PreparedAuthorityEffectV1,
     ) -> Result<LifecycleAtomicSnapshotSourceAdmissionV1, LifecycleAtomicSnapshotSourceErrorV1>
     {
+        self.reserve_inner(
+            current,
+            barrier,
+            plan,
+            predecessor,
+            predecessor_outcome,
+            fence,
+            authority,
+            None,
+        )
+    }
+
+    /// Reserves a group bound to the broker journal's immutable hello checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero checkpoint, stale lifecycle authority, or
+    /// uncertain protected journal commit. The caller must not dispatch then.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reserve_with_checkpoint(
+        &mut self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        barrier: &LifecycleSnapshotBarrierV1,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        predecessor: &LifecycleAuthenticatedStorageInventoryV1,
+        predecessor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        fence: LiveRuntimeFenceV1,
+        authority: &PreparedAuthorityEffectV1,
+        checkpoint: ObjectDigest,
+    ) -> Result<LifecycleAtomicSnapshotSourceAdmissionV1, LifecycleAtomicSnapshotSourceErrorV1>
+    {
+        if checkpoint.as_bytes() == &[0; 32] {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+        self.reserve_inner(
+            current,
+            barrier,
+            plan,
+            predecessor,
+            predecessor_outcome,
+            fence,
+            authority,
+            Some(checkpoint),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reserve_inner(
+        &mut self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        barrier: &LifecycleSnapshotBarrierV1,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        predecessor: &LifecycleAuthenticatedStorageInventoryV1,
+        predecessor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        fence: LiveRuntimeFenceV1,
+        authority: &PreparedAuthorityEffectV1,
+        checkpoint: Option<ObjectDigest>,
+    ) -> Result<LifecycleAtomicSnapshotSourceAdmissionV1, LifecycleAtomicSnapshotSourceErrorV1>
+    {
         self.journal.ensure_protected_authority()?;
-        let candidate = reservation(
+        let mut candidate = reservation(
             current,
             barrier,
             plan,
@@ -181,6 +248,10 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
             fence,
             authority,
         )?;
+        if let Some(checkpoint) = checkpoint {
+            candidate.version = 2;
+            candidate.checkpoint = *checkpoint.as_bytes();
+        }
         match self.load(candidate.operation)? {
             Some(retained) if retained.same_reservation(&candidate) => {
                 Ok(if retained.completion.is_some() {
@@ -224,7 +295,7 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
     ) -> Result<LifecycleAtomicSnapshotSourceCompletionV1, LifecycleAtomicSnapshotSourceErrorV1>
     {
         self.journal.ensure_protected_authority()?;
-        let candidate = reservation(
+        let mut candidate = reservation(
             current,
             barrier,
             plan,
@@ -236,6 +307,8 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         let retained = self
             .load(candidate.operation)?
             .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+        candidate.version = retained.version;
+        candidate.checkpoint = retained.checkpoint;
         if !retained.same_reservation(&candidate) {
             return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
         }
@@ -344,6 +417,7 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
                 request_packet: ObjectDigest::from_bytes(record.request_packet),
                 predecessor_packet: ObjectDigest::from_bytes(record.predecessor_packet),
                 session: ObjectDigest::from_bytes(record.session),
+                checkpoint: ObjectDigest::from_bytes(record.checkpoint),
             }),
         }
     }
@@ -442,6 +516,7 @@ struct SourceCompletion {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SourceRecord {
+    version: u8,
     operation: [u8; 16],
     operation_record: [u8; 32],
     projection: [u8; 32],
@@ -457,6 +532,7 @@ struct SourceRecord {
     generation: u64,
     source: [u8; 32],
     session: [u8; 32],
+    checkpoint: [u8; 32],
     completion: Option<SourceCompletion>,
 }
 
@@ -469,8 +545,16 @@ impl SourceRecord {
     }
 
     fn body(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(RECORD_BYTES);
-        bytes.extend_from_slice(MAGIC);
+        let mut bytes = Vec::with_capacity(if self.version == 2 {
+            RECORD_BYTES_V2
+        } else {
+            RECORD_BYTES_V1
+        });
+        bytes.extend_from_slice(if self.version == 2 {
+            MAGIC_V2
+        } else {
+            MAGIC_V1
+        });
         bytes.push(u8::from(self.completion.is_some()));
         bytes.extend_from_slice(&self.operation);
         for field in [
@@ -495,6 +579,9 @@ impl SourceRecord {
         bytes.extend_from_slice(&self.generation.to_be_bytes());
         bytes.extend_from_slice(&self.source);
         bytes.extend_from_slice(&self.session);
+        if self.version == 2 {
+            bytes.extend_from_slice(&self.checkpoint);
+        }
         let completion = self.completion.unwrap_or(SourceCompletion {
             signed_request: [0; 32],
             signed_outcome: [0; 32],
@@ -516,7 +603,11 @@ impl SourceRecord {
 
     fn digest(&self) -> [u8; 32] {
         Sha256::new()
-            .chain_update(DIGEST_DOMAIN)
+            .chain_update(if self.version == 2 {
+                DIGEST_DOMAIN_V2
+            } else {
+                DIGEST_DOMAIN_V1
+            })
             .chain_update(self.body())
             .finalize()
             .into()
@@ -529,13 +620,13 @@ impl SourceRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, LifecycleAtomicSnapshotSourceErrorV1> {
-        if bytes.len() != RECORD_BYTES {
-            return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
-        }
+        let version = match bytes.len() {
+            RECORD_BYTES_V1 if bytes.get(..8) == Some(MAGIC_V1.as_slice()) => 1,
+            RECORD_BYTES_V2 if bytes.get(..8) == Some(MAGIC_V2.as_slice()) => 2,
+            _ => return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt),
+        };
         let mut input = bytes;
-        if take::<8>(&mut input)? != *MAGIC {
-            return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
-        }
+        let _magic = take::<8>(&mut input)?;
         let state = take::<1>(&mut input)?[0];
         if state > 1 {
             return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
@@ -555,6 +646,11 @@ impl SourceRecord {
         let generation = u64::from_be_bytes(take(&mut input)?);
         let source = take(&mut input)?;
         let session = take(&mut input)?;
+        let checkpoint = if version == 2 {
+            take(&mut input)?
+        } else {
+            [0; 32]
+        };
         let completion = SourceCompletion {
             signed_request: take(&mut input)?,
             signed_outcome: take(&mut input)?,
@@ -566,6 +662,7 @@ impl SourceRecord {
         };
         let retained_digest = take::<32>(&mut input)?;
         let record = Self {
+            version,
             operation,
             operation_record,
             projection,
@@ -581,6 +678,7 @@ impl SourceRecord {
             generation,
             source,
             session,
+            checkpoint,
             completion: (state == 1).then_some(completion),
         };
         let mandatory = [
@@ -608,6 +706,7 @@ impl SourceRecord {
         if operation == [0; 16]
             || request_id == [0; 16]
             || generation == 0
+            || (version == 2 && checkpoint == [0; 32])
             || mandatory.contains(&[0; 32])
             || (state == 0 && (terminal != [[0; 32]; 6] || completion.successor_generation != 0))
             || (state == 1 && (terminal.contains(&[0; 32]) || completion.successor_generation == 0))
@@ -666,6 +765,7 @@ fn reservation(
         return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
     }
     Ok(SourceRecord {
+        version: 1,
         operation: current.operation().operation_id().into_bytes(),
         operation_record: *current.record().digest().as_bytes(),
         projection: *current.projection_root().as_bytes(),
@@ -681,6 +781,7 @@ fn reservation(
         generation: predecessor.generation(),
         source: *predecessor.source().as_bytes(),
         session: *predecessor.session().as_bytes(),
+        checkpoint: [0; 32],
         completion: None,
     })
 }
@@ -723,6 +824,7 @@ mod tests {
 
     fn reservation() -> SourceRecord {
         SourceRecord {
+            version: 1,
             operation: [1; 16],
             operation_record: [2; 32],
             projection: [3; 32],
@@ -738,6 +840,7 @@ mod tests {
             generation: 13,
             source: [14; 32],
             session: [15; 32],
+            checkpoint: [0; 32],
             completion: None,
         }
     }
@@ -746,6 +849,21 @@ mod tests {
     fn source_record_replay_rejects_corrupt_and_partial_completion() {
         let pending = reservation();
         assert_eq!(SourceRecord::decode(&pending.encode()).unwrap(), pending);
+
+        let checkpointed = SourceRecord {
+            version: 2,
+            checkpoint: [22; 32],
+            ..pending
+        };
+        assert_eq!(
+            SourceRecord::decode(&checkpointed.encode()).unwrap(),
+            checkpointed
+        );
+        let missing_checkpoint = SourceRecord {
+            checkpoint: [0; 32],
+            ..checkpointed
+        };
+        assert!(SourceRecord::decode(&missing_checkpoint.encode()).is_err());
 
         let complete = SourceRecord {
             completion: Some(SourceCompletion {

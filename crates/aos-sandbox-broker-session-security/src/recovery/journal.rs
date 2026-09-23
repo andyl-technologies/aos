@@ -7,8 +7,10 @@
 //! current-session authority still requires the live endpoint before and after
 //! every read.
 
+mod historical_checkpoint;
 mod owner;
 
+pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
 
 use std::path::{Path, PathBuf};
@@ -24,7 +26,10 @@ use aos_sandbox_broker_session_protocol::{
 use aos_sandbox_core::ProtocolVersion;
 use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodOutcomeV1,
     AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodRequestV1,
+    AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerRequestDirectionV1,
+    admit_client_received_authenticated_broker_method_outcome_v1,
     authenticated_semantic_bindings_from_envelope_v1,
 };
 use sha2::{Digest as _, Sha256};
@@ -48,10 +53,13 @@ use super::{
 
 const KEY_MAGIC: &[u8; 8] = b"AOSBSJ01";
 const VALUE_MAGIC: &[u8; 8] = b"AOSBSJ01";
-const VALUE_VERSION: u16 = 2;
-const VALUE_FIXED_BYTES: usize = 184;
+const VALUE_VERSION_V2: u16 = 2;
+const VALUE_VERSION_V3: u16 = 3;
+const VALUE_FIXED_BYTES_V2: usize = 184;
+const VALUE_FIXED_BYTES_V3: usize = 188;
 const VALUE_DIGEST_BYTES: usize = 32;
-const VALUE_DOMAIN: &[u8] = b"aos.sandbox.broker-session.protected-history.v2\0";
+const VALUE_DOMAIN_V2: &[u8] = b"aos.sandbox.broker-session.protected-history.v2\0";
+const VALUE_DOMAIN_V3: &[u8] = b"aos.sandbox.broker-session.protected-history.v3\0";
 const ENDPOINT_PUBLICATION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.endpoint-publication.v1\0";
 const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.stable-endpoint-identity.v2\0";
@@ -84,6 +92,119 @@ pub(crate) enum ProtectedPriorAtomicStorageHistoryV1 {
     },
 }
 
+/// Contains only fully reauthenticated historical outcomes, never a send token.
+pub(crate) enum ProtectedVerifiedAtomicStorageHistoryV1 {
+    Absent,
+    Incomplete,
+    Complete {
+        predecessor: AuthenticatedBrokerMethodOutcomeV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
+        successor: AuthenticatedBrokerMethodOutcomeV1,
+    },
+}
+
+fn historical_terminal_outcome(
+    records: &[aos_sandbox_broker_session_protocol::BrokerSessionDurableRecordV1],
+    terminal_index: usize,
+    checkpoint: &HistoricalSessionCheckpointV1,
+    transcript: &VerifiedBrokerSessionTranscriptV1,
+) -> Result<AuthenticatedBrokerMethodOutcomeV1, BrokerSessionSecurityError> {
+    let request_index = terminal_index
+        .checked_sub(1)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let prepared = records
+        .get(request_index)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let terminal = records
+        .get(terminal_index)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    if prepared.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+        || terminal.phase() != BrokerSessionDurablePhaseV1::Terminal
+        || prepared.request_packet() != terminal.request_packet()
+        || prepared.request_id() != terminal.request_id()
+    {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+
+    let prior =
+        reconstruct_traffic_records(&records[..request_index], transcript, checkpoint.context())?;
+    let canonical = decode_canonical_request_v1(terminal.request_packet())
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let method = canonical.signed_artifact().method();
+    let bindings = authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let peer = checkpoint.peer();
+    let policy = aos_sandbox_protocol::PeerPolicy {
+        uid: peer.uid,
+        gid: Some(peer.gid),
+        audience: checkpoint.context().audience(),
+    };
+    let retained_time = terminal
+        .request_companion()
+        .deadline_boottime_nanoseconds()
+        .checked_sub(1)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let (request, pending_traffic) =
+        match prepare_client_sent_authenticated_broker_method_request_v1(
+            &prior,
+            terminal.request_packet(),
+            None,
+            canonical.message().descriptors.len(),
+            peer,
+            policy,
+            retained_time,
+            bindings,
+            checkpoint.context(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        {
+            AuthenticatedBrokerMethodRequestAdmissionV1::New {
+                request,
+                next_traffic,
+            } => (request, next_traffic),
+            AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+        };
+    if !request_matches_head(
+        &request,
+        terminal,
+        AuthenticatedBrokerRequestDirectionV1::ClientSend,
+    ) || request.semantic_commitment() != terminal.request_semantic_binding()
+    {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    let packet = terminal
+        .outcome_packet()
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let canonical_outcome = decode_canonical_response_v1(packet)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let outcome = match admit_client_received_authenticated_broker_method_outcome_v1(
+        &pending_traffic,
+        &request,
+        packet,
+        None,
+        canonical_outcome.message().descriptors.len(),
+        checkpoint.context(),
+    )
+    .map_err(|_| BrokerSessionSecurityError::Currentness)?
+    {
+        AuthenticatedBrokerMethodOutcomeAdmissionV1::New { outcome, .. } => outcome,
+        AuthenticatedBrokerMethodOutcomeAdmissionV1::ExactReplay(_) => {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+    };
+    if outcome.semantic_commitment() != terminal.outcome_semantic_binding()
+        || !matches!(
+            outcome.result(),
+            AuthenticatedBrokerMethodResultV1::Success { .. }
+        )
+    {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    Ok(outcome)
+}
+
 fn successful_terminal(
     record: &aos_sandbox_broker_session_protocol::BrokerSessionDurableRecordV1,
 ) -> Result<bool, BrokerSessionSecurityError> {
@@ -113,8 +234,10 @@ pub(crate) enum ProtectedBrokerReceivedRequestAdmissionV1 {
 }
 
 fn protected_session_journal_limits() -> JournalLimits {
-    let maximum_record_bytes =
-        BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES + VALUE_FIXED_BYTES + 1024;
+    let maximum_record_bytes = BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
+        + VALUE_FIXED_BYTES_V3
+        + historical_checkpoint::MAXIMUM_BYTES
+        + 1024;
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
         maximum_record_bytes,
@@ -253,6 +376,16 @@ impl ProtectedEndpointV1 {
         match self {
             Self::Client(endpoint) => endpoint.context_for_handshake(transcript.broker_process()),
             Self::Broker(endpoint) => endpoint.context_for_handshake(transcript.client_process()),
+        }
+    }
+
+    fn historical_context(
+        &mut self,
+        archived: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        match self {
+            Self::Client(endpoint) => endpoint.context_for_history(archived),
+            Self::Broker(endpoint) => endpoint.context_for_history(archived),
         }
     }
 }
@@ -398,6 +531,40 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Reauthenticates the old Storage trio without granting live traffic authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prior_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<ProtectedVerifiedAtomicStorageHistoryV1, BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let before = self
+            .journal
+            .read_current(BrokerSessionProtocolV1::Storage)?;
+        let history = self.journal.prior_verified_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            checkpoint_digest,
+        )?;
+        if self
+            .journal
+            .read_current(BrokerSessionProtocolV1::Storage)?
+            != before
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(history)
+    }
+
     /// Reads the exact protected Storage group and adjacent signed inventories.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prior_atomic_storage_history(
@@ -665,9 +832,14 @@ impl ProtectedBrokerSessionOwnerV1 {
         request: &AuthenticatedBrokerMethodRequestV1,
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
+        checkpoint: &HistoricalSessionCheckpointV1,
     ) -> Result<ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError> {
-        self.journal
-            .initialize_authenticated_request(request, transcript, connection_peer)
+        self.journal.initialize_authenticated_request(
+            request,
+            transcript,
+            connection_peer,
+            checkpoint,
+        )
     }
 
     /// Reopens the exact protected broker-side outcome gate.
@@ -1035,6 +1207,104 @@ fn reconstruct_retained_server_request(
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    fn prior_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+    ) -> Result<ProtectedVerifiedAtomicStorageHistoryV1, BrokerSessionSecurityError> {
+        let raw = self.prior_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            BrokerSessionProtocolV1::Storage,
+        )?;
+        let ProtectedPriorAtomicStorageHistoryV1::Complete {
+            predecessor_request,
+            predecessor_outcome,
+            group_request,
+            group_outcome,
+            successor_request,
+            successor_outcome,
+        } = raw
+        else {
+            return Ok(match raw {
+                ProtectedPriorAtomicStorageHistoryV1::Absent => {
+                    ProtectedVerifiedAtomicStorageHistoryV1::Absent
+                }
+                ProtectedPriorAtomicStorageHistoryV1::Incomplete => {
+                    ProtectedVerifiedAtomicStorageHistoryV1::Incomplete
+                }
+                ProtectedPriorAtomicStorageHistoryV1::Complete { .. } => {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+            });
+        };
+        let stored = self
+            .read_optional(BrokerSessionProtocolV1::Storage)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if checkpoint.digest()? != checkpoint_digest
+            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let transcript = checkpoint.verify()?;
+        if transcript.session_binding() != session_binding
+            || stored.endpoint_publication
+                != self.historical_endpoint_publication(
+                    BrokerSessionProtocolV1::Storage,
+                    &transcript,
+                )?
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let history = stored.history_model()?;
+        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
+        let records = history.records();
+        let (index, _) = records
+            .iter()
+            .enumerate()
+            .find(|(_, record)| {
+                record.phase() == BrokerSessionDurablePhaseV1::Terminal
+                    && record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                    && record.request_id() == request_id
+                    && Sha256::digest(record.request_packet()).as_slice() == request_packet
+            })
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let predecessor_index = index
+            .checked_sub(2)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let successor_index = index
+            .checked_add(2)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let predecessor =
+            historical_terminal_outcome(records, predecessor_index, checkpoint, &transcript)?;
+        let group = historical_terminal_outcome(records, index, checkpoint, &transcript)?;
+        let successor =
+            historical_terminal_outcome(records, successor_index, checkpoint, &transcript)?;
+        if predecessor.request().canonical_packet() != predecessor_request
+            || predecessor.canonical_packet() != predecessor_outcome
+            || group.request().canonical_packet() != group_request
+            || group.canonical_packet() != group_outcome
+            || successor.request().canonical_packet() != successor_request
+            || successor.canonical_packet() != successor_outcome
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(ProtectedVerifiedAtomicStorageHistoryV1::Complete {
+            predecessor,
+            group,
+            successor,
+        })
+    }
+
     fn prior_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],
@@ -1557,6 +1827,7 @@ impl ProtectedBrokerSessionJournalV1 {
         request: &AuthenticatedBrokerMethodRequestV1,
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
+        checkpoint: &HistoricalSessionCheckpointV1,
     ) -> Result<ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError> {
         let context = self.current_context(transcript)?;
         let peer = self.observe_peer(transcript, connection_peer)?;
@@ -1609,6 +1880,7 @@ impl ProtectedBrokerSessionJournalV1 {
             endpoint_publication,
             current_catalog,
             write,
+            Some(checkpoint.clone()),
         )?;
         let recovery = ProtectedBrokerSessionInitializationRecoveryV1 {
             expected_generation,
@@ -1798,6 +2070,7 @@ impl ProtectedBrokerSessionJournalV1 {
                 current.endpoint_publication,
                 write.current_catalog()?,
                 write,
+                current.checkpoint.clone(),
             )?,
             transcript: transcript.clone(),
         };
@@ -2070,6 +2343,29 @@ impl ProtectedBrokerSessionJournalV1 {
         Ok(digest.finalize().into())
     }
 
+    fn historical_endpoint_publication(
+        &mut self,
+        protocol: BrokerSessionProtocolV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+    ) -> Result<[u8; 32], BrokerSessionSecurityError> {
+        self.endpoint.revalidate()?;
+        let manifest = self.endpoint.manifest_binding()?;
+        let process = match self.endpoint.role() {
+            BrokerSessionDurableEndpointV1::Client => transcript.client_process(),
+            BrokerSessionDurableEndpointV1::Broker => transcript.broker_process(),
+        };
+        let role = endpoint_code(self.endpoint.role());
+        self.endpoint.revalidate()?;
+
+        Ok(Sha256::new()
+            .chain_update(ENDPOINT_PUBLICATION_DOMAIN)
+            .chain_update([protocol_code(protocol), role])
+            .chain_update(manifest)
+            .chain_update(process)
+            .finalize()
+            .into())
+    }
+
     fn stable_endpoint_identity(
         &mut self,
         protocol: BrokerSessionProtocolV1,
@@ -2266,6 +2562,7 @@ struct StoredProtocolHistoryV1 {
     current_catalog: [u8; 32],
     current_head: [u8; 32],
     history: Vec<u8>,
+    checkpoint: Option<HistoricalSessionCheckpointV1>,
 }
 
 impl StoredProtocolHistoryV1 {
@@ -2276,6 +2573,7 @@ impl StoredProtocolHistoryV1 {
         endpoint_publication: [u8; 32],
         current_catalog: [u8; 32],
         write: ProtectedBrokerRequestWriteV1,
+        checkpoint: Option<HistoricalSessionCheckpointV1>,
     ) -> Result<Self, BrokerSessionSecurityError> {
         let history = write.encode()?;
         let model = BrokerSessionDurableHistoryV1::decode(&history)
@@ -2292,6 +2590,7 @@ impl StoredProtocolHistoryV1 {
             current_catalog,
             current_head: model.head_commitment(),
             history,
+            checkpoint,
         })
     }
 
@@ -2318,6 +2617,7 @@ impl StoredProtocolHistoryV1 {
             current_catalog: pending.protected_bindings.current_catalog(),
             current_head: pending.durable_cas.replacement_head,
             history,
+            checkpoint: current.checkpoint.clone(),
         })
     }
 
@@ -2343,6 +2643,20 @@ impl StoredProtocolHistoryV1 {
         let head = model
             .head()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if let Some(checkpoint) = &self.checkpoint {
+            let transcript = checkpoint.verify()?;
+            if transcript.protocol() != self.protocol
+                || model.records().iter().any(|record| {
+                    record.session_binding() != transcript.session_binding()
+                        || record.protected_bindings().protected_context()
+                            != checkpoint.context().protected_context_digest()
+                        || record.protected_bindings().endpoint_publication()
+                            != self.endpoint_publication
+                })
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+        }
         if self.generation == 0
             || self.endpoint_publication.iter().all(|byte| *byte == 0)
             || self.stable_endpoint_identity.iter().all(|byte| *byte == 0)
@@ -2355,15 +2669,29 @@ impl StoredProtocolHistoryV1 {
         }
         let history_length = u32::try_from(self.history.len())
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let capacity = VALUE_FIXED_BYTES
+        let checkpoint = self
+            .checkpoint
+            .as_ref()
+            .map(HistoricalSessionCheckpointV1::encode)
+            .transpose()?;
+        let checkpoint_length = checkpoint.as_ref().map_or(0, Vec::len);
+        let version = if checkpoint.is_some() {
+            VALUE_VERSION_V3
+        } else {
+            VALUE_VERSION_V2
+        };
+        let capacity = VALUE_FIXED_BYTES_V3
             .checked_add(self.history.len())
+            .and_then(|size| size.checked_add(checkpoint_length))
             .ok_or(BrokerSessionSecurityError::Currentness)?;
-        if self.history.len() > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES {
+        if self.history.len() > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
+            || checkpoint_length > historical_checkpoint::MAXIMUM_BYTES
+        {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         let mut value = Vec::with_capacity(capacity);
         value.extend_from_slice(VALUE_MAGIC);
-        value.extend_from_slice(&VALUE_VERSION.to_be_bytes());
+        value.extend_from_slice(&version.to_be_bytes());
         value.push(protocol_code(self.protocol));
         value.push(endpoint_code(self.endpoint));
         value.extend_from_slice(&self.generation.to_be_bytes());
@@ -2373,20 +2701,30 @@ impl StoredProtocolHistoryV1 {
         value.extend_from_slice(&self.current_head);
         value.extend_from_slice(&history_length.to_be_bytes());
         value.extend_from_slice(&self.history);
-        let digest = value_digest(&value);
+        if let Some(checkpoint) = checkpoint {
+            let length = u32::try_from(checkpoint.len())
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            value.extend_from_slice(&length.to_be_bytes());
+            value.extend_from_slice(&checkpoint);
+        }
+        let digest = value_digest(&value, version);
         value.extend_from_slice(&digest);
         Ok(value)
     }
 
     fn decode(key: &[u8], value: &[u8]) -> Result<Self, BrokerSessionSecurityError> {
-        if value.len() < VALUE_FIXED_BYTES
+        if value.len() < VALUE_FIXED_BYTES_V2
             || value.len()
-                > VALUE_FIXED_BYTES
+                > VALUE_FIXED_BYTES_V3
                     .checked_add(BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES)
+                    .and_then(|size| size.checked_add(historical_checkpoint::MAXIMUM_BYTES))
                     .ok_or(BrokerSessionSecurityError::Currentness)?
             || value.get(..8) != Some(VALUE_MAGIC.as_slice())
-            || read_u16(value, 8)? != VALUE_VERSION
         {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let version = read_u16(value, 8)?;
+        if !matches!(version, VALUE_VERSION_V2 | VALUE_VERSION_V3) {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         let protocol = decode_protocol(read_u8(value, 10)?)?;
@@ -2404,13 +2742,35 @@ impl StoredProtocolHistoryV1 {
         let history_end = 152usize
             .checked_add(history_length)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let digest_end = history_end
+        let (checkpoint, digest_start) = if version == VALUE_VERSION_V3 {
+            let length = usize::try_from(read_u32(value, history_end)?)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            if length == 0 || length > historical_checkpoint::MAXIMUM_BYTES {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let start = history_end
+                .checked_add(4)
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let end = start
+                .checked_add(length)
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let checkpoint = HistoricalSessionCheckpointV1::decode(
+                value
+                    .get(start..end)
+                    .ok_or(BrokerSessionSecurityError::Currentness)?,
+            )?;
+            (Some(checkpoint), end)
+        } else {
+            (None, history_end)
+        };
+        let digest_end = digest_start
             .checked_add(VALUE_DIGEST_BYTES)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         if history_length == 0
             || history_length > BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
             || digest_end != value.len()
-            || read_array::<32>(value, history_end)? != value_digest(&value[..history_end])
+            || read_array::<32>(value, digest_start)?
+                != value_digest(&value[..digest_start], version)
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
@@ -2427,6 +2787,7 @@ impl StoredProtocolHistoryV1 {
             current_catalog,
             current_head,
             history,
+            checkpoint,
         };
         if stored.encode()? != value {
             return Err(BrokerSessionSecurityError::Currentness);
@@ -2476,9 +2837,13 @@ fn decode_endpoint(code: u8) -> Result<BrokerSessionDurableEndpointV1, BrokerSes
     }
 }
 
-fn value_digest(value_without_digest: &[u8]) -> [u8; 32] {
+fn value_digest(value_without_digest: &[u8], version: u16) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(VALUE_DOMAIN);
+    digest.update(if version == VALUE_VERSION_V3 {
+        VALUE_DOMAIN_V3
+    } else {
+        VALUE_DOMAIN_V2
+    });
     digest.update(value_without_digest);
     digest.finalize().into()
 }
@@ -2495,7 +2860,14 @@ fn transaction_id(
     ]);
     digest.update(stored.generation.to_be_bytes());
     digest.update(stored.current_head);
-    digest.update(value_digest(&value));
+    digest.update(value_digest(
+        &value,
+        if stored.checkpoint.is_some() {
+            VALUE_VERSION_V3
+        } else {
+            VALUE_VERSION_V2
+        },
+    ));
     let bytes: [u8; 32] = digest.finalize().into();
     let mut id = [0; 16];
     id.copy_from_slice(&bytes[..16]);

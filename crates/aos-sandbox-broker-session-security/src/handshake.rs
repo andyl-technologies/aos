@@ -23,10 +23,12 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
+use aos_sandbox_protocol::PeerCredentials;
 
 use crate::recovery::{
-    FixedEndpointCustodyV1, ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
-    ProtectedPriorTerminalExchangeV1,
+    FixedEndpointCustodyV1, HistoricalSessionCheckpointV1, ProtectedBrokerSessionOwnerV1,
+    ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
+    ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
     BrokerSessionSecurityError, ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1,
@@ -1203,9 +1205,35 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
     owner: ProtectedBrokerSessionOwnerV1,
     socket: SeqpacketSocket,
     transcript: VerifiedBrokerSessionTranscriptV1,
+    checkpoint: HistoricalSessionCheckpointV1,
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn historical_checkpoint_digest(
+        &self,
+    ) -> Result<[u8; 32], BrokerSessionSecurityError> {
+        self.checkpoint.digest()
+    }
+
+    pub(super) fn prior_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+    ) -> Result<ProtectedVerifiedAtomicStorageHistoryV1, BrokerSessionSecurityError> {
+        self.owner.prior_verified_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            checkpoint_digest,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn prior_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],
@@ -1676,14 +1704,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let InertProvisionalClientSession {
             _custody: custody,
             _carrier: carrier,
+            _client_packet: client_packet,
+            _broker_packet: broker_packet,
             _transcript: transcript,
             ..
         } = session;
+        let context = custody.context_for_handshake(transcript.broker_process())?;
         Self::from_parts(
             root,
             FixedEndpointCustodyV1::Client(custody),
             carrier,
             transcript,
+            context,
+            client_packet,
+            broker_packet,
         )
     }
 
@@ -1694,14 +1728,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let InertProvisionalBrokerSession {
             _custody: custody,
             _carrier: carrier,
+            _client_packet: client_packet,
+            _broker_packet: broker_packet,
             _transcript: transcript,
             ..
         } = session;
+        let context = custody.context_for_handshake(transcript.client_process())?;
         Self::from_parts(
             root,
             FixedEndpointCustodyV1::Broker(custody),
             carrier,
             transcript,
+            context,
+            client_packet,
+            broker_packet,
         )
     }
 
@@ -1710,13 +1750,30 @@ impl DormantAuthenticatedBrokerSessionV1 {
         custody: FixedEndpointCustodyV1,
         carrier: HandshakeCarrier,
         transcript: VerifiedBrokerSessionTranscriptV1,
+        context: aos_sandbox_broker_session_protocol::ProtectedBrokerSessionVerificationContextV1,
+        client_packet: Vec<u8>,
+        broker_packet: Vec<u8>,
     ) -> Result<Self, DormantBrokerSessionHandshakeErrorV1> {
         let socket = carrier.into_ordinary()?;
+        let credentials = socket.peer().credentials();
+        let peer = PeerCredentials {
+            uid: credentials.uid(),
+            gid: credentials.gid(),
+            pid: Some(credentials.pid().get()),
+        };
+        let checkpoint = HistoricalSessionCheckpointV1::new(
+            context,
+            &client_packet,
+            &broker_packet,
+            peer,
+            &transcript,
+        )?;
         let owner = ProtectedBrokerSessionOwnerV1::from_fixed_custody(root, custody)?;
         Ok(Self {
             owner,
             socket,
             transcript,
+            checkpoint,
         })
     }
 
@@ -1725,8 +1782,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
         request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
     ) -> Result<crate::ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError>
     {
-        self.owner
-            .initialize_authenticated_request(request, &self.transcript, self.socket.peer())
+        self.owner.initialize_authenticated_request(
+            request,
+            &self.transcript,
+            self.socket.peer(),
+            &self.checkpoint,
+        )
     }
 
     pub(super) fn append_authenticated_request(

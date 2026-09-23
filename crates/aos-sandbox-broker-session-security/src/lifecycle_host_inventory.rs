@@ -28,7 +28,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use buffa::Message as _;
 
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
-use crate::recovery::ProtectedPriorAtomicStorageHistoryV1;
+use crate::recovery::{
+    ProtectedPriorAtomicStorageHistoryV1, ProtectedVerifiedAtomicStorageHistoryV1,
+};
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
     DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
@@ -908,6 +910,44 @@ impl DormantAtomicStorageInventoryCompletionV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Returns the signed-hello/context checkpoint bound to this Storage session.
+    pub(crate) fn historical_checkpoint_digest(
+        &self,
+    ) -> Result<aos_sandbox_core::ObjectDigest, EffectFailure> {
+        self.0
+            .session
+            .historical_checkpoint_digest()
+            .map(aos_sandbox_core::ObjectDigest::from_bytes)
+            .map_err(|_| {
+                EffectFailure::Retryable("Storage historical checkpoint is unavailable".to_owned())
+            })
+    }
+
+    /// Reauthenticates a complete old trio without issuing a Storage request.
+    pub(crate) fn recover_verified_atomic_snapshot_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: aos_sandbox_core::ObjectDigest,
+        predecessor_packet: aos_sandbox_core::ObjectDigest,
+        session_binding: aos_sandbox_core::ObjectDigest,
+        checkpoint: aos_sandbox_core::ObjectDigest,
+    ) -> Result<ProtectedVerifiedAtomicStorageHistoryV1, EffectFailure> {
+        self.0
+            .session
+            .prior_verified_atomic_storage_history(
+                request_id,
+                *request_packet.as_bytes(),
+                *predecessor_packet.as_bytes(),
+                *session_binding.as_bytes(),
+                *checkpoint.as_bytes(),
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "protected historical Storage trio is unavailable".to_owned(),
+                )
+            })
+    }
+
     /// Inspects the exact old Storage session before a new request rolls it over.
     pub(crate) fn recover_prior_atomic_snapshot_history(
         &mut self,

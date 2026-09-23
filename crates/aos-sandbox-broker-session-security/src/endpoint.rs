@@ -468,6 +468,21 @@ impl ProtectedBrokerSessionClientV1 {
             .context(self.inner.process_execution_id, broker_process)
     }
 
+    /// Reconstructs an old context from the still-pinned manifest for history only.
+    pub(crate) fn context_for_history(
+        &mut self,
+        historical: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let context = self.inner.files.manifest().verification_context(
+            historical.boot_id(),
+            historical.client_process(),
+            historical.broker_process(),
+        )?;
+        self.inner.revalidate_after()?;
+        Ok(context)
+    }
+
     pub(crate) fn finalize_client_hello(
         &mut self,
         message: BrokerClientHello,
@@ -735,6 +750,21 @@ impl ProtectedBrokerSessionBrokerV1 {
     ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
         self.inner
             .context(client_process, self.inner.process_execution_id)
+    }
+
+    /// Reconstructs an old context from the still-pinned manifest for history only.
+    pub(crate) fn context_for_history(
+        &mut self,
+        historical: &ProtectedBrokerSessionVerificationContextV1,
+    ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.inner.revalidate_before()?;
+        let context = self.inner.files.manifest().verification_context(
+            historical.boot_id(),
+            historical.client_process(),
+            historical.broker_process(),
+        )?;
+        self.inner.revalidate_after()?;
+        Ok(context)
     }
 
     pub(crate) fn client_hello_verification_key(

@@ -1270,6 +1270,30 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn historical_checkpoint_digest(
+        &self,
+    ) -> Result<[u8; 32], BrokerSessionSecurityError> {
+        self.0.historical_checkpoint_digest()
+    }
+
+    pub(crate) fn prior_verified_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        checkpoint_digest: [u8; 32],
+    ) -> Result<crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1, BrokerSessionSecurityError>
+    {
+        self.0.prior_verified_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            checkpoint_digest,
+        )
+    }
+
     pub(crate) fn prior_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],

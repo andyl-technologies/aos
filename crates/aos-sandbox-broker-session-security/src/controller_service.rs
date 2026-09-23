@@ -971,6 +971,7 @@ fn audit_pending_atomic_snapshot_sources(
             request_packet,
             predecessor_packet,
             session,
+            checkpoint,
         } = source
         else {
             return Err(CycleFailure::Fatal(
@@ -978,11 +979,12 @@ fn audit_pending_atomic_snapshot_sources(
             ));
         };
         storage
-            .recover_prior_atomic_snapshot_history(
+            .recover_verified_atomic_snapshot_history(
                 request_id,
                 request_packet,
                 predecessor_packet,
                 session,
+                checkpoint,
             )
             .map_err(|error| CycleFailure::Retryable(format!("{error:?}")))?;
     }
