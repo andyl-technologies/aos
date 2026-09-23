@@ -257,7 +257,7 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
     ))
     .expect("observation root");
     let checkpoint_content =
-        ContentId::for_bytes(ObjectKind::ExactManifest, 4, b"retained-checkpoint");
+        ContentId::for_bytes(ObjectKind::ExactManifest, 5, b"retained-checkpoint");
     let checkpoint = ExactCheckpointId::parse(&format!(
         "crucible.executor.exact-checkpoint-root@{checkpoint_content}"
     ))

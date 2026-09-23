@@ -277,7 +277,7 @@ where
                 QemuFreshDriveOutcome::Observation(pending) => {
                     Ok(QemuFreshRunnerResult::Observation(pending))
                 }
-                QemuFreshDriveOutcome::CheckpointRequested => {
+                QemuFreshDriveOutcome::CheckpointRequested(choices) => {
                     if !context.checkpoint_request().is_requested() {
                         return Err(AttemptWorkerFailure::Terminal(
                             QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
@@ -300,6 +300,9 @@ where
                     }
                     let capture = lifecycle
                         .capture_attempt_checkpoint(context)
+                        .map_err(map_checkpoint_capture_failure)?;
+                    let capture = choices
+                        .bind_capture(input.scenario(), capture)
                         .map_err(map_checkpoint_capture_failure)?;
                     context
                         .prepare_and_stage_checkpoint(capture)

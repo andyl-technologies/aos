@@ -747,7 +747,7 @@ fn test_checkpoint_store() -> Arc<ExactCheckpointStore> {
 fn checkpoint_id(label: &str) -> ExactCheckpointId {
     ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         label.as_bytes(),
     ))
     .expect("exact checkpoint fixture")

@@ -418,7 +418,7 @@ fn publish_test_exact_checkpoint_closure(
 
     let root = ContentEnvelope::new(
         "crucible.test.exact-checkpoint-root",
-        4,
+        5,
         BTreeSet::from([
             ContentChild::new("index.0000", index_id).expect("root index child"),
             ContentChild::new("manifest", manifest).expect("root manifest child"),

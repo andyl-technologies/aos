@@ -393,7 +393,7 @@ fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resu
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"hot-first-resume",
     ))
     .expect("checkpoint id");

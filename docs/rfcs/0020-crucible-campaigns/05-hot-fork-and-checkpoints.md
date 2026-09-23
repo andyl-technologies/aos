@@ -509,10 +509,11 @@ Only version-nine manifests are decoded and authenticated. There is no
 alternate monolithic VMState reader or restore path.
 `crucible.qemu.vmstate@device-state.1` is the opaque QEMU qcow2 VMState byte
 stream. Production publication uses
-`crucible.executor.exact-checkpoint-root@exact-manifest.4`. The root commits to
+`crucible.executor.exact-checkpoint-root@exact-manifest.5`. The root commits to
 the version-nine closure manifest and its direct-or-delta RAM layers, device
-state, scheduler continuation, immutable backing, and fault checkpoint. The
-assignment ledger stages that root before publication, and publication makes
+state, scheduler continuation, immutable backing, fault checkpoint, and bounded
+choice records discovered before the pause. The assignment ledger stages that
+root before publication, and publication makes
 the authenticated children durable before exposing the root. A process-local
 replay claim is issued only by a completed guarded raw-to-promoted comparison;
 persisted bytes alone cannot authorize restore, and reopening the store requires
@@ -583,7 +584,7 @@ the production-store installer reconstructs the canonical manifest/object
 closure in private storage and applies the complete scenario-aware semantic
 restore validator. It independently derives the manifest's closure identity,
 scenario, and modeled configuration and requires all three to equal the claims
-bound by the version-four root. The local configured checkpoint-byte ceiling applies to the
+bound by the version-five root. The local configured checkpoint-byte ceiling applies to the
 manifest plus deduplicated production-object bytes in addition to the authored
 production resource bound. Before inventory allocation, the loader also
 requires `object_count * 32 <= manifest_bytes`; every deduplicated object must
@@ -596,7 +597,7 @@ For a packaged fresh attempt, the modeled driver yields checkpoint ownership
 only at an exact safe boundary. The production lifecycle first retains the
 complete portable source in its separately bounded native catalog. While that
 lifecycle is still owned by the runner, the fixed pool authenticates the source
-scenario, streams every native object to derive the version-four campaign root,
+scenario, streams every native object to derive the version-five campaign root,
 and persists `checkpoint-publishing(root)` before the first campaign-CAS put.
 The runner then tears down the lifecycle and returns an opaque prepared token;
 the pool publishes the immutable closure and moves to `paused(root)` without

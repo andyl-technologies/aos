@@ -1159,7 +1159,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   interface, authenticates and semantically restores the complete closure in a
   private bounded store before publishing any destination object, then installs
   immutable objects idempotently and commits the manifest last. Campaign CAS
-  now retains that complete closure under exact-root version four: a canonical
+  now retains that complete closure under exact-root version five: a canonical
   production-manifest leaf and typed production-object leaves are covered by
   bounded 4,096-entry index envelopes, and the root binds the exact scenario,
   configuration, production identity, counts, and aggregate bytes. Preparation
@@ -1167,7 +1167,7 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   all leaves and indexes before the root; loading reconstructs a lazy portable
   source for the production semantic installer. Concrete packaged capture and
   ledger handoff are now wired into the fixed pool: the runner captures the
-  complete source, validates its lineage scenario, prepares the version-four
+  complete source, validates its lineage scenario, prepares the version-five
   root, persists `checkpoint-publishing(root)` through a pool-owned callback
   while the lifecycle remains live, then shuts down and returns an opaque phase
   token for campaign-CAS publication and durable pause. The callback never

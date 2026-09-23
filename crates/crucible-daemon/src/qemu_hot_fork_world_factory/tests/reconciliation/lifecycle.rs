@@ -322,7 +322,7 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     )
     .expect("managed source pool");
     let fallback = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
         "d1".repeat(32)
     ))
     .expect("fallback checkpoint");

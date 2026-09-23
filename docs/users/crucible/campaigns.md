@@ -277,7 +277,7 @@ genesis_content = "crucible.campaign.configuration-artifact@configuration-v1-CON
 crucible_version = "crucible-0.1.0"
 qemu_build = "qemu-11.1.1-crucible"
 scenario_schema = 3
-exact_closure_schema = 4
+exact_closure_schema = 5
 
 [protocol_versions]
 control = 3

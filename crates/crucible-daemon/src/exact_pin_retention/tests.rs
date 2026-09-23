@@ -315,7 +315,7 @@ fn imported_selection_never_replaces_an_existing_campaign_owner() {
     let mut conflicting = original.clone();
     let conflicting_content = crucible_cas::content_store::ContentId::for_bytes(
         crucible_cas::content_store::ObjectKind::ExactManifest,
-        4,
+        5,
         b"conflicting imported checkpoint",
     );
     conflicting.checkpoint = ExactCheckpointId::parse(&format!(

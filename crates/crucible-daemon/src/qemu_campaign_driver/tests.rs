@@ -492,7 +492,7 @@ fn expect_observation(
 ) -> QemuFreshPendingObservation {
     match outcome {
         QemuFreshDriveOutcome::Observation(pending) => pending,
-        QemuFreshDriveOutcome::CheckpointRequested => {
+        QemuFreshDriveOutcome::CheckpointRequested(_) => {
             panic!("modeled observation fixture unexpectedly requested a checkpoint")
         }
     }
@@ -530,7 +530,7 @@ fn sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving() {
 
     assert!(matches!(
         outcome,
-        QemuFreshDriveOutcome::CheckpointRequested
+        QemuFreshDriveOutcome::CheckpointRequested(_)
     ));
     assert_eq!(owner.drives, 0);
 }
@@ -598,7 +598,10 @@ fn savepoint_capture_ignores_prelatched_checkpoint_until_attempt_stop() {
         )
         .expect("capture reaches its modeled stop");
 
-    assert!(matches!(result, QemuFreshDriveOutcome::CheckpointRequested));
+    assert!(matches!(
+        result,
+        QemuFreshDriveOutcome::CheckpointRequested(_)
+    ));
     assert_eq!(owner.drives, 2);
 }
 

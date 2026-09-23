@@ -60,6 +60,7 @@ pub(crate) struct ProductionPausedCheckpointPromotionTarget<'a> {
     resources: AttemptResourceLimits,
     start_mode: AttemptStartMode,
     attempt: &'a CrucibleAttemptExecution,
+    replay_store: Option<&'a CampaignExecutorStore>,
     selected_checkpoint: &'a mut Option<SelectedExactCheckpointRoot>,
 }
 
@@ -86,6 +87,7 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
     #[must_use]
     pub(crate) fn target<'a>(
         &'a self,
+        replay_store: &'a CampaignExecutorStore,
         run_state_root: &'a Path,
         selected_checkpoint: &'a mut Option<SelectedExactCheckpointRoot>,
     ) -> ProductionPausedCheckpointPromotionTarget<'a> {
@@ -110,6 +112,7 @@ impl ResolvedProductionPausedCheckpointPromotionRecovery {
             resources: self.promotion_basis.resources(),
             start_mode: self.promotion_basis.start_mode(),
             attempt: &self.attempt,
+            replay_store: Some(replay_store),
             selected_checkpoint,
         }
     }
@@ -297,6 +300,9 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// The portable production closure could not stream one raw live target.
     #[error(transparent)]
     ProductionClosure(#[from] LifecycleApiError),
+    /// Root-bound and repository choice records do not authenticate the schedule.
+    #[error(transparent)]
+    ReplayChoices(#[from] crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
@@ -485,7 +491,7 @@ where
                 recovery,
                 cancellation,
             )?;
-            let target = resolved.target(run_state_root, recovery.selected_checkpoint());
+            let target = resolved.target(store, run_state_root, recovery.selected_checkpoint());
             let prepared = validate_and_prepare_production_paused_checkpoint_promotion(
                 checkpoints,
                 target,
@@ -670,6 +676,22 @@ where
         target.cancellation,
     )?;
     eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=install-complete");
+    let owned_choices =
+        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+            installed.loaded().choice_closure(),
+        )?;
+    let _choices = match target.replay_store {
+        Some(store) => owned_choices.complete_from_repository(
+            store,
+            target.source,
+            &installed.configuration().schedule,
+        )?,
+        None => {
+            owned_choices
+                .validate_for_schedule(target.source, &installed.configuration().schedule)?;
+            owned_choices
+        }
+    };
     match target.start_mode {
         AttemptStartMode::CaptureMaterializedStart { .. } => {
             validate_materialized_start_configuration(
@@ -1003,7 +1025,7 @@ pub(crate) fn publish_staged_paused_checkpoint_promotion(
 
 /// Reconstructs a published production token from one durable staged pair.
 ///
-/// Both version-four roots pass complete portable scenario validation without
+/// Both version-five roots pass complete portable scenario validation without
 /// writes, and every live-node snapshot must form the exact raw-to-matching
 /// promotion relationship before the final supervisor CAS is allowed.
 ///

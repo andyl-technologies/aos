@@ -562,7 +562,7 @@ where
                         QemuFreshDriveOutcome::Observation(pending) => {
                             Ok(ResumeRunnerResult::Observation(pending))
                         }
-                        QemuFreshDriveOutcome::CheckpointRequested => {
+                        QemuFreshDriveOutcome::CheckpointRequested(choices) => {
                             if !context.checkpoint_request().is_requested() {
                                 let error = QemuProductionExactResumeExecutionRunnerError::
                                     UnsolicitedCheckpoint;
@@ -570,6 +570,9 @@ where
                             }
                             let capture = lifecycle
                                 .capture_attempt_checkpoint(context)
+                                .map_err(map_resume_checkpoint_capture_failure)?;
+                            let capture = choices
+                                .bind_capture(input.scenario(), capture)
                                 .map_err(map_resume_checkpoint_capture_failure)?;
                             context
                                 .prepare_and_stage_checkpoint(capture)

@@ -318,7 +318,7 @@ fn candidate(byte: u8, score: u64) -> HotCheckpointCandidate {
             .expect("score"),
         HotCheckpointFallback::Exact(
             crucible_campaign::ExactCheckpointId::parse(&format!(
-                "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+                "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
                 encode_hex(&[byte; 32])
             ))
             .expect("checkpoint"),

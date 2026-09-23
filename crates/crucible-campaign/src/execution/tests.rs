@@ -152,7 +152,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"candidate-resume-checkpoint",
     ))
     .expect("resume checkpoint");
@@ -679,7 +679,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
     let prior_execution = ExecutionId::from_bytes([0x3d; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"executor-resume-checkpoint-root",
     ))
     .expect("checkpoint root");
@@ -723,7 +723,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
 
     let other_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"other-resume-checkpoint-root",
     ))
     .expect("other checkpoint root");
@@ -789,7 +789,7 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     let prior_execution = ExecutionId::from_bytes([0x4d; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"materialized-start-resume-checkpoint",
     ))
     .expect("checkpoint root");
@@ -934,7 +934,7 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
     let prior_execution = ExecutionId::from_bytes([0xb3; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"selected-resume-checkpoint",
     ))
     .expect("checkpoint");
@@ -1077,7 +1077,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"executor-checkpoint-root",
     ))
     .expect("checkpoint root");

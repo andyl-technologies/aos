@@ -963,7 +963,7 @@ fn select_controlled_continuation(request: ControlledContinuationRequest<'_>) ->
     .expect("capture status request");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         &[request.marker; 32],
     ))
     .expect("capture checkpoint");

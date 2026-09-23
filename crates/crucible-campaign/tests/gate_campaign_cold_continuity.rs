@@ -812,7 +812,7 @@ fn exact_checkpoint_closure(
     blobs.put_if_absent(leaf_id, &BlobHandle::from_bytes(leaf.canonical_bytes()))?;
     let manifest = ContentEnvelope::new(
         "crucible.gate.campaign-cold-continuity.exact-checkpoint",
-        4,
+        5,
         BTreeSet::from([ContentChild::new("execution-state", leaf_id)?]),
         b"selected exact continuation materialization".to_vec(),
     )?;

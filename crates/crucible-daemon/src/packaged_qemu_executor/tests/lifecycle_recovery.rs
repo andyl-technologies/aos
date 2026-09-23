@@ -86,7 +86,7 @@ fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
     .expect("fallback lineage");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"packaged restart fallback",
     ))
     .expect("fallback checkpoint");
@@ -272,7 +272,7 @@ fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"packaged-status-checkpoint",
     ))
     .expect("checkpoint");

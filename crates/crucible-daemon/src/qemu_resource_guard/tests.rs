@@ -268,7 +268,7 @@ fn resources(quanta: u64) -> AttemptResourceLimits {
 
 fn selected_checkpoint(label: &[u8]) -> (ExactCheckpointId, SelectedExactCheckpointRoot) {
     let checkpoint =
-        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 4, label))
+        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 5, label))
             .expect("build selected exact checkpoint ID");
     let selected = SelectedExactCheckpointRoot::from_test_checkpoint(checkpoint);
     (checkpoint, selected)

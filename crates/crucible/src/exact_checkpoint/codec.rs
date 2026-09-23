@@ -122,13 +122,14 @@ pub(super) fn decode_root_children(
 ) -> Result<RepositoryRootChildren, ExactCheckpointRelationError> {
     let count = usize::try_from(index_count)
         .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)?;
-    if !matches!(envelope.children().len(), length if length == count.saturating_add(1) || length == count.saturating_add(3))
+    if !matches!(envelope.children().len(), length if length == count.saturating_add(2) || length == count.saturating_add(4))
     {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
     let mut manifest = None;
     let mut promotion_source = None;
     let mut promotion_evidence = None;
+    let mut choice_closure = None;
     let mut indexes = vec![None; count];
     for child in envelope.children() {
         match child.role() {
@@ -155,6 +156,14 @@ pub(super) fn decode_root_children(
                     return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
                 }
             }
+            CHOICE_CLOSURE_ROLE => {
+                if child.id().kind() != ObjectKind::Observation
+                    || child.id().schema_version() != CHOICE_CLOSURE_SCHEMA_VERSION
+                    || choice_closure.replace(child.id()).is_some()
+                {
+                    return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
+                }
+            }
             role => {
                 let suffix = role
                     .strip_prefix(INDEX_ROLE_PREFIX)
@@ -176,7 +185,7 @@ pub(super) fn decode_root_children(
             }
         }
     }
-    if promotion_source.is_some() != promotion_evidence.is_some() {
+    if promotion_source.is_some() != promotion_evidence.is_some() || choice_closure.is_none() {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
     Ok(RepositoryRootChildren {

@@ -453,7 +453,7 @@ mod tests {
     fn checkpoint(label: &[u8]) -> Result<ExactCheckpointId, Box<dyn Error>> {
         Ok(ExactCheckpointId::try_from(ContentId::for_bytes(
             ObjectKind::ExactManifest,
-            4,
+            5,
             label,
         ))?)
     }

@@ -37,13 +37,13 @@ fn archive_manifest_rejects_duplicate_configuration_pin_pairs() {
             .expect("pin fact");
     let first = ExactCheckpointId::from_content_id(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"first checkpoint",
     ))
     .expect("first checkpoint");
     let second = ExactCheckpointId::from_content_id(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"second checkpoint",
     ))
     .expect("second checkpoint");
@@ -136,7 +136,7 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
         .expect("publish representative observation");
     let checkpoint_envelope = ContentEnvelope::new(
         "crucible.test.archive-exact-checkpoint",
-        4,
+        5,
         BTreeSet::new(),
         b"representative exact checkpoint".to_vec(),
     )
