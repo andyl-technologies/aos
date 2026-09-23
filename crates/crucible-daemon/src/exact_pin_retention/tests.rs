@@ -287,7 +287,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         .to_hex(),
         // The digest pins the canonical retained bytes only after their current
         // campaign fact and exact-checkpoint closure authenticate above.
-        "48e59f2e1b072bacdb5b7d490274138971bb864fc29618f5c500d6d5ba05af02"
+        "df23223f42c8d612e879eb73998d742af02e9e5fd33bb1e326623bebe9959286"
     );
     drop(store);
 

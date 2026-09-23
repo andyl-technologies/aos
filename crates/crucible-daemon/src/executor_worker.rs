@@ -18,8 +18,11 @@ use crucible_campaign::{
 };
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
 };
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 const MAX_SELECTED_ORIGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES: u64 = 32 * 1024 * 1024 + 1024;
@@ -553,6 +556,7 @@ pub struct AttemptExecutionContext {
     checkpoint_scenario: Option<ContentHash>,
     checkpoint_handoff: Option<ExecutionCheckpointHandoff>,
     execution_quanta: ExecutionQuantumBudget,
+    host_watchdog: Option<AssignmentHostWatchdog>,
     origin: AttemptExecutionOrigin,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
     selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
@@ -572,6 +576,7 @@ impl Clone for AttemptExecutionContext {
             checkpoint_scenario: self.checkpoint_scenario,
             checkpoint_handoff: self.checkpoint_handoff.clone(),
             execution_quanta: self.execution_quanta.clone(),
+            host_watchdog: self.host_watchdog.clone(),
             origin: self.origin,
             guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
             selected_checkpoint: Mutex::new(None),
@@ -583,6 +588,108 @@ impl Clone for AttemptExecutionContext {
 #[derive(Clone, Debug)]
 struct ExecutionQuantumBudget {
     consumed: Arc<AtomicU64>,
+}
+
+/// Monotonic, clone-shared operational deadline for one accepted assignment.
+#[derive(Clone, Debug)]
+struct AssignmentHostWatchdog {
+    started_at: Instant,
+    allowance: Duration,
+    expired: Arc<AtomicBool>,
+}
+
+impl AssignmentHostWatchdog {
+    // Host elapsed time is operational supervision only; it never enters
+    // campaign objects, modeled ordering, or finding signatures.
+    // crucible-lint: allow clippy-disallowed-method -- elapsed host time controls only operational cancellation.
+    #[allow(clippy::disallowed_methods)]
+    fn remaining(&self) -> Duration {
+        self.allowance.saturating_sub(self.started_at.elapsed())
+    }
+
+    fn expired(&self) -> bool {
+        self.expired.load(Ordering::Acquire) || self.remaining().is_zero()
+    }
+}
+
+/// Cancels a live QEMU child when the whole assignment exceeds its host budget.
+struct AssignmentHostWatchdogGuard {
+    completion: mpsc::Sender<()>,
+    watcher: Option<JoinHandle<()>>,
+    state: AssignmentHostWatchdog,
+}
+
+impl AssignmentHostWatchdogGuard {
+    // Host monotonic time controls only process cancellation for this assignment.
+    // crucible-lint: allow clippy-disallowed-method -- host time never enters campaign semantic state.
+    #[allow(clippy::disallowed_methods)]
+    fn start(milliseconds: u64, cancellation: ExecutionCancellation) -> std::io::Result<Self> {
+        let state = AssignmentHostWatchdog {
+            started_at: Instant::now(),
+            allowance: Duration::from_millis(milliseconds),
+            expired: Arc::new(AtomicBool::new(false)),
+        };
+        let (completion, receiver) = mpsc::channel();
+        let watcher_state = state.clone();
+        let watcher = thread::Builder::new()
+            .name(String::from("campaign-host-watchdog"))
+            .spawn(move || {
+                loop {
+                    // Keep each wait representable even when policy admits a
+                    // duration far beyond the platform's Instant range.
+                    let slice = watcher_state.remaining().min(Duration::from_secs(3600));
+                    match receiver.recv_timeout(slice) {
+                        Err(mpsc::RecvTimeoutError::Timeout) if watcher_state.expired() => {
+                            watcher_state.expired.store(true, Ordering::Release);
+                            cancellation.cancel();
+                            break;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) | Ok(()) => break,
+                    }
+                }
+            })?;
+        Ok(Self {
+            completion,
+            watcher: Some(watcher),
+            state,
+        })
+    }
+
+    fn stop(&mut self) -> bool {
+        // A completed candidate cannot win a race against the assignment deadline
+        // merely because the watchdog thread has not been scheduled yet.
+        if self.state.remaining().is_zero() {
+            self.state.expired.store(true, Ordering::Release);
+        }
+        let _ = self.completion.send(());
+        let joined = self
+            .watcher
+            .take()
+            .is_none_or(|watcher| watcher.join().is_ok());
+        !joined || self.state.expired()
+    }
+}
+
+impl Drop for AssignmentHostWatchdogGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn complete_host_watchdog<T, E>(
+    result: Result<T, AttemptWorkerFailure<RepositoryAttemptWorkerError<E>>>,
+    watchdog: Option<&mut AssignmentHostWatchdogGuard>,
+    milliseconds: Option<u64>,
+) -> Result<T, AttemptWorkerFailure<RepositoryAttemptWorkerError<E>>> {
+    if watchdog.is_some_and(AssignmentHostWatchdogGuard::stop) {
+        return Err(AttemptWorkerFailure::Terminal(
+            RepositoryAttemptWorkerError::HostWatchdogExpired {
+                milliseconds: milliseconds.unwrap_or_default(),
+            },
+        ));
+    }
+    result
 }
 
 impl ExecutionQuantumBudget {
@@ -635,6 +742,7 @@ impl AttemptExecutionContext {
             checkpoint_scenario: None,
             checkpoint_handoff: None,
             execution_quanta: ExecutionQuantumBudget::new(),
+            host_watchdog: None,
             origin: AttemptExecutionOrigin::Initial,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
             selected_checkpoint: Mutex::new(None),
@@ -716,6 +824,19 @@ impl AttemptExecutionContext {
     #[must_use]
     pub(crate) fn consumed_execution_quanta(&self) -> u64 {
         self.execution_quanta.consumed()
+    }
+
+    /// Returns the remaining host budget for this execution incarnation.
+    #[must_use]
+    pub(crate) fn remaining_host_watchdog(&self) -> Option<Duration> {
+        self.host_watchdog
+            .as_ref()
+            .map(AssignmentHostWatchdog::remaining)
+    }
+
+    fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
+        self.host_watchdog = Some(watchdog);
+        self
     }
 
     /// Returns whether another physical replay can begin within this reservation.
@@ -1138,6 +1259,15 @@ pub enum RepositoryAttemptWorkerError<E> {
         /// Stable fail-closed mismatch category.
         reason: &'static str,
     },
+    /// The assignment exceeded its policy-keyed host safety deadline.
+    #[error("attempt infrastructure host watchdog expired after {milliseconds} ms")]
+    HostWatchdogExpired {
+        /// Configured wall-clock ceiling for this assignment.
+        milliseconds: u64,
+    },
+    /// The assignment's host safety timer could not be installed.
+    #[error("install attempt infrastructure host watchdog: {0}")]
+    HostWatchdogStart(#[source] std::io::Error),
 }
 
 /// Local worker that resolves campaign records and publishes immutable results.
@@ -1219,7 +1349,19 @@ where
         let expected_scenario = ContentHash {
             bytes: input.lineage().scenario().as_hash().as_bytes(),
         };
-        let context = AttemptExecutionContext::new(
+        let host_watchdog_ms = match queued.request().retention_policy() {
+            AttemptRetentionPolicyDisposition::Required(basis) => self
+                .store
+                .load_attempt_timeout_policy(
+                    queued.request().lineage(),
+                    queued.request().attempt(),
+                    basis,
+                )
+                .map_err(repository_worker_failure)?
+                .and_then(|policy| policy.host_completion_watchdog_ms()),
+            AttemptRetentionPolicyDisposition::Disabled => None,
+        };
+        let mut context = AttemptExecutionContext::new(
             queued.request().resources(),
             queued.request().retention(),
             queued.cancellation().clone(),
@@ -1233,8 +1375,21 @@ where
         ))
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
-        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone())
-        .install_selected_checkpoint(queued.take_selected_checkpoint());
+        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
+        let mut host_watchdog = host_watchdog_ms
+            .map(|milliseconds| {
+                AssignmentHostWatchdogGuard::start(milliseconds, context.cancellation().clone())
+                    .map_err(|error| {
+                        AttemptWorkerFailure::Terminal(
+                            RepositoryAttemptWorkerError::HostWatchdogStart(error),
+                        )
+                    })
+            })
+            .transpose()?;
+        if let Some(watchdog) = &host_watchdog {
+            context = context.with_host_watchdog(watchdog.state.clone());
+        }
+        context = context.install_selected_checkpoint(queued.take_selected_checkpoint());
         let product = self
             .model
             .execute(&input, &context)
@@ -1242,7 +1397,8 @@ where
         if let Some(selected) = context.take_selected_checkpoint() {
             queued.restore_selected_checkpoint(selected);
         }
-        let product = product?;
+        // Expiry wins even if guest work returned a candidate concurrently.
+        let product = complete_host_watchdog(product, host_watchdog.as_mut(), host_watchdog_ms)?;
         match &product {
             AttemptExecutionProduct::PreparedSemantic(result) => {
                 let candidate = result.observation();
@@ -1403,7 +1559,9 @@ fn repository_worker_failure<E>(
         RepositoryAttemptWorkerError::Repository(_)
         | RepositoryAttemptWorkerError::Model(_)
         | RepositoryAttemptWorkerError::ResourceRefusal { .. }
-        | RepositoryAttemptWorkerError::IncompatibleResult { .. } => {
+        | RepositoryAttemptWorkerError::IncompatibleResult { .. }
+        | RepositoryAttemptWorkerError::HostWatchdogExpired { .. }
+        | RepositoryAttemptWorkerError::HostWatchdogStart(_) => {
             AttemptWorkerFailure::Terminal(error)
         }
     }

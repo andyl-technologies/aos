@@ -23,13 +23,14 @@ use crucible::{
     coverage_fingerprint_from_event_log, try_step,
 };
 use crucible_campaign::{
-    AssertionViolationWitness, AttemptStartMode, CampaignCodecError, CampaignHash, ChoiceDiscovery,
-    ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact, ConfigurationId,
-    CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES,
-    Observation, ObservationCandidate, ObservationCondition, ObservationEventLogProof,
-    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
-    PropertyEvidence, PropertyVerdict, PropertyVerdictSet, SelectableId, Selection,
-    SelectionOrigin, StopCondition, StopOutcome,
+    AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
+    CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact,
+    ConfigurationId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES,
+    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation, ObservationCandidate,
+    ObservationCondition, ObservationEventLogProof, ObservationQuantumBoundary,
+    ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,
+    PropertyVerdict, PropertyVerdictSet, SelectableId, Selection, SelectionOrigin, StopCondition,
+    StopOutcome,
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;
@@ -165,6 +166,9 @@ pub enum QemuFreshModeledDriverError {
     /// A post-quantum observation proof disagreed with its scheduler output.
     #[error("observation stop proof disagrees with the completed quantum")]
     ObservationStopProof,
+    /// A policy stop proof disagreed with the retained scheduler coordinate.
+    #[error("bounded campaign stop proof disagrees with the completed quantum")]
+    BoundedStopProof,
     /// A selected continuation replay did not stop at its claimed boundary.
     #[error("selected continuation origin replay did not match its claimed boundary")]
     SelectedOriginBoundaryMismatch,
@@ -448,7 +452,9 @@ impl QemuFreshPendingObservation {
     ) -> Result<(Configuration, QemuFreshStartMaterialization), QemuFreshModeledDriverError> {
         if !matches!(
             self.stop,
-            ModeledStop::Reached(_) | ModeledStop::ObservationReached { .. }
+            ModeledStop::Reached(_)
+                | ModeledStop::BoundedPrimaryReached { .. }
+                | ModeledStop::ObservationReached { .. }
         ) {
             return Err(QemuFreshModeledDriverError::SelectedOriginBoundaryMismatch);
         }
@@ -661,6 +667,19 @@ impl QemuSavepointReplayReceipt {
 #[derive(Debug)]
 enum ModeledStop {
     Reached(StopCondition),
+    BoundedPrimaryReached {
+        stop: StopCondition,
+        proof: BoundedStopProof,
+    },
+    BoundedPrimaryTimeout {
+        stop: StopCondition,
+        proof: BoundedStopProof,
+    },
+    PolicyTimeout {
+        stop: StopCondition,
+        kind: PolicyTimeoutKind,
+        proof: BoundedStopProof,
+    },
     ObservationReached {
         proof: Box<ObservationStopProof>,
         evidence: CrucibleObservationBoundaryEvidence,
@@ -1246,7 +1265,7 @@ fn drive_modeled_attempt_inner(
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
-                stop: ModeledStop::Reached(input.attempt().stop().clone()),
+                stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
@@ -1258,7 +1277,7 @@ fn drive_modeled_attempt_inner(
         );
     }
     if matches!(
-        input.attempt().stop(),
+        input.attempt().stop().primary(),
         StopCondition::EventCount(count)
             if u64::try_from(observed_event_count).is_ok_and(|events| events >= *count)
     ) {
@@ -1274,7 +1293,7 @@ fn drive_modeled_attempt_inner(
             QemuFreshPendingObservation {
                 input: input.clone(),
                 configuration,
-                stop: ModeledStop::Reached(input.attempt().stop().clone()),
+                stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
@@ -1377,9 +1396,16 @@ fn drive_modeled_attempt_inner(
                 },
             );
         }
+        let policy_stop = terminal_stop
+            .is_none()
+            .then(|| policy_timeout_at(input.attempt().stop(), outcome.frontier, completed_quanta))
+            .flatten();
         let observation_stop = if terminal_stop.is_none()
-            && matches!(input.attempt().stop(), StopCondition::Observation(_))
-        {
+            && policy_stop.is_none()
+            && matches!(
+                input.attempt().stop().primary(),
+                StopCondition::Observation(_)
+            ) {
             let evidence = QuantumStopEvidence {
                 properties: input.scenario().properties(),
                 outcome: &outcome,
@@ -1394,7 +1420,7 @@ fn drive_modeled_attempt_inner(
         } else {
             None
         };
-        if terminal_stop.is_none() && observation_stop.is_none() {
+        if terminal_stop.is_none() && policy_stop.is_none() && observation_stop.is_none() {
             resolve_pending_guest_choices(
                 lifecycle,
                 input,
@@ -1405,6 +1431,8 @@ fn drive_modeled_attempt_inner(
         }
         let stop = if let Some(stop) = terminal_stop {
             Some(stop)
+        } else if policy_stop.is_some() {
+            policy_stop
         } else if observation_stop.is_some() {
             observation_stop
         } else {
@@ -1429,7 +1457,12 @@ fn drive_modeled_attempt_inner(
             ))?;
         let retain_signal_fault_discoveries = matches!(
             stop.as_ref(),
-            Some(ModeledStop::Reached(stop)) if stop.accepts_next_choice()
+            Some(ModeledStop::Reached(stop))
+                if stop == input.attempt().stop().primary() && stop.accepts_next_choice()
+        ) || matches!(
+            stop.as_ref(),
+            Some(ModeledStop::BoundedPrimaryReached { stop, .. })
+                if stop.primary().accepts_next_choice()
         );
         configuration = append_quantum(
             &mut event_log,
@@ -1502,6 +1535,16 @@ fn drive_modeled_attempt_inner(
 
 fn requested_attempt_stop_frontier(requested: &StopCondition) -> Option<VirtualTime> {
     match requested {
+        StopCondition::Bounded {
+            primary,
+            virtual_time_nanoseconds,
+            ..
+        } => requested_attempt_stop_frontier(primary)
+            .map(|frontier| frontier.ticks)
+            .into_iter()
+            .chain(*virtual_time_nanoseconds)
+            .min()
+            .map(|ticks| VirtualTime { ticks }),
         StopCondition::VirtualTimeNanoseconds(deadline) => Some(VirtualTime { ticks: *deadline }),
         StopCondition::VirtualTimeOrExecutionQuanta {
             virtual_time_nanoseconds,
@@ -1896,6 +1939,31 @@ fn reached_requested_stop(
     requested: &StopCondition,
     evidence: &QuantumStopEvidence<'_>,
 ) -> Result<Option<ModeledStop>, QemuFreshModeledDriverError> {
+    if let StopCondition::Bounded { primary, .. } = requested {
+        let proof =
+            BoundedStopProof::new(evidence.outcome.frontier.ticks, evidence.completed_quanta);
+        if let Some(timeout) = policy_timeout_at(
+            requested,
+            evidence.outcome.frontier,
+            evidence.completed_quanta,
+        ) {
+            return Ok(Some(timeout));
+        }
+        return reached_requested_stop(primary, evidence).map(|stop| {
+            stop.map(|stop| match stop {
+                ModeledStop::Reached(_) => ModeledStop::BoundedPrimaryReached {
+                    stop: requested.clone(),
+                    proof,
+                },
+                ModeledStop::ModeledTimeout(_) => ModeledStop::BoundedPrimaryTimeout {
+                    stop: requested.clone(),
+                    proof,
+                },
+                other => other,
+            })
+        });
+    }
+
     let QuantumStopEvidence {
         outcome,
         observed_event_count,
@@ -1908,11 +1976,17 @@ fn reached_requested_stop(
             !discoveries.is_empty() || !outcome.discovered_choices.is_empty()
         }
         StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
+            // A choice is eligible only before the intrinsic quantum fallback.
+            // At the completed fallback quantum the timeout wins the tie.
+            if *completed_quanta >= *execution_quanta {
+                return Ok(Some(ModeledStop::ModeledTimeout(String::from(
+                    "execution-quanta",
+                ))));
+            }
             if !discoveries.is_empty() || !outcome.discovered_choices.is_empty() {
                 return Ok(Some(ModeledStop::Reached(requested.clone())));
             }
-            return Ok((*completed_quanta >= *execution_quanta)
-                .then(|| ModeledStop::ModeledTimeout(String::from("execution-quanta"))));
+            return Ok(None);
         }
         StopCondition::NamedBoundary(name) => outcome.event_log_entries.iter().any(|entry| {
             matches!(
@@ -1953,8 +2027,39 @@ fn reached_requested_stop(
                 })
             });
         }
+        StopCondition::Bounded { .. } => {
+            return Err(QemuFreshModeledDriverError::BoundedStopProof);
+        }
     };
     Ok(reached.then(|| ModeledStop::Reached(requested.clone())))
+}
+
+fn policy_timeout_at(
+    requested: &StopCondition,
+    frontier: VirtualTime,
+    completed_quanta: u64,
+) -> Option<ModeledStop> {
+    let StopCondition::Bounded {
+        virtual_time_nanoseconds,
+        execution_quanta,
+        ..
+    } = requested
+    else {
+        return None;
+    };
+    let proof = BoundedStopProof::new(frontier.ticks, completed_quanta);
+    let kind = if virtual_time_nanoseconds.is_some_and(|deadline| frontier.ticks >= deadline) {
+        PolicyTimeoutKind::VirtualTime
+    } else if execution_quanta.is_some_and(|deadline| completed_quanta >= deadline) {
+        PolicyTimeoutKind::ExecutionQuanta
+    } else {
+        return None;
+    };
+    Some(ModeledStop::PolicyTimeout {
+        stop: requested.clone(),
+        kind,
+        proof,
+    })
 }
 
 fn observation_stop_proof(
@@ -2117,6 +2222,25 @@ fn initial_requested_stop(
     completed_quanta: u64,
     observed_event_count: usize,
 ) -> Option<ModeledStop> {
+    if let StopCondition::Bounded { primary, .. } = requested {
+        let proof = BoundedStopProof::new(frontier.ticks, completed_quanta);
+        if let Some(timeout) = policy_timeout_at(requested, frontier, completed_quanta) {
+            return Some(timeout);
+        }
+        return initial_requested_stop(primary, frontier, completed_quanta, observed_event_count)
+            .map(|stop| match stop {
+                ModeledStop::Reached(_) => ModeledStop::BoundedPrimaryReached {
+                    stop: requested.clone(),
+                    proof,
+                },
+                ModeledStop::ModeledTimeout(_) => ModeledStop::BoundedPrimaryTimeout {
+                    stop: requested.clone(),
+                    proof,
+                },
+                other => other,
+            });
+    }
+
     let reached = match requested {
         StopCondition::VirtualTimeNanoseconds(deadline) => frontier.ticks >= *deadline,
         StopCondition::ExecutionQuanta(bound) => completed_quanta >= *bound,
@@ -2135,8 +2259,24 @@ fn initial_requested_stop(
             return (completed_quanta >= *execution_quanta)
                 .then(|| ModeledStop::ModeledTimeout(String::from("execution-quanta")));
         }
+        StopCondition::Bounded { .. } => return None,
     };
     reached.then(|| ModeledStop::Reached(requested.clone()))
+}
+
+fn primary_stop_at(
+    requested: &StopCondition,
+    frontier: VirtualTime,
+    completed_quanta: u64,
+) -> ModeledStop {
+    if matches!(requested, StopCondition::Bounded { .. }) {
+        ModeledStop::BoundedPrimaryReached {
+            stop: requested.clone(),
+            proof: BoundedStopProof::new(frontier.ticks, completed_quanta),
+        }
+    } else {
+        ModeledStop::Reached(requested.clone())
+    }
 }
 
 fn build_observation_candidate(
@@ -2224,7 +2364,7 @@ fn project_boundary(
         });
     }
 
-    let timeout = retain_execution_quanta_timeout(&mut pending)?;
+    let timeout = retain_modeled_timeout(&mut pending)?;
     let mut checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(pending.input.scenario().world());
     if let Some(quiescence) = pending.terminal_quiescence.clone() {
@@ -2328,19 +2468,35 @@ fn project_boundary(
     })
 }
 
-fn retain_execution_quanta_timeout(
+fn retain_modeled_timeout(
     pending: &mut QemuFreshPendingObservation,
 ) -> Result<Option<FailureTimeoutRecord>, QemuFreshModeledDriverError> {
-    let Some(configured_limit) = execution_quanta_timeout_limit(pending) else {
+    if let ModeledStop::PolicyTimeout { proof, .. } = &pending.stop
+        && (proof.frontier_nanoseconds() != pending.terminal_at.ticks
+            || proof.completed_quanta() != pending.completed_quanta)
+    {
+        return Err(QemuFreshModeledDriverError::BoundedStopProof);
+    }
+    let Some((budget_kind, configured_limit)) = modeled_timeout_limit(pending) else {
         return Ok(None);
     };
-    if pending.completed_quanta < configured_limit {
+    let observed = match budget_kind {
+        FailureTimeoutBudgetKind::ExecutionQuanta => pending.completed_quanta,
+        FailureTimeoutBudgetKind::VirtualTime => pending.terminal_at.ticks,
+    };
+    if observed < configured_limit {
         return Ok(None);
     }
 
+    let budget_name = match budget_kind {
+        FailureTimeoutBudgetKind::ExecutionQuanta => "execution-quanta",
+        FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
+    };
+
     let retained_marker = pending.event_log.iter().rev().find(|entry| {
         entry.event_payload().kind() == "execution_budget_exhausted"
-            && entry.event_payload().string("budget_kind") == Some("execution-quanta")
+            && entry.event_payload().string("budget_kind") == Some(budget_name)
+            && entry.at() == pending.terminal_at
     });
     let marker = if let Some(marker) = retained_marker {
         marker.clone()
@@ -2358,11 +2514,8 @@ fn retain_execution_quanta_timeout(
             .map_or(pending.terminal_at, |entry| {
                 pending.terminal_at.max(entry.at())
             });
-        let marker = SchedulerEventLogEntry::execution_budget_exhausted(
-            sequence,
-            boundary,
-            "execution-quanta",
-        );
+        let marker =
+            SchedulerEventLogEntry::execution_budget_exhausted(sequence, boundary, budget_name);
         append_event_entries(
             &mut pending.event_log,
             &mut pending.event_log_bytes,
@@ -2372,7 +2525,7 @@ fn retain_execution_quanta_timeout(
     };
 
     Ok(Some(FailureTimeoutRecord::new(
-        FailureTimeoutBudgetKind::ExecutionQuanta,
+        budget_kind,
         Some(configured_limit),
         pending.completed_quanta,
         marker.at(),
@@ -2387,14 +2540,16 @@ fn retain_execution_quanta_timeout(
     )))
 }
 
-fn execution_quanta_timeout_limit(pending: &QemuFreshPendingObservation) -> Option<u64> {
+fn modeled_timeout_limit(
+    pending: &QemuFreshPendingObservation,
+) -> Option<(FailureTimeoutBudgetKind, u64)> {
     if let ModeledStop::ObservationReached { proof, .. } = &pending.stop {
         if proof.satisfaction() != ObservationStopSatisfaction::ExecutionQuanta {
             return None;
         }
         return match proof.condition() {
             ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
-                Some(*execution_quanta)
+                Some((FailureTimeoutBudgetKind::ExecutionQuanta, *execution_quanta))
             }
             ObservationCondition::SchedulerQuiescent
             | ObservationCondition::AssertionViolationTransition(_)
@@ -2405,16 +2560,65 @@ fn execution_quanta_timeout_limit(pending: &QemuFreshPendingObservation) -> Opti
     let stop = match &pending.stop {
         ModeledStop::ReplayBoundary => pending.input.attempt().stop(),
         ModeledStop::Reached(stop) => stop,
+        ModeledStop::PolicyTimeout {
+            stop,
+            kind: PolicyTimeoutKind::ExecutionQuanta,
+            ..
+        } => {
+            return stop
+                .bounded_deadlines()
+                .and_then(|(_, execution_quanta)| execution_quanta)
+                .map(|limit| (FailureTimeoutBudgetKind::ExecutionQuanta, limit));
+        }
+        ModeledStop::PolicyTimeout {
+            stop,
+            kind: PolicyTimeoutKind::VirtualTime,
+            ..
+        } => {
+            return stop
+                .bounded_deadlines()
+                .and_then(|(virtual_time, _)| virtual_time)
+                .map(|limit| (FailureTimeoutBudgetKind::VirtualTime, limit));
+        }
+        ModeledStop::BoundedPrimaryReached { stop, .. } => {
+            return match stop.primary() {
+                StopCondition::NextChoiceOrExecutionQuanta { .. } => None,
+                primary => configured_execution_quanta_limit(primary)
+                    .map(|limit| (FailureTimeoutBudgetKind::ExecutionQuanta, limit)),
+            };
+        }
+        ModeledStop::BoundedPrimaryTimeout { .. } => return None,
         ModeledStop::ObservationReached { .. }
         | ModeledStop::ModeledTimeout(_)
         | ModeledStop::TerminalPassed
         | ModeledStop::TerminalFailed(_) => return None,
     };
+    if let StopCondition::Bounded {
+        primary,
+        virtual_time_nanoseconds,
+        execution_quanta,
+    } = stop
+    {
+        // A virtual deadline wins over a quantum deadline at one boundary.
+        // Primary stops retain only the timeout evidence they actually reached.
+        if virtual_time_nanoseconds.is_some_and(|deadline| pending.terminal_at.ticks >= deadline) {
+            return None;
+        }
+        if let Some(deadline) = execution_quanta
+            && pending.completed_quanta >= *deadline
+        {
+            return Some((FailureTimeoutBudgetKind::ExecutionQuanta, *deadline));
+        }
+        return configured_execution_quanta_limit(primary)
+            .map(|limit| (FailureTimeoutBudgetKind::ExecutionQuanta, limit));
+    }
     configured_execution_quanta_limit(stop)
+        .map(|limit| (FailureTimeoutBudgetKind::ExecutionQuanta, limit))
 }
 
 fn configured_execution_quanta_limit(stop: &StopCondition) -> Option<u64> {
     match stop {
+        StopCondition::Bounded { primary, .. } => configured_execution_quanta_limit(primary),
         StopCondition::ExecutionQuanta(limit) => Some(*limit),
         StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => Some(*execution_quanta),
         StopCondition::VirtualTimeOrExecutionQuanta {
@@ -2586,6 +2790,15 @@ fn stop_outcome(
     match stop {
         ModeledStop::ObservationReached { proof, .. } => Ok(StopOutcome::ObservationReached(proof)),
         ModeledStop::Reached(stop) => Ok(assertion_failure.unwrap_or(StopOutcome::Reached(stop))),
+        ModeledStop::BoundedPrimaryReached { stop, proof } => {
+            Ok(assertion_failure.unwrap_or(StopOutcome::BoundedPrimaryReached { stop, proof }))
+        }
+        ModeledStop::BoundedPrimaryTimeout { stop, proof } => {
+            Ok(assertion_failure.unwrap_or(StopOutcome::BoundedPrimaryTimeout { stop, proof }))
+        }
+        ModeledStop::PolicyTimeout { stop, kind, proof } => {
+            Ok(assertion_failure.unwrap_or(StopOutcome::PolicyTimeout { stop, kind, proof }))
+        }
         ModeledStop::ModeledTimeout(name) => {
             Ok(assertion_failure.unwrap_or(StopOutcome::ModeledTimeout(name)))
         }
