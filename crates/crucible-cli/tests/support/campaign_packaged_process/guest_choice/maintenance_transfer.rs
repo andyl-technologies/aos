@@ -108,7 +108,16 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
 
     let configuration = ConfigurationId::parse(&fast_configuration)?;
     let source_pin = selected_pin_checkpoint(&source, configuration)?;
-    let transfer = transfer_executable_archive(&source, &destination, &archive_snapshot)?;
+    let (preflight, transfer) =
+        transfer_executable_archive(&source, &destination, &archive_snapshot)?;
+    assert_eq!(preflight["schema"], "crucible.cli.campaign-archive-plan.v1");
+    assert_eq!(preflight["phase"], "pre-transfer");
+    assert_eq!(preflight["policy"], "executable");
+    assert!(
+        preflight["sensitive_classes"]
+            .as_array()
+            .is_some_and(|classes| !classes.is_empty())
+    );
     assert_eq!(transfer["authenticated"], true);
     assert_eq!(transfer["campaign"], CAMPAIGN);
     assert!(
@@ -119,6 +128,10 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     let inspected = inspect_archive(&destination)?;
     assert_eq!(inspected["manifest"], transfer["manifest"]);
     assert_eq!(inspected["authenticated"], true);
+    assert_eq!(
+        inspected["sensitive_classes"],
+        preflight["sensitive_classes"]
+    );
     assert_eq!(
         selected_pin_checkpoint(&destination, configuration)?,
         source_pin
@@ -246,32 +259,35 @@ fn transfer_executable_archive(
     source: &FlightFixture,
     destination: &FlightFixture,
     snapshot: &str,
-) -> Result<Value, Box<dyn Error>> {
-    run_json(
-        command(&[
-            "--format",
-            "jsonl",
-            "campaign",
-            "archive",
-            "transfer",
-            "--source-state",
-        ])
-        .arg(&source.state)
-        .arg("--source-policy")
-        .arg(&source.peer_policy)
-        .arg("--source-store")
-        .arg(&source.store)
-        .args(["--source-campaign", CAMPAIGN, "--snapshot", snapshot])
-        .args(["--mode", "executable"])
-        .arg("--destination-state")
-        .arg(&destination.state)
-        .arg("--destination-policy")
-        .arg(&destination.peer_policy)
-        .arg("--destination-store")
-        .arg(&destination.store)
-        .args(["--archive", ARCHIVE_NAME, "--campaign", CAMPAIGN]),
-        "transfer executable campaign archive",
-    )
+) -> Result<(Value, Value), Box<dyn Error>> {
+    let output = command(&[
+        "--format",
+        "jsonl",
+        "campaign",
+        "archive",
+        "transfer",
+        "--source-state",
+    ])
+    .arg(&source.state)
+    .arg("--source-policy")
+    .arg(&source.peer_policy)
+    .arg("--source-store")
+    .arg(&source.store)
+    .args(["--source-campaign", CAMPAIGN, "--snapshot", snapshot])
+    .args(["--mode", "executable"])
+    .arg("--destination-state")
+    .arg(&destination.state)
+    .arg("--destination-policy")
+    .arg(&destination.peer_policy)
+    .arg("--destination-store")
+    .arg(&destination.store)
+    .args(["--archive", ARCHIVE_NAME, "--campaign", CAMPAIGN])
+    .output()?;
+    require_success(&output, "transfer executable campaign archive")?;
+    Ok((
+        serde_json::from_slice(&output.stderr)?,
+        serde_json::from_slice(&output.stdout)?,
+    ))
 }
 
 fn inspect_archive(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
