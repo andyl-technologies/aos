@@ -45,11 +45,13 @@ use rustix::fs::{Mode, OFlags, open};
 use crate::state::transition::{PayloadLaunchSnapshot, PinnedObjectSnapshot};
 use crate::{HostError, Result};
 
+mod deployment;
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
 mod readiness;
 mod selinux_policy;
 
+pub use deployment::verify_optional_backend_deployment_v1;
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedPackagedRuntimeV1,

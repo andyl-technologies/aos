@@ -14,10 +14,7 @@ use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::peer::ControllerPeerVerifier;
-use aos_sandbox_host::plan::{
-    BackendReadinessBlocker, GuardianConfig, ProtectedBackendReadinessEvidence,
-    VerifiedLiveSelinuxPolicyV1,
-};
+use aos_sandbox_host::plan::{GuardianConfig, verify_optional_backend_deployment_v1};
 use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
@@ -76,37 +73,12 @@ fn run() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| HostError::State(error.to_string()))?;
-    let readiness = ProtectedBackendReadinessEvidence::load_protected_optional(
-        &credential_directory,
-        STATE_ROOT,
+    runtime.block_on(verify_optional_backend_deployment_v1(
+        std::path::Path::new(&credential_directory),
+        std::path::Path::new(STATE_ROOT),
         &nspawn_executable,
-    )?;
-    if let Some(readiness) = readiness {
-        let packaged = readiness.verify_packaged_runtime()?;
-        let live_mac = VerifiedLiveSelinuxPolicyV1::verify(&selinux_policy)?;
-        runtime.block_on(async {
-            let systemd = aos_systemd::SystemdClient::connect()
-                .await
-                .map_err(|error| HostError::State(format!("PID 1 bus unavailable: {error}")))?;
-            packaged
-                .verify_live_pid1_service(&readiness, &systemd)
-                .await
-        })?;
-        live_mac.revalidate(&selinux_policy)?;
-        let blockers = readiness.runtime_blockers();
-        if blockers
-            != [
-                BackendReadinessBlocker::Phase0ClaimVerification,
-                BackendReadinessBlocker::ShiftedPayloadPidfdNamespaceInspection,
-                BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
-            ]
-        {
-            return Err(HostError::State(
-                "host backend readiness boundary changed without launch wiring".to_owned(),
-            ));
-        }
-        drop(readiness);
-    }
+        &selinux_policy,
+    ))?;
     let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
     let verifier = ControllerPeerVerifier::new(
         CgroupV2Root::try_from(open_cgroup_root()?)

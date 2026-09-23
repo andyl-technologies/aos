@@ -19,9 +19,7 @@ use aos_sandbox_host::DormantHostBrokerCompositionV1;
 use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
-use aos_sandbox_host::plan::{
-    BackendReadinessBlocker, GuardianConfig, ProtectedBackendReadinessEvidence,
-};
+use aos_sandbox_host::plan::{GuardianConfig, verify_optional_backend_deployment_v1};
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
@@ -48,7 +46,8 @@ fn run() -> Result<()> {
             "host broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let (_legacy_controller_identity, nspawn_executable, guardian_executable) = arguments()?;
+    let (_legacy_controller_identity, nspawn_executable, guardian_executable, selinux_policy) =
+        arguments()?;
 
     // SAFETY: this is the single-threaded entrypoint before any operation can
     // allocate or mutate a descriptor. PID 1 owns and transfers exactly FDs 3
@@ -76,20 +75,21 @@ fn run() -> Result<()> {
     let authority = HostAuthorityV1::from_protected_directory(&credential_directory)
         .map_err(|error| HostError::State(error.to_string()))?;
     let guardian = GuardianConfig::new(&guardian_executable, Duration::from_secs(30))?;
-    validate_backend_readiness(
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| HostError::State(error.to_string()))?;
+    runtime.block_on(verify_optional_backend_deployment_v1(
         std::path::Path::new(&credential_directory),
+        std::path::Path::new(STATE_ROOT),
         &nspawn_executable,
-    )?;
+        &selinux_policy,
+    ))?;
 
     let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
     let mut broker =
         HostBroker::open(catalog, state, worker, None, authority)?.with_guardian(guardian);
     let mut host = DormantHostBrokerCompositionV1::new(&mut broker);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| HostError::State(error.to_string()))?;
-
     runtime.block_on(async move {
         loop {
             let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
@@ -113,38 +113,11 @@ fn run() -> Result<()> {
     })
 }
 
-fn validate_backend_readiness(
-    credential_directory: &std::path::Path,
-    nspawn_executable: &str,
-) -> Result<()> {
-    let readiness = ProtectedBackendReadinessEvidence::load_protected_optional(
-        credential_directory,
-        STATE_ROOT,
-        nspawn_executable,
-    )?;
-    let Some(readiness) = readiness else {
-        return Ok(());
-    };
-    if readiness.runtime_blockers()
-        != [
-            BackendReadinessBlocker::Phase0ClaimVerification,
-            BackendReadinessBlocker::ShiftedPayloadPidfdNamespaceInspection,
-            BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
-        ]
-    {
-        return Err(HostError::State(
-            "host backend readiness boundary changed without launch wiring".to_owned(),
-        ));
-    }
-
-    Ok(())
-}
-
 fn production_error(error: ProductionBrokerSessionActivationErrorV1) -> HostError {
     HostError::State(error.to_string())
 }
 
-fn arguments() -> Result<((u32, u32), String, String)> {
+fn arguments() -> Result<((u32, u32), String, String, String)> {
     let mut arguments = env::args();
     let _program = arguments.next();
     let uid = parse_identity(arguments.next(), "controller UID")?;
@@ -155,14 +128,17 @@ fn arguments() -> Result<((u32, u32), String, String)> {
     let guardian = arguments
         .next()
         .ok_or_else(|| HostError::State("Guardian path is absent".to_owned()))?;
+    let selinux_policy = arguments
+        .next()
+        .ok_or_else(|| HostError::State("production SELinux policy path is absent".to_owned()))?;
     if arguments.next().is_some() {
         return Err(HostError::State(
-            "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH GUARDIAN_PATH"
+            "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH GUARDIAN_PATH SELINUX_POLICY_PATH"
                 .to_owned(),
         ));
     }
 
-    Ok(((uid, gid), nspawn, guardian))
+    Ok(((uid, gid), nspawn, guardian, selinux_policy))
 }
 
 fn parse_identity(value: Option<String>, label: &str) -> Result<u32> {
