@@ -30,13 +30,16 @@ const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
 
+#[path = "guest_choice/maintenance_transfer.rs"]
+mod maintenance_transfer;
+
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<(), Box<dyn Error>>
 {
     let fixture = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
-    create_guest_choice_campaign(&fixture, &compiled)?;
+    create_guest_choice_campaign(&fixture, &compiled, "qemu-11.1.1-crucible")?;
 
     let authority = write_component_authority(&fixture)?;
     let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
@@ -385,6 +388,7 @@ pub(crate) fn guest_choice_selectables(
 fn create_guest_choice_campaign(
     fixture: &FlightFixture,
     compiled: &Value,
+    qemu_build: &str,
 ) -> Result<(), Box<dyn Error>> {
     let root = fixture._temporary.path();
     let lineage_input = root.join("guest-choice-lineage.toml");
@@ -392,7 +396,7 @@ fn create_guest_choice_campaign(
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,
@@ -547,13 +551,25 @@ fn start_packaged_service(
     authority: &Path,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+    let qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?;
+    let plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?;
+    start_packaged_service_with_artifacts(fixture, authority, &deployment, &qemu, &plugin)
+}
+
+fn start_packaged_service_with_artifacts(
+    fixture: &FlightFixture,
+    authority: &Path,
+    deployment: &Path,
+    qemu: &Path,
+    plugin: &Path,
+) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let executor_socket = fixture._temporary.path().join("guest-choice-executor.sock");
     let mut invocation = fixture.service_command(None);
     invocation
         .arg("--qemu")
-        .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
+        .arg(qemu)
         .arg("--plugin")
-        .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?)
+        .arg(plugin)
         .args([
             "--production-qemu",
             "--qemu-rendezvous-icount",
