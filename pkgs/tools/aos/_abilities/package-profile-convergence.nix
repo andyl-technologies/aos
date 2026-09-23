@@ -79,133 +79,119 @@
     };
     ignore_failure = false;
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [];
-          };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "private";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = false;
-          writable_executable_memory = false;
-          remove_interprocess_communication = false;
-          isolation_domains = [];
-          isolation_domain_creation = "denied";
-          network_families = ["ipv4" "ipv6" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          denied_operation_action = "return-permission-denied";
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "private";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = false;
+      writable_executable_memory = false;
+      remove_interprocess_communication = false;
+      isolation_domains = [];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      denied_operation_action = "return-permission-denied";
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
+    inherit consumerInstance;
+    service = consumerInstance;
+    lifecycle = {
+      description = "Converge the image-authored system package profile";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        (
+          if cfg.enable
+          then packageManager
+          else noPackagesSelected
+        )
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 120000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      prerequisites =
+        [evaluationReadiness]
+        ++ lib.optional cfg.enable specificationResource;
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+      required_by = [];
+    };
+    conditions.all = lib.optionals cfg.enable [
+      {
+        kind = "path";
+        predicate = "exists";
+        path = "/run/aos/manifest.json";
+        negated = true;
+      }
     ];
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = consumerInstance;
-      enabled = true;
-      lifecycle = {
-        description = "Converge the image-authored system package profile";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          (
-            if cfg.enable
-            then packageManager
-            else noPackagesSelected
-          )
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 120000;
-        stop_timeout_millis = 90000;
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 120000;
+    };
+    environment = {
+      variables = lib.optionalAttrs cfg.enable {
+        AOS_EXPOSE_START_NO_WAIT = "1";
       };
-      dependencies = {
-        prerequisites =
-          [evaluationReadiness]
-          ++ lib.optional cfg.enable specificationResource;
-        after = [];
-        before = [];
-        requires = [];
-        wants = [];
-        required_by = [];
-      };
-      conditions.all = lib.optionals cfg.enable [
+      search_path = [];
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "read-only-system";
+      home_access = "inaccessible";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = lib.optionals cfg.enable [
         {
-          kind = "path";
-          predicate = "exists";
-          path = "/run/aos/manifest.json";
-          negated = true;
+          source = "/nix";
+          mode = "read-write";
+        }
+        {
+          source = "/var/lib/apm";
+          mode = "read-write";
+        }
+        {
+          source = "/run/aos";
+          mode = "read-only";
         }
       ];
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 120000;
-      };
-      environment = {
-        variables = lib.optionalAttrs cfg.enable {
-          AOS_EXPOSE_START_NO_WAIT = "1";
-        };
-        search_path = [];
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "read-only-system";
-        home_access = "inaccessible";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = lib.optionals cfg.enable [
-          {
-            source = "/nix";
-            mode = "read-write";
-          }
-          {
-            source = "/var/lib/apm";
-            mode = "read-write";
-          }
-          {
-            source = "/run/aos";
-            mode = "read-only";
-          }
-        ];
-        permit_core_dumps = false;
-      };
+      permit_core_dumps = false;
     };
   };
-  fragments = [specification service];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.packageRuntime.packageProfile = {
     enable = lib.mkOption {
@@ -228,37 +214,32 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        [
-          {
-            interfaces.${readinessAlias} = readinessDeclaration;
-            implementations.${readinessAlias} = {
-              description = "Publishes package-profile convergence through the package-owned lifecycle resource.";
-              interface = readinessIdentity;
-              artifact = lib.abilities.packageOutput {};
-              methods = [];
-              guarantees = [];
-              providerModule = {
-                artifact = lib.abilities.packageOutput {output = "module";};
-                path = "package-profile-readiness-provider.nix";
-              };
-              desiredType = null;
-              requiredFeatures = [];
-            };
-          }
-        ]
-        ++ builtins.map (definition: definition.declarations) definitions
-      );
+      aos.services."package-profile-convergence.package-profile-convergence" =
+        service
+        // {
+          enable = hostStage;
+        };
+      aos.abilities = {
+        interfaces.${readinessAlias} = readinessDeclaration;
+        implementations.${readinessAlias} = {
+          description = "Publishes package-profile convergence through the package-owned lifecycle resource.";
+          interface = readinessIdentity;
+          artifact = lib.abilities.packageOutput {};
+          methods = [];
+          guarantees = [];
+          providerModule = {
+            artifact = lib.abilities.packageOutput {output = "module";};
+            path = "package-profile-readiness-provider.nix";
+          };
+          desiredType = null;
+          requiredFeatures = [];
+        };
+      };
     }
-    (lib.mkIf hostStage {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (definition: definition.configured) (
-          if cfg.enable
-          then definitions
-          else builtins.tail definitions
-        )
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [specification];
+      enabled = hostStage && cfg.enable;
     })
   ];
 }
