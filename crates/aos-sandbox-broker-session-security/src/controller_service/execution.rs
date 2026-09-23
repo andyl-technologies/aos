@@ -1,4 +1,4 @@
-//! Durable controller dispatch identity for public execution-control effects.
+//! Durable controller dispatch identity for public execution-control and cancel effects.
 //!
 //! The accepted controller effect retains the authenticated caller, project,
 //! and canonical public request. This protected admission context, not the
@@ -11,18 +11,21 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerRequestEnvelope, HostExecutionActionV1, HostExecutionCompletionStatusV1,
     HostExecutionPhaseV1, QueryHostExecutionRequestV1, RequestHeader,
 };
+use aos_proto::aos::sandbox::v1::ExecutionPhase;
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
 use aos_sandbox::controller_service::public_projection::{
-    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
+    PublicProjectionStoreV1,
 };
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
+use aos_sandbox::runtime_execution::decode_cancel_completion_phase_v1;
 use aos_sandbox::{
     AuthorityPublicationStore, EffectFailure, EffectObservation, EffectReceipt, Journal,
-    PublicMutationEffectV1,
+    JournalRecord, JournalTransaction, PublicMutationEffectV1, RecordNamespace,
 };
-use aos_sandbox_core::runtime_backend::EffectOperationV1;
+use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ExecutionId, NodeId, ObjectDigest,
     OperationId, ProjectId, ProtocolId, ProtocolVersion, SandboxId,
@@ -51,6 +54,8 @@ use super::REQUEST_SCOPE;
 
 const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-request.v1\0";
 const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-receipt.v1\0";
+const CANCEL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.controller.execution-cancel-projection.v1\0";
 const RETAINED_RECOVERY: &str = "execution effect retains protected Host session recovery custody";
 const SESSION_UNUSABLE: &str = "execution effect Host session is unusable";
 
@@ -67,6 +72,7 @@ pub(crate) struct ControllerExecutionIntentV1 {
 enum ControllerExecutionActionV1 {
     Resize { rows: u16, columns: u16 },
     Signal { signal_code: u8 },
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,42 +91,133 @@ impl ExecutionAuthorizationKindV1 {
 }
 
 impl ControllerExecutionIntentV1 {
-    pub(crate) fn from_control(
+    /// Publishes a terminal canceled phase only after verified Host success.
+    ///
+    /// The accepted desired record stays RUNNING until method 26 or 27 proves
+    /// that the guest completed the exact cancellation. A retry reads the
+    /// protected record first, making the projection write idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the projection is absent, superseded, malformed,
+    /// or cannot be durably committed.
+    pub(crate) fn commit_cancel_projection(
+        &self,
+        project: ProjectId,
+        journal: &mut Journal,
+    ) -> Result<(), EffectFailure> {
+        if self.action != ControllerExecutionActionV1::Cancel {
+            return Ok(());
+        }
+        let current = PublicProjectionStoreV1::new(journal)
+            .get(PublicProjectionKindV1::Execution, self.execution_id)
+            .map_err(retryable)?
+            .ok_or_else(|| {
+                EffectFailure::Retryable("cancel execution projection is absent".to_owned())
+            })?;
+        if current.project() != project || current.operation() != self.operation_id {
+            return Err(EffectFailure::Retryable(
+                "cancel execution projection was superseded".to_owned(),
+            ));
+        }
+        let PublicProjectionResourceV1::Execution(execution) = current.resource() else {
+            return Err(EffectFailure::Permanent(
+                "cancel execution projection has another resource kind".to_owned(),
+            ));
+        };
+        if execution.phase.as_known() == Some(ExecutionPhase::EXECUTION_PHASE_CANCELED) {
+            if execution.access.as_option().is_none() {
+                return Ok(());
+            }
+            return Err(EffectFailure::Permanent(
+                "canceled execution retained OpenSSH access".to_owned(),
+            ));
+        }
+        if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING) {
+            return Err(EffectFailure::Retryable(
+                "cancel execution projection is no longer running".to_owned(),
+            ));
+        }
+
+        let mut canceled = execution.clone();
+        canceled.phase = ExecutionPhase::EXECUTION_PHASE_CANCELED.into();
+        canceled.access = None.into();
+        let (key, value) = PublicProjectionPlanV1::new(
+            project,
+            self.operation_id,
+            PublicProjectionResourceV1::Execution(canceled),
+        )
+        .map_err(retryable)?
+        .into_desired_state();
+        let digest = Sha256::new()
+            .chain_update(CANCEL_PROJECTION_TRANSACTION_DOMAIN)
+            .chain_update(self.operation_id.as_bytes())
+            .finalize();
+        let transaction_id: [u8; 16] = digest[..16].try_into().map_err(|_| {
+            EffectFailure::Permanent("cancel projection transaction is invalid".to_owned())
+        })?;
+        if transaction_id == [0; 16] {
+            return Err(EffectFailure::Permanent(
+                "cancel projection transaction is invalid".to_owned(),
+            ));
+        }
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                key,
+                value,
+            )],
+        )
+        .map_err(retryable)?;
+        journal.commit(&transaction).map_err(retryable)?;
+        Ok(())
+    }
+
+    pub(crate) fn from_request(
         operation_id: OperationId,
         context: &PublicMutationEffectV1,
     ) -> Result<Self, EffectFailure> {
-        let DormantSandboxRequestKindV1::ExecutionControl(request) = context
+        let request = context
             .validated_request()
-            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
-        else {
-            return Err(EffectFailure::Permanent(
-                "execution effect has the wrong public method".to_owned(),
-            ));
-        };
-        let execution_id: [u8; 16] = request.execution_id.as_slice().try_into().map_err(|_| {
-            EffectFailure::Permanent("execution effect identity is invalid".to_owned())
-        })?;
-        let PublicExecutionControlDispatchV1::Effect(effect) =
-            lower_public_execution_control_v1(&request)
-                .map_err(|error| EffectFailure::Permanent(error.to_string()))?
-        else {
-            return Err(EffectFailure::Permanent(
-                "execution attachment requires a separate route".to_owned(),
-            ));
-        };
-        let action = match effect {
-            EffectOperationV1::ResizeTerminal { rows, columns } => {
-                ControllerExecutionActionV1::Resize { rows, columns }
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        let (execution_id, action) = match request {
+            DormantSandboxRequestKindV1::ExecutionControl(request) => {
+                let PublicExecutionControlDispatchV1::Effect(effect) =
+                    lower_public_execution_control_v1(&request)
+                        .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+                else {
+                    return Err(EffectFailure::Permanent(
+                        "execution attachment requires a separate route".to_owned(),
+                    ));
+                };
+                let action = match effect {
+                    EffectOperationV1::ResizeTerminal { rows, columns } => {
+                        ControllerExecutionActionV1::Resize { rows, columns }
+                    }
+                    EffectOperationV1::Signal { signal_code } => {
+                        ControllerExecutionActionV1::Signal { signal_code }
+                    }
+                    _ => {
+                        return Err(EffectFailure::Permanent(
+                            "execution control action is unsupported".to_owned(),
+                        ));
+                    }
+                };
+                (request.execution_id, action)
             }
-            EffectOperationV1::Signal { signal_code } => {
-                ControllerExecutionActionV1::Signal { signal_code }
+            DormantSandboxRequestKindV1::CancelExec(request) => {
+                (request.execution_id, ControllerExecutionActionV1::Cancel)
             }
             _ => {
                 return Err(EffectFailure::Permanent(
-                    "execution control action is unsupported".to_owned(),
+                    "execution effect has the wrong public method".to_owned(),
                 ));
             }
         };
+        let execution_id: [u8; 16] = execution_id.as_slice().try_into().map_err(|_| {
+            EffectFailure::Permanent("execution effect identity is invalid".to_owned())
+        })?;
 
         let source_operation_commitment: [u8; 32] = Sha256::new()
             .chain_update(PUBLIC_REQUEST_DIGEST_DOMAIN)
@@ -205,6 +302,7 @@ impl ControllerExecutionIntentV1 {
                     ControllerExecutionActionV1::Signal { signal_code } => {
                         EffectOperationV1::Signal { signal_code }
                     }
+                    ControllerExecutionActionV1::Cancel => EffectOperationV1::Cancel,
                 };
                 host_execution_apply_grant_v1(
                     assignment,
@@ -315,6 +413,9 @@ impl ControllerExecutionIntentV1 {
                         0,
                         u32::from(signal_code),
                     ),
+                    ControllerExecutionActionV1::Cancel => {
+                        (HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL, 0, 0, 0)
+                    }
                 };
                 let request = ApplyHostExecutionRequestV1 {
                     header: Some(header).into(),
@@ -717,6 +818,25 @@ fn classify_outcome(
                     ));
                 }
             }
+            if intent.action == ControllerExecutionActionV1::Cancel {
+                let phase = decode_cancel_completion_phase_v1(
+                    &body.completion_bytes,
+                    *intent.operation_id.as_bytes(),
+                    intent.source_operation_commitment,
+                    intent.execution_id,
+                    body.observation_sequence,
+                )
+                .map_err(|_| {
+                    EffectFailure::Permanent(
+                        "Host cancel completion evidence is invalid".to_owned(),
+                    )
+                })?;
+                if phase != BackendExecutionPhaseV1::Canceled {
+                    return Err(EffectFailure::Permanent(
+                        "execution exited before cancellation was observed".to_owned(),
+                    ));
+                }
+            }
             let digest: [u8; 32] = Sha256::new()
                 .chain_update(EXECUTION_RECEIPT_DOMAIN)
                 .chain_update(intent.operation_id.as_bytes())
@@ -775,6 +895,13 @@ fn request_matches_intent(
                         && request.terminal_rows == 0
                         && request.terminal_columns == 0
                         && request.signal_number == u32::from(signal_code)
+                }
+                ControllerExecutionActionV1::Cancel => {
+                    request.action.as_known()
+                        == Some(HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL)
+                        && request.terminal_rows == 0
+                        && request.terminal_columns == 0
+                        && request.signal_number == 0
                 }
             };
             request.encode_to_vec() == exact_body

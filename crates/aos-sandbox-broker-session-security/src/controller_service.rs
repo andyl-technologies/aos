@@ -3534,11 +3534,15 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             return Ok(observation);
         }
         let context = self.public_mutation_context(plan)?;
-        if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution)
-        {
+        if matches!(
+            plan.public_mutation_method(),
+            Some(
+                aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution
+                    | aos_sandbox::controller_query::PublicOperationMethodV1::CancelExecution
+            )
+        ) {
             let intent =
-                execution::ControllerExecutionIntentV1::from_control(operation_id, &context)?;
+                execution::ControllerExecutionIntentV1::from_request(operation_id, &context)?;
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;
@@ -3557,7 +3561,12 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            return host.query_execution(&intent, authorization.as_ref());
+            let observation = host.query_execution(&intent, authorization.as_ref())?;
+            drop(sessions);
+            if matches!(observation, EffectObservation::Applied(_)) {
+                intent.commit_cancel_projection(context.project(), journal)?;
+            }
+            return Ok(observation);
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
@@ -3666,11 +3675,15 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.recover_pending_cache_pin(operation_id)?;
         }
         let context = self.public_mutation_context(plan)?;
-        if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution)
-        {
+        if matches!(
+            plan.public_mutation_method(),
+            Some(
+                aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution
+                    | aos_sandbox::controller_query::PublicOperationMethodV1::CancelExecution
+            )
+        ) {
             let intent =
-                execution::ControllerExecutionIntentV1::from_control(operation_id, &context)?;
+                execution::ControllerExecutionIntentV1::from_request(operation_id, &context)?;
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;
@@ -3689,7 +3702,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            return host.apply_execution(&intent, authorization.as_ref());
+            let receipt = host.apply_execution(&intent, authorization.as_ref())?;
+            drop(sessions);
+            intent.commit_cancel_projection(context.project(), journal)?;
+            return Ok(receipt);
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)

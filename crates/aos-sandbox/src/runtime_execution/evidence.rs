@@ -55,6 +55,48 @@ pub fn completion_from_backend_observation_v1(
     Ok(JournalExecutionCompletionV1 { completion })
 }
 
+/// Reads the observed phase from a Host-authenticated Cancel completion.
+///
+/// The caller must first authenticate the Host outcome and its result digest.
+/// This check then binds the fixed evidence to the exact controller operation,
+/// source request, execution, and observation sequence. It does not replace
+/// the Host's full protected admission and guest-signature verification.
+///
+/// # Errors
+///
+/// Returns an error for a foreign, malformed, or non-Cancel observation.
+pub fn decode_cancel_completion_phase_v1(
+    bytes: &[u8],
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    observation_sequence: u64,
+) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
+    if bytes.len() != EVIDENCE_BYTES
+        || bytes.get(..8) != Some(EVIDENCE_MAGIC.as_slice())
+        || bytes.get(266..298) != Some(evidence_digest(&bytes[..266]).as_bytes().as_slice())
+    {
+        return Err(RuntimeExecutionEvidenceError::MalformedEvidence);
+    }
+    if bytes[8] != EffectOperationV1::Cancel.code()
+        || bytes.get(9..25) != Some(operation_id.as_slice())
+        || bytes.get(33..65) != Some(source_commitment.as_slice())
+        || bytes.get(65..81) != Some(execution_id.as_slice())
+        || observation_sequence == 0
+        || bytes.get(226..234) != Some(observation_sequence.to_be_bytes().as_slice())
+    {
+        return Err(RuntimeExecutionEvidenceError::OperationMismatch);
+    }
+    let phase = decode_phase(bytes[225])?;
+    if !matches!(
+        phase,
+        BackendExecutionPhaseV1::Canceled | BackendExecutionPhaseV1::Exited
+    ) {
+        return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
+    }
+    Ok(phase)
+}
+
 pub(crate) fn completion_from_authenticated_absence_v1(
     effect: &DurableExecutionEffectV1,
     inventory: &BackendExecutionInventoryV1,
@@ -414,4 +456,48 @@ pub enum RuntimeExecutionEvidenceError {
     /// Portable effect completion validation failed.
     #[error("runtime execution completion is invalid: {0}")]
     Completion(#[from] EffectCommitError),
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
+
+    use super::{
+        EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
+        decode_cancel_completion_phase_v1, evidence_digest,
+    };
+
+    #[test]
+    fn cancel_completion_phase_requires_exact_bound_evidence() {
+        let operation = [1; 16];
+        let source = [2; 32];
+        let execution = [3; 16];
+        let sequence = 4_u64;
+        let mut bytes = vec![0; EVIDENCE_BYTES];
+        bytes[..8].copy_from_slice(EVIDENCE_MAGIC);
+        bytes[8] = 4;
+        bytes[9..25].copy_from_slice(&operation);
+        bytes[33..65].copy_from_slice(&source);
+        bytes[65..81].copy_from_slice(&execution);
+        bytes[225] = 5;
+        bytes[226..234].copy_from_slice(&sequence.to_be_bytes());
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+
+        assert_eq!(
+            decode_cancel_completion_phase_v1(&bytes, operation, source, execution, sequence),
+            Ok(BackendExecutionPhaseV1::Canceled)
+        );
+        assert_eq!(
+            decode_cancel_completion_phase_v1(&bytes, [9; 16], source, execution, sequence),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
+        );
+        bytes[225] = 3;
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+        assert_eq!(
+            decode_cancel_completion_phase_v1(&bytes, operation, source, execution, sequence),
+            Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+    }
 }

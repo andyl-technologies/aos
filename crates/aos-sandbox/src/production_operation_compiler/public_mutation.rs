@@ -502,14 +502,12 @@ pub(super) fn compile_public_mutation(
             request_digest,
             value,
         )?,
-        Request::CancelExec(value) => execution_mutation_intent(
+        Request::CancelExec(value) => cancel_execution_projection(
             journal,
             peer.project(),
             operation_id,
-            request.operation_method(),
-            canonical_request,
-            &value.execution_id,
-            value.mutation.as_option(),
+            request_digest,
+            value,
         )?,
         Request::CachePin(value) => cache_consumer_mutation_intent(
             journal,
@@ -1060,6 +1058,50 @@ fn control_execution_projection(
         operation,
         PublicProjectionResourceV1::Execution(execution),
     )
+}
+
+fn cancel_execution_projection(
+    journal: &Journal,
+    project: ProjectId,
+    operation: OperationId,
+    request_digest: [u8; 32],
+    request: &aos_proto::aos::sandbox::v1::CancelExecutionRequest,
+) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    let execution = load_execution_for_mutation(
+        journal,
+        project,
+        &request.execution_id,
+        request.mutation.as_option(),
+    )?;
+    let execution = next_cancel_desired_execution(execution, operation, request_digest)?;
+
+    projection(
+        project,
+        operation,
+        PublicProjectionResourceV1::Execution(execution),
+    )
+}
+
+fn next_cancel_desired_execution(
+    mut execution: Execution,
+    operation: OperationId,
+    request_digest: [u8; 32],
+) -> Result<Execution, OperationCompilationError> {
+    // Desired state is admitted before the Host effect. Keep the observed
+    // phase running until a signed Host cancellation completes.
+    if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING) {
+        return Err(OperationCompilationError::Rejected);
+    }
+
+    let generation = next_generation(execution.desired_generation)?;
+    execution.desired_generation = generation;
+    execution.resource_version = resource_version(
+        operation,
+        PublicOperationMethodV1::CancelExecution,
+        generation,
+        request_digest,
+    );
+    Ok(execution)
 }
 
 fn load_execution_for_mutation(
@@ -2131,8 +2173,8 @@ mod tests {
     use aos_sandbox_core::OperationId;
 
     use super::{
-        OperationCompilationError, next_controlled_execution, validate_execution_control,
-        validate_execution_mutation,
+        OperationCompilationError, next_cancel_desired_execution, next_controlled_execution,
+        validate_execution_control, validate_execution_mutation,
     };
 
     #[test]
@@ -2226,5 +2268,41 @@ mod tests {
             validate_execution_control(&terminal_execution, &request),
             Err(OperationCompilationError::Rejected)
         );
+    }
+
+    #[test]
+    fn pending_cancel_advances_only_desired_identity() {
+        let execution = Execution {
+            resource_version: vec![0x31; 32],
+            desired_generation: 7,
+            observation_sequence: 5,
+            phase: ExecutionPhase::EXECUTION_PHASE_RUNNING.into(),
+            ..Default::default()
+        };
+        let next = next_cancel_desired_execution(
+            execution.clone(),
+            OperationId::from_bytes([0x44; 16]),
+            [0x55; 32],
+        )
+        .unwrap();
+        assert_eq!(next.desired_generation, 8);
+        assert_eq!(
+            next.phase.as_known(),
+            Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+        );
+        assert!(next.access.as_option().is_none());
+        assert_eq!(next.observation_sequence, execution.observation_sequence);
+        assert_ne!(next.resource_version, execution.resource_version);
+
+        let mut terminal = execution;
+        terminal.phase = ExecutionPhase::EXECUTION_PHASE_EXITED.into();
+        assert!(matches!(
+            next_cancel_desired_execution(
+                terminal,
+                OperationId::from_bytes([0x44; 16]),
+                [0x55; 32]
+            ),
+            Err(OperationCompilationError::Rejected)
+        ));
     }
 }
