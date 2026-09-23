@@ -315,6 +315,19 @@ where
     pub(crate) fn source_world_owner_for_test(&self) -> Arc<Mutex<ProductionVmHotForkSourceWorld>> {
         Arc::clone(&self.source_world)
     }
+
+    /// Commits a selected Boot through the adopted production lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scheduler error when the retained node cannot reactivate.
+    #[cfg(test)]
+    pub(crate) fn commit_modeled_boot_for_test(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle.commit_modeled_boot_for_test(node)
+    }
 }
 
 impl<G> QemuProductionHotForkRetainedLineage<G>
@@ -555,17 +568,6 @@ where
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        if boundaries
-            .values()
-            .any(|(state, _generation)| *state == ProductionVmHotForkNodeServiceState::PoweredOff)
-        {
-            return retain_complete_install_failure(
-                source_world,
-                resources,
-                self,
-                lifecycle_error("powered-off source nodes require exact/thin fallback"),
-            );
-        }
         let child_nodes = self.children.keys().cloned().collect::<Vec<_>>();
         for node in child_nodes {
             let Some(boundary) = boundaries.get(&node) else {
@@ -579,13 +581,13 @@ where
                     )),
                 );
             };
-            if boundary.0 != ProductionVmHotForkNodeServiceState::Running {
+            if boundary.0 == ProductionVmHotForkNodeServiceState::PermanentlyFailed {
                 return retain_complete_install_failure(
                     source_world,
                     resources,
                     self,
                     lifecycle_error(format!(
-                        "assembled hot-fork child `{}` is not a running source node",
+                        "assembled hot-fork child `{}` is not a retained source node",
                         node.name
                     )),
                 );

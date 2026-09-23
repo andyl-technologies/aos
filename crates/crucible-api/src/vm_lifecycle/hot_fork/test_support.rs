@@ -108,10 +108,49 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
     ),
     LifecycleApiError,
 > {
+    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test(
+        source,
+        source_nodes,
+        &BTreeSet::new(),
+    )
+}
+
+/// Builds a prepared source world with selected retained VMs powered off.
+///
+/// Each selected VM keeps its paused QEMU process and host-I/O continuation so
+/// a forked child can later handle Boot. Other retained VMs remain running.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when a powered-off node is not
+/// retained or any source-world boundary cannot be constructed.
+pub fn prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+    powered_off_nodes: &BTreeSet<NodeId>,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
     let mut lifecycle = lifecycle_with_permanently_failed_nodes(source)?;
     if source_nodes.is_empty() || source_nodes.len() > source.world().vm_nodes().len() {
         return Err(loop_factory_error(
             "scripted source count is outside the built-in scenario World",
+        ));
+    }
+    let retained_nodes = source
+        .world()
+        .vm_nodes()
+        .iter()
+        .take(source_nodes.len())
+        .map(|vm| vm.id.clone())
+        .collect::<BTreeSet<_>>();
+    if !powered_off_nodes.is_subset(&retained_nodes) {
+        return Err(loop_factory_error(
+            "scripted powered-off VM is not a retained source",
         ));
     }
 
@@ -149,14 +188,27 @@ pub fn prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
                 identity: generation.clone(),
             }),
         );
+        let powered_off = powered_off_nodes.contains(&retained_node);
+        let service_state = if powered_off {
+            ProductionNodeServiceState::PoweredOff
+        } else {
+            ProductionNodeServiceState::Running
+        };
         lifecycle
             .node_service_states
-            .insert(retained_node.clone(), ProductionNodeServiceState::Running);
+            .insert(retained_node.clone(), service_state);
         lifecycle.failed_host_io.remove(&retained_node);
         lifecycle
             .inner
             .loop_impl_mut()
-            .set_vm_node_activity(&retained_node, SchedulerNodeActivity::Runnable)
+            .set_vm_node_activity(
+                &retained_node,
+                if powered_off {
+                    SchedulerNodeActivity::Halted
+                } else {
+                    SchedulerNodeActivity::Runnable
+                },
+            )
             .map_err(|error| test_support_error("activate scripted source VM", error))?;
         lifecycle
             .inner
