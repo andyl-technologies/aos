@@ -1114,13 +1114,28 @@ in
               -p crucible-cli \
               cli_search_fuzz \
               -- --test-threads=1
-            cargo test \
+            if ! cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
               -p crucible-cli \
+              --features test-double \
               cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
-              -- --test-threads=1
+              -- --test-threads=1 \
+              > "$TMPDIR/machine-readable-search-fuzz-test.log" 2>&1; then
+              cat "$TMPDIR/machine-readable-search-fuzz-test.log"
+              exit 1
+            fi
+            named_test_count="$(
+              sed -n \
+                '/^test cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \.\.\. ok$/p' \
+                "$TMPDIR/machine-readable-search-fuzz-test.log" \
+                | wc -l
+            )"
+            if [ "$named_test_count" -ne 1 ]; then
+              cat "$TMPDIR/machine-readable-search-fuzz-test.log"
+              exit 1
+            fi
 
             mkdir -p \
               "$TMPDIR/crucible-cli-search-artifacts" \
@@ -1220,6 +1235,7 @@ in
             process_search_fuzz=production-qemu-jsonl-final-outcome
             state_space=live-qemu-frontier-branch-realization
             fuzz_feedback=live-qemu-basic-block-coverage
+            machine_readable_named_tests=1
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
