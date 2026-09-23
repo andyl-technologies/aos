@@ -72,6 +72,7 @@
           options.enable = lib.mkOption {
             type = lib.types.bool;
             default = false;
+            extensible = true;
             description = "Enable this service instance.";
           };
         }

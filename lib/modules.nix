@@ -1458,19 +1458,25 @@
           (candidate: ownerForProvenance (candidate.provenance or "@base"))
           samePath);
         pathStr = builtins.concatStringsSep "." decl.path;
+        extensibleBaseDeclarations =
+          builtins.filter
+          (candidate:
+            candidate.provenance
+            == "@base"
+            && candidate.option.extensible)
+          samePath;
         extensibleBaseTypes =
           builtins.map
           (candidate: submoduleParts candidate.option.type)
-          (builtins.filter
-            (candidate:
-              candidate.provenance
-              == "@base"
-              && candidate.option.extensible)
-            samePath);
+          extensibleBaseDeclarations;
         baseSubmodule =
           if extensibleBaseTypes == []
           then null
           else builtins.head extensibleBaseTypes;
+        scalarBase =
+          if extensibleBaseDeclarations == []
+          then null
+          else builtins.head extensibleBaseDeclarations;
         sharedSubmodule =
           baseSubmodule
           != null
@@ -1480,8 +1486,16 @@
           in
             parts != null && parts.isAttrsOf == baseSubmodule.isAttrsOf)
           samePath;
+        specializedScalar =
+          scalarBase
+          != null
+          && submoduleParts scalarBase.option.type == null
+          && builtins.all
+          (candidate: candidate.option.type.name == scalarBase.option.type.name)
+          samePath
+          && builtins.all (owner: builtins.elem owner ["@base" package]) declaringOwners;
       in
-        if declaringOwners == [package] || sharedSubmodule
+        if declaringOwners == [package] || sharedSubmodule || specializedScalar
         then true
         else throw "evalModules: package '${package}' does not uniquely own declaration '${pathStr}'";
 

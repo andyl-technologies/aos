@@ -264,24 +264,26 @@ in {
     ./registration-interface.nix
   ];
 
-  options.aos.serviceOptionModules.dbus = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Run the D-Bus system message bus.";
-      };
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "dbus") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Run the D-Bus system message bus.";
+        };
 
-      openFileLimit = lib.mkOption {
-        type = abilityTypes.optional (abilityTypes.integer {
-          minimum = 1;
-          maximum = abilityTypes.limits.maxSafeInteger;
-        });
-        default = null;
-        description = "Maximum number of files the system bus may keep open.";
+        openFileLimit = lib.mkOption {
+          type = abilityTypes.optional (abilityTypes.integer {
+            minimum = 1;
+            maximum = abilityTypes.limits.maxSafeInteger;
+          });
+          default = null;
+          description = "Maximum number of files the system bus may keep open.";
+        };
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
