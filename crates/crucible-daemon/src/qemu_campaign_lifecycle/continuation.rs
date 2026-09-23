@@ -2,6 +2,55 @@
 
 use super::*;
 
+use crate::automatic_finding_runner::{
+    FindingExactRetentionSource, FindingTerminalCheckpointIdentity,
+};
+
+fn retain_failed_observation_checkpoint<L, D>(
+    source: &dyn FindingExactRetentionSource,
+    lifecycle: &mut L,
+    driver: &D,
+    pending: &D::Pending,
+    input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
+) -> Option<()>
+where
+    L: QemuFreshAttemptLifecycleOwner,
+    D: QemuFreshAttemptDriver,
+{
+    use crucible_campaign::ExecutionRetentionIntent;
+
+    if !matches!(
+        context.retention(),
+        ExecutionRetentionIntent::RetainOnFailure | ExecutionRetentionIntent::RetainAlways
+    ) || !source.exact_findings_enabled(input, context)
+    {
+        return None;
+    }
+    let QuantumTerminalVerdict::Failed(violations) = lifecycle.terminal_verdict_for_stop()? else {
+        return None;
+    };
+    let (choices, event_count) = driver.terminal_checkpoint_choices(pending)?;
+    if !lifecycle.exact_checkpoint_ready().ok()? {
+        return None;
+    }
+
+    lifecycle
+        .prepare_terminal_checkpoint(CheckpointTerminalCause::Failed(violations))
+        .ok()?;
+    let capture = lifecycle.capture_attempt_checkpoint(context).ok()?;
+    let identity = FindingTerminalCheckpointIdentity {
+        scenario: input.lineage().scenario(),
+        scenario_artifact: input.lineage().scenario_content(),
+        configuration: choices.configuration_id(),
+        event_count,
+    };
+    let capture = choices.bind_capture(input.scenario(), capture).ok()?;
+    source
+        .retain_terminal_checkpoint(&capture, context, identity)
+        .ok()
+}
+
 pub(super) fn production_lifecycle_config_for_continuations(
     mut config: ProductionVmLifecycleConfig,
     continuations: &[OwnedQemuAttemptContinuation],
@@ -317,6 +366,20 @@ where
                 .map(|()| pending)
                 .map_err(map_terminal_fingerprint_capture_failure)
         });
+        if let (Some(source), Ok(QemuFreshRunnerResult::Observation(pending))) =
+            (&self.terminal_exact_retention, &driven)
+        {
+            // Optional exact retention never changes the semantic observation.
+            // Missing or unsafe physical capture is represented by Incomplete.
+            let _ = retain_failed_observation_checkpoint(
+                source.as_ref(),
+                &mut lifecycle,
+                &self.driver,
+                pending,
+                input,
+                context,
+            );
+        }
         let cleanup = lifecycle.shutdown();
 
         let (pending, final_events) = match (driven, cleanup) {

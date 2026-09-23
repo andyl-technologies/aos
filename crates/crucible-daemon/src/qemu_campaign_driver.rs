@@ -263,6 +263,16 @@ pub struct QemuFreshPendingObservation {
 }
 
 impl QemuFreshPendingObservation {
+    fn terminal_checkpoint_choices(&self) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
+        Some((
+            QemuCheckpointChoiceProvenance::new(
+                self.configuration.clone(),
+                self.discoveries.clone(),
+            ),
+            u64::try_from(self.event_log.len()).ok()?,
+        ))
+    }
+
     fn into_checkpoint_choices(self) -> QemuCheckpointChoiceProvenance {
         QemuCheckpointChoiceProvenance::new(self.configuration, self.discoveries)
     }
@@ -934,6 +944,13 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
     type Pending = QemuFreshPendingObservation;
     type Error = QemuFreshModeledDriverError;
 
+    fn terminal_checkpoint_choices(
+        &self,
+        pending: &Self::Pending,
+    ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
+        pending.terminal_checkpoint_choices()
+    }
+
     fn drive(
         &mut self,
         lifecycle: &mut QemuFreshAttemptLifecycle<'_>,
@@ -973,6 +990,13 @@ impl QemuFindingReplayDriver for QemuFreshModeledDriver {
 impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
     type Pending = QemuFreshPendingObservation;
     type Error = QemuFreshModeledDriverError;
+
+    fn terminal_checkpoint_choices(
+        &self,
+        pending: &Self::Pending,
+    ) -> Option<(QemuCheckpointChoiceProvenance, u64)> {
+        pending.terminal_checkpoint_choices()
+    }
 
     fn drive(
         &mut self,

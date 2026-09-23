@@ -1295,6 +1295,8 @@ where
     let repository = Arc::new(repository);
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     let exact_retention = campaign_run_finding_exact_retention_source(&request, store.clone())?;
+    let main = main.with_terminal_exact_retention_source(Arc::clone(&exact_retention)
+        as Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>);
     let mut runner = AutomaticFindingExecutionRunner::new(
         store,
         Arc::clone(&exact_retention)

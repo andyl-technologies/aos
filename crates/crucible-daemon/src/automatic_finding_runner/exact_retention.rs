@@ -20,7 +20,10 @@ use crate::crucible_measurement::CrucibleMeasurementStopEvidence;
 use crate::crucible_measurement::verified_assertion_transition;
 use crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator;
 use crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot;
-use crate::{AttemptExecutionContext, CrucibleAttemptExecution, ExactCheckpointStore};
+use crate::{
+    AttemptExecutionContext, CapturedAttemptCheckpoint, CrucibleAttemptExecution,
+    ExactCheckpointStore, ExecutionCancellation,
+};
 
 const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS: usize = 65_536;
@@ -45,6 +48,91 @@ pub(crate) trait FindingExactRetentionSource: FindingExactCheckpointAuthenticato
         configuration: ConfigurationId,
         maximum_candidates: usize,
     ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError>;
+
+    /// Authenticates the admitted attempt's exact-findings policy before capture.
+    fn exact_findings_enabled(
+        &self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> bool;
+
+    /// Publishes and catalogs a failed observation's exact terminal root.
+    fn retain_terminal_checkpoint(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+        context: &AttemptExecutionContext,
+        identity: FindingTerminalCheckpointIdentity,
+    ) -> Result<(), FindingExactCandidateInventoryError>;
+}
+
+/// Semantic basis and completed event count required of an auxiliary root.
+#[derive(Clone, Copy)]
+pub(crate) struct FindingTerminalCheckpointIdentity {
+    pub(crate) scenario: ScenarioDefId,
+    pub(crate) scenario_artifact: ScenarioArtifactId,
+    pub(crate) configuration: ConfigurationId,
+    pub(crate) event_count: u64,
+}
+
+pub(crate) fn exact_findings_enabled(
+    store: &CampaignExecutorStore,
+    input: &CrucibleAttemptExecution,
+    context: &AttemptExecutionContext,
+) -> bool {
+    let crucible_campaign::AttemptRetentionPolicyDisposition::Required(basis) =
+        context.retention_policy()
+    else {
+        return false;
+    };
+    let Ok(lineage) = input.lineage().id() else {
+        return false;
+    };
+    let Ok(attempt) = input.attempt().id() else {
+        return false;
+    };
+    store
+        .validate_attempt_retention_policy_basis(lineage, attempt, basis)
+        .is_ok_and(|policy| policy.exact_findings())
+}
+
+pub(crate) fn publish_authenticated_terminal_checkpoint(
+    source: &dyn FindingExactCheckpointAuthenticator,
+    checkpoints: &ExactCheckpointStore,
+    capture: &CapturedAttemptCheckpoint,
+    cancellation: &ExecutionCancellation,
+    identity: FindingTerminalCheckpointIdentity,
+) -> Result<ExactCheckpointId, FindingExactCandidateInventoryError> {
+    // The root is published before catalog insertion, so a failed count or
+    // canceled publication can only leave an unselected durable orphan.
+    let prepared = checkpoints
+        .prepare_attempt_checkpoint_with_cancellation(capture, cancellation)
+        .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+    if cancellation.is_canceled() {
+        return Err(FindingExactCandidateInventoryError::Unavailable);
+    }
+    let root = prepared.root();
+    let publication = checkpoints
+        .publish_attempt_checkpoint(&prepared)
+        .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+    if publication.root() != root {
+        return Err(FindingExactCandidateInventoryError::Unavailable);
+    }
+    let authenticated = source
+        .authenticate_finding_exact_checkpoint(
+            root,
+            identity.scenario,
+            identity.scenario_artifact,
+            identity.configuration,
+            MAX_FINDING_EXACT_METADATA_BYTES,
+        )
+        .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+    if authenticated.event_count() != identity.event_count {
+        return Err(FindingExactCandidateInventoryError::Unavailable);
+    }
+    if cancellation.is_canceled() {
+        return Err(FindingExactCandidateInventoryError::Unavailable);
+    }
+    Ok(root)
 }
 
 pub(crate) struct CampaignRunFindingExactRetentionSource {
@@ -194,6 +282,30 @@ impl FindingExactRetentionSource for CampaignRunFindingExactRetentionSource {
             .lock()
             .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?
             .candidates(configuration, maximum_candidates)
+    }
+
+    fn exact_findings_enabled(
+        &self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> bool {
+        exact_findings_enabled(&self.campaign, input, context)
+    }
+
+    fn retain_terminal_checkpoint(
+        &self,
+        capture: &CapturedAttemptCheckpoint,
+        context: &AttemptExecutionContext,
+        identity: FindingTerminalCheckpointIdentity,
+    ) -> Result<(), FindingExactCandidateInventoryError> {
+        let root = publish_authenticated_terminal_checkpoint(
+            self,
+            &self.checkpoints,
+            capture,
+            context.cancellation(),
+            identity,
+        )?;
+        self.retain_checkpoint(root)
     }
 }
 
@@ -545,6 +657,23 @@ mod tests {
                 TestInventory::Failure(error) => Err(*error),
             }
         }
+
+        fn exact_findings_enabled(
+            &self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+        ) -> bool {
+            false
+        }
+
+        fn retain_terminal_checkpoint(
+            &self,
+            _capture: &CapturedAttemptCheckpoint,
+            _context: &AttemptExecutionContext,
+            _identity: FindingTerminalCheckpointIdentity,
+        ) -> Result<(), FindingExactCandidateInventoryError> {
+            Err(FindingExactCandidateInventoryError::Unavailable)
+        }
     }
 
     impl FindingExactCheckpointAuthenticator for TestSource {
@@ -587,6 +716,23 @@ mod tests {
         ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
             self.inner
                 .candidate_checkpoints(configuration, maximum_candidates)
+        }
+
+        fn exact_findings_enabled(
+            &self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+        ) -> bool {
+            false
+        }
+
+        fn retain_terminal_checkpoint(
+            &self,
+            _capture: &CapturedAttemptCheckpoint,
+            _context: &AttemptExecutionContext,
+            _identity: FindingTerminalCheckpointIdentity,
+        ) -> Result<(), FindingExactCandidateInventoryError> {
+            Err(FindingExactCandidateInventoryError::Unavailable)
         }
     }
 
@@ -958,7 +1104,6 @@ mod tests {
             CampaignExecutorStore::new(repository),
             checkpoints,
         );
-        source.retain_checkpoint(checkpoint)?;
         let loaded = Arc::new(source.checkpoints.load_attempt_checkpoint(checkpoint)?);
         let stored_scenario = source.campaign.load_scenario_artifact(scenario_artifact)?;
         let decoded_source = crate::decode_crucible_scenario_artifact(&stored_scenario)?;
@@ -985,6 +1130,45 @@ mod tests {
                 MAX_FINDING_EXACT_METADATA_BYTES,
             )
             .map_err(|error| io::Error::other(format!("checkpoint authentication: {error:?}")))?;
+
+        let context = AttemptExecutionContext::new(
+            crucible_campaign::AttemptResourceLimits::new(
+                2,
+                64 * 1024 * 1024,
+                128 * 1024 * 1024,
+                4,
+            )?,
+            crucible_campaign::ExecutionRetentionIntent::RetainOnFailure,
+            ExecutionCancellation::default(),
+            crate::ExecutionCheckpointRequest::default(),
+            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+        );
+        let capture = CapturedAttemptCheckpoint::from_production_closure(fixture.closure().clone());
+        let identity = FindingTerminalCheckpointIdentity {
+            scenario: scenario_id,
+            scenario_artifact,
+            configuration,
+            event_count: authenticated.event_count(),
+        };
+        assert!(source.candidate_checkpoints(configuration, 2)?.is_empty());
+        source.retain_terminal_checkpoint(&capture, &context, identity)?;
+        source.retain_terminal_checkpoint(&capture, &context, identity)?;
+        assert_eq!(
+            source.candidate_checkpoints(configuration, 2)?,
+            vec![checkpoint]
+        );
+        let stale = FindingTerminalCheckpointIdentity {
+            event_count: identity.event_count + 1,
+            ..identity
+        };
+        assert_eq!(
+            source.retain_terminal_checkpoint(&capture, &context, stale),
+            Err(FindingExactCandidateInventoryError::Unavailable)
+        );
+        assert_eq!(
+            source.candidate_checkpoints(configuration, 2)?,
+            vec![checkpoint]
+        );
 
         let (pins, prepared) = select_finding_exact_retention(
             basis()?,

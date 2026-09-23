@@ -479,6 +479,7 @@ where
         },
         move |store,
               checkpoints,
+              finding_exact_retention,
               shared,
               worker_state_root,
               worker_count,
@@ -509,7 +510,10 @@ where
                                     QemuFreshExecutionRunner::new(
                                         lifecycle_factory,
                                         QemuFreshModeledDriver,
-                                    ),
+                                    )
+                                    .with_terminal_exact_retention_source(Arc::clone(
+                                        finding_exact_retention,
+                                    )),
                                 ),
                                 evidence,
                             )
@@ -611,7 +615,8 @@ where
                         evidence.clone(),
                     );
                 let fallback =
-                    QemuFreshExecutionRunner::new(fallback_lifecycles, QemuFreshModeledDriver);
+                    QemuFreshExecutionRunner::new(fallback_lifecycles, QemuFreshModeledDriver)
+                        .with_terminal_exact_retention_source(Arc::clone(finding_exact_retention));
                 let provider = match pool.provider() {
                     Ok(provider) => provider,
                     Err(source) => {
