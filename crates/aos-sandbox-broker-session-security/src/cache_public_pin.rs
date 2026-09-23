@@ -87,7 +87,7 @@ impl PublicCacheUnpinExecutionV1 {
         match self {
             Self {
                 outcome: CacheResidencyCommitOutcomeV1::Applied(_),
-                settlement: Some(Ok(settlement)),
+                settlement: Some(Ok(settlement @ CacheOwnerPinSettlementV1::Changed(_))),
             } => Ok(settlement),
             unresolved => Err(unresolved),
         }

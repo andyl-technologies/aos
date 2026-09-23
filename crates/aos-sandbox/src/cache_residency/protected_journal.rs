@@ -17,12 +17,13 @@ use std::{
 use crate::journal::{Journal, JournalError, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::{
     AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
-    DomainPostcommitCapabilityV1, DomainRecoveryV1, PreparedDomainTransactionV1,
-    ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
-    ProtectedDomainKeyV1, ProtectedDomainProjectionV1, ProtectedDomainReplayPhaseV1,
-    ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1, ProtectedRecordRoleV1,
-    ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1, ValidatedDomainPostcommitV1,
-    decode_reducer_payload_with_validator, encode_reducer_payload_with_validator,
+    DomainPostcommitCapabilityV1, DomainRecoveryV1, DomainRetainedRecoveryV1,
+    PreparedDomainTransactionV1, ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1,
+    ProtectedDomainJournalV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
+    ProtectedDomainReplayPhaseV1, ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1,
+    ProtectedRecordRoleV1, ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1,
+    ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
+    encode_reducer_payload_with_validator,
 };
 
 #[cfg(target_os = "linux")]
@@ -1096,51 +1097,57 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
 
     /// Resolves an exact ambiguous cache commit after protected reopen.
     ///
-    /// # Errors
-    ///
-    /// Returns [`CacheResidencyProtectedJournalErrorV1`] when replay is
-    /// poisoned or malformed.
-    pub fn recover(
-        &self,
-        pending: CacheResidencyOutcomeUnknownV1,
-    ) -> Result<CacheResidencyRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
+    pub fn recover(&self, pending: CacheResidencyOutcomeUnknownV1) -> CacheResidencyRecoveryV1 {
         if let Err(cause) = self.replay() {
-            return Ok(CacheResidencyRecoveryV1::Indeterminate { pending, cause });
+            return CacheResidencyRecoveryV1::Indeterminate { pending, cause };
         }
         let kind = pending.kind;
         let inner = match pending.inner {
             CacheResidencyOutcomeUnknownStateV1::PostcommitValidation(inner) => {
-                return Ok(CacheResidencyRecoveryV1::Applied(
-                    AppliedCacheResidencyTransactionV1 { kind, inner },
-                ));
+                return CacheResidencyRecoveryV1::Applied(AppliedCacheResidencyTransactionV1 {
+                    kind,
+                    inner,
+                });
             }
             CacheResidencyOutcomeUnknownStateV1::Commit(inner) => inner,
         };
-        let recovery = self.inner.recover(inner)?;
+        let recovery = match self.inner.recover_retaining(inner) {
+            DomainRetainedRecoveryV1::Outcome(recovery) => recovery,
+            DomainRetainedRecoveryV1::Retryable { pending, error } => {
+                return CacheResidencyRecoveryV1::Indeterminate {
+                    pending: CacheResidencyOutcomeUnknownV1 {
+                        kind,
+                        inner: CacheResidencyOutcomeUnknownStateV1::Commit(pending),
+                    },
+                    cause: error,
+                };
+            }
+        };
         match recovery {
             DomainRecoveryV1::Applied(inner) => {
                 if let Err(cause) = self.replay() {
-                    return Ok(CacheResidencyRecoveryV1::Indeterminate {
+                    return CacheResidencyRecoveryV1::Indeterminate {
                         pending: CacheResidencyOutcomeUnknownV1 {
                             kind,
                             inner: CacheResidencyOutcomeUnknownStateV1::PostcommitValidation(inner),
                         },
                         cause,
-                    });
+                    };
                 }
-                Ok(CacheResidencyRecoveryV1::Applied(
-                    AppliedCacheResidencyTransactionV1 { kind, inner },
-                ))
+                CacheResidencyRecoveryV1::Applied(AppliedCacheResidencyTransactionV1 {
+                    kind,
+                    inner,
+                })
             }
-            DomainRecoveryV1::Retry(inner) => Ok(CacheResidencyRecoveryV1::Retry(
-                PreparedCacheResidencyTransactionV1 { kind, inner },
-            )),
-            DomainRecoveryV1::Diverged(inner) => Ok(CacheResidencyRecoveryV1::Diverged(
-                CacheResidencyOutcomeUnknownV1 {
+            DomainRecoveryV1::Retry(inner) => {
+                CacheResidencyRecoveryV1::Retry(PreparedCacheResidencyTransactionV1 { kind, inner })
+            }
+            DomainRecoveryV1::Diverged(inner) => {
+                CacheResidencyRecoveryV1::Diverged(CacheResidencyOutcomeUnknownV1 {
                     kind,
                     inner: CacheResidencyOutcomeUnknownStateV1::Commit(inner),
-                },
-            )),
+                })
+            }
         }
     }
 

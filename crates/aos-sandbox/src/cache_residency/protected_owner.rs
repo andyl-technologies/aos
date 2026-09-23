@@ -1453,7 +1453,7 @@ impl CacheResidencyProtectedOwnerV1 {
                 .as_mut()
                 .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
             let journal = CacheResidencyProtectedJournalV1::claim(journal, validator)?;
-            let mut recovery = journal.recover(pending)?;
+            let mut recovery = journal.recover(pending);
             let handoff_result = match &mut recovery {
                 CacheResidencyRecoveryV1::Applied(applied) => {
                     if refresh().is_err() {
