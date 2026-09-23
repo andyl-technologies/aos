@@ -641,6 +641,19 @@ pub(crate) fn get_generation(
         .map(|record| DurableAttachmentDesiredStateV1 { record }))
 }
 
+pub(crate) fn get_operation(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
+    let history = History::load(journal)?;
+    Ok(history
+        .operations
+        .get(&operation_id)
+        .and_then(|key| history.generations.get(key))
+        .cloned()
+        .map(|record| DurableAttachmentDesiredStateV1 { record }))
+}
+
 /// Returns current desired attachments for one exact consumer generation.
 pub(crate) fn current_for_consumer(
     journal: &Journal,
@@ -987,6 +1000,15 @@ mod tests {
                 .presence(),
             AttachmentDesiredPresenceV1::Released
         );
+        assert_eq!(
+            get_operation(&journal, first.record.operation_id)
+                .unwrap()
+                .unwrap()
+                .intent()
+                .desired_generation()
+                .get(),
+            1
+        );
 
         journal.compact().unwrap();
         drop(journal);
@@ -997,6 +1019,13 @@ mod tests {
                 .unwrap()
                 .presence(),
             AttachmentDesiredPresenceV1::Released
+        );
+        assert_eq!(
+            get_operation(&recovered, first.record.operation_id)
+                .unwrap()
+                .unwrap()
+                .record_digest(),
+            first_digest
         );
     }
 

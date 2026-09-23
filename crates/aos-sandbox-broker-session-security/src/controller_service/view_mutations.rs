@@ -241,6 +241,7 @@ fn accepted_release(
     if view.view_id.as_slice() != view_id.as_bytes()
         || view.project_id.as_slice() != project.as_bytes()
         || view.phase.as_known() != Some(ViewPhase::VIEW_PHASE_RELEASING)
+        || view.active_attachment_count != 0
         || previous.presence() != FilesystemViewRevisionPresenceV1::Available
         || view.desired_generation != previous.revision().get().saturating_add(1)
         || view.revision.as_option().is_none_or(|revision| {

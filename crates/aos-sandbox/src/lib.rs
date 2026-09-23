@@ -20,6 +20,8 @@
 //! privileged broker implementations deliberately live outside this crate.
 
 #[cfg(target_os = "linux")]
+pub mod attachment_effect_owner;
+#[cfg(target_os = "linux")]
 pub mod attachment_mount;
 #[cfg(target_os = "linux")]
 pub mod attachment_reconciliation;
