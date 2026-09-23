@@ -988,6 +988,50 @@ pub struct CacheRecoveryInventoryV1 {
 }
 
 impl CacheRecoveryInventoryV1 {
+    /// Derives the exact Replay authority scope for a typed checkpoint anchor.
+    ///
+    /// This computes a record target; it does not issue authority or authorize
+    /// recovery. An issuer must independently authenticate the partition,
+    /// quotas, checkpoint, floor, and validity interval before installing the
+    /// corresponding protected record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError`] for malformed checkpoint bytes, an invalid
+    /// predecessor or floor link, or an invalid authority interval.
+    pub fn replay_authority_scope(
+        partition: PhysicalPartitionId,
+        typed_checkpoint_bytes: &[u8],
+        prior_typed_checkpoint_bytes: Option<&[u8]>,
+        floor: CacheHistoryFloorV1,
+        valid_until: u64,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<CacheAuthorityScopeV1, RecoveryError> {
+        let limits = limits.validate()?;
+        let typed = decode_typed_checkpoint(partition, typed_checkpoint_bytes, limits)?;
+        match prior_typed_checkpoint_bytes {
+            Some(bytes) => {
+                let prior = decode_typed_checkpoint(partition, bytes, limits)?;
+                validate_checkpoint_successor(&prior, &typed)?;
+            }
+            None if typed.checkpoint.predecessor.as_bytes() == &[0; 32] => {}
+            None => return Err(RecoveryError::AnchorMismatch),
+        }
+        floor.validate()?;
+        if floor.checkpoint != typed.checkpoint.digest
+            || floor.retained_history_root != typed.checkpoint.history_head
+            || floor.first_retained_sequence
+                != typed
+                    .checkpoint
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(RecoveryError::HistoryOverflow)?
+        {
+            return Err(RecoveryError::AnchorMismatch);
+        }
+        replay_scope_from_validated_anchor(partition, typed.digest, floor, valid_until)
+    }
+
     /// Validates anchored history and classifies unresolved latest records.
     ///
     /// Records must be supplied in strictly increasing sequence order beginning
@@ -1272,20 +1316,10 @@ impl CacheRecoveryInventoryV1 {
         let head_sequence = expected_sequence.saturating_sub(1);
         // Protected authority binds the immutable replay anchor. The journal
         // CAS/hash chain and inventory binding authenticate the evolving suffix.
-        let subject = replay_authority_subject(
-            typed_checkpoint_digest,
-            floor.digest,
-            floor.first_retained_sequence,
-            floor.retained_history_root,
-            partition.digest(),
-        );
-        let authority_scope = CacheAuthorityScopeV1::new(
+        let authority_scope = replay_scope_from_validated_anchor(
             partition,
-            subject,
-            None,
             typed_checkpoint_digest,
-            partition.backing().root(),
-            floor.first_retained_sequence,
+            floor,
             authority_valid_until,
         )?;
         validate_authority(authority_scope)?;
@@ -1319,6 +1353,30 @@ impl CacheRecoveryInventoryV1 {
         inventory.replay_binding = replay_inventory_binding(&inventory);
         Ok(inventory)
     }
+}
+
+fn replay_scope_from_validated_anchor(
+    partition: PhysicalPartitionId,
+    checkpoint_digest: ObjectDigest,
+    floor: CacheHistoryFloorV1,
+    valid_until: u64,
+) -> Result<CacheAuthorityScopeV1, RecoveryError> {
+    let subject = replay_authority_subject(
+        checkpoint_digest,
+        floor.digest,
+        floor.first_retained_sequence,
+        floor.retained_history_root,
+        partition.digest(),
+    );
+    Ok(CacheAuthorityScopeV1::new(
+        partition,
+        subject,
+        None,
+        checkpoint_digest,
+        partition.backing().root(),
+        floor.first_retained_sequence,
+        valid_until,
+    )?)
 }
 
 /// Reports bounded recovery and anchored-history failures.
