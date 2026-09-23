@@ -19,8 +19,9 @@
 use std::collections::BTreeSet;
 
 use aos_proto::aos::sandbox::local::v1::{
-    InventoryStorageRequest, InventoryStorageResourcesResponse, StorageLifecycleInventoryRecord,
-    StorageLifecycleTransitionRecord, StorageWorkspaceInventoryRecord,
+    InventoryStorageRequest, InventoryStorageResourcesResponse, StorageAtomicSnapshotCheckpoint,
+    StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
+    StorageWorkspaceInventoryRecord,
 };
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion};
 use buffa::Message as _;
@@ -249,14 +250,16 @@ fn validate_lifecycle_inventory(
         && response.lifecycle_transitions.is_empty()
         && response.lifecycle_source_version == 0
         && response.lifecycle_catalog_head.is_empty()
-        && response.lifecycle_catalog_generation == 0;
+        && response.lifecycle_catalog_generation == 0
+        && response.atomic_snapshot_checkpoints.is_empty();
     if absent {
         return Ok(());
     }
     exact_nonzero::<32>(&response.lifecycle_source, "storage lifecycle source")?;
     match response.lifecycle_source_version {
         0 if response.lifecycle_catalog_head.is_empty()
-            && response.lifecycle_catalog_generation == 0 => {}
+            && response.lifecycle_catalog_generation == 0
+            && response.atomic_snapshot_checkpoints.is_empty() => {}
         3 => {
             exact_nonzero::<32>(&response.lifecycle_catalog_head, "storage lifecycle head")?;
             if response.lifecycle_catalog_generation == 0 {
@@ -273,6 +276,7 @@ fn validate_lifecycle_inventory(
     }
     if response.lifecycle_resources.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
         || response.lifecycle_transitions.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
+        || response.atomic_snapshot_checkpoints.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS
     {
         return Err(ProtocolValidationError::TooManyEntries {
             field: "storage lifecycle inventory",
@@ -298,7 +302,52 @@ fn validate_lifecycle_inventory(
     for record in &response.lifecycle_transitions {
         validate_lifecycle_transition(record)?;
     }
+    if !response
+        .atomic_snapshot_checkpoints
+        .windows(2)
+        .all(|pair| pair[0].operation_id < pair[1].operation_id)
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage atomic checkpoint order",
+        ));
+    }
+    let mut request_ids = BTreeSet::new();
+    for checkpoint in &response.atomic_snapshot_checkpoints {
+        validate_atomic_snapshot_checkpoint(checkpoint, response)?;
+        if !request_ids.insert(&checkpoint.request_id) {
+            return Err(ProtocolValidationError::InvalidField(
+                "storage atomic checkpoint request",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn validate_atomic_snapshot_checkpoint(
+    checkpoint: &StorageAtomicSnapshotCheckpoint,
+    inventory: &InventoryStorageResourcesResponse,
+) -> Result<(), ProtocolValidationError> {
+    let source = exact_nonzero::<32>(&checkpoint.catalog_source, "atomic catalog source")?;
+    let pre_head = exact_nonzero::<32>(&checkpoint.pre_catalog_head, "atomic pre-head")?;
+    let post_head = exact_nonzero::<32>(&checkpoint.post_catalog_head, "atomic post-head")?;
+    exact_nonzero::<16>(&checkpoint.operation_id, "atomic operation")?;
+    exact_nonzero::<16>(&checkpoint.request_id, "atomic request")?;
+    exact_nonzero::<32>(&checkpoint.request_digest, "atomic request digest")?;
+    exact_nonzero::<32>(&checkpoint.program, "atomic program")?;
+    exact_nonzero::<32>(&checkpoint.observation, "atomic observation")?;
+    if inventory.lifecycle_source_version != 3
+        || source != inventory.lifecycle_source.as_slice()
+        || checkpoint.pre_catalog_generation == 0
+        || checkpoint.pre_catalog_generation.checked_add(1)
+            != Some(checkpoint.post_catalog_generation)
+        || checkpoint.post_catalog_generation > inventory.lifecycle_catalog_generation
+        || pre_head == post_head
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage atomic checkpoint chain",
+        ));
+    }
+    reject_unknown(&checkpoint.__buffa_unknown_fields)
 }
 
 fn validate_lifecycle_resource(
@@ -676,6 +725,45 @@ mod tests {
         );
 
         response.lifecycle_source_version = 0;
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
+        );
+    }
+
+    #[test]
+    fn atomic_checkpoint_requires_exact_chain_and_canonical_order() {
+        let mut response =
+            InventoryStorageResourcesResponse::decode_from_slice(&response(Vec::new())).unwrap();
+        response.lifecycle_source = vec![13; 32];
+        response.lifecycle_source_version = 3;
+        response.lifecycle_catalog_head = vec![15; 32];
+        response.lifecycle_catalog_generation = 17;
+        let checkpoint = StorageAtomicSnapshotCheckpoint {
+            operation_id: vec![1; 16],
+            request_id: vec![2; 16],
+            request_digest: vec![3; 32],
+            program: vec![4; 32],
+            observation: vec![5; 32],
+            catalog_source: vec![13; 32],
+            pre_catalog_generation: 15,
+            pre_catalog_head: vec![14; 32],
+            post_catalog_generation: 16,
+            post_catalog_head: vec![15; 32],
+            ..Default::default()
+        };
+        response
+            .atomic_snapshot_checkpoints
+            .push(checkpoint.clone());
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_ok()
+        );
+
+        response.atomic_snapshot_checkpoints[0].post_catalog_generation = 17;
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
+        );
+        response.atomic_snapshot_checkpoints[0] = checkpoint.clone();
+        response.atomic_snapshot_checkpoints.push(checkpoint);
         assert!(
             decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
         );

@@ -7,8 +7,8 @@
 //! remains unchanged, and no public row or inventory constructor exists.
 
 use aos_proto::aos::sandbox::local::v1::{
-    InventoryStorageResourcesResponse, StorageLifecycleInventoryRecord,
-    StorageLifecycleTransitionRecord,
+    InventoryStorageResourcesResponse, StorageAtomicSnapshotCheckpoint,
+    StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
 };
 use aos_sandbox::lifecycle::{
     LifecyclePhase6ErrorV1, LifecycleResourceV1, LifecycleStorageInventoryKindV1,
@@ -42,6 +42,7 @@ pub(crate) fn attach_complete_lifecycle_inventory(
         || response.lifecycle_source_version != 0
         || !response.lifecycle_catalog_head.is_empty()
         || response.lifecycle_catalog_generation != 0
+        || !response.atomic_snapshot_checkpoints.is_empty()
     {
         return Err(LifecyclePhase6ErrorV1::InvalidInput);
     }
@@ -58,6 +59,7 @@ pub(crate) fn attach_complete_lifecycle_inventory(
     response.lifecycle_catalog_generation = journal.physical().binding().generation();
     response.lifecycle_resources = project_complete_rows(&journal, &atomic)?;
     response.lifecycle_transitions = project_transitions(&journal, &atomic)?;
+    response.atomic_snapshot_checkpoints = project_atomic_checkpoints(&journal, &atomic)?;
 
     let encoded = response.encode_to_vec();
     aos_sandbox_protocol::decode_storage_resource_inventory_response(
@@ -66,6 +68,53 @@ pub(crate) fn attach_complete_lifecycle_inventory(
     )
     .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
     Ok(encoded)
+}
+
+fn project_atomic_checkpoints(
+    journal: &VerifiedStorageResolverJournalV1,
+    atomic: &[crate::state::AtomicDatasetSnapshotInventoryV1],
+) -> Result<Vec<StorageAtomicSnapshotCheckpoint>, LifecyclePhase6ErrorV1> {
+    let mut checkpoints = Vec::new();
+    for record in atomic {
+        let program = record.program();
+        if record.phase() != crate::state::AtomicDatasetSnapshotPhaseV1::Committed
+            || program.format_version() != 2
+        {
+            continue;
+        }
+        let observation = record
+            .observation()
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let post_head = record
+            .post_head()
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if program.catalog_source() != journal.genesis().digest()
+            || program.catalog_generation().checked_add(1) != Some(post_head.generation())
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        checkpoints.push(StorageAtomicSnapshotCheckpoint {
+            operation_id: program.operation().to_vec(),
+            request_id: record.request_id().to_vec(),
+            request_digest: record.transport_digest().as_bytes().to_vec(),
+            program: program.commitment().as_bytes().to_vec(),
+            observation: observation.as_bytes().to_vec(),
+            catalog_source: program.catalog_source().as_bytes().to_vec(),
+            pre_catalog_generation: program.catalog_generation(),
+            pre_catalog_head: program.catalog_head().as_bytes().to_vec(),
+            post_catalog_generation: post_head.generation(),
+            post_catalog_head: post_head.digest().as_bytes().to_vec(),
+            ..Default::default()
+        });
+    }
+    checkpoints.sort_unstable_by(|left, right| left.operation_id.cmp(&right.operation_id));
+    if !checkpoints
+        .windows(2)
+        .all(|pair| pair[0].operation_id < pair[1].operation_id)
+    {
+        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+    }
+    Ok(checkpoints)
 }
 
 fn project_complete_rows(

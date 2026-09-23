@@ -616,6 +616,22 @@ message StorageLifecycleTransitionRecord {
   bytes identity = 7; // Exactly 32 bytes.
 }
 
+// A protected committed group joined to its original request and physical
+// catalog transition. The current head may be later; recovery accepts this
+// checkpoint only when the signed current head equals post_catalog_head.
+message StorageAtomicSnapshotCheckpoint {
+  bytes operation_id = 1; // Exactly 16 bytes.
+  bytes request_id = 2; // Exactly 16 bytes.
+  bytes request_digest = 3; // SHA-256 of the original request body, 32 bytes.
+  bytes program = 4; // Protected grouped-program commitment, 32 bytes.
+  bytes observation = 5; // Whole-group GUID observation commitment, 32 bytes.
+  bytes catalog_source = 6; // Immutable protected catalog genesis, 32 bytes.
+  uint64 pre_catalog_generation = 7;
+  bytes pre_catalog_head = 8; // Exactly 32 bytes.
+  uint64 post_catalog_generation = 9;
+  bytes post_catalog_head = 10; // Exactly 32 bytes.
+}
+
 message InventoryStorageResourcesResponse {
   bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
   uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
@@ -628,6 +644,7 @@ message InventoryStorageResourcesResponse {
   uint32 lifecycle_source_version = 9; // Zero for legacy V2; exactly 3 for root/head split.
   bytes lifecycle_catalog_head = 10; // V3 protected physical head digest, 32 bytes.
   uint64 lifecycle_catalog_generation = 11; // V3 protected physical head generation.
+  repeated StorageAtomicSnapshotCheckpoint atomic_snapshot_checkpoints = 12; // Protected committed groups, strict operation order.
 }
 
 service StorageBroker {

@@ -82,6 +82,13 @@ pub(crate) enum ProtectedPriorAtomicStorageHistoryV1 {
     Absent,
     /// The request or its adjacent signed successor is not terminal.
     Incomplete,
+    /// The original group succeeded, but no adjacent successor was journaled.
+    GroupCommitted {
+        predecessor_request: Vec<u8>,
+        predecessor_outcome: Vec<u8>,
+        group_request: Vec<u8>,
+        group_outcome: Vec<u8>,
+    },
     /// The protected history retains all three adjacent successful exchanges.
     Complete {
         predecessor_request: Vec<u8>,
@@ -97,6 +104,10 @@ pub(crate) enum ProtectedPriorAtomicStorageHistoryV1 {
 pub(crate) enum ProtectedVerifiedAtomicStorageHistoryV1 {
     Absent,
     Incomplete,
+    GroupCommitted {
+        predecessor: AuthenticatedBrokerMethodOutcomeV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
+    },
     Complete {
         predecessor: AuthenticatedBrokerMethodOutcomeV1,
         group: AuthenticatedBrokerMethodOutcomeV1,
@@ -1234,26 +1245,45 @@ impl ProtectedBrokerSessionJournalV1 {
             session_binding,
             BrokerSessionProtocolV1::Storage,
         )?;
-        let ProtectedPriorAtomicStorageHistoryV1::Complete {
+        let (
             predecessor_request,
             predecessor_outcome,
             group_request,
             group_outcome,
-            successor_request,
-            successor_outcome,
-        } = raw
-        else {
-            return Ok(match raw {
-                ProtectedPriorAtomicStorageHistoryV1::Absent => {
-                    ProtectedVerifiedAtomicStorageHistoryV1::Absent
-                }
-                ProtectedPriorAtomicStorageHistoryV1::Incomplete => {
-                    ProtectedVerifiedAtomicStorageHistoryV1::Incomplete
-                }
-                ProtectedPriorAtomicStorageHistoryV1::Complete { .. } => {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-            });
+            successor_bytes,
+        ) = match raw {
+            ProtectedPriorAtomicStorageHistoryV1::Absent => {
+                return Ok(ProtectedVerifiedAtomicStorageHistoryV1::Absent);
+            }
+            ProtectedPriorAtomicStorageHistoryV1::Incomplete => {
+                return Ok(ProtectedVerifiedAtomicStorageHistoryV1::Incomplete);
+            }
+            ProtectedPriorAtomicStorageHistoryV1::GroupCommitted {
+                predecessor_request,
+                predecessor_outcome,
+                group_request,
+                group_outcome,
+            } => (
+                predecessor_request,
+                predecessor_outcome,
+                group_request,
+                group_outcome,
+                None,
+            ),
+            ProtectedPriorAtomicStorageHistoryV1::Complete {
+                predecessor_request,
+                predecessor_outcome,
+                group_request,
+                group_outcome,
+                successor_request,
+                successor_outcome,
+            } => (
+                predecessor_request,
+                predecessor_outcome,
+                group_request,
+                group_outcome,
+                Some((successor_request, successor_outcome)),
+            ),
         };
         let stored = self
             .read_optional(BrokerSessionProtocolV1::Storage)?
@@ -1295,19 +1325,28 @@ impl ProtectedBrokerSessionJournalV1 {
         let predecessor_index = index
             .checked_sub(2)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let successor_index = index
-            .checked_add(2)
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
         let predecessor =
             historical_terminal_outcome(records, predecessor_index, checkpoint, &transcript)?;
         let group = historical_terminal_outcome(records, index, checkpoint, &transcript)?;
-        let successor =
-            historical_terminal_outcome(records, successor_index, checkpoint, &transcript)?;
         if predecessor.request().canonical_packet() != predecessor_request
             || predecessor.canonical_packet() != predecessor_outcome
             || group.request().canonical_packet() != group_request
             || group.canonical_packet() != group_outcome
-            || successor.request().canonical_packet() != successor_request
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let Some((successor_request, successor_outcome)) = successor_bytes else {
+            return Ok(ProtectedVerifiedAtomicStorageHistoryV1::GroupCommitted {
+                predecessor,
+                group,
+            });
+        };
+        let successor_index = index
+            .checked_add(2)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let successor =
+            historical_terminal_outcome(records, successor_index, checkpoint, &transcript)?;
+        if successor.request().canonical_packet() != successor_request
             || successor.canonical_packet() != successor_outcome
         {
             return Err(BrokerSessionSecurityError::Currentness);
@@ -1382,8 +1421,23 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        let predecessor_request = predecessor.request_packet().to_vec();
+        let predecessor_outcome = predecessor
+            .outcome_packet()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .to_vec();
+        let group_request = group.request_packet().to_vec();
+        let group_outcome = group
+            .outcome_packet()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .to_vec();
         let Some(successor) = successor else {
-            return Ok(ProtectedPriorAtomicStorageHistoryV1::Incomplete);
+            return Ok(ProtectedPriorAtomicStorageHistoryV1::GroupCommitted {
+                predecessor_request,
+                predecessor_outcome,
+                group_request,
+                group_outcome,
+            });
         };
         if successor.phase() != BrokerSessionDurablePhaseV1::Terminal
             || successor.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
@@ -1392,19 +1446,18 @@ impl ProtectedBrokerSessionJournalV1 {
             || group.broker_sequence().checked_add(1) != Some(successor.broker_sequence())
             || !successful_terminal(successor)?
         {
-            return Ok(ProtectedPriorAtomicStorageHistoryV1::Incomplete);
+            return Ok(ProtectedPriorAtomicStorageHistoryV1::GroupCommitted {
+                predecessor_request,
+                predecessor_outcome,
+                group_request,
+                group_outcome,
+            });
         }
         Ok(ProtectedPriorAtomicStorageHistoryV1::Complete {
-            predecessor_request: predecessor.request_packet().to_vec(),
-            predecessor_outcome: predecessor
-                .outcome_packet()
-                .ok_or(BrokerSessionSecurityError::Currentness)?
-                .to_vec(),
-            group_request: group.request_packet().to_vec(),
-            group_outcome: group
-                .outcome_packet()
-                .ok_or(BrokerSessionSecurityError::Currentness)?
-                .to_vec(),
+            predecessor_request,
+            predecessor_outcome,
+            group_request,
+            group_outcome,
             successor_request: successor.request_packet().to_vec(),
             successor_outcome: successor
                 .outcome_packet()
