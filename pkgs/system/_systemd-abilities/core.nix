@@ -44,7 +44,6 @@
   servicePolicy = lib.abilities.interfaces.servicePolicy;
   milestones = serviceManagement.milestones;
   serviceInterfaces = serviceManagement.interfaces // servicePolicy.interfaces;
-  serviceTypes = serviceManagement.types;
   imageRolloutPlatform = lib.abilities.interfaces.imageRolloutPlatform.interfaces;
   resultOf = lib.abilities.resultOf;
   hostPlatformAvailable =
@@ -99,94 +98,83 @@
   measurementLocalFilesystemsResource = resultOf "measurement-local-filesystems" "resource";
   measurementMultiUserResource = resultOf "measurement-multi-user" "resource";
   measurementRuntimeEntriesResource = resultOf "measurement-runtime-entries" "resource";
-  imageMeasurementService = serviceManagement.forService {
-    inherit serviceTypes;
+  imageMeasurementService = {
     consumerInstance = "image-measurement-index";
-    declaration = {
-      service = "image-measurement-index";
-      enabled = true;
-      lifecycle = {
-        description = "Import authenticated boot artifact PCR 11 measurement metadata";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = handlerArtifact;
-              entry_point = handlerEntryPoint;
-              arguments = [
-                "measurement-index"
-                "--pcr-public-key"
-                (config.aos.packageRuntime.configurationEvaluation.pcrPublicKey or null)
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 300000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        prerequisites = [];
-        after = [
-          measurementEspReadyResource
-          measurementLocalFilesystemsResource
-          measurementRuntimeEntriesResource
-        ];
-        before = [measurementMultiUserResource];
-        requires = [
-          measurementEspReadyResource
-          measurementLocalFilesystemsResource
-          measurementRuntimeEntriesResource
-        ];
-        wants = [];
-        requisite = [];
-        conflicts = [];
-        binds_to = [];
-        part_of = [];
-        upholds = [];
-        required_by = [];
-        wanted_by = [measurementMultiUserResource];
-        required_mounts = [];
-        implicit_dependencies = false;
-      };
-      manager_identity = {
-        name = "aos-image-measurement-index";
-        aliases = [];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 300000;
-      };
-      environment = {
-        variables = {};
-        search_path = [(lib.abilities.packageOutput {package = "openssl";})];
-      };
+    service = "image-measurement-index";
+    lifecycle = {
+      description = "Import authenticated boot artifact PCR 11 measurement metadata";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            artifact = handlerArtifact;
+            entry_point = handlerEntryPoint;
+            arguments = [
+              "measurement-index"
+              "--pcr-public-key"
+              (config.aos.packageRuntime.configurationEvaluation.pcrPublicKey or null)
+            ];
+          };
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 300000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      prerequisites = [];
+      after = [
+        measurementEspReadyResource
+        measurementLocalFilesystemsResource
+        measurementRuntimeEntriesResource
+      ];
+      before = [measurementMultiUserResource];
+      requires = [
+        measurementEspReadyResource
+        measurementLocalFilesystemsResource
+        measurementRuntimeEntriesResource
+      ];
+      wants = [];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [];
+      wanted_by = [measurementMultiUserResource];
+      required_mounts = [];
+      implicit_dependencies = false;
+    };
+    manager_identity = {
+      name = "aos-image-measurement-index";
+      aliases = [];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 300000;
+    };
+    environment = {
+      variables = {};
+      search_path = [(lib.abilities.packageOutput {package = "openssl";})];
     };
   };
-  imageMeasurementFragments = [
+  imageMeasurementProducers = [
     measurementEspReady
     measurementLocalFilesystems
     measurementMultiUser
     measurementRuntimeEntries
-    imageMeasurementService
   ];
-  imageMeasurementRequirementTemplates = lib.mkMerge (
-    builtins.map (fragment: fragment.requirementTemplates or {}) imageMeasurementFragments
-  );
-  imageMeasurementRequests = lib.mkMerge (
-    builtins.map (fragment: fragment.requests or {}) imageMeasurementFragments
-  );
   dbusRegistrationInterface = {
     name = "aos.dbus.system-registration-contribution";
     abi = 1;
@@ -1483,207 +1471,214 @@
     })
     readinessControllers);
 in {
-  config.aos.abilities = {
-    instances = lib.mkMerge [
-      (lib.mkIf dbusRegistrationAvailable {manager = {};})
-      (lib.mkIf measurementEnabled {image-measurement-index = {};})
-      (lib.mkIf hostPlatformAvailable {
-        boot-artifact-storage.implementation = "boot-artifact-storage";
-        boot-selection.implementation = "boot-selection";
-        boot-success.implementation = "boot-success";
-        image-health-observation.implementation = "image-health-observation";
-        host-restart.implementation = "host-restart";
-      })
-    ];
+  config = lib.mkMerge [
+    {
+      aos.services."systemd.image-measurement-index" = imageMeasurementService // {enable = measurementEnabled;};
+      aos.abilities = {
+        instances = lib.mkMerge [
+          (lib.mkIf dbusRegistrationAvailable {manager = {};})
+          (lib.mkIf hostPlatformAvailable {
+            boot-artifact-storage.implementation = "boot-artifact-storage";
+            boot-selection.implementation = "boot-selection";
+            boot-success.implementation = "boot-success";
+            image-health-observation.implementation = "image-health-observation";
+            host-restart.implementation = "host-restart";
+          })
+        ];
 
-    interfaces =
-      {
-        systemd-packaged-unit = packagedUnitDeclaration;
-        systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
-        systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
-        ${networkConfigurationEffectsAlias} = networkConfigurationEffects.declaration;
-        systemd-service-effects = serviceEffectsDeclaration;
-      }
-      // builtins.listToAttrs (builtins.map (selected: {
-          name = readinessEffectsAlias selected;
-          value = readinessEffectsDeclaration selected;
-        })
-        readinessControllers)
-      // builtins.listToAttrs (builtins.map (controller: {
-          name = credentialEffectsAlias controller.selected;
-          value = credentialEffectsDeclaration controller.selected;
-        })
-        credentialControllers)
-      // builtins.listToAttrs (builtins.map (kind: {
-        name = identityKinds.${kind}.effectsAlias;
-        value = identityEffectsDeclarations.${kind};
-      }) (builtins.attrNames identityKinds))
-      // builtins.listToAttrs (builtins.map (kind: {
-        name = nativeResourceKinds.${kind}.effectsAlias;
-        value = nativeEffectsDeclarations.${kind};
-      }) (builtins.attrNames nativeResourceKinds));
+        interfaces =
+          {
+            systemd-packaged-unit = packagedUnitDeclaration;
+            systemd-packaged-unit-effects = packagedUnitEffectsDeclaration;
+            systemd-manager-watchdog-effects = managerWatchdogEffectsDeclaration;
+            ${networkConfigurationEffectsAlias} = networkConfigurationEffects.declaration;
+            systemd-service-effects = serviceEffectsDeclaration;
+          }
+          // builtins.listToAttrs (builtins.map (selected: {
+              name = readinessEffectsAlias selected;
+              value = readinessEffectsDeclaration selected;
+            })
+            readinessControllers)
+          // builtins.listToAttrs (builtins.map (controller: {
+              name = credentialEffectsAlias controller.selected;
+              value = credentialEffectsDeclaration controller.selected;
+            })
+            credentialControllers)
+          // builtins.listToAttrs (builtins.map (kind: {
+            name = identityKinds.${kind}.effectsAlias;
+            value = identityEffectsDeclarations.${kind};
+          }) (builtins.attrNames identityKinds))
+          // builtins.listToAttrs (builtins.map (kind: {
+            name = nativeResourceKinds.${kind}.effectsAlias;
+            value = nativeEffectsDeclarations.${kind};
+          }) (builtins.attrNames nativeResourceKinds));
 
-    implementations = withHandlerDependency (
-      serviceImplementations
-      // readinessImplementations
-      // readinessTerminalImplementations
-      // identityControllerImplementations
-      // identityTerminalImplementations
-      // nativeControllerImplementations
-      // nativeTerminalImplementations
-      // devicePresenceImplementation
-      // imagePlatformImplementations
-      // credentialControllerImplementations
-      // credentialTerminalImplementations
-      // {
-        systemd-manager-watchdog = {
-          description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";
-          interface = managerWatchdog.identity;
-          inherit artifact;
-          inherit (managerWatchdog) methods;
-          guarantees = [];
-          requirements.manager-watchdog-effects = managerWatchdogEffectsRequirement;
-          providerModule = {
-            artifact = lib.abilities.packageOutput {output = "module";};
-            path = "provider/systemd.nix";
-          };
-          desiredType = managerWatchdogRealization;
-          requiredFeatures = [];
-        };
-        systemd-manager-watchdog-effects = {
-          description = "Executes checked terminal systemd manager-watchdog effects.";
-          interface = "systemd-manager-watchdog-effects";
-          artifact = handlerArtifact;
-          methods = ["create" "observe" "reconcile" "remove" "update"];
-          guarantees = [];
-          handlerDescriptor = {
-            artifact = handlerArtifact;
-            entryPoint = handlerEntryPoint;
-            arguments = managerWatchdogEffectsRequest;
-            result = managerWatchdogEffectsObservation;
-          };
-          desiredType = null;
-          requiredFeatures = [];
-        };
-        network-configuration = {
-          description = "Realizes provider-neutral host networking through systemd-networkd and systemd-resolved.";
-          interface = networkConfiguration.identity;
-          inherit artifact;
-          inherit (networkConfiguration) methods;
-          guarantees = [];
-          requirements = {
-            network-configuration-effects = networkConfigurationEffectsRequirement;
-            network-service-unit = networkServiceUnitRequirement;
-          };
-          providerModule = {
-            artifact = lib.abilities.packageOutput {output = "module";};
-            path = "provider/systemd.nix";
-          };
-          desiredType = networkConfigurationRealization;
-          requiredFeatures = [];
-        };
-        ${networkConfigurationEffectsAlias} = {
-          description = "Executes checked systemd-networkd configuration effects.";
-          interface = networkConfigurationEffectsAlias;
-          artifact = handlerArtifact;
-          inherit (networkConfigurationEffects) methods;
-          guarantees = [];
-          handlerDescriptor = {
-            artifact = handlerArtifact;
-            entryPoint = handlerEntryPoint;
-            arguments = networkConfigurationEffects.requestType;
-            result = networkConfigurationEffects.observationType;
-          };
-          desiredType = null;
-          requiredFeatures = [];
-        };
-        systemd-service-effects = {
-          description = "Executes checked systemd service effects selected by the package-owned service controller.";
-          interface = "systemd-service-effects";
-          artifact = handlerArtifact;
-          methods = ["create" "observe" "reconcile" "remove" "update"];
-          guarantees = [];
-          handlerDescriptor = {
-            artifact = handlerArtifact;
-            entryPoint = handlerEntryPoint;
-            arguments = serviceEffectsRequest;
-            result = serviceEffectsObservation;
-          };
-          desiredType = null;
-          requiredFeatures = [];
-          qualification = serviceEffectsQualification;
-        };
-        systemd-packaged-unit = {
-          description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
-          interface = "systemd-packaged-unit";
-          inherit artifact;
-          methods = ["apply" "observe" "remove"];
-          guarantees = [];
-          requirements.packaged-unit-effects = packagedUnitEffectsRequirement;
-          providerModule = {
-            artifact = lib.abilities.packageOutput {output = "module";};
-            path = "provider/systemd.nix";
-          };
-          desiredType = realizationType;
-          requiredFeatures = [];
-        };
-        systemd-packaged-unit-effects = {
-          description = "Executes checked terminal systemd packaged-unit effects.";
-          interface = "systemd-packaged-unit-effects";
-          artifact = handlerArtifact;
-          methods = ["create" "observe" "reconcile" "remove" "update"];
-          guarantees = [];
-          handlerDescriptor = {
-            artifact = handlerArtifact;
-            entryPoint = handlerEntryPoint;
-            arguments = packagedUnitEffectsRequest;
-            result = packagedUnitEffectsObservation;
-          };
-          desiredType = null;
-          requiredFeatures = [];
-        };
-      }
-    );
+        implementations = withHandlerDependency (
+          serviceImplementations
+          // readinessImplementations
+          // readinessTerminalImplementations
+          // identityControllerImplementations
+          // identityTerminalImplementations
+          // nativeControllerImplementations
+          // nativeTerminalImplementations
+          // devicePresenceImplementation
+          // imagePlatformImplementations
+          // credentialControllerImplementations
+          // credentialTerminalImplementations
+          // {
+            systemd-manager-watchdog = {
+              description = "Controls systemd manager watchdog configuration through a pure package-owned controller.";
+              interface = managerWatchdog.identity;
+              inherit artifact;
+              inherit (managerWatchdog) methods;
+              guarantees = [];
+              requirements.manager-watchdog-effects = managerWatchdogEffectsRequirement;
+              providerModule = {
+                artifact = lib.abilities.packageOutput {output = "module";};
+                path = "provider/systemd.nix";
+              };
+              desiredType = managerWatchdogRealization;
+              requiredFeatures = [];
+            };
+            systemd-manager-watchdog-effects = {
+              description = "Executes checked terminal systemd manager-watchdog effects.";
+              interface = "systemd-manager-watchdog-effects";
+              artifact = handlerArtifact;
+              methods = ["create" "observe" "reconcile" "remove" "update"];
+              guarantees = [];
+              handlerDescriptor = {
+                artifact = handlerArtifact;
+                entryPoint = handlerEntryPoint;
+                arguments = managerWatchdogEffectsRequest;
+                result = managerWatchdogEffectsObservation;
+              };
+              desiredType = null;
+              requiredFeatures = [];
+            };
+            network-configuration = {
+              description = "Realizes provider-neutral host networking through systemd-networkd and systemd-resolved.";
+              interface = networkConfiguration.identity;
+              inherit artifact;
+              inherit (networkConfiguration) methods;
+              guarantees = [];
+              requirements = {
+                network-configuration-effects = networkConfigurationEffectsRequirement;
+                network-service-unit = networkServiceUnitRequirement;
+              };
+              providerModule = {
+                artifact = lib.abilities.packageOutput {output = "module";};
+                path = "provider/systemd.nix";
+              };
+              desiredType = networkConfigurationRealization;
+              requiredFeatures = [];
+            };
+            ${networkConfigurationEffectsAlias} = {
+              description = "Executes checked systemd-networkd configuration effects.";
+              interface = networkConfigurationEffectsAlias;
+              artifact = handlerArtifact;
+              inherit (networkConfigurationEffects) methods;
+              guarantees = [];
+              handlerDescriptor = {
+                artifact = handlerArtifact;
+                entryPoint = handlerEntryPoint;
+                arguments = networkConfigurationEffects.requestType;
+                result = networkConfigurationEffects.observationType;
+              };
+              desiredType = null;
+              requiredFeatures = [];
+            };
+            systemd-service-effects = {
+              description = "Executes checked systemd service effects selected by the package-owned service controller.";
+              interface = "systemd-service-effects";
+              artifact = handlerArtifact;
+              methods = ["create" "observe" "reconcile" "remove" "update"];
+              guarantees = [];
+              handlerDescriptor = {
+                artifact = handlerArtifact;
+                entryPoint = handlerEntryPoint;
+                arguments = serviceEffectsRequest;
+                result = serviceEffectsObservation;
+              };
+              desiredType = null;
+              requiredFeatures = [];
+              qualification = serviceEffectsQualification;
+            };
+            systemd-packaged-unit = {
+              description = "Activates authenticated packaged units and materializes bounded systemd drop-ins.";
+              interface = "systemd-packaged-unit";
+              inherit artifact;
+              methods = ["apply" "observe" "remove"];
+              guarantees = [];
+              requirements.packaged-unit-effects = packagedUnitEffectsRequirement;
+              providerModule = {
+                artifact = lib.abilities.packageOutput {output = "module";};
+                path = "provider/systemd.nix";
+              };
+              desiredType = realizationType;
+              requiredFeatures = [];
+            };
+            systemd-packaged-unit-effects = {
+              description = "Executes checked terminal systemd packaged-unit effects.";
+              interface = "systemd-packaged-unit-effects";
+              artifact = handlerArtifact;
+              methods = ["create" "observe" "reconcile" "remove" "update"];
+              guarantees = [];
+              handlerDescriptor = {
+                artifact = handlerArtifact;
+                entryPoint = handlerEntryPoint;
+                arguments = packagedUnitEffectsRequest;
+                result = packagedUnitEffectsObservation;
+              };
+              desiredType = null;
+              requiredFeatures = [];
+            };
+          }
+        );
 
-    requirementTemplates = lib.mkMerge [
-      (lib.mkIf dbusRegistrationAvailable {
-        dbus-system-registration = {
-          description = "Contributes systemd's system-bus activation and policy artifacts.";
-          interface = dbusRegistrationInterface.name;
-          inherit (dbusRegistrationInterface) abi descriptor;
-          methods = ["observe"];
-          guarantees = [];
-          strength = "required";
-          fallback = null;
-        };
-      })
-      (lib.mkIf measurementEnabled imageMeasurementRequirementTemplates)
-    ];
+        requirementTemplates = lib.mkMerge [
+          (lib.mkIf dbusRegistrationAvailable {
+            dbus-system-registration = {
+              description = "Contributes systemd's system-bus activation and policy artifacts.";
+              interface = dbusRegistrationInterface.name;
+              inherit (dbusRegistrationInterface) abi descriptor;
+              methods = ["observe"];
+              guarantees = [];
+              strength = "required";
+              fallback = null;
+            };
+          })
+        ];
 
-    requests = lib.mkMerge [
-      (lib.mkIf dbusRegistrationAvailable {
-        dbus-system-registration = {
-          requirement = "dbus-system-registration";
-          consumer = "manager";
-          scope = ["system-bus"];
-          parameters = {
-            name = "systemd";
-            activation_directories = [
-              {
-                inherit artifact;
-                path = "share/dbus-1/system-services";
-              }
-            ];
-            policy_directories = [
-              {
-                inherit artifact;
-                path = "share/dbus-1/system.d";
-              }
-            ];
-          };
-        };
-      })
-      (lib.mkIf measurementEnabled imageMeasurementRequests)
-    ];
-  };
+        requests = lib.mkMerge [
+          (lib.mkIf dbusRegistrationAvailable {
+            dbus-system-registration = {
+              requirement = "dbus-system-registration";
+              consumer = "manager";
+              scope = ["system-bus"];
+              parameters = {
+                name = "systemd";
+                activation_directories = [
+                  {
+                    inherit artifact;
+                    path = "share/dbus-1/system-services";
+                  }
+                ];
+                policy_directories = [
+                  {
+                    inherit artifact;
+                    path = "share/dbus-1/system.d";
+                  }
+                ];
+              };
+            };
+          })
+        ];
+      };
+    }
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = imageMeasurementProducers;
+      enabled = measurementEnabled;
+    })
+  ];
 }
