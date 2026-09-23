@@ -30,6 +30,10 @@ use aos_proto::aos::sandbox::local::v1::{
     MountSourceConsistency,
 };
 use aos_sandbox_core::model::{AttachmentIntent, ViewMutation};
+use aos_sandbox_core::{
+    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, InvalidBrokerAuthorizationPlan,
+    ProtocolId, RevocationScopeId,
+};
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, RawPairedClockSample, encode_view_source};
 use aos_sandbox_protocol::{ValidatedMountInventoryRecord, ValidatedMountRecipe};
 
@@ -52,7 +56,7 @@ use crate::mount_preparation::{
     PreparedCurrentMountReleaseV1,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::CurrentNamespaceTarget;
+use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScopeError};
 use crate::{
     BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal, SignedBrokerPlan,
 };
@@ -89,6 +93,12 @@ pub enum AttachmentMountError {
     /// The exact durable view revision could not supply source authority.
     #[error(transparent)]
     FilesystemViewRevision(#[from] FilesystemViewRevisionStateError),
+    /// Current Host-backed ownership authority is unavailable for a Mount plan.
+    #[error(transparent)]
+    Runtime(#[from] CurrentRuntimeScopeError),
+    /// The exact Mount plan cannot be represented.
+    #[error(transparent)]
+    Plan(#[from] InvalidBrokerAuthorizationPlan),
 }
 
 /// Retains a plan-derived Mount operation until its exact signed plan is bound.
@@ -227,6 +237,66 @@ impl PreparedCurrentAttachmentMountV1 {
     #[must_use]
     pub fn body_without_deadline(&self) -> &[u8] {
         self.operation.body_without_deadline()
+    }
+
+    /// Constructs one Mount-only plan for the exact prepared Apply semantics.
+    ///
+    /// The independent Mount revocation scope must come from deployment
+    /// credentials. This plan still requires an independent signature and
+    /// exact bind before any durable attempt or broker exchange.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale reconciliation, Host or ownership authority, an expired
+    /// catalog, or unrepresentable request and grant bounds.
+    pub fn plan_at<T>(
+        &self,
+        journal: &mut Journal,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let scope = self.operation.target().runtime_generation().scope();
+        let (lease, fresh) = scope.verified_plan_lease(journal, clock)?;
+        let manifest = scope.binding().manifest().manifest();
+        let request = crate::dispatch::durable_attempt_body(
+            self.body_without_deadline(),
+            self.valid_until_boottime_nanoseconds(),
+        )
+        .map_err(|_| MountAttemptError::CorruptState)?;
+        let maximum_request_bytes =
+            u32::try_from(request.len()).map_err(|_| MountAttemptError::Capacity)?;
+        let semantics = self.semantics();
+        let grant = BrokerGrant::new(
+            semantics.verb(),
+            semantics.target(),
+            semantics.argument_commitment(),
+            maximum_request_bytes,
+            0,
+        )?;
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Mount,
+            ProtocolId::MountBroker,
+            mount_preparation::MOUNT_VERSION,
+            scope
+                .binding()
+                .manifest()
+                .broker_assignment()
+                .map_err(|_| MountAttemptError::CorruptState)?,
+            manifest.node(),
+            lease.signer().clone(),
+            vec![grant],
+            manifest.policy().digest(),
+            mount_revocation_scope,
+            fresh.wall_seconds(),
+            scope.expires_wall_seconds(),
+            Vec::new(),
+        )?;
+        self.recheck(journal, clock)?;
+        Ok(plan)
     }
 
     pub(crate) fn recheck<T>(

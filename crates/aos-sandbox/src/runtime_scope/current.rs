@@ -204,6 +204,25 @@ impl CurrentRuntimeScope {
         Ok((fresh.wall_seconds(), expires))
     }
 
+    /// Rechecks and returns the signed lease for a live Host-backed Mount plan.
+    pub(crate) fn verified_plan_lease<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(SignedOwnershipLease, RawPairedClockSample), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let fresh = read_clock(&self.policy, clock)?;
+        self.validity.check(fresh)?;
+        let publication =
+            select_exact_current(journal, self.selection, &self.policy, &self.binding)?;
+        let lease = verify_lease(journal, &self.binding, &publication, &self.policy, fresh)?;
+        self.recheck(journal, clock)?;
+        Ok((lease, fresh))
+    }
+
     /// Borrows the exact protected holder decision selected during acquisition.
     #[must_use]
     pub const fn binding(&self) -> &RuntimeAuthorityBindingV1 {

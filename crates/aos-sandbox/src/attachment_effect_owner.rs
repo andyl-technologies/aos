@@ -14,6 +14,7 @@ use aos_sandbox_core::{
 
 use crate::attachment_mount::{
     self, AttachmentMountError, PreparedCurrentAttachmentMountCatalogQueryV1,
+    PreparedCurrentAttachmentMountV1,
 };
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
@@ -586,5 +587,23 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             session_deadline_boottime_nanoseconds,
             clock,
         )
+    }
+
+    /// Builds an independent Mount grant for an exact Host-backed Apply body.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale desired, inventory, namespace or ownership authority, an
+    /// expired catalog, or unrepresentable plan bounds.
+    pub fn current_mount_plan<T>(
+        &mut self,
+        prepared: &PreparedCurrentAttachmentMountV1,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        prepared.plan_at(self.journal, mount_revocation_scope, clock)
     }
 }
