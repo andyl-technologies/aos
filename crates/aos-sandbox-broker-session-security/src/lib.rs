@@ -30,11 +30,12 @@
 //!
 //! [`manifest`] owns the fixed `AOSBSC01` format.
 //! `cache_source_membership` binds public Cache consumers to the independently
-//! authenticated View source projection. The private protected-files module
-//! pins the endpoint directory and its three role-local files. The
-//! private self-execution module pins and revalidates the loading process, the
-//! private entropy module implements bounded kernel acquisition, the endpoint
-//! module owns deliberately narrow client and broker custody APIs, and the
+//! authenticated View source projection; `cache_directory_source` streams
+//! staged objects beneath a caller-pinned source root. The private
+//! protected-files module pins the endpoint directory and its three role-local
+//! files. The private self-execution module pins and revalidates the loading
+//! process. The private entropy module implements bounded kernel acquisition;
+//! the endpoint module owns narrow client and broker custody APIs; and the
 //! handshake module owns the dormant same-channel hello and general protected
 //! traffic typestates. The private
 //! recovery module owns the fixed-root `AOSBSJ01` namespace-47 journal, stable
@@ -44,6 +45,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod cache_directory_source;
 mod cache_index_buffer;
 mod cache_public_pin;
 mod cache_source_membership;
@@ -81,6 +83,7 @@ mod recovery;
 )]
 mod self_execution;
 
+pub use cache_directory_source::{DirectoryPortableObjectSource, PortableObjectReader};
 pub use cache_public_pin::{
     ConfirmedPublicCachePinV1, PublicCachePinExecutionErrorV1, PublicCachePinExecutionV1,
     PublicCacheUnpinExecutionV1, PublicCacheUnpinObservationErrorV1,
