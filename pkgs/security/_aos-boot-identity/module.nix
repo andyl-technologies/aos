@@ -7,7 +7,6 @@
   cfg = config.aos.security.bootIdentityServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-identity";
@@ -59,54 +58,50 @@
     failurePolicy ? null,
     logging ? false,
   }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration =
-        {
-          service = key;
-          enabled = true;
-          lifecycle = {
-            inherit description;
-            execution_model = "oneshot";
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            start = [(command key)];
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart = "never";
-            restart_delay_millis = 0;
-            configuration_change_action = "restart";
-            remain_after_exit = key != "aos-boot-identity-failure-report";
-            start_timeout_millis = 90000;
-            stop_timeout_millis = 90000;
-          };
-          inherit dependencies;
-          environment = {
-            variables = {};
-            search_path = builtins.map lib.abilities.packageOutput [
-              {}
-              {package = "coreutils";}
-              {package = "util-linux";}
-            ];
-          };
-          readiness = {
-            mechanism = "successful-exit";
-            signal_scope = "none";
-            timeout_millis = 90000;
-          };
-        }
-        // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;}
-        // lib.optionalAttrs logging {
-          logging = {
-            standard_output = "structured-and-console";
-            standard_error = "structured-and-console";
-            namespace = null;
-            directories = [];
-            directory_mode = "0755";
-          };
-        };
+    {
+      inherit consumerInstance;
+      service = key;
+      lifecycle = {
+        inherit description;
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command key)];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = key != "aos-boot-identity-failure-report";
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      inherit dependencies;
+      environment = {
+        variables = {};
+        search_path = builtins.map lib.abilities.packageOutput [
+          {}
+          {package = "coreutils";}
+          {package = "util-linux";}
+        ];
+      };
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+    }
+    // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;}
+    // lib.optionalAttrs logging {
+      logging = {
+        standard_output = "structured-and-console";
+        standard_error = "structured-and-console";
+        namespace = null;
+        directories = [];
+        directory_mode = "0755";
+      };
     };
   identitySuccess = service {
     key = "aos-boot-identity-success";
@@ -146,15 +141,7 @@
       };
     logging = true;
   };
-  fragments = [
-    deviceSettle
-    initrdFilesystems
-    integrityFailure
-    identitySuccess
-    identityGuard
-    failureReport
-  ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
+  producers = [deviceSettle initrdFilesystems integrityFailure];
 in {
   options.aos.security.bootIdentityServices.enable = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -165,15 +152,15 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        builtins.map (definition: definition.declarations) definitions
-      );
+      aos.services = {
+        "boot-identity.aos-boot-identity-success" = identitySuccess // {enable = initrdStage && cfg.enable;};
+        "boot-identity.aos-boot-identity-guard" = identityGuard // {enable = initrdStage && cfg.enable;};
+        "boot-identity.aos-boot-identity-failure-report" = failureReport // {enable = initrdStage && cfg.enable;};
+      };
     }
-    (lib.mkIf (initrdStage && cfg.enable) {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (definition: definition.configured) definitions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = initrdStage && cfg.enable;
     })
   ];
 }

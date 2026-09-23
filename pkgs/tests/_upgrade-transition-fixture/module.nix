@@ -6,8 +6,11 @@
 }: let
   cfg = config.upgrade-transition-fixture;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
-  serviceTypes = serviceManagement.types;
   initialGeneration = cfg.generation == "initial";
+  serviceName =
+    if initialGeneration
+    then "aos-upgrade-removed"
+    else "aos-upgrade-test-marker";
   resultOf = lib.abilities.resultOf;
 
   command = entryPoint: {
@@ -42,67 +45,55 @@
       dependencies = [];
     };
   };
-  service = serviceManagement.forService {
-    inherit serviceTypes;
+  service = {
     consumerInstance = "upgrade-transition-fixture";
-    declaration = {
-      service =
+    service = serviceName;
+    lifecycle = {
+      description =
         if initialGeneration
-        then "aos-upgrade-removed"
-        else "aos-upgrade-test-marker";
-      enabled = true;
-      lifecycle = {
-        description =
-          if initialGeneration
-          then "Upgrade-test service removed by the next generation"
-          else "Upgrade-test marker introduced by the next generation";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [(command "bin/upgrade-transition-start")];
-        post_start = [];
-        stop = lib.optional initialGeneration (command "bin/upgrade-transition-stop");
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = let
-        readiness = [
-          (resultOf "ingress" "resource")
-          (resultOf "kernel-tunables" "resource")
-        ];
-      in {
-        prerequisites = readiness;
-        after = readiness;
-        before = [];
-        requires = readiness;
-        wants = [];
-      };
-      isolation = {
-        # This fixture deliberately observes a host-level stop side effect.
-        privilege = "privileged";
-        filesystem = "host";
-        network = "none";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = true;
-      };
+        then "Upgrade-test service removed by the next generation"
+        else "Upgrade-test marker introduced by the next generation";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [(command "bin/upgrade-transition-start")];
+      post_start = [];
+      stop = lib.optional initialGeneration (command "bin/upgrade-transition-stop");
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = let
+      readiness = [
+        (resultOf "ingress" "resource")
+        (resultOf "kernel-tunables" "resource")
+      ];
+    in {
+      prerequisites = readiness;
+      after = readiness;
+      before = [];
+      requires = readiness;
+      wants = [];
+    };
+    isolation = {
+      # This fixture deliberately observes a host-level stop side effect.
+      privilege = "privileged";
+      filesystem = "host";
+      network = "none";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
     };
   };
-  fragments = [
-    ingress
-    tunables
-    service
-  ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
+  producers = [ingress tunables];
 in {
   options.upgrade-transition-fixture = {
     enable = lib.mkOption {
@@ -122,13 +113,11 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (builtins.map (definition: definition.declarations) definitions);
+      aos.services."upgrade-transition-fixture.${serviceName}" = service // {enable = cfg.enable;};
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.upgrade-transition-fixture = {};}]
-        ++ builtins.map (definition: definition.configured) definitions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
     })
   ];
 }
