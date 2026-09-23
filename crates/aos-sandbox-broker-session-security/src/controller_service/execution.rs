@@ -69,10 +69,19 @@ enum ControllerExecutionActionV1 {
     Signal { signal_code: u8 },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExecutionAuthorizationKindV1 {
     Apply,
     Query,
+}
+
+impl ExecutionAuthorizationKindV1 {
+    fn broker_method(self) -> BrokerMethod {
+        match self {
+            Self::Apply => BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
+            Self::Query => BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION,
+        }
+    }
 }
 
 impl ControllerExecutionIntentV1 {
@@ -278,7 +287,7 @@ impl ControllerExecutionIntentV1 {
 
     fn envelope(
         &self,
-        kind: ExecutionExchangeKindV1,
+        kind: ExecutionAuthorizationKindV1,
         coordinates: DormantBrokerRequestCoordinatesV1,
         authorization: &BrokerAuthorizationArtifactsV1,
     ) -> BrokerRequestEnvelope {
@@ -291,8 +300,8 @@ impl ControllerExecutionIntentV1 {
             maximum_response_bytes: coordinates.maximum_response_bytes(),
             ..Default::default()
         };
-        let (method, body) = match kind {
-            ExecutionExchangeKindV1::Apply => {
+        let body = match kind {
+            ExecutionAuthorizationKindV1::Apply => {
                 let (action, terminal_rows, terminal_columns, signal_number) = match self.action {
                     ControllerExecutionActionV1::Resize { rows, columns } => (
                         HostExecutionActionV1::HOST_EXECUTION_ACTION_RESIZE,
@@ -318,12 +327,9 @@ impl ControllerExecutionIntentV1 {
                     signal_number,
                     ..Default::default()
                 };
-                (
-                    BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
-                    request.encode_to_vec(),
-                )
+                request.encode_to_vec()
             }
-            ExecutionExchangeKindV1::Query => {
+            ExecutionAuthorizationKindV1::Query => {
                 let request = QueryHostExecutionRequestV1 {
                     header: Some(header).into(),
                     operation_id: self.operation_id.as_bytes().to_vec(),
@@ -331,14 +337,11 @@ impl ControllerExecutionIntentV1 {
                     source_operation_commitment: self.source_operation_commitment.to_vec(),
                     ..Default::default()
                 };
-                (
-                    BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION,
-                    request.encode_to_vec(),
-                )
+                request.encode_to_vec()
             }
         };
         BrokerRequestEnvelope {
-            method: method.into(),
+            method: kind.broker_method().into(),
             body,
             authorization: Some(authorization.clone()).into(),
             ..Default::default()
@@ -350,15 +353,9 @@ fn retryable(error: impl ToString) -> EffectFailure {
     EffectFailure::Retryable(error.to_string())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ExecutionExchangeKindV1 {
-    Apply,
-    Query,
-}
-
 struct PendingExecutionExchangeV1 {
     intent: ControllerExecutionIntentV1,
-    kind: ExecutionExchangeKindV1,
+    kind: ExecutionAuthorizationKindV1,
     stage: ExecutionExchangeStageV1,
 }
 
@@ -405,10 +402,10 @@ impl ControllerExecutionExchangeV1 {
         let outcome = self.exchange(
             session,
             intent,
-            ExecutionExchangeKindV1::Query,
+            ExecutionAuthorizationKindV1::Query,
             authorization,
         )?;
-        let result = classify_outcome(intent, ExecutionExchangeKindV1::Query, &outcome);
+        let result = classify_outcome(intent, ExecutionAuthorizationKindV1::Query, &outcome);
         if matches!(&result, Err(EffectFailure::Permanent(_))) {
             self.failed = true;
         }
@@ -424,10 +421,10 @@ impl ControllerExecutionExchangeV1 {
         let outcome = self.exchange(
             session,
             intent,
-            ExecutionExchangeKindV1::Apply,
+            ExecutionAuthorizationKindV1::Apply,
             authorization,
         )?;
-        let result = classify_outcome(intent, ExecutionExchangeKindV1::Apply, &outcome);
+        let result = classify_outcome(intent, ExecutionAuthorizationKindV1::Apply, &outcome);
         if matches!(&result, Err(EffectFailure::Permanent(_))) {
             self.failed = true;
         }
@@ -443,7 +440,7 @@ impl ControllerExecutionExchangeV1 {
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
         intent: &ControllerExecutionIntentV1,
-        kind: ExecutionExchangeKindV1,
+        kind: ExecutionAuthorizationKindV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
         if self.failed {
@@ -464,12 +461,8 @@ impl ControllerExecutionExchangeV1 {
                     "current Host execution authorization is unavailable".to_owned(),
                 )
             })?;
-            let method = match kind {
-                ExecutionExchangeKindV1::Apply => BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
-                ExecutionExchangeKindV1::Query => BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION,
-            };
             let preparation = session
-                .prepare_authenticated_request(method, |coordinates| {
+                .prepare_authenticated_request(kind.broker_method(), |coordinates| {
                     intent.envelope(kind, coordinates, authorization)
                 })
                 .map_err(|_| {
@@ -595,7 +588,7 @@ impl ControllerExecutionExchangeV1 {
     fn retain<T>(
         &mut self,
         intent: ControllerExecutionIntentV1,
-        kind: ExecutionExchangeKindV1,
+        kind: ExecutionAuthorizationKindV1,
         stage: ExecutionExchangeStageV1,
     ) -> Result<T, EffectFailure> {
         self.pending = Some(PendingExecutionExchangeV1 {
@@ -659,14 +652,10 @@ fn wait(
 
 fn classify_outcome(
     intent: &ControllerExecutionIntentV1,
-    kind: ExecutionExchangeKindV1,
+    kind: ExecutionAuthorizationKindV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<EffectObservation, EffectFailure> {
-    let expected_method = match kind {
-        ExecutionExchangeKindV1::Apply => BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
-        ExecutionExchangeKindV1::Query => BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION,
-    };
-    if outcome.method() != expected_method || !request_matches_intent(intent, kind, outcome) {
+    if outcome.method() != kind.broker_method() || !request_matches_intent(intent, kind, outcome) {
         return Err(EffectFailure::Permanent(
             "Host execution outcome has the wrong signed request".to_owned(),
         ));
@@ -744,7 +733,7 @@ fn classify_outcome(
             Ok(EffectObservation::Applied(receipt))
         }
         Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ABSENT)
-            if kind == ExecutionExchangeKindV1::Query =>
+            if kind == ExecutionAuthorizationKindV1::Query =>
         {
             Ok(EffectObservation::Absent)
         }
@@ -763,12 +752,12 @@ fn classify_outcome(
 
 fn request_matches_intent(
     intent: &ControllerExecutionIntentV1,
-    kind: ExecutionExchangeKindV1,
+    kind: ExecutionAuthorizationKindV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> bool {
     let exact_body = outcome.request().exact_body();
     match kind {
-        ExecutionExchangeKindV1::Apply => {
+        ExecutionAuthorizationKindV1::Apply => {
             let Ok(request) = ApplyHostExecutionRequestV1::decode_from_slice(exact_body) else {
                 return false;
             };
@@ -795,7 +784,7 @@ fn request_matches_intent(
                 && request.canonical_execution_spec.is_empty()
                 && action_matches
         }
-        ExecutionExchangeKindV1::Query => {
+        ExecutionAuthorizationKindV1::Query => {
             let Ok(request) = QueryHostExecutionRequestV1::decode_from_slice(exact_body) else {
                 return false;
             };
