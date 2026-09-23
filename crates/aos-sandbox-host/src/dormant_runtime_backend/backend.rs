@@ -566,13 +566,17 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
     /// # Errors
     ///
     /// Returns [`DormantBackendHandoffErrorV1`] for stale protected ownership,
-    /// a nonfresh/foreign effect, wrong operation, or corrupt durability.
+    /// a nonfresh/foreign effect, pending observation, wrong operation, or
+    /// corrupt durability.
     pub fn prepare_execution_handoff(
         &mut self,
         effect: &aos_sandbox_core::runtime_backend::DurableExecutionEffectV1,
     ) -> Result<DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1> {
         self.revalidate()
             .map_err(|_| DormantBackendHandoffErrorV1::StaleCurrentness)?;
+        if !self.execution_observations.is_empty() || !self.runtime_observations.is_empty() {
+            return Err(DormantBackendHandoffErrorV1::ObservationPending);
+        }
         let live_session = self
             .agent_session
             .as_ref()
@@ -662,13 +666,17 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
     /// # Errors
     ///
     /// Returns [`DormantBackendHandoffErrorV1`] for stale ownership, a missing
-    /// capability, a foreign effect, or an occupied stop-and-wait session.
+    /// capability, a foreign effect, pending observation, or an occupied
+    /// stop-and-wait session.
     pub fn prepare_execution_control_handoff(
         &mut self,
         effect: &DurableExecutionEffectV1,
     ) -> Result<DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1> {
         self.revalidate()
             .map_err(|_| DormantBackendHandoffErrorV1::StaleCurrentness)?;
+        if !self.execution_observations.is_empty() || !self.runtime_observations.is_empty() {
+            return Err(DormantBackendHandoffErrorV1::ObservationPending);
+        }
         let admission = effect.admission();
         if effect.phase() != EffectPhaseV1::Issued
             || admission.currentness() != self.authority.currentness()
@@ -2265,6 +2273,9 @@ pub enum DormantBackendHandoffErrorV1 {
     /// The exact request was already staged in this live backend instance.
     #[error("dormant backend execution request is already staged")]
     AlreadyStaged,
+    /// A verified observation must be consumed before another agent request.
+    #[error("dormant backend has a pending authenticated observation")]
+    ObservationPending,
     /// No authenticated agent session is retained by the protected backend.
     #[error("dormant backend has no authenticated agent session")]
     MissingAgentSession,
