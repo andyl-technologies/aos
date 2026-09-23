@@ -504,28 +504,31 @@
 in {
   imports = [./dbus-registration.nix];
 
-  options.aos.serviceOptionModules.libvirt = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Run Libvirt with the QEMU virtualization driver.";
-      };
-      allowedUsers = lib.mkOption {
-        type = abilityTypes.list {
-          element = serviceTypes.principalName;
-          maxItems = 256;
-          unique = true;
-          canonicalOrder = true;
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "libvirt") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Run Libvirt with the QEMU virtualization driver.";
         };
-        default = [];
-        description = "Existing principals allowed to access the read-write Libvirt socket.";
+        allowedUsers = lib.mkOption {
+          type = abilityTypes.list {
+            element = serviceTypes.principalName;
+            maxItems = 256;
+            unique = true;
+            canonicalOrder = true;
+          };
+          default = [];
+          description = "Existing principals allowed to access the read-write Libvirt socket.";
+        };
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.libvirt = {};}
     {
       aos.abilities = lib.mkMerge (
         [

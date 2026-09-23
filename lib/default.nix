@@ -74,20 +74,31 @@
           then moduleArgs
           else [moduleArgs]
         );
-    baseModules = builtins.map (record: record.module) (builtins.filter
+    moduleWithSource = record: let
+      module = record.module;
+      source = record.file or null;
+    in
+      if source == null
+      then module
+      else if builtins.isFunction module
+      then args: (module args) // {_file = source;}
+      else if builtins.isAttrs module
+      then module // {_file = source;}
+      else module;
+    baseModules = builtins.map moduleWithSource (builtins.filter
       (record:
         builtins.elem record.provenance ["@base" "@host-import" "@runtime-import"])
       moduleRecords);
-    operatorOptionModules = builtins.map (record: record.module) (builtins.filter
+    operatorOptionModules = builtins.map moduleWithSource (builtins.filter
       (record: record.provenance == "@host")
       moduleRecords);
-    runtimeOptionModules = builtins.map (record: record.module) (builtins.filter
+    runtimeOptionModules = builtins.map moduleWithSource (builtins.filter
       (record: record.provenance == "@runtime")
       moduleRecords);
     packageOptionModules =
       builtins.map (record: {
         name = strings.removePrefix "package:" record.provenance;
-        module = record.module;
+        module = moduleWithSource record;
       }) (builtins.filter
         (record: strings.hasPrefix "package:" record.provenance)
         moduleRecords);

@@ -428,94 +428,97 @@
   ];
   definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
-  options.aos.serviceOptionModules.ssh = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      banner = lib.mkOption {
-        type = abilityTypes.optional serviceTypes.hostPath;
-        default = null;
-        description = "Absolute pre-authentication banner file, or null to disable it.";
-      };
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Enable the OpenSSH server.";
-      };
-      port = lib.mkOption {
-        type = abilityTypes.integer {
-          minimum = 1;
-          maximum = 65535;
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "ssh") {
+        banner = lib.mkOption {
+          type = abilityTypes.optional serviceTypes.hostPath;
+          default = null;
+          description = "Absolute pre-authentication banner file, or null to disable it.";
         };
-        default = 22;
-        description = "TCP port on which the OpenSSH server listens.";
-      };
-      permitRootLogin = lib.mkOption {
-        type = abilityTypes.enum ["yes" "prohibit-password" "forced-commands-only" "no"];
-        default = "prohibit-password";
-        description = "Root login policy enforced by the OpenSSH server.";
-      };
-      passwordAuthentication = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Allow password authentication.";
-      };
-      kbdInteractiveAuthentication = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Allow keyboard-interactive authentication.";
-      };
-      usePAM = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Use PAM for account and session management.";
-      };
-      x11Forwarding = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Allow X11 forwarding.";
-      };
-      maxAuthTries = lib.mkOption {
-        type = abilityTypes.integer {
-          minimum = 1;
-          maximum = 1024;
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Enable the OpenSSH server.";
         };
-        default = 3;
-        description = "Maximum authentication attempts per connection.";
+        port = lib.mkOption {
+          type = abilityTypes.integer {
+            minimum = 1;
+            maximum = 65535;
+          };
+          default = 22;
+          description = "TCP port on which the OpenSSH server listens.";
+        };
+        permitRootLogin = lib.mkOption {
+          type = abilityTypes.enum ["yes" "prohibit-password" "forced-commands-only" "no"];
+          default = "prohibit-password";
+          description = "Root login policy enforced by the OpenSSH server.";
+        };
+        passwordAuthentication = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Allow password authentication.";
+        };
+        kbdInteractiveAuthentication = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Allow keyboard-interactive authentication.";
+        };
+        usePAM = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Use PAM for account and session management.";
+        };
+        x11Forwarding = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Allow X11 forwarding.";
+        };
+        maxAuthTries = lib.mkOption {
+          type = abilityTypes.integer {
+            minimum = 1;
+            maximum = 1024;
+          };
+          default = 3;
+          description = "Maximum authentication attempts per connection.";
+        };
+        allowedCiphers = lib.mkOption {
+          type = boundedStrings;
+          default = [
+            "chacha20-poly1305@openssh.com"
+            "aes256-gcm@openssh.com"
+            "aes128-gcm@openssh.com"
+          ];
+          description = "Allowed symmetric ciphers.";
+        };
+        allowedKexAlgorithms = lib.mkOption {
+          type = boundedStrings;
+          default = ["curve25519-sha256" "curve25519-sha256@libssh.org"];
+          description = "Allowed key exchange algorithms.";
+        };
+        allowedMACs = lib.mkOption {
+          type = boundedStrings;
+          default = ["hmac-sha2-512-etm@openssh.com" "hmac-sha2-256-etm@openssh.com"];
+          description = "Allowed message authentication algorithms.";
+        };
+        authorizedKeysFile = lib.mkOption {
+          type = boundedString;
+          default = "/etc/ssh/authorized_keys/%u";
+          description = "Path pattern used to find authorized keys.";
+        };
+        authorizedKeysCommand = lib.mkOption {
+          type = abilityTypes.optional authorizedKeysCommand;
+          default = null;
+          extensible = true;
+          description = "Symbolic package command used to look up authorized keys.";
+        };
       };
-      allowedCiphers = lib.mkOption {
-        type = boundedStrings;
-        default = [
-          "chacha20-poly1305@openssh.com"
-          "aes256-gcm@openssh.com"
-          "aes128-gcm@openssh.com"
-        ];
-        description = "Allowed symmetric ciphers.";
-      };
-      allowedKexAlgorithms = lib.mkOption {
-        type = boundedStrings;
-        default = ["curve25519-sha256" "curve25519-sha256@libssh.org"];
-        description = "Allowed key exchange algorithms.";
-      };
-      allowedMACs = lib.mkOption {
-        type = boundedStrings;
-        default = ["hmac-sha2-512-etm@openssh.com" "hmac-sha2-256-etm@openssh.com"];
-        description = "Allowed message authentication algorithms.";
-      };
-      authorizedKeysFile = lib.mkOption {
-        type = boundedString;
-        default = "/etc/ssh/authorized_keys/%u";
-        description = "Path pattern used to find authorized keys.";
-      };
-      authorizedKeysCommand = lib.mkOption {
-        type = abilityTypes.optional authorizedKeysCommand;
-        default = null;
-        extensible = true;
-        description = "Symbolic package command used to look up authorized keys.";
-      };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.ssh = {};}
     {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
     (lib.mkIf cfg.enable {
       aos.pam.packageServices = lib.mkIf cfg.usePAM {

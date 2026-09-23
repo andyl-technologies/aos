@@ -61,89 +61,94 @@
       ${builtins.concatStringsSep "\n" (builtins.map (user: "  - ${user}") cfg.denyUsers)}
     '';
 in {
-  options.aos.serviceOptionModules.opkssh = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Enable OpenID Connect authentication for OpenSSH through opkssh.";
-      };
-
-      providers = lib.mkOption {
-        type = abilityTypes.list {
-          element = provider;
-          maxItems = 256;
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "opkssh") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Enable OpenID Connect authentication for OpenSSH through opkssh.";
         };
-        default = [];
-        description = "OIDC providers allowed to authenticate.";
-        example = [
-          {
-            issuer = "https://accounts.google.com";
-            clientId = "client.apps.googleusercontent.com";
-            expirationPolicy = "24h";
-          }
-        ];
-      };
 
-      authRules = lib.mkOption {
-        type = abilityTypes.list {
-          element = authRule;
-          maxItems = 4096;
+        providers = lib.mkOption {
+          type = abilityTypes.list {
+            element = provider;
+            maxItems = 256;
+          };
+          default = [];
+          description = "OIDC providers allowed to authenticate.";
+          example = [
+            {
+              issuer = "https://accounts.google.com";
+              clientId = "client.apps.googleusercontent.com";
+              expirationPolicy = "24h";
+            }
+          ];
         };
-        default = [];
-        description = "OIDC identity-to-principal mappings.";
-        example = [
-          {
-            principal = "root";
-            identity = "alice@example.com";
-            issuer = "https://accounts.google.com";
-          }
-        ];
-      };
 
-      denyEmails = lib.mkOption {
-        type = strings 4096;
-        default = [];
-        description = "Email addresses denied authentication.";
-      };
+        authRules = lib.mkOption {
+          type = abilityTypes.list {
+            element = authRule;
+            maxItems = 4096;
+          };
+          default = [];
+          description = "OIDC identity-to-principal mappings.";
+          example = [
+            {
+              principal = "root";
+              identity = "alice@example.com";
+              issuer = "https://accounts.google.com";
+            }
+          ];
+        };
 
-      denyUsers = lib.mkOption {
-        type = strings 4096;
-        default = [];
-        description = "Runtime principals denied authentication.";
+        denyEmails = lib.mkOption {
+          type = strings 4096;
+          default = [];
+          description = "Email addresses denied authentication.";
+        };
+
+        denyUsers = lib.mkOption {
+          type = strings 4096;
+          default = [];
+          description = "Runtime principals denied authentication.";
+        };
       };
-    };
+    }));
+    default = {};
   };
 
-  config = lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
-    aos.services.ssh.authorizedKeysCommand = {
-      executable = {
-        artifact = lib.abilities.packageOutput {package = packageName;};
-        path = "bin/opkssh";
+  config = lib.mkMerge [
+    {aos.services.opkssh = {};}
+    (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
+      aos.services.ssh.authorizedKeysCommand = {
+        executable = {
+          artifact = lib.abilities.packageOutput {package = packageName;};
+          path = "bin/opkssh";
+        };
+        arguments = ["verify" "%u" "%k" "%t"];
+        user = "opksshuser";
       };
-      arguments = ["verify" "%u" "%k" "%t"];
-      user = "opksshuser";
-    };
 
-    environment.etc = {
-      "opk/providers".text = providersText + "\n";
-      "opk/auth_id".text = authIdText + "\n";
-      "opk/config.yml".text = configYaml;
-    };
+      environment.etc = {
+        "opk/providers".text = providersText + "\n";
+        "opk/auth_id".text = authIdText + "\n";
+        "opk/config.yml".text = configYaml;
+      };
 
-    aos.users.users.opksshuser = {
-      uid = 993;
-      group = "opksshuser";
-      home = "/";
-      shell = "/sbin/nologin";
-      description = "opkssh AuthorizedKeysCommand user";
-      extraGroups = [];
-    };
+      aos.users.users.opksshuser = {
+        uid = 993;
+        group = "opksshuser";
+        home = "/";
+        shell = "/sbin/nologin";
+        description = "opkssh AuthorizedKeysCommand user";
+        extraGroups = [];
+      };
 
-    aos.users.groups.opksshuser = {
-      gid = 993;
-      members = ["opksshuser"];
-    };
-  };
+      aos.users.groups.opksshuser = {
+        gid = 993;
+        members = ["opksshuser"];
+      };
+    })
+  ];
 }

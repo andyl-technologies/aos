@@ -181,60 +181,63 @@
     maxItems = 256;
   };
 in {
-  options.aos.serviceOptionModules.attestationVerifier = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Provide the standalone AOS package attestation verifier service.";
-      };
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "attestationVerifier") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Provide the standalone AOS package attestation verifier service.";
+        };
 
-      eventLog = lib.mkOption {
-        type = serviceTypes.hostPath;
-        default = "/var/lib/aos-attestation-verifier/aos-packages.cel";
-        description = "Package attestation event log consumed by the verifier.";
-      };
+        eventLog = lib.mkOption {
+          type = serviceTypes.hostPath;
+          default = "/var/lib/aos-attestation-verifier/aos-packages.cel";
+          description = "Package attestation event log consumed by the verifier.";
+        };
 
-      quoteDir = lib.mkOption {
-        type = serviceTypes.hostPath;
-        default = "/var/lib/aos-attestation-verifier/quote";
-        description = "Directory containing the verifier-local quote bundle.";
-      };
+        quoteDir = lib.mkOption {
+          type = serviceTypes.hostPath;
+          default = "/var/lib/aos-attestation-verifier/quote";
+          description = "Directory containing the verifier-local quote bundle.";
+        };
 
-      nonceFile = lib.mkOption {
-        type = serviceTypes.hostPath;
-        default = "/var/lib/aos-attestation-verifier/nonce";
-        description = "File containing the verifier nonce as hexadecimal text.";
-      };
+        nonceFile = lib.mkOption {
+          type = serviceTypes.hostPath;
+          default = "/var/lib/aos-attestation-verifier/nonce";
+          description = "File containing the verifier nonce as hexadecimal text.";
+        };
 
-      resultFile = lib.mkOption {
-        type = serviceTypes.hostPath;
-        default = "/var/lib/aos-attestation-verifier/result.json";
-        description = "File atomically replaced with the current JSON verification result.";
-      };
+        resultFile = lib.mkOption {
+          type = serviceTypes.hostPath;
+          default = "/var/lib/aos-attestation-verifier/result.json";
+          description = "File atomically replaced with the current JSON verification result.";
+        };
 
-      pcr15BaselineFile = lib.mkOption {
-        type = abilityTypes.optional serviceTypes.hostPath;
-        default = null;
-        description = "Optional file containing the expected PCR 15 baseline.";
-      };
+        pcr15BaselineFile = lib.mkOption {
+          type = abilityTypes.optional serviceTypes.hostPath;
+          default = null;
+          description = "Optional file containing the expected PCR 15 baseline.";
+        };
 
-      quoteIdentityFiles = lib.mkOption {
-        type = inputPathList;
-        default = [];
-        description = "Quote identity pin catalogs required by the verifier.";
-      };
+        quoteIdentityFiles = lib.mkOption {
+          type = inputPathList;
+          default = [];
+          description = "Quote identity pin catalogs required by the verifier.";
+        };
 
-      catalogFiles = lib.mkOption {
-        type = inputPathList;
-        default = [];
-        description = "Additional golden package measurement catalogs required by the verifier.";
+        catalogFiles = lib.mkOption {
+          type = inputPathList;
+          default = [];
+          description = "Additional golden package measurement catalogs required by the verifier.";
+        };
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.attestationVerifier = {};}
     {
       aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);
     }

@@ -409,43 +409,55 @@
       command = "serve";
       order.after = ["database"];
     };
-  serviceRegistryEvaluation = lib.evalModules {
+  serviceModuleEvaluation = lib.evalModules {
     inherit lib;
     modules = [
       ../../modules/abilities/_service.nix
       ({config, ...}: {
-        options.aos.serviceOptionModules.first = lib.mkOption {
-          type = lib.types.deferredModule;
-          default.options.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
+        options.aos.services = lib.mkOption {
+          type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+            options =
+              if name == "first"
+              then {
+                enable = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                };
+              }
+              else if name == "second"
+              then {
+                command = lib.mkOption {
+                  type = lib.types.str;
+                  default = "idle";
+                  description = "The second service command.";
+                };
+              }
+              else {};
+          }));
+          default = {};
         };
-        options.aos.serviceOptionModules.second = lib.mkOption {
-          type = lib.types.deferredModule;
-          default.options.command = lib.mkOption {
-            type = lib.types.str;
-            default = "idle";
-            description = "The second service command.";
-          };
-        };
-        config = lib.mkIf config.aos.services.first.enable {
-          aos.services.second.command = "run";
-        };
+        config = lib.mkMerge [
+          {aos.services.first = {};}
+          {aos.services.second = {};}
+          (lib.mkIf config.aos.services.first.enable {
+            aos.services.second.command = "run";
+          })
+        ];
       })
       {
-        aos.serviceFeatureModules = [
-          {
+        options.aos.services = lib.mkOption {
+          type = lib.types.lazyAttrsOf (lib.types.submodule {
             options.extensions.start.command = lib.mkOption {
               type = lib.types.str;
             };
-          }
-        ];
-        aos.services.second.extensions.start.command = "start";
+          });
+          default = {};
+        };
+        config.aos.services.second.extensions.start.command = "start";
       }
       {
-        aos.serviceFeatureModules = [
-          ({config, ...}: {
+        options.aos.services = lib.mkOption {
+          type = lib.types.lazyAttrsOf (lib.types.submodule ({config, ...}: {
             options.extensions.order.after = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [];
@@ -454,27 +466,28 @@
               lib.mkIf
               (config.extensions.start.command == "start")
               ["first"];
-          })
-        ];
+          }));
+          default = {};
+        };
       }
     ];
   };
-  serviceRegistryAvoidsSiblingCycle =
-    serviceRegistryEvaluation.config.aos.services.second.command == "idle";
-  serviceFeatureModulesCompose =
-    serviceRegistryEvaluation.config.aos.services.second.extensions
+  serviceModulesAvoidSiblingCycle =
+    serviceModuleEvaluation.config.aos.services.second.command == "idle";
+  serviceModulesCompose =
+    serviceModuleEvaluation.config.aos.services.second.extensions
     == {
       start.command = "start";
       order.after = ["first"];
     };
-  serviceRegistryProjectsNestedOptions =
+  serviceModulesProjectNestedOptions =
     builtins.any
     (declaration:
       declaration.pathStr
       == "command"
       && declaration.description == "The second service command.")
     (lib.submoduleOptionDeclarations
-      serviceRegistryEvaluation.options.aos.services.type._elementType
+      serviceModuleEvaluation.options.aos.services.type._elementType
       ["aos" "services" "second"]);
 
   # --- Extensible option surface -----------------------------------
@@ -1564,9 +1577,9 @@
           composedServiceOptions
           && composedServiceRejectsUnknown
           && deferredServiceFeaturesCompose
-          && serviceRegistryAvoidsSiblingCycle
-          && serviceFeatureModulesCompose
-          && serviceRegistryProjectsNestedOptions;
+          && serviceModulesAvoidSiblingCycle
+          && serviceModulesCompose
+          && serviceModulesProjectNestedOptions;
         message = "feature modules compose one strict named submodule";
       }
       {

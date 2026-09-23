@@ -325,100 +325,103 @@
     maxItems = 256;
   };
 in {
-  options.aos.serviceOptionModules.chrony = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      ## Enable chronyd NTP time synchronization.
-      ##
-      ## # See Also
-      ## - `aos.services.chrony.servers`, `aos.services.chrony.makestep`
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = ''
-          Enable chronyd NTP time synchronization. Essential for servers,
-          especially in Kubernetes clusters where certificate validation
-          and distributed consensus depend on accurate time.
-        '';
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "chrony") {
+        ## Enable chronyd NTP time synchronization.
+        ##
+        ## # See Also
+        ## - `aos.services.chrony.servers`, `aos.services.chrony.makestep`
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = ''
+            Enable chronyd NTP time synchronization. Essential for servers,
+            especially in Kubernetes clusters where certificate validation
+            and distributed consensus depend on accurate time.
+          '';
+        };
+
+        ## NTP server hostnames or IP addresses.
+        ##
+        ## # Examples
+        ## ```nix
+        ## aos.services.chrony.servers = [ "ntp1.internal" "ntp2.internal" ];
+        ## ```
+        servers = lib.mkOption {
+          type = boundedStrings;
+          default = [
+            "time.cloudflare.com"
+            "ptbtime1.ptb.de"
+            "ptbtime2.ptb.de"
+            "nts.netnod.se"
+          ];
+          description = ''
+            NTP server hostnames or IP addresses. The default is a set of
+            public NTS-capable servers (Cloudflare, PTB, Netnod) across
+            independent operators, so the host gets authenticated time out of
+            the box (see `aos.services.chrony.nts.enable`).
+
+            If you point this at servers that do not support NTS (e.g.
+            pool.ntp.org or a plain internal source), set
+            `aos.services.chrony.nts.enable = false`, otherwise the `nts`
+            option on each `server` directive will make synchronization fail.
+            For production, prefer organization-specific servers or a local
+            stratum-1 source.
+          '';
+        };
+
+        ## Network Time Security (NTS, RFC 8915) for NTP sources.
+        nts.enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = ''
+            Authenticate the configured `servers` with Network Time Security
+            (RFC 8915). Each `server` directive gets the `nts` option, so
+            chronyd performs TLS-authenticated key establishment (NTS-KE over
+            TCP 4460) and then exchanges authenticated NTP packets, defeating
+            man-in-the-middle time-shifting attacks. NTS cookies are cached
+            under /var/lib/chrony (`ntsdumpdir`) to persist across restarts.
+
+            Server certificates are verified against gnutls's system trust
+            store, which AOS populates with the Mozilla CA bundle (see
+            pkgs/security/gnutls.nix). This applies to NTP *sources* only
+            (client side); serving NTS to others is not configured here.
+
+            All entries in `servers` must support NTS while this is enabled.
+            Set to false to use plain, unauthenticated NTP.
+          '';
+        };
+
+        ## Subnets allowed to use this host as an NTP server.
+        allowedSubnets = lib.mkOption {
+          type = boundedStrings;
+          default = [];
+          description = ''
+            Subnets allowed to use this host as an NTP server. Empty means
+            this host is a client only. Example: [ "10.0.0.0/8" ] to serve
+            time to a private network.
+          '';
+        };
+
+        ## Step correction threshold for initial synchronization.
+        makestep = lib.mkOption {
+          type = boundedString;
+          default = "1.0 3";
+          description = ''
+            Step correction threshold. Format: "<seconds> <limit>".
+            "1.0 3" means: allow stepping the clock up to 1 second during
+            the first 3 updates. After that, only slew (gradual) corrections
+            are applied. Stepping is needed for initial sync on boot.
+          '';
+        };
       };
-
-      ## NTP server hostnames or IP addresses.
-      ##
-      ## # Examples
-      ## ```nix
-      ## aos.services.chrony.servers = [ "ntp1.internal" "ntp2.internal" ];
-      ## ```
-      servers = lib.mkOption {
-        type = boundedStrings;
-        default = [
-          "time.cloudflare.com"
-          "ptbtime1.ptb.de"
-          "ptbtime2.ptb.de"
-          "nts.netnod.se"
-        ];
-        description = ''
-          NTP server hostnames or IP addresses. The default is a set of
-          public NTS-capable servers (Cloudflare, PTB, Netnod) across
-          independent operators, so the host gets authenticated time out of
-          the box (see `aos.services.chrony.nts.enable`).
-
-          If you point this at servers that do not support NTS (e.g.
-          pool.ntp.org or a plain internal source), set
-          `aos.services.chrony.nts.enable = false`, otherwise the `nts`
-          option on each `server` directive will make synchronization fail.
-          For production, prefer organization-specific servers or a local
-          stratum-1 source.
-        '';
-      };
-
-      ## Network Time Security (NTS, RFC 8915) for NTP sources.
-      nts.enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = ''
-          Authenticate the configured `servers` with Network Time Security
-          (RFC 8915). Each `server` directive gets the `nts` option, so
-          chronyd performs TLS-authenticated key establishment (NTS-KE over
-          TCP 4460) and then exchanges authenticated NTP packets, defeating
-          man-in-the-middle time-shifting attacks. NTS cookies are cached
-          under /var/lib/chrony (`ntsdumpdir`) to persist across restarts.
-
-          Server certificates are verified against gnutls's system trust
-          store, which AOS populates with the Mozilla CA bundle (see
-          pkgs/security/gnutls.nix). This applies to NTP *sources* only
-          (client side); serving NTS to others is not configured here.
-
-          All entries in `servers` must support NTS while this is enabled.
-          Set to false to use plain, unauthenticated NTP.
-        '';
-      };
-
-      ## Subnets allowed to use this host as an NTP server.
-      allowedSubnets = lib.mkOption {
-        type = boundedStrings;
-        default = [];
-        description = ''
-          Subnets allowed to use this host as an NTP server. Empty means
-          this host is a client only. Example: [ "10.0.0.0/8" ] to serve
-          time to a private network.
-        '';
-      };
-
-      ## Step correction threshold for initial synchronization.
-      makestep = lib.mkOption {
-        type = boundedString;
-        default = "1.0 3";
-        description = ''
-          Step correction threshold. Format: "<seconds> <limit>".
-          "1.0 3" means: allow stepping the clock up to 1 second during
-          the first 3 updates. After that, only slew (gradual) corrections
-          are applied. Stepping is needed for initial sync on boot.
-        '';
-      };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.chrony = {};}
     (lib.mkMerge (builtins.map
       (definition: {aos.abilities = definition.declarations;})
       definitions))

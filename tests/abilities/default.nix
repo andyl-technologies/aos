@@ -251,6 +251,9 @@
   tailscaleService = import ./tailscale-service.nix {
     inherit pkgs lib;
   };
+  packageOptionProvenance = import ./package-option-provenance.nix {
+    inherit pkgs;
+  };
   nftablesFirewall = import ./nftables-firewall.nix {
     inherit pkgs lib;
   };
@@ -698,6 +701,7 @@ in
   assert !(builtins.elem pkgs.postgresql unbundledPackageModuleSystem.config.environment.systemPackages);
   assert dockerService;
   assert tailscaleService;
+  assert packageOptionProvenance;
   assert nftablesFirewall;
   assert containerdStaticProjection;
   assert zram;

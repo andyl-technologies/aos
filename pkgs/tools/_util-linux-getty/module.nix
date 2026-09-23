@@ -141,24 +141,29 @@
   ];
   definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
-  options.aos.serviceOptionModules.getty = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options.autologin = {
-      enable = lib.mkOption {
-        type = lib.abilities.types.boolean;
-        default = false;
-        description = "Run passwordless root gettys on the primary virtual and serial consoles.";
-      };
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "getty") {
+        autologin = {
+          enable = lib.mkOption {
+            type = lib.abilities.types.boolean;
+            default = false;
+            description = "Run passwordless root gettys on the primary virtual and serial consoles.";
+          };
 
-      stage = lib.mkOption {
-        type = lib.abilities.types.enum ["host" "initrd"];
-        default = "host";
-        description = "Select the host or initrd console and activation contract.";
+          stage = lib.mkOption {
+            type = lib.abilities.types.enum ["host" "initrd"];
+            default = "host";
+            description = "Select the host or initrd console and activation contract.";
+          };
+        };
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.getty = {};}
     {
       aos.abilities = lib.mkMerge (
         builtins.map (definition: definition.declarations) definitions

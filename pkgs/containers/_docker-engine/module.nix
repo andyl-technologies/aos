@@ -188,48 +188,51 @@
   abilityFragments = [dataStorage runtimeStorage networkReadiness service];
   definitions = builtins.map serviceManagement.splitDefinition abilityFragments;
 in {
-  options.aos.serviceOptionModules.docker = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = false;
-        description = "Run the Docker container engine.";
-      };
-
-      dataRoot = lib.mkOption {
-        type = serviceTypes.executionPath;
-        default = "/var/lib/docker";
-        description = "Absolute directory used for persistent Docker data.";
-      };
-
-      storageDriver = lib.mkOption {
-        type = abilityTypes.enum ["overlay2" "btrfs" "fuse-overlayfs"];
-        default = "overlay2";
-        description = "Storage driver used for container layers.";
-      };
-
-      liveRestore = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Keep containers running while the daemon is unavailable.";
-      };
-
-      extraOptions = lib.mkOption {
-        type = abilityTypes.list {
-          element = abilityTypes.string {
-            maxLength = abilityTypes.limits.maxStringLength;
-            syntax = null;
-          };
-          maxItems = abilityTypes.limits.maxCollectionItems;
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "docker") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = false;
+          description = "Run the Docker container engine.";
         };
-        default = [];
-        description = "Additional command-line options passed to dockerd.";
+
+        dataRoot = lib.mkOption {
+          type = serviceTypes.executionPath;
+          default = "/var/lib/docker";
+          description = "Absolute directory used for persistent Docker data.";
+        };
+
+        storageDriver = lib.mkOption {
+          type = abilityTypes.enum ["overlay2" "btrfs" "fuse-overlayfs"];
+          default = "overlay2";
+          description = "Storage driver used for container layers.";
+        };
+
+        liveRestore = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Keep containers running while the daemon is unavailable.";
+        };
+
+        extraOptions = lib.mkOption {
+          type = abilityTypes.list {
+            element = abilityTypes.string {
+              maxLength = abilityTypes.limits.maxStringLength;
+              syntax = null;
+            };
+            maxItems = abilityTypes.limits.maxCollectionItems;
+          };
+          default = [];
+          description = "Additional command-line options passed to dockerd.";
+        };
       };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.docker = {};}
     (lib.mkMerge (
       builtins.map (definition: {aos.abilities = definition.declarations;}) definitions
     ))

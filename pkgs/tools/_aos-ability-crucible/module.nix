@@ -155,23 +155,26 @@ in {
     ./endpoint-provider.nix
   ];
 
-  options.aos.serviceOptionModules.abilityCrucible = lib.mkOption {
-    type = lib.types.deferredModule;
-    default.options = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Run the protected Ability Crucible execution-boundary adapter.";
+  options.aos.services = lib.mkOption {
+    type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+      options = lib.optionalAttrs (name == "abilityCrucible") {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Run the protected Ability Crucible execution-boundary adapter.";
+        };
+        socketName = lib.mkOption {
+          type = abilityTypes.localKey;
+          default = "controller.sock";
+          description = "Runtime-directory entry used for the protected observer socket.";
+        };
       };
-      socketName = lib.mkOption {
-        type = abilityTypes.localKey;
-        default = "controller.sock";
-        description = "Runtime-directory entry used for the protected observer socket.";
-      };
-    };
+    }));
+    default = {};
   };
 
   config = lib.mkMerge [
+    {aos.services.abilityCrucible = {};}
     {
       aos.abilities = lib.mkMerge (
         builtins.map (definition: definition.declarations) definitions
