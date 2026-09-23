@@ -251,7 +251,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         discovery,
     )
     .expect("observation-stop service request");
-    assert_eq!(&service.canonical_bytes()[..4], &3_u32.to_be_bytes());
+    assert_eq!(&service.canonical_bytes()[..4], &4_u32.to_be_bytes());
     assert_eq!(
         SubmitCampaignDiscoveryRequest::from_canonical_bytes(&service.canonical_bytes())
             .expect("service round trip"),

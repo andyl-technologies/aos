@@ -810,7 +810,10 @@ quantum coordinates. A policy deadline produces a distinct, proof-bearing
 `PolicyTimeout` observation, never a reached primary boundary. Terminal and
 assertion outcomes win first; virtual time wins a tie with quanta, and either
 policy deadline wins a tie with the primary boundary. Policy timeout cannot
-authorize a selected continuation or statistical primary-stop sample.
+authorize a selected continuation or statistical primary-stop sample. The
+intrinsic quantum fallback of `NextChoiceOrExecutionQuanta` has its own
+proof-bearing `BoundedPrimaryTimeout` outcome; it also cannot authorize a
+selected continuation, while a choice reached before that fallback can.
 
 These stop tags occur only in the current enclosing records: `Attempt` v9,
 `BranchRequest` v10, `CampaignFact` v15, `Observation` v13, and discovery-service

@@ -2,13 +2,74 @@
 
 use super::*;
 use crate::{
-    AuthenticatedFindingExactCheckpoint, CampaignExecutorStore,
-    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
-    FindingExactRetention, FindingExactRetentionCandidate, FindingExactRetentionDisposition,
-    FindingExactRetentionEvidence, FindingExactRetentionIncomplete, FindingTriageEvidenceSet,
-    ScenarioArtifactId,
+    AuthenticatedFindingExactCheckpoint, BoundedStopProof, CampaignAttemptTimeoutPolicy,
+    CampaignExecutorStore, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingExactRetention, FindingExactRetentionCandidate,
+    FindingExactRetentionDisposition, FindingExactRetentionEvidence,
+    FindingExactRetentionIncomplete, FindingTriageEvidenceSet, ScenarioArtifactId,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
+
+#[test]
+fn bounded_intrinsic_timeout_publishes_without_opening_a_choice_continuation() {
+    let (repository, lineage, base_policy) = fixture();
+    let policy = base_policy
+        .with_attempt_timeout_policy(
+            CampaignAttemptTimeoutPolicy::new(Some(20), Some(10), None)
+                .expect("modeled policy deadlines"),
+        )
+        .expect("timed policy");
+    let stop = policy
+        .bound_stop(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        })
+        .expect("bounded choice stop");
+
+    let fallback = StopOutcome::BoundedPrimaryTimeout {
+        stop: stop.clone(),
+        proof: BoundedStopProof::new(7, 7),
+    };
+    let (_, admitted, observation) = admitted_observation_fixture_with_stop(
+        &repository,
+        &lineage,
+        &policy,
+        "bounded-intrinsic-timeout",
+        stop.clone(),
+        fallback,
+        false,
+    );
+    assert!(observation.discovered_choices().is_empty());
+    assert!(!observation.stop().reached_next_choice());
+    repository
+        .publish_observation(
+            "bounded-intrinsic-timeout",
+            admitted.new_snapshot,
+            &observation,
+        )
+        .expect("intrinsic timeout without a discovered choice");
+
+    let choice = StopOutcome::BoundedPrimaryReached {
+        stop: stop.clone(),
+        proof: BoundedStopProof::new(6, 6),
+    };
+    let (_, choice_admitted, choice_observation) = admitted_observation_fixture_with_stop(
+        &repository,
+        &lineage,
+        &policy,
+        "bounded-choice-before-timeout",
+        stop,
+        choice,
+        true,
+    );
+    assert!(choice_observation.stop().reached_next_choice());
+    repository
+        .publish_observation(
+            "bounded-choice-before-timeout",
+            choice_admitted.new_snapshot,
+            &choice_observation,
+        )
+        .expect("choice before intrinsic fallback");
+}
 
 #[test]
 fn observations_publish_exact_roots_replay_and_retain_determinism_conflicts() {

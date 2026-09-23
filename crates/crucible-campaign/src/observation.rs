@@ -1056,6 +1056,13 @@ pub enum StopOutcome {
         /// Executor-attested coordinates before both policy deadlines.
         proof: BoundedStopProof,
     },
+    /// The primary stop's intrinsic quantum fallback fired before policy deadlines.
+    BoundedPrimaryTimeout {
+        /// Exact bounded attempt stop with a next-choice-or-quanta primary.
+        stop: StopCondition,
+        /// Executor-attested coordinates at the intrinsic fallback.
+        proof: BoundedStopProof,
+    },
     /// A campaign-policy deadline fired as a modeled, catchable timeout.
     PolicyTimeout {
         /// Exact bounded attempt stop.
@@ -1088,6 +1095,32 @@ impl StopOutcome {
                         reason: "bounded primary reached at or after a policy deadline",
                     });
                 }
+                if matches!(
+                    stop.primary(),
+                    StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
+                        if proof.completed_quanta() >= *execution_quanta
+                ) {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "bounded next-choice primary reached at its intrinsic timeout",
+                    });
+                }
+                Ok(())
+            }
+            Self::BoundedPrimaryTimeout { stop, proof } => {
+                let StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } =
+                    stop.primary()
+                else {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "bounded primary timeout has no intrinsic quantum fallback",
+                    });
+                };
+                if proof.completed_quanta() != *execution_quanta
+                    || winning_policy_timeout(stop, *proof)?.is_some()
+                {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "bounded primary timeout disagrees with intrinsic or policy deadline",
+                    });
+                }
                 Ok(())
             }
             Self::PolicyTimeout { stop, kind, proof } => {
@@ -1114,7 +1147,13 @@ impl StopOutcome {
     pub fn reaches(&self, requested: &StopCondition) -> bool {
         match (self, requested) {
             (Self::BoundedPrimaryReached { stop, proof }, requested) => {
-                stop == requested && winning_policy_timeout(stop, *proof) == Ok(None)
+                stop == requested
+                    && winning_policy_timeout(stop, *proof) == Ok(None)
+                    && !matches!(
+                        stop.primary(),
+                        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
+                            if proof.completed_quanta() >= *execution_quanta
+                    )
             }
             (Self::Reached(actual), requested)
                 if !matches!(
@@ -1148,7 +1187,9 @@ impl StopOutcome {
     #[must_use]
     pub fn authenticates_requested_stop(&self, requested: &StopCondition) -> bool {
         match self {
-            Self::PolicyTimeout { stop, .. } => stop == requested && self.validate().is_ok(),
+            Self::PolicyTimeout { stop, .. } | Self::BoundedPrimaryTimeout { stop, .. } => {
+                stop == requested && self.validate().is_ok()
+            }
             Self::Reached(_) | Self::ObservationReached(_) | Self::BoundedPrimaryReached { .. } => {
                 self.reaches(requested)
             }
@@ -1225,6 +1266,11 @@ impl Canonical for StopOutcome {
                 stop.encode(encoder);
                 proof.encode(encoder);
             }
+            Self::BoundedPrimaryTimeout { stop, proof } => {
+                encoder.u8(9);
+                stop.encode(encoder);
+                proof.encode(encoder);
+            }
             Self::PolicyTimeout { stop, kind, proof } => {
                 encoder.u8(8);
                 stop.encode(encoder);
@@ -1265,6 +1311,10 @@ impl Canonical for StopOutcome {
             8 => Self::PolicyTimeout {
                 stop: StopCondition::decode(decoder)?,
                 kind: PolicyTimeoutKind::decode(decoder)?,
+                proof: BoundedStopProof::decode(decoder)?,
+            },
+            9 => Self::BoundedPrimaryTimeout {
+                stop: StopCondition::decode(decoder)?,
                 proof: BoundedStopProof::decode(decoder)?,
             },
             tag => {

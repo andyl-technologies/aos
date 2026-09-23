@@ -249,7 +249,7 @@ fn capture_request_owns_no_semantic_admission_budget_or_configuration_pin() {
     );
     let request_fact = CampaignFact::SavepointCaptureRequested(request.clone());
     let request_bytes = request_fact.canonical_bytes();
-    assert_eq!(&request_bytes[..4], &14_u32.to_be_bytes());
+    assert_eq!(&request_bytes[..4], &15_u32.to_be_bytes());
     assert_eq!(
         CampaignFact::from_canonical_bytes(&request_bytes).expect("decode capture request"),
         request_fact
@@ -705,7 +705,7 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
     };
     let resolution_fact = CampaignFact::SavepointCaptureResolved(resolution.clone());
     let resolution_bytes = resolution_fact.canonical_bytes();
-    assert_eq!(&resolution_bytes[..4], &14_u32.to_be_bytes());
+    assert_eq!(&resolution_bytes[..4], &15_u32.to_be_bytes());
     assert_eq!(
         CampaignFact::from_canonical_bytes(&resolution_bytes).expect("decode capture resolution"),
         resolution_fact
@@ -793,7 +793,7 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
         StopCondition::ExecutionQuanta(200),
     )
     .expect("semantic continuation");
-    assert_eq!(&continuation.canonical_bytes()[..4], &8_u32.to_be_bytes());
+    assert_eq!(&continuation.canonical_bytes()[..4], &9_u32.to_be_bytes());
 
     let first_selection = SavepointContinuationSelection {
         command: CampaignCommandId::from_hash(CampaignHash::derive(
@@ -810,7 +810,7 @@ fn selected_continuation_identity_deduplicates_distinct_capture_causes() {
     let selection_fact = CampaignFact::SavepointContinuationSelected(first_selection.clone());
     assert_eq!(
         &selection_fact.canonical_bytes()[..4],
-        &14_u32.to_be_bytes()
+        &15_u32.to_be_bytes()
     );
     assert_eq!(
         CampaignFact::from_canonical_bytes(&selection_fact.canonical_bytes())
