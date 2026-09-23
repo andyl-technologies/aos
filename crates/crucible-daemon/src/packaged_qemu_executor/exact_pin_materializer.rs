@@ -334,6 +334,7 @@ impl FindingExactCheckpointAuthenticator for PackagedFindingExactRetentionSource
         &self,
         checkpoint: ExactCheckpointId,
         boundary: &crucible_campaign::FindingAssertionFailureBoundary,
+        trace_bytes: &[u8],
         scenario: ScenarioDefId,
         scenario_artifact: ScenarioArtifactId,
         configuration: ConfigurationId,
@@ -342,6 +343,7 @@ impl FindingExactCheckpointAuthenticator for PackagedFindingExactRetentionSource
             .authenticate_finding_assertion_boundary(
                 checkpoint,
                 boundary,
+                trace_bytes,
                 scenario,
                 scenario_artifact,
                 configuration,
