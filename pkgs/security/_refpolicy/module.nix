@@ -199,120 +199,111 @@
     ];
   };
 
-  policyLoad = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "selinux-policy-load";
-      enabled = true;
-      lifecycle = {
-        description = "Load SELinux policy";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          (command
-            (lib.abilities.packageOutput {})
-            "libexec/aos-selinux-load-policy"
-            [cfg.policy cfg.mode])
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      conditions.all = [
-        {
-          kind = "mandatory-access-control";
-          state = "available";
-          negated = false;
-        }
+  policyLoad = {
+    lifecycle = {
+      description = "Load SELinux policy";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        (command
+          (lib.abilities.packageOutput {})
+          "libexec/aos-selinux-load-policy"
+          [cfg.policy cfg.mode])
       ];
-      dependencies = {
-        after = [
-          (resultOf "local-filesystems" "resource")
-          (resultOf "policy-state" "resource")
-        ];
-        before = [
-          (resultOf "early-system" "resource")
-          (resultOf "runtime-entry-population" "resource")
-        ];
-        requires = [
-          (resultOf "policy-state" "resource")
-          (resultOf "selinux-config" "resource")
-          (resultOf "semanage-config" "resource")
-        ];
-        wants = [];
-        wanted_by = [(resultOf "early-system" "resource")];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    conditions.all = [
+      {
+        kind = "mandatory-access-control";
+        state = "available";
+        negated = false;
+      }
+    ];
+    dependencies = {
+      after = [
+        (resultOf "local-filesystems" "resource")
+        (resultOf "policy-state" "resource")
+      ];
+      before = [
+        (resultOf "early-system" "resource")
+        (resultOf "runtime-entry-population" "resource")
+      ];
+      requires = [
+        (resultOf "policy-state" "resource")
+        (resultOf "selinux-config" "resource")
+        (resultOf "semanage-config" "resource")
+      ];
+      wants = [];
+      wanted_by = [(resultOf "early-system" "resource")];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
     };
   };
-  autorelabel = serviceManagement.forService {
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "selinux-autorelabel";
-      enabled = cfg.autorelabel;
-      lifecycle = {
-        description = "SELinux filesystem relabeling";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [
-          (command
-            (lib.abilities.packageOutput {package = "coreutils";})
-            "bin/test"
-            ["-f" "/.autorelabel"])
-        ];
-        pre_start = [];
-        start = [
-          (command
-            (lib.abilities.packageOutput {package = "policycoreutils";})
-            "sbin/fixfiles"
-            ["-f" "-F" "relabel"])
-        ];
-        post_start = [
-          (command
-            (lib.abilities.packageOutput {package = "coreutils";})
-            "bin/rm"
-            ["-f" "/.autorelabel"])
-        ];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [
-          (resultOf "selinux-policy-load-lifecycle" "resource")
-          (resultOf "local-filesystems" "resource")
-        ];
-        before = [(resultOf "early-system" "resource")];
-        requires = [(resultOf "selinux-policy-load-lifecycle" "resource")];
-        wants = [];
-        wanted_by = [(resultOf "early-system" "resource")];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
+  autorelabel = {
+    autoStart = cfg.autorelabel;
+    lifecycle = {
+      description = "SELinux filesystem relabeling";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [
+        (command
+          (lib.abilities.packageOutput {package = "coreutils";})
+          "bin/test"
+          ["-f" "/.autorelabel"])
+      ];
+      pre_start = [];
+      start = [
+        (command
+          (lib.abilities.packageOutput {package = "policycoreutils";})
+          "sbin/fixfiles"
+          ["-f" "-F" "relabel"])
+      ];
+      post_start = [
+        (command
+          (lib.abilities.packageOutput {package = "coreutils";})
+          "bin/rm"
+          ["-f" "/.autorelabel"])
+      ];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "selinux-policy-load-lifecycle" "resource")
+        (resultOf "local-filesystems" "resource")
+      ];
+      before = [(resultOf "early-system" "resource")];
+      requires = [(resultOf "selinux-policy-load-lifecycle" "resource")];
+      wants = [];
+      wanted_by = [(resultOf "early-system" "resource")];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
     };
   };
 
-  fragments = [
+  producers = [
     localFilesystems
     policyState
     earlySystem
@@ -320,10 +311,7 @@
     selinuxConfiguration
     semanageConfiguration
     configurationFiles
-    policyLoad
-    autorelabel
   ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.security.selinux = {
     enable = lib.mkOption {
@@ -349,7 +337,16 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
+    {
+      aos.services = {
+        "selinux.selinux-policy-load" = policyLoad // {enable = cfg.enable;};
+        "selinux.selinux-autorelabel" = autorelabel // {enable = cfg.enable;};
+      };
+    }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
       aos.kernel.commandLineParts.refpolicy = [
         "enforcing=0"
@@ -365,33 +362,25 @@ in {
           };
         }
       ];
-      aos.abilities = lib.mkMerge (
-        [
-          {instances.${consumerInstance} = {};}
+      aos.abilities.runtimeChecks.selinux = {
+        description = "SELinux checks";
+        checks = [
           {
-            runtimeChecks.selinux = {
-              description = "SELinux checks";
-              checks = [
-                {
-                  name = "selinuxfs";
-                  description = "/sys/fs/selinux is present";
-                  script = ''
-                    vm.succeed("test -d /sys/fs/selinux")
-                  '';
-                }
-                {
-                  name = "enforce-file";
-                  description = "SELinux enforce file exists";
-                  script = ''
-                    vm.succeed("test -f /sys/fs/selinux/enforce")
-                  '';
-                }
-              ];
-            };
+            name = "selinuxfs";
+            description = "/sys/fs/selinux is present";
+            script = ''
+              vm.succeed("test -d /sys/fs/selinux")
+            '';
           }
-        ]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
+          {
+            name = "enforce-file";
+            description = "SELinux enforce file exists";
+            script = ''
+              vm.succeed("test -f /sys/fs/selinux/enforce")
+            '';
+          }
+        ];
+      };
     })
   ];
 }
