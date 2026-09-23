@@ -286,6 +286,7 @@ fn build_one_node_raw_checkpoint(
     fs::write(&device_state, b"device-state fixture").expect("write device-state fixture");
     fs::write(&ram, b"exact RAM fixture").expect("write exact RAM fixture");
     let overlay_artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &File::open(&overlay).expect("open overlay fixture"),
         &overlay,
         &run_state_root.join("raw-overlay-chunks"),
         "root overlay fixture",
@@ -1381,6 +1382,7 @@ fn sparse_overlay_staging_persists_only_changed_chunks_and_reconstructs_holes() 
     drop(source_file);
 
     let artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &File::open(&source).expect("open sparse overlay"),
         &source,
         &object_directory,
         "root overlay",
@@ -1458,6 +1460,7 @@ fn all_zero_sparse_overlay_has_no_stored_chunks() {
     drop(source_file);
 
     let artifact = stage_sparse_checkpoint_artifact_chunks_with_boundary(
+        &File::open(&source).expect("open all-zero overlay"),
         &source,
         &object_directory,
         "all-zero root overlay",

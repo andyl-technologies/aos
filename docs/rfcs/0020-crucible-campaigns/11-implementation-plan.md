@@ -470,10 +470,21 @@ tests. The reactivation flight additionally checks the real inactive world's
 source-process distinction before its exact checkpoint. The production world
 factory now forks and adopts powered-off children with their retained service
 state, including them in atomic assembly and source reconciliation. The
-branch-private disk handoff remains separate work.
+flight alone does not prove branch-private disk handoff.
 Longer diagnostic execution also stalled waiting for a post-device control
 acknowledgement and returned cleanup-pending on shutdown; the short successful
 flight does not close that liveness investigation.
+
+The production hot-fork handoff now provisions a distinct target run directory
+with pinned VMState and root-overlay files for each child. QEMU copies the
+frozen source's writable overlay into the target, and the host authenticates
+the child-file proof and named directory before lifecycle adoption. The
+supervisor-owned mode-`0700` attempt root prevents the child from replacing its
+generation directory entry afterward. Lifecycle generation ownership uses that
+path under the parent-ownership constraint. Exact checkpoint capture instead
+opens the root overlay through the retained directory descriptor and checks its
+inode before reading bytes, so a child-side symlink or regular-file replacement
+cannot substitute the source artifact.
 
 Repository-wide gate maintenance restores campaign-model phase ordering and
 per-layer coverage, with negative checks for every required public repository

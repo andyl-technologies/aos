@@ -30,6 +30,10 @@ impl ProductionVmNodeLease for TestNodeLease {
         &self.identity
     }
 
+    fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
+        Err(loop_factory_error("test node has no pinned root overlay"))
+    }
+
     fn finish(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }
