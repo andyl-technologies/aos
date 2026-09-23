@@ -4342,20 +4342,9 @@ impl CapabilityService {
                 reply,
             })
             .map_err(controller_command_send_error)?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller public resource read timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+        let result =
+            await_public_controller_reply(response, "controller public resource read timed out")
+                .await?;
 
         match result {
             Ok(Some(read)) => Ok(read),
@@ -4421,20 +4410,11 @@ impl CapabilityService {
                 reply,
             })
             .map_err(controller_command_send_error)?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller public-read authorization timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+        let result = await_public_controller_reply(
+            response,
+            "controller public-read authorization timed out",
+        )
+        .await?;
 
         match result {
             Ok(Some(authorization)) => Ok(authorization),
@@ -4493,20 +4473,9 @@ impl CapabilityService {
                 reply,
             })
             .map_err(controller_command_send_error)?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller public policy planning timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+        let result =
+            await_public_controller_reply(response, "controller public policy planning timed out")
+                .await?;
 
         match result {
             Ok(plan) => Ok(plan),
@@ -4559,20 +4528,11 @@ impl CapabilityService {
                 reply,
             })
             .map_err(controller_command_send_error)?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller operator-recovery admission timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+        let result = await_public_controller_reply(
+            response,
+            "controller operator-recovery admission timed out",
+        )
+        .await?;
 
         match result {
             Ok(operation) => Ok(operation),
@@ -4625,20 +4585,11 @@ impl CapabilityService {
                 reply,
             })
             .map_err(controller_command_send_error)?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller public mutation admission timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+        let result = await_public_controller_reply(
+            response,
+            "controller public mutation admission timed out",
+        )
+        .await?;
 
         match result {
             Ok(admitted) => Ok(admitted),
@@ -4691,20 +4642,9 @@ impl CapabilityService {
                 reply,
             })
             .map_err(controller_command_send_error)?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller attachment admission timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+        let result =
+            await_public_controller_reply(response, "controller attachment admission timed out")
+                .await?;
 
         match result {
             Ok(admitted) => Ok(admitted),
@@ -4858,6 +4798,21 @@ impl CapabilityService {
             ..Default::default()
         })
     }
+}
+
+async fn await_public_controller_reply<T>(
+    response: tokio::sync::oneshot::Receiver<ControllerCommandResponse<T>>,
+    timeout_message: &'static str,
+) -> Result<ControllerCommandResponse<T>, ConnectError> {
+    tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
+        .await
+        .map_err(|_| ConnectError::new(ErrorCode::DeadlineExceeded, timeout_message))?
+        .map_err(|_| {
+            ConnectError::new(
+                ErrorCode::Unavailable,
+                "controller worker ended before replying",
+            )
+        })
 }
 
 fn controller_command_send_error<T>(error: mpsc::TrySendError<T>) -> ConnectError {
