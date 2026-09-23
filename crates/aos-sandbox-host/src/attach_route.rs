@@ -22,14 +22,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1,
 };
-use aos_sandbox::{Journal, JournalError, JournalLimits, RecordNamespace};
+use aos_sandbox::{
+    Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+};
 use aos_sandbox_agent::openssh_gate::{
     OpenSshGateBindingV1, OpenSshGateObserveRequestV1, OpenSshGateReadbackErrorV1,
     OpenSshGateReadbackV1, verify_openssh_gate_readback_v1,
 };
 use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
 use aos_sandbox_agent::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
-use aos_sandbox_core::ExecutionId;
+use aos_sandbox_core::public_attach_grant::{
+    PublicAttachGrantErrorV1, PublicAttachPendingGrantV1, verify_public_attach_pending_grant_v1,
+};
+use aos_sandbox_core::{ExecutionId, VerifiedOwnershipLease};
+use ed25519_dalek::VerifyingKey;
 use rand::{TryRngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -42,7 +48,10 @@ const ROUTE_MAGIC: &str = "AOSHAR01";
 const ROUTE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.host.openssh-attach-route.v1\0";
 const TRUST_CREDENTIAL_PATH: &str =
     "/run/credentials/aos-sandbox-hostd.service/openssh-attach-trust.json";
+const GRANT_KEY_CREDENTIAL_PATH: &str =
+    "/run/credentials/aos-sandbox-hostd.service/openssh-attach-grant-public-key";
 const TRUST_MAGIC: &str = "AOSHAT01";
+const GRANT_RESERVATION_PREFIX: &[u8] = b"openssh-attach-grant-v1/";
 const O_NOFOLLOW: i32 = 0o400_000;
 const O_CLOEXEC: i32 = 0o2_000_000;
 const MAXIMUM_ROUTE_BYTES: usize = 2048;
@@ -85,6 +94,91 @@ impl HostOpenSshAttachRouteOwnerV1 {
         let authority = journal.claim_protected_authority(RecordNamespace::HostExecution)?;
         drop(authority);
         Ok(Self { journal })
+    }
+
+    /// Durably reserves one route from a dedicated-key controller pending grant.
+    ///
+    /// The caller must supply a freshly verified live ownership lease. This
+    /// method independently checks the grant signer, external deployment trust,
+    /// current protected Host runtime and admitted execution. Its one-time
+    /// grant marker and route record commit atomically. It does not assert that
+    /// the guest gate is installed; only live readback can do that.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing credentials, invalid grant/lease/currentness,
+    /// reused grant, or failed protected journal durability.
+    pub fn reserve_from_pending_grant(
+        &mut self,
+        packet: &[u8],
+        lease: &VerifiedOwnershipLease,
+    ) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+        let verifier_bytes = read_fixed_credential(GRANT_KEY_CREDENTIAL_PATH, 32)?;
+        let verifier: [u8; 32] = verifier_bytes
+            .try_into()
+            .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+        let verifier = VerifyingKey::from_bytes(&verifier)
+            .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+        let grant = verify_public_attach_pending_grant_v1(packet, &verifier)?;
+        let (trust, trust_digest) = read_deployment_trust()?;
+        if grant.trust_digest != trust_digest
+            || grant.gate_config_digest != trust.gate_config_digest
+            || grant.expires_at <= current_unix_seconds()?
+        {
+            return Err(HostOpenSshAttachRouteErrorV1::TrustMismatch);
+        }
+        validate_grant_currentness(&grant, lease)?;
+
+        let mut key = ROUTE_KEY_PREFIX.to_vec();
+        key.extend_from_slice(&grant.execution_id);
+        let mut reservation_key = GRANT_RESERVATION_PREFIX.to_vec();
+        reservation_key.extend_from_slice(&grant.operation_id);
+        let mut authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::HostExecution)?;
+        if authority.get(&reservation_key)?.is_some() {
+            return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
+        }
+        let route_generation = match authority.get(&key)? {
+            Some(previous) => decode_route_record(previous)?
+                .route_generation
+                .checked_add(1)
+                .ok_or(HostOpenSshAttachRouteErrorV1::Stale)?,
+            None => 1,
+        };
+        let route = RouteRecordV1 {
+            magic: ROUTE_MAGIC.to_owned(),
+            execution_id: grant.execution_id,
+            attach_operation_id: grant.operation_id,
+            incarnation_id: grant.incarnation_id,
+            assignment_epoch: grant.assignment_epoch,
+            principal_id: grant.principal_id,
+            audit_id: grant.audit_id,
+            host: trust.host,
+            port: trust.port,
+            user: trust.user,
+            host_public_key: trust.host_public_key,
+            trusted_user_ca_public_key: trust.trusted_user_ca_public_key,
+            expires_at: grant.expires_at,
+            route_generation,
+            gate_config_digest: grant.gate_config_digest,
+        };
+        let bytes =
+            serde_json::to_vec(&route).map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
+        decode_route_record(&bytes)?;
+        let transaction = JournalTransaction::new(
+            grant.operation_id,
+            vec![
+                JournalRecord::put(RecordNamespace::HostExecution, key, bytes),
+                JournalRecord::put(
+                    RecordNamespace::HostExecution,
+                    reservation_key,
+                    Sha256::digest(packet).to_vec(),
+                ),
+            ],
+        )?;
+        authority.commit(&transaction)?;
+        Ok(())
     }
 
     /// Reads one protected route and the live forced-command gate.
@@ -450,31 +544,41 @@ fn validate_current_execution(route: &RouteRecordV1) -> Result<(), HostOpenSshAt
     Ok(())
 }
 
+fn validate_grant_currentness(
+    grant: &PublicAttachPendingGrantV1,
+    lease: &VerifiedOwnershipLease,
+) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+    let mut runtime_owner = DormantRuntimeExecutionOwnerV1::open()?;
+    let current = runtime_owner.claim()?;
+    let runtime = current.currentness().runtime().currentness();
+    let admission = current
+        .load_admission(ExecutionId::from_bytes(grant.execution_id))?
+        .ok_or(HostOpenSshAttachRouteErrorV1::Stale)?;
+    let lease_assignment = lease.lease().assignment();
+    if admission.currentness() != current.currentness()
+        || runtime.sandbox().as_bytes() != &grant.sandbox_id
+        || runtime.incarnation().as_bytes() != &grant.incarnation_id
+        || runtime.node().as_bytes() != &grant.node_id
+        || runtime.assignment_epoch().get() != grant.assignment_epoch
+        || runtime.desired_generation().get() != grant.desired_generation
+        || runtime.namespace_generation().get() != grant.namespace_generation
+        || runtime.assignment_digest().as_bytes() != &grant.assignment_digest
+        || lease_assignment.sandbox().as_bytes() != &grant.sandbox_id
+        || lease_assignment.incarnation().as_bytes() != &grant.incarnation_id
+        || lease_assignment.epoch().get() != grant.assignment_epoch
+        || lease_assignment.digest().as_bytes() != &grant.assignment_digest
+        || lease.lease().node().as_bytes() != &grant.node_id
+        || lease.lease().lease_generation() != grant.lease_generation
+        || lease.lease_digest().as_bytes() != &grant.lease_digest
+    {
+        return Err(HostOpenSshAttachRouteErrorV1::Stale);
+    }
+    Ok(())
+}
+
 fn validate_deployment_trust(route: &RouteRecordV1) -> Result<(), HostOpenSshAttachRouteErrorV1> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(TRUST_CREDENTIAL_PATH)
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
-    }
-    let mut bytes = Vec::new();
-    file.take((MAXIMUM_ROUTE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-    if bytes.len() > MAXIMUM_ROUTE_BYTES {
-        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
-    }
-    let trust: DeploymentTrustV1 = serde_json::from_slice(&bytes)
-        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
-    if serde_json::to_vec(&trust).map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?
-        != bytes
-        || trust.magic != TRUST_MAGIC
-        || trust.host != route.host
+    let (trust, _) = read_deployment_trust()?;
+    if trust.host != route.host
         || trust.port != route.port
         || trust.user != route.user
         || trust.host_public_key != route.host_public_key
@@ -484,6 +588,51 @@ fn validate_deployment_trust(route: &RouteRecordV1) -> Result<(), HostOpenSshAtt
         return Err(HostOpenSshAttachRouteErrorV1::TrustMismatch);
     }
     Ok(())
+}
+
+fn read_deployment_trust() -> Result<(DeploymentTrustV1, [u8; 32]), HostOpenSshAttachRouteErrorV1> {
+    let bytes = read_fixed_credential(TRUST_CREDENTIAL_PATH, MAXIMUM_ROUTE_BYTES)?;
+    let trust: DeploymentTrustV1 = serde_json::from_slice(&bytes)
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    if serde_json::to_vec(&trust).map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?
+        != bytes
+        || trust.magic != TRUST_MAGIC
+        || !valid_host(&trust.host)
+        || trust.port == 0
+        || !valid_user(&trust.user)
+        || !canonical_ed25519_key(&trust.host_public_key)
+        || !canonical_ed25519_key(&trust.trusted_user_ca_public_key)
+        || trust.gate_config_digest == [0; 32]
+    {
+        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
+    }
+    let digest = Sha256::digest(&bytes).into();
+    Ok((trust, digest))
+}
+
+fn read_fixed_credential(
+    path: &str,
+    maximum: usize,
+) -> Result<Vec<u8>, HostOpenSshAttachRouteErrorV1> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(path)
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
+    }
+    let mut bytes = Vec::new();
+    file.take((maximum + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?;
+    if bytes.is_empty() || bytes.len() > maximum {
+        return Err(HostOpenSshAttachRouteErrorV1::TrustUnavailable);
+    }
+    Ok(bytes)
 }
 
 fn decode_route_record(bytes: &[u8]) -> Result<RouteRecordV1, HostOpenSshAttachRouteErrorV1> {
@@ -533,7 +682,9 @@ fn canonical_ed25519_key(line: &str) -> bool {
     let Ok(key) = PublicKey::from_openssh(line) else {
         return false;
     };
-    key.algorithm() == Algorithm::Ed25519 && key.to_openssh().is_ok_and(|value| value == line)
+    key.algorithm() == Algorithm::Ed25519
+        && key.comment().is_empty()
+        && key.to_openssh().is_ok_and(|value| value == line)
 }
 
 fn valid_host(host: &str) -> bool {
@@ -591,12 +742,18 @@ pub enum HostOpenSshAttachRouteErrorV1 {
     /// Guest readback packet could not be authenticated.
     #[error("guest OpenSSH gate readback failed: {0}")]
     Readback(#[from] OpenSshGateReadbackErrorV1),
+    /// The dedicated controller pending grant is malformed or unauthenticated.
+    #[error("controller pending attach grant failed: {0}")]
+    Grant(#[from] PublicAttachGrantErrorV1),
     /// The externally provisioned systemd trust credential is unavailable.
     #[error("OpenSSH attach deployment trust credential is unavailable")]
     TrustUnavailable,
     /// The protected route differs from externally provisioned trust pins.
     #[error("OpenSSH attach route differs from deployment trust pins")]
     TrustMismatch,
+    /// The exact pending grant was already reserved in Host durable state.
+    #[error("pending OpenSSH attach grant was already used")]
+    GrantReused,
     /// Authenticated agent framing is malformed.
     #[error("guest OpenSSH gate agent frame failed: {0}")]
     Protocol(#[from] AgentProtocolError),

@@ -47,6 +47,7 @@
     // {
       backendReadiness = "backend-readiness.json";
       opensshAttachTrust = "openssh-attach-trust.json";
+      opensshAttachGrantPublicKey = "openssh-attach-grant-public-key";
     };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
@@ -99,6 +100,8 @@ in {
             then "Optional protected boot-local readiness claims published externally as ${credentialFile}; ingestion alone never enables Apply."
             else if name == "opensshAttachTrust"
             then "Optional externally provisioned OpenSSH attach trust pins (endpoint, server host public key, user CA public key, and expected gate configuration digest) loaded as ${credentialFile}; their presence alone never enables attach."
+            else if name == "opensshAttachGrantPublicKey"
+            then "Optional dedicated controller OpenSSH attach-grant verifier key loaded as ${credentialFile}; broker-plan verification keys cannot authorize attach grants."
             else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields
@@ -112,7 +115,15 @@ in {
         message = "aos.sandbox.hostBroker.credentials.${name} is required for ${credentialFile}";
       })
       authorityCredentialFields
-      ++ brokerSessionConfiguration.assertions;
+      ++ brokerSessionConfiguration.assertions
+      ++ [
+        {
+          assertion =
+            (cfg.credentials.opensshAttachTrust == null)
+            == (cfg.credentials.opensshAttachGrantPublicKey == null);
+          message = "OpenSSH attach trust and dedicated attach-grant verifier credentials must be provisioned together";
+        }
+      ];
 
     systemd.sockets.aos-sandbox-hostd = {
       description = "AOS controller-facing sandbox Host broker socket";
