@@ -616,15 +616,33 @@ in rec {
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
     check = v: v == null || elemType.check v;
+    # A nullable structural value still merges its non-null definitions at
+    # nested option boundaries. Preserve their priorities for the inner type.
+    mergeProvenanceByKey = elemType.mergeProvenanceByKey or false;
     merge = loc: defs: let
-      val = lastValue loc defs;
+      structural = elemType.mergeProvenanceByKey or false;
+      minPriority =
+        builtins.foldl' (
+          priority: def:
+            if (def._priority or 100) < priority
+            then def._priority or 100
+            else priority
+        )
+        9999
+        defs;
+      winningDefs = builtins.filter (def: (def._priority or 100) == minPriority) defs;
+      winningNull = builtins.any (def: def.value == null) winningDefs;
+      winningValue = builtins.any (def: def.value != null) winningDefs;
+      nonNullDefs = builtins.filter (def: def.value != null) defs;
+      selectedDef = builtins.elemAt winningDefs (builtins.length winningDefs - 1);
     in
-      if val == null
+      if winningNull && winningValue
+      then throw "The option '${showLoc loc}' has conflicting null and non-null definitions: ${showDefs winningDefs}"
+      else if winningNull
       then null
-      else
-        elemType.merge loc [
-          ((builtins.elemAt defs (builtins.length defs - 1)) // {value = val;})
-        ];
+      else if structural
+      then elemType.merge loc nonNullDefs
+      else elemType.merge loc [selectedDef];
     _aosDocType = {
       kind = "nullable";
       value =
