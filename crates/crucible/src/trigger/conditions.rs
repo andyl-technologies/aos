@@ -283,9 +283,25 @@ impl ObservableEvent {
         self
     }
 
-    /// Moves a polled console observation forward to its unified scheduler boundary.
+    /// Stamps a polled guest observation at the boundary where it becomes visible.
+    ///
+    /// The payload retains its physical instruction count. The event time is the
+    /// condition-evaluation coordinate, so a pulse cannot fall behind a later
+    /// scheduler boundary while backend evidence is being committed. Resolved
+    /// I/O completions and scheduler-owned node states keep their exact event
+    /// coordinates; they do not originate from this backend poll.
     pub(crate) fn normalize_backend_poll_boundary(mut self, boundary: VirtualTime) -> Self {
-        if matches!(&self.payload, ObservableEventPayload::ConsoleOutput { .. }) {
+        if matches!(
+            &self.payload,
+            ObservableEventPayload::ConsoleOutput { .. }
+                | ObservableEventPayload::CoverageBlock { .. }
+                | ObservableEventPayload::CoverageMarker { .. }
+                | ObservableEventPayload::MemorySample { .. }
+                | ObservableEventPayload::GuestMarker { .. }
+                | ObservableEventPayload::GuestMeasurement { .. }
+                | ObservableEventPayload::GuestSemanticMarker { .. }
+                | ObservableEventPayload::GuestAssertionMarker { .. }
+        ) {
             self.at = self.at.max(boundary);
         }
         self
