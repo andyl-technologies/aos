@@ -547,6 +547,28 @@ in
           chmod +x "$ukify_hook"
         '';
       }
+      {
+        name = "measure-aos-payload-policy";
+        # This public artifact binds the reviewed compiler policy to the exact
+        # final PID 1 and nspawn binaries. Host still verifies live PID 1 and
+        # the protected readiness claims before using it.
+        script = ''
+          test -x "$out/lib/systemd/systemd"
+          test -x "$out/bin/systemd-nspawn"
+          mkdir -p "$out/share/aos"
+          cp ${./payload-root-policy-v1} "$out/share/aos/payload-root-policy-v1"
+          pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
+          nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
+          pid1_digest=''${pid1_digest%% *}
+          nspawn_digest=''${nspawn_digest%% *}
+          {
+            printf 'AOSBPA01\n'
+            printf '%s\n' "$pid1_digest"
+            printf '%s\n' "$nspawn_digest"
+            cat "$out/share/aos/payload-root-policy-v1"
+          } > "$out/share/aos/backend-policy-artifact-v1"
+        '';
+      }
     ];
 
     meta = {

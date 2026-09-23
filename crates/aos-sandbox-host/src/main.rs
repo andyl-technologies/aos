@@ -76,6 +76,8 @@ fn run() -> Result<()> {
         &nspawn_executable,
     )?;
     if let Some(readiness) = readiness {
+        let packaged = readiness.verify_packaged_runtime()?;
+        packaged.revalidate(&readiness)?;
         let blockers = readiness.runtime_blockers();
         if blockers
             != [

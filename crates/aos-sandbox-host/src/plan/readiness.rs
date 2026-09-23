@@ -11,6 +11,7 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::sync::Arc;
 
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_systemd::PayloadRootContinuityPolicyV1;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
@@ -28,6 +29,9 @@ const READINESS_WATERMARK_NEXT: &str = "backend-readiness-watermark.next";
 const READINESS_WATERMARK_SCHEMA: &str = "aos.sandbox.host-backend-readiness-watermark.v1";
 const MAXIMUM_WATERMARK_BYTES: usize = 4096;
 const MAXIMUM_NSPAWN_EXECUTABLE_BYTES: i64 = 256 * 1024 * 1024;
+const BACKEND_POLICY_ARTIFACT: &str = "share/aos/backend-policy-artifact-v1";
+const BACKEND_POLICY_ARTIFACT_BYTES: usize = 9 + 65 * 3;
+const BACKEND_POLICY_MAGIC: &[u8; 9] = b"AOSBPA01\n";
 const EXECUTABLE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
@@ -113,6 +117,103 @@ pub struct ProtectedBackendReadinessEvidence {
 pub struct VerifiedCompiledSupervisorProfileV1 {
     binding_identity: ReadinessBindingIdentityV1,
     policy_digest: [u8; 32],
+}
+
+/// Proves the packaged policy and final binaries against live PID 1.
+///
+/// This is a partial phase-0 proof. It does not verify the installed unit
+/// property program, the protected probe result, or shifted-payload access,
+/// and therefore cannot construct [`BackendReadiness`].
+pub struct VerifiedPackagedRuntimeV1 {
+    binding_identity: ReadinessBindingIdentityV1,
+    pid1_snapshot: NspawnExecutableSnapshot,
+    pid1_digest: [u8; 32],
+    policy_digest: [u8; 32],
+}
+
+impl VerifiedPackagedRuntimeV1 {
+    /// Rechecks the same protected claim, package, and live PID 1 generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after a boot, executable, package, or PID 1 change.
+    pub fn revalidate(&self, evidence: &ProtectedBackendReadinessEvidence) -> Result<()> {
+        let current = evidence.verify_packaged_runtime()?;
+        if current.binding_identity != self.binding_identity
+            || current.pid1_snapshot != self.pid1_snapshot
+            || current.pid1_digest != self.pid1_digest
+            || current.policy_digest != self.policy_digest
+        {
+            return Err(HostError::State(
+                "packaged backend proof changed after verification".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct BackendPolicyArtifactV1 {
+    pid1_digest: [u8; 32],
+    nspawn_digest: [u8; 32],
+    policy_digest: [u8; 32],
+}
+
+fn read_backend_policy_artifact(nspawn_path: &str) -> Result<BackendPolicyArtifactV1> {
+    let package_root = Path::new(nspawn_path)
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| HostError::State("nspawn package root is invalid".to_owned()))?;
+    let artifact_path = package_root.join(BACKEND_POLICY_ARTIFACT);
+    let descriptor = open(
+        &artifact_path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| HostError::State(error.to_string()))?;
+    let bytes = read_protected_descriptor(
+        descriptor,
+        BACKEND_POLICY_ARTIFACT,
+        BACKEND_POLICY_ARTIFACT_BYTES,
+    )?;
+    parse_backend_policy_artifact(&bytes)
+}
+
+fn parse_backend_policy_artifact(bytes: &[u8]) -> Result<BackendPolicyArtifactV1> {
+    if bytes.len() != BACKEND_POLICY_ARTIFACT_BYTES || !bytes.starts_with(BACKEND_POLICY_MAGIC) {
+        return Err(HostError::State(
+            "packaged backend policy artifact is malformed".to_owned(),
+        ));
+    }
+    let digest = |offset| -> Result<[u8; 32]> {
+        let line = bytes.get(offset..offset + 65).ok_or_else(|| {
+            HostError::State("packaged backend policy artifact is truncated".to_owned())
+        })?;
+        if line[64] != b'\n' {
+            return Err(HostError::State(
+                "packaged backend policy digest is malformed".to_owned(),
+            ));
+        }
+        let text = std::str::from_utf8(&line[..64]).map_err(|_| {
+            HostError::State("packaged backend policy digest is not UTF-8".to_owned())
+        })?;
+        let digest = format!("sha256:{text}")
+            .parse::<ObjectDigest>()
+            .map_err(|_| {
+                HostError::State("packaged backend policy digest is invalid".to_owned())
+            })?;
+        if digest.as_bytes() == &[0; 32] {
+            return Err(HostError::State(
+                "packaged backend policy digest is a sentinel".to_owned(),
+            ));
+        }
+        Ok(*digest.as_bytes())
+    };
+
+    Ok(BackendPolicyArtifactV1 {
+        pid1_digest: digest(9)?,
+        nspawn_digest: digest(74)?,
+        policy_digest: digest(139)?,
+    })
 }
 
 impl std::fmt::Debug for VerifiedCompiledSupervisorProfileV1 {
@@ -297,6 +398,61 @@ impl ProtectedBackendReadinessEvidence {
         policy: PayloadRootContinuityPolicyV1,
     ) -> Result<VerifiedCompiledSupervisorProfileV1> {
         self.verify_compiled_supervisor_profile_for_boot(policy, current_boot_id()?)
+    }
+
+    /// Verifies the deployed package artifact and live PID 1 executable.
+    ///
+    /// The artifact is opened beside the exact Nix-store nspawn selected by
+    /// the protected readiness credential. Its policy digest must equal the
+    /// sealed compiler projection, and its two binary digests must match the
+    /// retained nspawn pin and the current PID 1 executable. This check does
+    /// not authorize launch or discharge the remaining runtime blockers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing or malformed package evidence, changed
+    /// protected currentness, an unrecognized policy, or foreign PID 1 bytes.
+    pub fn verify_packaged_runtime(&self) -> Result<VerifiedPackagedRuntimeV1> {
+        let policy = PayloadRootContinuityPolicyV1::fixed();
+        let compiler = self.verify_compiled_supervisor_profile(policy)?;
+        let artifact = read_backend_policy_artifact(&self.binding.executable_path)?;
+        if artifact.nspawn_digest != self.binding.executable_sha256
+            || artifact.policy_digest != compiler.policy_digest
+        {
+            return Err(HostError::State(
+                "packaged backend policy differs from protected readiness".to_owned(),
+            ));
+        }
+
+        let pid1 = open(
+            "/proc/1/exe",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| HostError::State(error.to_string()))?;
+        let pid1_stat = fstat(&pid1).map_err(|error| HostError::State(error.to_string()))?;
+        if FileType::from_raw_mode(pid1_stat.st_mode) != FileType::RegularFile
+            || pid1_stat.st_uid != 0
+            || pid1_stat.st_mode & 0o022 != 0
+        {
+            return Err(HostError::State(
+                "live PID 1 executable is not a protected binary".to_owned(),
+            ));
+        }
+        let (pid1_snapshot, pid1_digest) = snapshot_and_hash_executable(pid1.as_fd())?;
+        if pid1_digest != artifact.pid1_digest {
+            return Err(HostError::State(
+                "live PID 1 differs from the packaged backend policy".to_owned(),
+            ));
+        }
+        self.binding.revalidate(current_boot_id()?)?;
+
+        Ok(VerifiedPackagedRuntimeV1 {
+            binding_identity: compiler.binding_identity,
+            pid1_snapshot,
+            pid1_digest,
+            policy_digest: compiler.policy_digest,
+        })
     }
 
     /// Returns the current blockers which keep phase-0 evidence from authorizing launch.
@@ -794,6 +950,27 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn packaged_policy_artifact_rejects_substitution_and_noncanonical_digests() {
+        let mut bytes = Vec::from(BACKEND_POLICY_MAGIC.as_slice());
+        for byte in [b'a', b'b', b'c'] {
+            bytes.extend(std::iter::repeat_n(byte, 64));
+            bytes.push(b'\n');
+        }
+        let artifact = parse_backend_policy_artifact(&bytes).unwrap();
+        assert_eq!(artifact.pid1_digest, [0xaa; 32]);
+        assert_eq!(artifact.nspawn_digest, [0xbb; 32]);
+        assert_eq!(artifact.policy_digest, [0xcc; 32]);
+
+        bytes[75] = b'B';
+        assert!(parse_backend_policy_artifact(&bytes).is_err());
+        bytes[75] = b'b';
+        bytes[203] = b' ';
+        assert!(parse_backend_policy_artifact(&bytes).is_err());
+        bytes.pop();
+        assert!(parse_backend_policy_artifact(&bytes).is_err());
+    }
 
     fn readiness_artifact(
         path: String,

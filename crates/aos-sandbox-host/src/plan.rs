@@ -51,7 +51,7 @@ mod readiness;
 
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
-    VerifiedCompiledSupervisorProfileV1,
+    VerifiedCompiledSupervisorProfileV1, VerifiedPackagedRuntimeV1,
 };
 
 const PROCESSES: u8 = 2;

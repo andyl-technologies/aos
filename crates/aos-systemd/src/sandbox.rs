@@ -326,6 +326,15 @@ pub struct PayloadRootContinuityPolicyV1 {
 }
 
 impl PayloadRootContinuityPolicyV1 {
+    /// Returns the sealed fixed policy without constructing a launch unit.
+    ///
+    /// This is a compiler-policy witness only. It never attests the packaged
+    /// binaries, live PID 1, or a transient unit's installed properties.
+    #[must_use]
+    pub const fn fixed() -> Self {
+        Self { _sealed: () }
+    }
+
     /// Returns the domain-separated canonical digest of the fixed v1 policy.
     ///
     /// The digest covers the ordered nspawn argument and transient-unit
@@ -1265,6 +1274,13 @@ mod tests {
             spec.payload_root_continuity_policy().digest(),
             with_attachment.payload_root_continuity_policy().digest()
         );
+        let package_digest = include_str!("../../../pkgs/system/payload-root-policy-v1");
+        let policy_digest = PayloadRootContinuityPolicyV1::fixed()
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(package_digest, format!("{policy_digest}\n"));
     }
 
     #[test]

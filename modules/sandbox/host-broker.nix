@@ -187,7 +187,7 @@ in {
       serviceConfig = {
         Type = "simple";
         ExecStartPre =
-          ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/unit-reference-policy-v1"]
+          ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v1"]
           ++ brokerSessionConfiguration.installCommands;
         ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian";
         # This public digest is pinned to the deployed immutable guest package,
