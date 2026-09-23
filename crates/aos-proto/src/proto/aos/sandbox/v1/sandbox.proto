@@ -372,6 +372,7 @@ message Attachment {
   uint64 observation_sequence = 11;
   uint64 assignment_epoch = 12;
   Timestamp last_successful_reconciliation_time = 13;
+  bytes source_view_id = 14; // Exact logical view identity, not inferred from revision bytes.
 }
 
 enum SnapshotPhase {

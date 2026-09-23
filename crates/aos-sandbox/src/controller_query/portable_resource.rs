@@ -283,6 +283,10 @@ impl TryFrom<Attachment> for CheckedAttachmentResourceV1 {
         exact_nonzero_id(&value.attachment_id)?;
         exact_nonzero_id(&value.sandbox_id)?;
         exact_nonzero_id(&value.destination_slot_id)?;
+        // Older durable projections remain readable but cannot prove a cache consumer binding.
+        if !value.source_view_id.is_empty() {
+            exact_nonzero_id(&value.source_view_id)?;
+        }
         checked_version(&value.resource_version)?;
         validate_descriptor_media(
             value

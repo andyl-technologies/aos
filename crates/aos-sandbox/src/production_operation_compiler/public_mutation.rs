@@ -152,9 +152,26 @@ pub(super) fn compile_public_mutation(
             &value.execution_id,
             value.mutation.as_option(),
         )?,
-        Request::CachePin(_) | Request::CacheUnpin(_) => {
-            mutation_intent(operation_id, request.operation_method(), canonical_request)
-        }
+        Request::CachePin(value) => cache_consumer_mutation_intent(
+            journal,
+            peer.project(),
+            operation_id,
+            request.operation_method(),
+            canonical_request,
+            &value.view_id,
+            &value.attachment_id,
+            value.mutation.as_option(),
+        )?,
+        Request::CacheUnpin(value) => cache_consumer_mutation_intent(
+            journal,
+            peer.project(),
+            operation_id,
+            request.operation_method(),
+            canonical_request,
+            &value.view_id,
+            &value.attachment_id,
+            value.mutation.as_option(),
+        )?,
         Request::CancelOperation(value) => cancel_operation_intent(
             journal,
             peer.project(),
@@ -850,6 +867,7 @@ fn attach_view_projection(
     let attachment = Attachment {
         attachment_id: AttachmentId::new().into_bytes().to_vec(),
         sandbox_id: sandbox.sandbox_id.clone(),
+        source_view_id: view.view_id.clone(),
         destination_slot_id: exact_id(&request.destination_slot_id)?.to_vec(),
         resource_version: resource_version(
             operation,
@@ -898,6 +916,7 @@ fn replace_attachment_projection(
     }
     let generation = next_generation(attachment.desired_generation)?;
     attachment.view_revision = Some(revision.clone()).into();
+    attachment.source_view_id = view.view_id.clone();
     attachment.phase = AttachmentPhase::ATTACHMENT_PHASE_REPLACING.into();
     attachment.desired_generation = generation;
     attachment.source_generation = view.desired_generation;
@@ -1343,6 +1362,35 @@ fn validate_resource_mutation(
     } else {
         Err(OperationCompilationError::Rejected)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cache_consumer_mutation_intent(
+    journal: &Journal,
+    project: ProjectId,
+    operation: OperationId,
+    method: PublicOperationMethodV1,
+    canonical_request: &[u8],
+    view_id: &[u8],
+    attachment_id: &[u8],
+    mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
+) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    let view = load_view(journal, exact_id(view_id)?)?;
+    ensure_view_project(&view, project)?;
+
+    if attachment_id.is_empty() {
+        validate_resource_mutation(&view.resource_version, mutation)?;
+    } else {
+        let attachment = load_attachment(journal, exact_id(attachment_id)?)?;
+        let sandbox = load_sandbox(journal, exact_id(&attachment.sandbox_id)?)?;
+        ensure_sandbox_project(&sandbox, project)?;
+        if attachment.source_view_id != view_id {
+            return Err(OperationCompilationError::Rejected);
+        }
+        validate_resource_mutation(&attachment.resource_version, mutation)?;
+    }
+
+    Ok(mutation_intent(operation, method, canonical_request))
 }
 
 fn cancel_operation_intent(

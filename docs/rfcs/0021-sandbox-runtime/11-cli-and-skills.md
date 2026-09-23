@@ -47,7 +47,10 @@ aos sandbox cache unpin
 
 Cache pin and unpin identify the consuming view with `--view-id` and, for an
 attached consumer, its attachment with `--attachment-id`. An object descriptor
-alone does not identify the correctness dependency being changed.
+alone does not identify the correctness dependency being changed. Their
+`--expected-resource-version` fences the current view when no attachment is
+named, or the current attachment when one is named. An attachment's source view
+identity is recorded separately from its revision descriptor.
 
 Commands accept opaque sandbox IDs and unambiguous project-scoped selectors.
 Names are labels, not identities. Relative selectors such as `self`, `parent`,
