@@ -66,7 +66,6 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
-  rust,
   wasm-bindgen-cli,
   nodejs,
   stdenv,
@@ -85,6 +84,7 @@
   buildCc = buildPackages.cc;
   buildBash = buildPackages.bash;
   buildCoreutils = buildPackages.coreutils;
+  buildRust = buildPackages.rust;
   buildConsoleDist = buildPackages.aos-hub-console-dist;
   buildMiniflare = buildPackages.miniflare;
   nativeRustTarget = stdenv.buildPlatform.config;
@@ -214,7 +214,7 @@ in
     # The wasm32 toolchain (rustc + cargo + the wasm32 std + rust-lld), the
     # version-locked bindgen CLI, node for the glue-rewrite script, and a host
     # `cc` on PATH for any build-script native compile during the cargo build.
-    buildDeps = [rust wasm-bindgen-cli nodejs buildProtobuf buildCc buildBash buildCoreutils];
+    buildDeps = [buildRust wasm-bindgen-cli nodejs buildProtobuf buildCc buildBash buildCoreutils];
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
     # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
@@ -296,7 +296,7 @@ in
           done
 
           [ -n "$output" ]
-          ${rust}/lib/rustlib/${nativeRustTarget}/bin/rust-lld "''${arguments[@]}"
+          ${buildRust}/lib/rustlib/${nativeRustTarget}/bin/rust-lld "''${arguments[@]}"
           ${buildCoreutils}/bin/cat "$stage_dir/output.wasm" > "$output"
           LINKER
           chmod +x "$TMPDIR/aos-wasm-linker"
