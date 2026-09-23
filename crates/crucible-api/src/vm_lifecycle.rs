@@ -61,7 +61,8 @@ use std::time::Duration;
 
 mod assets;
 use assets::{
-    ProductionVmGuestAssets, production_kernel_cmdline_prefix, validate_guest_asset_references,
+    ProductionVmGuestAssets, production_kernel_cmdline_prefix, selected_initrd_for_vm,
+    validate_guest_asset_references,
 };
 pub use assets::{ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths};
 mod checkpoint_store;
