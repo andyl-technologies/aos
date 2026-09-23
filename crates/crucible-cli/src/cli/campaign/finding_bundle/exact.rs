@@ -48,16 +48,18 @@ pub(super) fn replay_exact_finding(
         role.campaign_role(),
     )
     .map_err(|error| backend_error(format!("archived production replay is invalid: {error}")))?;
-    // Marker identity does not hash the executable bytes. This path accepts
-    // only the immutable suite-selected QEMU and plugin store outputs.
-    if cli.qemu.is_some()
-        || cli.plugin.is_some()
-        || std::env::var_os(CRUCIBLE_QEMU_ENV).is_some()
-        || std::env::var_os(CRUCIBLE_PLUGIN_ENV).is_some()
+    // Marker identity does not hash the executable bytes. Reject mutable
+    // overrides before discovery probes or executes either candidate.
+    for path in [cli.qemu.as_deref(), cli.plugin.as_deref()]
+        .into_iter()
+        .flatten()
     {
-        return Err(usage_error(
-            "exact finding replay requires the immutable packaged QEMU and plugin",
-        ));
+        require_immutable_store_path(path)?;
+    }
+    for name in [CRUCIBLE_QEMU_ENV, CRUCIBLE_PLUGIN_ENV] {
+        if let Some(path) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            require_immutable_store_path(Path::new(&path))?;
+        }
     }
     let backend = crate::cli_run_save::require_selftest_qemu_backend(cli)?;
     let (qemu, plugin, build_id) = match backend {
@@ -65,19 +67,10 @@ pub(super) fn replay_exact_finding(
             qemu,
             plugin,
             qemu_build_id,
-            qemu_source,
-            plugin_source,
             ..
         } => {
-            if qemu_source != QemuDiscoverySource::AosPackageSet
-                || plugin_source != QemuDiscoverySource::AosPackageSet
-                || !immutable_store_path(&qemu)?
-                || !immutable_store_path(&plugin)?
-            {
-                return Err(backend_error(
-                    "exact finding replay requires immutable packaged QEMU and plugin paths",
-                ));
-            }
+            require_immutable_store_path(&qemu)?;
+            require_immutable_store_path(&plugin)?;
             (qemu, plugin, qemu_build_id)
         }
         #[cfg(any(test, feature = "test-double"))]
@@ -193,9 +186,15 @@ pub(super) fn replay_exact_finding(
     })
 }
 
-fn immutable_store_path(path: &Path) -> Result<bool, CliError> {
+fn require_immutable_store_path(path: &Path) -> Result<(), CliError> {
     let canonical = std::fs::canonicalize(path).map_err(CliError::Io)?;
-    Ok(canonical.starts_with("/nix/store"))
+    if !canonical.starts_with("/nix/store") {
+        return Err(usage_error(format!(
+            "exact finding replay requires an immutable packaged QEMU or plugin path: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn lifecycle_config(
