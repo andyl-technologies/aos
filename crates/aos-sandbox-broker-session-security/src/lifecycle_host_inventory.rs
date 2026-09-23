@@ -10,7 +10,9 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryMountSourceAcquisitionsRequest, InventoryMountsRequest, InventoryNetworksRequest,
     InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
 };
-use aos_sandbox::attachment_source::DurableCurrentAttachmentSourceDispatchV1;
+use aos_sandbox::attachment_source::{
+    AttachmentSourceAttemptKindV1, DurableCurrentAttachmentSourceDispatchV1,
+};
 use aos_sandbox::lifecycle::{
     CurrentLifecycleBootInventoryV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     LifecycleAtomicDatasetSnapshotPlanV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
@@ -376,12 +378,12 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         Ok(outcome)
     }
 
-    /// Sends or drains one exact protected Mount source Acquire on retained AOSAGE.
-    pub(crate) fn authenticated_mount_source_acquire(
+    /// Sends or drains one exact protected Mount source effect on retained AOSAGE.
+    pub(crate) fn authenticated_mount_source_effect(
         &mut self,
         attempt: &DurableCurrentAttachmentSourceDispatchV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
-        let (outcome, currentness) = self.0.source_acquire_complete(attempt)?;
+        let (outcome, currentness) = self.0.source_effect_complete(attempt)?;
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
@@ -771,7 +773,7 @@ impl DormantLifecycleInventorySessionV1 {
         })
     }
 
-    fn source_acquire_complete(
+    fn source_effect_complete(
         &mut self,
         attempt: &DurableCurrentAttachmentSourceDispatchV1,
     ) -> Result<
@@ -781,10 +783,20 @@ impl DormantLifecycleInventorySessionV1 {
         ),
         LifecyclePhase6ErrorV1,
     > {
-        self.exact_request_complete(
-            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
-            |session| session.prepare_authenticated_mount_source_acquire(attempt),
-        )
+        let method = match attempt.kind() {
+            AttachmentSourceAttemptKindV1::Acquire => {
+                BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            }
+            AttachmentSourceAttemptKindV1::Release => {
+                BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            }
+            AttachmentSourceAttemptKindV1::Consume => {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+        };
+        self.exact_request_complete(method, |session| {
+            session.prepare_authenticated_mount_source_effect(attempt)
+        })
     }
 
     fn exact_request_complete(

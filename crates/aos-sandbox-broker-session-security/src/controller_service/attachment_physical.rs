@@ -92,9 +92,10 @@ pub(super) fn observe(
             .map_err(|error| retryable(error.to_string()))?
     };
     let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
-    let (target, snapshot, source_action) = if desired.presence()
-        == AttachmentDesiredPresenceV1::Present
-    {
+    let (target, snapshot, source_action) = if matches!(
+        desired.presence(),
+        AttachmentDesiredPresenceV1::Present | AttachmentDesiredPresenceV1::Released
+    ) {
         let fence = owner
             .begin_authenticated_source_inventory()
             .map_err(|error| retryable(error.to_string()))?;
@@ -198,8 +199,65 @@ pub(super) fn observe(
                 "source custody completed; fresh Mount inventory is pending",
             ));
         }
-        let (target, resources) = source.into_mount_reconciliation_inputs();
-        (target, resources, Some(action))
+        if action == AttachmentSourceActionV1::Released {
+            let (target, resources) = source.into_mount_reconciliation_inputs();
+            (target, resources, Some(action))
+        } else if matches!(action, AttachmentSourceActionV1::CompleteRelease { .. }) {
+            owner
+                .complete_current_source_release(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "source release custody completed; fresh Mount inventory is pending",
+            ));
+        } else if matches!(action, AttachmentSourceActionV1::Release { .. }) {
+            ensure_mount_policy(executor)?;
+            let coordinates = {
+                let mut sessions = executor
+                    .sessions
+                    .lock()
+                    .map_err(|_| retryable("broker session lock is poisoned"))?;
+                sessions
+                    .mount
+                    .as_mut()
+                    .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
+                    .mount_request_coordinates()
+                    .map_err(|error| retryable(error.to_string()))?
+            };
+            let prepared = owner
+                .prepare_current_source_release(
+                    source,
+                    OperationId::from_bytes(coordinates.request_id()),
+                    coordinates.deadline_boottime_nanoseconds(),
+                    &mut clock,
+                )
+                .map_err(|error| retryable(error.to_string()))?;
+            let scope =
+                ControllerBrokerPlanSignerV1::mount_revocation_scope_from_process_credentials()
+                    .map_err(|error| retryable(error.to_string()))?;
+            let plan = owner
+                .current_source_release_plan(&prepared, scope, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let issued = plan.issued_seconds();
+            let signed = executor
+                .broker_plan_signer
+                .as_ref()
+                .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+                .sign_mount_plan(plan, issued)
+                .map_err(|error| retryable(error.to_string()))?;
+            let bound = owner
+                .bind_current_source_release(prepared, signed, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let attempt = owner
+                .admit_current_source_release(bound, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            executor.pending_attachment_source_attempt = Some(attempt);
+            drop(owner);
+            drain_pending_source_attempt(executor, journal)?;
+            return Err(retryable("fresh Mount source inventory is pending"));
+        } else {
+            let (target, resources) = source.into_mount_reconciliation_inputs();
+            (target, resources, Some(action))
+        }
     } else {
         (target, snapshot, None)
     };
@@ -278,6 +336,9 @@ fn source_allows_mount(
 ) -> bool {
     match (source, mount) {
         (None, _) => true,
+        (Some(AttachmentSourceActionV1::Released), AttachmentReconciliationActionV1::Released) => {
+            true
+        }
         (
             Some(AttachmentSourceActionV1::Consume { .. }),
             AttachmentReconciliationActionV1::Prepare { .. },
@@ -356,7 +417,7 @@ fn drain_pending_source_attempt(
             .mount
             .as_mut()
             .ok_or_else(|| retryable("authenticated Mount session is unavailable"))?
-            .authenticated_mount_source_acquire(&attempt)
+            .authenticated_mount_source_effect(&attempt)
             .map_err(|error| retryable(error.to_string()))
     })();
     let outcome = match outcome {
