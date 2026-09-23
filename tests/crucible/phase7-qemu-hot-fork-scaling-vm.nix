@@ -236,11 +236,36 @@ in
         cat "$result"
       }
 
+      require_exact_test_marker() {
+        expected="$1"
+        result="$2"
+        if ${pkgs.gawk}/bin/awk -v expected="$expected" '
+          $0 == expected { found = 1 }
+          /^test [^[:space:]]+ \.\.\. / && $NF == expected { found = 1 }
+          END { exit !found }
+        ' "$result"; then
+          return 0
+        fi
+        cat "$result" >&2
+        echo "missing exact test marker $expected" >&2
+        return 1
+      }
+
+      # libtest joins the first captured line to its `test ...` prefix.
+      printf '%s\n' 'test fixture::clone ... host_continuation_siblings=64' \
+        > /tmp/test-marker-fixture
+      require_exact_test_marker host_continuation_siblings=64 /tmp/test-marker-fixture
+      if require_exact_test_marker host_continuation_siblings=6 /tmp/test-marker-fixture \
+        > /dev/null 2>&1; then
+        echo 'test marker parser accepted a partial value' >&2
+        exit 1
+      fi
+
       run_host_clone_test \
         crucible_api \
         vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
         /tmp/host-clone-cost-result
-      ${pkgs.grep}/bin/grep -Fxq 'host_continuation_siblings=64' /tmp/host-clone-cost-result
+      require_exact_test_marker host_continuation_siblings=64 /tmp/host-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'host_immutable_object_bytes=33554432' /tmp/host-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'host_shared_backing_copies=1' /tmp/host-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'host_clone_private_growth_limit_kib=65536' /tmp/host-clone-cost-result
@@ -248,7 +273,7 @@ in
         crucible_qemu \
         production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
         /tmp/fault-clone-cost-result
-      ${pkgs.grep}/bin/grep -Fxq 'fault_checkpoint_siblings=64' /tmp/fault-clone-cost-result
+      require_exact_test_marker fault_checkpoint_siblings=64 /tmp/fault-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'qemu_authentication_map_copies=1' /tmp/fault-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq \
         'child_private_ledgers=network-adapter,pending-qemu-events' /tmp/fault-clone-cost-result
