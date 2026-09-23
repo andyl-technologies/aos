@@ -6,6 +6,7 @@ use std::io::Write as _;
 use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::time::Instant;
 
 use aos_sandbox_agent::protected_entry::{GuestOperationEffectsV1, ProtectedGuestAgentErrorV1};
 use aos_sandbox_agent::{
@@ -92,7 +93,9 @@ impl GuestProcessEffectsV1 {
         &mut self,
         request: &AgentOperationRequestV1,
         runtime: &AgentRuntimeBindingV1,
+        deadline: Instant,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
+        check_deadline(deadline)?;
         match request.operation() {
             AgentExecutionOperationV1::Authorize {
                 execution,
@@ -141,6 +144,7 @@ impl GuestProcessEffectsV1 {
                         "supplementary groups are not supported by this launcher",
                     ));
                 }
+                check_deadline(deadline)?;
                 self.start_process(
                     *execution,
                     specification_bytes,
@@ -439,14 +443,19 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         request: &AgentOperationRequestV1,
         runtime: &AgentRuntimeBindingV1,
         channel: ObjectDigest,
+        deadline: Instant,
     ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1> {
+        check_deadline(deadline).map_err(effect_error)?;
         let reservation = self
             .ledger
             .reserve(request, runtime, channel)
             .map_err(effect_error)?;
         let stored = match reservation {
             Reservation::Fresh => {
-                let result = self.apply_effect(request, runtime).map_err(effect_error)?;
+                check_deadline(deadline).map_err(effect_error)?;
+                let result = self
+                    .apply_effect(request, runtime, deadline)
+                    .map_err(effect_error)?;
                 self.ledger
                     .complete(request, runtime, channel, result.clone())
                     .map_err(effect_error)?;
@@ -464,11 +473,22 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
                 result
             }
         };
+        check_deadline(deadline).map_err(effect_error)?;
         let phase = decode_phase(stored.phase).ok_or_else(|| {
             ProtectedGuestAgentErrorV1::EffectFailed("invalid durable phase".into())
         })?;
         Ok((phase, stored.result))
     }
+
+}
+
+pub(crate) fn check_deadline(deadline: Instant) -> Result<(), GuestProcessEffectErrorV1> {
+    if Instant::now() >= deadline {
+        return Err(GuestProcessEffectErrorV1::Unavailable(
+            "guest operation deadline expired",
+        ));
+    }
+    Ok(())
 }
 
 fn effect_error(error: GuestProcessEffectErrorV1) -> ProtectedGuestAgentErrorV1 {
