@@ -726,6 +726,7 @@ impl RepositoryExactRestoreAuthority {
         node: &NodeId,
         snapshot: ExactSnapshotHandle,
         paused: bool,
+        process_generation: u64,
     ) -> Result<ProductionVmReplayExactNodeRestoreAdmission, LifecycleApiError> {
         let target = self.targets.take_target(node).map_err(|error| {
             loop_factory_error(format!("claim authenticated exact replay target: {error}"))
@@ -740,6 +741,7 @@ impl RepositoryExactRestoreAuthority {
                 paused,
                 open: Arc::clone(&self.open),
             },
+            process_generation,
         })
     }
 }
@@ -1204,6 +1206,7 @@ impl std::fmt::Debug for ProductionVmExactNodeRestoreAdmission {
 #[must_use = "an authenticated replay restore must be consumed by the replay coordinator"]
 pub struct ProductionVmReplayExactNodeRestoreAdmission {
     basis: ProductionVmExactNodeRestoreBasis,
+    process_generation: u64,
 }
 
 impl std::fmt::Debug for ProductionVmReplayExactNodeRestoreAdmission {
@@ -1276,6 +1279,12 @@ impl ProductionVmExactNodeRestoreAdmission {
 }
 
 impl ProductionVmReplayExactNodeRestoreAdmission {
+    /// Returns the repository-authenticated QEMU lifecycle generation.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
     /// Returns the authenticated World node identity used to select baked genesis.
     #[must_use]
     pub fn node(&self) -> &NodeId {

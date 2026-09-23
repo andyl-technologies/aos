@@ -128,11 +128,13 @@ impl ProductionVmExactNodeRestoreAdmissions {
                 loop_factory_error("exact restore target has no persisted service disposition")
             })?;
         let paused = restored_node_paused(service_state)?;
+        let process_generation =
+            authenticated_node_generation(&self.checkpoint.node_generations, &node)?;
         let authority = self.checkpoint.repository_restore.as_mut().ok_or_else(|| {
             loop_factory_error("exact restore has no repository target authority")
         })?;
         authority
-            .take_replay_node_admission(&node, target.snapshot, paused)
+            .take_replay_node_admission(&node, target.snapshot, paused, process_generation)
             .map(Some)
     }
 
@@ -611,9 +613,46 @@ fn take_role<T>(value: &mut Option<T>, role: &str) -> Result<T, LifecycleApiErro
         .ok_or_else(|| loop_factory_error(format!("exact checkpoint is missing {role}")))
 }
 
+fn authenticated_node_generation(
+    generations: &BTreeMap<NodeId, u64>,
+    node: &NodeId,
+) -> Result<u64, LifecycleApiError> {
+    generations
+        .get(node)
+        .copied()
+        .filter(|generation| *generation != 0)
+        .ok_or_else(|| {
+            loop_factory_error(format!(
+                "exact restore target `{}` has no authenticated process generation",
+                node.name
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_restore_requires_a_nonzero_authenticated_node_generation() {
+        let node = NodeId {
+            name: String::from("choice-node"),
+        };
+        let missing = BTreeMap::new();
+        let zero = BTreeMap::from([(node.clone(), 0)]);
+        let foreign = BTreeMap::from([(
+            NodeId {
+                name: String::from("other-node"),
+            },
+            2,
+        )]);
+        let second = BTreeMap::from([(node.clone(), 2)]);
+
+        assert!(authenticated_node_generation(&missing, &node).is_err());
+        assert!(authenticated_node_generation(&zero, &node).is_err());
+        assert!(authenticated_node_generation(&foreign, &node).is_err());
+        assert_eq!(authenticated_node_generation(&second, &node).ok(), Some(2));
+    }
 
     #[test]
     fn authenticated_service_disposition_controls_exact_restore_run_state() {
