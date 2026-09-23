@@ -1522,6 +1522,13 @@ in
             export EXTRA_BAZEL_ARGS="
               --verbose_failures
               --curses=no
+              ${lib.optionalString (version == "7.7.1") ''
+              --nouse_ijars
+              --strict_java_deps=off
+              --nostart_end_lib
+              --linkopt=-fuse-ld=bfd
+              --host_linkopt=-fuse-ld=bfd
+            ''}
               ${lib.optionalString (version == "8.6.0") ''
               --nouse_ijars
               --nostart_end_lib
