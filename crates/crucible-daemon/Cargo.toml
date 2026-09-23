@@ -30,6 +30,7 @@ rand = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 
@@ -38,7 +39,6 @@ crucible = { path = "../crucible", features = ["test-double"] }
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
 crucible-session = { path = "../crucible-session" }
-tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [[test]]

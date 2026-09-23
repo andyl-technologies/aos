@@ -622,8 +622,7 @@ impl CampaignExecutorPublicationGuard<'_> {
         &self,
         id: ContentId,
     ) -> Result<BlobHandle, CampaignRepositoryError> {
-        validate_finding_replay_capture_object_id(id)?;
-        self.repository.blobs.read(id, None).map_err(Into::into)
+        self.repository.read_finding_replay_capture_object(id)
     }
 
     /// Idempotently writes one capture chunk or manifest while GC remains excluded.
@@ -641,6 +640,26 @@ impl CampaignExecutorPublicationGuard<'_> {
             .blobs
             .put_if_absent(id, source)
             .map_err(Into::into)
+    }
+}
+
+impl CampaignRepository {
+    /// Reads one immutable finding replay capture manifest or chunk.
+    ///
+    /// This read-only path is used after an imported archive has authenticated
+    /// the complete finding closure. Publication still requires the separate
+    /// GC-excluded [`CampaignExecutorPublicationGuard`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for another kind/schema or when the backend cannot
+    /// return an authenticated handle.
+    pub fn read_finding_replay_capture_object(
+        &self,
+        id: ContentId,
+    ) -> Result<BlobHandle, CampaignRepositoryError> {
+        validate_finding_replay_capture_object_id(id)?;
+        self.blobs.read(id, None).map_err(Into::into)
     }
 }
 

@@ -99,6 +99,7 @@ mod campaign_debug_inventory;
 pub mod campaign_debug_session;
 pub mod campaign_diagnostics;
 pub mod campaign_endpoint;
+pub mod campaign_finding_handoff;
 pub mod campaign_gc;
 pub mod campaign_loopback;
 pub mod campaign_objective_driver;
@@ -218,6 +219,11 @@ pub use campaign_diagnostics::{
 pub use campaign_endpoint::{
     CampaignLoopbackEndpointConfig, ExecutorLoopbackEndpointConfig, LocalComponentEndpointError,
     ManagedCampaignLoopbackListener, ManagedExecutorLoopbackListener,
+};
+pub use campaign_finding_handoff::{
+    CampaignFindingHandoffError, MaterializedFindingReplayGuest,
+    MaterializedFindingReplayGuestAssets, load_archived_finding_production_capture,
+    materialize_finding_replay_guest_assets,
 };
 pub use campaign_gc::{
     CampaignGcApplyError, CampaignGcApplyReport, CampaignGcApplyStatus,

@@ -1073,6 +1073,45 @@ fn read_only_mode_denies_policy_granted_mutation() {
 }
 
 #[test]
+fn finding_export_authorizer_admits_only_ledger_reads() {
+    let (_directory, config) = fixture();
+    let policy = Arc::new(
+        load_policy(
+            config.policy_path(),
+            config.endpoint().owner_user_id(),
+            config.endpoint().owner_group_id(),
+        )
+        .expect("load policy"),
+    );
+    let authorizer = CampaignFindingExportAuthorizer(CampaignLocalAuthorizer {
+        policy,
+        mode: CampaignLocalServiceMode::ReadWrite,
+    });
+    let principal = CampaignPrincipal::new("operator").expect("principal");
+    let campaign = CampaignName::new("example").expect("campaign");
+    let digest = CampaignHash::derive("campaign-finding-export-authorizer", b"request");
+
+    assert_eq!(
+        authorizer.authorize(
+            &principal,
+            CampaignServiceOperation::QueryCampaignFindings,
+            &campaign,
+            digest,
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        authorizer.authorize(
+            &principal,
+            CampaignServiceOperation::CreateCampaign,
+            &campaign,
+            digest,
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+}
+
+#[test]
 fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
     let (_directory, config) = fixture();
     let service = config.open().expect("open local service");

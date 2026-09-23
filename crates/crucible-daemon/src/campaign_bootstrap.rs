@@ -532,6 +532,34 @@ pub struct PreparedCampaignLocalService {
     transfer_identity: String,
 }
 
+/// Principal policy restricted to the five finding-ledger read operations.
+pub struct CampaignFindingExportAuthorizer<A>(A);
+
+impl<A: CampaignPrincipalAuthorizer> CampaignPrincipalAuthorizer
+    for CampaignFindingExportAuthorizer<A>
+{
+    fn authorize(
+        &self,
+        principal: &CampaignPrincipal,
+        operation: CampaignServiceOperation,
+        campaign: &CampaignName,
+        request_digest: CampaignHash,
+    ) -> Result<(), CampaignAuthorizationError> {
+        if !matches!(
+            operation,
+            CampaignServiceOperation::QueryCampaignFindings
+                | CampaignServiceOperation::QueryCampaignFindingOccurrences
+                | CampaignServiceOperation::GetCampaignFindingObject
+                | CampaignServiceOperation::GetCampaignFindingOccurrenceObject
+                | CampaignServiceOperation::GetCampaignFindingTriageReplaySegment
+        ) {
+            return Err(CampaignAuthorizationError::Unauthorized);
+        }
+        self.0
+            .authorize(principal, operation, campaign, request_digest)
+    }
+}
+
 /// Borrowed destructive-maintenance authority for one stopped local service.
 ///
 /// The authority is available only before endpoint binding and while the
@@ -702,6 +730,22 @@ impl CampaignLocalStoreGcAuthority<'_> {
 }
 
 impl PreparedCampaignLocalService {
+    /// Borrows a typed read service from this stopped repository owner.
+    ///
+    /// The caller supplies the same principal authorization policy used for
+    /// service queries. The borrow keeps the repository namespace lock alive
+    /// while a standalone export captures its native finding ledger.
+    #[must_use]
+    pub fn campaign_read_service<A: CampaignPrincipalAuthorizer>(
+        &self,
+        authorizer: A,
+    ) -> crucible_campaign::RepositoryCampaignService<'_, CampaignFindingExportAuthorizer<A>> {
+        crucible_campaign::RepositoryCampaignService::new(
+            self.repository.as_ref(),
+            CampaignFindingExportAuthorizer(authorizer),
+        )
+    }
+
     /// Builds one authenticated archive plan under this repository owner.
     ///
     /// # Errors
@@ -744,6 +788,29 @@ impl PreparedCampaignLocalService {
         self.repository
             .plan_campaign_archive(snapshot, policy, retained_roots, Some(&mut resolver))
             .map_err(Into::into)
+    }
+
+    /// Copies one authenticated archive into a private destination repository.
+    ///
+    /// This narrow export holds source GC exclusion across metadata staging and
+    /// the entire copy. A standalone bundle writer owns the destination and
+    /// publishes its directory only after this call and destination inspection
+    /// succeed, so it needs no long-lived transfer journal in the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] if the source plan changes, source
+    /// GC exclusion cannot be acquired, or destination placement fails.
+    pub fn export_campaign_archive_to_repository(
+        &self,
+        plan: &crucible_campaign::CampaignArchivePlan,
+        destination: &CampaignRepository,
+        durability: crucible_cas::content_store::DurabilityRequirement,
+    ) -> Result<crucible_campaign::CampaignArchiveTransferReport, CampaignRepositoryError> {
+        let _source_gc = self.repository.acquire_gc_exclusion_guard()?;
+        self.repository.stage_campaign_archive_metadata(plan)?;
+        self.repository
+            .transfer_campaign_archive_objects(destination, plan, durability)
     }
 
     /// Authenticates one named archive and its complete direct inventory.
