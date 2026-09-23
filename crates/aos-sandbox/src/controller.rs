@@ -9,6 +9,7 @@
 //! It deliberately owns no signing key, privileged catalog, broker transport,
 //! or volatile work queue.
 
+use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
 use buffa::Message as _;
 #[cfg(target_os = "linux")]
@@ -1059,6 +1060,9 @@ where
     ) -> Result<DormantOperatorRecoverySynchronizedV1, DormantOperatorRecoveryServiceErrorV1> {
         let checked = OperatorRecoveryRequestV1::try_from(request.clone())
             .map_err(|_| DormantOperatorRecoveryServiceErrorV1::InvalidRequest)?;
+        if requires_physical_recovery_receipt(checked.action()) {
+            return Err(DormantOperatorRecoveryServiceErrorV1::RecoveryState);
+        }
         let authorized = self.authorizer.authorize(authorization, &request)?;
         if authorized.request_binding != checked.authority_binding() {
             return Err(DormantOperatorRecoveryServiceErrorV1::AuthorizationRejected);
@@ -1312,6 +1316,9 @@ impl DormantOperatorRecoveryOwnerV1<'_> {
         X: DormantOperatorRecoveryEffectExecutorV1,
     {
         self.recheck_effect_handoff(&handoff)?;
+        if requires_physical_recovery_receipt(handoff.issued.request.action()) {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
         let query = DormantOperatorRecoveryEffectQueryV1 {
             effect_id: handoff.issued.effect_id,
             attempt: handoff.issued.attempt,
@@ -1410,6 +1417,12 @@ impl DormantOperatorRecoveryOwnerV1<'_> {
             .ensure_protected_authority()
             .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
         if principal.as_bytes() == &[0; 32] {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        // A generic result cannot prove a physical Reconcile or Repair.
+        // Do not reserve an effect until a dedicated owner verifies the signed
+        // intent and returns a protected post-effect inventory receipt.
+        if requires_physical_recovery_receipt(request.action()) {
             return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
         }
         let reservation_key =
@@ -1570,6 +1583,9 @@ impl DormantOperatorRecoveryOwnerV1<'_> {
             return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
         };
         if retained != pending.issued {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        if requires_physical_recovery_receipt(retained.request.action()) {
             return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
         }
         validate_recovery_reservation_key(&retained, &pending.reservation_key)?;
@@ -2459,7 +2475,8 @@ fn validate_recovery_terminal(
     request: &OperatorRecoveryRequestV1,
     result: &aos_proto::aos::sandbox::v1::OperatorRecoveryResult,
 ) -> Result<(), InvalidObservationClientAdapter> {
-    if result.resource_id.as_slice() != request.resource_id()
+    if requires_physical_recovery_receipt(request.action())
+        || result.resource_id.as_slice() != request.resource_id()
         || result.action.to_i32() != request.action()
         || result.resource_version.is_empty()
         || result.resource_version.len() > crate::cli_model::MAXIMUM_CLI_OPAQUE_BYTES
@@ -2470,6 +2487,11 @@ fn validate_recovery_terminal(
     crate::cli_model::CheckedOperatorRecoveryResultV1::try_from(result.clone())
         .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
     Ok(())
+}
+
+fn requires_physical_recovery_receipt(action: i32) -> bool {
+    action == OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RECONCILE as i32
+        || action == OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
 }
 
 fn recovery_terminal_records(
@@ -6471,5 +6493,21 @@ mod tests {
         assert_eq!(report.steps().len(), 2);
         assert_eq!(report.steps()[0].outcome(), ReconcileOutcome::RetryPending);
         assert_eq!(report.steps()[1].outcome(), ReconcileOutcome::EffectApplied);
+    }
+
+    #[test]
+    fn effectful_operator_recovery_requires_physical_receipt() {
+        assert!(!requires_physical_recovery_receipt(
+            OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY as i32
+        ));
+        assert!(!requires_physical_recovery_receipt(
+            OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_ABANDON as i32
+        ));
+        assert!(requires_physical_recovery_receipt(
+            OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RECONCILE as i32
+        ));
+        assert!(requires_physical_recovery_receipt(
+            OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
+        ));
     }
 }

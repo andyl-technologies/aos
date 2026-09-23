@@ -24,6 +24,7 @@ pub mod format;
 pub mod guardian_binding;
 pub mod identity;
 pub mod model;
+pub mod operator_recovery_effect;
 pub mod ownership_lease;
 pub mod public_attach_grant;
 pub mod publisher;

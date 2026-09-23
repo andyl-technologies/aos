@@ -329,9 +329,15 @@ the outstanding work concrete:
   terminal `PermanentlyBlocked` operation: it atomically records the exact
   operator acknowledgment without changing the target or claiming cleanup.
   `CommittedWithResidualCleanup` and nonterminal targets remain ineligible.
-  Reconcile and Repair still lack protected owner effect/receipt protocols and
-  are rejected before admission. Connect those methods before claiming the
-  public mutation family is complete.
+  Reconcile and Repair have a versioned, domain-separated signed intent and
+  physical owner receipt schema binding target/version/action/evidence,
+  current authorization, effect attempt, terminal result, and before/after
+  inventory. The generic dormant recovery owner also rejects those actions
+  before issuance and refuses their terminal results until receipt verification
+  is integrated. No physical owner, dedicated key provisioning, or protected
+  currentness verifier yet implements this schema, so public admission remains
+  closed. Connect those owners before claiming the public mutation family is
+  complete.
 - Execution control is not a same-process owner call. Public admission now
   separates OpenSSH attach from checked resize and signal effects, and the
   dormant Host backend can bind issued authorize, resize, signal, cancel, and
