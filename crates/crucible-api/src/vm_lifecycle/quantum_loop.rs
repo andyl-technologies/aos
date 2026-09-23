@@ -23,6 +23,8 @@ use checkpoint_capture::{
     prepare_exact_checkpoint_targets, retained_exact_ram_parent_for_committed,
 };
 use crucible::BackendRngEvidence;
+use debug_policy::private_gateway_listener_request;
+#[cfg(test)]
 use debug_policy::trusted_debug_listener;
 use host_concurrent::merge_host_concurrent_outcomes;
 pub(super) const MAX_PRODUCTION_QEMU_HOST_WORKERS: usize = 64;
@@ -558,6 +560,20 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .append_noncanonical_debug_event_log_entries(entries)
     }
 
+    fn authorize_noncanonical_guest_write(&mut self) -> Result<(), SchedulerError> {
+        let gateway =
+            self.debug_gateway
+                .as_mut()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("private debugger gateway is not attached"),
+                })?;
+        gateway
+            .authorize_noncanonical_guest_write()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("authorize noncanonical guest write at private gateway: {error}"),
+            })
+    }
+
     fn activate_debug_guest(&mut self, node: NodeId) -> Result<(), SchedulerError> {
         self.inner.activate_debug_guest(node)
     }
@@ -613,7 +629,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from("production debugger configuration is unavailable"),
                 })?;
-        let requested = trusted_debug_listener(configured, &listen)?;
+        private_gateway_listener_request(configured, &listen)?;
         let executable = self
             .config
             .debug_gateway_executable
@@ -621,9 +637,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from("standalone debugger gateway executable is unavailable"),
             })?;
-        let mut gateway = DebugGatewayProcess::launch_with_trusted_loopback(executable, requested)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("launch production debugger gateway: {error}"),
+        let mut gateway =
+            DebugGatewayProcess::launch_with_owner_unix(executable).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("launch production debugger gateway: {error}"),
+                }
             })?;
         gateway.promote_backend(&backend_path).map_err(|error| {
             SchedulerError::BoundaryViolation {
@@ -632,13 +650,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         })?;
         let actual =
             gateway
-                .operator_listen()
+                .operator_endpoint()
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from(
                         "production debugger gateway did not bind a GDB listener",
                     ),
                 })?;
-        let actual_listen = GdbListen::new(actual.to_string()).map_err(SchedulerError::Backend)?;
+        let actual_listen = GdbListen::new(actual.to_owned()).map_err(SchedulerError::Backend)?;
         let info = GdbAttachInfo::new(
             node,
             backend_path.to_string_lossy().into_owned(),

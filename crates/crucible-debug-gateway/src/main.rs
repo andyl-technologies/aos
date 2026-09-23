@@ -10,18 +10,19 @@
 //!
 //! A malformed or disconnected control client is isolated to its connection;
 //! the process and active backend remain available for the next client. The
-//! stable operator listener relays allowlisted read-only RSP traffic across
-//! backend replacement. Scheduler run control is queued for the host session;
-//! guest channels fail closed until their shared-memory routes are active.
+//! private operator Unix listener relays allowlisted read-only RSP traffic
+//! across backend replacement. An owner control transition admits guest writes
+//! only after a noncanonical fork. Direct run control remains denied; guest
+//! channels fail closed until their shared-memory routes are active.
 
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,21 +41,21 @@ mod scheduler_ownership;
 
 use scheduler_ownership::{
     acknowledge_scheduler_response, finish_gdb_scheduler_run, interrupt_scheduler_backend,
-    poll_scheduler_run_control, queue_scheduler_run_control, scheduler_lease,
+    poll_scheduler_run_control, scheduler_lease,
 };
 
 struct GatewayProcess {
     model: DebugGateway,
     active: Option<(BackendGeneration, UnixStream)>,
     prepared: Option<(BackendGeneration, UnixStream, u64)>,
-    operator_listen: Option<SocketAddr>,
-    operator_writer: Option<TcpStream>,
+    operator_listen: Option<String>,
+    operator_writer: Option<UnixStream>,
+    branch_guest_write_enabled: bool,
     operator_admission_paused: bool,
     rsp_responses_pending: usize,
     rsp_state_epoch: u64,
     replacement_epoch: u64,
     operator_epoch: u32,
-    next_run_control_stream: u32,
     run_control_requests: VecDeque<(u32, u32, Vec<u8>)>,
     run_control_inflight: Option<(u32, u32, Vec<u8>)>,
     run_control_completed: Option<(u32, Vec<u8>, Vec<u8>)>,
@@ -67,19 +68,19 @@ const QEMU_RSP_TIMEOUT: Duration = Duration::from_secs(5);
 const RSP_RELAY_POLL_TIMEOUT: Duration = Duration::from_millis(10);
 
 impl GatewayProcess {
-    fn new(operator_listen: Option<SocketAddr>) -> Self {
+    fn new(operator_listen: Option<String>) -> Self {
         Self {
             model: DebugGateway::new(),
             active: None,
             prepared: None,
             operator_listen,
             operator_writer: None,
+            branch_guest_write_enabled: false,
             operator_admission_paused: false,
             rsp_responses_pending: 0,
             rsp_state_epoch: 0,
             replacement_epoch: 0,
             operator_epoch: 0,
-            next_run_control_stream: 0,
             run_control_requests: VecDeque::new(),
             run_control_inflight: None,
             run_control_completed: None,
@@ -126,6 +127,7 @@ impl GatewayProcess {
                     .commit_backend(generation)
                     .map_err(|error| error.to_string())?;
                 self.active = Some((generation, stream));
+                self.branch_guest_write_enabled = false;
                 self.operator_admission_paused = false;
                 self.replacement_epoch = self.replacement_epoch.saturating_add(1);
                 response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes())
@@ -160,9 +162,26 @@ impl GatewayProcess {
                     DebugGatewayMessageKind::OperatorStatusAck,
                     0,
                     self.operator_listen
-                        .map(|listen| listen.to_string().into_bytes())
+                        .as_ref()
+                        .map(|listen| listen.as_bytes().to_vec())
                         .unwrap_or_default(),
                 )
+            }
+            DebugGatewayMessageKind::OperatorAccess => {
+                if frame.payload != b"branch-guest-write" {
+                    return Err(String::from("unsupported operator access transition"));
+                }
+                if !self
+                    .operator_listen
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("unix:"))
+                {
+                    return Err(String::from(
+                        "guest writes require a private Unix operator endpoint",
+                    ));
+                }
+                self.branch_guest_write_enabled = true;
+                response(DebugGatewayMessageKind::Ack, 0, Vec::new())
             }
             DebugGatewayMessageKind::SchedulerLease => Err(String::from(
                 "scheduler lease must use the ownership dispatcher",
@@ -518,7 +537,7 @@ fn connect_candidate(endpoint: &QemuRspEndpoint) -> Result<UnixStream, String> {
 
 fn spawn_operator_listener(
     process: SharedGatewayProcess,
-    listener: TcpListener,
+    listener: UnixListener,
 ) -> Result<(), String> {
     std::thread::Builder::new()
         .name(String::from("crucible-debug-gdb-listener"))
@@ -527,7 +546,7 @@ fn spawn_operator_listener(
         .map_err(|error| format!("spawn operator gdb listener: {error}"))
 }
 
-fn operator_listener_loop(process: &SharedGatewayProcess, listener: TcpListener) {
+fn operator_listener_loop(process: &SharedGatewayProcess, listener: UnixListener) {
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
@@ -661,7 +680,7 @@ fn restore_backend_after_operator_disconnect(
 
 fn serve_operator_connection(
     process: &SharedGatewayProcess,
-    mut operator: TcpStream,
+    mut operator: UnixStream,
 ) -> Result<(), String> {
     operator
         .set_read_timeout(Some(RSP_RELAY_POLL_TIMEOUT))
@@ -810,7 +829,7 @@ fn handle_operator_rsp_unit(
             }
             write_active_backend(process, b"-").map(|_| ())
         }
-        RspUnit::Interrupt => queue_scheduler_run_control(process, vec![0x03], false),
+        RspUnit::Interrupt => write_rsp_rejection(process, b"E22", false),
         RspUnit::Packet(packet) => match classify_rsp_packet(&packet) {
             RspDisposition::ForwardToQemu => {
                 if !admit_operator_request(process, &packet)? {
@@ -819,13 +838,29 @@ fn handle_operator_rsp_unit(
                 pending_state.push_back(packet);
                 Ok(())
             }
-            RspDisposition::SchedulerRunControl => {
-                queue_scheduler_run_control(process, rsp_payload(&packet).to_vec(), true)
+            RspDisposition::SchedulerRunControl => write_rsp_rejection(process, b"E22", true),
+            RspDisposition::RejectReadOnly if branch_guest_write_allowed(process, &packet)? => {
+                if !admit_operator_request(process, &packet)? {
+                    return write_rsp_rejection(process, b"E20", true);
+                }
+                pending_state.push_back(packet);
+                Ok(())
             }
             RspDisposition::RejectReadOnly => write_rsp_rejection(process, b"E22", true),
             RspDisposition::RejectUnsupported => write_rsp_rejection(process, b"E01", true),
         },
     }
+}
+
+fn branch_guest_write_allowed(
+    process: &SharedGatewayProcess,
+    packet: &[u8],
+) -> Result<bool, String> {
+    let payload = rsp_payload(packet);
+    let guest_write = matches!(payload.first(), Some(b'G' | b'P' | b'M' | b'X'));
+    with_gateway(process, |gateway| {
+        Ok(guest_write && gateway.branch_guest_write_enabled)
+    })
 }
 
 fn admit_operator_request(process: &SharedGatewayProcess, packet: &[u8]) -> Result<bool, String> {
@@ -966,9 +1001,9 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         | DebugGatewayMessageKind::BackendCommit
         | DebugGatewayMessageKind::BackendAbort
         | DebugGatewayMessageKind::BackendStatus => DebugGatewayErrorCode::BackendUnavailable,
-        DebugGatewayMessageKind::OperatorStatus | DebugGatewayMessageKind::SchedulerLease => {
-            DebugGatewayErrorCode::InvalidRequest
-        }
+        DebugGatewayMessageKind::OperatorStatus
+        | DebugGatewayMessageKind::OperatorAccess
+        | DebugGatewayMessageKind::SchedulerLease => DebugGatewayErrorCode::InvalidRequest,
         DebugGatewayMessageKind::ExecOpen
         | DebugGatewayMessageKind::PtyOpen
         | DebugGatewayMessageKind::SshOpen
@@ -988,7 +1023,7 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
 
 struct GatewayArguments {
     control_socket: PathBuf,
-    gdb_listen: Option<SocketAddr>,
+    owner_gdb_socket: Option<PathBuf>,
 }
 
 fn gateway_arguments() -> Result<GatewayArguments, String> {
@@ -999,22 +1034,13 @@ fn gateway_arguments() -> Result<GatewayArguments, String> {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("crucible-debug-gateway");
     let mut control_socket = None;
-    let mut gdb_listen = None;
-    let mut allow_unauthenticated_gdb = false;
+    let mut owner_gdb_socket = None;
     while let Some(flag) = arguments.next() {
-        if flag == std::ffi::OsStr::new("--allow-unauthenticated-gdb") {
-            allow_unauthenticated_gdb = true;
-            continue;
-        }
         let value = arguments.next().ok_or_else(|| gateway_usage(program))?;
         if flag == std::ffi::OsStr::new("--control-socket") && control_socket.is_none() {
             control_socket = Some(PathBuf::from(value));
-        } else if flag == std::ffi::OsStr::new("--gdb-listen") {
-            gdb_listen = Some(
-                value
-                    .into_string()
-                    .map_err(|_| String::from("gdb listen address is not UTF-8"))?,
-            );
+        } else if flag == std::ffi::OsStr::new("--owner-gdb-socket") && owner_gdb_socket.is_none() {
+            owner_gdb_socket = Some(PathBuf::from(value));
         } else {
             return Err(gateway_usage(program));
         }
@@ -1023,54 +1049,46 @@ fn gateway_arguments() -> Result<GatewayArguments, String> {
     if !control_socket.is_absolute() {
         return Err(String::from("control socket path must be absolute"));
     }
-    if gdb_listen.is_some() && !allow_unauthenticated_gdb {
-        return Err(String::from(
-            "--gdb-listen requires explicit --allow-unauthenticated-gdb trusted-loopback policy",
-        ));
+    if owner_gdb_socket
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(String::from("owner GDB socket path must be absolute"));
     }
-    let gdb_listen = allow_unauthenticated_gdb
-        .then(|| gdb_listen.unwrap_or_else(|| String::from("127.0.0.1:0")))
-        .map(|listen| {
-            let listen = listen
-                .parse::<SocketAddr>()
-                .map_err(|error| format!("parse gdb listen address: {error}"))?;
-            if !listen.ip().is_loopback() {
-                return Err(String::from(
-                    "standalone gateway gdb listener must use a loopback address",
-                ));
-            }
-            Ok(listen)
-        })
-        .transpose()?;
     Ok(GatewayArguments {
         control_socket,
-        gdb_listen,
+        owner_gdb_socket,
     })
 }
 
 fn gateway_usage(program: &str) -> String {
     format!(
-        "usage: {program} --control-socket <absolute-path> [--allow-unauthenticated-gdb [--gdb-listen <loopback-address>]]"
+        "usage: {program} --control-socket <absolute-path> [--owner-gdb-socket <absolute-path>]"
     )
 }
 
 fn run() -> Result<(), String> {
     let arguments = gateway_arguments()?;
-    let gdb_listener = arguments
-        .gdb_listen
-        .map(|listen| {
-            TcpListener::bind(listen)
-                .map_err(|error| format!("bind operator gdb listener {listen}: {error}"))
+    let owner_listener = arguments
+        .owner_gdb_socket
+        .as_ref()
+        .map(|path| {
+            require_private_socket_parent(path)?;
+            let listener = UnixListener::bind(path)
+                .map_err(|error| format!("bind owner gdb socket {}: {error}", path.display()))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |error| format!("restrict owner gdb socket {}: {error}", path.display()),
+            )?;
+            Ok::<_, String>(listener)
         })
         .transpose()?;
-    let operator_listen = gdb_listener
+    let operator_listen = arguments
+        .owner_gdb_socket
         .as_ref()
-        .map(TcpListener::local_addr)
-        .transpose()
-        .map_err(|error| format!("inspect operator gdb listener: {error}"))?;
+        .map(|path| format!("unix:{}", path.display()));
     let process = Arc::new(Mutex::new(GatewayProcess::new(operator_listen)));
-    if let Some(gdb_listener) = gdb_listener {
-        spawn_operator_listener(process.clone(), gdb_listener)?;
+    if let Some(owner_listener) = owner_listener {
+        spawn_operator_listener(process.clone(), owner_listener)?;
     }
     let listener = UnixListener::bind(&arguments.control_socket).map_err(|error| {
         format!(
@@ -1086,6 +1104,24 @@ fn run() -> Result<(), String> {
                 bounded_diagnostic(&error)
             );
         }
+    }
+    Ok(())
+}
+
+fn require_private_socket_parent(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| String::from("owner GDB socket has no parent"))?;
+    let metadata = std::fs::metadata(parent).map_err(|error| {
+        format!(
+            "inspect owner GDB socket directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(String::from(
+            "owner GDB socket directory must be private (0700)",
+        ));
     }
     Ok(())
 }
