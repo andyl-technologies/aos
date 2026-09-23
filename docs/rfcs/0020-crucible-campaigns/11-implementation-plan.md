@@ -2082,6 +2082,9 @@ manual Phase 6 and Phase 7 evidence recorded below.
   child readiness authentication, and invalidation rules.
 - [ ] **T-CAM-7.3** Implement copy-on-write host continuation clones and exact
   pairing with each QEMU child.
+  Immutable event-log and signal-artifact closure bytes share backing across
+  siblings and through child admission. Mutable scheduler and fault state still
+  require per-child restoration; the complete clone-cost gate remains open.
 - [ ] **T-CAM-7.4** Implement atomic multi-node world fork with failed-node and
   non-VM I/O-node semantics.
 - [x] **T-CAM-7.5** Integrate `HotCheckpointManager`, hotness scoring,
