@@ -651,6 +651,7 @@ impl DormantSandboxRequestV1 {
                     })
             }
             K::ExecutionControl(r) => {
+                // The guest-agent resize effect carries each dimension as u16.
                 nonempty(&r.execution_id)
                     && mutation_with_incarnation(r.mutation.as_option())
                     && match r.action.to_i32() {
@@ -660,7 +661,9 @@ impl DormantSandboxRequestV1 {
                                 && r.signal.to_i32() == 0
                         }
                         2 => {
-                            r.terminal_rows > 0 && r.terminal_columns > 0 && r.signal.to_i32() == 0
+                            (1..=u32::from(u16::MAX)).contains(&r.terminal_rows)
+                                && (1..=u32::from(u16::MAX)).contains(&r.terminal_columns)
+                                && r.signal.to_i32() == 0
                         }
                         3 => {
                             r.terminal_rows == 0
@@ -1233,6 +1236,7 @@ fn valid_command(command: &wire::Command) -> bool {
         && !command.sandbox_shell.is_empty()
         && command.sandbox_shell.len() <= MAXIMUM_EXEC_ARGUMENT_BYTES
         && !command.sandbox_shell.contains(&0);
+    // The runtime execution effect encodes PTY geometry as two u16 values.
     let io_shape_is_valid = match command.io_mode.to_i32() {
         1 => {
             !command.allocate_terminal
@@ -1242,8 +1246,8 @@ fn valid_command(command: &wire::Command) -> bool {
         }
         2 => {
             command.allocate_terminal
-                && command.terminal_rows > 0
-                && command.terminal_columns > 0
+                && (1..=u32::from(u16::MAX)).contains(&command.terminal_rows)
+                && (1..=u32::from(u16::MAX)).contains(&command.terminal_columns)
                 && command.detached_capture_bytes == 0
         }
         3 => {

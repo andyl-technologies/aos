@@ -561,6 +561,7 @@ fn validate_command(
         .as_known()
         .filter(|io| *io != ExecutionIoMode::EXECUTION_IO_MODE_UNSPECIFIED)
         .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
+    // Keep retained public resources representable by the runtime effect format.
     let io_is_valid = match io {
         ExecutionIoMode::EXECUTION_IO_MODE_STREAM => {
             !command.allocate_terminal
@@ -570,8 +571,8 @@ fn validate_command(
         }
         ExecutionIoMode::EXECUTION_IO_MODE_PTY => {
             command.allocate_terminal
-                && command.terminal_rows > 0
-                && command.terminal_columns > 0
+                && (1..=u32::from(u16::MAX)).contains(&command.terminal_rows)
+                && (1..=u32::from(u16::MAX)).contains(&command.terminal_columns)
                 && command.detached_capture_bytes == 0
         }
         ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE => {
