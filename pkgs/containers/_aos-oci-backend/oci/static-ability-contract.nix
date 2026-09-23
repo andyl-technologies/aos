@@ -132,7 +132,9 @@
         }
         {
           name = "abilityResolution${toString packageIndex}Source";
-          path = entry.payload.drvPath;
+          # A source .drv is evidence; its inputs may include deliberately
+          # unbuilt evaluator probes, whose outputs must not be realized.
+          path = builtins.unsafeDiscardOutputDependency entry.payload.drvPath;
         }
       ]
       ++ builtins.map (selected: {
