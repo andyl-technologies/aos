@@ -758,7 +758,7 @@ impl OfflineAssertionChecker {
                 Ok(prefix) => prefix,
                 Err(OfflineAssertionCheckError::ConditionEvaluation(
                     ConditionEvaluationError::FutureEventLogEntry { .. },
-                )) if observation_awaits_atomic_evaluation_boundary(event_log, index)
+                )) if entry_awaits_atomic_evaluation_boundary(event_log, index)
                     && (!require_recorded_offsets || recorded_offset.is_none()) =>
                 {
                     continue;
@@ -772,27 +772,45 @@ impl OfflineAssertionChecker {
     }
 }
 
-/// Reports whether an observation belongs to an explicitly bounded atomic batch.
-fn observation_awaits_atomic_evaluation_boundary(
+/// Reports whether an unpublished entry belongs to a completed atomic batch.
+fn entry_awaits_atomic_evaluation_boundary(
     event_log: &[SchedulerEventLogEntry],
     index: usize,
 ) -> bool {
-    if !matches!(
-        event_log[index].payload(),
-        SchedulerEventLogPayload::Observable(_)
-    ) {
-        return false;
+    let trailing_batch = &event_log[index + 1..];
+    match event_log[index].payload() {
+        SchedulerEventLogPayload::Observable(_) => trailing_batch
+            .iter()
+            .find(|entry| !matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
+            .is_some_and(|entry| {
+                matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::EvaluationBoundary(_)
+                )
+            }),
+        SchedulerEventLogPayload::ResolvedHappening(_) | SchedulerEventLogPayload::Decision(_) => {
+            // Quantum EMIT publishes causal entries and their evaluation boundary
+            // in one segment. A physical delivery can precede the prior point,
+            // but no reader can observe its intermediate flat prefix.
+            trailing_batch
+                .iter()
+                .find(|entry| {
+                    !matches!(
+                        entry.payload(),
+                        SchedulerEventLogPayload::ResolvedHappening(_)
+                            | SchedulerEventLogPayload::Decision(_)
+                            | SchedulerEventLogPayload::Observable(_)
+                    )
+                })
+                .is_some_and(|entry| {
+                    matches!(
+                        entry.payload(),
+                        SchedulerEventLogPayload::EvaluationBoundary(_)
+                    )
+                })
+        }
+        _ => false,
     }
-
-    event_log[index + 1..]
-        .iter()
-        .find(|entry| !matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
-        .is_some_and(|entry| {
-            matches!(
-                entry.payload(),
-                SchedulerEventLogPayload::EvaluationBoundary(_)
-            )
-        })
 }
 
 /// Retained assertion-checking view of a recorded scheduler event log.
