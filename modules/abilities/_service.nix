@@ -106,9 +106,14 @@
     else "@base";
 
   project = name: let
+    lifecycleDefinitions =
+      provenance.definitionsOfNestedAttr ["aos" "services"] [name "lifecycle"];
     service = config.aos.services.${name};
   in
-    lib.optional (service.lifecycle != null) (serviceManagement.projectService {
+    # A system module may configure a host package's service while the initrd
+    # evaluates the same source graph without that package's module. Only a
+    # lifecycle authored in this stage can turn it into an ability consumer.
+    lib.optional (lifecycleDefinitions != [] && service.lifecycle != null) (serviceManagement.projectService {
       inherit config lib name;
       consumerInstance = service.consumerInstance;
       derivedProvenance = sourceForService name;
