@@ -1425,7 +1425,11 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
         ))
     }
 
-    /// Consumes current protected postcommit authority into one pin transition.
+    /// Consumes current postcommit authority into one physical pin transition.
+    ///
+    /// A logical renewal changes only lease authority and cannot acquire a
+    /// second physical owner pin. The requested pin must be the one changed by
+    /// this event, not an older active pin or retained release tombstone.
     ///
     /// # Errors
     ///
@@ -1449,18 +1453,29 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
                 return false;
             }
             decode_atomic_object_record(partition, &body[descriptor_end..], limits).is_ok_and(
-                |payload| match action {
-                    super::CacheOwnerPinActionV1::Acquire => payload.pins.iter().any(|pin| {
-                        pin.id.as_bytes() == id.as_bytes()
-                            && pin.partition == partition
-                            && pin.object == descriptor
-                    }),
-                    super::CacheOwnerPinActionV1::Release => {
-                        payload.released_pins.iter().any(|released| {
-                            released.pin.id.as_bytes() == id.as_bytes()
-                                && released.pin.partition == partition
-                                && released.pin.object == descriptor
-                        })
+                |payload| {
+                    if payload.record.kind != CacheRecordKindV1::Pin {
+                        return false;
+                    }
+                    match action {
+                        super::CacheOwnerPinActionV1::Acquire => {
+                            payload.record.state == 1
+                                && payload.pins.iter().any(|pin| {
+                                    pin.id.as_bytes() == id.as_bytes()
+                                        && pin.partition == partition
+                                        && pin.object == descriptor
+                                        && pin.evidence == payload.record.authority
+                                })
+                        }
+                        super::CacheOwnerPinActionV1::Release => {
+                            payload.record.state == 2
+                                && payload.released_pins.iter().any(|released| {
+                                    released.pin.id.as_bytes() == id.as_bytes()
+                                        && released.pin.partition == partition
+                                        && released.pin.object == descriptor
+                                        && released.drain.digest() == payload.record.authority
+                                })
+                        }
                     }
                 },
             )
