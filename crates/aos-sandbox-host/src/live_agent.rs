@@ -42,7 +42,8 @@ use aos_sandbox_core::runtime_backend::{
 use aos_sandbox_core::{DecodeLimits, ObjectDigest, decode_execution_spec_v1};
 use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
-use aos_systemd::SandboxUnitSpec;
+use aos_sandbox_protocol::ValidatedAssignmentFence;
+use aos_systemd::{SandboxUnitName, SandboxUnitSpec};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use rustix::fs::{Mode, OFlags, open, openat};
@@ -381,10 +382,14 @@ impl HostAgentGuestLaunchDescriptorsV1 {
     pub fn bind_unit_spec(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
+        assignment: &ValidatedAssignmentFence,
         spec: SandboxUnitSpec,
     ) -> Result<SandboxUnitSpec, HostAgentLiveErrorV1> {
         claim.revalidate()?;
-        if claim.currentness() != &self.currentness {
+        if claim.currentness() != &self.currentness
+            || !matches_assignment(claim, assignment)
+            || spec.name() != &SandboxUnitName::from_incarnation(*assignment.incarnation_id())
+        {
             return Err(HostAgentLiveErrorV1::Binding);
         }
         let spec = spec.with_guest_agent_descriptors(
@@ -415,10 +420,14 @@ impl HostAgentLaunchHandoffV1 {
     /// or failure to create and seal the private descriptors.
     pub fn prepare(
         claim: &DormantRuntimeExecutionClaimV1<'_>,
+        assignment: &ValidatedAssignmentFence,
         record: GuestAgentLaunchRecordV1,
         attach_trust: HostAgentProtectedAttachTrustV1,
     ) -> Result<Self, HostAgentLiveErrorV1> {
         claim.revalidate()?;
+        if !matches_assignment(claim, assignment) {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
         let currentness = *claim.currentness();
         let peer = claim.agent_peer();
         let runtime = agent_runtime(&currentness)?;
@@ -461,6 +470,18 @@ impl HostAgentLaunchHandoffV1 {
     pub fn into_parts(self) -> (HostAgentPendingSessionV1, HostAgentGuestLaunchDescriptorsV1) {
         (self.pending, self.guest)
     }
+}
+
+fn matches_assignment(
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+    assignment: &ValidatedAssignmentFence,
+) -> bool {
+    let current = claim.currentness().runtime().currentness();
+    current.sandbox().as_bytes() == assignment.sandbox_id()
+        && current.incarnation().as_bytes() == assignment.incarnation_id()
+        && current.assignment_epoch().get() == assignment.assignment_epoch()
+        && current.assignment_digest().as_bytes() == assignment.assignment_digest()
+        && current.desired_generation().get() == assignment.desired_generation()
 }
 
 /// Retains the Host endpoint until the launched guest proves its secret.
