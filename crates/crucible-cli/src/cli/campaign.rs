@@ -50,7 +50,7 @@ use explain::{
     validate_campaign_attempt_explain_command, validate_campaign_explain_command,
     validate_campaign_finding_explain_command,
 };
-use finding_bundle::{export_finding_bundle, verify_exported_finding};
+use finding_bundle::{export_finding_bundle, run_finding_bundle_midpoint, verify_exported_finding};
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
 use lineage::{compile_campaign_lineage, render_campaign_lineage_compilation};
 use object::{query_campaign_object, render_campaign_object, validate_campaign_object_basis};
@@ -461,6 +461,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             }
             CampaignFindingBundleCommand::Verify(verify) => {
                 verify_exported_finding(cli, verify, cli.output_format())?
+            }
+            CampaignFindingBundleCommand::Midpoint(midpoint) => {
+                run_finding_bundle_midpoint(cli, midpoint)?;
+                return Ok(());
             }
         };
         println!("{report}");

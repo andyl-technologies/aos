@@ -85,9 +85,19 @@ pub(super) async fn run_remote_debug_relay_async(
     node: crucible::NodeId,
     gdb_listen: std::net::SocketAddr,
 ) -> Result<(), CliError> {
+    let client = remote_rpc_client(daemon, backend_plan)?;
+    run_debug_relay_with_client_async(&client, session, node, gdb_listen).await
+}
+
+/// Relays one authenticated debug session over a process-local GDB listener.
+pub(crate) async fn run_debug_relay_with_client_async(
+    client: &RpcControlClient,
+    session: SessionRef,
+    node: crucible::NodeId,
+    gdb_listen: std::net::SocketAddr,
+) -> Result<(), CliError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let client = remote_rpc_client(daemon, backend_plan)?;
     let acquisition = crucible_api::DebugControllerAcquisition::new();
     let lease = client
         .acquire_debug_controller(session, &acquisition)

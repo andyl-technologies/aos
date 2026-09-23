@@ -423,10 +423,12 @@ struct CampaignFindingBundleArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFindingBundleCommand {
-    /// Export one finding and its exact executable archive from a stopped owner.
+    /// Export one finding and its complete executable archive from a stopped owner.
     Export(CampaignFindingBundleExportArgs),
     /// Verify archived evidence offline; optionally reproduce in local QEMU.
     Verify(CampaignFindingBundleVerifyArgs),
+    /// Open an archived exact checkpoint in a private read-only QEMU session.
+    Midpoint(CampaignFindingBundleMidpointArgs),
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
@@ -468,6 +470,25 @@ struct CampaignFindingBundleVerifyArgs {
     /// Repeat the retained production boundary in a fresh local QEMU lifecycle.
     #[arg(long, action = ArgAction::SetTrue)]
     exact: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleMidpointArgs {
+    /// Exported finding bundle directory.
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Retained replay pass used for packaged guest and fault evidence.
+    #[arg(long, value_enum, default_value_t = CampaignFindingBundleRole::VerificationOriginal)]
+    role: CampaignFindingBundleRole,
+    /// Attach this node's gdbstub at the retained midpoint.
+    #[arg(long, value_name = "ID", required = true)]
+    node: String,
+    /// Listen for read-only GDB clients on this loopback address.
+    #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:0")]
+    gdb_listen: String,
+    /// Maximum authenticated bytes admitted for one exact checkpoint closure.
+    #[arg(long, default_value_t = 1_073_741_824, value_name = "BYTES")]
+    maximum_checkpoint_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]

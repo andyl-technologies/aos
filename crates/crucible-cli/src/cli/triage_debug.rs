@@ -16,6 +16,7 @@ mod triage;
 
 pub(crate) use debug_relay::{plan_debug_invocation, run_remote_debug_relay};
 pub(crate) use debug_terminal::parse_debug_reverse_condition;
+pub(crate) use debug_terminal::run_debug_relay_with_client_async;
 #[cfg(test)]
 pub(crate) use debug_terminal::{
     GUEST_TRANSCRIPT_HEADER, GuestTranscriptDirection, GuestTranscriptWriter,
