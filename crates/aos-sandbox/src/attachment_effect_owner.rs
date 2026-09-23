@@ -35,6 +35,9 @@ use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
 };
+use crate::attachment_verification::{
+    self, AttachmentVerificationError, DurableAttachmentVerificationV1,
+};
 use crate::destination_slot_effect::{
     self, CompletedCurrentDestinationSlotAttemptV1, DestinationSlotEffectError,
     DurableCurrentDestinationSlotAttemptV1, PreparedCurrentDestinationSlotDispatchV1,
@@ -604,6 +607,32 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         )
     }
 
+    /// Closes exact Consume custody only after post-attach verification.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-completable source plan, missing exact durable attempt,
+    /// stale paired inventory, or failed protected completion commit.
+    pub fn complete_current_source_consume<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<DurableAttachmentSourceCompletionV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if !matches!(
+            plan.action(),
+            AttachmentSourceActionV1::CompleteConsume { .. }
+        ) {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let attachment = plan.desired().intent().id();
+        let attempt = attachment_source::recover_open_attempt(self.journal, attachment)?
+            .ok_or(AttachmentSourceError::Conflict)?;
+        attachment_source::record_completion(self.journal, attempt, plan, clock)
+    }
+
     /// Joins a fresh Mount resource inventory to one current namespace target.
     ///
     /// # Errors
@@ -882,6 +911,26 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             .ensure_protected_authority()
             .map_err(AttachmentDesiredStateError::from)?;
         attachment_reconciliation::reconcile_current(self.journal, desired, inventory, clock)
+    }
+
+    /// Records exact installed kernel evidence selected by fresh Mount reconciliation.
+    ///
+    /// The write invalidates the selected inventory snapshot. A later fresh
+    /// authenticated inventory must independently report Ready.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Verify action, stale protected target or inventory,
+    /// conflicting installed evidence, or failed protected durability.
+    pub fn verify_current_mount_installation<T>(
+        &mut self,
+        reconciliation: CurrentAttachmentReconciliationV1,
+        clock: &mut T,
+    ) -> Result<DurableAttachmentVerificationV1, AttachmentVerificationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_verification::record_current(self.journal, reconciliation, clock)
     }
 
     /// Builds an exact Host-authorized Mount catalog query from reconciliation.
