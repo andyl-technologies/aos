@@ -187,6 +187,26 @@ pub enum PublicCacheUnpinProgressErrorV1 {
     Recovery(#[from] PublicCacheUnpinRecoveryErrorV1),
 }
 
+/// Derives the stable protected acquisition transaction from its public operation.
+///
+/// A retry or cold recovery must name the same protected transaction even if
+/// current partition selection changes. The acquisition and release domains
+/// are distinct, and the reserved all-zero journal identity is remapped.
+#[must_use]
+pub fn public_cache_pin_transaction_id_v1(operation: OperationId) -> [u8; 16] {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(b"aos.sandbox.cache.public-pin-transaction.v1\0")
+        .chain_update(operation.as_bytes())
+        .finalize()
+        .into();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&digest[..16]);
+    if transaction_id == [0; 16] {
+        transaction_id[15] = 1;
+    }
+    transaction_id
+}
+
 /// Derives the stable protected release transaction for one exact logical pin.
 ///
 /// A release tombstone retains the pin but not the public operation that first
@@ -381,6 +401,7 @@ pub fn execute_public_cache_unpin_consumer_v1(
 /// The partition is selected only from the protected resident catalog and
 /// authenticated View disclosure domain. The caller supplies source authority
 /// and retains the source journal through the protected commit-time recheck.
+/// The protected transaction identity is derived from `operation` for retry.
 ///
 /// # Errors
 ///
@@ -395,7 +416,6 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
-    transaction_id: [u8; 16],
     controller_node: NodeId,
     compiler_abi: [u8; 32],
     compilation_limits: CacheCompiledSourceLimitsV1,
@@ -419,7 +439,7 @@ pub fn execute_public_cache_pin_v1<S: ObjectSource>(
                 controller_node,
             )?;
             let result = protected.commit_public_logical_pin_acquisition(
-                transaction_id,
+                public_cache_pin_transaction_id_v1(operation),
                 &acquisition,
                 operation,
                 source_journal,
@@ -521,4 +541,22 @@ pub fn execute_public_cache_unpin_v1(
         outcome,
         settlement,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::OperationId;
+
+    use super::public_cache_pin_transaction_id_v1;
+
+    #[test]
+    fn public_pin_transaction_identity_is_restart_stable_and_operation_bound() {
+        let first = OperationId::from_bytes([0x31; 16]);
+        let second = OperationId::from_bytes([0x32; 16]);
+
+        let transaction = public_cache_pin_transaction_id_v1(first);
+        assert_ne!(transaction, [0; 16]);
+        assert_eq!(transaction, public_cache_pin_transaction_id_v1(first));
+        assert_ne!(transaction, public_cache_pin_transaction_id_v1(second));
+    }
 }
