@@ -120,6 +120,9 @@
   identityNames = builtins.sort builtins.lessThan (builtins.map (request: request.parameters.name) identityRequests);
 in
   assert builtins.all (name: builtins.hasAttr name requests) identityRequestNames;
+  assert requests ? "krb5:initialize-lifecycle";
+  assert requests ? "krb5:kdc-lifecycle";
+  assert !(requests ? "krb5:administration-lifecycle");
   assert builtins.all (assertion: assertion.assertion) fixedPoint.config.assertions;
   assert builtins.all (request: request.parameters.allocation == "managed") identityRequests;
   assert builtins.all (request: !(request.parameters ? requested_id)) identityRequests;
