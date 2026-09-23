@@ -22,8 +22,8 @@ mod node_executor;
 pub(crate) use node_executor::{QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer};
 #[cfg(target_os = "linux")]
 pub use node_executor::{
-    QemuReplayValidationExactAdmission, QemuReplayValidationExecutor,
-    QemuReplayValidationThinAdmission,
+    QemuReplayOracleThinObservation, QemuReplayValidationExactAdmission,
+    QemuReplayValidationExecutor, QemuReplayValidationThinAdmission,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
