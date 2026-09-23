@@ -7,6 +7,40 @@
 use super::*;
 
 impl QemuReplayValidationExecutor {
+    /// Reports whether the replay guest consumed every selected reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no replay node is active.
+    pub fn replay_selectable_reply_is_quiescent(&self) -> Result<bool, QemuVmRealizationError> {
+        self.active_node
+            .as_ref()
+            .map(QemuNode::selectable_reply_is_checkpoint_quiescent)
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "inspect guarded replay selectable reply",
+                message: String::from("no QEMU replay node is active"),
+            })
+    }
+
+    /// Returns the authenticated thin node instruction count for a physical replay step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation is stale or lacks the modeled node.
+    pub fn materialized_replay_icount(
+        &self,
+        thin: &QemuReplayOracleThinObservation,
+    ) -> Result<Icount, QemuVmRealizationError> {
+        self.validate_observation(
+            &thin.authority,
+            thin.generation,
+            self.thin_observation_generation,
+            "thin replay observation",
+        )?;
+        self.validate_active_replay_runtime(&thin.runtime)?;
+        replay_node_icount(&thin.runtime, &self.node)
+    }
+
     /// Drains guest choice requests at the current guarded replay boundary.
     ///
     /// # Errors
@@ -80,12 +114,7 @@ impl QemuReplayValidationExecutor {
         let mut runtime = thin.runtime;
         self.validate_active_replay_runtime(&runtime)?;
 
-        let current = runtime.node_icounts.get(&self.node).ok_or_else(|| {
-            QemuVmRealizationError::InvalidCheckpoint {
-                role: "thin replay physical boundary",
-                message: String::from("restored runtime has no instruction count for replay node"),
-            }
-        })?;
+        let current = replay_node_icount(&runtime, &self.node)?;
         if ceiling.retired <= current.retired {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "thin replay physical boundary",
@@ -212,6 +241,65 @@ impl QemuReplayValidationExecutor {
                 message: String::from("thin observation differs from the installed live runtime"),
             });
         }
+        Ok(())
+    }
+}
+
+fn replay_node_icount(
+    runtime: &RuntimeState,
+    node: &NodeId,
+) -> Result<Icount, QemuVmRealizationError> {
+    runtime.node_icounts.get(node).copied().ok_or_else(|| {
+        QemuVmRealizationError::InvalidCheckpoint {
+            role: "thin replay physical boundary",
+            message: String::from("restored runtime has no instruction count for replay node"),
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crucible::{Configuration, EventLogOffset, ScenarioDef, Schedule, SchedulerState};
+
+    use super::*;
+
+    #[test]
+    fn physical_replay_reads_only_the_owned_node_clock() -> Result<(), QemuVmRealizationError> {
+        let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+            "crucible.test.qemu.replay-physical",
+            "multi-node-clock",
+        ));
+        let local = NodeId {
+            name: String::from("local"),
+        };
+        let remote = NodeId {
+            name: String::from("remote"),
+        };
+        let runtime = RuntimeState {
+            id: ContentHash::from_bytes(b"multi-node physical replay"),
+            configuration: configuration.id(),
+            node_blobs: BTreeMap::new(),
+            node_icounts: BTreeMap::from([
+                (local.clone(), Icount { retired: 41 }),
+                (remote.clone(), Icount { retired: 900 }),
+            ]),
+            scheduler: SchedulerState::from_schedule(&Schedule::empty()),
+            event_log: EventLogOffset::default(),
+        };
+
+        assert_eq!(replay_node_icount(&runtime, &local)?.retired, 41);
+        assert_eq!(replay_node_icount(&runtime, &remote)?.retired, 900);
+        assert!(
+            replay_node_icount(
+                &runtime,
+                &NodeId {
+                    name: String::from("missing"),
+                },
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

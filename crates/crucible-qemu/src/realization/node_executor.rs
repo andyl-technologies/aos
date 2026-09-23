@@ -8,7 +8,7 @@
 
 use crucible::{
     AdvanceOutcome, Backend, BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash,
-    EventLog, EventLogOffset, Icount, NodeId, RuntimeState,
+    EventLog, Icount, NodeId, RuntimeState,
 };
 use std::error::Error as _;
 use std::sync::Arc;
@@ -448,36 +448,6 @@ impl QemuReplayValidationExecutor {
             generation,
         })
     }
-
-    /// Replays one bounded quantum on a guarded materialized exact runtime.
-    ///
-    /// The caller owns operational quantum charging. This method owns only the
-    /// live runtime/event-log exactness checks and backend transition.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuVmRealizationError`] when no node is active, the supplied
-    /// runtime is stale, or the backend cannot reach the requested boundary.
-    pub fn replay_materialized_one_quantum(
-        &mut self,
-        runtime: QemuReplayOracleThinObservation,
-        request: QemuVmReplayRequest,
-    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
-        self.validate_observation(
-            &runtime.authority,
-            runtime.generation,
-            self.thin_observation_generation,
-            "thin replay observation",
-        )?;
-        let runtime = self.replay_one_quantum_inner(runtime.runtime, request)?;
-        let generation = self.issue_observation_generation()?;
-        self.thin_observation_generation = Some(generation);
-        Ok(QemuReplayOracleThinObservation {
-            runtime,
-            authority: Arc::clone(&self.authority),
-            generation,
-        })
-    }
 }
 
 impl QemuReplayValidationExecutor {
@@ -599,72 +569,6 @@ impl QemuReplayValidationExecutor {
             .map_err(|source| node_backend_error(operation, source))?;
         self.active_node = Some(node);
         Ok(runtime_id)
-    }
-}
-
-impl QemuReplayValidationExecutor {
-    fn replay_one_quantum_inner(
-        &mut self,
-        runtime: RuntimeState,
-        request: QemuVmReplayRequest,
-    ) -> Result<RuntimeState, QemuVmRealizationError> {
-        validate_replay_transition(
-            self.active_configuration.as_ref(),
-            self.active_runtime_id,
-            &runtime,
-            &request,
-        )?;
-        if runtime.event_log != self.event_log.offset() {
-            return Err(QemuVmRealizationError::Executor {
-                operation: "replay one QEMU node quantum",
-                message: format!(
-                    "runtime event-log offset {:?} does not match installed offset {:?}",
-                    runtime.event_log,
-                    self.event_log.offset()
-                ),
-            });
-        }
-        let horizon = replay_horizon_from_runtime(&runtime)?;
-        let node_id = self.node.clone();
-        let node = self
-            .active_node
-            .as_mut()
-            .ok_or_else(|| QemuVmRealizationError::Executor {
-                operation: "replay one QEMU node quantum",
-                message: String::from("no QEMU node has been restored"),
-            })?;
-        match QemuRealizedNodeBackend::advance_live_to_horizon(node, horizon, &mut self.event_log)
-            .map_err(|source| node_backend_error("advance QEMU node replay quantum", source))?
-        {
-            AdvanceOutcome::ReachedHorizon => {}
-            AdvanceOutcome::Paused { at } => {
-                return Err(QemuVmRealizationError::Executor {
-                    operation: "advance QEMU node replay quantum",
-                    message: format!(
-                        "backend paused at {} before replay horizon {}",
-                        at.retired, horizon.icount.retired
-                    ),
-                });
-            }
-        }
-        let runtime_id = Backend::fingerprint(node)
-            .map(|fingerprint| fingerprint.hash)
-            .map_err(|source| node_backend_error("sample QEMU node replay fingerprint", source))?;
-        let current_icount = QemuRealizedNodeBackend::current_icount(node)
-            .map_err(|source| node_backend_error("sample QEMU node replay icount", source))?;
-
-        let next_configuration = request.to().clone();
-        let runtime = runtime_from_live_replay(
-            runtime,
-            request,
-            node_id,
-            current_icount,
-            runtime_id,
-            self.event_log.offset(),
-        );
-        self.active_configuration = Some(next_configuration);
-        self.active_runtime_id = Some(runtime.id);
-        Ok(runtime)
     }
 }
 
@@ -821,51 +725,6 @@ fn runtime_from_scheduled_checkpoint_material(
     }
 }
 
-fn runtime_from_live_replay(
-    runtime: RuntimeState,
-    request: QemuVmReplayRequest,
-    node: NodeId,
-    current_icount: Icount,
-    runtime_id: ContentHash,
-    event_log: EventLogOffset,
-) -> RuntimeState {
-    let mut scheduler = runtime.scheduler;
-    scheduler.apply_decision(request.decision());
-    let mut node_icounts = runtime.node_icounts;
-    node_icounts.insert(node, current_icount);
-    RuntimeState {
-        id: runtime_id,
-        configuration: request.to().id(),
-        node_blobs: runtime.node_blobs,
-        node_icounts,
-        scheduler,
-        event_log,
-    }
-}
-
-fn replay_horizon_from_runtime(
-    runtime: &RuntimeState,
-) -> Result<crucible::ExecutionHorizon, QemuVmRealizationError> {
-    let current = runtime
-        .node_icounts
-        .values()
-        .map(|icount| icount.retired)
-        .max()
-        .ok_or_else(|| QemuVmRealizationError::Executor {
-            operation: "derive QEMU node replay horizon",
-            message: String::from("runtime has no restored node instruction counts"),
-        })?;
-    let retired = current
-        .checked_add(1)
-        .ok_or_else(|| QemuVmRealizationError::Executor {
-            operation: "derive QEMU node replay horizon",
-            message: String::from("current instruction count is already at u64::MAX"),
-        })?;
-    Ok(crucible::ExecutionHorizon {
-        icount: Icount { retired },
-    })
-}
-
 fn retain_profile_restore_result(
     result: Result<QemuNode, QemuLiveNodeStepGateError>,
     failed_child: &mut Option<crate::QemuNodeChild>,
@@ -916,7 +775,7 @@ fn node_backend_error(operation: &'static str, source: BackendError) -> QemuVmRe
 mod tests {
     use std::collections::BTreeMap;
 
-    use crucible::{Decision, RngDecision, RngStreamId, Schedule, SchedulerState};
+    use crucible::{Decision, EventLogOffset, RngDecision, RngStreamId, Schedule, SchedulerState};
 
     use super::*;
 
