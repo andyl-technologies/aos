@@ -47,7 +47,8 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
     let (source, artifacts) =
-        scenario::build_equivalence(&fixture, artifacts).expect("build equivalence scenario");
+        scenario::build_equivalence(&fixture, artifacts, &paths.kernel, &paths.root_image)
+            .expect("build equivalence scenario");
 
     let input = execution_input_for_scenario(source.clone());
     let checkpoint_context = execution_context(&input, 0x90);
@@ -282,8 +283,13 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
-    let (source, artifacts) = scenario::build_single_node_equivalence(&fixture, artifacts)
-        .expect("build single-node equivalence scenario");
+    let (source, artifacts) = scenario::build_single_node_equivalence(
+        &fixture,
+        artifacts,
+        &paths.kernel,
+        &paths.root_image,
+    )
+    .expect("build single-node equivalence scenario");
 
     let input = execution_input_for_scenario(source.clone());
     let checkpoint_context = execution_context(&input, 0xa0);
@@ -497,9 +503,14 @@ fn production_single_vm_child_ready_p95_is_below_100_milliseconds() {
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
-    let (source, artifacts) =
-        scenario::build_single_node_equivalence_with_memory(&fixture, artifacts, 64)
-            .expect("build 64 MiB single-VM reference scenario");
+    let (source, artifacts) = scenario::build_single_node_equivalence_with_memory(
+        &fixture,
+        artifacts,
+        64,
+        &paths.kernel,
+        &paths.root_image,
+    )
+    .expect("build 64 MiB single-VM reference scenario");
     let input = execution_input_for_scenario(source.clone());
     let source_context = execution_context(&input, 0xb0);
     let mut source_lifecycle = begin_fresh(
@@ -580,7 +591,8 @@ fn production_hot_fork_scales_across_three_semantic_template_depths() {
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
     let (source, artifacts) =
-        scenario::build_single_node_scaling(&fixture, artifacts).expect("build scaling scenario");
+        scenario::build_single_node_scaling(&fixture, artifacts, &paths.kernel, &paths.root_image)
+            .expect("build scaling scenario");
 
     let context = execution_context(&execution_input_for_scenario(source.clone()), 0xc1);
     let mut lifecycle = begin_fresh(
@@ -684,9 +696,14 @@ fn production_hot_fork_scales_across_three_guest_memory_sizes() {
 
     for (index, memory_mib) in [64_u32, 256, 512].into_iter().enumerate() {
         let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
-        let (source, artifacts) =
-            scenario::build_single_node_equivalence_with_memory(&fixture, artifacts, memory_mib)
-                .expect("build memory scaling scenario");
+        let (source, artifacts) = scenario::build_single_node_equivalence_with_memory(
+            &fixture,
+            artifacts,
+            memory_mib,
+            &paths.kernel,
+            &paths.root_image,
+        )
+        .expect("build memory scaling scenario");
         let source_lane = format!("ram-{memory_mib}-source");
         let target_lane = format!("ram-{memory_mib}-target");
         let input = execution_input_for_scenario(source.clone());
@@ -742,8 +759,13 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
     let paths = NativeGatePaths::from_environment();
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
-    let (source, artifacts) = scenario::build_single_node_equivalence(&fixture, artifacts)
-        .expect("build production stress scenario");
+    let (source, artifacts) = scenario::build_single_node_equivalence(
+        &fixture,
+        artifacts,
+        &paths.kernel,
+        &paths.root_image,
+    )
+    .expect("build production stress scenario");
     let input = execution_input_for_scenario(source.clone());
     let context = execution_context(&input, 0xa8);
     let mut lifecycle = begin_fresh(
@@ -813,7 +835,8 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
     let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
     let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
     let (source, artifacts) =
-        scenario::build_equivalence(&fixture, artifacts).expect("build performance scenario");
+        scenario::build_equivalence(&fixture, artifacts, &paths.kernel, &paths.root_image)
+            .expect("build performance scenario");
     let input = execution_input_for_scenario(source.clone());
     let checkpoint_context = execution_context(&input, 0xe0);
     let mut checkpoint_source = begin_fresh(
