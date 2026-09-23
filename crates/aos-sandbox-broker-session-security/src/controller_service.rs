@@ -4749,29 +4749,10 @@ impl CapabilityService {
         };
         self.commands
             .try_send(command)
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => ConnectError::new(
-                    ErrorCode::ResourceExhausted,
-                    "controller command capacity is exhausted",
-                ),
-                mpsc::TrySendError::Disconnected(_) => {
-                    ConnectError::new(ErrorCode::Unavailable, "controller worker is unavailable")
-                }
-            })?;
-        let result = tokio::time::timeout(CONTROLLER_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::DeadlineExceeded,
-                    "controller operation lookup timed out",
-                )
-            })?
-            .map_err(|_| {
-                ConnectError::new(
-                    ErrorCode::Unavailable,
-                    "controller worker ended before replying",
-                )
-            })?;
+            .map_err(controller_command_send_error)?;
+        let result =
+            await_public_controller_reply(response, "controller operation lookup timed out")
+                .await?;
         let operation = match result {
             Ok(Some(operation)) => operation,
             Ok(None) => {
