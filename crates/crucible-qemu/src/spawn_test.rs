@@ -961,6 +961,25 @@ fn prepared_run_directory_rejects_root_overlay_replacement() -> Result<(), Box<d
 }
 
 #[test]
+fn direct_launch_pin_rejects_overlay_replacement_after_revalidation() -> Result<(), Box<dyn Error>>
+{
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let prepared = open_prepared_run_directory_for_test(directory.path())?;
+    prepared.revalidate()?;
+
+    let overlay_path = directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    std::fs::remove_file(&overlay_path)?;
+    std::fs::File::create(&overlay_path)?;
+
+    assert!(matches!(
+        GuardedLaunchImagePins::new(&prepared),
+        Err(QemuSpawnError::PreparedRootOverlayChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
 fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
@@ -1061,7 +1080,11 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
             b"original-vmstate"
         );
         assert_eq!(
-            std::fs::read(format!("/proc/self/fd/{QEMU_ROOT_OVERLAY_LAUNCH_FD}"))?,
+            std::fs::read(format!("/proc/self/fd/{QEMU_ROOT_OVERLAY_READ_LAUNCH_FD}"))?,
+            b"original-overlay"
+        );
+        assert_eq!(
+            std::fs::read(format!("/proc/self/fd/{QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD}"))?,
             b"original-overlay"
         );
         return Ok(());
@@ -1087,8 +1110,33 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
         .overlay
         .as_ref()
         .ok_or("root overlay pin missing")?;
+    let materialization_overlay = prepared
+        .root_overlay
+        .as_ref()
+        .ok_or("materialization overlay pin missing")?;
+    let read_flags = unsafe {
+        // SAFETY: the launch descriptor is live for this test.
+        libc::fcntl(overlay_pin.read.as_raw_fd(), libc::F_GETFL)
+    };
+    let write_flags = unsafe {
+        // SAFETY: the launch descriptor is live for this test.
+        libc::fcntl(overlay_pin.write.as_raw_fd(), libc::F_GETFL)
+    };
+    let materialization_flags = unsafe {
+        // SAFETY: the materialization descriptor is live for this test.
+        libc::fcntl(materialization_overlay.as_raw_fd(), libc::F_GETFL)
+    };
+    assert_ne!(read_flags, -1);
+    assert_ne!(write_flags, -1);
+    assert_ne!(materialization_flags, -1);
+    assert_eq!(read_flags & libc::O_ACCMODE, libc::O_RDONLY);
+    assert_eq!(write_flags & libc::O_ACCMODE, libc::O_RDWR);
+    assert_ne!(read_flags & libc::O_DIRECT, 0);
+    assert_ne!(write_flags & libc::O_DIRECT, 0);
+    assert_eq!(materialization_flags & libc::O_DIRECT, 0);
     assert!(image_pins.vmstate.as_raw_fd() >= CHILD_SOURCE_FD_MIN);
-    assert!(overlay_pin.as_raw_fd() >= CHILD_SOURCE_FD_MIN);
+    assert!(overlay_pin.read.as_raw_fd() >= CHILD_SOURCE_FD_MIN);
+    assert!(overlay_pin.write.as_raw_fd() >= CHILD_SOURCE_FD_MIN);
 
     let (_host, child_resources) = create_spawn_resources(4096)?;
     for source_fd in [
@@ -1099,12 +1147,13 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
         assert!(source_fd >= CHILD_SOURCE_FD_MIN);
     }
     let source_fds = format!(
-        "{},{},{},{},{}",
+        "{},{},{},{},{},{}",
         child_resources.control_socket.as_raw_fd(),
         child_resources.shmem_fd.as_raw_fd(),
         child_resources.wake_fd.as_raw_fd(),
         image_pins.vmstate.as_raw_fd(),
-        overlay_pin.as_raw_fd(),
+        overlay_pin.read.as_raw_fd(),
+        overlay_pin.write.as_raw_fd(),
     );
     let current_exe = env::current_exe()?;
     let current_exe = current_exe.to_string_lossy().into_owned();
@@ -1150,6 +1199,10 @@ fn guarded_launch_rewrites_only_authenticated_block_roots() -> Result<(), Box<dy
 
     assert_eq!(guarded[0], "-add-fd");
     assert_eq!(guarded[2], "-add-fd");
+    assert_eq!(guarded[4], "-add-fd");
+    assert_eq!(guarded[1], "fd=6,set=1,opaque=crucible-vmstate");
+    assert_eq!(guarded[3], "fd=7,set=2,opaque=crucible-root-overlay-read");
+    assert_eq!(guarded[5], "fd=8,set=2,opaque=crucible-root-overlay-write");
     assert!(
         guarded
             .iter()
