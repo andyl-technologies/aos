@@ -2106,7 +2106,9 @@ pub(crate) fn decode_cache_payload_for_lifecycle(
     Ok(Some(payload))
 }
 
-fn encode_partition_descriptor(partition: PhysicalPartitionId) -> [u8; PARTITION_DESCRIPTOR_BYTES] {
+pub(crate) fn encode_partition_descriptor(
+    partition: PhysicalPartitionId,
+) -> [u8; PARTITION_DESCRIPTOR_BYTES] {
     let mut bytes = [0_u8; PARTITION_DESCRIPTOR_BYTES];
     bytes[..8].copy_from_slice(PARTITION_DESCRIPTOR_MAGIC);
     bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());

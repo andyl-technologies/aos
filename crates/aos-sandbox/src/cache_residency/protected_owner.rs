@@ -26,7 +26,7 @@ use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use super::protected_journal::{
     CacheResidencyCurrentTimeAuthorityV1, CacheResidencyReplayPartitionEvidenceV1,
     ProtectedCacheResidencyReplayAuthorityV1, decode_cache_payload_for_lifecycle,
-    decode_partition_descriptor,
+    decode_partition_descriptor, encode_partition_descriptor,
 };
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
@@ -41,7 +41,7 @@ use super::{
     ReclamationEvidenceV1, ReleasedCachePinV1, UnlinkObservationV1,
     ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
     cache_residency_protected_key_v1, cache_residency_reducer_envelope_v1, decode_floor,
-    decode_typed_checkpoint,
+    decode_typed_checkpoint, encode_floor,
 };
 
 const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
@@ -1691,7 +1691,7 @@ fn decode_cache_replay_manifest(
         decode_typed_checkpoint(partition, prior, limits)
             .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
     }
-    Ok(CacheResidencyReplayPartitionEvidenceV1 {
+    let evidence = CacheResidencyReplayPartitionEvidenceV1 {
         partition,
         purpose,
         scope,
@@ -1699,7 +1699,76 @@ fn decode_cache_replay_manifest(
         typed_checkpoint,
         prior_typed_checkpoint,
         floor,
-    })
+    };
+    if encode_cache_replay_manifest(&evidence, limits)?.as_slice() != bytes {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+    }
+    Ok(evidence)
+}
+
+fn encode_cache_replay_manifest(
+    evidence: &CacheResidencyReplayPartitionEvidenceV1,
+    limits: CacheRecoveryLimitsV1,
+) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {
+    let record_key_bytes = u16::try_from(evidence.record_key.len())
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    let checkpoint_bytes = u32::try_from(evidence.typed_checkpoint.len())
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    let prior = evidence
+        .prior_typed_checkpoint
+        .as_deref()
+        .unwrap_or_default();
+    let prior_bytes = u32::try_from(prior.len())
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    let total_bytes = CACHE_MANIFEST_FIXED_BYTES
+        .checked_add(evidence.record_key.len())
+        .and_then(|length| length.checked_add(evidence.typed_checkpoint.len()))
+        .and_then(|length| length.checked_add(prior.len()))
+        .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    if evidence.record_key.is_empty()
+        || evidence.record_key.len() > 1024
+        || evidence.typed_checkpoint.is_empty()
+        || evidence.typed_checkpoint.len() > limits.maximum_payload_bytes
+        || prior.len() > limits.maximum_payload_bytes
+        || evidence
+            .prior_typed_checkpoint
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        || evidence.scope.partition() != evidence.partition.digest()
+    {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+    }
+    decode_typed_checkpoint(evidence.partition, &evidence.typed_checkpoint, limits)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    if !prior.is_empty() {
+        decode_typed_checkpoint(evidence.partition, prior, limits)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    }
+
+    let mut bytes = vec![0_u8; total_bytes];
+    bytes[..8].copy_from_slice(CACHE_MANIFEST_MAGIC);
+    bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+    bytes[16..257].copy_from_slice(&encode_partition_descriptor(evidence.partition));
+    bytes[257] = evidence.purpose as u8;
+    bytes[265..297].copy_from_slice(evidence.scope.subject().as_bytes());
+    bytes[297..313].copy_from_slice(&evidence.scope.operation());
+    bytes[313..345].copy_from_slice(evidence.scope.plan().as_bytes());
+    bytes[345..377].copy_from_slice(evidence.scope.root_custody().as_bytes());
+    bytes[377..385].copy_from_slice(&evidence.scope.generation().to_be_bytes());
+    bytes[385..393].copy_from_slice(&evidence.scope.valid_until().to_be_bytes());
+    bytes[393..545].copy_from_slice(
+        &encode_floor(&evidence.floor)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+    );
+    bytes[545..547].copy_from_slice(&record_key_bytes.to_be_bytes());
+    bytes[547..551].copy_from_slice(&checkpoint_bytes.to_be_bytes());
+    bytes[551..555].copy_from_slice(&prior_bytes.to_be_bytes());
+    let record_key_end = CACHE_MANIFEST_FIXED_BYTES + evidence.record_key.len();
+    let checkpoint_end = record_key_end + evidence.typed_checkpoint.len();
+    bytes[CACHE_MANIFEST_FIXED_BYTES..record_key_end].copy_from_slice(&evidence.record_key);
+    bytes[record_key_end..checkpoint_end].copy_from_slice(&evidence.typed_checkpoint);
+    bytes[checkpoint_end..].copy_from_slice(prior);
+    Ok(bytes)
 }
 
 fn decode_cache_authority_purpose(code: u8) -> Option<CacheAuthorityPurposeV1> {
