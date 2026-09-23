@@ -703,7 +703,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   128 MiB of credit/path bodies, 65,536 unique objective evaluations and 128
   MiB of their deduplicated evaluation/observation/property basis bodies, 128
   MiB of unique choice-domain bodies, and unique prior-provenance records within
-  the existing visit-projection byte cap. Branch-request schema v9 contains
+  the existing visit-projection byte cap. Branch-request schema v10 contains
   bounded positive explicit finite weights and finite masses bound to the exact
   model named by the opportunity; the owner selects the earliest
   credited execution basis per semantic edge and normalizes completed plus one
@@ -718,7 +718,7 @@ Primary crates: `crucible`, `crucible-cas`, `crucible-api`, and
   difference, interval size, and lower offset. It uses the exact active policy
   and planning view, batches branch-point projections under the established
   guidance bounds, preserves the already-proposed value set, and revalidates
-  identically after restart/import. Branch-request schema v9 and generator
+  identically after restart/import. Branch-request schema v10 and generator
   implementation version 17 resolve standardized uniform
   app-random models into a request-keyed, budget-bounded power-of-two integer
   permutation. Exact model/generator/domain validation, zero-write mismatch

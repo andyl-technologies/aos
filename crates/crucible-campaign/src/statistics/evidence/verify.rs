@@ -11,7 +11,7 @@ use crate::{
     BranchRequestCause, CampaignCodecError, CampaignMode, CandidateSource, ObservationId,
     SelectionOrigin, SequentialMonteCarloEstimateReport, StatisticalEndpointEstimate,
     StatisticalEstimateReport, StatisticalGeneration, StatisticalParticleOutcome,
-    StatisticalProposalEvidence, StatisticalRational, StatisticalWeightDiagnostics, StopOutcome,
+    StatisticalProposalEvidence, StatisticalRational, StatisticalWeightDiagnostics,
 };
 
 /// Replays the semantics of a complete finite statistical evidence bundle.
@@ -63,8 +63,10 @@ pub fn verify_sequential_monte_carlo_evidence(
     let mut source_executions = BTreeMap::new();
     for draw in evidence.initial().draws() {
         let execution = draw.execution();
-        if execution.observation().stop()
-            != &StopOutcome::Reached(execution.request().stop().clone())
+        if !execution
+            .observation()
+            .stop()
+            .reaches(execution.request().stop())
         {
             return Err(invalid("SMC initial draw did not reach its declared stop"));
         }
@@ -115,8 +117,10 @@ pub fn verify_sequential_monte_carlo_evidence(
             )?;
 
             if design.stage(stage.saturating_add(1)).is_some()
-                && execution.observation().stop()
-                    != &StopOutcome::Reached(execution.request().stop().clone())
+                && !execution
+                    .observation()
+                    .stop()
+                    .reaches(execution.request().stop())
             {
                 return Err(invalid(
                     "nonfinal SMC transition did not reach its declared stop",
@@ -551,8 +555,10 @@ fn validate_smc_request(
         .get(&(particle.observation(), particle.proposal()))
         .ok_or_else(|| invalid("SMC source observation evidence is missing"))?;
     if source_execution.observation().path() != particle.path()
-        || source_execution.observation().stop()
-            != &StopOutcome::Reached(source_execution.request().stop().clone())
+        || !source_execution
+            .observation()
+            .stop()
+            .reaches(source_execution.request().stop())
         || execution.parent().id()? != source_execution.observation().child_content()
         || execution.parent().configuration() != source_execution.observation().child()
     {

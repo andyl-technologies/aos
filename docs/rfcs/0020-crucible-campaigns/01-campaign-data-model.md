@@ -282,7 +282,7 @@ pub enum CampaignFact {
 executor incompatibility, invalid input, authorization denial, and terminal
 worker failure. A terminal worker failure is an operational quarantine: it
 closes the admitted ordinal without manufacturing an observation or modeled
-stop outcome. The current campaign-fact schema v14 encodes every disposition.
+stop outcome. The current campaign-fact schema v15 encodes every disposition.
 
 New branch-request transitions use `BranchRequestAccepted`. Its immutable
 summary records the validated addressable source cardinality, the existing
@@ -302,7 +302,7 @@ parent-derived branch point. A branch request must find the exact opportunity
 under its domain-separated `(BranchPointId, ChoiceOpportunityId)` graph key;
 backing-store presence, global opportunity membership, an arbitrary Merkle key,
 or a caller-supplied subset root is insufficient. The current campaign-fact
-schema v14 binds the explicit discovery parent and branch point.
+schema v15 binds the explicit discovery parent and branch point.
 
 `CampaignDerived` names the exact source snapshot and policy active in the new
 child. Its successor preserves lineage and every semantic root, changes only
@@ -313,7 +313,7 @@ creation are one owner transaction. Exact retries resolve the first derived
 snapshot from the target history even after later target mutations. They are
 bound to that target's most recent founding derivation edge; a locator inherited
 from an ancestor derived campaign cannot replay as the child ref's own result.
-Campaign facts use schema v14. Every current transition variant has one exact
+Campaign facts use schema v15. Every current transition variant has one exact
 encoding under that schema, including observation crediting, pin commands,
 objective publication, branch-request acceptance, discovery, terminal worker
 failure, and savepoint capture. Any other fact schema or a mismatched envelope
@@ -322,7 +322,7 @@ version is rejected before transition validation.
 The pin owner resolves command replay before staleness. An exact retry returns
 the first accepted parent/child snapshot pair; reuse of the command ID with a
 different `PinRequest` fails closed. The configuration must already occur in
-the parent's authenticated graph. Acceptance inserts the v14 fact under both
+the parent's authenticated graph. Acceptance inserts the v15 fact under both
 `accounting.command(command_id)` and `pins.configuration(configuration_id)`;
 unpinning writes a `retention = None` tombstone at the same pin key rather than
 deleting historical intent. Imported and restarted histories recompute these
@@ -580,7 +580,7 @@ pub struct BranchPoint {
 }
 
 pub struct BranchRequest {
-    pub schema_version: u32, // exact current schema v9
+    pub schema_version: u32, // exact current schema v10
     pub branch_point: BranchPointId,
     pub parent: ConfigurationArtifactId,
     pub opportunity: ChoiceOpportunityId,
@@ -675,7 +675,7 @@ pub struct BranchEdge {
 }
 
 pub struct Attempt {
-    pub schema_version: u32, // exact current schema v8
+    pub schema_version: u32, // exact current schema v9
     pub start: AttemptStart,
     pub path: BranchPathId,
     pub stop: StopCondition,
@@ -764,7 +764,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
-    pub schema_version: u32, // exact current schema v12
+    pub schema_version: u32, // exact current schema v13
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -778,7 +778,7 @@ pub struct Observation {
 }
 ```
 
-Observation schema v12 is the sole current encoding. It carries the current
+Observation schema v13 is the sole current encoding. It carries the current
 stop outcome plus the bounded canonical set of selections produced while execution
 continued through choices discovered by that attempt. Each selection must
 resolve to exactly one of the observation's discovered opportunities, and no
@@ -800,12 +800,24 @@ may be earlier and is not a substitute. Terminal and assertion outcomes retain
 precedence. When virtual time and execution quanta first cross on the same
 scheduler quantum, virtual time is the reporting priority.
 
-These stop tags occur only in the current enclosing records: `Attempt` v8,
-`BranchRequest` v9, `CampaignFact` v14, `Observation` v12, and discovery-service
-request v3. A noncurrent enclosing schema is rejected before interpreting the
+Campaign policies may additionally bind every attempt's primary stop to an
+absolute virtual-time deadline, an absolute scheduler-quantum deadline, or
+both. At least one modeled deadline is required when this policy is present.
+An optional host completion watchdog is operational supervision; its expiry
+quarantines the attempt without an observation or modeled stop. A primary
+boundary reached before both deadlines carries proof of the virtual-time and
+quantum coordinates. A policy deadline produces a distinct, proof-bearing
+`PolicyTimeout` observation, never a reached primary boundary. Terminal and
+assertion outcomes win first; virtual time wins a tie with quanta, and either
+policy deadline wins a tie with the primary boundary. Policy timeout cannot
+authorize a selected continuation or statistical primary-stop sample.
+
+These stop tags occur only in the current enclosing records: `Attempt` v9,
+`BranchRequest` v10, `CampaignFact` v15, `Observation` v13, and discovery-service
+request v4. A noncurrent enclosing schema is rejected before interpreting the
 stop body.
 
-`BranchRequest` schema v9 encodes uniform finite, generated, explicitly
+`BranchRequest` schema v10 encodes uniform finite, generated, explicitly
 weighted finite, modeled finite, modeled generated, statistical finite, and SMC
 sources with distinct tags. Finite mass maps are nonempty, contain at most
 4,096 entries, and name exactly the finite value set. A modeled ID must equal
@@ -816,7 +828,7 @@ generator envelope as a child and validate its implementation contract.
 an enabled `admits_scenario_defaults` bit, an unweighted finite singleton equal
 to the opportunity default, and a one-proposal/one-attempt budget.
 
-Branch requests use schema v9. The current encoding admits the complete current
+Branch requests use schema v10. The current encoding admits the complete current
 source, cause, budget, and stop-condition vocabulary. Any other request schema
 is rejected before those semantics are validated.
 

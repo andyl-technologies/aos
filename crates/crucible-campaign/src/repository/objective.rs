@@ -768,13 +768,13 @@ mod tests {
         .expect("synthetic lineage ID");
         let policy = CampaignPolicyId::from_content_id(ContentId::for_bytes(
             ObjectKind::Policy,
-            4,
+            5,
             b"policy",
         ))
         .expect("synthetic policy ID");
         let transition = CampaignFactId::from_content_id(ContentId::for_bytes(
             ObjectKind::CampaignFact,
-            14,
+            15,
             b"transition",
         ))
         .expect("synthetic transition ID");

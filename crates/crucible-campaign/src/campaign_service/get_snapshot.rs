@@ -212,7 +212,7 @@ mod tests {
             .expect("lineage"),
             CampaignPolicyId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Policy,
-                4,
+                5,
                 b"snapshot-policy",
             ))
             .expect("policy"),

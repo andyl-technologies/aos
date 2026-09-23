@@ -23,7 +23,7 @@ use crate::{
 
 use super::AdmissionOrdinal;
 
-const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 14;
+const CAMPAIGN_FACT_SCHEMA_VERSION: u32 = 15;
 
 /// Durable user intent projected from campaign accounting facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

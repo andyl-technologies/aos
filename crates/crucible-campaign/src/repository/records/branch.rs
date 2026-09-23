@@ -256,6 +256,11 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
         let active_policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
+        if request.stop() != &active_policy.bound_stop(request.stop().primary().clone())? {
+            return Err(integrity(
+                "branch-request-stop-disagrees-with-active-policy-timeout",
+            ));
+        }
         self.validate_statistical_request_policy(snapshot, &lineage, &active_policy, request)?;
         if parent.scenario() != lineage.scenario() {
             return Err(integrity("branch-request-parent-scenario-mismatch"));
@@ -435,7 +440,7 @@ impl CampaignRepository {
         if !matches!(request.cause(), BranchRequestCause::Planner(_))
             || request.opportunity() != draw.opportunity()
             || request.domain() != draw.domain()
-            || request.stop() != draw.stop()
+            || request.stop() != &policy.bound_stop(draw.stop().clone())?
             || request.budget() != BranchBudget::new(1, 1)?
             || request.branch_point() != expected_branch_point
             || opportunity.id()? != draw.opportunity()
@@ -556,7 +561,7 @@ impl CampaignRepository {
             )?,
             BranchRequestCause::Planner(invocation),
             BranchBudget::new(1, 1)?,
-            stage.selector().stop().clone(),
+            policy.bound_stop(stage.selector().stop().clone())?,
         )?;
         if &expected != request {
             return Err(integrity("SMC request disagrees with owner replay"));

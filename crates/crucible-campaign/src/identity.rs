@@ -406,7 +406,7 @@ content_object_id!(
 content_object_id!(
     CampaignPolicyId,
     ObjectKind::Policy,
-    4,
+    5,
     "crucible.campaign.policy",
     "Identifies one immutable campaign policy revision."
 );
@@ -464,7 +464,7 @@ content_object_id!(
 content_object_id!(
     CampaignFactId,
     ObjectKind::CampaignFact,
-    14,
+    15,
     "crucible.campaign.fact",
     "Identifies one immutable current campaign fact."
 );
@@ -542,7 +542,7 @@ semantic_id!(
 content_object_id!(
     BranchRequestId,
     ObjectKind::CampaignFact,
-    9,
+    10,
     "crucible.campaign.branch-request",
     "Identifies one bounded branch request whose schema records its source, cause, and stop semantics."
 );
@@ -573,7 +573,7 @@ content_object_id!(
 content_object_id!(
     AttemptId,
     ObjectKind::CampaignFact,
-    8,
+    9,
     "crucible.campaign.attempt",
     "Identifies one current immutable attempt with its start, stop, and modeled continuation input."
 );
@@ -587,7 +587,7 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    12,
+    13,
     "crucible.campaign.observation",
     "Identifies one current canonical observation with its stop and produced-selection semantics."
 );

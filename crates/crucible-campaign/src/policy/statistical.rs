@@ -631,7 +631,7 @@ mod tests {
                 smc_design(2, shared_model, shared_distribution),
             )
             .expect("SMC policy");
-        assert_eq!(policy.schema_version(), 4);
+        assert_eq!(policy.schema_version(), 5);
         assert_eq!(
             CampaignPolicy::from_canonical_bytes(&policy.canonical_bytes())
                 .expect("canonical SMC policy"),

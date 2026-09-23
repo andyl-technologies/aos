@@ -575,7 +575,7 @@ mod tests {
                 )),
                 crate::BranchRequestId::from_content_id(ContentId::for_bytes(
                     crucible_cas::content_store::ObjectKind::CampaignFact,
-                    9,
+                    10,
                     label,
                 ))
                 .expect("request id"),

@@ -5,10 +5,10 @@ use super::*;
 #[test]
 fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
     let observation_in =
-        ObservationId::from_content_id(content_id(ObjectKind::Observation, 12, "event-in"))
+        ObservationId::from_content_id(content_id(ObjectKind::Observation, 13, "event-in"))
             .expect("event-in observation ID");
     let observation_out =
-        ObservationId::from_content_id(content_id(ObjectKind::Observation, 12, "event-out"))
+        ObservationId::from_content_id(content_id(ObjectKind::Observation, 13, "event-out"))
             .expect("event-out observation ID");
     let endpoint = |coordinate, observation, weight| {
         crate::StatisticalEndpointEstimate::new(
@@ -21,7 +21,7 @@ fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
             .expect("proposal ID"),
             AttemptId::from_content_id(content_id(
                 ObjectKind::CampaignFact,
-                8,
+                9,
                 &format!("attempt-{coordinate}"),
             ))
             .expect("attempt ID"),
@@ -44,7 +44,7 @@ fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
             "snapshot",
         ))
         .expect("snapshot ID"),
-        CampaignPolicyId::from_content_id(content_id(ObjectKind::Policy, 4, "policy"))
+        CampaignPolicyId::from_content_id(content_id(ObjectKind::Policy, 5, "policy"))
             .expect("policy ID"),
         vec![
             endpoint(

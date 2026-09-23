@@ -232,13 +232,14 @@ impl CampaignRepository {
             return Ok(None);
         }
         let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
+        let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
         let path = BranchPath::new(Vec::new())?;
         let attempt = Attempt::new(
             AttemptStart::Discover {
                 configuration: lineage.genesis_content(),
             },
             path.id()?,
-            StopCondition::NextChoice,
+            policy.bound_stop(StopCondition::NextChoice)?,
         )?;
         let admission = AttemptAdmission::new(
             attempt.id()?,
@@ -326,7 +327,7 @@ impl CampaignRepository {
                 configuration: request.configuration,
             },
             path.id()?,
-            request.stop.clone(),
+            policy.bound_stop(request.stop.clone())?,
         )?;
         let admission = AttemptAdmission::new(
             attempt.id()?,

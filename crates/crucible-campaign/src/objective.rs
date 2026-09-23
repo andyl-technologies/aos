@@ -914,9 +914,11 @@ fn observation_rejections(
             ));
         }
         crate::StopOutcome::Reached(_)
+        | crate::StopOutcome::BoundedPrimaryReached { .. }
         | crate::StopOutcome::ObservationReached(_)
         | crate::StopOutcome::TerminalSuccess
-        | crate::StopOutcome::ModeledTimeout(_) => {}
+        | crate::StopOutcome::ModeledTimeout(_)
+        | crate::StopOutcome::PolicyTimeout { .. } => {}
     }
     rejections
 }

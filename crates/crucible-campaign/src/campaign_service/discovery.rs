@@ -3,7 +3,7 @@
 use super::*;
 use crate::{CampaignDiscoveryResult, DiscoveryRequest};
 
-const DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 3;
+const DISCOVERY_REQUEST_SCHEMA_VERSION: u32 = 4;
 
 /// Strict principal-bound request for one idempotent discovery admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
