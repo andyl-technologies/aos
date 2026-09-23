@@ -9,6 +9,14 @@
     module.aos.security.polkit.enable = true;
     packages = [pkgs.polkit pkgs.dbus pkgs.systemd];
   };
+  disabled = evaluate {
+    name = "security-polkit-service-disabled";
+    module = {lib, ...}: {
+      aos.security.polkit.enable = true;
+      aos.services."polkit.polkit".enable = lib.mkForce false;
+    };
+    packages = [pkgs.polkit pkgs.dbus pkgs.systemd];
+  };
   config = evaluated.config;
   requests = config.aos.abilities.requests;
   lifecycle = requests."polkit:polkit-lifecycle".parameters;
@@ -82,6 +90,10 @@ in
   assert config.aos.abilities.runtimeChecks."polkit:polkit".description
   == "polkit policy and privilege checks";
   assert lib.abilities.types.isPortableOptionTree evaluated.options.aos.pam;
+  assert disabled.config.aos.abilities.requirementTemplates ? "polkit:system-bus-availability";
+  assert !(disabled.config.aos.abilities.requests ? "polkit:service-group");
+  assert !(disabled.config.aos.abilities.requests ? "polkit:polkit-lifecycle");
+  assert !(disabled.config.aos.pam.packageServices ? "polkit-1");
   assert (config.systemd.services or {}) == {};
   assert !(config.environment.etc ? "polkit-1/rules.d/10-aos.rules");
   assert !(config.environment.etc ? "polkit-1/actions/org.freedesktop.policykit.policy");

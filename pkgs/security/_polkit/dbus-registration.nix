@@ -4,7 +4,7 @@
   lib,
   ...
 }: let
-  cfg = config.aos.security.polkit;
+  serviceEnabled = config.aos.services."polkit.polkit".enable;
   contributionInterface = {
     name = "aos.dbus.system-registration-contribution";
     abi = 1;
@@ -33,7 +33,7 @@ in {
       };
     })
 
-    (lib.mkIf (registrationAvailable && cfg.enable) {
+    (lib.mkIf (registrationAvailable && serviceEnabled) {
       requests.dbus-system-registration = {
         requirement = "dbus-system-registration";
         consumer = "polkit";

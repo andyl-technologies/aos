@@ -12,6 +12,7 @@
     != null
     && abilitySelection.isImplementationSelected availabilityAlias;
   active = cfg.enable || availabilitySelected;
+  serviceEnabled = config.aos.services."polkit.polkit".enable;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -343,9 +344,9 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = active;
+      enabled = serviceEnabled;
     })
-    (lib.mkIf active {
+    (lib.mkIf serviceEnabled {
       aos.pam.packageServices."polkit-1" = {
         unixAuth = true;
         startSession = false;
