@@ -2,8 +2,8 @@
 //!
 //! PID 1 supplies the sole sequence-packet socket and private state/catalog
 //! directories. The executable accepts only the node-controller numeric
-//! identity plus the immutable AOS `systemd-nspawn` and Guardian store paths
-//! selected by its system unit.
+//! identity plus the immutable AOS `systemd-nspawn`, Guardian, and SELinux
+//! production-policy store paths selected by its system unit.
 
 use std::env;
 use std::os::fd::OwnedFd;
@@ -16,6 +16,7 @@ use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_host::plan::{
     BackendReadinessBlocker, GuardianConfig, ProtectedBackendReadinessEvidence,
+    VerifiedLiveSelinuxPolicyV1,
 };
 use aos_sandbox_host::service::HostService;
 use aos_sandbox_host::state::FileHostStateStore;
@@ -44,7 +45,8 @@ fn run() -> Result<()> {
             "host broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let (controller_identity, nspawn_executable, guardian_executable) = arguments()?;
+    let (controller_identity, nspawn_executable, guardian_executable, selinux_policy) =
+        arguments()?;
 
     // SAFETY: PID 1 transfers the sole stable activation entry to this
     // single-threaded entrypoint. No Rust owner has been constructed for FD 3,
@@ -81,6 +83,7 @@ fn run() -> Result<()> {
     )?;
     if let Some(readiness) = readiness {
         let packaged = readiness.verify_packaged_runtime()?;
+        let live_mac = VerifiedLiveSelinuxPolicyV1::verify(&selinux_policy)?;
         runtime.block_on(async {
             let systemd = aos_systemd::SystemdClient::connect()
                 .await
@@ -89,6 +92,7 @@ fn run() -> Result<()> {
                 .verify_live_pid1_service(&readiness, &systemd)
                 .await
         })?;
+        live_mac.revalidate(&selinux_policy)?;
         let blockers = readiness.runtime_blockers();
         if blockers
             != [
@@ -109,8 +113,9 @@ fn run() -> Result<()> {
             .map_err(|error| HostError::State(error.to_string()))?,
     );
     // Any present phase-0 artifact is protected, boot-bound, and
-    // rollback-protected above. Its declared digests are not yet independently
-    // verified, and the self-probe above does not prove ptrace access to a
+    // rollback-protected above. The live MAC policy is independently checked,
+    // but the declared probe and payload-filter digests are not, and the
+    // self-probe above does not prove ptrace access to a
     // shifted payload, so it cannot be promoted into BackendReadiness and
     // Host Launch remains disabled. A Guardian profile alone is
     // not sufficient to compile a payload; Apply is never advertised until a
@@ -126,7 +131,7 @@ fn run() -> Result<()> {
     })
 }
 
-fn arguments() -> Result<((u32, u32), String, String)> {
+fn arguments() -> Result<((u32, u32), String, String, String)> {
     let mut arguments = env::args();
     let _program = arguments.next();
     let uid = parse_identity(arguments.next(), "controller UID")?;
@@ -137,13 +142,16 @@ fn arguments() -> Result<((u32, u32), String, String)> {
     let guardian = arguments
         .next()
         .ok_or_else(|| HostError::State("Guardian path is absent".to_owned()))?;
+    let selinux_policy = arguments
+        .next()
+        .ok_or_else(|| HostError::State("production SELinux policy path is absent".to_owned()))?;
     if arguments.next().is_some() {
         return Err(HostError::State(
-            "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH GUARDIAN_PATH"
+            "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH GUARDIAN_PATH SELINUX_POLICY_PATH"
                 .to_owned(),
         ));
     }
-    Ok(((uid, gid), nspawn, guardian))
+    Ok(((uid, gid), nspawn, guardian, selinux_policy))
 }
 
 fn parse_identity(value: Option<String>, label: &str) -> Result<u32> {

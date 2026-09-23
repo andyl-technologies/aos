@@ -189,7 +189,7 @@ in {
         ExecStartPre =
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v1"]
           ++ brokerSessionConfiguration.installCommands;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
         # This public digest is pinned to the deployed immutable guest package,
         # independent of Storage's assignment-bound physical root proof.
         LoadCredential =

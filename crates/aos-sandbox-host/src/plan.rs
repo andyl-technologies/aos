@@ -48,11 +48,13 @@ use crate::{HostError, Result};
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
 mod readiness;
+mod selinux_policy;
 
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedPackagedRuntimeV1,
 };
+pub use selinux_policy::VerifiedLiveSelinuxPolicyV1;
 
 const PROCESSES: u8 = 2;
 const MEMORY: u8 = 3;
