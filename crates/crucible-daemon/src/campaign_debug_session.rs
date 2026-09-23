@@ -17,7 +17,8 @@ use crucible_api::{
 use crucible_campaign::{
     AttemptResourceLimits, AttemptRetentionPolicyDisposition, CampaignFindingObject, CampaignHash,
     CampaignName, CampaignRepository, CampaignServiceFailure, CampaignSnapshotId,
-    ExactCheckpointId, ExecutionRetentionIntent, FindingId, GetCampaignFindingObjectResponse,
+    ExactCheckpointId, ExecutionRetentionIntent, FindingExactPins, FindingId,
+    GetCampaignFindingObjectResponse,
 };
 
 use crate::campaign_debug_inventory::CampaignDebugSessionInventory;
@@ -53,11 +54,11 @@ pub trait CampaignDebugLifecycleAdmission: Send + Sync {
 
 /// Complete owner-authenticated input for one read-only lifecycle admission.
 pub struct PreparedCampaignDebugLifecycle {
-    source: ScenarioDefForm,
-    configuration: Configuration,
-    checkpoint: Checkpoint,
-    retention: SessionLifetimeRetention,
-    build_loop: Box<
+    pub(crate) source: ScenarioDefForm,
+    pub(crate) configuration: Configuration,
+    pub(crate) checkpoint: Checkpoint,
+    pub(crate) retention: SessionLifetimeRetention,
+    pub(crate) build_loop: Box<
         dyn FnOnce() -> Result<ProductionVmLifecycleLoop, CampaignDebugLifecycleBuildError> + Send,
     >,
 }
@@ -123,7 +124,7 @@ type GuardedResumeBuilder = dyn Fn(
 /// Cloneable owner capability for inspecting and restoring packaged checkpoints.
 pub struct CampaignDebugQemuCapability {
     checkpoints: Arc<ExactCheckpointStore>,
-    build_resume: Arc<GuardedResumeBuilder>,
+    pub(crate) build_resume: Arc<GuardedResumeBuilder>,
 }
 
 impl CampaignDebugQemuCapability {
@@ -177,15 +178,6 @@ impl CampaignDebugQemuCapability {
             checkpoints,
             build_resume,
         }
-    }
-
-    fn load(
-        &self,
-        checkpoint: ExactCheckpointId,
-    ) -> Result<LoadedProductionExactCheckpoint, CampaignServiceFailure> {
-        self.checkpoints
-            .load_attempt_checkpoint(checkpoint)
-            .map_err(|_| CampaignServiceFailure::IntegrityFailure)
     }
 }
 
@@ -429,7 +421,12 @@ impl CanonicalCampaignDebugController {
             configuration,
             modeled_checkpoint,
             ..
-        } = self.select_checkpoint(&source, &reproduction_configuration, &finding)?;
+        } = select_finding_debug_checkpoint(
+            &source,
+            &reproduction_configuration,
+            finding.finding().exact_pin_retention(),
+            &self.qemu.checkpoints,
+        )?;
         let response_encoding = OpenCampaignDebugSessionResponse::prepare_encoding(checkpoint)
             .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
         self.inventory
@@ -473,78 +470,80 @@ impl CanonicalCampaignDebugController {
         reservation.bind_session(admitted.session);
         Ok(response_encoding.finish(request, role, configuration.id(), admitted.session))
     }
-
-    fn select_checkpoint(
-        &self,
-        source: &ScenarioDefForm,
-        reproduction: &Configuration,
-        finding: &GetCampaignFindingObjectResponse,
-    ) -> Result<SelectedCampaignDebugCheckpoint, CampaignServiceFailure> {
-        let pins = finding.finding().exact_pin_retention();
-        let roles = [
-            (
-                CampaignDebugCheckpointRole::PostFailure,
-                pins.post_failure(),
-            ),
-            (CampaignDebugCheckpointRole::PreFailure, pins.pre_failure()),
-            (
-                CampaignDebugCheckpointRole::MeasurementBoundary,
-                pins.measurement_boundary(),
-            ),
-            (CampaignDebugCheckpointRole::Additional, pins.additional()),
-        ];
-        let mut selected: Option<SelectedCampaignDebugCheckpoint> = None;
-        for (role, candidates) in roles {
-            for checkpoint in candidates {
-                let loaded = self.qemu.load(*checkpoint)?;
-                if loaded.scenario() != source.scenario_def().id() {
-                    return Err(CampaignServiceFailure::IntegrityFailure);
-                }
-                let loaded = Arc::new(loaded);
-                let decoded = loaded
-                    .decode_semantic_checkpoint(source, &ExecutionCancellation::default())
-                    .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
-                let configuration = decoded.configuration().clone();
-                if !reproduction
-                    .schedule
-                    .decisions()
-                    .starts_with(configuration.schedule.decisions())
-                {
-                    return Err(CampaignServiceFailure::IntegrityFailure);
-                }
-                let modeled = decoded
-                    .modeled_checkpoint()
-                    .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
-                let cost = loaded
-                    .authenticated_restore_bytes()
-                    .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
-                let candidate = SelectedCampaignDebugCheckpoint {
-                    restore_bytes: cost,
-                    checkpoint: *checkpoint,
-                    role,
-                    loaded,
-                    configuration,
-                    modeled_checkpoint: modeled,
-                };
-                if selected
-                    .as_ref()
-                    .is_none_or(|current| candidate.selection_key() < current.selection_key())
-                {
-                    selected = Some(candidate);
-                }
-            }
-        }
-        selected.ok_or(CampaignServiceFailure::NotFound)
-    }
 }
 
-struct SelectedCampaignDebugCheckpoint {
-    restore_bytes: u64,
-    checkpoint: ExactCheckpointId,
-    role: CampaignDebugCheckpointRole,
-    loaded: Arc<LoadedProductionExactCheckpoint>,
-    configuration: Configuration,
-    modeled_checkpoint: Checkpoint,
+/// Applies the live debug selection rule to one authenticated finding pin set.
+pub(crate) fn select_finding_debug_checkpoint(
+    source: &ScenarioDefForm,
+    reproduction: &Configuration,
+    pins: &FindingExactPins,
+    checkpoints: &ExactCheckpointStore,
+) -> Result<SelectedCampaignDebugCheckpoint, CampaignServiceFailure> {
+    let roles = [
+        (
+            CampaignDebugCheckpointRole::PostFailure,
+            pins.post_failure(),
+        ),
+        (CampaignDebugCheckpointRole::PreFailure, pins.pre_failure()),
+        (
+            CampaignDebugCheckpointRole::MeasurementBoundary,
+            pins.measurement_boundary(),
+        ),
+        (CampaignDebugCheckpointRole::Additional, pins.additional()),
+    ];
+    let mut selected: Option<SelectedCampaignDebugCheckpoint> = None;
+    for (role, candidates) in roles {
+        for checkpoint in candidates {
+            let loaded = checkpoints
+                .load_attempt_checkpoint(*checkpoint)
+                .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+            if loaded.scenario() != source.scenario_def().id() {
+                return Err(CampaignServiceFailure::IntegrityFailure);
+            }
+            let loaded = Arc::new(loaded);
+            let decoded = loaded
+                .decode_semantic_checkpoint(source, &ExecutionCancellation::default())
+                .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+            let configuration = decoded.configuration().clone();
+            if !reproduction
+                .schedule
+                .decisions()
+                .starts_with(configuration.schedule.decisions())
+            {
+                return Err(CampaignServiceFailure::IntegrityFailure);
+            }
+            let modeled = decoded
+                .modeled_checkpoint()
+                .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+            let cost = loaded
+                .authenticated_restore_bytes()
+                .map_err(|_| CampaignServiceFailure::IntegrityFailure)?;
+            let candidate = SelectedCampaignDebugCheckpoint {
+                restore_bytes: cost,
+                checkpoint: *checkpoint,
+                role,
+                loaded,
+                configuration,
+                modeled_checkpoint: modeled,
+            };
+            if selected
+                .as_ref()
+                .is_none_or(|current| candidate.selection_key() < current.selection_key())
+            {
+                selected = Some(candidate);
+            }
+        }
+    }
+    selected.ok_or(CampaignServiceFailure::NotFound)
+}
+
+pub(crate) struct SelectedCampaignDebugCheckpoint {
+    pub(crate) restore_bytes: u64,
+    pub(crate) checkpoint: ExactCheckpointId,
+    pub(crate) role: CampaignDebugCheckpointRole,
+    pub(crate) loaded: Arc<LoadedProductionExactCheckpoint>,
+    pub(crate) configuration: Configuration,
+    pub(crate) modeled_checkpoint: Checkpoint,
 }
 
 impl SelectedCampaignDebugCheckpoint {
