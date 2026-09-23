@@ -433,8 +433,8 @@ impl SandboxNspawnCommand {
         })
     }
 
-    fn arguments(&self, has_attachment_anchor: bool) -> Vec<String> {
-        payload_root_continuity::arguments(self, has_attachment_anchor)
+    fn arguments(&self, has_attachment_anchor: bool, has_guest_agent: bool) -> Vec<String> {
+        payload_root_continuity::arguments(self, has_attachment_anchor, has_guest_agent)
     }
 }
 
@@ -502,9 +502,21 @@ pub struct SandboxUnitSpec {
     paths: SandboxResolvedPaths,
     resources: SandboxResources,
     devices: Vec<SandboxDevice>,
+    guest_agent_descriptors: Option<SandboxGuestAgentDescriptorsV1>,
     launch_binding: Option<[u8; 32]>,
     timeout_start: Duration,
     timeout_stop: Duration,
+}
+
+/// Pins the three fixed guest-agent descriptors through transient activation.
+///
+/// The descriptor order and roles are part of the patched nspawn launch
+/// contract. Values cannot be named or reordered by a broker request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SandboxGuestAgentDescriptorsV1 {
+    pub(crate) channel: SandboxDescriptorPath,
+    pub(crate) provisioning: SandboxDescriptorPath,
+    pub(crate) attach_trust: SandboxDescriptorPath,
 }
 
 impl SandboxUnitSpec {
@@ -532,7 +544,7 @@ impl SandboxUnitSpec {
                 "nspawn command incarnation does not match unit name",
             ));
         }
-        let arguments = command.arguments(paths.attachment_anchor_pin.is_some());
+        let arguments = command.arguments(paths.attachment_anchor_pin.is_some(), false);
         validate_arguments(&arguments)?;
         duration_micros(timeout_start, "start timeout")?;
         duration_micros(timeout_stop, "stop timeout")?;
@@ -544,6 +556,7 @@ impl SandboxUnitSpec {
             paths,
             resources,
             devices: Vec::new(),
+            guest_agent_descriptors: None,
             launch_binding: None,
             timeout_start,
             timeout_stop,
@@ -606,6 +619,41 @@ impl SandboxUnitSpec {
             }
         }
         self.devices = devices;
+        Ok(self)
+    }
+
+    /// Adds exactly the fixed guest FD 3, FD 4, and FD 5 launch handoff.
+    ///
+    /// The descriptors must come from a protected Host launch owner. They are
+    /// pinned before the launch transaction is bound so the fixed option is
+    /// covered by the payload-spec semantics digest.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a bound or already provisioned spec, descriptor duplication
+    /// failure, or an argument profile that exceeds fixed transport bounds.
+    pub fn with_guest_agent_descriptors(
+        mut self,
+        channel: BorrowedFd<'_>,
+        provisioning: BorrowedFd<'_>,
+        attach_trust: BorrowedFd<'_>,
+    ) -> Result<Self> {
+        if self.launch_binding.is_some() || self.guest_agent_descriptors.is_some() {
+            return Err(invalid("guest descriptors must precede launch binding"));
+        }
+        let descriptors = SandboxGuestAgentDescriptorsV1 {
+            channel: SandboxDescriptorPath::for_current_process(channel)
+                .map_err(|error| invalid(format!("cannot pin guest channel: {error}")))?,
+            provisioning: SandboxDescriptorPath::for_current_process(provisioning)
+                .map_err(|error| invalid(format!("cannot pin guest provisioning: {error}")))?,
+            attach_trust: SandboxDescriptorPath::for_current_process(attach_trust)
+                .map_err(|error| invalid(format!("cannot pin guest attach trust: {error}")))?,
+        };
+        self.arguments = self
+            .command
+            .arguments(self.paths.attachment_anchor_pin.is_some(), true);
+        validate_arguments(&self.arguments)?;
+        self.guest_agent_descriptors = Some(descriptors);
         Ok(self)
     }
 
@@ -1216,6 +1264,92 @@ mod tests {
         assert_eq!(
             spec.payload_root_continuity_policy().digest(),
             with_attachment.payload_root_continuity_policy().digest()
+        );
+    }
+
+    #[test]
+    fn guest_agent_handoff_has_fixed_argument_roles_and_prebinding_order() {
+        let descriptor = std::fs::File::open("/proc/self/exe").unwrap();
+        let unbound = fixture();
+        let original_digest = unbound.semantic_digest_v1();
+        let spec = unbound
+            .with_guest_agent_descriptors(
+                descriptor.as_fd(),
+                descriptor.as_fd(),
+                descriptor.as_fd(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            spec.arguments().last().unwrap(),
+            "--aos-guest-agent-fds=aos-sandbox-guest-agent-channel-v1:aos-sandbox-guest-agent-provisioning-v1:aos-sandbox-guest-attach-trust-v1"
+        );
+        assert_ne!(spec.semantic_digest_v1(), original_digest);
+        let (_, property) = spec
+            .properties()
+            .unwrap()
+            .into_iter()
+            .find(|(name, _)| name == "ExtraFileDescriptors")
+            .unwrap();
+        let descriptors = Vec::<(Fd<'static>, String)>::try_from(property).unwrap();
+        let roles = descriptors
+            .iter()
+            .map(|(_, role)| role.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            [
+                "aos-sandbox-root-mount-v1",
+                "aos-sandbox-guest-agent-channel-v1",
+                "aos-sandbox-guest-agent-provisioning-v1",
+                "aos-sandbox-guest-attach-trust-v1",
+            ]
+        );
+
+        let anchored = SandboxUnitSpec::new_nspawn(
+            SandboxUnitName::from_incarnation([0xab; 16]),
+            command([0xab; 16]),
+            paths()
+                .with_attachment_anchor(descriptor_path("/"), descriptor_path("/proc/self/ns/mnt")),
+            SandboxResources::new(1, 1, 1, 1).unwrap(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap()
+        .with_guest_agent_descriptors(descriptor.as_fd(), descriptor.as_fd(), descriptor.as_fd())
+        .unwrap();
+        let (_, anchored_property) = anchored
+            .properties()
+            .unwrap()
+            .into_iter()
+            .find(|(name, _)| name == "ExtraFileDescriptors")
+            .unwrap();
+        let anchored_roles = Vec::<(Fd<'static>, String)>::try_from(anchored_property)
+            .unwrap()
+            .into_iter()
+            .map(|(_, role)| role)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            anchored_roles,
+            [
+                "aos-sandbox-root-mount-v1",
+                "aos-sandbox-attachment-anchor-v1",
+                "aos-sandbox-attachment-anchor-namespace-v1",
+                "aos-sandbox-guest-agent-channel-v1",
+                "aos-sandbox-guest-agent-provisioning-v1",
+                "aos-sandbox-guest-attach-trust-v1",
+            ]
+        );
+
+        let bound = spec.into_bound([1; 32]).unwrap();
+        assert!(
+            bound
+                .with_guest_agent_descriptors(
+                    descriptor.as_fd(),
+                    descriptor.as_fd(),
+                    descriptor.as_fd(),
+                )
+                .is_err()
         );
     }
 

@@ -48,6 +48,8 @@
       backendReadiness = "backend-readiness.json";
       opensshAttachTrust = "openssh-attach-trust.json";
       opensshAttachGrantPublicKey = "openssh-attach-grant-public-key";
+      guestAgentSigningSeed = "guest-agent-signing-seed-v1";
+      opensshAttachHostPrivateKey = "openssh-attach-host-private-key-v1";
     };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
@@ -102,6 +104,10 @@ in {
             then "Optional externally provisioned OpenSSH attach trust pins (endpoint, account, server host public key, and user CA public key) loaded as ${credentialFile}; the per-operation gate configuration digest is signed in the pending grant."
             else if name == "opensshAttachGrantPublicKey"
             then "Optional dedicated controller OpenSSH attach-grant verifier key loaded as ${credentialFile}; broker-plan verification keys cannot authorize attach grants."
+            else if name == "guestAgentSigningSeed"
+            then "Optional externally provisioned AOSGSK01 guest-agent signing seed loaded as ${credentialFile}; its derived public key must match the protected runtime peer before launch."
+            else if name == "opensshAttachHostPrivateKey"
+            then "Optional externally provisioned unencrypted Ed25519 OpenSSH server private key loaded as ${credentialFile}; its public key must match independent protected attach trust pins before launch."
             else "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields

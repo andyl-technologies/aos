@@ -105,6 +105,10 @@ enum NspawnArgumentPolicyV1<'a> {
         option: &'a str,
         separator: &'a str,
     },
+    GuestAgentFds {
+        option: &'a str,
+        roles: [&'a str; 3],
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -284,6 +288,14 @@ const NSPAWN_ARGUMENT_POLICY_V1: &[NspawnArgumentPolicyV1<'_>] = &[
         option: "--aos-attachment-anchor-fd=",
         role: DescriptorRoleV1::AttachmentAnchor,
         optional: true,
+    },
+    NspawnArgumentPolicyV1::GuestAgentFds {
+        option: "--aos-guest-agent-fds=",
+        roles: [
+            "aos-sandbox-guest-agent-channel-v1",
+            "aos-sandbox-guest-agent-provisioning-v1",
+            "aos-sandbox-guest-attach-trust-v1",
+        ],
     },
 ];
 
@@ -548,6 +560,13 @@ impl PayloadRootContinuityProjectionV1<'_> {
                     semantic_string(&mut hash, option);
                     semantic_string(&mut hash, separator);
                 }
+                NspawnArgumentPolicyV1::GuestAgentFds { option, roles } => {
+                    hash.update([4]);
+                    semantic_string(&mut hash, option);
+                    for role in roles {
+                        semantic_string(&mut hash, role);
+                    }
+                }
             }
         }
 
@@ -663,7 +682,12 @@ impl PayloadRootContinuityProjectionV1<'_> {
         hash.finalize().into()
     }
 
-    fn arguments(self, command: &SandboxNspawnCommand, has_attachment_anchor: bool) -> Vec<String> {
+    fn arguments(
+        self,
+        command: &SandboxNspawnCommand,
+        has_attachment_anchor: bool,
+        has_guest_agent: bool,
+    ) -> Vec<String> {
         let machine = encode_hex(command.incarnation);
         self.nspawn_arguments
             .iter()
@@ -682,6 +706,8 @@ impl PayloadRootContinuityProjectionV1<'_> {
                     "{option}{}{separator}{}",
                     command.uid_range_start, command.uid_range_size
                 )),
+                NspawnArgumentPolicyV1::GuestAgentFds { option, roles } => has_guest_agent
+                    .then(|| format!("{option}{}:{}:{}", roles[0], roles[1], roles[2])),
             })
             .collect()
     }
@@ -690,8 +716,9 @@ impl PayloadRootContinuityProjectionV1<'_> {
 pub(super) fn arguments(
     command: &SandboxNspawnCommand,
     has_attachment_anchor: bool,
+    has_guest_agent: bool,
 ) -> Vec<String> {
-    PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.arguments(command, has_attachment_anchor)
+    PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.arguments(command, has_attachment_anchor, has_guest_agent)
 }
 
 pub(super) fn digest_v1() -> [u8; 32] {
@@ -838,6 +865,21 @@ impl PayloadRootContinuityProjectionV1<'_> {
                             Fd::from(source_namespace_fd),
                             self.descriptor_roles.attachment_anchor_namespace.to_owned(),
                         ));
+                    }
+                    if let Some(guest) = &spec.guest_agent_descriptors {
+                        for (pin, role) in [
+                            (&guest.channel, "aos-sandbox-guest-agent-channel-v1"),
+                            (
+                                &guest.provisioning,
+                                "aos-sandbox-guest-agent-provisioning-v1",
+                            ),
+                            (&guest.attach_trust, "aos-sandbox-guest-attach-trust-v1"),
+                        ] {
+                            let descriptor = pin.pin.try_clone().map_err(|error| {
+                                invalid(format!("cannot duplicate {role} descriptor: {error}"))
+                            })?;
+                            descriptors.push((Fd::from(descriptor), role.to_owned()));
+                        }
                     }
                     Some(complex_property(name, descriptors)?)
                 }

@@ -42,6 +42,7 @@ use aos_sandbox_core::runtime_backend::{
 use aos_sandbox_core::{DecodeLimits, ObjectDigest, decode_execution_spec_v1};
 use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
+use aos_systemd::SandboxUnitSpec;
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use rustix::fs::{Mode, OFlags, open, openat};
@@ -84,6 +85,9 @@ pub enum HostAgentLiveErrorV1 {
     /// The sealed guest attach-trust record is invalid.
     #[error(transparent)]
     AttachTrust(#[from] GuestAttachTrustErrorV1),
+    /// The fixed transient unit could not retain the exact guest descriptors.
+    #[error(transparent)]
+    LaunchSpec(#[from] aos_systemd::Error),
     /// Protected runtime ownership changed or became unavailable.
     #[error(transparent)]
     Owner(#[from] DormantRuntimeExecutionOwnerErrorV1),
@@ -345,6 +349,7 @@ pub struct HostAgentGuestLaunchDescriptorsV1 {
     channel: OwnedFd,
     provisioning: SealedReadOnlyCredential,
     attach_trust: SealedReadOnlyCredential,
+    currentness: AdmissionCurrentnessV1,
 }
 
 impl HostAgentGuestLaunchDescriptorsV1 {
@@ -365,6 +370,30 @@ impl HostAgentGuestLaunchDescriptorsV1 {
     #[must_use]
     pub fn attach_trust_fd5(&self) -> BorrowedFd<'_> {
         self.attach_trust.as_fd()
+    }
+
+    /// Pins the fixed three roles into an unbound transient nspawn unit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected currentness, a bound unit, or descriptor
+    /// duplication failure before a launch transaction may be committed.
+    pub fn bind_unit_spec(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        spec: SandboxUnitSpec,
+    ) -> Result<SandboxUnitSpec, HostAgentLiveErrorV1> {
+        claim.revalidate()?;
+        if claim.currentness() != &self.currentness {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        let spec = spec.with_guest_agent_descriptors(
+            self.channel_fd3(),
+            self.provisioning_fd4(),
+            self.attach_trust_fd5(),
+        )?;
+        claim.revalidate()?;
+        Ok(spec)
     }
 }
 
@@ -412,6 +441,7 @@ impl HostAgentLaunchHandoffV1 {
             channel,
             provisioning,
             attach_trust,
+            currentness,
         };
         let pending = HostAgentPendingSessionV1 {
             socket,

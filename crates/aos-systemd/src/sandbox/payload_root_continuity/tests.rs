@@ -125,6 +125,22 @@ fn root_continuity_policy_digest_is_sensitive_to_every_projected_choice() {
                     },
                 );
             }
+            NspawnArgumentPolicyV1::GuestAgentFds { option, roles } => {
+                assert_argument_policy_mutation(
+                    index,
+                    NspawnArgumentPolicyV1::GuestAgentFds {
+                        option: "--changed-guest-fds=",
+                        roles,
+                    },
+                );
+                assert_argument_policy_mutation(
+                    index,
+                    NspawnArgumentPolicyV1::GuestAgentFds {
+                        option,
+                        roles: ["changed-channel", roles[1], roles[2]],
+                    },
+                );
+            }
         }
 
         let mut removed = NSPAWN_ARGUMENT_POLICY_V1.to_vec();
@@ -713,7 +729,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
 
     // This independently spells out every canonical tag, width, and field
     // rather than traversing the production projection or its encoders.
-    preimage.extend_from_slice(&17_u64.to_be_bytes());
+    preimage.extend_from_slice(&18_u64.to_be_bytes());
     for value in [
         "--boot",
         "--quiet",
@@ -756,6 +772,15 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     preimage.push(2);
     append_string(&mut preimage, "--aos-attachment-anchor-fd=");
     preimage.extend_from_slice(&[1, 1]);
+    preimage.push(4);
+    append_string(&mut preimage, "--aos-guest-agent-fds=");
+    for role in [
+        "aos-sandbox-guest-agent-channel-v1",
+        "aos-sandbox-guest-agent-provisioning-v1",
+        "aos-sandbox-guest-attach-trust-v1",
+    ] {
+        append_string(&mut preimage, role);
+    }
 
     preimage.extend_from_slice(&47_u64.to_be_bytes());
     named_value(&mut preimage, 0, "Description", "AOS sandbox ");
@@ -874,7 +899,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     let independently_assembled_digest: [u8; 32] = Sha256::digest(preimage).into();
     assert_eq!(
         encode_hex32(independently_assembled_digest),
-        "57e3b7b2c87ad8cf85d1deb2ace91272e1fda52406a10ce1d1c703535beae50f"
+        "ea6e448b7a867444fb29116a6e56853330a082e26fde79d54c2cf432e5775aff"
     );
     assert_eq!(digest_v1(), independently_assembled_digest);
 }
