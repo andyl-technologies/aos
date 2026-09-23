@@ -1097,7 +1097,7 @@ fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
     ));
     shutdown.shutdown();
     let report = server.join().expect("join service");
-    assert_eq!(report.accepted_connections(), 1);
+    assert_eq!(report.listener().accepted_connections(), 1);
     assert!(!socket.exists());
 
     let restarted = config.open().expect("restart local service");

@@ -20,6 +20,7 @@ use super::*;
 #[must_use = "authenticated checkpoint state must be consumed by lifecycle construction"]
 pub struct DecodedProductionExactCheckpoint {
     pub(super) checkpoint: ProductionVmExactCheckpointSet,
+    expected_snapshots: BTreeMap<NodeId, ContentHash>,
 }
 
 impl DecodedProductionExactCheckpoint {
@@ -89,6 +90,7 @@ impl DecodedProductionExactCheckpoint {
     pub fn into_node_restore_admissions(self) -> ProductionVmExactNodeRestoreAdmissions {
         ProductionVmExactNodeRestoreAdmissions {
             checkpoint: self.checkpoint,
+            expected_snapshots: self.expected_snapshots,
         }
     }
 
@@ -101,6 +103,7 @@ impl DecodedProductionExactCheckpoint {
 #[must_use = "validated node restore admissions must be consumed or discarded"]
 pub struct ProductionVmExactNodeRestoreAdmissions {
     checkpoint: ProductionVmExactCheckpointSet,
+    expected_snapshots: BTreeMap<NodeId, ContentHash>,
 }
 
 impl ProductionVmExactNodeRestoreAdmissions {
@@ -132,6 +135,37 @@ impl ProductionVmExactNodeRestoreAdmissions {
             .take_replay_node_admission(&node, target.snapshot, paused)
             .map(Some)
     }
+
+    /// Seals one matching replay result for every consumed repository target.
+    ///
+    /// The returned promotion is bound to the exact repository root, closure
+    /// identity, target manifest, node, and snapshot carried by each one-shot
+    /// restore admission. It does not reopen an attempt-local native catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when a target admission remains, the
+    /// match set is incomplete, a match belongs to another exact source, or
+    /// `boundary` rejects an operational boundary.
+    pub fn prepare_replay_oracle_promotion_with_boundary(
+        self,
+        repository_root: crucible_campaign::ExactCheckpointId,
+        matches: BTreeMap<NodeId, QemuReplayOracleMatch>,
+        boundary: &mut dyn FnMut() -> Result<(), LifecycleApiError>,
+    ) -> Result<PreparedProductionReplayOraclePromotion, LifecycleApiError> {
+        if !self.checkpoint.targets.is_empty() {
+            return Err(loop_factory_error(
+                "production replay-oracle target admissions were not completely consumed",
+            ));
+        }
+        super::replay::prepare_production_replay_oracle_promotion_source(
+            self.checkpoint.identity,
+            repository_root,
+            self.expected_snapshots,
+            matches,
+            boundary,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -155,6 +189,7 @@ struct AuthenticatedTarget {
     immutable_backing: ContentHash,
     counter: u64,
     scheduler_time: VirtualTime,
+    snapshot_object: ContentHash,
     snapshot: ExactSnapshotHandle,
 }
 
@@ -193,6 +228,11 @@ pub fn decode_authenticated_production_exact_checkpoint(
             ))
         })?;
 
+    let expected_snapshots = objects
+        .targets
+        .iter()
+        .map(|(node, target)| (node.clone(), target.snapshot_object))
+        .collect();
     let mut checkpoint = decode_semantic_checkpoint(identity, scenario, source, objects)?;
     checkpoint.repository_restore = Some(RepositoryExactRestoreAuthority {
         targets,
@@ -200,7 +240,10 @@ pub fn decode_authenticated_production_exact_checkpoint(
         scheduler: Arc::new(checkpoint.scheduler.clone()),
         open,
     });
-    Ok(DecodedProductionExactCheckpoint { checkpoint })
+    Ok(DecodedProductionExactCheckpoint {
+        checkpoint,
+        expected_snapshots,
+    })
 }
 
 fn collect_semantic_object(
@@ -209,7 +252,7 @@ fn collect_semantic_object(
     bytes: &[u8],
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
-) -> io::Result<()> {
+) -> io::Result<Option<ContentHash>> {
     let duplicate = |role: &str| io::Error::other(format!("duplicate exact checkpoint {role}"));
     let limits = source.plan().fault_signals().resource_limits();
     match role {
@@ -310,6 +353,7 @@ fn collect_semantic_object(
                         scheduler_time: VirtualTime {
                             ticks: scheduler_time,
                         },
+                        snapshot_object: ContentHash::from_bytes(bytes),
                         snapshot,
                     },
                 )
@@ -384,7 +428,18 @@ fn collect_semantic_object(
             }
         }
     }
-    Ok(())
+    // The producer binds the QMP RAM target to the decoded fault identity.
+    // The manifest separately binds the canonical fault object's byte hash.
+    let fault_semantic_identity =
+        if matches!(role, ExactCheckpointSemanticObjectRole::FaultCheckpoint) {
+            objects
+                .fault_checkpoint
+                .as_ref()
+                .map(ProductionFaultRuntimeCheckpoint::id)
+        } else {
+            None
+        };
+    Ok(fault_semantic_identity)
 }
 
 fn fallible_copy(bytes: &[u8], role: &str) -> io::Result<Vec<u8>> {

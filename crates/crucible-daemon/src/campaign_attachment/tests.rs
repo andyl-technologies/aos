@@ -25,6 +25,25 @@ use crate::{
 use super::*;
 use crate::executor_supervisor::AllowAllAttemptAdmission;
 
+#[test]
+fn canonical_planner_cancellation_has_an_exact_error_shape() {
+    let canceled: CanonicalRuntimeDriverFailure =
+        ObjectivePublishingCampaignDriverError::Inner(CampaignSupervisorError::Planner(
+            CampaignPlannerDriverError::Planner(PlannerClientError::Service(
+                AuthorizedPlannerServiceError::Supervisor(CanonicalPlannerProcessError::Canceled),
+            )),
+        ));
+    let timed_out: CanonicalRuntimeDriverFailure =
+        ObjectivePublishingCampaignDriverError::Inner(CampaignSupervisorError::Planner(
+            CampaignPlannerDriverError::Planner(PlannerClientError::Service(
+                AuthorizedPlannerServiceError::Supervisor(CanonicalPlannerProcessError::TimedOut),
+            )),
+        ));
+
+    assert!(is_canonical_planner_cancellation(&canceled));
+    assert!(!is_canonical_planner_cancellation(&timed_out));
+}
+
 fn fixture() -> (
     Arc<CampaignRepository>,
     Arc<MemoryBlobBackend>,

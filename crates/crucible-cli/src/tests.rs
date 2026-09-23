@@ -143,7 +143,7 @@ fn malformed_streamed_coverage_fails_loudly() {
 
 #[test]
 fn joined_campaign_failure_survives_lifecycle_shutdown_error() {
-    let lifecycle = Err(serve_error("campaign service stopped unexpectedly"));
+    let lifecycle = Err(campaign_service_stopped_error(None));
     let campaign = Err(campaign_service_join_error(&JoinedCampaignFailure {
         source: TerminalCampaignFailure,
     }));
@@ -154,5 +154,15 @@ fn joined_campaign_failure_survives_lifecycle_shutdown_error() {
     assert_eq!(
         error.to_string(),
         "campaign service stopped unexpectedly; campaign service error: canonical campaign runtime stopped unexpectedly; caused by: terminal attempt evaluation failed"
+    );
+}
+
+#[test]
+fn unexpected_campaign_stop_reports_checkpoint_promotion_failure_phase() {
+    let error = campaign_service_stopped_error_with_promotion_failures(Some((3, 1, 2)));
+
+    assert_eq!(
+        error.to_string(),
+        "campaign service stopped unexpectedly; checkpoint promotions failed=3 preparation_terminal=1 publication_terminal_reverted=2"
     );
 }

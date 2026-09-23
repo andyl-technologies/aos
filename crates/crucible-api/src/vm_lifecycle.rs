@@ -75,12 +75,11 @@ pub use checkpoint_store::{
 };
 pub use checkpoint_store::{
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
-    ProductionBakedSnapshotCatalog, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointResumeBasis,
-    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
-    ProductionExactCheckpointRetirementReport, ProductionVmExactNodeRestoreAdmissions,
-    decode_authenticated_production_exact_checkpoint, open_exact_checkpoint_closure,
-    retire_production_exact_checkpoint_catalog,
+    ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointObject, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
+    open_exact_checkpoint_closure, retire_production_exact_checkpoint_catalog,
 };
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::{
@@ -1291,6 +1290,18 @@ impl ProductionVmReplayExactNodeRestoreAdmission {
     #[must_use]
     pub fn configuration_id(&self) -> ContentHash {
         self.basis.configuration.id()
+    }
+
+    /// Converts the admitted repository claim into a process-free replay match for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn into_replay_oracle_match_for_test(
+        self,
+        runtime_hash: ContentHash,
+    ) -> QemuReplayOracleMatch {
+        let node = self.basis.node;
+        let source = self.basis.target.into_verified_node_for_test();
+        QemuReplayOracleMatch::from_authenticated_source_for_test(node, source, runtime_hash)
     }
 
     /// Consumes this admission into one replay-owned atomic exact restore.

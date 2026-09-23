@@ -7,17 +7,13 @@
 //! production closures and consumes sealed RAM and device-state descriptors
 //! through the production lifecycle.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::fmt::{self, Write as _};
 use std::sync::Arc;
 
-use crucible::{
-    Configuration, ContentHash, Decision, NodeId, ScenarioDefForm, SingleSchedulerCheckpoint,
-};
+use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
 use crucible_api::{
-    DecodedProductionExactCheckpoint, LifecycleApiError, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointResumeBasis, ProductionVmExactNodeRestoreAdmissions,
-    open_exact_checkpoint_closure,
+    DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
+    ProductionVmExactNodeRestoreAdmissions,
 };
 use crucible_qemu::{
     QemuBakedGenesisSnapshot, QemuReplayOracleMatch, QemuReplayValidationExecutor,
@@ -40,7 +36,7 @@ use crate::{
 /// It grants no process-launch or replay-oracle authority.
 pub(crate) struct InstalledProductionAttemptCheckpoint {
     checkpoint: ExactCheckpointId,
-    closure: ProductionExactCheckpointClosure,
+    loaded: Arc<crate::LoadedProductionExactCheckpoint>,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
     decoded: Option<DecodedProductionExactCheckpoint>,
@@ -119,10 +115,10 @@ impl InstalledProductionAttemptCheckpoint {
         self.checkpoint
     }
 
-    /// Returns the installed native production closure.
+    /// Returns the authenticated repository source retained for publication.
     #[must_use]
-    pub(crate) const fn closure(&self) -> &ProductionExactCheckpointClosure {
-        &self.closure
+    pub(crate) const fn loaded(&self) -> &Arc<crate::LoadedProductionExactCheckpoint> {
+        &self.loaded
     }
 
     /// Returns the exact restored modeled configuration.
@@ -265,8 +261,8 @@ where
                 self.guard.retain_failed_launch_child(child);
             }
         }
-        self.guard.check_operational_boundary()?;
-        result
+        let boundary = self.guard.check_operational_boundary();
+        observed_realization(result, boundary)
     }
 
     fn cleanup(&mut self) -> Result<(), QemuVmRealizationError> {
@@ -299,6 +295,73 @@ where
     }
 }
 
+fn observed_realization<T>(
+    result: Result<T, QemuVmRealizationError>,
+    boundary: Result<(), QemuVmRealizationError>,
+) -> Result<T, QemuVmRealizationError> {
+    match (result, boundary) {
+        (Err(cause), Err(cleanup @ QemuVmRealizationError::ReapQuarantined { .. })) => {
+            Err(replay_quarantine_with_cause(cause, cleanup))
+        }
+        // The session still quarantines a failed realization during finish.
+        // Retain its cause when a second boundary error cannot explain it.
+        (Err(cause), _) => Err(cause),
+        (Ok(_), Err(boundary)) => Err(boundary),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+const MAX_REPLAY_QUARANTINE_DETAIL_BYTES: usize = 2 * 1024;
+const REPLAY_QUARANTINE_TRUNCATION_SUFFIX: &str = " ... [truncated]";
+
+struct BoundedReplayQuarantineDetail(String);
+
+impl fmt::Write for BoundedReplayQuarantineDetail {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let available = MAX_REPLAY_QUARANTINE_DETAIL_BYTES
+            .saturating_sub(REPLAY_QUARANTINE_TRUNCATION_SUFFIX.len())
+            .saturating_sub(self.0.len());
+        let mut boundary = available.min(value.len());
+        while !value.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        self.0.push_str(&value[..boundary]);
+        if boundary < value.len() {
+            self.0.push_str(REPLAY_QUARANTINE_TRUNCATION_SUFFIX);
+            return Err(fmt::Error);
+        }
+        Ok(())
+    }
+}
+
+/// Keeps quarantine authoritative while placing the initiating replay failure first.
+pub(crate) fn replay_quarantine_with_cause(
+    cause: QemuVmRealizationError,
+    cleanup: QemuVmRealizationError,
+) -> QemuVmRealizationError {
+    let QemuVmRealizationError::ReapQuarantined { operation, message } = cleanup else {
+        return cause;
+    };
+    let mut detail = BoundedReplayQuarantineDetail(String::new());
+    match &cause {
+        QemuVmRealizationError::ReapQuarantined {
+            message: earlier, ..
+        } if earlier.starts_with("replay comparison failed: ") => {
+            let _ = write!(detail, "{earlier}; cleanup: {message}");
+        }
+        _ => {
+            let _ = write!(
+                detail,
+                "replay comparison failed: {cause}; cleanup: {message}"
+            );
+        }
+    }
+    QemuVmRealizationError::ReapQuarantined {
+        operation,
+        message: detail.0,
+    }
+}
+
 impl<G> Drop for QemuGuardedReplayOracleSession<'_, G>
 where
     G: QemuAttemptProcessResourceGuard,
@@ -318,11 +381,10 @@ where
 /// while ordinary scheduler decisions and scenario-authenticated model samples
 /// may extend the prefix.
 ///
-/// This operation authenticates the campaign-CAS root, streams the complete
-/// portable closure into the private production run-state store, reruns the
-/// complete scenario-aware restore validator, and returns only a modeled
-/// continuation proof. It does not launch QEMU and does not establish the
-/// source-bound replay-oracle evidence required for production resume.
+/// This operation authenticates and decodes the complete campaign-CAS closure,
+/// reruns the scenario-aware restore validator, and returns only a modeled
+/// continuation proof. It does not launch QEMU or depend on an attempt-local
+/// native catalog.
 ///
 /// # Errors
 ///
@@ -335,7 +397,6 @@ pub(crate) fn install_attempt_production_exact_checkpoint(
     source: &ScenarioDefForm,
     initial: &Configuration,
     post_selection: Option<&Configuration>,
-    run_state_root: &Path,
     cancellation: &ExecutionCancellation,
 ) -> Result<InstalledProductionAttemptCheckpoint, ProductionAttemptCheckpointRestoreError> {
     install_attempt_production_exact_checkpoint_inner(AttemptCheckpointInstallation {
@@ -344,7 +405,6 @@ pub(crate) fn install_attempt_production_exact_checkpoint(
         source,
         initial,
         post_selection,
-        run_state_root,
         cancellation,
     })
 }
@@ -485,7 +545,6 @@ struct AttemptCheckpointInstallation<'a> {
     source: &'a ScenarioDefForm,
     initial: &'a Configuration,
     post_selection: Option<&'a Configuration>,
-    run_state_root: &'a Path,
     cancellation: &'a ExecutionCancellation,
 }
 
@@ -545,7 +604,6 @@ fn install_attempt_production_exact_checkpoint_inner(
         source,
         initial,
         post_selection,
-        run_state_root,
         cancellation,
     } = installation;
     check_production_cancellation(cancellation)?;
@@ -573,25 +631,6 @@ fn install_attempt_production_exact_checkpoint_inner(
     }
     check_production_cancellation(cancellation)?;
 
-    let closure =
-        open_exact_checkpoint_closure(run_state_root, source, loaded.production_identity())
-            .map_err(map_production_lifecycle_error)?;
-    let mut boundary = || production_restore_boundary(cancellation);
-    let basis = closure
-        .authenticate_resume_basis_with_boundary(&mut boundary)
-        .map_err(map_production_lifecycle_error)?;
-    validate_production_resume_basis(
-        &basis,
-        loaded.production_identity(),
-        loaded.configuration(),
-        effective_start,
-        checkpoint,
-    )?;
-    if closure.identity() != loaded.production_identity() {
-        return Err(
-            ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint },
-        );
-    }
     let decoded = loaded
         .decode_semantic_checkpoint(source, cancellation)
         .map_err(map_production_store_error)?;
@@ -603,10 +642,12 @@ fn install_attempt_production_exact_checkpoint_inner(
             },
         );
     }
-    let (configuration, scheduler) = basis.into_parts();
+    validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
+    let configuration = decoded.configuration().clone();
+    let scheduler = decoded.scheduler().clone();
     Ok(InstalledProductionAttemptCheckpoint {
         checkpoint,
-        closure,
+        loaded,
         configuration,
         scheduler,
         decoded: Some(decoded),
@@ -713,7 +754,7 @@ pub(crate) fn prepare_attempt_production_replay_oracle_promotion(
     checkpoints: &ExactCheckpointStore,
     raw: ExactCheckpointId,
     installed: &InstalledProductionAttemptCheckpoint,
-    matches: BTreeMap<NodeId, QemuReplayOracleMatch>,
+    promotion: PreparedProductionReplayOraclePromotion,
     cancellation: &ExecutionCancellation,
 ) -> Result<PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError>
 {
@@ -723,12 +764,7 @@ pub(crate) fn prepare_attempt_production_replay_oracle_promotion(
             ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint: raw },
         );
     }
-    let mut boundary = || production_restore_boundary(cancellation);
-    let promotion = installed
-        .closure()
-        .prepare_replay_oracle_promotion_with_boundary(raw, matches, &mut boundary)
-        .map_err(map_production_lifecycle_error)?;
-    if promotion.source() != installed.closure().identity() {
+    if promotion.source() != installed.loaded().production_identity() {
         return Err(
             ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint: raw },
         );
@@ -736,7 +772,7 @@ pub(crate) fn prepare_attempt_production_replay_oracle_promotion(
     let replacement = checkpoints
         .prepare_production_replay_oracle_promotion_with_cancellation(
             raw,
-            installed.closure().clone(),
+            Arc::clone(installed.loaded()),
             promotion,
             cancellation,
         )
@@ -866,29 +902,6 @@ fn validate_production_attempt_continuation(
     Ok(())
 }
 
-fn validate_production_resume_basis(
-    basis: &ProductionExactCheckpointResumeBasis,
-    expected_identity: ContentHash,
-    expected_configuration: ContentHash,
-    effective_start: &Configuration,
-    checkpoint: ExactCheckpointId,
-) -> Result<(), ProductionAttemptCheckpointRestoreError> {
-    if basis.identity() != expected_identity {
-        return Err(
-            ProductionAttemptCheckpointRestoreError::ClosureIdentityMismatch { checkpoint },
-        );
-    }
-    if basis.configuration().id() != expected_configuration {
-        return Err(
-            ProductionAttemptCheckpointRestoreError::CheckpointConfigurationMismatch {
-                checkpoint,
-                configuration: expected_configuration,
-            },
-        );
-    }
-    validate_production_attempt_continuation(effective_start, basis.configuration(), checkpoint)
-}
-
 fn validate_production_post_selection(
     initial: &Configuration,
     selected: &Configuration,
@@ -922,19 +935,6 @@ fn check_production_cancellation(
     }
 }
 
-fn production_restore_boundary(
-    cancellation: &ExecutionCancellation,
-) -> Result<(), LifecycleApiError> {
-    if cancellation.is_canceled() {
-        Err(LifecycleApiError::AttemptOperational {
-            class: crucible::SchedulerOperationalFailureClass::Canceled,
-            message: String::from("production exact-checkpoint installation canceled"),
-        })
-    } else {
-        Ok(())
-    }
-}
-
 fn map_production_store_error(
     error: ExactCheckpointStoreError,
 ) -> ProductionAttemptCheckpointRestoreError {
@@ -944,24 +944,90 @@ fn map_production_store_error(
     }
 }
 
-fn map_production_lifecycle_error(
-    error: LifecycleApiError,
-) -> ProductionAttemptCheckpointRestoreError {
-    match error {
-        LifecycleApiError::AttemptOperational {
-            class: crucible::SchedulerOperationalFailureClass::Canceled,
-            ..
-        } => ProductionAttemptCheckpointRestoreError::Canceled,
-        error => ProductionAttemptCheckpointRestoreError::Lifecycle(error),
-    }
-}
-
 #[cfg(test)]
 mod captured_source_tests {
     use super::*;
 
     use crucible::{RngDecision, RngStreamId, Schedule};
     use crucible_cas::content_store::{ContentId, ObjectKind};
+
+    #[test]
+    fn replay_quarantine_starts_with_bounded_initiating_failure() {
+        let cause = QemuVmRealizationError::Executor {
+            operation: "load exact fat probe",
+            message: "realization failed ".to_owned() + &"界".repeat(2_000),
+        };
+        let cleanup = QemuVmRealizationError::ReapQuarantined {
+            operation: "finish guarded replay-oracle comparison",
+            message: String::from("process authority was quarantined"),
+        };
+
+        let result = replay_quarantine_with_cause(cause, cleanup);
+        let QemuVmRealizationError::ReapQuarantined { operation, message } = result else {
+            panic!("failed cleanup must remain quarantine classified");
+        };
+        assert_eq!(operation, "finish guarded replay-oracle comparison");
+        assert!(message.starts_with(
+            "replay comparison failed: load exact fat probe executor operation failed: realization failed"
+        ));
+        assert!(message.ends_with(REPLAY_QUARANTINE_TRUNCATION_SUFFIX));
+        assert!(message.len() <= MAX_REPLAY_QUARANTINE_DETAIL_BYTES);
+    }
+
+    #[test]
+    fn replay_realization_cause_survives_failing_operational_boundary() {
+        let cause = QemuVmRealizationError::Executor {
+            operation: "load exact fat probe",
+            message: String::from("original realization failure"),
+        };
+        let boundary = QemuVmRealizationError::Executor {
+            operation: "check QEMU attempt resources",
+            message: String::from("secondary boundary failure"),
+        };
+
+        let result = observed_realization::<()>(Err(cause), Err(boundary))
+            .expect_err("realization must fail");
+        assert!(matches!(
+            result,
+            QemuVmRealizationError::Executor { operation: "load exact fat probe", message }
+                if message == "original realization failure"
+        ));
+
+        let cause = QemuVmRealizationError::Executor {
+            operation: "load exact fat probe",
+            message: String::from("original realization failure"),
+        };
+        let boundary = QemuVmRealizationError::ReapQuarantined {
+            operation: "check QEMU attempt resources",
+            message: String::from("boundary quarantined"),
+        };
+        let result = observed_realization::<()>(Err(cause), Err(boundary))
+            .expect_err("quarantine must remain terminal");
+        let QemuVmRealizationError::ReapQuarantined { message, .. } = result else {
+            panic!("boundary quarantine classification must survive");
+        };
+        assert!(message.starts_with("replay comparison failed: load exact fat probe"));
+        assert!(message.contains("boundary quarantined"));
+    }
+
+    #[test]
+    fn replay_comparison_cause_survives_non_quarantine_cleanup_error() {
+        let cause = QemuVmRealizationError::Executor {
+            operation: "compare replay oracle",
+            message: String::from("original mismatch"),
+        };
+        let cleanup = QemuVmRealizationError::Executor {
+            operation: "finish replay guard",
+            message: String::from("secondary cleanup failure"),
+        };
+
+        let result = replay_quarantine_with_cause(cause, cleanup);
+        assert!(matches!(
+            result,
+            QemuVmRealizationError::Executor { operation: "compare replay oracle", message }
+                if message == "original mismatch"
+        ));
+    }
 
     #[test]
     fn production_resume_basis_requires_the_exact_attempt_prefix() {

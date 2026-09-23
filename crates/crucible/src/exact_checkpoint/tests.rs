@@ -245,6 +245,7 @@ fn authenticate_fixture_target(
     )?;
     let mut traversed = ExactCheckpointTraversedClosureBinding {
         closure: authenticated,
+        fault_semantic_identity: hash(b"fault semantic identity"),
     };
     traversed.take_target(node)
 }
@@ -332,12 +333,22 @@ fn semantic_traversal_reads_a_shared_snapshot_once() {
                 opens.set(opens.get() + 1);
                 Ok(Box::new(Cursor::new(shared_bytes.to_vec())))
             },
-            |_, _| Ok(()),
+            |role, _| {
+                Ok(
+                    matches!(role, ExactCheckpointSemanticObjectRole::FaultCheckpoint)
+                        .then(|| hash(b"decoded fault semantic identity")),
+                )
+            },
         )
         .unwrap_or_else(|error| panic!("visit shared semantic object: {error:?}"));
 
     assert_eq!(opens.get(), 1);
     assert_eq!(traversed.closure.target_index.len(), 2);
+    assert_eq!(
+        traversed.fault_semantic_identity,
+        hash(b"decoded fault semantic identity")
+    );
+    assert_ne!(traversed.fault_semantic_identity, closure.fault_checkpoint);
 }
 
 #[test]

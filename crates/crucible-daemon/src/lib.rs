@@ -197,10 +197,10 @@ pub use campaign_attachment::{
 };
 pub use campaign_bootstrap::{
     CampaignLocalRepositoryStore, CampaignLocalService, CampaignLocalServiceConfig,
-    CampaignLocalServiceError, CampaignLocalServiceMode, CampaignLocalStoreGcAuthority,
-    CampaignLocalStoreMaintenanceAuthority, CampaignRuntimeAttachmentHandle,
-    CampaignStoreMaintenanceConfig, CampaignStoreMaintenanceConfigError,
-    PreparedCampaignLocalService,
+    CampaignLocalServiceError, CampaignLocalServiceMode, CampaignLocalServiceReport,
+    CampaignLocalStoreGcAuthority, CampaignLocalStoreMaintenanceAuthority,
+    CampaignRuntimeAttachmentHandle, CampaignStoreMaintenanceConfig,
+    CampaignStoreMaintenanceConfigError, PreparedCampaignLocalService,
 };
 pub use campaign_debug_control::{
     CampaignDebugCheckpointRole, CampaignDebugControlCodecError, CampaignDebugControlService,
@@ -362,8 +362,10 @@ pub(crate) use executor_pool::{
 pub use executor_pool::{
     LocalExecutorPoolCompletion, LocalExecutorPoolConfigError, LocalExecutorPoolReport,
     LocalExecutorPoolService, LocalExecutorPoolServiceError, LocalExecutorPoolShutdown,
-    LocalExecutorPoolShutdownError, LocalExecutorWorkerPool, MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE,
-    MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS, MAX_LOCAL_EXECUTOR_WORKERS,
+    LocalExecutorPoolShutdownError, LocalExecutorPromotionFailure,
+    LocalExecutorPromotionFailureReport, LocalExecutorPromotionPhase, LocalExecutorWorkerPool,
+    MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE, MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS,
+    MAX_LOCAL_EXECUTOR_WORKERS,
 };
 pub use executor_server::{
     ExecutorLoopbackListenerError, ExecutorLoopbackServer, ExecutorLoopbackServerConfig,
@@ -503,6 +505,7 @@ pub(crate) use paused_checkpoint_promotion::{
 };
 #[cfg(all(target_os = "linux", test))]
 pub(crate) use paused_checkpoint_promotion::{
+    RepositoryPromotionFixture, prepare_repository_promotion_fixture,
     promote_test_checkpoint_for_resume, resolve_production_paused_checkpoint_promotion_recovery,
 };
 pub use pending_finding::{

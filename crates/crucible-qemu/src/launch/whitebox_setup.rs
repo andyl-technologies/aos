@@ -223,8 +223,8 @@ fn x86_whitebox_probe_args_from(
                 let value = command_args
                     .get(index + 1)
                     .ok_or(QemuWhiteboxSetupError::MalformedLaunchCommand { option })?;
-                let read_only = probe_read_only_storage_argument(option, value)?;
-                args.extend([option.to_owned(), read_only]);
+                let probe_storage = probe_storage_argument(option, value)?;
+                args.extend([option.to_owned(), probe_storage]);
                 index += 2;
             }
             _ => {
@@ -239,18 +239,18 @@ fn x86_whitebox_probe_args_from(
     Ok(args)
 }
 
-// The setup probe retains the launch's machine and device topology while
-// opening its exact storage artifacts read-only. The permission-only change
-// prevents QEMU from dirtying a qcow2 header before the real launch.
-fn probe_read_only_storage_argument(
+// The setup probe retains the launch's machine and device topology. VMState is
+// inert because an exact restore may leave its future capture file empty;
+// other storage artifacts are opened read-only to prevent probe writes.
+fn probe_storage_argument(
     option: &'static str,
     value: &str,
 ) -> Result<String, QemuWhiteboxSetupError> {
+    if option == "-blockdev" && is_vmstate_blockdev(value) {
+        return Ok(format!("driver=null-co,node-name={VMSTATE_DRIVE_ID}"));
+    }
     let (supported, read_only_property) = match option {
-        "-blockdev" => (
-            is_vmstate_blockdev(value) || is_crucible_shmem_blockdev(value),
-            "read-only=on",
-        ),
+        "-blockdev" => (is_crucible_shmem_blockdev(value), "read-only=on"),
         "-drive" => (is_root_overlay_drive(value), "readonly=on"),
         _ => {
             return Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument { option });
@@ -506,14 +506,14 @@ mod tests {
     }
 
     #[test]
-    fn setup_probe_opens_builder_storage_forms_read_only() {
+    fn setup_probe_uses_inert_vmstate_and_read_only_storage() {
         let vmstate = format!(
             "driver=qcow2,node-name={VMSTATE_DRIVE_ID},file.driver=file,file.filename={DEFAULT_VMSTATE_FILE_NAME}"
         );
         assert_eq!(
-            probe_read_only_storage_argument("-blockdev", &vmstate)
+            probe_storage_argument("-blockdev", &vmstate)
                 .unwrap_or_else(|error| panic!("VMState blockdev should validate: {error}")),
-            format!("{vmstate},read-only=on")
+            format!("driver=null-co,node-name={VMSTATE_DRIVE_ID}")
         );
 
         let shmem_device = CrucibleShmemBlockDevice::new(1024 * 1024)
@@ -522,9 +522,9 @@ mod tests {
         shmem_device.append_qemu_args(&mut shmem_args);
         let shmem_blockdev = &shmem_args[1];
         assert_eq!(
-            probe_read_only_storage_argument("-blockdev", shmem_blockdev).unwrap_or_else(
-                |error| panic!("builder Crucible shmem blockdev should validate: {error}")
-            ),
+            probe_storage_argument("-blockdev", shmem_blockdev).unwrap_or_else(|error| panic!(
+                "builder Crucible shmem blockdev should validate: {error}"
+            )),
             format!("{shmem_blockdev},read-only=on")
         );
 
@@ -533,7 +533,7 @@ mod tests {
                 "id={ROOT_DRIVE_ID},file=custom-root-overlay.qcow2,backing.driver={backing_driver},backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
             );
             assert_eq!(
-                probe_read_only_storage_argument("-drive", &root)
+                probe_storage_argument("-drive", &root)
                     .unwrap_or_else(|error| panic!("root drive should validate: {error}")),
                 format!("{root},readonly=on")
             );
@@ -563,7 +563,7 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                probe_read_only_storage_argument(option, value),
+                probe_storage_argument(option, value),
                 Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument {
                     option: rejected,
                 }) if rejected == option

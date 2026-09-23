@@ -74,8 +74,11 @@ pub(super) fn visit_authenticated_semantic_objects(
     byte_limit: u64,
     mut boundary: impl FnMut() -> io::Result<()>,
     mut open: impl FnMut(ContentHash) -> io::Result<Box<dyn Read + Send>>,
-    mut visit: impl FnMut(ExactCheckpointSemanticObjectRole<'_>, &[u8]) -> io::Result<()>,
-) -> Result<(), ExactCheckpointExecutionSourceError> {
+    mut visit: impl FnMut(
+        ExactCheckpointSemanticObjectRole<'_>,
+        &[u8],
+    ) -> io::Result<Option<ContentHash>>,
+) -> Result<ContentHash, ExactCheckpointExecutionSourceError> {
     let objects = read_unique_semantic_objects(
         repository,
         closure,
@@ -84,6 +87,7 @@ pub(super) fn visit_authenticated_semantic_objects(
         &mut boundary,
         &mut open,
     )?;
+    let mut fault_semantic_identity = None;
     {
         let mut deliver = |role, identity| {
             let object = objects
@@ -91,7 +95,23 @@ pub(super) fn visit_authenticated_semantic_objects(
                 .ok()
                 .and_then(|index| objects.get(index))
                 .ok_or_else(|| io::Error::other("semantic object was not authenticated"))?;
-            visit(role, &object.bytes)?;
+            let semantic_identity = visit(role, &object.bytes)?;
+            match (role, semantic_identity) {
+                (ExactCheckpointSemanticObjectRole::FaultCheckpoint, Some(identity)) => {
+                    fault_semantic_identity = Some(identity);
+                }
+                (ExactCheckpointSemanticObjectRole::FaultCheckpoint, None) => {
+                    return Err(io::Error::other(
+                        "authenticated fault checkpoint has no semantic identity",
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(io::Error::other(
+                        "unexpected semantic identity outside fault checkpoint",
+                    ));
+                }
+                (_, None) => {}
+            }
             boundary()
         };
 
@@ -157,21 +177,31 @@ pub(super) fn visit_authenticated_semantic_objects(
     }
 
     for (node, generation) in &closure.node_generations {
-        visit(
+        if visit(
             ExactCheckpointSemanticObjectRole::NodeGeneration(node, *generation),
             &[],
-        )?;
+        )?
+        .is_some()
+        {
+            return Err(io::Error::other("unexpected node generation semantic identity").into());
+        }
         boundary()?;
     }
     for (node, service_state) in &closure.node_service_states {
-        visit(
+        if visit(
             ExactCheckpointSemanticObjectRole::NodeServiceState(node, *service_state),
             &[],
-        )?;
+        )?
+        .is_some()
+        {
+            return Err(io::Error::other("unexpected node service semantic identity").into());
+        }
         boundary()?;
     }
 
-    Ok(())
+    fault_semantic_identity.ok_or_else(|| {
+        io::Error::other("authenticated closure has no fault semantic identity").into()
+    })
 }
 
 struct AuthenticatedSemanticObject {

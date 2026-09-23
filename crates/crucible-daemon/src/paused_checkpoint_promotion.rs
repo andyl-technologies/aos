@@ -20,8 +20,10 @@ use crucible_cas::content_store::ContentId;
 use crucible_qemu::{QemuReplayValidationExecutor, QemuVmRealizationError};
 use thiserror::Error;
 
-use crate::exact_checkpoint_restore::QemuGuardedReplayOracleSession;
 use crate::exact_checkpoint_restore::validate_materialized_start_configuration;
+use crate::exact_checkpoint_restore::{
+    QemuGuardedReplayOracleSession, replay_quarantine_with_cause,
+};
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
 use crate::{
     AssignmentLedger, AttemptAdmissionValidator, AttemptExecutionKey,
@@ -539,7 +541,6 @@ where
                     execution.scenario(),
                     initial,
                     post_selection,
-                    run_state_root,
                     &cancellation,
                 )
                 .map_err(PausedCheckpointPromotionPreparationError::from)
@@ -665,7 +666,6 @@ where
         target.source,
         target.initial,
         target.post_selection,
-        target.run_state_root,
         target.cancellation,
     )?;
     match target.start_mode {
@@ -784,14 +784,23 @@ where
         );
         let cleanup = session.finish();
         let matched = match (comparison, cleanup) {
-            (_, Err(cleanup)) => {
+            (Err(comparison), Err(cleanup)) => {
+                return Err(PausedCheckpointPromotionPreparationError::Realization(
+                    replay_quarantine_with_cause(comparison, cleanup),
+                ));
+            }
+            (Ok(_), Err(cleanup)) => {
                 return Err(PausedCheckpointPromotionPreparationError::Realization(
                     cleanup,
                 ));
             }
             (Err(comparison), Ok(())) => {
+                let error = match finish_replay_guard(&mut guard) {
+                    Some(cleanup) => replay_quarantine_with_cause(comparison, cleanup),
+                    None => comparison,
+                };
                 return Err(PausedCheckpointPromotionPreparationError::Realization(
-                    finish_replay_guard(&mut guard).unwrap_or(comparison),
+                    error,
                 ));
             }
             (Ok(check), Ok(())) => check,
@@ -814,12 +823,24 @@ where
     }
 
     guard.finish()?;
-
+    let mut boundary = || {
+        if target.cancellation.is_canceled() {
+            Err(LifecycleApiError::AttemptOperational {
+                class: crucible::SchedulerOperationalFailureClass::Canceled,
+                message: String::from("production replay-oracle promotion was canceled"),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    let evidence = targets
+        .prepare_replay_oracle_promotion_with_boundary(target.raw, matches, &mut boundary)
+        .map_err(|error| map_production_target_error(error, target.cancellation))?;
     let promotion = prepare_attempt_production_replay_oracle_promotion(
         checkpoints,
         target.raw,
         &installed,
-        matches,
+        evidence,
         target.cancellation,
     )?;
     Ok(PreparedPausedCheckpointPromotion::new(
@@ -1124,4 +1145,7 @@ where
 mod tests;
 
 #[cfg(test)]
-pub(crate) use tests::promote_test_checkpoint_for_resume;
+pub(crate) use tests::{
+    RepositoryPromotionFixture, prepare_repository_promotion_fixture,
+    promote_test_checkpoint_for_resume,
+};
