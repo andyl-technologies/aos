@@ -1,8 +1,8 @@
-//! Fixed guest-local PTY descriptor handoff for the authenticated SSH gate.
+//! Fixed guest-local process I/O handoff for the authenticated SSH gate.
 //!
-//! The root-owned process ledger owns the PTY master. This socket hands one
-//! duplicate to one kernel-identified forced-command gate only after reading
-//! back the installed route claim and the current process identity.
+//! The root-owned process ledger owns the PTY master or stream pipe ends. This
+//! socket hands them to one kernel-identified forced-command gate only after
+//! reading back the installed route claim and current process identity.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -18,9 +18,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use aos_sandbox_agent::openssh_gate::{
+    OpenSshGateBridgeRequestV1, OpenSshGateClaimV1, decode_openssh_gate_bridge_request_v1,
+};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError, SeqpacketSocket};
-use serde::{Deserialize, Serialize};
 
 use crate::GuestProcessEffectErrorV1;
 use crate::ledger::Ledger;
@@ -208,7 +210,8 @@ fn serve_one(
             Err(error) => return Err(error.into()),
         }
     };
-    let request = decode_request(received.payload())?;
+    let request = decode_openssh_gate_bridge_request_v1(received.payload())
+        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
     let peer = socket.peer();
     let connector = peer.credentials();
     let subject = received.subject();
@@ -228,9 +231,8 @@ fn serve_one(
 
     let claim = read_gate_claim()?;
     let process = ledger.read_process_bytes(request.execution)?;
-    if !request.matches(&claim, &process)
+    if !request_matches(&request, &claim, &process)
         || connector.uid() != process.uid
-        || !process.pty
         || process.canceled
         || process.terminal.is_some()
         || !process_matches(&process)?
@@ -264,6 +266,9 @@ fn serve_one(
 
     // The durable reservation precedes SCM_RIGHTS. A crash or short send may
     // consume the attach right, but cannot permit duplicate terminal holders.
+    if read_gate_claim()? != claim {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
     ledger.reserve_attach(request.execution)?;
     match descriptors {
         AttachedIo::Pty(master) if claim.pty => {
@@ -285,37 +290,7 @@ fn serve_one(
     Ok(())
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GateClaim {
-    binding: GateBinding,
-    route_digest: [u8; 32],
-    runtime_identity: [u8; 32],
-    process_pid: u32,
-    process_start_ticks: u64,
-    pty: bool,
-    sshd_pid: u32,
-    sshd_start_ticks: u64,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GateBinding {
-    attach_operation_id: [u8; 16],
-    execution_id: [u8; 16],
-    incarnation_id: [u8; 16],
-    assignment_epoch: u64,
-    principal_id: [u8; 16],
-    audit_id: [u8; 16],
-    user: String,
-    port: u16,
-    host_public_key: String,
-    trusted_user_ca_public_key: String,
-    expires_at: i64,
-    gate_config_digest: [u8; 32],
-}
-
-fn read_gate_claim() -> Result<GateClaim, GuestProcessEffectErrorV1> {
+fn read_gate_claim() -> Result<OpenSshGateClaimV1, GuestProcessEffectErrorV1> {
     for parent in ["/etc", "/etc/aos", "/etc/aos/sandbox-attach"] {
         let metadata = fs::symlink_metadata(parent)?;
         if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
@@ -340,8 +315,11 @@ fn read_gate_claim() -> Result<GateClaim, GuestProcessEffectErrorV1> {
     if bytes.len() as u64 > MAX_GATE_RECORD_BYTES {
         return Err(GuestProcessEffectErrorV1::LedgerConflict);
     }
-    let claim: GateClaim =
+    let claim: OpenSshGateClaimV1 =
         serde_json::from_slice(&bytes).map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    claim
+        .validate()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
     let canonical =
         serde_json::to_vec(&claim).map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
     let now = SystemTime::now()
@@ -349,106 +327,37 @@ fn read_gate_claim() -> Result<GateClaim, GuestProcessEffectErrorV1> {
         .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
     let now =
         i64::try_from(now.as_secs()).map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
-    if canonical != bytes
-        || claim.sshd_pid == 0
-        || claim.sshd_start_ticks == 0
-        || claim.binding.expires_at <= now
-        || claim.binding.user.is_empty()
-        || claim.binding.port == 0
-        || claim.binding.host_public_key.is_empty()
-        || claim.binding.trusted_user_ca_public_key.is_empty()
-        || claim.binding.gate_config_digest == [0; 32]
-        || claim.route_digest == [0; 32]
-    {
+    if canonical != bytes || claim.binding.expires_at <= now {
         return Err(GuestProcessEffectErrorV1::LedgerConflict);
     }
     Ok(claim)
 }
 
-struct BridgeRequest {
-    operation: [u8; 16],
-    execution: [u8; 16],
-    incarnation: [u8; 16],
-    assignment_epoch: u64,
-    principal: [u8; 16],
-    audit: [u8; 16],
-    route_digest: [u8; 32],
-    runtime_identity: [u8; 32],
-    process_pid: u32,
-    process_start_ticks: u64,
-}
-
-impl BridgeRequest {
-    fn matches(&self, claim: &GateClaim, process: &crate::ledger::ProcessRecord) -> bool {
-        let binding = &claim.binding;
-        self.operation == binding.attach_operation_id
-            && self.execution == binding.execution_id
-            && self.execution == process.execution
-            && self.incarnation == binding.incarnation_id
-            && self.incarnation == process.incarnation
-            && self.assignment_epoch == binding.assignment_epoch
-            && self.assignment_epoch == process.assignment_epoch
-            && self.principal == binding.principal_id
-            && self.principal == process.principal
-            && self.audit == binding.audit_id
-            && self.audit == process.audit
-            && self.route_digest == claim.route_digest
-            && self.runtime_identity == claim.runtime_identity
-            && self.runtime_identity == process.runtime
-            && self.process_pid == claim.process_pid
-            && self.process_pid == process.pid
-            && self.process_start_ticks == claim.process_start_ticks
-            && self.process_start_ticks == process.start_ticks
-            && claim.pty == process.pty
-    }
-}
-
-fn decode_request(bytes: &[u8]) -> Result<BridgeRequest, GuestProcessEffectErrorV1> {
-    if bytes.len() != REQUEST_BYTES || bytes.get(..8) != Some(b"AOSGAB01".as_slice()) {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    let mut offset = 8;
-    let operation = take::<16>(bytes, &mut offset)?;
-    let execution = take::<16>(bytes, &mut offset)?;
-    let incarnation = take::<16>(bytes, &mut offset)?;
-    let assignment_epoch = u64::from_be_bytes(take(bytes, &mut offset)?);
-    let principal = take::<16>(bytes, &mut offset)?;
-    let audit = take::<16>(bytes, &mut offset)?;
-    let route_digest = take::<32>(bytes, &mut offset)?;
-    let runtime_identity = take::<32>(bytes, &mut offset)?;
-    let process_pid = u32::from_be_bytes(take(bytes, &mut offset)?);
-    let process_start_ticks = u64::from_be_bytes(take(bytes, &mut offset)?);
-    if offset != REQUEST_BYTES {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    Ok(BridgeRequest {
-        operation,
-        execution,
-        incarnation,
-        assignment_epoch,
-        principal,
-        audit,
-        route_digest,
-        runtime_identity,
-        process_pid,
-        process_start_ticks,
-    })
-}
-
-fn take<const N: usize>(
-    bytes: &[u8],
-    offset: &mut usize,
-) -> Result<[u8; N], GuestProcessEffectErrorV1> {
-    let end = offset
-        .checked_add(N)
-        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    let slice = bytes
-        .get(*offset..end)
-        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    let mut result = [0_u8; N];
-    result.copy_from_slice(slice);
-    *offset = end;
-    Ok(result)
+fn request_matches(
+    request: &OpenSshGateBridgeRequestV1,
+    claim: &OpenSshGateClaimV1,
+    process: &crate::ledger::ProcessRecord,
+) -> bool {
+    let binding = &claim.binding;
+    request.operation == binding.attach_operation_id
+        && request.execution == binding.execution_id
+        && request.execution == process.execution
+        && request.incarnation == binding.incarnation_id
+        && request.incarnation == process.incarnation
+        && request.assignment_epoch == binding.assignment_epoch
+        && request.assignment_epoch == process.assignment_epoch
+        && request.principal == binding.principal_id
+        && request.principal == process.principal
+        && request.audit == binding.audit_id
+        && request.audit == process.audit
+        && request.route_digest == claim.route_digest
+        && request.runtime_identity == claim.runtime_identity
+        && request.runtime_identity == process.runtime
+        && request.process_pid == claim.process_pid
+        && request.process_pid == process.pid
+        && request.process_start_ticks == claim.process_start_ticks
+        && request.process_start_ticks == process.start_ticks
+        && claim.pty == process.pty
 }
 
 fn verify_gate_peer(

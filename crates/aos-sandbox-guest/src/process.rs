@@ -367,8 +367,8 @@ impl GuestProcessEffectsV1 {
         }
         let pid =
             Pid::from_raw(record.pid as i32).ok_or(GuestProcessEffectErrorV1::LedgerConflict)?;
-        kill_process_group(pid, Signal::KILL)?;
         self.bridge.remove(*execution.as_bytes())?;
+        kill_process_group(pid, Signal::KILL)?;
         record.canceled = true;
         self.ledger.replace_process(execution, &record)?;
         Ok(outcome(
