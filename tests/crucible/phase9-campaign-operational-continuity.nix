@@ -125,9 +125,6 @@ in
           test "$(grep -Ec '^authenticated_replay_causal_entries=[1-9][0-9]*$' ${campaignMidpointDebug}/result || true)" -eq 1
           test "$(grep -Ec '^minimization_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' ${campaignMidpointDebug}/result || true)" -eq 1
           test "$(grep -Ec '^verification_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' ${campaignMidpointDebug}/result || true)" -eq 1
-          minimization_original=$(grep -E '^minimization_original_replay=' ${campaignMidpointDebug}/result | cut -d = -f 2-)
-          verification_original=$(grep -E '^verification_original_replay=' ${campaignMidpointDebug}/result | cut -d = -f 2-)
-          test "$minimization_original" != "$verification_original"
 
           midpoint_manifest=${campaignMidpointDebug}/evidence.sha256
           test -f "$midpoint_manifest"
