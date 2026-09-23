@@ -3034,6 +3034,9 @@ in rec {
       campaignMidpointDebug = import ./phase9-campaign-midpoint-debug.nix {
         inherit pkgs lib;
       };
+      campaignFindingExactVm = import ./phase9-campaign-finding-exact-vm.nix {
+        inherit pkgs lib;
+      };
       campaignOperationalContinuity = import ./phase9-campaign-operational-continuity.nix {
         inherit pkgs lib;
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;

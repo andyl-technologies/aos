@@ -4,12 +4,13 @@
   lib,
   guestChoice ? false,
   campaignMidpoint ? false,
+  findingExactBundle ? false,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  campaignFlightFeatures = lib.optionalString campaignMidpoint " --features packaged-midpoint-flight";
+  campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle) " --features packaged-midpoint-flight";
   campaignFlightBuildCommand = "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}";
   campaignFlightArtifacts = pkgs.mkCargoArtifacts {
     pname = "crucible-packaged-campaign-flight-artifacts";
@@ -89,7 +90,7 @@
     maximum_slots = 1
     maximum_vcpus = 2
     maximum_resident_bytes = ${toString (
-      if guestChoice || campaignMidpoint
+      if guestChoice || campaignMidpoint || findingExactBundle
       then 1073741824
       else 536870912
     )}
@@ -125,14 +126,17 @@
     name =
       if guestChoice
       then "crucible-packaged-campaign-choice"
+      else if findingExactBundle
+      then "crucible-campaign-finding-exact-bundle"
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
     memory = 2048;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
+      ++ (lib.optional findingExactBundle pkgs.crucible)
       ++ (
-        if guestChoice || campaignMidpoint
+        if guestChoice || campaignMidpoint || findingExactBundle
         then [choiceInitramfs]
         else []
       );
@@ -179,6 +183,7 @@
       echo 'campaign-host-setup-complete=true'
       ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
       export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
+      ${lib.optionalString findingExactBundle "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
       export CRUCIBLE_FLIGHT_QEMU=${pkgs.qemu-crucible}/bin/qemu-system-x86_64
       export CRUCIBLE_FLIGHT_PLUGIN=${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
       export CRUCIBLE_FLIGHT_DEPLOYMENT=/tmp/executor.toml
@@ -186,7 +191,7 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
-      ${lib.optionalString campaignMidpoint "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (campaignMidpoint || findingExactBundle) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
@@ -252,6 +257,26 @@
             'gate=gate:typed-choice-product-checkpoint' \
             'proven=typed-guest-registration,fresh-qemu-restore'
           cat /tmp/guest-choice-flight.log
+        ''
+        else if findingExactBundle
+        then ''
+          bundle_selector=finding_exact_vm::packaged_finding_bundle_replays_without_source_owner
+          bundle_log=/tmp/campaign-finding-exact-bundle.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 900 \
+            ${flight}/bin/campaign-store-process-flight --exact \
+            "$bundle_selector" --nocapture > "$bundle_log" 2>&1; then
+            cat "$bundle_log"
+            exit 1
+          fi
+          cat "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_fresh_process_exact_qemu=true' "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_source_owner_absent=true' "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_signature_and_terminal_reproduced=true' "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_live_midpoint_read_only=true' "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_mutation_rejected_and_checkpoint_unchanged=true' "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fxq 'finding_bundle_tamper_rejected=true' "$bundle_log"
+          ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$bundle_log"
+          printf '%s\n' 'gate=gate:campaign-finding-exact-read-only'
         ''
         else if campaignMidpoint
         then ''

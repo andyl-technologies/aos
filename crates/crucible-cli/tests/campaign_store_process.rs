@@ -48,6 +48,9 @@ const MAXIMUM_PENDING_BYTES: u64 = 512 * 1024 * 1024;
 #[cfg(feature = "packaged-midpoint-flight")]
 #[path = "campaign_store_process/midpoint_debug.rs"]
 mod midpoint_debug;
+#[cfg(feature = "packaged-midpoint-flight")]
+#[path = "campaign_store_process/finding_exact_vm.rs"]
+mod finding_exact_vm;
 #[path = "support/campaign_packaged_process.rs"]
 mod packaged;
 #[path = "campaign_store_process/service_diagnostics.rs"]
