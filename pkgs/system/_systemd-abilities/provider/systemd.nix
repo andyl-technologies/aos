@@ -1134,25 +1134,127 @@
     input = realization;
     selectors = selectorPathsFor resource resource.realization;
   };
+  staticOutputDescriptorFor = requestName: outputName: let
+    matchingBindings = builtins.filter (
+      binding: binding.request == requestName
+    ) (builtins.attrValues config.aos.abilities.bindings);
+    binding =
+      if builtins.length matchingBindings == 1
+      then builtins.head matchingBindings
+      else throw "systemd static rendering requires one binding for '${requestName}'";
+    implementation = config.aos.abilities.implementations.${binding.implementation}
+      or (throw "systemd static rendering selects an absent implementation");
+    interface =
+      if builtins.isString implementation.interface
+      then config.aos.abilities.interfaces.${implementation.interface}
+        or (throw "systemd static rendering selects an absent interface")
+      else interfaceForReference {inherit (implementation) interface;};
+    request =
+      config.aos.abilities.requests.${requestName}
+      or config.aos.abilities.compositionRequests.${requestName}
+      or (throw "systemd static rendering names an absent request '${requestName}'");
+    generatedRequirement = config.aos.abilities.compositionRequirements.${request.requirement} or null;
+    requirement =
+      config.aos.abilities.requirementTemplates.${
+        request.requirement
+      }
+      or (
+        if generatedRequirement == null
+        then throw "systemd static rendering names an absent requirement '${request.requirement}'"
+        else generatedRequirement.requirement
+      );
+    aggregate = interface.outputs.${outputName} or null;
+    methodOutputs = builtins.concatMap (methodName: let
+      method = interface.methods.${methodName}
+        or (throw "systemd static rendering selects an absent method '${methodName}'");
+    in
+      lib.optional (builtins.hasAttr outputName method.outputs) method.outputs.${outputName})
+    requirement.methods;
+    candidates =
+      if aggregate != null
+      then [aggregate]
+      else methodOutputs;
+  in
+    if builtins.length candidates == 1
+    then builtins.head candidates
+    else throw "systemd static rendering needs one declared output '${requestName}.${outputName}'";
+  staticLifetimeRank = {
+    attempt = 0;
+    transaction = 1;
+    instance = 2;
+    persistent = 3;
+  };
+  # Runtime outputs are materialized by the live provider, not a build-time unit.
+  staticValueFor = recipientLifetime: trail: value:
+    if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
+    then let
+      reference = "${value.request}.${value.output}";
+      descriptor = staticOutputDescriptorFor value.request value.output;
+      output =
+        config.aos.abilities.compositionOutputs.${value.request}.${value.output}
+        or (throw "systemd static rendering cannot resolve '${reference}'");
+    in
+      if builtins.elem reference trail
+      then throw "systemd static rendering has a planning-output cycle at '${reference}'"
+      else if staticLifetimeRank.${descriptor.lifetime} < staticLifetimeRank.${recipientLifetime}
+      then throw "systemd static rendering cannot retain '${reference}' beyond its output lifetime"
+      else if descriptor.phase == "runtime"
+      then {
+        available = false;
+        value = null;
+      }
+      else if descriptor.phase == "planning"
+      then staticValueFor recipientLifetime (trail ++ [reference]) output.value
+      else throw "systemd static rendering has an unsupported output phase at '${reference}'"
+    else if builtins.isAttrs value
+    then let
+      fields = builtins.mapAttrs (_: staticValueFor recipientLifetime trail) value;
+      available = builtins.all (field: field.available) (builtins.attrValues fields);
+    in {
+      inherit available;
+      value =
+        if available
+        then builtins.mapAttrs (_: field: field.value) fields
+        else null;
+    }
+    else if builtins.isList value
+    then let
+      items = builtins.map (staticValueFor recipientLifetime trail) value;
+      available = builtins.all (item: item.available) items;
+    in {
+      inherit available;
+      value =
+        if available
+        then builtins.map (item: item.value) items
+        else null;
+    }
+    else {
+      available = true;
+      inherit value;
+    };
   staticNativePlanFor = resource: let
+    desired = staticValueFor resource.lifetime [] resource.value;
     symbolicInput = {
       schema = "aos.systemd.native-resource-static-input/v1";
       inherit (resource) kind;
-      desired = resource.value;
+      desired = desired.value;
       inherit (resource) realization;
     };
     input = builtins.toJSON symbolicInput;
-  in {
-    name = derivationDisplayName "systemd-native-resource" input;
-    inherit input;
-    selectors = selectorPathsFor resource symbolicInput;
-  };
+  in
+    if desired.available
+    then {
+      name = derivationDisplayName "systemd-native-resource" input;
+      inherit input;
+      selectors = selectorPathsFor resource symbolicInput;
+    }
+    else null;
   staticPlans =
     if config.aos.abilities.compositionPendingRequests != {}
     then []
     else
       builtins.map staticPlanFor (selectedResources ++ selectedServiceResources)
-      ++ builtins.map staticNativePlanFor selectedNativeResources;
+      ++ builtins.filter (plan: plan != null) (builtins.map staticNativePlanFor selectedNativeResources);
   managerWatchdogPlans =
     if config.aos.abilities.compositionPendingRequests != {}
     then []
