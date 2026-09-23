@@ -54,128 +54,114 @@
     interface = serviceManagement.interfaces.filesystemReadiness;
     parameters.scope = "local-filesystems";
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [];
-          };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "private";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = false;
-          isolation_domains = [];
-          isolation_domain_creation = "denied";
-          network_families = ["local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          denied_operation_action = "return-permission-denied";
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "private";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = false;
+      isolation_domains = [];
+      isolation_domain_creation = "denied";
+      network_families = ["local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      denied_operation_action = "return-permission-denied";
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
     consumerInstance = "service";
-    declaration = {
-      service = serviceName;
-      # The verifier remains available for explicit invocation without joining
-      # a boot target, matching the previous standalone unit.
-      enabled = false;
-      lifecycle = {
-        description = "Verify AOS package attestation evidence (${packageName} ${packageVersion})";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [command];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "none";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [(resultOf "local-filesystems" "resource")];
-        before = [];
-        requires = [(resultOf "local-filesystems" "resource")];
-        wants = [];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      directories.managed = [
-        {
-          path = serviceName;
-          purpose = "state";
-          mode = "0750";
-          retention = "persistent";
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = true;
-        file_creation_mask = "0022";
-      };
-      isolation = {
-        privilege = "unprivileged";
-        filesystem = "read-only-system";
-        home_access = "inaccessible";
-        network = "none";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths =
-          builtins.map (source: {
-            inherit source;
-            mode = "read-only";
-          })
-          inputPaths
-          ++ [
-            {
-              source = builtins.dirOf cfg.resultFile;
-              mode = "read-write";
-            }
-          ];
-        permit_core_dumps = false;
-      };
+    service = serviceName;
+    # The verifier remains available for explicit invocation without joining
+    # a boot target, matching the previous standalone unit.
+    autoStart = false;
+    lifecycle = {
+      description = "Verify AOS package attestation evidence (${packageName} ${packageVersion})";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [command];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "none";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [(resultOf "local-filesystems" "resource")];
+      before = [];
+      requires = [(resultOf "local-filesystems" "resource")];
+      wants = [];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    directories.managed = [
+      {
+        path = serviceName;
+        purpose = "state";
+        mode = "0750";
+        retention = "persistent";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = true;
+      file_creation_mask = "0022";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      home_access = "inaccessible";
+      network = "none";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths =
+        builtins.map (source: {
+          inherit source;
+          mode = "read-only";
+        })
+        inputPaths
+        ++ [
+          {
+            source = builtins.dirOf cfg.resultFile;
+            mode = "read-write";
+          }
+        ];
+      permit_core_dumps = false;
     };
   };
-  fragments = [filesystems service];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
   inputPathList = abilityTypes.list {
     element = serviceTypes.hostPath;
     maxItems = 256;
@@ -237,14 +223,16 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.services.attestationVerifier = {};}
     {
-      aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);
+      aos.services = {
+        attestationVerifier = {};
+        "service.${serviceName}" = service // {enable = cfg.enable;};
+      };
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = lib.mkMerge (
-        [{instances.service = {};}] ++ builtins.map (entry: entry.configured) definitions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [filesystems];
+      enabled = cfg.enable;
     })
   ];
 }
