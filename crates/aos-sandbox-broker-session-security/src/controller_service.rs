@@ -3547,7 +3547,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let consumer = cache_consumer.as_ref().ok_or_else(|| {
                 EffectFailure::Permanent("cache pin consumer is unavailable".to_owned())
             })?;
-            return self.recover_public_cache_pin(operation_id, consumer);
+            return self.apply_public_cache_pin(operation_id, consumer, journal, &request);
         }
         if matches!(&request, DormantSandboxRequestKindV1::CacheUnpin(_)) {
             let consumer = cache_consumer.as_ref().ok_or_else(|| {

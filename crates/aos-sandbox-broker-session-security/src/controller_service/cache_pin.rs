@@ -1,34 +1,55 @@
-//! Controller custody for cold public Cache pin acquisition recovery.
+//! Controller custody for source-proven public Cache pin acquisition.
 //!
-//! A recovered protected event names its original partition and physical pin.
-//! Recovery never selects a fresh source or destination; a state-only result
-//! still requires the separate authenticated View source execution path.
+//! A recovered protected event names its original partition and physical pin;
+//! only a state-only transaction may compile the current sealed View source and
+//! select a fresh destination.
 
+use aos_filesystem_view_core::{ProjectionLimits, TreeCompileLimits};
 use aos_sandbox::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerOutcomeUnknownV1, CacheOwnerPinSettlementErrorV1,
+    CacheResidencyCommitOutcomeV1, CacheResidencyOutcomeUnknownV1,
+    CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyRecoveryV1,
 };
+use aos_sandbox::filesystem_view_state::current_filesystem_view_revision_v1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
+use aos_sandbox_core::DecodeLimits;
+use sha2::{Digest as _, Sha256};
 
-use super::{EffectFailure, EffectReceipt, OperationId, ProductionEffectExecutor};
-use crate::{PublicCachePinRecoveryV1, recover_public_cache_pin_v1};
+use super::{
+    DormantSandboxRequestKindV1, EffectFailure, EffectReceipt, Journal, OperationId,
+    ProductionEffectExecutor,
+};
+use crate::{
+    CacheCompiledSourceLimitsV1, CacheSourceMembershipLimitsV1, ProjectSealedViewObjectSourceV1,
+    PublicCachePinExecutionV1, PublicCachePinRecoveryV1,
+    execute_public_cache_pin_from_project_revision_v1, public_cache_pin_transaction_id_v1,
+    recover_public_cache_pin_v1,
+};
 
-/// Retains an ambiguous physical acquisition until its exact outcome is known.
+/// Retains an ambiguous protected or physical acquisition until its outcome is known.
 pub(super) struct PendingControllerCachePinV1 {
     operation_id: OperationId,
-    physical: CacheOwnerOutcomeUnknownV1,
+    custody: PendingCachePinCustodyV1,
+}
+
+enum PendingCachePinCustodyV1 {
+    Protected(CacheResidencyOutcomeUnknownV1),
+    Physical(CacheOwnerOutcomeUnknownV1),
 }
 
 impl ProductionEffectExecutor {
-    /// Cold-recovers a public pin without selecting a new source or partition.
+    /// Recovers an existing pin or acquires a new source-proven pin.
     ///
     /// # Errors
     ///
     /// Returns a retryable error while source execution or exact physical
     /// recovery is pending, or when protected replay cannot validate the pin.
-    pub(super) fn recover_public_cache_pin(
+    pub(super) fn apply_public_cache_pin(
         &mut self,
         operation_id: OperationId,
         consumer: &RecheckedCacheConsumerV1,
+        journal: &Journal,
+        request: &DormantSandboxRequestKindV1,
     ) -> Result<EffectReceipt, EffectFailure> {
         self.ensure_cache_physical_owner()?;
         self.recover_pending_cache_pin(operation_id)?;
@@ -45,15 +66,15 @@ impl ProductionEffectExecutor {
             PublicCachePinRecoveryV1::Acquired(_) | PublicCachePinRecoveryV1::Retained(_) => {
                 cache_pin_receipt(operation_id)
             }
-            PublicCachePinRecoveryV1::StateOnly => Err(EffectFailure::Retryable(
-                "public Cache pin awaits authenticated View source execution".to_owned(),
-            )),
+            PublicCachePinRecoveryV1::StateOnly => {
+                self.acquire_public_cache_pin(operation_id, consumer, journal, request)
+            }
             PublicCachePinRecoveryV1::PhysicalError(CacheOwnerPinSettlementErrorV1::Owner(
                 CacheOwnerErrorV1::OutcomeUnknown(physical),
             )) => {
                 self.pending_cache_pin = Some(PendingControllerCachePinV1 {
                     operation_id,
-                    physical,
+                    custody: PendingCachePinCustodyV1::Physical(physical),
                 });
                 Err(EffectFailure::Retryable(
                     "physical Cache pin acquisition requires exact recovery".to_owned(),
@@ -62,6 +83,77 @@ impl ProductionEffectExecutor {
             PublicCachePinRecoveryV1::PhysicalError(error) => {
                 Err(EffectFailure::Retryable(error.to_string()))
             }
+        }
+    }
+
+    fn acquire_public_cache_pin(
+        &mut self,
+        operation_id: OperationId,
+        consumer: &RecheckedCacheConsumerV1,
+        journal: &Journal,
+        request: &DormantSandboxRequestKindV1,
+    ) -> Result<EffectReceipt, EffectFailure> {
+        let revision = current_filesystem_view_revision_v1(journal, consumer.view())
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+            .ok_or_else(|| {
+                EffectFailure::Permanent("public Cache pin View revision is absent".to_owned())
+            })?;
+        let mut source = ProjectSealedViewObjectSourceV1::open_fixed(consumer.project())
+            .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+        let protected = self.cache_inventory.as_mut().ok_or_else(|| {
+            EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+        })?;
+        let physical = self.cache_physical.as_mut().ok_or_else(|| {
+            EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
+        })?;
+        let compiler_abi: [u8; 32] = Sha256::digest(b"aos.sandbox.cache.pin-compiler.v1\0").into();
+        let execution = execute_public_cache_pin_from_project_revision_v1(
+            protected,
+            physical,
+            &mut source,
+            &revision,
+            consumer,
+            journal,
+            request,
+            operation_id,
+            self.node,
+            compiler_abi,
+            controller_cache_source_limits(),
+        )
+        .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+        match execution.into_confirmed() {
+            Ok(_) => cache_pin_receipt(operation_id),
+            Err(PublicCachePinExecutionV1::Committed {
+                outcome,
+                settlement,
+            }) => {
+                match outcome {
+                    CacheResidencyCommitOutcomeV1::OutcomeUnknown { pending, .. }
+                    | CacheResidencyCommitOutcomeV1::ValidationUnknown { pending, .. } => {
+                        self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                            operation_id,
+                            custody: PendingCachePinCustodyV1::Protected(pending),
+                        });
+                    }
+                    CacheResidencyCommitOutcomeV1::Applied(_) => {
+                        if let Some(Err(CacheOwnerPinSettlementErrorV1::Owner(
+                            CacheOwnerErrorV1::OutcomeUnknown(pending),
+                        ))) = settlement
+                        {
+                            self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                                operation_id,
+                                custody: PendingCachePinCustodyV1::Physical(pending),
+                            });
+                        }
+                    }
+                }
+                Err(EffectFailure::Retryable(
+                    "public Cache pin requires exact protected or physical recovery".to_owned(),
+                ))
+            }
+            Err(PublicCachePinExecutionV1::Retained(_)) => Err(EffectFailure::Permanent(
+                "retained Cache pin unexpectedly lacks confirmation".to_owned(),
+            )),
         }
     }
 
@@ -75,6 +167,13 @@ impl ProductionEffectExecutor {
         &mut self,
         operation_id: OperationId,
     ) -> Result<(), EffectFailure> {
+        if self.pending_cache_pin.is_some()
+            && (self.cache_inventory.is_none() || self.cache_physical.is_none())
+        {
+            return Err(EffectFailure::Retryable(
+                "Cache owners are unavailable while exact pin custody is retained".to_owned(),
+            ));
+        }
         let Some(pending) = self.pending_cache_pin.take() else {
             return Ok(());
         };
@@ -85,25 +184,139 @@ impl ProductionEffectExecutor {
             ));
         }
 
-        let Some(physical) = self.cache_physical.as_mut() else {
-            self.pending_cache_pin = Some(pending);
-            return Err(EffectFailure::Retryable(
-                "physical Cache owner is unavailable during pin recovery".to_owned(),
-            ));
-        };
-        match physical.recover_outcome_unknown(pending.physical) {
-            Ok(_) => Ok(()),
-            Err(failure) => {
-                let (physical, cause) = failure.into_parts();
-                self.pending_cache_pin = Some(PendingControllerCachePinV1 {
-                    operation_id,
-                    physical,
-                });
-                Err(EffectFailure::Retryable(format!(
-                    "physical Cache pin recovery remains unresolved: {cause}"
-                )))
+        match pending.custody {
+            PendingCachePinCustodyV1::Physical(token) => {
+                let physical = self.cache_physical.as_mut().ok_or_else(|| {
+                    EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
+                })?;
+                match physical.recover_outcome_unknown(token) {
+                    Ok(_) => Ok(()),
+                    Err(failure) => {
+                        let (token, cause) = failure.into_parts();
+                        self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                            operation_id,
+                            custody: PendingCachePinCustodyV1::Physical(token),
+                        });
+                        Err(EffectFailure::Retryable(format!(
+                            "physical Cache pin recovery remains unresolved: {cause}"
+                        )))
+                    }
+                }
+            }
+            PendingCachePinCustodyV1::Protected(token) => {
+                let protected = self.cache_inventory.as_mut().ok_or_else(|| {
+                    EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+                })?;
+                let physical = self.cache_physical.as_mut().ok_or_else(|| {
+                    EffectFailure::Permanent("physical Cache owner is unavailable".to_owned())
+                })?;
+                let recovery = protected.recover(
+                    public_cache_pin_transaction_id_v1(operation_id),
+                    token,
+                    |postcommit| postcommit.settle_cache_owner_pin_change(physical),
+                );
+                match recovery {
+                    CacheResidencyProtectedOwnerRecoveryV1::Pending {
+                        pending: token,
+                        cause,
+                        ..
+                    }
+                    | CacheResidencyProtectedOwnerRecoveryV1::Classified {
+                        recovery:
+                            CacheResidencyRecoveryV1::Indeterminate {
+                                pending: token,
+                                cause,
+                            },
+                        ..
+                    } => {
+                        self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                            operation_id,
+                            custody: PendingCachePinCustodyV1::Protected(token),
+                        });
+                        Err(EffectFailure::Retryable(format!(
+                            "protected Cache pin recovery remains unresolved: {cause}"
+                        )))
+                    }
+                    CacheResidencyProtectedOwnerRecoveryV1::Classified {
+                        recovery: CacheResidencyRecoveryV1::Diverged(token),
+                        ..
+                    } => {
+                        self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                            operation_id,
+                            custody: PendingCachePinCustodyV1::Protected(token),
+                        });
+                        Err(EffectFailure::Permanent(
+                            "protected Cache pin transaction diverged".to_owned(),
+                        ))
+                    }
+                    CacheResidencyProtectedOwnerRecoveryV1::Classified {
+                        recovery: CacheResidencyRecoveryV1::Applied(_),
+                        handoff:
+                            Some(Err(CacheOwnerPinSettlementErrorV1::Owner(
+                                CacheOwnerErrorV1::OutcomeUnknown(token),
+                            ))),
+                        ..
+                    } => {
+                        self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                            operation_id,
+                            custody: PendingCachePinCustodyV1::Physical(token),
+                        });
+                        Err(EffectFailure::Retryable(
+                            "physical Cache pin durability remains unknown".to_owned(),
+                        ))
+                    }
+                    CacheResidencyProtectedOwnerRecoveryV1::Classified { .. }
+                    | CacheResidencyProtectedOwnerRecoveryV1::ColdLookupRequired { .. } => Ok(()),
+                }
             }
         }
+    }
+}
+
+fn controller_cache_source_limits() -> CacheCompiledSourceLimitsV1 {
+    const MIB: u64 = 1024 * 1024;
+
+    // The controller runs in a 512-MiB cgroup. Keep source compilation well
+    // below that envelope until a dedicated bounded compiler worker exists.
+    let tree = TreeCompileLimits {
+        object_bytes: (4 * MIB) as usize,
+        nodes: 65_536,
+        directory_entries: 65_536,
+        depth: 256,
+        name_bytes: 16 * MIB,
+        symlink_bytes: 4 * MIB,
+        xattr_bytes: 8 * MIB,
+        xattrs: 65_536,
+        acl_entries: 65_536,
+        extents: 65_536,
+        hardlink_groups: 65_536,
+        hardlink_members: 65_536,
+        logical_bytes: u64::MAX,
+        working_bytes: 32 * MIB,
+        index_bytes: 8 * MIB,
+        index_record_bytes: 4 * MIB,
+    };
+    let projection = ProjectionLimits {
+        decode: DecodeLimits {
+            maximum_bytes: (4 * MIB) as usize,
+            ..DecodeLimits::default()
+        },
+        maximum_actions: 65_536,
+        maximum_source_records: 65_536,
+        maximum_projected_nodes: 65_536,
+        maximum_path_components: 256,
+        maximum_path_bytes: 16 * MIB,
+        maximum_working_bytes: 32 * MIB,
+    };
+
+    CacheCompiledSourceLimitsV1 {
+        tree,
+        membership: CacheSourceMembershipLimitsV1 {
+            maximum_index_bytes: 8 * MIB,
+            maximum_index_working_bytes: 16 * MIB,
+            projection,
+        },
+        maximum_memory_bytes: 64 * MIB,
     }
 }
 
