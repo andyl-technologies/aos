@@ -207,6 +207,8 @@ pub enum RecordNamespace {
     LifecycleAtomicSnapshotSource = 52,
     /// Holder-bound OpenSSH access issued by one authorized public operation.
     PublicAttachRoute = 53,
+    /// Durable, non-admitted public attach identity awaiting Host gate readback.
+    PublicAttachPending = 54,
 }
 
 impl RecordNamespace {
@@ -265,6 +267,7 @@ impl RecordNamespace {
             51 => Ok(Self::PublicOperationAuthorization),
             52 => Ok(Self::LifecycleAtomicSnapshotSource),
             53 => Ok(Self::PublicAttachRoute),
+            54 => Ok(Self::PublicAttachPending),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -3649,15 +3652,94 @@ mod tests {
             RecordNamespace::OperatorRecovery,
             RecordNamespace::FilesystemWorkerRegistration,
             RecordNamespace::PublicOperationAuthorization,
+            RecordNamespace::LifecycleAtomicSnapshotSource,
+            RecordNamespace::PublicAttachRoute,
+            RecordNamespace::PublicAttachPending,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = u8::try_from(index + 1).unwrap();
             assert_eq!(namespace as u8, code);
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
-        for code in [0, 52, 255] {
+        for code in [0, 55, 255] {
             assert!(RecordNamespace::from_byte(code).is_err());
         }
+    }
+
+    #[test]
+    fn public_attach_reservation_survives_reopen_without_admitting_an_operation() {
+        use crate::public_attach_pending::{
+            load_public_attach_pending_v1, reserve_public_attach_pending_v1,
+        };
+
+        let directory = TestDirectory::new("public-attach-pending");
+        let key = IdempotencyKey::new(b"attach-request".to_vec()).unwrap();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let pending = reserve_public_attach_pending_v1(
+            &mut journal,
+            &key,
+            [1; 32],
+            [2; 16],
+            [3; 16],
+            4,
+            [5; 16],
+            [6; 16],
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            journal.check_idempotency(&key, [1; 32]),
+            IdempotencyOutcome::Vacant
+        );
+        assert!(journal.records(RecordNamespace::Operation).next().is_none());
+        assert!(
+            journal
+                .records(RecordNamespace::DesiredState)
+                .next()
+                .is_none()
+        );
+        assert!(
+            journal
+                .records(RecordNamespace::PublicAttachRoute)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            reserve_public_attach_pending_v1(
+                &mut journal,
+                &key,
+                [1; 32],
+                [2; 16],
+                [3; 16],
+                4,
+                [5; 16],
+                [6; 16],
+                101,
+            )
+            .unwrap(),
+            pending
+        );
+        drop(journal);
+
+        let (mut reopened, _) = protected_open(&directory.0).unwrap();
+        assert_eq!(
+            load_public_attach_pending_v1(&reopened, &key).unwrap(),
+            Some(pending.clone())
+        );
+        assert!(
+            reserve_public_attach_pending_v1(
+                &mut reopened,
+                &key,
+                [9; 32],
+                [2; 16],
+                [3; 16],
+                4,
+                [5; 16],
+                [6; 16],
+                101,
+            )
+            .is_err()
+        );
     }
 
     #[test]

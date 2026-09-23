@@ -5132,12 +5132,56 @@ where
         self.accept_compiled_plan(plan, request_digest)
     }
 
+    /// Reserves an authorized public attach operation before Host gate readback.
+    ///
+    /// This durable record has no ordinary operation effect. Its identity must
+    /// be installed and read back by the authenticated Host gate before final
+    /// admission may publish an OpenSSH endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale peer evidence, invalid authorization or holder proof,
+    /// stale execution state, conflicting identity, or journal failure.
+    #[cfg(target_os = "linux")]
+    pub fn reserve_public_attach(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+    ) -> Result<crate::public_attach_pending::PublicAttachPendingV1, ControllerServiceError> {
+        if canonical_request.is_empty() {
+            return Err(ControllerServiceError::EmptyRequest);
+        }
+        if canonical_request.len() > self.limits.maximum_request_bytes {
+            return Err(ControllerServiceError::RequestTooLarge);
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+
+        let request_digest = public_controller_request_digest(
+            self.scope,
+            peer.principal(),
+            peer.project(),
+            canonical_request,
+        );
+        let pending = crate::production_operation_compiler::reserve_public_attach_v1(
+            self.reconciler.journal_mut(),
+            peer,
+            capability_id,
+            canonical_request,
+            request_digest,
+        )?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(pending)
+    }
+
     /// Admits a public attach using current authenticated Host OpenSSH evidence.
     ///
     /// The protected issuer and route evidence must come from the controller's
     /// separate Host route readback. This path signs and retains the endpoint
-    /// in the same journal transaction as the public operation. The ordinary
-    /// public compiler remains closed when those dependencies are unavailable.
+    /// in the same journal transaction as the public operation. The caller
+    /// must provide the exact earlier durable reservation used by the Host gate.
     ///
     /// # Errors
     ///
@@ -5150,6 +5194,7 @@ where
         peer: &crate::public_api_session::PublicApiPeer,
         capability_id: aos_sandbox_core::CapabilityId,
         canonical_request: &[u8],
+        pending: &crate::public_attach_pending::PublicAttachPendingV1,
         route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
         issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
     ) -> Result<
@@ -5180,6 +5225,7 @@ where
             capability_id,
             canonical_request,
             request_digest,
+            pending,
             route,
             issuer,
         )?;

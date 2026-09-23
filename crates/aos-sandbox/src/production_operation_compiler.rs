@@ -101,6 +101,7 @@ pub fn compile_public_attach_route_v1(
     capability_id: CapabilityId,
     canonical_request: &[u8],
     request_digest: [u8; 32],
+    pending: &crate::public_attach_pending::PublicAttachPendingV1,
     route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
     issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
 ) -> Result<OperationPlan, OperationCompilationError> {
@@ -122,9 +123,41 @@ pub fn compile_public_attach_route_v1(
         journal,
         &authorized,
         request_digest,
+        pending,
         route,
         issuer,
     )
+}
+
+/// Reserves an authorized public attach identity before Host gate installation.
+///
+/// # Errors
+///
+/// Rejects malformed or unauthorized requests, stale executions, conflicting
+/// idempotency keys, or unavailable protected journal custody.
+#[cfg(target_os = "linux")]
+pub fn reserve_public_attach_v1(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+) -> Result<crate::public_attach_pending::PublicAttachPendingV1, OperationCompilationError> {
+    let authorized = AuthorizedPublicMutationRequestV1::authorize(
+        journal,
+        peer,
+        capability_id,
+        canonical_request,
+    )
+    .map_err(|error| match error {
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
+            OperationCompilationError::Malformed
+        }
+        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
+            OperationCompilationError::Rejected
+        }
+    })?;
+    public_mutation::reserve_authorized_attach(journal, &authorized, request_digest)
 }
 
 impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {

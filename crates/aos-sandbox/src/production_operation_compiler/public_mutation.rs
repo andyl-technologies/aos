@@ -24,6 +24,8 @@ use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
+#[cfg(target_os = "linux")]
+use crate::public_attach_pending::{PublicAttachPendingV1, reserve_public_attach_pending_v1};
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
@@ -34,10 +36,96 @@ use crate::{
 use super::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 
 #[cfg(target_os = "linux")]
+pub(super) fn reserve_authorized_attach(
+    journal: &mut Journal,
+    authorized: &AuthorizedPublicMutationRequestV1,
+    request_digest: [u8; 32],
+) -> Result<PublicAttachPendingV1, OperationCompilationError> {
+    let Request::ExecutionControl(control) = authorized.request().request() else {
+        return Err(OperationCompilationError::Malformed);
+    };
+    if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
+        return Err(OperationCompilationError::Malformed);
+    }
+    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
+        .map_err(|_| OperationCompilationError::Malformed)?;
+    if let Some(pending) = crate::public_attach_pending::load_public_attach_pending_v1(
+        journal,
+        authorized.request().idempotency_key(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?
+    {
+        if !pending.matches_request(authorized.request().idempotency_key(), request_digest) {
+            return Err(OperationCompilationError::Rejected);
+        }
+        if let IdempotencyOutcome::Replay(operation) =
+            journal.check_idempotency(authorized.request().idempotency_key(), request_digest)
+        {
+            if operation != pending.operation_id() {
+                return Err(OperationCompilationError::Rejected);
+            }
+            let current = PublicProjectionStoreV1::new(journal)
+                .get(PublicProjectionKindV1::Execution, pending.execution_id())
+                .map_err(|_| OperationCompilationError::Rejected)?
+                .ok_or(OperationCompilationError::Rejected)?;
+            let PublicProjectionResourceV1::Execution(execution) = current.resource() else {
+                return Err(OperationCompilationError::Rejected);
+            };
+            if current.project() != authorized.project()
+                || current.operation() != operation
+                || !pending.matches_execution(
+                    &execution.execution_id,
+                    &execution.sandbox_incarnation_id,
+                    execution.assignment_epoch,
+                    authorized.caller().as_bytes(),
+                    &execution.audit_id,
+                )
+            {
+                return Err(OperationCompilationError::Rejected);
+            }
+            return Ok(pending);
+        }
+    }
+    let execution = load_execution_for_mutation(
+        journal,
+        authorized.project(),
+        &control.execution_id,
+        control.mutation.as_option(),
+    )?;
+    validate_execution_control(&execution, control)?;
+    if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+        || execution.command.as_option().is_none_or(|command| {
+            !matches!(
+                command.io_mode.as_known(),
+                Some(
+                    ExecutionIoMode::EXECUTION_IO_MODE_PTY
+                        | ExecutionIoMode::EXECUTION_IO_MODE_STREAM
+                )
+            )
+        })
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    reserve_public_attach_pending_v1(
+        journal,
+        authorized.request().idempotency_key(),
+        request_digest,
+        exact_id(&execution.execution_id)?,
+        exact_id(&execution.sandbox_incarnation_id)?,
+        execution.assignment_epoch,
+        *authorized.caller().as_bytes(),
+        exact_id(&execution.audit_id)?,
+        authorized.accepted_wall_seconds(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)
+}
+
+#[cfg(target_os = "linux")]
 pub(super) fn compile_authorized_attach_route(
     journal: &mut Journal,
     authorized: &AuthorizedPublicMutationRequestV1,
     request_digest: [u8; 32],
+    pending: &PublicAttachPendingV1,
     route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
     issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
 ) -> Result<OperationPlan, OperationCompilationError> {
@@ -49,9 +137,31 @@ pub(super) fn compile_authorized_attach_route(
     }
     crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
         .map_err(|_| OperationCompilationError::Malformed)?;
+    let stored = crate::public_attach_pending::load_public_attach_pending_v1(
+        journal,
+        authorized.request().idempotency_key(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?
+    .ok_or(OperationCompilationError::Rejected)?;
+    if stored != *pending
+        || !pending.matches_request(authorized.request().idempotency_key(), request_digest)
+        || pending.expires_at() <= authorized.accepted_wall_seconds()
+        || route.execution_id != pending.execution_id()
+        || route.attach_operation_id != *pending.operation_id().as_bytes()
+        || route.sandbox_incarnation_id != pending.sandbox_incarnation_id()
+        || route.assignment_epoch != pending.assignment_epoch()
+        || route.principal_id != pending.principal_id()
+        || route.audit_id != pending.audit_id()
+        || route.expires_at > pending.expires_at()
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
 
     match journal.check_idempotency(authorized.request().idempotency_key(), request_digest) {
         IdempotencyOutcome::Replay(operation_id) => {
+            if operation_id != pending.operation_id() {
+                return Err(OperationCompilationError::Rejected);
+            }
             let access = crate::attach_route_issuer::load_public_attach_route_v1(
                 journal,
                 operation_id,
@@ -73,6 +183,13 @@ pub(super) fn compile_authorized_attach_route(
                 || current.operation() != operation_id
                 || current_execution.phase.as_known()
                     != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+                || !pending.matches_execution(
+                    &current_execution.execution_id,
+                    &current_execution.sandbox_incarnation_id,
+                    current_execution.assignment_epoch,
+                    authorized.caller().as_bytes(),
+                    &current_execution.audit_id,
+                )
             {
                 return Err(OperationCompilationError::Rejected);
             }
@@ -119,7 +236,7 @@ pub(super) fn compile_authorized_attach_route(
         IdempotencyOutcome::Vacant => {}
     }
 
-    let operation_id = OperationId::new();
+    let operation_id = pending.operation_id();
     let mut execution = load_execution_for_mutation(
         journal,
         authorized.project(),
@@ -127,6 +244,15 @@ pub(super) fn compile_authorized_attach_route(
         control.mutation.as_option(),
     )?;
     validate_execution_control(&execution, control)?;
+    if !pending.matches_execution(
+        &execution.execution_id,
+        &execution.sandbox_incarnation_id,
+        execution.assignment_epoch,
+        authorized.caller().as_bytes(),
+        &execution.audit_id,
+    ) {
+        return Err(OperationCompilationError::Rejected);
+    }
     let access = issuer
         .issue(
             control,

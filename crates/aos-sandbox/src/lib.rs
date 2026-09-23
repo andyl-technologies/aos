@@ -36,6 +36,7 @@ pub mod attachment_verification;
 pub mod authority;
 pub mod attach_holder_proof;
 pub mod attach_route_issuer;
+pub mod public_attach_pending;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod client_state;

@@ -135,10 +135,16 @@ pub(crate) fn load_public_attach_route_v1(
 pub struct AuthenticatedOpenSshRouteV1 {
     /// Exact execution served by the forced-command gate.
     pub execution_id: [u8; 16],
+    /// Exact durably reserved attach operation observed by the Host gate.
+    pub attach_operation_id: [u8; 16],
     /// Current sandbox incarnation serving this execution.
     pub sandbox_incarnation_id: [u8; 16],
     /// Current assignment epoch for the Host listener.
     pub assignment_epoch: u64,
+    /// Authenticated principal named by the forced-command gate.
+    pub principal_id: [u8; 16],
+    /// Current execution audit identity named by the gate.
+    pub audit_id: [u8; 16],
     /// Reachable DNS name or IP address for the listener.
     pub host: String,
     /// Reachable TCP port for the listener.
@@ -151,6 +157,10 @@ pub struct AuthenticatedOpenSshRouteV1 {
     pub trusted_user_ca_public_key: Vec<u8>,
     /// Confirms that the gate checks the exact committed attach operation.
     pub forced_command_gate_active: bool,
+    /// Digest of the byte-exact protected Host route record.
+    pub route_digest: [u8; 32],
+    /// Commitment to the fresh authenticated physical gate readback.
+    pub gate_observation_commitment: [u8; 32],
     /// Exclusive Unix-second expiry of the authenticated Host route.
     pub expires_at: i64,
 }
@@ -172,12 +182,17 @@ impl AuthenticatedOpenSshRouteV1 {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
         if self.execution_id == [0; 16]
+            || self.attach_operation_id == [0; 16]
             || self.sandbox_incarnation_id == [0; 16]
             || self.assignment_epoch == 0
+            || self.principal_id == [0; 16]
+            || self.audit_id == [0; 16]
             || !host_valid
             || self.port == 0
             || !user_valid
             || !self.forced_command_gate_active
+            || self.route_digest == [0; 32]
+            || self.gate_observation_commitment == [0; 32]
             || self.expires_at <= 0
         {
             return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
@@ -237,6 +252,9 @@ impl OpenSshAttachRouteIssuerV1 {
         if operation.as_bytes() == &[0; 16]
             || principal.as_bytes() == &[0; 16]
             || request_digest == [0; 32]
+            || route.attach_operation_id != *operation.as_bytes()
+            || route.principal_id != *principal.as_bytes()
+            || route.audit_id != execution.audit_id.as_slice()
         {
             return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
         }
@@ -369,6 +387,9 @@ impl OpenSshAttachRouteIssuerV1 {
         if operation.as_bytes() == &[0; 16]
             || principal.as_bytes() == &[0; 16]
             || request_digest == [0; 32]
+            || route.attach_operation_id != *operation.as_bytes()
+            || route.principal_id != *principal.as_bytes()
+            || route.audit_id != execution.audit_id.as_slice()
         {
             return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
         }
