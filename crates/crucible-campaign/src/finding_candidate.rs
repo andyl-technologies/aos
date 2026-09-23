@@ -26,7 +26,7 @@ use crate::{
     ObservationId, ReproductionArtifactId,
 };
 
-pub(crate) const FINDING_CANDIDATE_SCHEMA_VERSION: u32 = 6;
+pub(crate) const FINDING_CANDIDATE_SCHEMA_VERSION: u32 = 7;
 const REPLAY_SIGNATURE_SCHEMA_VERSION: u32 = 1;
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SIGNATURE_REPLAYS_PER_PASS: usize = MAX_FINDING_MINIMIZATION_ATTEMPTS + 1;

@@ -3,18 +3,23 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use crucible::{AssertionPhase, SchedulerEventLogEntry};
 use crucible_campaign::{
     AttemptRetentionPolicyBasis, AuthenticatedFindingExactCheckpoint, CampaignCodecError,
     CampaignExecutorStore, CampaignHash, ConfigurationId, ExactCheckpointId,
-    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
-    FindingExactPins, FindingExactRetention, FindingExactRetentionCandidate,
-    FindingExactRetentionDisposition, FindingExactRetentionEvidence,
-    FindingExactRetentionIncomplete, ObservationCandidate, ScenarioArtifactId, ScenarioDefId,
-    StopOutcome,
+    FindingAssertionFailureBoundary, FindingExactCheckpointAuthenticationError,
+    FindingExactCheckpointAuthenticator, FindingExactPins, FindingExactRetention,
+    FindingExactRetentionCandidate, FindingExactRetentionDisposition,
+    FindingExactRetentionEvidence, FindingExactRetentionIncomplete, PropertyVerdict,
+    ScenarioArtifactId, ScenarioDefId, StopOutcome,
 };
 
-use crate::crucible_artifact::PreparedFindingExactRetention;
+use crate::crucible_artifact::{PreparedFindingExactRetention, PreparedSemanticAttemptResult};
+use crate::crucible_measurement::CrucibleMeasurementStopEvidence;
+use crate::crucible_measurement::verified_assertion_transition;
 use crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator;
+use crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot;
 use crate::{AttemptExecutionContext, CrucibleAttemptExecution, ExactCheckpointStore};
 
 const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
@@ -187,6 +192,24 @@ impl FindingExactRetentionSource for CampaignRunFindingExactRetentionSource {
 }
 
 impl FindingExactCheckpointAuthenticator for CampaignRunFindingExactRetentionSource {
+    fn authenticate_finding_assertion_boundary(
+        &self,
+        checkpoint: ExactCheckpointId,
+        boundary: &FindingAssertionFailureBoundary,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+    ) -> Result<(), FindingExactCheckpointAuthenticationError> {
+        ExactFindingCheckpointAuthenticator::new(&self.campaign, &self.checkpoints)
+            .authenticate_finding_assertion_boundary(
+                checkpoint,
+                boundary,
+                scenario,
+                scenario_artifact,
+                configuration,
+            )
+    }
+
     fn authenticate_finding_exact_checkpoint(
         &self,
         checkpoint: ExactCheckpointId,
@@ -221,8 +244,10 @@ pub(super) fn prepare_finding_exact_retention(
     source: &dyn FindingExactRetentionSource,
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
-    observation: &ObservationCandidate,
+    result: &PreparedSemanticAttemptResult,
+    execution: Option<&QemuAttemptExecutionEvidenceSnapshot>,
 ) -> Result<(FindingExactPins, PreparedFindingExactRetention), CampaignCodecError> {
+    let observation = result.observation();
     let crucible_campaign::AttemptRetentionPolicyDisposition::Required(basis) =
         context.retention_policy()
     else {
@@ -239,12 +264,27 @@ pub(super) fn prepare_finding_exact_retention(
         .map_err(|_| CampaignCodecError::InvalidValue {
             reason: "finding retention policy basis failed executor authentication",
         })?;
-    let boundary = match observation.observation().stop() {
-        StopOutcome::ObservationReached(proof) => Some((
-            proof.event_log().events(),
-            Some(proof.boundary().start_events()),
-        )),
-        _ => None,
+    let (boundary, assertion_boundary) = match observation.observation().stop() {
+        StopOutcome::ObservationReached(proof) => (
+            Some((
+                proof.event_log().events(),
+                Some(proof.boundary().start_events()),
+            )),
+            None,
+        ),
+        StopOutcome::AssertionFailure(property) => {
+            let witness = execution.and_then(|execution| {
+                assertion_failure_boundary(input, result, execution, property)
+            });
+            let boundary = witness.as_ref().map(|witness| {
+                (
+                    witness.terminal_events(),
+                    Some(witness.quantum_start_events()),
+                )
+            });
+            (boundary, witness)
+        }
+        _ => (None, None),
     };
     select_finding_exact_retention(
         basis,
@@ -254,7 +294,66 @@ pub(super) fn prepare_finding_exact_retention(
         input.lineage().scenario_content(),
         observation.child().configuration(),
         boundary,
+        assertion_boundary,
     )
+}
+
+fn assertion_failure_boundary(
+    input: &CrucibleAttemptExecution,
+    result: &PreparedSemanticAttemptResult,
+    execution: &QemuAttemptExecutionEvidenceSnapshot,
+    property: &str,
+) -> Option<FindingAssertionFailureBoundary> {
+    let observation = result.observation();
+    if observation.observation().attempt() != input.attempt().id().ok()?
+        || observation
+            .properties()
+            .properties()
+            .get(property)?
+            .verdict()
+            != PropertyVerdict::Failed
+    {
+        return None;
+    }
+
+    let terminal_events = execution.semantic_stop_events()?;
+    let quantum_start_events = execution.latest_quantum_start_events()?;
+    let terminal_len = usize::try_from(terminal_events).ok()?;
+    let entries = execution.event_log_entries().get(..terminal_len)?;
+    if quantum_start_events >= terminal_events {
+        return None;
+    }
+
+    let measurement_ids = observation.measurements().evaluation().evidence();
+    let mut matching = result
+        .measurement_replay_evidence()
+        .iter()
+        .filter_map(|leaf| {
+            let id = leaf.id().ok()?;
+            (measurement_ids.contains(&id)
+                && leaf.scenario() == input.lineage().scenario()
+                && leaf.configuration() == observation.child().configuration()
+                && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
+                && leaf.entries() == entries)
+                .then_some((id, leaf))
+        });
+    let (trace, _) = matching.next()?;
+    if matching.next().is_some() || measurement_ids.len() != 1 {
+        return None;
+    }
+
+    let transition = verified_assertion_transition(entries, quantum_start_events, property)?;
+
+    FindingAssertionFailureBoundary::new(
+        trace,
+        crate::crucible_measurement::observation_event_prefix_digest(entries),
+        terminal_events,
+        quantum_start_events,
+        transition.sequence(),
+        CampaignHash::from_bytes(transition.content_hash().bytes),
+        property.to_owned(),
+    )
+    .ok()
 }
 
 fn select_finding_exact_retention(
@@ -265,6 +364,7 @@ fn select_finding_exact_retention(
     scenario_artifact: ScenarioArtifactId,
     configuration: ConfigurationId,
     boundary: Option<(u64, Option<u64>)>,
+    assertion_boundary: Option<FindingAssertionFailureBoundary>,
 ) -> Result<(FindingExactPins, PreparedFindingExactRetention), CampaignCodecError> {
     if !exact_findings {
         let retention = FindingExactRetention::new(
@@ -346,6 +446,19 @@ fn select_finding_exact_retention(
         ));
     }
     candidates.sort_by_key(|candidate| candidate.checkpoint());
+    if let Some(boundary) = assertion_boundary.as_ref() {
+        candidates.retain(|candidate| {
+            source
+                .authenticate_finding_assertion_boundary(
+                    candidate.checkpoint(),
+                    boundary,
+                    scenario,
+                    scenario_artifact,
+                    configuration,
+                )
+                .is_ok()
+        });
+    }
     let Some(captured_failure) = candidates
         .iter()
         .filter(|candidate| candidate.event_count() == failure_events)
@@ -362,6 +475,13 @@ fn select_finding_exact_retention(
     ) {
         Ok(evidence) => evidence,
         Err(_) => return incomplete(FindingExactRetentionIncomplete::SelectionFailed),
+    };
+    let evidence = match assertion_boundary {
+        Some(boundary) => match evidence.with_assertion_boundary(boundary) {
+            Ok(evidence) => evidence,
+            Err(_) => return incomplete(FindingExactRetentionIncomplete::SelectionFailed),
+        },
+        None => evidence,
     };
     let authenticated_candidates = u32::try_from(evidence.candidates().len()).map_err(|_| {
         CampaignCodecError::LimitExceeded {
@@ -391,6 +511,7 @@ mod tests {
     use std::error::Error;
     use std::io;
 
+    use crucible::{AssertionId, VirtualTime};
     use crucible_cas::content_store::{ContentId, ObjectKind};
 
     use super::*;
@@ -447,6 +568,61 @@ mod tests {
                 event_count,
                 128,
             ))
+        }
+    }
+
+    struct PrefixSource {
+        inner: TestSource,
+        prefixes: BTreeMap<ExactCheckpointId, Vec<SchedulerEventLogEntry>>,
+    }
+
+    impl FindingExactRetentionSource for PrefixSource {
+        fn candidate_checkpoints(
+            &self,
+            configuration: ConfigurationId,
+            maximum_candidates: usize,
+        ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
+            self.inner
+                .candidate_checkpoints(configuration, maximum_candidates)
+        }
+    }
+
+    impl FindingExactCheckpointAuthenticator for PrefixSource {
+        fn authenticate_finding_assertion_boundary(
+            &self,
+            checkpoint: ExactCheckpointId,
+            boundary: &FindingAssertionFailureBoundary,
+            _scenario: ScenarioDefId,
+            _scenario_artifact: ScenarioArtifactId,
+            _configuration: ConfigurationId,
+        ) -> Result<(), FindingExactCheckpointAuthenticationError> {
+            self.prefixes
+                .get(&checkpoint)
+                .filter(|entries| {
+                    entries.len() as u64 == boundary.terminal_events()
+                        && crate::crucible_measurement::observation_event_prefix_digest(entries)
+                            == boundary.prefix_digest()
+                })
+                .map(|_| ())
+                .ok_or(FindingExactCheckpointAuthenticationError::AuthenticationFailed)
+        }
+
+        fn authenticate_finding_exact_checkpoint(
+            &self,
+            checkpoint: ExactCheckpointId,
+            scenario: ScenarioDefId,
+            scenario_artifact: ScenarioArtifactId,
+            configuration: ConfigurationId,
+            maximum_metadata_bytes: u64,
+        ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>
+        {
+            self.inner.authenticate_finding_exact_checkpoint(
+                checkpoint,
+                scenario,
+                scenario_artifact,
+                configuration,
+                maximum_metadata_bytes,
+            )
         }
     }
 
@@ -565,6 +741,115 @@ mod tests {
     }
 
     #[test]
+    fn assertion_boundary_requires_one_dense_violated_transition_in_terminal_quantum() {
+        let unrelated = SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            AssertionId::from_name("unrelated"),
+            AssertionPhase::Violated,
+        );
+        let target = SchedulerEventLogEntry::assertion_state_observation(
+            1,
+            VirtualTime { ticks: 2 },
+            AssertionId::from_name("target"),
+            AssertionPhase::Violated,
+        );
+        let entries = vec![unrelated.clone(), target.clone()];
+
+        assert_eq!(
+            verified_assertion_transition(&entries, 1, "target"),
+            Some(&target),
+        );
+        assert!(verified_assertion_transition(&entries, 1, "unrelated").is_none());
+        assert!(verified_assertion_transition(&entries, 2, "target").is_none());
+
+        let duplicate = SchedulerEventLogEntry::assertion_state_observation(
+            2,
+            VirtualTime { ticks: 2 },
+            AssertionId::from_name("target"),
+            AssertionPhase::Violated,
+        );
+        assert!(
+            verified_assertion_transition(&[unrelated, target, duplicate], 1, "target").is_none()
+        );
+        assert!(verified_assertion_transition(&[entries[1].clone()], 0, "target").is_none());
+    }
+
+    #[test]
+    fn assertion_retention_excludes_lower_id_divergent_same_count_root()
+    -> Result<(), Box<dyn Error>> {
+        let mut roots = [checkpoint(b"first")?, checkpoint(b"second")?];
+        roots.sort();
+        let divergent = roots[0];
+        let matching = roots[1];
+        let matching_log = (0_u64..5)
+            .map(|sequence| {
+                SchedulerEventLogEntry::assertion_state_observation(
+                    sequence,
+                    VirtualTime {
+                        ticks: sequence + 1,
+                    },
+                    AssertionId::from_name(if sequence == 3 { "target" } else { "noise" }),
+                    if sequence == 3 {
+                        AssertionPhase::Violated
+                    } else {
+                        AssertionPhase::Satisfied
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut divergent_log = matching_log.clone();
+        divergent_log[0] = SchedulerEventLogEntry::assertion_state_observation(
+            0,
+            VirtualTime { ticks: 1 },
+            AssertionId::from_name("foreign"),
+            AssertionPhase::Satisfied,
+        );
+        let source = PrefixSource {
+            inner: TestSource {
+                inventory: TestInventory::Roots(roots.to_vec()),
+                events: BTreeMap::from([(divergent, 5), (matching, 5)]),
+                authentication_fails: false,
+            },
+            prefixes: BTreeMap::from([
+                (divergent, divergent_log),
+                (matching, matching_log.clone()),
+            ]),
+        };
+        let (scenario, scenario_artifact, configuration) = identities()?;
+        let boundary = FindingAssertionFailureBoundary::new(
+            ContentId::for_bytes(ObjectKind::Trace, 2, b"matching"),
+            crate::crucible_measurement::observation_event_prefix_digest(&matching_log),
+            5,
+            2,
+            3,
+            CampaignHash::from_bytes(matching_log[3].content_hash().bytes),
+            String::from("target"),
+        )?;
+
+        let (pins, prepared) = select_finding_exact_retention(
+            basis()?,
+            true,
+            &source,
+            scenario,
+            scenario_artifact,
+            configuration,
+            Some((5, Some(2))),
+            Some(boundary),
+        )?;
+
+        assert_eq!(
+            disposition(&prepared)?,
+            FindingExactRetentionDisposition::Complete
+        );
+        assert_eq!(pins.post_failure(), &BTreeSet::from([matching]));
+        let evidence = prepared.evidence.ok_or("missing selected evidence")?;
+        assert_eq!(evidence.captured_failure(), matching);
+        assert_eq!(evidence.candidates().len(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn matching_authenticated_roots_produce_complete_exact_pins() -> Result<(), Box<dyn Error>> {
         let first = checkpoint(b"first")?;
         let failure = checkpoint(b"failure")?;
@@ -583,6 +868,7 @@ mod tests {
             scenario_artifact,
             configuration,
             Some((5, Some(4))),
+            None,
         )?;
 
         assert_eq!(
@@ -673,6 +959,7 @@ mod tests {
             scenario_artifact,
             configuration,
             Some((authenticated.event_count(), None)),
+            None,
         )?;
 
         assert_eq!(
@@ -775,6 +1062,7 @@ mod tests {
                 scenario_artifact,
                 configuration,
                 boundary,
+                None,
             )?;
             assert_eq!(disposition(&prepared)?, expected);
         }

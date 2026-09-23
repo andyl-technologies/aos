@@ -38,7 +38,7 @@ fn fixture_request() -> SubmitAttemptRequest {
 fn fixture_finding_candidate() -> FindingCandidateBundleId {
     FindingCandidateBundleId::from_content_id(ContentId::for_bytes(
         ObjectKind::Finding,
-        6,
+        7,
         b"executor-finding-candidate",
     ))
     .expect("finding candidate")

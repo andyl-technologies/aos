@@ -14,6 +14,8 @@ use super::{
 pub struct QemuAttemptExecutionEvidenceSnapshot {
     quanta: u64,
     frontier: crucible::VirtualTime,
+    latest_quantum_start_events: Option<u64>,
+    semantic_stop_events: Option<u64>,
     event_log_entries: Vec<SchedulerEventLogEntry>,
     event_log_bytes: usize,
     execution_fingerprints: Vec<FingerprintSample>,
@@ -52,6 +54,18 @@ impl QemuAttemptExecutionEvidenceSnapshot {
     #[must_use]
     pub const fn frontier(&self) -> crucible::VirtualTime {
         self.frontier
+    }
+
+    /// Returns the retained event offset before the latest completed quantum.
+    #[must_use]
+    pub const fn latest_quantum_start_events(&self) -> Option<u64> {
+        self.latest_quantum_start_events
+    }
+
+    /// Returns the full event count at the modeled stop, before shutdown drain.
+    #[must_use]
+    pub const fn semantic_stop_events(&self) -> Option<u64> {
+        self.semantic_stop_events
     }
 
     /// Returns the exact bounded scheduler event log retained for the attempt.
@@ -130,6 +144,12 @@ impl QemuAttemptExecutionEvidence {
         append_event_entries(&mut snapshot, entries)
     }
 
+    pub(super) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        snapshot.semantic_stop_events = Some(snapshot.event_log_entries.len() as u64);
+        Ok(())
+    }
+
     fn record_with_event_limits(
         &self,
         quanta: u64,
@@ -139,6 +159,7 @@ impl QemuAttemptExecutionEvidence {
         event_byte_limit: usize,
     ) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        let quantum_start_events = snapshot.event_log_entries.len() as u64;
         append_event_entries_with_limits(
             &mut snapshot,
             entries,
@@ -147,6 +168,7 @@ impl QemuAttemptExecutionEvidence {
         )?;
         snapshot.quanta = quanta;
         snapshot.frontier = frontier;
+        snapshot.latest_quantum_start_events = Some(quantum_start_events);
         Ok(())
     }
 

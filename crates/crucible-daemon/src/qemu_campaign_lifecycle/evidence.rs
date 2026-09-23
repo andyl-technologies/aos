@@ -201,6 +201,7 @@ where
         }
 
         let samples = self.sample_fingerprints()?;
+        self.evidence.record_semantic_stop()?;
         self.staged_terminal_fingerprints = Some(samples);
         Ok(())
     }

@@ -330,6 +330,24 @@ impl FindingExactRetentionSource for PackagedFindingExactRetentionSource {
 }
 
 impl FindingExactCheckpointAuthenticator for PackagedFindingExactRetentionSource {
+    fn authenticate_finding_assertion_boundary(
+        &self,
+        checkpoint: ExactCheckpointId,
+        boundary: &crucible_campaign::FindingAssertionFailureBoundary,
+        scenario: ScenarioDefId,
+        scenario_artifact: ScenarioArtifactId,
+        configuration: ConfigurationId,
+    ) -> Result<(), FindingExactCheckpointAuthenticationError> {
+        ExactFindingCheckpointAuthenticator::new(&self.store, &self.checkpoints)
+            .authenticate_finding_assertion_boundary(
+                checkpoint,
+                boundary,
+                scenario,
+                scenario_artifact,
+                configuration,
+            )
+    }
+
     fn authenticate_finding_exact_checkpoint(
         &self,
         checkpoint: ExactCheckpointId,

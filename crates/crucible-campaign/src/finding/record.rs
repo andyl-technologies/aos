@@ -101,7 +101,7 @@ impl Finding {
     ) -> Result<Self, CampaignCodecError> {
         let candidate_bundle = FindingCandidateBundleId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            6,
+            7,
             b"unit-test finding candidate bundle",
         ))?;
         let candidate_occurrences = FindingCandidateOccurrenceSet::new(

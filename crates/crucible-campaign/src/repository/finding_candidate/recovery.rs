@@ -82,6 +82,27 @@ pub trait FindingExactCheckpointAuthenticator: Send + Sync {
         maximum_metadata_bytes: u64,
     ) -> Result<AuthenticatedFindingExactCheckpoint, FindingExactCheckpointAuthenticationError>;
 
+    /// Replays the raw Trace for an assertion-failure retention attestation.
+    ///
+    /// The repository cannot decode scheduler Trace leaves. Complete
+    /// assertion retention therefore requires the executor's typed verifier at
+    /// publication; later cold loads authenticate the immutable attestation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication failure for absent, malformed, or mismatched
+    /// raw Trace evidence. The default rejects unsupported implementations.
+    fn authenticate_finding_assertion_boundary(
+        &self,
+        _checkpoint: crate::ExactCheckpointId,
+        _boundary: &crate::FindingAssertionFailureBoundary,
+        _scenario: ScenarioDefId,
+        _scenario_artifact: ScenarioArtifactId,
+        _configuration: ConfigurationId,
+    ) -> Result<(), FindingExactCheckpointAuthenticationError> {
+        Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed)
+    }
+
     /// Opens one authenticated object named by a selected checkpoint closure.
     ///
     /// The repository calls this only for the selected root or for a child

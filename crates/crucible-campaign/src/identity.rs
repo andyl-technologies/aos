@@ -621,7 +621,7 @@ content_object_id!(
 content_object_id!(
     FindingCandidateBundleId,
     ObjectKind::Finding,
-    6,
+    7,
     "crucible.campaign.finding-candidate-bundle",
     "Identifies one current durable finding candidate handoff with optional evidence and retention."
 );
