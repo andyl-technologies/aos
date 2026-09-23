@@ -454,11 +454,16 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         println!("{}", run_campaign_archive(archive, cli.output_format())?);
         return Ok(());
     }
-    if let CampaignCommand::FindingBundle(CampaignFindingBundleArgs {
-        command: CampaignFindingBundleCommand::Verify(verify),
-    }) = &args.command
-    {
-        println!("{}", verify_exported_finding(verify, cli.output_format())?);
+    if let CampaignCommand::FindingBundle(bundle) = &args.command {
+        let report = match &bundle.command {
+            CampaignFindingBundleCommand::Export(export) => {
+                export_finding_bundle(export, cli.output_format())?
+            }
+            CampaignFindingBundleCommand::Verify(verify) => {
+                verify_exported_finding(cli, verify, cli.output_format())?
+            }
+        };
+        println!("{report}");
         return Ok(());
     }
 
@@ -721,14 +726,9 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_replay(&client, principal, &args.command)?;
             render_campaign_replay(&report, cli.output_format())?
         }
-        CampaignCommand::FindingBundle(CampaignFindingBundleArgs {
-            command: CampaignFindingBundleCommand::Export(export),
-        }) => export_finding_bundle(&client, principal, export, cli.output_format())?,
-        CampaignCommand::FindingBundle(CampaignFindingBundleArgs {
-            command: CampaignFindingBundleCommand::Verify(_),
-        }) => {
+        CampaignCommand::FindingBundle(_) => {
             return Err(backend_error(
-                "offline finding bundle verification reached connected campaign dispatch",
+                "offline finding bundle operation reached connected campaign dispatch",
             ));
         }
         CampaignCommand::Debug(_) => {
