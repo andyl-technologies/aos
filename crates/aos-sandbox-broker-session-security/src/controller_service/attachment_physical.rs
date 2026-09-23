@@ -4,12 +4,14 @@
 //! post-attach verification record; this adapter never manufactures one from a
 //! successful Apply response or a public projection.
 
-use aos_proto::aos::sandbox::local::v1::MountAction;
+use aos_proto::aos::sandbox::local::v1::{MountAction, MountSourceAcquisitionPhase};
 use aos_sandbox::Journal;
 use aos_sandbox::attachment_effect_owner::ProtectedAttachmentEffectOwnerV1;
 use aos_sandbox::attachment_mount::PreparedCurrentAttachmentMountV1;
 use aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1;
-use aos_sandbox::attachment_source::{AttachmentSourceActionV1, AttachmentSourceBoundsV1};
+use aos_sandbox::attachment_source::{
+    AttachmentSourceActionV1, AttachmentSourceAttemptKindV1, AttachmentSourceBoundsV1,
+};
 use aos_sandbox::attachment_state::AttachmentDesiredPresenceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
@@ -219,6 +221,36 @@ pub(super) fn observe(
                 "source custody completed; fresh Mount inventory is pending",
             ));
         }
+        if matches!(
+            action,
+            AttachmentSourceActionV1::AwaitAcquisition {
+                phase: MountSourceAcquisitionPhase::MOUNT_SOURCE_ACQUISITION_PHASE_UNSPECIFIED,
+                ..
+            }
+        ) {
+            // The paired signed inventory is rowless; only the original
+            // packet may be resent after current authority rebinds exactly.
+            ensure_mount_policy(executor)?;
+            let prepared = owner
+                .prepare_current_source_resume(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            let (canonical_plan, canonical_signature) = prepared
+                .original_plan_artifacts()
+                .map_err(|error| retryable(error.to_string()))?;
+            let signed = executor
+                .broker_plan_signer
+                .as_ref()
+                .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+                .recover_mount_plan(&canonical_plan, &canonical_signature)
+                .map_err(|error| retryable(error.to_string()))?;
+            let attempt = owner
+                .bind_current_source_resume(prepared, signed, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            executor.pending_attachment_source_attempt = Some(attempt);
+            drop(owner);
+            drain_pending_source_attempt(executor, journal)?;
+            return Err(retryable("fresh Mount source inventory is pending"));
+        }
         if matches!(action, AttachmentSourceActionV1::CompleteConsume { .. }) {
             owner
                 .complete_current_source_consume(source, &mut clock)
@@ -238,6 +270,44 @@ pub(super) fn observe(
                 "source release custody completed; fresh Mount inventory is pending",
             ));
         } else if matches!(action, AttachmentSourceActionV1::Release { .. }) {
+            if let Some(kind) = owner
+                .open_current_source_attempt_kind(attachment)
+                .map_err(|error| retryable(error.to_string()))?
+            {
+                if kind == AttachmentSourceAttemptKindV1::Acquire {
+                    owner
+                        .close_current_source_acquire_for_release(source, &mut clock)
+                        .map_err(|error| retryable(error.to_string()))?;
+                    return Err(retryable(
+                        "acquired source custody is closed; fresh Mount inventory is pending",
+                    ));
+                }
+                if kind != AttachmentSourceAttemptKindV1::Release {
+                    return Err(retryable("another source custody attempt is still open"));
+                }
+                // The signed predecessor row is still at the exact revision
+                // named by Release; recovery cannot mint a successor request.
+                ensure_mount_policy(executor)?;
+                let prepared = owner
+                    .prepare_current_source_resume(source, &mut clock)
+                    .map_err(|error| retryable(error.to_string()))?;
+                let (canonical_plan, canonical_signature) = prepared
+                    .original_plan_artifacts()
+                    .map_err(|error| retryable(error.to_string()))?;
+                let signed = executor
+                    .broker_plan_signer
+                    .as_ref()
+                    .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+                    .recover_mount_plan(&canonical_plan, &canonical_signature)
+                    .map_err(|error| retryable(error.to_string()))?;
+                let attempt = owner
+                    .bind_current_source_resume(prepared, signed, &mut clock)
+                    .map_err(|error| retryable(error.to_string()))?;
+                executor.pending_attachment_source_attempt = Some(attempt);
+                drop(owner);
+                drain_pending_source_attempt(executor, journal)?;
+                return Err(retryable("fresh Mount source inventory is pending"));
+            }
             ensure_mount_policy(executor)?;
             let coordinates = with_mount_session(executor, |mount| {
                 mount
