@@ -785,6 +785,7 @@ pub(super) fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliErro
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod remote_debug_tests {
     use super::*;
 
