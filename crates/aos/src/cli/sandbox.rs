@@ -1382,6 +1382,7 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
         bail!("execution environment names must be unique");
     }
     let mut semantic_features = vec![
+        aos_sandbox::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
         aos_sandbox::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
         io_feature,
     ];

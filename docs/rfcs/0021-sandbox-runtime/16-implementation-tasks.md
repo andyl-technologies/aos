@@ -307,8 +307,11 @@ the outstanding work concrete:
   through protected and physical owners, retains ambiguous in-process custody,
   and cold-reconciles released tombstones before completing. Resize and signal
   `ExecutionControl` still admit but fall through to a retry-only controller
-  effect. Attach is rejected before admission until holder proof verification
-  and OpenSSH route issuance are active. `CachePin` cold-recovers an existing
+  effect. Attach verifies the holder proof but is rejected before admission
+  until bound OpenSSH certificate and route issuance are active.
+  `CreateExecution` now verifies the holder proof over the complete command
+  and mutation fence before admission and again in production compilation.
+  `CachePin` cold-recovers an existing
   protected acquisition and its exact physical pin. A state-only transaction
   now compiles the current durable View revision against project-scoped sealed
   tree objects before acquiring a new protected and physical pin.

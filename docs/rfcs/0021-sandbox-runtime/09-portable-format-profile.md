@@ -243,6 +243,7 @@ and compatibility rule:
 | `aos.sandbox.enforcement.zfs-quota, 1, 0` | storage/snapshot dimensions under the stated ZFS quota and reservation contract |
 | `aos.sandbox.execution.stream, 1, 0` | live non-terminal execution streams with no PTY semantics |
 | `aos.sandbox.execution.attach-holder-proof, 1, 0` | attach requires a holder public key and verified possession proof before a bound OpenSSH certificate is issued |
+| `aos.sandbox.execution.create-holder-proof, 1, 0` | creation requires proof of the holder key over the complete command and mutation fence |
 | `aos.sandbox.execution.pty, 1, 0` | live pseudo-terminal execution with explicit nonzero rows and columns |
 | `aos.sandbox.execution.detached-capture, 1, 0` | no live stream; output is retained under the requested bounded capture ceiling |
 | `aos.sandbox.execution.sandbox-shell, 1, 0` | explicit sandbox-resident shell interpretation; it never selects a host shell |
@@ -279,6 +280,7 @@ The base-v1 `AOSFCF01` fixture SHA-256 values are pinned here:
 | `aos.sandbox.enforcement.cgroup-v2` | `ad1f2e95d21eab2df29e108ca629db1f4236b5f6b4dc9039aa4e0aaa587c49c2` |
 | `aos.sandbox.enforcement.zfs-quota` | `9d339d66103e5c87d2dc5e291ba1d2467a661a1f5eb34a2ce0a7287209c8c2a8` |
 | `aos.sandbox.execution.attach-holder-proof` | `f855452ce17dee734306df24ea47cc9d0981bd85c363eb9faf59ec10b348bc50` |
+| `aos.sandbox.execution.create-holder-proof` | `8e0cafe17816082e5ef3ef8690e84344529a438a7cb8b8704d63d659bb731942` |
 | `aos.sandbox.execution.detached-capture` | `12dc2d11a489618458744648489cf2efe8715b935a8e422b67c732e737d8766d` |
 | `aos.sandbox.execution.pty` | `def575cd72de3bc32ae8963e2ae77bdad7475c6fcc9946187e7fa4a9e4e1450e` |
 | `aos.sandbox.execution.sandbox-shell` | `895b0370cb4f75377cfd3c153795e8f1b44e6c9ecb9800ed3d5e82fe3afd08bd` |

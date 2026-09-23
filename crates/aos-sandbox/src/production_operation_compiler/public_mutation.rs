@@ -619,6 +619,8 @@ fn create_execution_projection(
     request_digest: [u8; 32],
     request: &aos_proto::aos::sandbox::v1::CreateExecutionRequest,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
+    crate::create_holder_proof::verify_create_holder_proof_v1(request)
+        .map_err(|_| OperationCompilationError::Rejected)?;
     let sandbox = load_sandbox(journal, exact_id(&request.sandbox_id)?)?;
     ensure_sandbox_project(&sandbox, project)?;
     let mutation = request

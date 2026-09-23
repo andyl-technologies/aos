@@ -642,6 +642,12 @@ impl DormantSandboxRequestV1 {
                     && nonempty(&r.client_public_key)
                     && nonempty(&r.proof_of_possession)
                     && mutation_with_incarnation(r.mutation.as_option())
+                    && r.mutation.as_option().is_some_and(|mutation| {
+                        crate::controller_query::contains_semantic_features_v1(
+                            &mutation.required_features,
+                            &[crate::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1],
+                        )
+                    })
                     && r.command.as_option().is_some_and(|command| {
                         execution_required_features_present(
                             command,

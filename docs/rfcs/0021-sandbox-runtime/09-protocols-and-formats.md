@@ -145,7 +145,16 @@ route can be issued only for the proven key and must still be short-lived.
 
 Attach requests require `aos.sandbox.execution.attach-holder-proof, 1, 0` in
 `MutationContext.required_features`; resize and signal requests carry no holder
-key or proof. Cache pin and unpin requests require
+key or proof. CreateExecution uses the same canonical Ed25519 OpenSSH key and
+SSHSIG PEM profile, but signs the complete `CreateExecutionRequest` with only
+`proof_of_possession` cleared under the distinct namespace
+`aos.sandbox.execution.create-holder-proof.v1`. Its command, sandbox ID,
+optimistic mutation fence, required features, and key are bound together;
+unknown fields in the request, command, nested environment, timeout, mutation,
+or features are rejected. Create requests require
+`aos.sandbox.execution.create-holder-proof, 1, 0` in
+`MutationContext.required_features`. The controller verifies the proof before
+admission, independently of TLS peer authorization. Cache pin and unpin requests require
 `aos.sandbox.cache.consumer-pin, 1, 0` so an older peer cannot ignore the
 consumer identity and reinterpret them as object-only retention.
 

@@ -780,7 +780,11 @@ impl ResolvedPublicMutationV1 {
                     .into(),
                     client_public_key: value.endpoint_proof.public_key().to_vec(),
                     proof_of_possession: value.endpoint_proof.proof().to_vec(),
-                    mutation: execution_mutation_context_proto(&value.mutation).into(),
+                    mutation: with_required_semantic_feature(
+                        execution_mutation_context_proto(&value.mutation),
+                        crate::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
+                    )
+                    .into(),
                     ..Default::default()
                 })
             }
