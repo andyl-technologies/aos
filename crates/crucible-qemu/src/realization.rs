@@ -7,8 +7,9 @@
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, MaterializedState,
-    NodeBlobRef, RuntimeState, World,
+    RuntimeState, World,
 };
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -441,7 +442,7 @@ fn validate_baked_genesis_snapshot(
         });
     }
     validate_exact_checkpoint_state(&snapshot.checkpoint, "baked genesis")?;
-    validate_baked_genesis_node_blobs(snapshot, world)?;
+    validate_baked_genesis_node_set(snapshot, world)?;
     Ok(())
 }
 
@@ -515,20 +516,28 @@ fn validate_exact_checkpoint_state(
     Ok(())
 }
 
-fn validate_baked_genesis_node_blobs(
+fn validate_baked_genesis_node_set(
     snapshot: &QemuBakedGenesisSnapshot,
     world: &World,
 ) -> Result<(), QemuVmRealizationError> {
-    for node in world.vm_nodes() {
-        if !matches!(
-            snapshot.checkpoint.node_blob(&node.id),
-            Some(NodeBlobRef::Baked(_))
-        ) {
-            return Err(QemuVmRealizationError::InvalidCheckpoint {
-                role: "baked genesis",
-                message: format!("missing baked node blob for node {}", node.id.name),
-            });
-        }
+    // Native VMState is authenticated by the v9 production closure. The
+    // modeled checkpoint's blob map is empty for that capture path; its node
+    // clocks still must cover exactly the VMs admitted by the World.
+    let expected = world
+        .vm_nodes()
+        .into_iter()
+        .map(|node| &node.id)
+        .collect::<BTreeSet<_>>();
+    let observed = snapshot
+        .checkpoint
+        .node_icounts
+        .keys()
+        .collect::<BTreeSet<_>>();
+    if observed != expected {
+        return Err(QemuVmRealizationError::InvalidCheckpoint {
+            role: "baked genesis",
+            message: String::from("modeled VM clock set does not match the World"),
+        });
     }
 
     Ok(())
@@ -606,3 +615,6 @@ impl PartialEq for QemuVmRealizationError {
 }
 
 impl Eq for QemuVmRealizationError {}
+
+#[cfg(test)]
+mod tests;
