@@ -112,7 +112,7 @@ pub(crate) fn run_finding_bundle_fork_write(
             report["read_only"] = json!(false);
             report["canonical_session_unchanged"] = json!(true);
             report["checkpoint_unchanged"] = json!(true);
-            report["bundle_unchanged"] = json!(true);
+            report["archive_manifest_unchanged"] = json!(true);
             report["register"] = json!(args.register);
             report["canonical_register_hex"] = json!(lower_hex(&proof.before));
             report["branch_register_hex"] = json!(lower_hex(&proof.after));
@@ -151,18 +151,36 @@ pub(crate) fn run_finding_bundle_fork_write(
         let _ = shutdown.send(());
         let served = match tokio::time::timeout(Duration::from_secs(10), &mut server).await {
             Ok(result) => result
-                .map_err(|error| backend_error(format!("finding fork relay task failed: {error}")))?
-                .map_err(CliError::Io),
+                .map_err(|error| backend_error(format!("finding fork relay task failed: {error}")))
+                .and_then(|served| served.map_err(CliError::Io)),
             Err(_) => {
                 server.abort();
                 let _ = server.await;
                 Err(backend_error("finding fork relay shutdown timed out"))
             }
         };
-        destroyed_branch?;
-        destroyed_canonical?;
-        served?;
-        result
+        let mut teardown_errors = Vec::new();
+        if let Err(error) = destroyed_branch {
+            teardown_errors.push(format!("branch destroy: {error}"));
+        }
+        if let Err(error) = destroyed_canonical {
+            teardown_errors.push(format!("canonical destroy: {error}"));
+        }
+        if let Err(error) = served {
+            teardown_errors.push(format!("relay shutdown: {error}"));
+        }
+        if teardown_errors.is_empty() {
+            return result;
+        }
+        let teardown = teardown_errors.join("; ");
+        match result {
+            Ok(()) => Err(backend_error(format!(
+                "finding fork teardown failed: {teardown}"
+            ))),
+            Err(error) => Err(backend_error(format!(
+                "{error}; finding fork teardown failed: {teardown}"
+            ))),
+        }
     })
 }
 
