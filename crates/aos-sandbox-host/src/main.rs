@@ -70,6 +70,10 @@ fn run() -> Result<()> {
     let authority = HostAuthorityV1::from_protected_directory(&credential_directory)
         .map_err(|error| HostError::State(error.to_string()))?;
     let guardian = GuardianConfig::new(&guardian_executable, std::time::Duration::from_secs(30))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| HostError::State(error.to_string()))?;
     let readiness = ProtectedBackendReadinessEvidence::load_protected_optional(
         &credential_directory,
         STATE_ROOT,
@@ -77,7 +81,14 @@ fn run() -> Result<()> {
     )?;
     if let Some(readiness) = readiness {
         let packaged = readiness.verify_packaged_runtime()?;
-        packaged.revalidate(&readiness)?;
+        runtime.block_on(async {
+            let systemd = aos_systemd::SystemdClient::connect()
+                .await
+                .map_err(|error| HostError::State(format!("PID 1 bus unavailable: {error}")))?;
+            packaged
+                .verify_live_pid1_service(&readiness, &systemd)
+                .await
+        })?;
         let blockers = readiness.runtime_blockers();
         if blockers
             != [
@@ -108,10 +119,6 @@ fn run() -> Result<()> {
     let mut service = HostService::new(broker, verifier, controller_identity)
         .with_catalog_publisher(catalog_publisher);
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| HostError::State(error.to_string()))?;
     runtime.block_on(async move {
         loop {
             service.serve_once(&listener).await?;

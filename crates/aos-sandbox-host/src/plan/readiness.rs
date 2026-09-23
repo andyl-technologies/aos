@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_systemd::PayloadRootContinuityPolicyV1;
+use aos_systemd::{OwnedValue, PayloadRootContinuityPolicyV1, SystemdClient};
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -132,6 +132,43 @@ pub struct VerifiedPackagedRuntimeV1 {
 }
 
 impl VerifiedPackagedRuntimeV1 {
+    /// Checks PID 1's live host-broker service identity and hardening policy.
+    ///
+    /// This is an additional partial deployment check, not a constructor for
+    /// backend launch readiness. The transient payload unit and shifted
+    /// process still require their own independent observations.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign D-Bus owner, service restart, mismatched property,
+    /// changed package, or failed D-Bus readback.
+    pub async fn verify_live_pid1_service(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        systemd: &SystemdClient,
+    ) -> Result<()> {
+        const HARDENING_PROPERTIES: &[&str] = &[
+            "NoNewPrivileges",
+            "PrivateDevices",
+            "MemoryDenyWriteExecute",
+            "ProtectSystem",
+        ];
+
+        let own_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+            .map_err(|_| HostError::State("host service PID is invalid".to_owned()))?;
+
+        let values = systemd
+            .observe_pid1_service_properties(
+                "aos-sandbox-hostd.service",
+                own_pid,
+                HARDENING_PROPERTIES,
+            )
+            .await
+            .map_err(|error| HostError::State(format!("PID 1 service readback failed: {error}")))?;
+        verify_host_service_hardening(&values)?;
+        self.revalidate(evidence)
+    }
+
     /// Rechecks the same protected claim, package, and live PID 1 generation.
     ///
     /// # Errors
@@ -150,6 +187,37 @@ impl VerifiedPackagedRuntimeV1 {
         }
         Ok(())
     }
+}
+
+fn verify_host_service_hardening(values: &[OwnedValue]) -> Result<()> {
+    let [
+        no_new_privileges,
+        private_devices,
+        memory_deny_write_execute,
+        protect_system,
+    ] = values
+    else {
+        return Err(HostError::State(
+            "PID 1 host service hardening readback is incomplete".to_owned(),
+        ));
+    };
+    let enabled = |value: &OwnedValue| {
+        bool::try_from(value).map_err(|_| {
+            HostError::State("PID 1 host service boolean property is malformed".to_owned())
+        })
+    };
+    if !enabled(no_new_privileges)?
+        || !enabled(private_devices)?
+        || !enabled(memory_deny_write_execute)?
+        || <&str>::try_from(protect_system).map_err(|_| {
+            HostError::State("PID 1 host service protection is malformed".to_owned())
+        })? != "strict"
+    {
+        return Err(HostError::State(
+            "PID 1 host service hardening differs from the required deployment profile".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 struct BackendPolicyArtifactV1 {
@@ -1499,6 +1567,36 @@ mod tests {
                 BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
             ]
         );
+    }
+
+    #[test]
+    fn live_host_service_hardening_requires_exact_property_values() {
+        let strict = OwnedValue::try_from(aos_systemd::Value::from("strict")).unwrap();
+        let values = vec![
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            strict,
+        ];
+        assert!(verify_host_service_hardening(&values).is_ok());
+
+        for position in 0..3 {
+            let mut changed = values
+                .iter()
+                .map(OwnedValue::try_clone)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            changed[position] = OwnedValue::from(false);
+            assert!(verify_host_service_hardening(&changed).is_err());
+        }
+        let mut changed = values
+            .iter()
+            .map(OwnedValue::try_clone)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        changed[3] = OwnedValue::try_from(aos_systemd::Value::from("full")).unwrap();
+        assert!(verify_host_service_hardening(&changed).is_err());
+        assert!(verify_host_service_hardening(&values[..3]).is_err());
     }
 
     #[test]

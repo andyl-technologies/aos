@@ -507,6 +507,106 @@ impl SystemdClient {
         Ok(props.get(iface, prop).await?)
     }
 
+    /// Reads service properties from one PID 1-owned systemd bus generation.
+    ///
+    /// The manager destination is its unique bus name, not the replaceable
+    /// well-known name. The owner and service identity are checked on both
+    /// sides of the read; callers still recheck any kernel objects they pin.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-service name, a manager not owned by PID 1, an inactive
+    /// or changing service, an absent property, or any D-Bus failure.
+    pub async fn observe_pid1_service_properties(
+        &self,
+        name: &str,
+        expected_main_pid: u32,
+        properties: &[&str],
+    ) -> Result<Vec<OwnedValue>> {
+        if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
+            return Err(Error::InvalidSandboxUnit(
+                "service name is not an exact unit name".to_owned(),
+            ));
+        }
+        if expected_main_pid == 0 {
+            return Err(Error::InvalidSandboxUnit(
+                "service main PID is absent".to_owned(),
+            ));
+        }
+
+        let bus = zbus::fdo::DBusProxy::new(&self.conn).await?;
+        let manager_name = zbus::names::BusName::try_from("org.freedesktop.systemd1")
+            .map_err(|error| Error::InvalidSandboxUnit(error.to_string()))?;
+        let owner = bus.get_name_owner(manager_name.clone()).await?;
+        if bus
+            .get_connection_unix_process_id(owner.as_str().try_into().map_err(
+                |error: zbus::names::Error| Error::InvalidSandboxUnit(error.to_string()),
+            )?)
+            .await?
+            != 1
+        {
+            return Err(Error::InvalidSandboxUnit(
+                "systemd bus owner is not PID 1".to_owned(),
+            ));
+        }
+
+        let manager = ManagerProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .build()
+            .await?;
+        let path = manager.get_unit(name).await?;
+        let unit = UnitProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let service = ServiceProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let before = (
+            unit.id().await?,
+            unit.active_state().await?,
+            service.main_pid().await?,
+            unit.invocation_id().await?,
+        );
+
+        let property_proxy = zbus::fdo::PropertiesProxy::builder(&self.conn)
+            .destination(owner.clone())?
+            .path(path)?
+            .build()
+            .await?;
+        let interface = zbus::names::InterfaceName::try_from("org.freedesktop.systemd1.Service")
+            .map_err(|error| Error::InvalidSandboxUnit(error.to_string()))?;
+        let mut values = Vec::with_capacity(properties.len());
+        for property in properties {
+            values.push(property_proxy.get(interface.clone(), property).await?);
+        }
+
+        let after = (
+            unit.id().await?,
+            unit.active_state().await?,
+            service.main_pid().await?,
+            unit.invocation_id().await?,
+        );
+        if before != after
+            || before.0 != name
+            || before.1 != "active"
+            || before.2 != expected_main_pid
+            || before.3.len() != 16
+            || before.3.iter().all(|byte| *byte == 0)
+            || bus.get_name_owner(manager_name).await? != owner
+        {
+            return Err(Error::InvalidSandboxUnit(
+                "PID 1 service changed during property readback".to_owned(),
+            ));
+        }
+        Ok(values)
+    }
+
     /// Observes an active service's exact unit, invocation, main PID, and cgroup.
     ///
     /// The returned path is only a locator. Consumers must retain and validate
