@@ -819,6 +819,7 @@ fn divergence_fingerprint(
 pub struct AutomaticFindingExecutionRunner<M, R> {
     store: CampaignExecutorStore,
     exact_retention: Arc<dyn FindingExactRetentionSource>,
+    exact_failure_evidence: Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence>,
     main: M,
     replay: R,
     verify_determinism_findings: bool,
@@ -837,11 +838,22 @@ impl<M, R> AutomaticFindingExecutionRunner<M, R> {
         Self {
             store,
             exact_retention,
+            exact_failure_evidence: None,
             main,
             replay,
             verify_determinism_findings: false,
             last_determinism_probe: AutomaticFindingDeterminismProbeDisposition::NotRequested,
         }
+    }
+
+    /// Attaches the main QEMU attempt's bounded semantic-stop evidence.
+    #[must_use]
+    pub(crate) fn with_exact_failure_evidence(
+        mut self,
+        evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+    ) -> Self {
+        self.exact_failure_evidence = Some(evidence);
+        self
     }
 
     /// Enables a bounded two-replay determinism check after ordinary attempts.
@@ -1021,7 +1033,11 @@ where
                 self.exact_retention.as_ref(),
                 input,
                 context,
-                result.observation(),
+                &result,
+                self.exact_failure_evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.snapshot().ok())
+                    .as_ref(),
             )
             .map_err(terminal_campaign_error)?;
 

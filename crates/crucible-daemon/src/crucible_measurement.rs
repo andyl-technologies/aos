@@ -20,6 +20,11 @@ use crucible_cas::content_store::ContentId;
 
 mod evidence;
 
+pub(crate) use evidence::{
+    observation_event_prefix_digest, verified_assertion_transition,
+    verify_assertion_failure_boundary,
+};
+
 pub use evidence::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementPublication,

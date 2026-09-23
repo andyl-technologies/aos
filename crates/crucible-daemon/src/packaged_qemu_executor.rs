@@ -1335,13 +1335,14 @@ where
                 QemuFreshModeledDriver,
             );
             let runner = QemuAttemptExecutionRouter::new(fresh, resume);
-            let runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence);
+            let runner = QemuTerminalEvidenceExecutionRunner::new(runner, evidence.clone());
             let mut runner = AutomaticFindingExecutionRunner::new(
                 store.clone(),
                 Arc::clone(&finding_exact_retention),
                 runner,
                 finding_replay,
-            );
+            )
+            .with_exact_failure_evidence(evidence);
             if config.verify_determinism_findings {
                 runner = runner.with_determinism_finding_verification();
             }

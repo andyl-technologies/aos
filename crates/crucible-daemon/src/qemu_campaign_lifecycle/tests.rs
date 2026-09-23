@@ -837,6 +837,8 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     let snapshot = evidence.snapshot().expect("observed execution evidence");
     assert_eq!(snapshot.quanta(), 2);
     assert_eq!(snapshot.frontier(), VirtualTime { ticks: 2 });
+    assert_eq!(snapshot.latest_quantum_start_events(), Some(0));
+    assert_eq!(snapshot.semantic_stop_events(), Some(0));
     assert_eq!(snapshot.event_log_entries().len(), 1);
     assert_eq!(snapshot.execution_fingerprints().len(), 2);
     assert_eq!(snapshot.execution_fingerprints()[0].at.ticks, 0);

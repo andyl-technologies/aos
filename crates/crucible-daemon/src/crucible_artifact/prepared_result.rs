@@ -735,6 +735,43 @@ fn validate_measurement_evidence(
     validate_observation_stop_evidence(observation, &evidence_by_id)?;
 
     if let Some(finding) = finding {
+        let retained = finding.bundle().exact_retention_evidence();
+        match (
+            observation.observation().stop(),
+            retained.and_then(|value| value.assertion_boundary()),
+        ) {
+            (StopOutcome::AssertionFailure(property), Some(boundary)) => {
+                let leaf = evidence_by_id
+                    .get(&boundary.trace())
+                    .ok_or_else(|| inconsistent("finding assertion trace"))?;
+                if boundary.property() != property
+                    || observation.measurements().evaluation().evidence().len() != 1
+                    || !observation
+                        .measurements()
+                        .evaluation()
+                        .evidence()
+                        .contains(&boundary.trace())
+                    || leaf.scenario() != observation.child().scenario()
+                    || leaf.configuration() != observation.child().configuration()
+                    || !crate::crucible_measurement::verify_assertion_failure_boundary(
+                        leaf, boundary,
+                    )
+                {
+                    return Err(inconsistent("finding assertion boundary"));
+                }
+            }
+            (StopOutcome::AssertionFailure(_), None)
+                if finding.bundle().exact_retention().disposition()
+                    == crucible_campaign::FindingExactRetentionDisposition::Complete =>
+            {
+                return Err(inconsistent("finding assertion boundary is missing"));
+            }
+            (_, Some(_)) => return Err(inconsistent("finding assertion boundary stop")),
+            _ => {}
+        }
+    }
+
+    if let Some(finding) = finding {
         let referenced_measurements = finding
             .minimization_replays
             .iter()

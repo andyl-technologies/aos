@@ -154,8 +154,8 @@ pub use finding::{
     MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES, ReproductionArtifact, ReproductionArtifactBasis,
 };
 pub use finding_candidate::{
-    FindingCandidateBundle, FindingCandidateCore, FindingExactRetention,
-    FindingExactRetentionCandidate, FindingExactRetentionDisposition,
+    FindingAssertionFailureBoundary, FindingCandidateBundle, FindingCandidateCore,
+    FindingExactRetention, FindingExactRetentionCandidate, FindingExactRetentionDisposition,
     FindingExactRetentionEvidence, FindingExactRetentionIncomplete, FindingReplayCaptureIncomplete,
     FindingReplayCaptureReference, FindingReplayCaptureSet, FindingReplaySignature,
     FindingReplayTargetKind, FindingSignatureMinimizationEvidence, FindingTriageEvidenceSet,
