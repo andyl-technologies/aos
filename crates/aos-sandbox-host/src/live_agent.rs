@@ -2,7 +2,7 @@
 //!
 //! A launch owner supplies a one-time signing record already matching the
 //! protected runtime peer. This module creates the private socket pair and
-//! sealed guest credential, then retains the Host endpoint across a signed
+//! sealed guest credentials, then retains the Host endpoint across a signed
 //! handshake and bounded stop-and-wait exchanges. It never discovers an
 //! inherited descriptor, reconnects to a path, or activates nspawn.
 
@@ -187,51 +187,56 @@ impl HostAgentProtectedAttachTrustV1 {
 }
 
 fn read_protected_attach_private_key() -> Result<Vec<u8>, HostAgentLiveErrorV1> {
+    let mut bytes =
+        read_root_owned_credential(ATTACH_PRIVATE_KEY_FILE, 1, MAX_ATTACH_PRIVATE_KEY_BYTES)
+            .map_err(|()| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    Ok(std::mem::take(&mut *bytes))
+}
+
+fn read_root_owned_credential(
+    file_name: &str,
+    minimum_bytes: u64,
+    maximum_bytes: u64,
+) -> Result<Zeroizing<Vec<u8>>, ()> {
     let directory = open(
         SEED_DIRECTORY,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    .map_err(|_| ())?;
     let directory = File::from(directory);
-    let directory_metadata = directory
-        .metadata()
-        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    let directory_metadata = directory.metadata().map_err(|_| ())?;
     if !directory_metadata.is_dir()
         || directory_metadata.uid() != 0
         || directory_metadata.mode() & 0o022 != 0
     {
-        return Err(HostAgentLiveErrorV1::AttachTrustUnavailable);
+        return Err(());
     }
 
     let descriptor = openat(
         &directory,
-        Path::new(ATTACH_PRIVATE_KEY_FILE),
+        Path::new(file_name),
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    .map_err(|_| ())?;
     let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    let metadata = file.metadata().map_err(|_| ())?;
     if !metadata.is_file()
         || metadata.uid() != 0
         || metadata.nlink() != 1
         || metadata.mode() & 0o277 != 0
         || metadata.mode() & 0o400 == 0
-        || metadata.len() == 0
-        || metadata.len() > MAX_ATTACH_PRIVATE_KEY_BYTES
+        || metadata.len() < minimum_bytes
+        || metadata.len() > maximum_bytes
     {
-        return Err(HostAgentLiveErrorV1::AttachTrustUnavailable);
+        return Err(());
     }
 
-    let length = usize::try_from(metadata.len())
-        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    let length = usize::try_from(metadata.len()).map_err(|_| ())?;
     let mut bytes = Zeroizing::new(vec![0; length]);
-    file.read_exact(&mut bytes)
-        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
-    Ok(std::mem::take(&mut *bytes))
+    file.read_exact(&mut bytes).map_err(|_| ())?;
+    Ok(bytes)
 }
 
 /// Retains a zeroizing seed verified against the fixed protected agent peer.
@@ -260,45 +265,12 @@ impl HostAgentProtectedSeedV1 {
         claim: &DormantRuntimeExecutionClaimV1<'_>,
     ) -> Result<Self, HostAgentLiveErrorV1> {
         claim.revalidate()?;
-        let directory = open(
-            SEED_DIRECTORY,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
+        let bytes = read_root_owned_credential(
+            SEED_FILE,
+            SEED_CREDENTIAL_BYTES as u64,
+            SEED_CREDENTIAL_BYTES as u64,
         )
-        .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
-        let directory = File::from(directory);
-        let directory_metadata = directory
-            .metadata()
-            .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
-        if !directory_metadata.is_dir()
-            || directory_metadata.uid() != 0
-            || directory_metadata.mode() & 0o022 != 0
-        {
-            return Err(HostAgentLiveErrorV1::SeedUnavailable);
-        }
-        let descriptor = openat(
-            &directory,
-            Path::new(SEED_FILE),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
-        let mut file = File::from(descriptor);
-        let metadata = file
-            .metadata()
-            .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
-        if !metadata.is_file()
-            || metadata.uid() != 0
-            || metadata.nlink() != 1
-            || metadata.mode() & 0o277 != 0
-            || metadata.mode() & 0o400 == 0
-            || metadata.len() != SEED_CREDENTIAL_BYTES as u64
-        {
-            return Err(HostAgentLiveErrorV1::SeedUnavailable);
-        }
-        let mut bytes = Zeroizing::new([0; SEED_CREDENTIAL_BYTES]);
-        file.read_exact(&mut *bytes)
-            .map_err(|_| HostAgentLiveErrorV1::SeedUnavailable)?;
+        .map_err(|()| HostAgentLiveErrorV1::SeedUnavailable)?;
         let seed = decode_seed_credential(&bytes)?;
         if SigningKey::from_bytes(&seed).verifying_key().to_bytes()
             != claim.agent_peer().public_key()
@@ -345,7 +317,7 @@ impl HostAgentProtectedSeedV1 {
     }
 }
 
-/// Owns both launch descriptors before their explicit transfer to the guest.
+/// Owns all three launch descriptors before their explicit transfer to the guest.
 pub struct HostAgentGuestLaunchDescriptorsV1 {
     channel: OwnedFd,
     provisioning: SealedReadOnlyCredential,
@@ -846,9 +818,10 @@ fn agent_runtime(
     )?)
 }
 
-fn decode_seed_credential(
-    bytes: &[u8; SEED_CREDENTIAL_BYTES],
-) -> Result<Zeroizing<[u8; 32]>, HostAgentLiveErrorV1> {
+fn decode_seed_credential(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, HostAgentLiveErrorV1> {
+    if bytes.len() != SEED_CREDENTIAL_BYTES {
+        return Err(HostAgentLiveErrorV1::SeedUnavailable);
+    }
     let checksum: [u8; 32] = Sha256::digest(&bytes[..40]).into();
     if &bytes[..8] != SEED_MAGIC || bytes[40..] != checksum {
         return Err(HostAgentLiveErrorV1::SeedUnavailable);
