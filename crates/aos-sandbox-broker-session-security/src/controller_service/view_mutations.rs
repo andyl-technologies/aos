@@ -36,17 +36,57 @@ pub(super) fn observe_create_view(
     request: &CreateViewRequest,
     journal: &Journal,
 ) -> Result<EffectObservation, EffectFailure> {
-    let (view_id, descriptor) =
-        accepted_creation(operation_id, context.project(), request, journal)?;
+    let descriptor = requested_descriptor(context.project(), request)?;
     let digest = normalized_request_digest(context);
+    let derived_id = filesystem_view_creation_id_v1(operation_id);
+    if let Some(revision) =
+        protected_filesystem_view_revision_v1(journal, derived_id, Revision::new(1))
+            .map_err(permanent)?
+    {
+        // A newer public projection may name a successor descriptor. The
+        // protected creation record, not that mutable projection, proves the
+        // completed operation. A present projection must still be in scope.
+        if PublicProjectionStoreV1::new(journal)
+            .get(
+                PublicProjectionKindV1::FilesystemView,
+                *derived_id.as_bytes(),
+            )
+            .map_err(permanent)?
+            .is_some_and(|record| record.project() != context.project())
+        {
+            return Err(EffectFailure::Permanent(
+                "derived View identity belongs to another project".to_owned(),
+            ));
+        }
+        return verified_creation_receipt(operation_id, derived_id, digest, &descriptor, &revision)
+            .map(EffectObservation::Applied);
+    }
+
+    let (view_id, _) = accepted_creation(operation_id, context.project(), request, journal)?;
+    if view_id == derived_id {
+        return Ok(EffectObservation::Absent);
+    }
     let revision = protected_filesystem_view_revision_v1(journal, view_id, Revision::new(1))
         .map_err(permanent)?;
     let Some(revision) = revision else {
         return Ok(EffectObservation::Absent);
     };
-    if revision.operation_id() != operation_id
+
+    verified_creation_receipt(operation_id, view_id, digest, &descriptor, &revision)
+        .map(EffectObservation::Applied)
+}
+
+fn verified_creation_receipt(
+    operation_id: OperationId,
+    view_id: ViewId,
+    digest: ObjectDigest,
+    descriptor: &ObjectDescriptor,
+    revision: &aos_sandbox::filesystem_view_state::DurableFilesystemViewRevisionV1,
+) -> Result<EffectReceipt, EffectFailure> {
+    if revision.view_id() != view_id
+        || revision.operation_id() != operation_id
         || revision.request_digest() != digest
-        || revision.descriptor() != &descriptor
+        || revision.descriptor() != descriptor
         || revision.presence() != FilesystemViewRevisionPresenceV1::Available
     {
         return Err(EffectFailure::Permanent(
@@ -54,10 +94,7 @@ pub(super) fn observe_create_view(
         ));
     }
 
-    Ok(EffectObservation::Applied(create_receipt(
-        operation_id,
-        revision.record_digest(),
-    )?))
+    create_receipt(operation_id, revision.record_digest())
 }
 
 pub(super) fn apply_create_view(
@@ -112,16 +149,7 @@ fn accepted_creation(
     request: &CreateViewRequest,
     journal: &Journal,
 ) -> Result<(ViewId, ObjectDescriptor), EffectFailure> {
-    if request.project_id.as_slice() != project.as_bytes() {
-        return Err(EffectFailure::Permanent(
-            "View creation crossed its admitted project".to_owned(),
-        ));
-    }
-    let descriptor = request
-        .revision
-        .as_option()
-        .ok_or_else(|| EffectFailure::Permanent("View revision is absent".to_owned()))
-        .and_then(portable_descriptor)?;
+    let descriptor = requested_descriptor(project, request)?;
     let store = PublicProjectionStoreV1::new(journal);
     let derived_id = filesystem_view_creation_id_v1(operation_id);
     let derived = store
@@ -178,6 +206,23 @@ fn accepted_creation(
             EffectFailure::Permanent("admitted View identity is invalid".to_owned())
         })?;
     Ok((ViewId::from_bytes(view_id), descriptor))
+}
+
+fn requested_descriptor(
+    project: ProjectId,
+    request: &CreateViewRequest,
+) -> Result<ObjectDescriptor, EffectFailure> {
+    if request.project_id.as_slice() != project.as_bytes() {
+        return Err(EffectFailure::Permanent(
+            "View creation crossed its admitted project".to_owned(),
+        ));
+    }
+    let descriptor = request
+        .revision
+        .as_option()
+        .ok_or_else(|| EffectFailure::Permanent("View revision is absent".to_owned()))
+        .and_then(portable_descriptor)?;
+    Ok(descriptor)
 }
 
 fn portable_descriptor(value: &ProtoObjectDescriptor) -> Result<ObjectDescriptor, EffectFailure> {
