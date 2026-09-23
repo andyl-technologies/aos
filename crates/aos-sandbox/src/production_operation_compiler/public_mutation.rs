@@ -826,7 +826,9 @@ fn create_view_projection(
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
     let view = FilesystemView {
-        view_id: ViewId::new().into_bytes().to_vec(),
+        view_id: crate::filesystem_view_state::filesystem_view_creation_id_v1(operation)
+            .into_bytes()
+            .to_vec(),
         project_id: project.into_bytes().to_vec(),
         resource_version: resource_version(
             operation,

@@ -118,6 +118,7 @@ mod public_api;
 mod public_hierarchy;
 mod public_services;
 mod public_watch;
+mod view_mutations;
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
@@ -3445,6 +3446,12 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 return Ok(EffectObservation::Applied(receipt));
             }
         }
+        if let DormantSandboxRequestKindV1::ViewCreate(request) = context
+            .validated_request()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        {
+            return view_mutations::observe_create_view(operation_id, &context, &request, journal);
+        }
         Ok(EffectObservation::Absent)
     }
 
@@ -3528,6 +3535,9 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         let request = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if let DormantSandboxRequestKindV1::ViewCreate(create) = &request {
+            return view_mutations::apply_create_view(operation_id, &context, create, journal);
+        }
         let cache_consumer = if matches!(
             &request,
             DormantSandboxRequestKindV1::CachePin(_) | DormantSandboxRequestKindV1::CacheUnpin(_)

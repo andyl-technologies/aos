@@ -1,0 +1,233 @@
+//! Completes source-verified public filesystem-view mutations.
+//!
+//! Creation binds an accepted projection to exact project-sealed View bytes
+//! before publishing revision one in protected controller custody. Its replay
+//! path reads that revision first, so cold recovery does not depend on staged
+//! source availability after the durable commit.
+
+use aos_filesystem_view_core::load_exact;
+use aos_proto::aos::sandbox::v1::{CreateViewRequest, ObjectDescriptor as ProtoObjectDescriptor};
+use aos_sandbox::controller_service::public_projection::{
+    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+};
+use aos_sandbox::filesystem_view_state::{
+    FilesystemViewRevisionMutationV1, FilesystemViewRevisionPresenceV1,
+    FilesystemViewRevisionStateError, commit_protected_filesystem_view_revision_v1,
+    filesystem_view_creation_id_v1, protected_filesystem_view_revision_v1,
+};
+use aos_sandbox_core::{
+    DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, ProjectId, Revision,
+    ViewId, decode_view, validate_descriptor_role,
+};
+use sha2::{Digest as _, Sha256};
+
+use super::{
+    EffectFailure, EffectObservation, EffectReceipt, Journal, OperationId, PublicMutationEffectV1,
+};
+use crate::ProjectSealedViewObjectSourceV1;
+
+const MAXIMUM_VIEW_BYTES: usize = 1024 * 1024;
+const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-view-effect.v1\0";
+const CREATE_RECEIPT_MAGIC: &[u8; 8] = b"AOSVCR01";
+
+pub(super) fn observe_create_view(
+    operation_id: OperationId,
+    context: &PublicMutationEffectV1,
+    request: &CreateViewRequest,
+    journal: &Journal,
+) -> Result<EffectObservation, EffectFailure> {
+    let (view_id, descriptor) =
+        accepted_creation(operation_id, context.project(), request, journal)?;
+    let digest = normalized_request_digest(context);
+    let revision = protected_filesystem_view_revision_v1(journal, view_id, Revision::new(1))
+        .map_err(permanent)?;
+    let Some(revision) = revision else {
+        return Ok(EffectObservation::Absent);
+    };
+    if revision.operation_id() != operation_id
+        || revision.request_digest() != digest
+        || revision.descriptor() != &descriptor
+        || revision.presence() != FilesystemViewRevisionPresenceV1::Available
+    {
+        return Err(EffectFailure::Permanent(
+            "protected View revision conflicts with its admitted creation".to_owned(),
+        ));
+    }
+
+    Ok(EffectObservation::Applied(create_receipt(
+        operation_id,
+        revision.record_digest(),
+    )?))
+}
+
+pub(super) fn apply_create_view(
+    operation_id: OperationId,
+    context: &PublicMutationEffectV1,
+    request: &CreateViewRequest,
+    journal: &mut Journal,
+) -> Result<EffectReceipt, EffectFailure> {
+    if let EffectObservation::Applied(receipt) =
+        observe_create_view(operation_id, context, request, journal)?
+    {
+        return Ok(receipt);
+    }
+
+    let (view_id, descriptor) =
+        accepted_creation(operation_id, context.project(), request, journal)?;
+    let mut source =
+        ProjectSealedViewObjectSourceV1::open_fixed(context.project()).map_err(retryable)?;
+    let object = load_exact(&mut source, &descriptor, MAXIMUM_VIEW_BYTES).map_err(retryable)?;
+    let view = decode_view(
+        object.bytes(),
+        DecodeLimits {
+            maximum_bytes: MAXIMUM_VIEW_BYTES,
+            ..DecodeLimits::default()
+        },
+    )
+    .map_err(permanent)?;
+    let mutation = FilesystemViewRevisionMutationV1::new(
+        FilesystemViewRevisionPresenceV1::Available,
+        view_id,
+        Revision::new(1),
+        view,
+        operation_id,
+        normalized_request_digest(context),
+        None,
+    )
+    .map_err(permanent)?;
+    let (revision, _) =
+        commit_protected_filesystem_view_revision_v1(journal, mutation).map_err(commit_error)?;
+    if revision.descriptor() != &descriptor {
+        return Err(EffectFailure::Permanent(
+            "committed View descriptor differs from admitted source".to_owned(),
+        ));
+    }
+
+    create_receipt(operation_id, revision.record_digest())
+}
+
+fn accepted_creation(
+    operation_id: OperationId,
+    project: ProjectId,
+    request: &CreateViewRequest,
+    journal: &Journal,
+) -> Result<(ViewId, ObjectDescriptor), EffectFailure> {
+    if request.project_id.as_slice() != project.as_bytes() {
+        return Err(EffectFailure::Permanent(
+            "View creation crossed its admitted project".to_owned(),
+        ));
+    }
+    let descriptor = request
+        .revision
+        .as_option()
+        .ok_or_else(|| EffectFailure::Permanent("View revision is absent".to_owned()))
+        .and_then(portable_descriptor)?;
+    let store = PublicProjectionStoreV1::new(journal);
+    let derived_id = filesystem_view_creation_id_v1(operation_id);
+    let derived = store
+        .get(
+            PublicProjectionKindV1::FilesystemView,
+            *derived_id.as_bytes(),
+        )
+        .map_err(permanent)?;
+    let view = if let Some(record) = derived {
+        if record.project() != project {
+            return Err(EffectFailure::Permanent(
+                "derived View identity belongs to another project".to_owned(),
+            ));
+        }
+        let PublicProjectionResourceV1::FilesystemView(view) = record.resource() else {
+            return Err(EffectFailure::Permanent(
+                "derived View projection has another resource kind".to_owned(),
+            ));
+        };
+        view.clone()
+    } else {
+        // Admissions made before derived IDs retain their operation-linked
+        // projection until a successor replaces it.
+        let records = store.list_operation(operation_id).map_err(permanent)?;
+        let mut views = records.into_iter().filter_map(|record| {
+            if record.project() != project || record.operation() != operation_id {
+                return None;
+            }
+            match record.resource() {
+                PublicProjectionResourceV1::FilesystemView(view) => Some(view.clone()),
+                _ => None,
+            }
+        });
+        let view = views.next().ok_or_else(|| {
+            EffectFailure::Permanent("admitted View projection is absent".to_owned())
+        })?;
+        if views.next().is_some() {
+            return Err(EffectFailure::Permanent(
+                "creation operation has multiple View projections".to_owned(),
+            ));
+        }
+        view
+    };
+    if view.project_id.as_slice() != project.as_bytes()
+        || view.revision.as_option() != request.revision.as_option()
+        || view.desired_generation == 0
+    {
+        return Err(EffectFailure::Permanent(
+            "admitted View projection conflicts with the exact request".to_owned(),
+        ));
+    }
+    let view_id: [u8; 16] =
+        view.view_id.as_slice().try_into().map_err(|_| {
+            EffectFailure::Permanent("admitted View identity is invalid".to_owned())
+        })?;
+    Ok((ViewId::from_bytes(view_id), descriptor))
+}
+
+fn portable_descriptor(value: &ProtoObjectDescriptor) -> Result<ObjectDescriptor, EffectFailure> {
+    let digest: [u8; 32] =
+        value.sha256.as_slice().try_into().map_err(|_| {
+            EffectFailure::Permanent("View descriptor digest is invalid".to_owned())
+        })?;
+    let media = MediaType::new(value.media_type.clone()).map_err(permanent)?;
+    let descriptor =
+        ObjectDescriptor::new(media, ObjectDigest::from_bytes(digest), value.encoded_size);
+    validate_descriptor_role(DescriptorRole::FilesystemViewRevision, &descriptor)
+        .map_err(permanent)?;
+    Ok(descriptor)
+}
+
+fn normalized_request_digest(context: &PublicMutationEffectV1) -> ObjectDigest {
+    let request = context.canonical_request();
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(REQUEST_DIGEST_DOMAIN)
+        .chain_update(context.caller().as_bytes())
+        .chain_update(context.project().as_bytes())
+        .chain_update((request.len() as u64).to_be_bytes())
+        .chain_update(request)
+        .finalize()
+        .into();
+    ObjectDigest::from_bytes(digest)
+}
+
+fn create_receipt(
+    operation_id: OperationId,
+    revision_digest: ObjectDigest,
+) -> Result<EffectReceipt, EffectFailure> {
+    let mut bytes = Vec::with_capacity(56);
+    bytes.extend_from_slice(CREATE_RECEIPT_MAGIC);
+    bytes.extend_from_slice(operation_id.as_bytes());
+    bytes.extend_from_slice(revision_digest.as_bytes());
+    EffectReceipt::new(bytes).map_err(permanent)
+}
+
+fn permanent(error: impl ToString) -> EffectFailure {
+    EffectFailure::Permanent(error.to_string())
+}
+
+fn retryable(error: impl ToString) -> EffectFailure {
+    EffectFailure::Retryable(error.to_string())
+}
+
+fn commit_error(error: FilesystemViewRevisionStateError) -> EffectFailure {
+    match error {
+        FilesystemViewRevisionStateError::Journal(_) => retryable(error),
+        _ => permanent(error),
+    }
+}

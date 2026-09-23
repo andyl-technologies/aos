@@ -29,6 +29,7 @@ use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordName
 const MAGIC: &[u8; 8] = b"AOSVRS01";
 const DOMAIN: &[u8] = b"aos.sandbox.filesystem-view-revision.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.filesystem-view-revision.transaction.v1\0";
+const CREATION_ID_DOMAIN: &[u8] = b"aos.sandbox.filesystem-view-creation-id.v1\0";
 const FIXED_RECORD_BYTES: usize = 152;
 const FLAG_EXPECTED_PREVIOUS: u8 = 1;
 const MAXIMUM_VIEW_BYTES: usize = 1024 * 1024;
@@ -44,6 +45,23 @@ pub enum FilesystemViewRevisionPresenceV1 {
     Available = 1,
     /// Permanently releases the logical view after its attachments drain.
     Released = 2,
+}
+
+/// Derives the logical View identity from its accepted creation operation.
+///
+/// This lets a cold controller recover creation after a successor public
+/// projection has replaced the initial operation-linked projection.
+#[must_use]
+pub fn filesystem_view_creation_id_v1(operation_id: OperationId) -> ViewId {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(CREATION_ID_DOMAIN)
+        .chain_update(operation_id.as_bytes())
+        .finalize()
+        .into();
+    let mut id = [0; 16];
+    id.copy_from_slice(&digest[..16]);
+    id[0] |= 1;
+    ViewId::from_bytes(id)
 }
 
 impl FilesystemViewRevisionPresenceV1 {
@@ -619,6 +637,45 @@ pub fn current_filesystem_view_revision_v1(
 ) -> Result<Option<DurableFilesystemViewRevisionV1>, FilesystemViewRevisionStateError> {
     journal.ensure_healthy()?;
     get_current(journal, view_id)
+}
+
+/// Commits one filesystem-view revision through a protected controller journal.
+///
+/// This entry point is for the production controller's source-verified View
+/// effects. The journal must retain its protected-open provenance; an in-memory
+/// or generic test journal cannot publish production View authority.
+///
+/// # Errors
+///
+/// Rejects unprotected or unhealthy custody, invalid or conflicting revision
+/// history, and failed durable commits.
+pub fn commit_protected_filesystem_view_revision_v1(
+    journal: &mut Journal,
+    mutation: FilesystemViewRevisionMutationV1,
+) -> Result<
+    (
+        DurableFilesystemViewRevisionV1,
+        FilesystemViewRevisionCommitOutcomeV1,
+    ),
+    FilesystemViewRevisionStateError,
+> {
+    journal.ensure_protected_authority()?;
+    commit(journal, mutation)
+}
+
+/// Loads one exact historical View revision from protected controller custody.
+///
+/// # Errors
+///
+/// Rejects unprotected or unhealthy custody and invalid revision history.
+pub fn protected_filesystem_view_revision_v1(
+    journal: &Journal,
+    view_id: ViewId,
+    revision: Revision,
+) -> Result<Option<DurableFilesystemViewRevisionV1>, FilesystemViewRevisionStateError> {
+    journal.ensure_protected_authority()?;
+    journal.ensure_healthy()?;
+    get_revision(journal, view_id, revision)
 }
 
 pub(crate) fn get_revision(
