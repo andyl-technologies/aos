@@ -1592,6 +1592,54 @@ fn continued_origin_past_intrinsic_choice_fallback_fails_before_sealing() {
 }
 
 #[test]
+fn reached_policy_deadline_wins_over_overdue_intrinsic_fallback_at_start() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
+            execution_quanta: 7,
+        }),
+        virtual_time_nanoseconds: None,
+        execution_quanta: Some(5),
+    };
+    let input = input(stop.clone());
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::new(),
+        terminal: None,
+        initial_quanta: 10,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let pending = expect_observation(
+        QemuFreshModeledDriver::new()
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::from_resume_parts(
+                    input.start().configuration().clone(),
+                    Vec::new(),
+                    0,
+                    10,
+                    VirtualTime::default(),
+                    SchedulerQuiescence::default(),
+                    None,
+                ),
+            )
+            .expect("policy deadline reached at restored start"),
+    );
+
+    assert!(matches!(
+        pending.stop,
+        ModeledStop::PolicyTimeout {
+            stop: reached,
+            kind: PolicyTimeoutKind::ExecutionQuanta,
+            proof,
+        } if reached == stop && proof.completed_quanta() == 10
+    ));
+    assert_eq!(owner.drives, 0);
+}
+
+#[test]
 fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {

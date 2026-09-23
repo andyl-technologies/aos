@@ -1161,13 +1161,16 @@ fn drive_modeled_attempt_inner(
             },
         );
     }
-    // A choice-or-quanta fallback can be authenticated only at its exact
-    // quantum. An attempt starting past it has no valid stop proof.
-    if matches!(
-        input.attempt().stop().primary(),
-        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
-            if completed_quanta > *execution_quanta
-    ) {
+    // A policy deadline already reached at the start remains a modeled timeout.
+    // Otherwise a choice-or-quanta fallback can be authenticated only at its
+    // exact quantum; an attempt starting past it has no valid primary proof.
+    if policy_timeout_at(input.attempt().stop(), terminal_at, completed_quanta).is_none()
+        && matches!(
+            input.attempt().stop().primary(),
+            StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
+                if completed_quanta > *execution_quanta
+        )
+    {
         return Err(AttemptWorkerFailure::Terminal(
             QemuFreshModeledDriverError::SelectedResumeBeyondAttemptStop,
         ));
