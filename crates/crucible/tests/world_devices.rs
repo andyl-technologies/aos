@@ -131,7 +131,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
 
     let artifact = ReproductionArtifact::from_recorded_parts(form, Schedule::empty());
     let artifact_binary = artifact.to_compact_binary();
-    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v7\0"));
+    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v8\0"));
     assert_eq!(
         ReproductionArtifact::from_compact_binary(&artifact_binary)
             .expect("heterogeneous reproduction artifact should parse"),
@@ -491,13 +491,13 @@ fn current_outer_envelopes_reject_retired_versions() {
 
     let artifact_v4_envelope = replace_magic(
         artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v7\0",
+        b"crucible.reproduction-artifact.v8\0",
         b"crucible.reproduction-artifact.v4\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v4_envelope).is_err());
     let mislabeled_artifact_v5 = replace_magic(
         artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v7\0",
+        b"crucible.reproduction-artifact.v8\0",
         b"crucible.reproduction-artifact.v5\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&mislabeled_artifact_v5).is_err());
@@ -530,7 +530,7 @@ fn current_outer_envelopes_reject_retired_versions() {
 
     let artifact_v1_envelope = replace_magic(
         vm_only_artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v7\0",
+        b"crucible.reproduction-artifact.v8\0",
         b"crucible.reproduction-artifact.v1\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());

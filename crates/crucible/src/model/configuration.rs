@@ -344,11 +344,14 @@ impl Configuration {
 /// process-private consumer state. A replaying producer reconstructs the exact
 /// opportunity and domain, decodes [`Self::selection`], and applies the value
 /// only after the campaign replay validator succeeds.
+/// Scheduler preemption branches also retain their bounded producer domain so
+/// partial-order reduction can regenerate parent-bound selections after a swap.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionDecision {
     canonical_selection: Vec<u8>,
     app_random_model_sample: bool,
     campaign_branch: bool,
+    preemption_config: Option<Box<PreemptionBranchConfig>>,
 }
 
 impl SelectionDecision {
@@ -362,7 +365,27 @@ impl SelectionDecision {
                 selection.origin(),
                 crucible_campaign::SelectionOrigin::CampaignBranch { .. }
             ),
+            preemption_config: None,
         }
+    }
+
+    /// Retains the bounded producer domain required to commute a preemption branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `selection` is not a campaign branch.
+    pub(crate) fn new_preemption_branch(
+        selection: &crucible_campaign::Selection,
+        config: &PreemptionBranchConfig,
+    ) -> Result<Self, crucible_campaign::CampaignCodecError> {
+        let mut decision = Self::new(selection);
+        if !decision.campaign_branch || !config.has_bounded_domain() {
+            return Err(crucible_campaign::CampaignCodecError::InvalidValue {
+                reason: "preemption producer evidence requires a bounded campaign branch",
+            });
+        }
+        decision.preemption_config = Some(Box::new(config.clone()));
+        Ok(decision)
     }
 
     /// Decodes one strict canonical selection decision.
@@ -402,6 +425,12 @@ impl SelectionDecision {
         self.campaign_branch
     }
 
+    /// Returns the retained bounded preemption producer domain, if present.
+    #[must_use]
+    pub fn preemption_config(&self) -> Option<&PreemptionBranchConfig> {
+        self.preemption_config.as_deref()
+    }
+
     /// Decodes the retained campaign selection.
     ///
     /// Construction guarantees these bytes already passed strict structural
@@ -424,7 +453,11 @@ impl serde::Serialize for SelectionDecision {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_bytes(&self.canonical_selection)
+        SelectionDecisionWire {
+            canonical_selection: self.canonical_selection.clone(),
+            preemption_config: self.preemption_config.as_deref().cloned(),
+        }
+        .serialize(serializer)
     }
 }
 
@@ -433,9 +466,28 @@ impl<'de> serde::Deserialize<'de> for SelectionDecision {
     where
         D: serde::Deserializer<'de>,
     {
-        let bytes = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
-        Self::from_canonical_bytes(&bytes).map_err(serde::de::Error::custom)
+        let wire = SelectionDecisionWire::deserialize(deserializer)?;
+        let mut decision = Self::from_canonical_bytes(&wire.canonical_selection)
+            .map_err(serde::de::Error::custom)?;
+        if wire
+            .preemption_config
+            .as_ref()
+            .is_some_and(|config| !decision.campaign_branch || !config.has_bounded_domain())
+        {
+            return Err(serde::de::Error::custom(
+                "preemption producer evidence requires a bounded campaign branch",
+            ));
+        }
+        decision.preemption_config = wire.preemption_config.map(Box::new);
+        Ok(decision)
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectionDecisionWire {
+    canonical_selection: Vec<u8>,
+    preemption_config: Option<PreemptionBranchConfig>,
 }
 
 /// One resolved nondeterministic choice at a scheduling point.
@@ -604,7 +656,7 @@ impl Schedule {
     /// Serializes this schedule as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V2);
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V3);
         write_schedule_binary(self, &mut writer);
         writer.finish()
     }
@@ -614,9 +666,9 @@ impl Schedule {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed input, a
-    /// schedule identity mismatch, or any schema other than current version 2.
+    /// schedule identity mismatch, or any schema other than current version 3.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V2)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V3)?;
         let schedule = read_schedule_binary(&mut reader)?;
         reader.finish()?;
         Ok(schedule)

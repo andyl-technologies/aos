@@ -186,13 +186,16 @@ impl TemporalGraph {
     ///
     /// Returns [`EngineError::CheckpointConfigurationMismatch`] or
     /// [`EngineError::CheckpointNotLoadable`] when the fat checkpoint metadata
-    /// is invalid. Returns [`EngineError::ReplayOracleMismatch`] when the thin
-    /// derivation does not reproduce the fat checkpoint identity.
+    /// is invalid. Returns [`EngineError::ScenarioSerialization`] when retained
+    /// preemption evidence does not reproduce at its recorded parent. Returns
+    /// [`EngineError::ReplayOracleMismatch`] when the thin derivation does not
+    /// reproduce the fat checkpoint identity.
     pub fn replay_checkpoint(
         &self,
         configuration: &Configuration,
         checkpoint: &Checkpoint,
     ) -> Result<ReplayOracleCheck, EngineError> {
+        validate_preemption_branch_schedule(configuration)?;
         validate_loadable_checkpoint(checkpoint, configuration)?;
         let thin_runtime = instantiate_thin_replay(self, configuration)?;
         let thin_checkpoint = if configuration.is_genesis() {
