@@ -4,9 +4,7 @@
 //! steps. This module retains ambiguous tokens in the single controller owner
 //! and rechecks every partition before publishing one public receipt.
 
-use aos_sandbox::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1, CacheResidencyCommitOutcomeV1,
-};
+use aos_sandbox::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1};
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 
 use super::{
@@ -20,7 +18,7 @@ use crate::{
 
 use super::cache_pin::cache_custody::{
     CacheCustodyMessages, CacheCustodyV1, PendingControllerCacheCustodyV1,
-    recover_pending_cache_custody,
+    cache_custody_from_commit, recover_pending_cache_custody,
 };
 
 pub(super) type PendingControllerCacheUnpinV1 = PendingControllerCacheCustodyV1<CachePinV1>;
@@ -66,27 +64,14 @@ impl ProductionEffectExecutor {
         match progress {
             PublicCacheUnpinProgressV1::Complete => cache_unpin_receipt(operation_id),
             PublicCacheUnpinProgressV1::PendingCommit { pin, execution } => {
-                match execution.outcome {
-                    CacheResidencyCommitOutcomeV1::OutcomeUnknown { pending, .. }
-                    | CacheResidencyCommitOutcomeV1::ValidationUnknown { pending, .. } => {
-                        self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                            operation_id,
-                            payload: pin,
-                            custody: CacheCustodyV1::Protected(pending),
-                        });
-                    }
-                    CacheResidencyCommitOutcomeV1::Applied(_) => {
-                        if let Some(Err(CacheOwnerPinSettlementErrorV1::Owner(
-                            CacheOwnerErrorV1::OutcomeUnknown(pending),
-                        ))) = execution.settlement
-                        {
-                            self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
-                                operation_id,
-                                payload: pin,
-                                custody: CacheCustodyV1::Physical(pending),
-                            });
-                        }
-                    }
+                if let Some(custody) =
+                    cache_custody_from_commit(execution.outcome, execution.settlement)
+                {
+                    self.pending_cache_unpin = Some(PendingControllerCacheUnpinV1 {
+                        operation_id,
+                        payload: pin,
+                        custody,
+                    });
                 }
                 Err(EffectFailure::Retryable(
                     "public Cache unpin release requires exact recovery".to_owned(),

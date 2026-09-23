@@ -5,9 +5,7 @@
 //! select a fresh destination.
 
 use aos_filesystem_view_core::{ProjectionLimits, TreeCompileLimits};
-use aos_sandbox::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CacheResidencyCommitOutcomeV1,
-};
+use aos_sandbox::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1};
 use aos_sandbox::filesystem_view_state::current_filesystem_view_revision_v1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::DecodeLimits;
@@ -29,7 +27,7 @@ pub(super) mod cache_custody;
 
 use cache_custody::{
     CacheCustodyMessages, CacheCustodyV1, PendingControllerCacheCustodyV1,
-    recover_pending_cache_custody,
+    cache_custody_from_commit, recover_pending_cache_custody,
 };
 
 /// Retains an ambiguous protected or physical acquisition until its outcome is known.
@@ -136,27 +134,12 @@ impl ProductionEffectExecutor {
                 outcome,
                 settlement,
             }) => {
-                match outcome {
-                    CacheResidencyCommitOutcomeV1::OutcomeUnknown { pending, .. }
-                    | CacheResidencyCommitOutcomeV1::ValidationUnknown { pending, .. } => {
-                        self.pending_cache_pin = Some(PendingControllerCachePinV1 {
-                            operation_id,
-                            payload: (),
-                            custody: CacheCustodyV1::Protected(pending),
-                        });
-                    }
-                    CacheResidencyCommitOutcomeV1::Applied(_) => {
-                        if let Some(Err(CacheOwnerPinSettlementErrorV1::Owner(
-                            CacheOwnerErrorV1::OutcomeUnknown(pending),
-                        ))) = settlement
-                        {
-                            self.pending_cache_pin = Some(PendingControllerCachePinV1 {
-                                operation_id,
-                                payload: (),
-                                custody: CacheCustodyV1::Physical(pending),
-                            });
-                        }
-                    }
+                if let Some(custody) = cache_custody_from_commit(outcome, settlement) {
+                    self.pending_cache_pin = Some(PendingControllerCachePinV1 {
+                        operation_id,
+                        payload: (),
+                        custody,
+                    });
                 }
                 Err(EffectFailure::Retryable(
                     "public Cache pin requires exact protected or physical recovery".to_owned(),

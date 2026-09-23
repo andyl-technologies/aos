@@ -5,8 +5,9 @@
 
 use aos_sandbox::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerOutcomeUnknownV1, CacheOwnerPinSettlementErrorV1,
-    CacheResidencyOutcomeUnknownV1, CacheResidencyProtectedOwnerRecoveryV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyRecoveryV1, DormantCacheOwnerV1,
+    CacheOwnerPinSettlementV1, CacheResidencyCommitOutcomeV1, CacheResidencyOutcomeUnknownV1,
+    CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
+    CacheResidencyRecoveryV1, DormantCacheOwnerV1,
 };
 
 use super::{EffectFailure, OperationId};
@@ -30,6 +31,25 @@ pub(in crate::controller_service) struct CacheCustodyMessages {
     pub(in crate::controller_service) protected_indeterminate: &'static str,
     pub(in crate::controller_service) protected_diverged: &'static str,
     pub(in crate::controller_service) physical_unknown: &'static str,
+}
+
+/// Selects only an ambiguous protected commit or physical settlement token.
+pub(in crate::controller_service) fn cache_custody_from_commit(
+    outcome: CacheResidencyCommitOutcomeV1,
+    settlement: Option<Result<CacheOwnerPinSettlementV1, CacheOwnerPinSettlementErrorV1>>,
+) -> Option<CacheCustodyV1> {
+    match outcome {
+        CacheResidencyCommitOutcomeV1::OutcomeUnknown { pending, .. }
+        | CacheResidencyCommitOutcomeV1::ValidationUnknown { pending, .. } => {
+            Some(CacheCustodyV1::Protected(pending))
+        }
+        CacheResidencyCommitOutcomeV1::Applied(_) => match settlement {
+            Some(Err(CacheOwnerPinSettlementErrorV1::Owner(
+                CacheOwnerErrorV1::OutcomeUnknown(pending),
+            ))) => Some(CacheCustodyV1::Physical(pending)),
+            _ => None,
+        },
+    }
 }
 
 /// Recovers retained custody before either operation can make more progress.
