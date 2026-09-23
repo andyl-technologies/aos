@@ -55,6 +55,7 @@ mod handshake;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod ownership_authority_client;
+pub mod ownership_authority_server;
 pub mod manifest;
 mod production_activation;
 mod production_dispatch;

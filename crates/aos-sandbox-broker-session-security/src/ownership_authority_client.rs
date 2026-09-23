@@ -34,7 +34,7 @@ use zeroize::Zeroizing;
 use crate::entropy::{KernelEntropy, nonzero_random};
 use crate::production_service::production_deadline_after;
 
-const METHODS: [OwnershipMethodV1; 3] = [
+pub(crate) const METHODS: [OwnershipMethodV1; 3] = [
     OwnershipMethodV1::Begin,
     OwnershipMethodV1::CompleteOrResume,
     OwnershipMethodV1::Query,
@@ -76,7 +76,7 @@ impl LocalOwnershipAuthorityClientV1 {
         Self::negotiate(socket, authority, peer_uid, peer_gid, secret, deadline)
     }
 
-    fn negotiate(
+    pub(crate) fn negotiate(
         mut socket: SeqpacketSocket,
         authority: KeyReference,
         peer_uid: u32,
@@ -194,7 +194,7 @@ impl OwnershipAuthoritySessionClient for LocalOwnershipAuthorityClientV1 {
     }
 }
 
-fn send_record(
+pub(crate) fn send_record(
     socket: &mut SeqpacketSocket,
     payload: &[u8],
     until: u64,
@@ -210,7 +210,7 @@ fn send_record(
     }
 }
 
-fn receive_record(
+pub(crate) fn receive_record(
     socket: &mut SeqpacketSocket,
     maximum_bytes: usize,
     peer_uid: u32,
