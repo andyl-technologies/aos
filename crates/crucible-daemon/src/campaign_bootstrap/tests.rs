@@ -1074,19 +1074,21 @@ fn read_only_mode_denies_policy_granted_mutation() {
 
 #[test]
 fn finding_export_authorizer_admits_only_ledger_reads() {
-    let (_directory, config) = fixture();
-    let policy = Arc::new(
-        load_policy(
-            config.policy_path(),
-            config.endpoint().owner_user_id(),
-            config.endpoint().owner_group_id(),
-        )
-        .expect("load policy"),
-    );
-    let authorizer = CampaignFindingExportAuthorizer(CampaignLocalAuthorizer {
-        policy,
-        mode: CampaignLocalServiceMode::ReadWrite,
-    });
+    struct AllowAll;
+
+    impl CampaignPrincipalAuthorizer for AllowAll {
+        fn authorize(
+            &self,
+            _principal: &CampaignPrincipal,
+            _operation: CampaignServiceOperation,
+            _campaign: &CampaignName,
+            _request_digest: CampaignHash,
+        ) -> Result<(), CampaignAuthorizationError> {
+            Ok(())
+        }
+    }
+
+    let authorizer = CampaignFindingExportAuthorizer(AllowAll);
     let principal = CampaignPrincipal::new("operator").expect("principal");
     let campaign = CampaignName::new("example").expect("campaign");
     let digest = CampaignHash::derive("campaign-finding-export-authorizer", b"request");
