@@ -358,10 +358,12 @@ exact_user_pins = true
 
 `[attempt_timeout]` is optional. When present, it requires a positive virtual-time
 bound, a positive execution-quantum bound, or both. Reaching a modeled bound
-records a deterministic timeout stop in the campaign Observation, subject to
-terminal and assertion outcome precedence. Campaign policy and triage can
-inspect that normal result. `host_completion_watchdog_ms` is an optional
-operational safeguard for a stalled executor; it must accompany a modeled
+records an authenticated `PolicyTimeout` outcome in the campaign Observation,
+subject to terminal and assertion outcome precedence. Campaign logic can
+handle that result; no timer event is delivered inside the guest.
+
+`host_completion_watchdog_ms` is an optional operational safeguard for a
+stalled executor; it must accompany a modeled
 bound and be a positive unsigned millisecond count. Quote a canonical decimal
 value when it exceeds TOML's signed 64-bit integer range. Its expiry aborts
 the attempt as a host failure, not a guest timeout or a replayable campaign
