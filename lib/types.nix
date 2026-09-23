@@ -519,20 +519,21 @@ in rec {
     _lazyAttrsOf = lazy;
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
     merge = loc: defs: let
-      allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
-      uniqueKeys = let
-        go = acc: remaining:
-          if remaining == []
-          then acc
-          else let
-            h = builtins.elemAt remaining 0;
-            t = builtins.genList (i: builtins.elemAt remaining (i + 1)) (builtins.length remaining - 1);
-          in
-            if builtins.any (x: x == h) acc
-            then go acc t
-            else go (acc ++ [h]) t;
-      in
-        go [] allKeys;
+      # Index each definition once. Scanning every definition for every key
+      # makes large dynamic option sets quadratic during system evaluation.
+      definitionsByKey = builtins.groupBy (entry: entry.name) (
+        builtins.concatMap (def:
+          map (name: {
+            inherit name;
+            value =
+              def
+              // {
+                value = def.value.${name};
+                _priority = def._priority or 100;
+              };
+          }) (builtins.attrNames def.value))
+        defs
+      );
       # For each key, collect its raw defs, unwrap override / mkIf /
       # mkMerge markers via dischargeProperties, and — critically —
       # drop keys whose def list became empty after filtering. A key
@@ -543,21 +544,7 @@ in rec {
       perKeyEntries = builtins.concatLists (
         builtins.map (
           key: let
-            keyDefs =
-              builtins.filter (d: builtins.hasAttr key d.value)
-              (
-                builtins.map (d:
-                  d
-                  // {_priority = d._priority or 100;})
-                defs
-              );
-            valueDefs = builtins.map (d:
-              d
-              // {
-                value = d.value.${key};
-                _priority = d._priority or 100;
-              })
-            keyDefs;
+            valueDefs = map (entry: entry.value) definitionsByKey.${key};
             # Unwrap override / mkIf / mkMerge markers at the sub-
             # attribute level and keep only defs at the winning
             # priority. This lets
@@ -584,7 +571,7 @@ in rec {
               }
             ]
         )
-        uniqueKeys
+        (builtins.attrNames definitionsByKey)
       );
     in
       builtins.listToAttrs perKeyEntries;
