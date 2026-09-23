@@ -308,17 +308,19 @@ the outstanding work concrete:
   and cold-reconciles released tombstones before completing. Resize and signal
   `ExecutionControl` still admit but fall through to a retry-only controller
   effect. Attach is rejected before admission until holder proof verification
-  and OpenSSH route issuance are active. `CachePin` can cold-recover an existing
-  protected acquisition and its exact physical pin, but a fresh acquisition
-  remains retry-only.
+  and OpenSSH route issuance are active. `CachePin` cold-recovers an existing
+  protected acquisition and its exact physical pin. A state-only transaction
+  now compiles the current durable View revision against project-scoped sealed
+  tree objects before acquiring a new protected and physical pin.
   Cache pin admission fences the named view or attachment to its project and
   current resource version. A required semantic feature prevents older peers
   from ignoring that consumer identity. The source-membership and protected
-  pin helpers exist. The protected current View revision can supply canonical
+  pin helpers exist. The protected current View revision supplies canonical
   View bytes; a project-scoped sealed source adapter supplies exact tree
-  objects for the corresponding pin helper. No authenticated tree-object producer or bounded
-  controller worker connects that helper to fresh public `CachePin` execution
-  yet. Operator recovery actions other than ownership-gate Retry lack a
+  objects for the corresponding pin helper. The controller uses a conservative
+  in-process compilation envelope; an isolated publisher for those project
+  objects and a dedicated bounded worker for larger trees are still absent.
+  Operator recovery actions other than ownership-gate Retry lack a
   completing effect path and are rejected before new admission. Retry is
   admitted only for an operation with
   a validated ownership gate. Connect the remaining methods to their protected
