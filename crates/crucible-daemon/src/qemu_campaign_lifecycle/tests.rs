@@ -1016,6 +1016,7 @@ struct BoundaryCaptureLifecycle {
     final_events: Vec<SchedulerEventLogEntry>,
     replay_decisions: VecDeque<Decision>,
     terminal_failure: bool,
+    terminal_marker: Option<NodeId>,
 }
 
 impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
@@ -1035,8 +1036,23 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         let at = VirtualTime {
             ticks: self.quanta + 1,
         };
+        let terminal_marker = self.terminal_marker.as_ref().map(|node| {
+            ObservableEvent::guest_assertion_marker(
+                Icount { retired: at.ticks },
+                node.clone(),
+                crucible::GuestAssertionMarker::new(
+                    crucible::AssertionId::from_name("no-split-brain"),
+                    "retained guest failure",
+                    crucible::GuestAssertionKind::Unreachable,
+                    true,
+                    false,
+                    Vec::new(),
+                    "terminal capture regression",
+                ),
+            )
+        });
         let append = self.event_log.append_observations_at_boundary(
-            std::iter::empty(),
+            terminal_marker,
             at,
             SchedulerEvaluationBoundaryKind::Quantum,
         )?;
@@ -1067,20 +1083,30 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
-        (self.terminal_failure && self.quanta > 0).then(|| {
-            crucible::QuantumTerminalVerdict::Failed(vec![String::from("retained assertion")])
-        })
+        if self.quanta == 0 {
+            None
+        } else if self.terminal_failure {
+            Some(crucible::QuantumTerminalVerdict::Failed(vec![
+                String::from("retained assertion"),
+            ]))
+        } else {
+            self.terminal_marker
+                .as_ref()
+                .map(|_| crucible::QuantumTerminalVerdict::Passed)
+        }
     }
 
     fn prepare_terminal_checkpoint(
         &mut self,
         cause: crucible::CheckpointTerminalCause,
     ) -> Result<(), crucible::SchedulerError> {
-        if self.terminal_failure
+        if (self.terminal_failure
             && cause
                 == crucible::CheckpointTerminalCause::Failed(vec![String::from(
                     "retained assertion",
-                )])
+                )]))
+            || (self.terminal_marker.is_some()
+                && cause == crucible::CheckpointTerminalCause::Passed)
         {
             return Ok(());
         }
@@ -1181,6 +1207,7 @@ struct BoundaryCaptureLifecycleFactory {
     final_events: Vec<SchedulerEventLogEntry>,
     replay_decisions: VecDeque<Decision>,
     terminal_failure: bool,
+    terminal_marker: Option<NodeId>,
 }
 
 struct SequencedBoundaryCaptureLifecycleFactory {
@@ -1210,6 +1237,7 @@ impl QemuFreshAttemptLifecycleFactory for BoundaryCaptureLifecycleFactory {
             final_events: self.final_events.clone(),
             replay_decisions: self.replay_decisions.clone(),
             terminal_failure: self.terminal_failure,
+            terminal_marker: self.terminal_marker.clone(),
         })
     }
 }
@@ -1247,6 +1275,7 @@ impl QemuFreshAttemptLifecycleFactory for SequencedBoundaryCaptureLifecycleFacto
             final_events,
             replay_decisions,
             terminal_failure: false,
+            terminal_marker: None,
         })
     }
 }
@@ -1979,6 +2008,7 @@ fn terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown
         final_events: Vec::new(),
         replay_decisions: VecDeque::new(),
         terminal_failure: false,
+        terminal_marker: None,
     };
     let (factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver::new());
@@ -2111,6 +2141,7 @@ fn failed_observation_retains_terminal_boundary_without_replacing_semantic_resul
             final_events: Vec::new(),
             replay_decisions: VecDeque::new(),
             terminal_failure: true,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     )
@@ -2143,6 +2174,7 @@ fn failed_observation_retains_terminal_boundary_without_replacing_semantic_resul
             final_events: Vec::new(),
             replay_decisions: VecDeque::new(),
             terminal_failure: true,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     )
@@ -2156,6 +2188,72 @@ fn failed_observation_retains_terminal_boundary_without_replacing_semantic_resul
         AttemptExecutionProduct::PreparedSemantic(_)
     ));
     assert_eq!(captures.lock().expect("terminal captures").len(), 1);
+}
+
+#[test]
+fn passed_trigger_retains_checker_failed_observation_boundary() {
+    let directory = tempfile::tempdir().expect("terminal checkpoint fixture directory");
+    let fixture =
+        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
+            .expect("terminal checkpoint fixture");
+    let node = fixture
+        .source()
+        .world()
+        .vm_nodes()
+        .iter()
+        .next()
+        .expect("checkpoint fixture VM")
+        .id
+        .clone();
+    let input = modeled_fresh_runner_input_for_scenario(
+        fixture.source().clone(),
+        StopCondition::ExecutionQuanta(1),
+    );
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let retained = Arc::new(Mutex::new(Vec::new()));
+    let source = Arc::new(RecordingTerminalRetentionSource {
+        captures: Arc::clone(&retained),
+        reject_capture: false,
+    });
+    let context = AttemptExecutionContext::new(
+        resources(4),
+        ExecutionRetentionIntent::RetainOnFailure,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    );
+    let mut runner = QemuFreshExecutionRunner::new(
+        BoundaryCaptureLifecycleFactory {
+            captured: Arc::clone(&captured),
+            final_events: Vec::new(),
+            replay_decisions: VecDeque::new(),
+            terminal_failure: false,
+            terminal_marker: Some(node),
+        },
+        QemuFreshModeledDriver::new(),
+    )
+    .with_terminal_exact_retention_source(source);
+
+    let outcome = runner
+        .execute(&input, &context)
+        .expect("checker-failed observation after a passed trigger");
+    let AttemptExecutionProduct::PreparedSemantic(result) = outcome.product() else {
+        panic!("checker failure must remain a semantic observation")
+    };
+    assert_eq!(
+        result.observation().observation().stop(),
+        &StopOutcome::AssertionFailure(String::from("no-split-brain"))
+    );
+    let captured = captured.lock().expect("captured terminal boundary");
+    let retained = retained.lock().expect("retained terminal identity");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(captured[0].quanta, 1);
+    assert_eq!(
+        retained[0].configuration,
+        ConfigurationId::from_hash(CampaignHash::from_bytes(captured[0].configuration.bytes))
+    );
+    assert_eq!(retained[0].event_count, captured[0].events.len() as u64);
 }
 
 fn finding_candidate_artifact(input: &CrucibleAttemptExecution) -> ConfigurationArtifact {
@@ -2302,6 +2400,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
             final_events: vec![final_event],
             replay_decisions: decisions,
             terminal_failure: false,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2405,6 +2504,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                         final_events: vec![final_event],
                         replay_decisions: decisions,
                         terminal_failure: false,
+                        terminal_marker: None,
                     },
                     QemuFreshModeledDriver::new(),
                 );
@@ -2636,6 +2736,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
             )],
             replay_decisions: replay_decisions.clone(),
             terminal_failure: false,
+            terminal_marker: None,
         },
         QemuFreshSupplementalModeledDriver::new(Some(Arc::clone(&oracle))),
     );
@@ -2744,6 +2845,7 @@ fn finding_candidate_replay_evaluates_the_declared_stop_after_materialization() 
             final_events: Vec::new(),
             replay_decisions: VecDeque::new(),
             terminal_failure: false,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2776,6 +2878,7 @@ fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
                 value: 7,
             })]),
             terminal_failure: false,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2813,6 +2916,7 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
                 value: 7,
             })]),
             terminal_failure: false,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -2879,6 +2983,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
             final_events: vec![final_event],
             replay_decisions: VecDeque::from([decision]),
             terminal_failure: false,
+            terminal_marker: None,
         },
         QemuFreshModeledDriver::new(),
     );
@@ -3215,6 +3320,7 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
                 final_events: vec![final_event],
                 replay_decisions: VecDeque::new(),
                 terminal_failure: false,
+                terminal_marker: None,
             },
             QemuFreshModeledDriver::new(),
         );
