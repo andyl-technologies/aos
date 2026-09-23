@@ -71,6 +71,9 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     header
         .request_pause([&slot])
         .unwrap_or_else(|error| panic!("restore pause should publish: {error}"));
+    let control_request = slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("stopped restore control should arm: {error}"));
     TEST_REQUEST_VMSTOP_CALLS.set(0);
 
     assert_eq!(state.restore_logical_time_if_requested(40, false), Ok(()));
@@ -86,11 +89,15 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     assert_eq!(network.tx.next_seq(), 31);
     assert_eq!(app_random.draws(), 3);
 
-    assert_eq!(state.publish_pause_if_requested(40), Ok(true));
+    assert_eq!(state.on_control_boundary(40), Ok(()));
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.logical_time_restore_request, generation);
     assert_eq!(snapshot.logical_time_restore_ack, generation);
+    assert_eq!(
+        snapshot.control_boundary_ack,
+        control_request.wrapping_add(1)
+    );
     assert_eq!(snapshot.current_icount, 500);
     assert_eq!(snapshot.logical_time_raw_icount, 40);
     assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 460);
