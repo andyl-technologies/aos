@@ -269,20 +269,27 @@
       mountpoint = attributes.mountPoint or null;
     in {
       inherit key;
-      fragment = producer key storage.dataset {
-        name = key;
-        enabled = true;
-        pool = resultOf "pool" "pool-name";
-        dataset = name;
-        inherit mountpoint;
-        mount_options = attributes.mountOptions;
-        properties = propertiesOf attributes;
-        prerequisites = [(resultOf "pool" "resource")];
+      spec = {
+        inherit key;
+        parameters = {
+          name = key;
+          enabled = true;
+          pool = resultOf "pool" "pool-name";
+          dataset = name;
+          inherit mountpoint;
+          mount_options = attributes.mountOptions;
+          properties = propertiesOf attributes;
+          prerequisites = [(resultOf "pool" "resource")];
+        };
       };
       readiness = packageResultOf key "resource";
     })
     configuredDatasets;
-  datasets = builtins.map (entry: entry.fragment) datasetEntries;
+  datasets = serviceManagement.forProducers {
+    inherit consumerInstance;
+    interface = storage.dataset;
+    producers = builtins.map (entry: entry.spec) datasetEntries;
+  };
   readinessResources =
     [(packageResultOf "pool" "resource")]
     ++ builtins.map (entry: entry.readiness) datasetEntries;
@@ -292,8 +299,6 @@
   deduplicatedDatasets = builtins.filter (
     name: cfg.datasets.${name}.deduplicate
   ) (builtins.attrNames cfg.datasets);
-  fragments = [pool] ++ datasets;
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./maintenance.nix
@@ -409,22 +414,20 @@ in {
       aos.kernel.commandLineParts.${packageName} = lib.mkIf cfg.enable cfg.moduleParameters;
     }
     {
-      aos.abilities = lib.mkMerge ([
-          {
-            interfaces.${poolTerminal.alias} = poolTerminal.declaration;
-            interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
-            implementations.storage-pool = controller storage.pool poolTerminal "pool-provider.nix" "Converges storage pools through the OpenZFS controller.";
-            implementations.storage-dataset = controller storage.dataset datasetTerminal "dataset-provider.nix" "Converges storage datasets through the OpenZFS controller.";
-            implementations.${poolTerminal.alias} = poolTerminal.implementation;
-            implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
-          }
-        ]
-        ++ builtins.map (definition: definition.declarations) definitions
-        ++ lib.optional cfg.enable (lib.mkMerge (
-          [{instances.${consumerInstance} = {};}]
-          ++ builtins.map (definition: definition.configured) definitions
-        )));
+      aos.abilities = {
+        interfaces.${poolTerminal.alias} = poolTerminal.declaration;
+        interfaces.${datasetTerminal.alias} = datasetTerminal.declaration;
+        implementations.storage-pool = controller storage.pool poolTerminal "pool-provider.nix" "Converges storage pools through the OpenZFS controller.";
+        implementations.storage-dataset = controller storage.dataset datasetTerminal "dataset-provider.nix" "Converges storage datasets through the OpenZFS controller.";
+        implementations.${poolTerminal.alias} = poolTerminal.implementation;
+        implementations.${datasetTerminal.alias} = datasetTerminal.implementation;
+      };
     }
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [pool datasets];
+      enabled = cfg.enable;
+    })
     (lib.mkIf cfg.enable {
       aos.filesystems.zfs.maintenance.enable = lib.mkDefault true;
     })
