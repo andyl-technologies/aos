@@ -32,6 +32,38 @@ pub enum PublicCachePinExecutionV1 {
     },
 }
 
+/// Proves that one public pin is retained by both protected and physical owners.
+#[must_use = "a confirmed public pin must be reflected in its operation result"]
+pub enum ConfirmedPublicCachePinV1 {
+    /// The existing logical and physical pins remained current.
+    Retained(CachePinV1),
+    /// A protected transition was read back and its physical effect settled.
+    Settled(CacheOwnerPinSettlementV1),
+}
+
+impl PublicCachePinExecutionV1 {
+    /// Separates a complete pin from an outcome that still needs recovery.
+    ///
+    /// An applied protected transaction is insufficient when its physical
+    /// handoff was skipped or failed. An unresolved result is returned intact
+    /// so the caller can retain its exact recovery custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original execution when protected readback or physical
+    /// settlement has not been confirmed.
+    pub fn into_confirmed(self) -> Result<ConfirmedPublicCachePinV1, Self> {
+        match self {
+            Self::Retained(pin) => Ok(ConfirmedPublicCachePinV1::Retained(pin)),
+            Self::Committed {
+                outcome: CacheResidencyCommitOutcomeV1::Applied(_),
+                settlement: Some(Ok(settlement)),
+            } => Ok(ConfirmedPublicCachePinV1::Settled(settlement)),
+            unresolved => Err(unresolved),
+        }
+    }
+}
+
 /// Retains the protected and physical outcomes of one exact public pin drain.
 #[must_use = "public unpin completion requires every retained partition to be drained"]
 pub struct PublicCacheUnpinExecutionV1 {
@@ -39,6 +71,27 @@ pub struct PublicCacheUnpinExecutionV1 {
     pub outcome: CacheResidencyCommitOutcomeV1,
     /// Physical settlement, absent while the protected outcome is unresolved.
     pub settlement: Option<Result<CacheOwnerPinSettlementV1, CacheOwnerPinSettlementErrorV1>>,
+}
+
+impl PublicCacheUnpinExecutionV1 {
+    /// Confirms that one partition's protected drain and physical release settled.
+    ///
+    /// The caller must repeat this for every retained partition pin before
+    /// completing the public UnpinObject operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original execution when protected readback or physical
+    /// settlement has not been confirmed.
+    pub fn into_confirmed(self) -> Result<CacheOwnerPinSettlementV1, Self> {
+        match self {
+            Self {
+                outcome: CacheResidencyCommitOutcomeV1::Applied(_),
+                settlement: Some(Ok(settlement)),
+            } => Ok(settlement),
+            unresolved => Err(unresolved),
+        }
+    }
 }
 
 /// Reports failure before a public Cache pin has a complete execution result.
