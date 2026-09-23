@@ -1069,7 +1069,7 @@ mod captured_source_tests {
         };
         let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
             ObjectKind::ExactManifest,
-            4,
+            5,
             b"production attempt continuation",
         ))
         .unwrap_or_else(|error| panic!("build production exact root: {error}"));

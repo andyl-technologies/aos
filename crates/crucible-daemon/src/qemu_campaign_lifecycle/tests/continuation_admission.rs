@@ -19,7 +19,7 @@ fn fresh_runner_rejects_resume_origin_before_factory_invocation() {
     );
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"fresh-runner-resume-origin",
     ))
     .expect("exact checkpoint fixture");

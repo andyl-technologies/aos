@@ -173,7 +173,7 @@ genesis_content = "{genesis_content}"
 crucible_version = "crucible-0.1.0"
 qemu_build = "qemu-11.1.1-crucible"
 scenario_schema = 3
-exact_closure_schema = 4
+exact_closure_schema = 5
 
 [protocol_versions]
 control = 3
@@ -199,7 +199,7 @@ shared-memory = 25
         );
         assert_eq!(report.encoded_bytes, bytes.len());
         assert_eq!(lineage.protocol_versions().get("control"), Some(&3));
-        assert_eq!(lineage.exact_closure_schema(), 4);
+        assert_eq!(lineage.exact_closure_schema(), 5);
     }
 
     #[test]

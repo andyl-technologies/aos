@@ -12,6 +12,7 @@ pub(super) struct ProductionSourcePreparation {
     pub(super) native_retirement: Option<ProductionExactCheckpointRetirement>,
     pub(super) promotion_source: Option<ExactCheckpointId>,
     pub(super) promotion_evidence: Option<Vec<u8>>,
+    pub(super) choice_closure: Vec<u8>,
     pub(super) reuse: Option<ProductionRepositoryReuse>,
 }
 
@@ -20,6 +21,7 @@ type ProductionRootChildren = (
     Vec<ContentId>,
     Option<ExactCheckpointId>,
     Option<ContentId>,
+    ContentId,
 );
 
 #[cfg(test)]
@@ -40,6 +42,9 @@ pub(super) fn prepare_production_source(
         native_retirement: None,
         promotion_source: None,
         promotion_evidence: None,
+        choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            .to_canonical_bytes()
+            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?,
         reuse: None,
     })
 }
@@ -57,6 +62,7 @@ pub(super) fn prepare_production_source_with_cancellation(
         native_retirement,
         promotion_source,
         promotion_evidence,
+        choice_closure,
         reuse,
     } = preparation;
 
@@ -165,6 +171,25 @@ pub(super) fn prepare_production_source_with_cancellation(
             "replay-oracle source and evidence must be prepared together",
         ));
     }
+    if choice_closure.is_empty()
+        || choice_closure.len() as u64 > MAX_PRODUCTION_CHOICE_CLOSURE_BYTES
+    {
+        return Err(invalid_root("checkpoint choice closure length is invalid"));
+    }
+    crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+        &choice_closure,
+    )
+    .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;
+    let mut choice_closure = BlobHandle::from_bytes(choice_closure);
+    if let Some(cancellation) = cancellation.as_ref() {
+        choice_closure = cancellation_blob_handle(choice_closure, cancellation.clone());
+    }
+    let choice_id = ContentId::for_source(
+        ObjectKind::Observation,
+        PRODUCTION_CHOICE_CLOSURE_SCHEMA_VERSION,
+        &choice_closure,
+    )
+    .map_err(map_checkpoint_store_error)?;
 
     let body = encode_production_root_body(ProductionRootBody {
         production_identity,
@@ -178,6 +203,10 @@ pub(super) fn prepare_production_source_with_cancellation(
     });
     let mut children = BTreeSet::new();
     children.insert(ContentChild::new(PRODUCTION_MANIFEST_ROLE, manifest_id)?);
+    children.insert(ContentChild::new(
+        PRODUCTION_CHOICE_CLOSURE_ROLE,
+        choice_id,
+    )?);
     if let Some(source) = promotion_source {
         children.insert(ContentChild::new(
             PRODUCTION_PROMOTION_SOURCE_ROLE,
@@ -217,6 +246,7 @@ pub(super) fn prepare_production_source_with_cancellation(
         production_identity,
         promotion_source,
         promotion_evidence,
+        choice_closure: (choice_id, choice_closure),
         scenario,
         configuration,
         object_bytes,
@@ -403,13 +433,14 @@ pub(super) fn decode_production_root_children(
 ) -> Result<ProductionRootChildren, ExactCheckpointStoreError> {
     let expected = usize::try_from(index_count)
         .map_err(|_| invalid_root("production index count is not representable"))?;
-    if !matches!(envelope.children().len(), count if count == expected.saturating_add(1) || count == expected.saturating_add(3))
+    if !matches!(envelope.children().len(), count if count == expected.saturating_add(2) || count == expected.saturating_add(4))
     {
         return Err(invalid_root("production root child count mismatch"));
     }
     let mut manifest = None;
     let mut promotion_source = None;
     let mut promotion_evidence = None;
+    let mut choice_closure = None;
     let mut indexes = vec![None; expected];
     for child in envelope.children() {
         if child.role() == PRODUCTION_MANIFEST_ROLE {
@@ -438,6 +469,15 @@ pub(super) fn decode_production_root_children(
             }
             continue;
         }
+        if child.role() == PRODUCTION_CHOICE_CLOSURE_ROLE {
+            if child.id().kind() != ObjectKind::Observation
+                || child.id().schema_version() != PRODUCTION_CHOICE_CLOSURE_SCHEMA_VERSION
+                || choice_closure.replace(child.id()).is_some()
+            {
+                return Err(invalid_root("checkpoint choice closure child is invalid"));
+            }
+            continue;
+        }
         let suffix = child
             .role()
             .strip_prefix(PRODUCTION_INDEX_ROLE_PREFIX)
@@ -462,7 +502,13 @@ pub(super) fn decode_production_root_children(
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| invalid_root("production index child sequence is incomplete"))?;
-    Ok((manifest, indexes, promotion_source, promotion_evidence))
+    Ok((
+        manifest,
+        indexes,
+        promotion_source,
+        promotion_evidence,
+        choice_closure.ok_or_else(|| invalid_root("checkpoint choice closure child is missing"))?,
+    ))
 }
 
 pub(super) fn validate_production_checkpoint_bytes(

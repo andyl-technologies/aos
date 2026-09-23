@@ -213,6 +213,15 @@ fn repository_fixture(closure: &ExactCheckpointClosureRecord) -> RepositoryFixtu
             ContentChild::new(MANIFEST_ROLE, manifest_id)
                 .unwrap_or_else(|error| panic!("fixture manifest child: {error:?}")),
             ContentChild::new(
+                CHOICE_CLOSURE_ROLE,
+                ContentId::for_bytes(
+                    ObjectKind::Observation,
+                    CHOICE_CLOSURE_SCHEMA_VERSION,
+                    b"CCRC\0\0\0\x01\0\0\0\0",
+                ),
+            )
+            .unwrap_or_else(|error| panic!("fixture choice child: {error:?}")),
+            ContentChild::new(
                 index_role(0).unwrap_or_else(|| panic!("fixture index role")),
                 index_id,
             )
@@ -390,7 +399,7 @@ fn verified_node_binds_outer_and_embedded_replay_identities() {
 
     let other_repository = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        4,
+        5,
         b"other repository root",
     ))
     .unwrap_or_else(|error| panic!("other repository root: {error:?}"));

@@ -18,6 +18,7 @@ use crucible_cas::content_store::BlobSource;
 const PRODUCTION_MANIFEST_ROLE: &str = "production-manifest";
 const PRODUCTION_PROMOTION_SOURCE_ROLE: &str = "replay-oracle-source";
 const PRODUCTION_PROMOTION_EVIDENCE_ROLE: &str = "replay-oracle-evidence";
+const PRODUCTION_CHOICE_CLOSURE_ROLE: &str = "checkpoint-choice-closure";
 const PRODUCTION_INDEX_ROLE_PREFIX: &str = "production-object-index-";
 const PRODUCTION_OBJECT_ROLE_PREFIX: &str = "object-";
 const PRODUCTION_INDEX_SCHEMA: &str = "crucible.executor.production-checkpoint-index";
@@ -25,6 +26,7 @@ const PRODUCTION_INDEX_SCHEMA_VERSION: u32 = 1;
 const PRODUCTION_MANIFEST_SCHEMA_VERSION: u32 = 4;
 const PRODUCTION_OBJECT_SCHEMA_VERSION: u32 = 5;
 const PRODUCTION_PROMOTION_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const PRODUCTION_CHOICE_CLOSURE_SCHEMA_VERSION: u32 = 1;
 const PRODUCTION_ROOT_BODY_BYTES: usize = 124;
 const PRODUCTION_INDEX_MAGIC: &[u8; 8] = b"CRUCPIDX";
 const PRODUCTION_INDEX_PAGE_OBJECTS: usize = 4_096;
@@ -32,6 +34,7 @@ const MAX_PRODUCTION_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const MAX_PRODUCTION_ROOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PRODUCTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PRODUCTION_PROMOTION_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_PRODUCTION_CHOICE_CLOSURE_BYTES: u64 = 128 * 1024 * 1024;
 const PRODUCTION_OBJECT_IDENTITY_BYTES: u64 = 32;
 const REPLAY_ORACLE_EVIDENCE_MAGIC: &[u8] = b"crucible.production-replay-oracle.v1\0";
 #[cfg(feature = "destructive-recovery-faults")]
@@ -89,6 +92,7 @@ pub struct PreparedProductionExactCheckpoint {
     production_identity: ContentHash,
     promotion_source: Option<ExactCheckpointId>,
     promotion_evidence: Option<(ContentId, BlobHandle)>,
+    choice_closure: (ContentId, BlobHandle),
     scenario: ContentHash,
     configuration: ContentHash,
     object_bytes: u64,
@@ -224,6 +228,7 @@ pub struct LoadedProductionExactCheckpoint {
     promotion_source: Option<ExactCheckpointId>,
     promotion_evidence_id: Option<ContentId>,
     promotion_evidence: Option<Vec<u8>>,
+    choice_closure: Vec<u8>,
     scenario: ContentHash,
     configuration: ContentHash,
     manifest: Vec<u8>,
@@ -234,6 +239,10 @@ pub struct LoadedProductionExactCheckpoint {
 }
 
 impl LoadedProductionExactCheckpoint {
+    /// Returns the root-authenticated bounded choice records captured at pause.
+    pub(crate) fn choice_closure(&self) -> &[u8] {
+        &self.choice_closure
+    }
     /// Returns the complete campaign exact-checkpoint root.
     #[must_use]
     pub const fn root(&self) -> ExactCheckpointId {
@@ -425,6 +434,7 @@ impl LoadedProductionExactCheckpoint {
             || self.configuration != raw.configuration
             || self.manifest != raw.manifest
             || self.objects != raw.objects
+            || self.choice_closure != raw.choice_closure
         {
             return Err(invalid_root(
                 "replay-oracle replacement changed its production closure",
@@ -586,20 +596,25 @@ impl ExactCheckpointStore {
         &self,
         closure: ProductionExactCheckpointClosure,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        self.prepare_production_closure_inner(closure, None)
+        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            .to_canonical_bytes()
+            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
+        self.prepare_production_closure_inner(closure, choices, None)
     }
 
     pub(super) fn prepare_production_closure_with_cancellation(
         &self,
         closure: ProductionExactCheckpointClosure,
+        choice_closure: Vec<u8>,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        self.prepare_production_closure_inner(closure, Some(cancellation.clone()))
+        self.prepare_production_closure_inner(closure, choice_closure, Some(cancellation.clone()))
     }
 
-    fn prepare_production_closure_inner(
+    pub(super) fn prepare_production_closure_inner(
         &self,
         closure: ProductionExactCheckpointClosure,
+        choice_closure: Vec<u8>,
         cancellation: Option<ExecutionCancellation>,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
         if let Some(cancellation) = cancellation.as_ref() {
@@ -632,6 +647,7 @@ impl ExactCheckpointStore {
             native_retirement,
             promotion_source: None,
             promotion_evidence: None,
+            choice_closure,
             reuse: None,
         })
     }
@@ -667,6 +683,7 @@ impl ExactCheckpointStore {
         let scenario = source.scenario();
         let configuration = source.configuration();
         let promotion_evidence = promotion.evidence().to_vec();
+        let choice_closure = source.choice_closure.clone();
         let reuse = ProductionRepositoryReuse {
             backend: Arc::clone(&source.backend),
             placements: source.placements.clone(),
@@ -682,6 +699,7 @@ impl ExactCheckpointStore {
             native_retirement: None,
             promotion_source: Some(raw),
             promotion_evidence: Some(promotion_evidence),
+            choice_closure,
             reuse: Some(reuse),
         })
     }
@@ -751,6 +769,7 @@ impl ExactCheckpointStore {
             )?;
         }
         if let Some((identity, source)) = &prepared.promotion_evidence {
+            check_cancellation(prepared.cancellation.as_ref())?;
             require_durable_receipt(
                 self.backend
                     .put_if_absent(*identity, source)
@@ -759,6 +778,14 @@ impl ExactCheckpointStore {
                 source.logical_length(),
             )?;
         }
+        check_cancellation(prepared.cancellation.as_ref())?;
+        require_durable_receipt(
+            self.backend
+                .put_if_absent(prepared.choice_closure.0, &prepared.choice_closure.1)
+                .map_err(map_checkpoint_store_error)?,
+            prepared.choice_closure.0,
+            prepared.choice_closure.1.logical_length(),
+        )?;
         require_durable_receipt(
             {
                 check_cancellation(prepared.cancellation.as_ref())?;
@@ -784,7 +811,7 @@ impl ExactCheckpointStore {
 
     /// Loads one complete production root as a bounded portable source.
     ///
-    /// This authenticates the v4 root, manifest object, exact ordered index
+    /// This authenticates the v5 root, manifest object, exact ordered index
     /// page set, every raw-identity-to-CAS mapping, object count, and aggregate
     /// declared bytes. Object bodies remain lazy and are independently checked
     /// when a production-store installer consumes them.
@@ -857,8 +884,25 @@ impl ExactCheckpointStore {
         )?;
         validate_production_object_inventory_bound(body.manifest_bytes, body.object_count)?;
         validate_production_index_geometry(body.object_count, body.index_count)?;
-        let (manifest_id, index_ids, promotion_source, promotion_evidence_id) =
+        let (manifest_id, index_ids, promotion_source, promotion_evidence_id, choice_id) =
             decode_production_root_children(&envelope, body.index_count)?;
+
+        let mut choice_handle = self.backend.read(choice_id, None)?;
+        if let Some(cancellation) = cancellation.as_ref() {
+            choice_handle = cancellation_blob_handle(choice_handle, cancellation.clone());
+        }
+        if choice_handle.logical_length() == 0
+            || choice_handle.logical_length() > MAX_PRODUCTION_CHOICE_CLOSURE_BYTES
+        {
+            return Err(invalid_root("checkpoint choice closure length is invalid"));
+        }
+        let choice_closure = choice_handle
+            .read_all(MAX_PRODUCTION_CHOICE_CLOSURE_BYTES)
+            .map_err(map_checkpoint_store_error)?;
+        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+            &choice_closure,
+        )
+        .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;
 
         let promotion_evidence = if let Some(identity) = promotion_evidence_id {
             let mut handle = self.backend.read(identity, None)?;
@@ -977,6 +1021,7 @@ impl ExactCheckpointStore {
             promotion_source,
             promotion_evidence_id,
             promotion_evidence,
+            choice_closure,
             scenario: body.scenario,
             configuration: body.configuration,
             manifest,
@@ -1017,6 +1062,8 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    mod choice_closure;
 
     use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
     use crucible_cas::content_store::{
@@ -1212,7 +1259,7 @@ mod tests {
         )
         .expect("prepare production closure");
 
-        assert_eq!(prepared.root().content_id().schema_version(), 4);
+        assert_eq!(prepared.root().content_id().schema_version(), 5);
         assert_eq!(prepared.indexes.len(), 2);
         assert_eq!(backend.object_count(), 0);
         let root = prepared.root();
@@ -1297,6 +1344,7 @@ mod tests {
             native_retirement: None,
             promotion_source: Some(raw),
             promotion_evidence: Some(evidence),
+            choice_closure: loaded.choice_closure().to_vec(),
             reuse: Some(ProductionRepositoryReuse {
                 backend: Arc::clone(&loaded.backend),
                 placements: loaded.placements.clone(),
@@ -1323,7 +1371,7 @@ mod tests {
             .expect("publish repository-backed replay promotion")
             .root();
         assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
-        assert_eq!(backend.puts.load(Ordering::Relaxed), 2);
+        assert_eq!(backend.puts.load(Ordering::Relaxed), 3);
         let promoted = store
             .load_production_closure(promoted)
             .expect("load repository-backed replay promotion");
@@ -1482,6 +1530,9 @@ mod tests {
             native_retirement: None,
             promotion_source: None,
             promotion_evidence: None,
+            choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+                .to_canonical_bytes()
+                .expect("encode empty checkpoint choices"),
             reuse: None,
         })
         .expect("prepare production closure before cancellation");
@@ -1552,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn production_root_v4_has_a_stable_canonical_identity() {
+    fn production_root_v5_has_a_stable_canonical_identity() {
         let prepared = prepare_production_source(
             Arc::new(memory_source(2)),
             ContentHash::from_bytes(b"golden closure"),
@@ -1564,7 +1615,7 @@ mod tests {
 
         assert_eq!(
             prepared.root().content_id().encode(),
-            "exact-manifest.4.fb6e0a2e28e3c5f0b0f5a89aeb9192fd6e48da929f60d085f66b3470bfabab97"
+            "exact-manifest.5.fda03aae94e21d84722b0cf1446d28b4f7c7407b67feed6eef52ba0a5462dde2"
         );
     }
 

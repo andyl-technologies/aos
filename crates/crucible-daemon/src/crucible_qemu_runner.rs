@@ -59,7 +59,7 @@ pub trait QemuSelectedOriginVerifier: CrucibleExecutionRunner {
 
 /// Independent cold-replay authority for an ordinary attempt's start boundary.
 ///
-/// The exact-checkpoint version-four envelope does not retain an authenticated
+/// The exact-checkpoint version-five envelope does not retain an authenticated
 /// attempt-local event count. Implementations therefore launch a fresh lifecycle
 /// and replay only genesis through the immutable Discover or Branch start. This
 /// adds one lifecycle launch and start-prefix replay to each ordinary EventCount
@@ -608,7 +608,7 @@ mod tests {
         crucible_campaign::ExactCheckpointId::try_from(
             crucible_cas::content_store::ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::ExactManifest,
-                4,
+                5,
                 material,
             ),
         )

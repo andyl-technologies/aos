@@ -81,7 +81,7 @@ mod tests {
 
     fn response(request: &OpenCampaignDebugSessionRequest) -> OpenCampaignDebugSessionResponse {
         let checkpoint = ExactCheckpointId::parse(&format!(
-            "crucible.executor.exact-checkpoint-root@exact-manifest.4.{}",
+            "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
             hex([0x31; 32])
         ))
         .unwrap_or_else(|error| panic!("checkpoint identity should parse: {error}"));

@@ -1,13 +1,14 @@
 //! Durable content-addressed publication of exact QEMU checkpoints.
 //!
-//! A complete production checkpoint uses a version-four storage root around
+//! A complete production checkpoint uses a version-five storage root around
 //! one canonical version-nine production closure and bounded index pages. The
 //! root version belongs to this CAS envelope and is independent of the runtime
 //! restore protocol version:
 //!
 //! ```text
-//! ExactCheckpointRootV4
+//! ExactCheckpointRootV5
 //!   production-manifest -> ProductionExactCheckpointClosureV9
+//!   checkpoint-choice-closure -> bounded owned replay selections
 //!   production-object-index-* -> ProductionCheckpointIndexV1
 //!     object-<native-hash> -> opaque typed production object
 //! ```
@@ -46,7 +47,7 @@ const CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES: usize = 1024 * 1024;
 /// Canonical schema name of the child-bearing exact-checkpoint root.
 pub const EXACT_CHECKPOINT_ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
 /// Content-ID and envelope version of the complete production exact-checkpoint root.
-pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 4;
+pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 5;
 
 mod production;
 pub use production::{
@@ -55,39 +56,59 @@ pub use production::{
 };
 
 /// Attempt-owned production closure awaiting no-write immutable-store preparation.
-pub struct CapturedAttemptCheckpoint(ProductionExactCheckpointClosure);
+pub struct CapturedAttemptCheckpoint {
+    closure: ProductionExactCheckpointClosure,
+    choice_closure: Option<Vec<u8>>,
+}
 
 impl fmt::Debug for CapturedAttemptCheckpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CapturedAttemptCheckpoint")
-            .field("identity", &self.0.identity())
-            .field("scenario", &self.0.scenario())
-            .field("configuration", &self.0.configuration())
-            .field("objects", &self.0.objects().len())
+            .field("identity", &self.closure.identity())
+            .field("scenario", &self.closure.scenario())
+            .field("configuration", &self.closure.configuration())
+            .field("objects", &self.closure.objects().len())
             .finish()
     }
 }
 
 impl CapturedAttemptCheckpoint {
     pub(crate) fn from_production_closure(capture: ProductionExactCheckpointClosure) -> Self {
-        Self(capture)
+        Self {
+            closure: capture,
+            choice_closure: None,
+        }
+    }
+
+    pub(crate) fn with_choice_closure(mut self, bytes: Vec<u8>) -> Self {
+        self.choice_closure = Some(bytes);
+        self
+    }
+
+    fn choice_closure_bytes(&self) -> Result<Vec<u8>, ExactCheckpointStoreError> {
+        match &self.choice_closure {
+            Some(bytes) => Ok(bytes.clone()),
+            None => crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+                .to_canonical_bytes()
+                .map_err(|_| invalid_root("empty choice closure could not be encoded")),
+        }
     }
 
     /// Returns the semantic scenario authenticated by this capture.
     #[must_use]
     pub fn scenario(&self) -> ContentHash {
-        self.0.scenario()
+        self.closure.scenario()
     }
 
     /// Returns the modeled configuration authenticated at the capture boundary.
     #[must_use]
     pub fn configuration(&self) -> ContentHash {
-        self.0.configuration()
+        self.closure.configuration()
     }
 
     pub(crate) fn into_closure(self) -> ProductionExactCheckpointClosure {
-        self.0
+        self.closure
     }
 }
 
@@ -333,7 +354,8 @@ impl ExactCheckpointStore {
         &self,
         capture: &CapturedAttemptCheckpoint,
     ) -> Result<PreparedAttemptCheckpoint, ExactCheckpointStoreError> {
-        self.prepare_production_closure(capture.0.clone())
+        let choices = capture.choice_closure_bytes()?;
+        self.prepare_production_closure_inner(capture.closure.clone(), choices, None)
             .map(PreparedAttemptCheckpoint)
     }
 
@@ -355,8 +377,13 @@ impl ExactCheckpointStore {
         if cancellation.is_canceled() {
             return Err(ExactCheckpointStoreError::Canceled);
         }
-        self.prepare_production_closure_with_cancellation(capture.0.clone(), cancellation)
-            .map(PreparedAttemptCheckpoint)
+        let choices = capture.choice_closure_bytes()?;
+        self.prepare_production_closure_with_cancellation(
+            capture.closure.clone(),
+            choices,
+            cancellation,
+        )
+        .map(PreparedAttemptCheckpoint)
     }
 
     /// Publishes one prepared production checkpoint through root-last ordering.

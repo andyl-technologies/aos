@@ -544,7 +544,7 @@ fn candidate(
 
 fn exact_fallback(byte: u8) -> HotCheckpointFallback {
     HotCheckpointFallback::Exact(
-        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 4, &[byte]))
+        ExactCheckpointId::try_from(ContentId::for_bytes(ObjectKind::ExactManifest, 5, &[byte]))
             .expect("exact fallback"),
     )
 }
