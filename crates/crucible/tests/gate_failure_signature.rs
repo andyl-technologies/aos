@@ -9,10 +9,10 @@ use std::error::Error;
 
 use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
-    AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
-    DagStore, Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp,
-    EventLogOffset, EventLogTime, EventPayload, EventSource, FailureCausalCone,
-    FailureClusterFinding, FailureClusterReport, FailureClusterReportDivergence,
+    AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration,
+    ContentHash, DagStore, Decision, EngineError, EventLogCausalDivergencePoint,
+    EventLogIcountStamp, EventLogOffset, EventLogTime, EventPayload, EventSource,
+    FailureCausalCone, FailureClusterFinding, FailureClusterReport, FailureClusterReportDivergence,
     FailureClusterReportFailure, FailureClusterReportFormat, FailureClusterReportSet,
     FailureClusteringResult, FailureFindingsLedger, FailureKind, FailureMinimizationDisposition,
     FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
@@ -22,11 +22,158 @@ use crucible::{
     FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
     FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MemoryDagStore,
     MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
-    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
-    SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy,
+    SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
+
+#[test]
+fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
+-> Result<(), Box<dyn Error>> {
+    let world = World::from_nodes(vec![WorldNode {
+        id: node("triage-node"),
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount { icount: icount(0) },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?;
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![
+            AssertionDef {
+                id: assertion_id("no-forbidden-marker"),
+                message: String::from("forbidden marker must stay absent"),
+                property: Property::Always {
+                    predicate: Predicate::not(Predicate::guest_marker(marker("forbidden"))),
+                },
+            },
+            AssertionDef {
+                id: assertion_id("eventually-present"),
+                message: String::from("missing marker must appear"),
+                property: Property::Sometimes {
+                    predicate: Predicate::guest_marker(marker("missing")),
+                },
+            },
+        ],
+    )?;
+    let scenario =
+        ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::default())?;
+    let finding = finding_artifact(
+        &scenario,
+        Schedule::empty(),
+        FindingDiscoveryPath::CampaignFork,
+        finding_hash("host-derived-marker"),
+    )?;
+    let boundary = crucible::test_support::condition_boundary_entry_for_test(
+        0,
+        VirtualTime { ticks: 100 },
+        SchedulerEvaluationBoundaryKind::Quantum,
+    );
+    let marker_event =
+        ObservableEvent::guest_marker(icount(5), node("triage-node"), marker("forbidden"));
+    let observed_marker = crucible::test_support::condition_payload_entry_for_test(
+        1,
+        VirtualTime { ticks: 100 },
+        SchedulerEventLogPayload::Observable(marker_event.payload().clone()),
+    );
+    let entries = vec![boundary.clone(), observed_marker];
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &entries)?;
+    let violations = report.violations();
+    assert_eq!(violations.len(), 2);
+
+    let marker_record = FailurePropertyViolationRecord::new(
+        violations
+            .iter()
+            .find(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
+            .ok_or("missing marker violation")?
+            .clone(),
+    );
+    let terminal_record = FailurePropertyViolationRecord::new(
+        violations
+            .iter()
+            .find(|violation| violation.assertion == assertion_id("eventually-present"))
+            .ok_or("missing terminal violation")?
+            .clone(),
+    );
+    for mut record in [marker_record.clone(), terminal_record] {
+        record.violation.reproduction_artifact = finding.artifact.id();
+        let log = recorded_event_log_for_finding(&finding, &entries)?;
+        let signature =
+            FailureSignature::from_recorded_property_violation(&finding, &log, &record)?;
+        assert!(signature.causal_slice_hash.is_some());
+    }
+
+    let mut marker_record = marker_record;
+    marker_record.violation.reproduction_artifact = finding.artifact.id();
+    let triage = FailureTriageReplayEvidence::new(
+        finding.clone(),
+        FailureClusterReportFailure::property(marker_record.clone()),
+        entries.clone(),
+        finding_hash("host-derived-coverage"),
+        Vec::new(),
+    )?;
+    let encoded = triage.to_compact_binary()?;
+    assert_eq!(
+        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &encoded)?,
+        triage
+    );
+
+    let missing_log = recorded_event_log_for_finding(&finding, std::slice::from_ref(&boundary))?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(&finding, &missing_log, &marker_record)
+            .is_err()
+    );
+
+    let wrong_marker =
+        ObservableEvent::guest_marker(icount(5), node("triage-node"), marker("other"));
+    let wrong_entries = vec![
+        boundary.clone(),
+        crucible::test_support::condition_payload_entry_for_test(
+            1,
+            VirtualTime { ticks: 100 },
+            SchedulerEventLogPayload::Observable(wrong_marker.payload().clone()),
+        ),
+    ];
+    let wrong_log = recorded_event_log_for_finding(&finding, &wrong_entries)?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(&finding, &wrong_log, &marker_record)
+            .is_err()
+    );
+
+    let wrong_icount =
+        ObservableEvent::guest_marker(icount(6), node("triage-node"), marker("forbidden"));
+    let wrong_icount_log = recorded_event_log_for_finding(
+        &finding,
+        &[
+            boundary,
+            crucible::test_support::condition_payload_entry_for_test(
+                1,
+                VirtualTime { ticks: 100 },
+                SchedulerEventLogPayload::Observable(wrong_icount.payload().clone()),
+            ),
+        ],
+    )?;
+    assert!(
+        FailureSignature::from_recorded_property_violation(
+            &finding,
+            &wrong_icount_log,
+            &marker_record,
+        )
+        .is_err()
+    );
+
+    Ok(())
+}
 
 #[test]
 fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<(), Box<dyn Error>> {
