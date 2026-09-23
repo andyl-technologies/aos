@@ -63,6 +63,7 @@ in
   assert !(disabledRequests ? "aos:package-profile-readiness");
   assert disabledRequests ? "aos:package-profile-convergence-lifecycle";
   assert disabledRequests ? "aos:aos-attest-lifecycle";
+  assert disabled.config.aos.abilities.requirementTemplates ? "aos:package-profile-readiness";
   assert !(initrd.config.aos.abilities.requests ? "aos:aos-attest-lifecycle");
   assert !(initrd.config.aos.abilities.requests ? "aos:package-profile-readiness");
   assert requests."aos:package-profile-readiness".parameters == "system-profile";
@@ -120,6 +121,7 @@ in
       ignore_failure = false;
     }
   ];
+  assert !quoteLifecycle.enabled;
   assert requests."aos:aos-attest-dependencies".parameters.prerequisites
   == [(resultOf "aos:package-profile-readiness" "resource")];
   assert !(enabled.config ? systemd); true

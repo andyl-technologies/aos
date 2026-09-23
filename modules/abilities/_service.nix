@@ -73,6 +73,11 @@
             extensible = true;
             description = "Enable this service instance.";
           };
+          options.autoStart = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Ask the selected manager to start this service automatically.";
+          };
           options.consumerInstance = lib.mkOption {
             type = lib.abilities.types.localKey;
             default = defaultConsumerInstance;

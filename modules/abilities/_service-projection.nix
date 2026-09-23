@@ -15,7 +15,7 @@
   declaration =
     {
       inherit (service) service;
-      enabled = true;
+      enabled = service.autoStart;
     }
     // lib.filterAttrs
     (field: value:
