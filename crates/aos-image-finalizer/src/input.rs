@@ -442,6 +442,7 @@ mod tests {
                 initrd_mib: 128,
                 uki_mib: 160,
                 download_mib: 640,
+                converted_download_mib: None,
             },
             initrd_contract: None,
             files: vec![AssemblyFileV1 {
