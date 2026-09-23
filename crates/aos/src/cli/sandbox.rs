@@ -1135,14 +1135,24 @@ impl CacheSubcommand {
             }),
             Self::Pin(a) => K::CachePin(wire::PinCacheObjectRequest {
                 object: a.object.0.clone().into(),
-                mutation: a.mutation.proto().into(),
+                mutation: a
+                    .mutation
+                    .proto_with_semantic_features(&[
+                        aos_sandbox::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                    ])
+                    .into(),
                 view_id: a.view_id.clone(),
                 attachment_id: optional_bytes(&a.attachment_id),
                 ..Default::default()
             }),
             Self::Unpin(a) => K::CacheUnpin(wire::UnpinCacheObjectRequest {
                 object: a.object.0.clone().into(),
-                mutation: a.mutation.proto().into(),
+                mutation: a
+                    .mutation
+                    .proto_with_semantic_features(&[
+                        aos_sandbox::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                    ])
+                    .into(),
                 view_id: a.view_id.clone(),
                 attachment_id: optional_bytes(&a.attachment_id),
                 ..Default::default()
@@ -1273,7 +1283,12 @@ fn execution_control(a: &ExecutionIdArgs, action: i32) -> wire::ExecutionControl
         action: action.into(),
         client_public_key: a.client_public_key.clone(),
         proof_of_possession: a.proof_of_possession.clone(),
-        mutation: a.mutation.proto().into(),
+        mutation: a
+            .mutation
+            .proto_with_semantic_features(&[
+                aos_sandbox::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1,
+            ])
+            .into(),
         ..Default::default()
     }
 }

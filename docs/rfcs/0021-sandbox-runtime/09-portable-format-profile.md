@@ -230,6 +230,7 @@ and compatibility rule:
 | `aos.sandbox.runtime.linux-systemd, 1, 0` | `sandbox-spec.runtime-profile`; booted Linux userspace with private user/PID/mount/UTS/IPC/network namespaces under the shared-kernel tier |
 | `aos.sandbox.snapshot.project-version-fence, 1, 0` | snapshot fork publication requires an exact current project resource-version compare-and-swap fence |
 | `aos.sandbox.authentication.broker-session, 1, 0` | holder-channel-bound authenticated broker session; the peer identity is verified before a fixed broker method is admitted |
+| `aos.sandbox.cache.consumer-pin, 1, 0` | cache pin and unpin require an explicit, authorized view and optional attachment consumer; repeated pin renews one logical dependency and unpin drains every retained physical obligation |
 | `aos.sandbox.identity.posix32, 1, 0` | view identity presentation and identity requirements; exact unsigned 32-bit UID/GID plus the spec's range/unmappable policy |
 | `aos.sandbox.metadata.posix-acl, 1, 0` | required by a tree with non-null ACL; the canonical ACL array and mode-mask consistency rules in this profile |
 | `aos.sandbox.symlink.absolute, 1, 0` | permits absolute symlink target bytes while retaining ordinary consumer-namespace resolution |
@@ -241,6 +242,7 @@ and compatibility rule:
 | `aos.sandbox.authorization.signed-plan-lease, 1, 0` | exact signed plan and ownership-lease artifacts on authority-bearing local broker requests |
 | `aos.sandbox.enforcement.zfs-quota, 1, 0` | storage/snapshot dimensions under the stated ZFS quota and reservation contract |
 | `aos.sandbox.execution.stream, 1, 0` | live non-terminal execution streams with no PTY semantics |
+| `aos.sandbox.execution.attach-holder-proof, 1, 0` | attach requires a holder public key and verified possession proof before a bound OpenSSH certificate is issued |
 | `aos.sandbox.execution.pty, 1, 0` | live pseudo-terminal execution with explicit nonzero rows and columns |
 | `aos.sandbox.execution.detached-capture, 1, 0` | no live stream; output is retained under the requested bounded capture ceiling |
 | `aos.sandbox.execution.sandbox-shell, 1, 0` | explicit sandbox-resident shell interpretation; it never selects a host shell |
@@ -271,10 +273,12 @@ The base-v1 `AOSFCF01` fixture SHA-256 values are pinned here:
 | `aos.sandbox.attachment.noexec` | `0be924f41cf27dd588d76f7b3eba56f736655434165ac1d0b0bc0b198a17152b` |
 | `aos.sandbox.authentication.broker-session` | `28c63b53053235ff58bb075d0b109d01f94ba12dc4c91fdd59ec8f26715b4b22` |
 | `aos.sandbox.authorization.signed-plan-lease` | `97fcf466291910a179c09f33f516c6823a0e648d104a8cc1916c0c228a0a4500` |
+| `aos.sandbox.cache.consumer-pin` | `611d91baa950f9d7a4bf15f28a704a69d331cbfdfd29aa770ef92976c1b64cdf` |
 | `aos.sandbox.deletion.force-revocation` | `dbc8fa415bdaac3ea8fb98d5ae133d3ce29a643500017cb20ed1f908eda18147` |
 | `aos.sandbox.enforcement.broker-ledger` | `c630cfadfef06e2a34f66ed79104ce6e6b22a195ce2806b7e6dc5d544245fe4b` |
 | `aos.sandbox.enforcement.cgroup-v2` | `ad1f2e95d21eab2df29e108ca629db1f4236b5f6b4dc9039aa4e0aaa587c49c2` |
 | `aos.sandbox.enforcement.zfs-quota` | `9d339d66103e5c87d2dc5e291ba1d2467a661a1f5eb34a2ce0a7287209c8c2a8` |
+| `aos.sandbox.execution.attach-holder-proof` | `f855452ce17dee734306df24ea47cc9d0981bd85c363eb9faf59ec10b348bc50` |
 | `aos.sandbox.execution.detached-capture` | `12dc2d11a489618458744648489cf2efe8715b935a8e422b67c732e737d8766d` |
 | `aos.sandbox.execution.pty` | `def575cd72de3bc32ae8963e2ae77bdad7475c6fcc9946187e7fa4a9e4e1450e` |
 | `aos.sandbox.execution.sandbox-shell` | `895b0370cb4f75377cfd3c153795e8f1b44e6c9ecb9800ed3d5e82fe3afd08bd` |

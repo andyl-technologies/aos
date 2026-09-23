@@ -1582,6 +1582,14 @@ fn validate_cache_consumer_projection(
     mutation: Option<&aos_proto::aos::sandbox::v1::MutationContext>,
     mutation_kind: CacheConsumerMutationV1,
 ) -> Result<Option<RecheckedCacheAcquisitionFenceV1>, OperationCompilationError> {
+    if !mutation.is_some_and(|mutation| {
+        crate::controller_query::contains_semantic_features_v1(
+            &mutation.required_features,
+            &[crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1],
+        )
+    }) {
+        return Err(OperationCompilationError::Malformed);
+    }
     let view = load_view(journal, exact_id(view_id)?)?;
     ensure_view_project(&view, project)?;
     // Release remains possible after the consumer starts draining.

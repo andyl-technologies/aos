@@ -9,10 +9,15 @@ use sha2::{Digest as _, Sha256};
 use super::resource::{InvalidPublicResource, MAXIMUM_CONDITION_FEATURES};
 
 /// Exact number of entries in the closed base-v1 semantic feature registry.
-pub const BASE_V1_FEATURE_REGISTRY_ENTRIES: usize = 25;
+pub const BASE_V1_FEATURE_REGISTRY_ENTRIES: usize = 27;
 
 /// Requires hard revocation before force-deletion cleanup begins.
 pub const FORCE_DELETE_FEATURE_V1: &str = "aos.sandbox.deletion.force-revocation";
+/// Requires a consumer-scoped cache pin or drain, never object-only retention.
+pub const CACHE_CONSUMER_PIN_FEATURE_V1: &str = "aos.sandbox.cache.consumer-pin";
+/// Requires holder proof before issuing an execution attachment route.
+pub const EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1: &str =
+    "aos.sandbox.execution.attach-holder-proof";
 /// Requires bounded detached execution-output capture.
 pub const EXECUTION_DETACHED_CAPTURE_FEATURE_V1: &str = "aos.sandbox.execution.detached-capture";
 /// Requires a live pseudo-terminal execution data path.
@@ -234,6 +239,13 @@ const BASE_FEATURE_REGISTRY_V1: &[BaseFeatureRegistryEntryV1] = &[
         b"signature=verified;lease=current"
     ),
     base_feature!(
+        "aos.sandbox.cache.consumer-pin",
+        "Consumer-scoped cache pin and drain",
+        b"cache-object.consumer-scope",
+        b"view-id=nonzero;attachment-id=optional;object=exact",
+        b"consumer=authorized;pin=renewable;unpin=complete-drain"
+    ),
+    base_feature!(
         "aos.sandbox.deletion.force-revocation",
         "Force deletion after hard revocation",
         b"delete-sandbox.revocation-order",
@@ -260,6 +272,13 @@ const BASE_FEATURE_REGISTRY_V1: &[BaseFeatureRegistryEntryV1] = &[
         b"resource-limit.enforcement",
         b"dimension=storage-bytes;value=1048576",
         b"refquota=1048576;readback=verified"
+    ),
+    base_feature!(
+        "aos.sandbox.execution.attach-holder-proof",
+        "Holder proof for execution attachment",
+        b"control-execution.attach-authority",
+        b"action=attach;holder-key=present;proof=present",
+        b"holder-proof=verified;certificate=holder-bound"
     ),
     base_feature!(
         "aos.sandbox.execution.detached-capture",

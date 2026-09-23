@@ -795,7 +795,11 @@ impl ResolvedPublicMutationV1 {
                         action: 1.into(),
                         client_public_key: endpoint_proof.public_key().to_vec(),
                         proof_of_possession: endpoint_proof.proof().to_vec(),
-                        mutation: execution_mutation_context_proto(mutation).into(),
+                        mutation: with_required_semantic_feature(
+                            execution_mutation_context_proto(mutation),
+                            crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1,
+                        )
+                        .into(),
                         ..Default::default()
                     })
                 }
@@ -979,7 +983,11 @@ impl ResolvedPublicMutationV1 {
                 mutation,
             } => ResolvedPublicMutationProtoV1::CachePin(wire::PinCacheObjectRequest {
                 object: object.as_proto().clone().into(),
-                mutation: mutation_context_proto(mutation).into(),
+                mutation: with_required_semantic_feature(
+                    mutation_context_proto(mutation),
+                    crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                )
+                .into(),
                 view_id: view.as_bytes().to_vec(),
                 attachment_id: attachment
                     .as_ref()
@@ -993,7 +1001,11 @@ impl ResolvedPublicMutationV1 {
                 mutation,
             } => ResolvedPublicMutationProtoV1::CacheUnpin(wire::UnpinCacheObjectRequest {
                 object: object.as_proto().clone().into(),
-                mutation: mutation_context_proto(mutation).into(),
+                mutation: with_required_semantic_feature(
+                    mutation_context_proto(mutation),
+                    crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                )
+                .into(),
                 view_id: view.as_bytes().to_vec(),
                 attachment_id: attachment
                     .as_ref()
@@ -1734,6 +1746,32 @@ fn execution_mutation_context_proto(
         required_features: mutation.required_features().as_slice().to_vec(),
         ..Default::default()
     }
+}
+
+fn with_required_semantic_feature(
+    mut mutation: wire::MutationContext,
+    namespace: &str,
+) -> wire::MutationContext {
+    if mutation
+        .required_features
+        .binary_search_by(|feature| feature.namespace.as_str().cmp(namespace))
+        .is_err()
+    {
+        mutation.required_features.push(wire::Feature {
+            namespace: namespace.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+        mutation.required_features.sort_by(|left, right| {
+            (&left.namespace, left.major, left.minor).cmp(&(
+                &right.namespace,
+                right.major,
+                right.minor,
+            ))
+        });
+    }
+    mutation
 }
 
 fn fork_snapshot_features(required: &CheckedFeatureSetV1) -> Vec<wire::Feature> {

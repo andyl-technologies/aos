@@ -664,6 +664,12 @@ impl DormantSandboxRequestV1 {
                                     .contains(&r.client_public_key.len())
                                 && (1..=MAXIMUM_ENDPOINT_PROOF_BYTES)
                                     .contains(&r.proof_of_possession.len())
+                                && r.mutation.as_option().is_some_and(|mutation| {
+                                    crate::controller_query::contains_semantic_features_v1(
+                                        &mutation.required_features,
+                                        &[crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
+                                    )
+                                })
                         }
                         2 => {
                             (1..=u32::from(u16::MAX)).contains(&r.terminal_rows)
@@ -789,11 +795,23 @@ impl DormantSandboxRequestV1 {
                 descriptor_present(r.object.as_option())
                     && valid_cache_consumer(&r.view_id, &r.attachment_id)
                     && mutation_resource_only(r.mutation.as_option())
+                    && r.mutation.as_option().is_some_and(|mutation| {
+                        crate::controller_query::contains_semantic_features_v1(
+                            &mutation.required_features,
+                            &[crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1],
+                        )
+                    })
             }
             K::CacheUnpin(r) => {
                 descriptor_present(r.object.as_option())
                     && valid_cache_consumer(&r.view_id, &r.attachment_id)
                     && mutation_resource_only(r.mutation.as_option())
+                    && r.mutation.as_option().is_some_and(|mutation| {
+                        crate::controller_query::contains_semantic_features_v1(
+                            &mutation.required_features,
+                            &[crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1],
+                        )
+                    })
             }
             K::CapabilitiesPublicApi(_) => true,
             K::CapabilitiesNode(r) => nonempty(&r.node_id),

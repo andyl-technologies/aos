@@ -129,6 +129,12 @@ feature grants rather than incidental SSH properties. The guest agent's local
 control channel is node-internal and is not a second public execution data
 plane. A future alternative requires a separately versioned protocol and RFC.
 
+Attach requests require `aos.sandbox.execution.attach-holder-proof, 1, 0` in
+`MutationContext.required_features`; resize and signal requests carry no holder
+key or proof. Cache pin and unpin requests require
+`aos.sandbox.cache.consumer-pin, 1, 0` so an older peer cannot ignore the
+consumer identity and reinterpret them as object-only retention.
+
 Client absolute deadlines are advisory because clocks differ. When accepting
 an operation, the server records its own wall timestamp for audit and a bounded
 monotonic duration for admission/cancellation behavior. Node sub-deadlines are

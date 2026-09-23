@@ -312,10 +312,11 @@ the outstanding work concrete:
   protected acquisition and its exact physical pin, but a fresh acquisition
   remains retry-only.
   Cache pin admission fences the named view or attachment to its project and
-  current resource version, and the source-membership and protected pin helpers
-  exist. The protected current View revision can supply canonical View bytes;
-  a project-scoped sealed source adapter supplies exact tree objects for the
-  corresponding pin helper. No authenticated tree-object producer or bounded
+  current resource version. A required semantic feature prevents older peers
+  from ignoring that consumer identity. The source-membership and protected
+  pin helpers exist. The protected current View revision can supply canonical
+  View bytes; a project-scoped sealed source adapter supplies exact tree
+  objects for the corresponding pin helper. No authenticated tree-object producer or bounded
   controller worker connects that helper to fresh public `CachePin` execution
   yet. Operator recovery actions other than ownership-gate Retry lack a
   completing effect path and are rejected before new admission. Retry is
@@ -336,9 +337,9 @@ the outstanding work concrete:
   completing controller effect and public projection. Attach requires its
   separately authorized OpenSSH data route; it is not an agent control effect.
   `ExecutionControlRequest` now carries attach-only holder key and possession
-  proof fields, and `ExecutionControlResult` can carry a checked holder-bound
-  endpoint. The service rejects attach before admission until it can verify
-  that proof and issue the route.
+  proof fields under a required semantic feature, and `ExecutionControlResult`
+  can carry a checked holder-bound endpoint. The service rejects attach before
+  admission until it can verify that proof and issue the route.
 - Grouped Storage snapshots are not production-dispatchable yet. Method 25 is
   deliberately absent from the authenticated broker profile even though the
   Storage owner, session adapter, lifecycle plan codec, and predecessor/successor

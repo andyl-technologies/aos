@@ -37,10 +37,17 @@ pub fn lower_public_execution_control_v1(
     let no_geometry = request.terminal_rows == 0 && request.terminal_columns == 0;
     let no_endpoint_proof =
         request.client_public_key.is_empty() && request.proof_of_possession.is_empty();
+    let attach_feature = request.mutation.as_option().is_some_and(|mutation| {
+        crate::controller_query::contains_semantic_features_v1(
+            &mutation.required_features,
+            &[crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
+        )
+    });
     match request.action.as_known() {
         Some(Action::EXECUTION_CONTROL_ACTION_ATTACH)
             if no_geometry
                 && request.signal.to_i32() == 0
+                && attach_feature
                 && (1..=MAXIMUM_ENDPOINT_PROOF_BYTES)
                     .contains(&request.client_public_key.len())
                 && (1..=MAXIMUM_ENDPOINT_PROOF_BYTES)
