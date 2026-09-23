@@ -1189,7 +1189,7 @@
         then throw "evalModules: artifact request has no authenticated package owner"
         else packageArtifactFor owner (packageOutputsForOwner owner) selector;
 
-      packageArtifactForRequest = requestName: selector: let
+      packageArtifactForRequest = providerName: requestName: selector: let
         abilities = finalConfig.aos.abilities;
         request =
           abilities.requests.${requestName}
@@ -1197,9 +1197,14 @@
           or (throw "evalModules: artifact request has no authenticated ability request '${requestName}'");
         owner = moduleLib.abilities.packageForDeclarationAuthority request.authority;
       in
-        if owner == null
-        then throw "evalModules: ability request '${requestName}' has no authenticated package owner"
-        else packageArtifactForOwner owner selector;
+        # Base-authored requests have no package owner. Their provider-created
+        # realization selects artifacts from the authenticated provider view.
+        packageArtifactForOwner (
+          if owner == null
+          then providerName
+          else owner
+        )
+        selector;
 
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
@@ -1228,7 +1233,7 @@
           inherit (record) name version;
           packageArtifactFor = packageArtifactFor record.name record.outputs;
           packageFor = packageFor record.name record.outputs;
-          inherit packageArtifactForRequest;
+          packageArtifactForRequest = packageArtifactForRequest record.name;
         }
         true
         [record.module])

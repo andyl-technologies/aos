@@ -9,6 +9,7 @@ in
   runCommand (builtins.unsafeDiscardStringContext plan.name) {
     realization = plan.input;
     inherit selectorPaths;
+    outputChecks = {};
     passAsFile = ["realization" "selectorPaths"];
     exportReferencesGraph.renderGraph = artifactPaths;
   } ''

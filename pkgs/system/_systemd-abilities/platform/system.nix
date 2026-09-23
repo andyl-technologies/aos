@@ -45,32 +45,7 @@
   };
 
   cfg = config.systemd;
-  providerRenderSelectorType = lib.types.submodule {
-    config._module.strict = true;
-    options = {
-      package = lib.mkOption {type = lib.types.nonEmptyStr;};
-      output = lib.mkOption {type = lib.types.nonEmptyStr;};
-      path = lib.mkOption {type = lib.types.nonEmptyStr;};
-    };
-  };
-  providerRenderPlanType = lib.types.submodule {
-    config._module.strict = true;
-    options = {
-      input = lib.mkOption {
-        type = lib.types.str;
-        description = "Canonical JSON input for the authenticated systemd renderer.";
-      };
-      name = lib.mkOption {
-        type = lib.types.nonEmptyStr;
-        description = "Stable diagnostic name for the rendered artifact.";
-      };
-      selectors = lib.mkOption {
-        type = lib.types.listOf providerRenderSelectorType;
-        default = [];
-        description = "Authenticated package output paths used by symbolic render input.";
-      };
-    };
-  };
+  providerPlanTypes = import ./render-plan-types.nix {inherit lib;};
 
   # --- globalEnvironment pre-merge (spec §4.2) --------------------------
   #
@@ -104,7 +79,7 @@
 in {
   options.systemd = {
     providerUnitPlans = lib.mkOption {
-      type = lib.types.listOf providerRenderPlanType;
+      type = lib.types.listOf providerPlanTypes.render;
       default = [];
       internal = true;
       extensible = true;
@@ -115,7 +90,7 @@ in {
     };
 
     providerManagerConfigurationPlans = lib.mkOption {
-      type = lib.types.listOf providerRenderPlanType;
+      type = lib.types.listOf providerPlanTypes.render;
       default = [];
       internal = true;
       extensible = true;
@@ -123,21 +98,7 @@ in {
     };
 
     providerNetworkConfigurationPlans = lib.mkOption {
-      type = lib.types.listOf (lib.types.submodule {
-        config._module.strict = true;
-        options = {
-          input = lib.mkOption {type = lib.types.str;};
-          name = lib.mkOption {type = lib.types.nonEmptyStr;};
-          selectors = lib.mkOption {
-            type = lib.types.listOf providerRenderSelectorType;
-            default = [];
-          };
-          resolverEnabled = lib.mkOption {
-            type = lib.types.bool;
-            description = "Whether the plan owns authoritative resolver configuration.";
-          };
-        };
-      });
+      type = lib.types.listOf providerPlanTypes.network;
       default = [];
       internal = true;
       extensible = true;
