@@ -63,6 +63,7 @@ impl GuardedCampaignReplayClosure {
         discoveries: &BTreeMap<crucible_campaign::ChoiceOpportunityId, ChoiceDiscovery>,
     ) -> Result<Self, GuardedCampaignReplayClosureError> {
         let mut records = Vec::new();
+        let mut encoded_bytes = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
         for decision in schedule.decisions() {
             let Decision::Selection(decision) = decision else {
                 continue;
@@ -71,12 +72,14 @@ impl GuardedCampaignReplayClosure {
             let Some(discovery) = discoveries.get(&selection.opportunity()) else {
                 continue;
             };
-            records.push(GuardedCampaignReplaySelection {
+            let record = GuardedCampaignReplaySelection {
                 domain: discovery.domain().clone(),
                 declaration: discovery.declaration().clone(),
                 opportunity: discovery.opportunity().clone(),
                 selection,
-            });
+            };
+            charge_selection_record(&mut encoded_bytes, &record)?;
+            records.push(record);
         }
         let closure = Self::new(records)?;
         closure.validate_for_schedule_with_coverage(scenario, schedule, false)?;
