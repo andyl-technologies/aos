@@ -15,11 +15,7 @@ rec {
   ## Return all elements except the first. Throws on empty list.
   ## # Type
   ## `[a] -> [a]`
-  tail = list:
-    assert builtins.length list > 0; let
-      len = builtins.length list;
-    in
-      genList (i: builtins.elemAt list (i + 1)) (len - 1);
+  tail = builtins.tail;
 
   ## Return the last element of a list. Throws on empty list.
   ## # Type

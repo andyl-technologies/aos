@@ -340,9 +340,10 @@ in rec {
   };
 
   ## Returns the canonical portable schema carried by an ability option type.
+  # The constructor validates this projection before attaching it to the type.
   schemaOf = context: abilityType:
     if moduleTypes.optionType.check abilityType && abilityType ? _abilitySchema
-    then checkedSchema context abilityType._abilitySchema
+    then abilityType._abilitySchema
     else throw "${context} must use an option type from lib.abilities.types";
 
   ## Reports whether every leaf in an evaluated option tree has a portable schema.
