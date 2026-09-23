@@ -169,6 +169,16 @@
       inherit lib pkgs;
       packageName = "systemd";
       outputs = selectedSystemdProvider.outputs;
+      packageArtifactForRequest = request: selector:
+        if request == "consumer:unit" && selector == artifact
+        then
+          selectedSystemdProvider.outputs.dependencies.${
+            builtins.toJSON {
+              output = artifact.output;
+              package = artifact.package;
+            }
+          }
+        else throw "packaged-unit fixture requested an undeclared consumer artifact";
       options = {};
       config.aos = {
         abilities = {
