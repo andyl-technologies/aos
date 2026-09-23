@@ -51,7 +51,8 @@ use explain::{
     validate_campaign_finding_explain_command,
 };
 use finding_bundle::{
-    export_finding_bundle, run_finding_bundle_fork_write, run_finding_bundle_midpoint,
+    export_finding_bundle, run_finding_bundle_branch, run_finding_bundle_fork_write,
+    run_finding_bundle_midpoint,
     verify_exported_finding,
 };
 use fixture::{generate_worked_network_fixture, render_worked_network_fixture};
@@ -472,6 +473,9 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             CampaignFindingBundleCommand::ForkWrite(fork) => {
                 run_finding_bundle_fork_write(cli, fork)?;
                 return Ok(());
+            }
+            CampaignFindingBundleCommand::Branch(branch) => {
+                run_finding_bundle_branch(cli, branch, cli.output_format())?
             }
         };
         println!("{report}");

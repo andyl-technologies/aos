@@ -221,7 +221,7 @@ where
             reject_unrecorded_local_request(self)?;
             let ceiling =
                 next_replay_ceiling(at, target_icount, previous_ceiling, &mut stalled_reissues)?;
-            let trace_step = physical_steps < 3 || physical_steps % 64 == 0;
+            let trace_step = physical_steps < 3 || physical_steps.is_multiple_of(64);
             if trace_step {
                 eprintln!(
                     "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=final-advance-before step={physical_steps} at={} ceiling={} target={}",

@@ -48,6 +48,9 @@ const MAXIMUM_PENDING_OBJECTS: u64 = 65_536;
 const MAXIMUM_PENDING_BYTES: u64 = 512 * 1024 * 1024;
 
 #[cfg(feature = "packaged-midpoint-flight")]
+#[path = "campaign_store_process/canonical_branch.rs"]
+mod canonical_branch;
+#[cfg(feature = "packaged-midpoint-flight")]
 #[path = "campaign_store_process/midpoint_debug.rs"]
 mod midpoint_debug;
 #[cfg(feature = "packaged-midpoint-flight")]
@@ -95,7 +98,9 @@ fn packaged_guest_choice_policy_grants_only_the_required_graph_query() -> Result
 #[test]
 fn public_campaign_debug_opens_authenticated_finding_at_fast_midpoint() -> Result<(), Box<dyn Error>>
 {
-    midpoint_debug::run_public_campaign_debug_flight_with_stopped_finding(|_, _, _| Ok(()))
+    midpoint_debug::run_public_campaign_debug_flight_with_stopped_finding(
+        canonical_branch::run_imported_canonical_branch,
+    )
 }
 
 #[test]
