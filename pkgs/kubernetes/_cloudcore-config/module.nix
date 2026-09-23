@@ -197,158 +197,143 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [];
-          };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "private";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = true;
-          writable_executable_memory = false;
-          isolation_domains = [];
-          network_families = [
-            "ipv4"
-            "ipv6"
-            "local"
-          ];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "self";
-          operation_architectures = ["native"];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "private";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      isolation_domains = [];
+      network_families = [
+        "ipv4"
+        "ipv6"
+        "local"
+      ];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "self";
+      operation_architectures = ["native"];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
     consumerInstance = "service";
-    declaration = {
-      service = "cloudcore";
-      enabled = true;
-      lifecycle = {
-        description = "KubeEdge cloud control plane (${packageName} ${packageVersion})";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/cloudcore";
-              arguments = [
-                "--config"
-                (resultOf "configuration" "planned-path")
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 5000;
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [
-          (resultOf "network" "resource")
-          (resultOf "ingress-policy" "resource")
-        ];
-        before = [];
-        requires = [(resultOf "ingress-policy" "resource")];
-        wants = [(resultOf "network" "resource")];
-      };
-      directories.managed = [
+    service = "cloudcore";
+    lifecycle = {
+      description = "KubeEdge cloud control plane (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
         {
-          path = "aos-pkg-cloudcore";
-          purpose = "state";
-          mode = "0700";
-          retention = "persistent";
-        }
-        {
-          path = "aos-pkg-cloudcore";
-          purpose = "runtime";
-          mode = "0750";
-          retention = "restart";
-        }
-        {
-          path = "cloudcore";
-          purpose = "logs";
-          mode = "0750";
-          retention = "persistent";
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/cloudcore";
+            arguments = [
+              "--config"
+              (resultOf "configuration" "planned-path")
+            ];
+          };
+          ignore_failure = false;
         }
       ];
-      configuration.views = [
-        {
-          name = "configuration";
-          source = resultOf "configuration" "planned-path";
-          optional = false;
-        }
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "network" "resource")
+        (resultOf "ingress-policy" "resource")
       ];
-      credentials.views =
-        lib.mapAttrsToList (name: reference: {
-          inherit name;
-          reference = credentialPath name;
-          inherit (reference) encrypted;
-          optional = true;
-        })
-        configuredCredentials;
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = ["cloudcore"];
-        directory_mode = "0750";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = true;
-        file_creation_mask = "0077";
-      };
-      isolation = {
-        privilege = "unprivileged";
-        filesystem = "read-only-system";
-        network = "host";
-        process_visibility = "private";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
-      };
+      before = [];
+      requires = [(resultOf "ingress-policy" "resource")];
+      wants = [(resultOf "network" "resource")];
+    };
+    directories.managed = [
+      {
+        path = "aos-pkg-cloudcore";
+        purpose = "state";
+        mode = "0700";
+        retention = "persistent";
+      }
+      {
+        path = "aos-pkg-cloudcore";
+        purpose = "runtime";
+        mode = "0750";
+        retention = "restart";
+      }
+      {
+        path = "cloudcore";
+        purpose = "logs";
+        mode = "0750";
+        retention = "persistent";
+      }
+    ];
+    configuration.views = [
+      {
+        name = "configuration";
+        source = resultOf "configuration" "planned-path";
+        optional = false;
+      }
+    ];
+    credentials.views =
+      lib.mapAttrsToList (name: reference: {
+        inherit name;
+        reference = credentialPath name;
+        inherit (reference) encrypted;
+        optional = true;
+      })
+      configuredCredentials;
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = ["cloudcore"];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = true;
+      file_creation_mask = "0077";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      network = "host";
+      process_visibility = "private";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
     };
   };
-  fragments = [
+  producers = [
     network
     ingressPolicy
     configuration
     credentialRequests
-    service
   ];
-  definitions = map serviceManagement.splitDefinition fragments;
 in {
   options.cloudcore = {
     enable = mkOption {
@@ -476,15 +461,11 @@ in {
           message = "cloudcore.enable requires HTTPS or WebSocket CloudHub transport";
         }
       ];
+      aos.services."service.cloudcore" = service // {enable = cfg.enable;};
     }
-    (lib.mkMerge (
-      map (definition: {aos.abilities = definition.declarations;}) definitions
-    ))
-    (lib.mkIf cfg.enable (
-      lib.mkMerge (
-        [{aos.abilities.instances.service = {};}]
-        ++ map (definition: {aos.abilities = definition.configured;}) definitions
-      )
-    ))
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
   ];
 }

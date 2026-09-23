@@ -166,236 +166,214 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "device_policy";
-        requirementAlias = "service-device-policy";
-        description = "Requires the selected service-management provider to enforce the declared device access policy.";
-        interface = "aos.service.device-policy";
-        abi = 1;
-        parameters = {
-          baseline_access = "standard-runtime-devices";
-          rules =
-            map
-            (class: {
-              selector = {
-                kind = "class";
-                device_type = "character";
-                inherit class;
-              };
-              read = true;
-              write = true;
-              create = false;
-            })
-            [
-              "fuse"
-              "kernel-message"
-              "network-tunnel"
-            ];
-        };
-      })
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = true;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [
-              "administer-host"
-              "administer-network"
-              "raw-network"
-              "administer-resource-limits"
-              "inspect-processes"
+  service = {
+    policy.devicePolicy = {
+      baseline_access = "standard-runtime-devices";
+      rules =
+        map
+        (class: {
+          selector = {
+            kind = "class";
+            device_type = "character";
+            inherit class;
+          };
+          read = true;
+          write = true;
+          create = false;
+        })
+        [
+          "fuse"
+          "kernel-message"
+          "network-tunnel"
+        ];
+    };
+    policy.hardening = {
+      allow_privilege_escalation = true;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [
+          "administer-host"
+          "administer-network"
+          "raw-network"
+          "administer-resource-limits"
+          "inspect-processes"
+        ];
+      };
+      resource_control_delegation = true;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = [
+        "ipv4"
+        "ipv6"
+        "route-control"
+        "raw-packet"
+        "local"
+      ];
+      memory_pressure_adjustment = 0;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
+    };
+    consumerInstance = "service";
+    service = "edgecore";
+    lifecycle = {
+      description = "KubeEdge edge node agent (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/edgecore";
+            arguments = [
+              "--config"
+              (resultOf "configuration" "planned-path")
             ];
           };
-          resource_control_delegation = true;
-          resource_control_access = "host";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = true;
-          isolation_domains = [];
-          network_families = [
-            "ipv4"
-            "ipv6"
-            "route-control"
-            "raw-packet"
-            "local"
-          ];
-          memory_pressure_adjustment = 0;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "privileged";
-          isolated_identity_mapping = "none";
-        };
-      })
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "network" "resource")
+        (resultOf "kernel-modules" "resource")
+        (resultOf "kernel-tunables" "resource")
+      ];
+      before = [];
+      requires = [
+        (resultOf "kernel-modules" "resource")
+        (resultOf "kernel-tunables" "resource")
+      ];
+      wants = [(resultOf "network" "resource")];
+    };
+    resources = {
+      open_files = {
+        kind = "maximum";
+        value = 1048576;
+      };
+      processes.kind = "unbounded";
+      tasks.kind = "unbounded";
+    };
+    directories.managed = [
+      {
+        path = "aos-pkg-edgecore";
+        purpose = "state";
+        mode = "0700";
+        retention = "persistent";
+      }
+      {
+        path = "aos-pkg-edgecore";
+        purpose = "runtime";
+        mode = "0750";
+        retention = "restart";
+      }
+      {
+        path = "edgecore";
+        purpose = "logs";
+        mode = "0750";
+        retention = "persistent";
+      }
+      {
+        path = "pods";
+        purpose = "logs";
+        mode = "0755";
+        retention = "persistent";
+      }
     ];
-    inherit serviceTypes;
-    consumerInstance = "service";
-    declaration = {
-      service = "edgecore";
-      enabled = true;
-      lifecycle = {
-        description = "KubeEdge edge node agent (${packageName} ${packageVersion})";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/edgecore";
-              arguments = [
-                "--config"
-                (resultOf "configuration" "planned-path")
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "always";
-        restart_delay_millis = 5000;
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [
-          (resultOf "network" "resource")
-          (resultOf "kernel-modules" "resource")
-          (resultOf "kernel-tunables" "resource")
-        ];
-        before = [];
-        requires = [
-          (resultOf "kernel-modules" "resource")
-          (resultOf "kernel-tunables" "resource")
-        ];
-        wants = [(resultOf "network" "resource")];
-      };
-      resources = {
-        open_files = {
-          kind = "maximum";
-          value = 1048576;
-        };
-        processes.kind = "unbounded";
-        tasks.kind = "unbounded";
-      };
-      directories.managed = [
+    configuration.views = [
+      {
+        name = "configuration";
+        source = resultOf "configuration" "planned-path";
+        optional = false;
+      }
+    ];
+    credentials.views =
+      lib.mapAttrsToList (name: reference: {
+        inherit name;
+        reference = resultOf "${name}-delivery" "credential-path";
+        inherit (reference) encrypted;
+        optional = true;
+      })
+      configuredCredentials;
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [
+        "edgecore"
+        "pods"
+      ];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0077";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "main-process";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [
         {
-          path = "aos-pkg-edgecore";
-          purpose = "state";
-          mode = "0700";
-          retention = "persistent";
+          source = "/run/containerd";
+          mode = "read-write";
         }
         {
-          path = "aos-pkg-edgecore";
-          purpose = "runtime";
-          mode = "0750";
-          retention = "restart";
+          source = "/sys/fs/cgroup";
+          mode = "read-write";
         }
         {
-          path = "edgecore";
-          purpose = "logs";
-          mode = "0750";
-          retention = "persistent";
+          source = "/var/log/pods";
+          mode = "read-write";
         }
         {
-          path = "pods";
-          purpose = "logs";
-          mode = "0755";
-          retention = "persistent";
+          source = "/lib/modules";
+          mode = "read-only";
+        }
+        {
+          source = "/etc/resolv.conf";
+          mode = "read-only";
         }
       ];
-      configuration.views = [
-        {
-          name = "configuration";
-          source = resultOf "configuration" "planned-path";
-          optional = false;
-        }
-      ];
-      credentials.views =
-        lib.mapAttrsToList (name: reference: {
-          inherit name;
-          reference = resultOf "${name}-delivery" "credential-path";
-          inherit (reference) encrypted;
-          optional = true;
-        })
-        configuredCredentials;
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [
-          "edgecore"
-          "pods"
-        ];
-        directory_mode = "0750";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0077";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "main-process";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = [
-          {
-            source = "/run/containerd";
-            mode = "read-write";
-          }
-          {
-            source = "/sys/fs/cgroup";
-            mode = "read-write";
-          }
-          {
-            source = "/var/log/pods";
-            mode = "read-write";
-          }
-          {
-            source = "/lib/modules";
-            mode = "read-only";
-          }
-          {
-            source = "/etc/resolv.conf";
-            mode = "read-only";
-          }
-        ];
-        permit_core_dumps = true;
-      };
+      permit_core_dumps = true;
     };
   };
-  fragments = [
+  producers = [
     network
     modules
     tunables
     configuration
     credentialRequests
-    service
   ];
-  definitions = map serviceManagement.splitDefinition fragments;
 in {
   options.edgecore = {
     enable = mkOption {
@@ -485,15 +463,11 @@ in {
           message = "edgecore.enable requires CA, client certificate, and client private-key references";
         }
       ];
+      aos.services."service.edgecore" = service // {enable = cfg.enable;};
     }
-    (lib.mkMerge (
-      map (definition: {aos.abilities = definition.declarations;}) definitions
-    ))
-    (lib.mkIf cfg.enable (
-      lib.mkMerge (
-        [{aos.abilities.instances.service = {};}]
-        ++ map (definition: {aos.abilities = definition.configured;}) definitions
-      )
-    ))
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = cfg.enable;
+    })
   ];
 }
