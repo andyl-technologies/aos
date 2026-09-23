@@ -790,15 +790,7 @@ impl StorageTransactionStore {
                 ),
             ],
         )?;
-        self.commit_journal(&transaction)?;
-        if transaction
-            .records()
-            .iter()
-            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
-        {
-            self.commit_failed = true;
-            return Err(aos_sandbox::JournalError::Poisoned.into());
-        }
+        self.commit_journal_verified(&transaction)?;
         self.guest_root_attempts
             .insert(attempt.effect_operation, attempt);
         Ok(sealed_attempt)
@@ -2023,15 +2015,7 @@ impl StorageTransactionStore {
         self.journal
             .preflight_transactions(&[transaction.clone(), satisfied])?;
 
-        self.commit_journal(&transaction)?;
-        if transaction
-            .records()
-            .iter()
-            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
-        {
-            self.commit_failed = true;
-            return Err(aos_sandbox::JournalError::Poisoned.into());
-        }
+        self.commit_journal_verified(&transaction)?;
 
         self.repair_intents
             .insert(intent.repair_operation_id(), intent);
@@ -2757,15 +2741,7 @@ impl StorageTransactionStore {
                 ),
             ],
         )?;
-        self.commit_journal(&transaction)?;
-        if transaction
-            .records()
-            .iter()
-            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
-        {
-            self.commit_failed = true;
-            return Err(aos_sandbox::JournalError::Poisoned.into());
-        }
+        self.commit_journal_verified(&transaction)?;
         self.pin_attempts.insert(attempt_id, satisfied);
         Ok(disposition)
     }
@@ -3785,6 +3761,24 @@ impl StorageTransactionStore {
             // an authority source until protected reopen replays the prefix.
             self.commit_failed = true;
             return Err(error.into());
+        }
+        Ok(())
+    }
+
+    // These effects cannot publish their cached state until every committed
+    // record is visible under its exact namespace and key.
+    fn commit_journal_verified(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), StorageStateError> {
+        self.commit_journal(transaction)?;
+        if transaction
+            .records()
+            .iter()
+            .any(|record| self.journal.get(record.namespace(), record.key()) != record.value())
+        {
+            self.commit_failed = true;
+            return Err(aos_sandbox::JournalError::Poisoned.into());
         }
         Ok(())
     }
