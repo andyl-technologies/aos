@@ -56,6 +56,10 @@
   measurementDependencies = requests."systemd:image-measurement-index-dependencies".parameters;
 in
   assert !(disabled.config.aos.abilities.requests ? "aos:configuration-evaluation-lifecycle");
+  assert !disabled.config.aos.services."configuration-evaluation.configuration-evaluation".enable;
+  assert enabled.config.aos.services."configuration-evaluation.configuration-evaluation".enable;
+  assert enabled.config.aos.services."configuration-evaluation.registry-synchronization".enable;
+  assert enabled.config.aos.services."configuration-evaluation.image-boot-commit".enable;
   assert !(unmeasured.config.aos.abilities.requests ? "systemd:image-measurement-index-lifecycle");
   assert !missingMeasurementKey.success;
   assert lifecycle.service == "configuration-evaluation";

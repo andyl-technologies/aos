@@ -7,7 +7,6 @@
   cfg = config.aos.packageRuntime.configurationEvaluation;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "configuration-evaluation";
@@ -85,134 +84,122 @@
     maxBytes = 4096;
   };
   storeViewResource = resultOf "package-store-read-view" "resource";
-  registrySynchronization = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [];
+  registrySynchronization = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "private";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = false;
+      writable_executable_memory = false;
+      remove_interprocess_communication = false;
+      isolation_domains = [];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      denied_operation_action = "return-permission-denied";
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
+    inherit consumerInstance;
+    service = "registry-synchronization";
+    lifecycle = {
+      description = "Refresh signed registry metadata for host evaluation";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            artifact = lib.abilities.packageOutput {output = "apm";};
+            entry_point = "bin/apm";
+            arguments = ["update" "--system"];
           };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "private";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = false;
-          writable_executable_memory = false;
-          remove_interprocess_communication = false;
-          isolation_domains = [];
-          isolation_domain_creation = "denied";
-          network_families = ["ipv4" "ipv6" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          denied_operation_action = "return-permission-denied";
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "registry-synchronization";
-      enabled = true;
-      lifecycle = {
-        description = "Refresh signed registry metadata for host evaluation";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {output = "apm";};
-              entry_point = "bin/apm";
-              arguments = ["update" "--system"];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 120000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        prerequisites = [];
-        after = [
-          (resultOf "local-filesystems" "resource")
-          (resultOf "network-readiness" "resource")
-        ];
-        before = [];
-        requires = [
-          (resultOf "local-filesystems" "resource")
-        ];
-        wants = [(resultOf "network-readiness" "resource")];
-        requisite = [];
-        conflicts = [];
-        binds_to = [];
-        part_of = [];
-        upholds = [];
-        required_by = [];
-        wanted_by = [];
-        required_mounts = [];
-        implicit_dependencies = false;
-      };
-      manager_identity = {
-        name = "aos-registry-sync";
-        aliases = [];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 120000;
-      };
-      environment = {
-        variables = {};
-        search_path = [];
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "read-only-system";
-        home_access = "inaccessible";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [
-          {
-            source = "/var/lib/apm";
-            mode = "read-write";
-          }
-        ];
-        permit_core_dumps = false;
-      };
-      resources = {
-        memory_high_bytes = {kind = "unbounded";};
-        memory_max_bytes = {kind = "unbounded";};
-        tasks = {kind = "unbounded";};
-      };
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 120000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      prerequisites = [];
+      after = [
+        (resultOf "local-filesystems" "resource")
+        (resultOf "network-readiness" "resource")
+      ];
+      before = [];
+      requires = [
+        (resultOf "local-filesystems" "resource")
+      ];
+      wants = [(resultOf "network-readiness" "resource")];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [];
+      wanted_by = [];
+      required_mounts = [];
+      implicit_dependencies = false;
+    };
+    manager_identity = {
+      name = "aos-registry-sync";
+      aliases = [];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 120000;
+    };
+    environment = {
+      variables = {};
+      search_path = [];
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "read-only-system";
+      home_access = "inaccessible";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [
+        {
+          source = "/var/lib/apm";
+          mode = "read-write";
+        }
+      ];
+      permit_core_dumps = false;
+    };
+    resources = {
+      memory_high_bytes = {kind = "unbounded";};
+      memory_max_bytes = {kind = "unbounded";};
+      tasks = {kind = "unbounded";};
     };
   };
   registryReadiness = resultOf "registry-synchronization-lifecycle" "resource";
@@ -254,47 +241,44 @@
     failurePolicy ? null,
     searchPath ? [],
   }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration =
-        {
-          service = serviceName;
-          inherit enabled;
-          lifecycle = {
-            inherit description;
-            execution_model = "oneshot";
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            start = [command];
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart = "never";
-            restart_delay_millis = 0;
-            configuration_change_action = "restart";
-            remain_after_exit = true;
-            start_timeout_millis = 300000;
-            stop_timeout_millis = 90000;
-          };
-          dependencies = serviceDependencies;
-          manager_identity = {
-            name = managerName;
-            aliases = [];
-          };
-          readiness = {
-            mechanism = "successful-exit";
-            signal_scope = "none";
-            timeout_millis = 300000;
-          };
-          environment = {
-            variables = {};
-            search_path = searchPath;
-          };
-        }
-        // lib.optionalAttrs (conditions != null) {inherit conditions;}
-        // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;};
-    };
+    {
+      inherit consumerInstance;
+      service = serviceName;
+      autoStart = enabled;
+      lifecycle = {
+        inherit description;
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [command];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = true;
+        start_timeout_millis = 300000;
+        stop_timeout_millis = 90000;
+      };
+      dependencies = serviceDependencies;
+      manager_identity = {
+        name = managerName;
+        aliases = [];
+      };
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 300000;
+      };
+      environment = {
+        variables = {};
+        search_path = searchPath;
+      };
+    }
+    // lib.optionalAttrs (conditions != null) {inherit conditions;}
+    // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;};
   mountEsp = resultOf "esp-ready" "resource";
   activationPreflight = resultOf "aos-graph-compile-lifecycle" "resource";
   activation = resultOf "aos-activate-lifecycle" "resource";
@@ -330,224 +314,202 @@
       }
     ];
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [];
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "private";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = false;
+      writable_executable_memory = false;
+      remove_interprocess_communication = false;
+      isolation_domains = [];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = ["clock" "cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "raw-io" "reboot" "resource-control" "swap"];
+      denied_operation_action = "return-permission-denied";
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
+    inherit consumerInstance;
+    service = consumerInstance;
+    lifecycle = {
+      description = "Evaluate host configuration to a converged manifest";
+      execution_model = "oneshot";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            artifact = lib.abilities.packageOutput {output = "packageRuntime";};
+            entry_point = "bin/aos-package-runtime";
+            arguments = [
+              "__eval-service"
+              "--store-view"
+              storeViewLocator
+              "--base-lib"
+              cfg.baseLib
+              "--module-abi"
+              (toString cfg.moduleAbi)
+              "--desired"
+              cfg.desired
+              "--out"
+              cfg.manifest
+              "--eval-root"
+              cfg.evalRoot
+            ];
           };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "private";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = false;
-          writable_executable_memory = false;
-          remove_interprocess_communication = false;
-          isolation_domains = [];
-          isolation_domain_creation = "denied";
-          network_families = ["ipv4" "ipv6" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = ["clock" "cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "raw-io" "reboot" "resource-control" "swap"];
-          denied_operation_action = "return-permission-denied";
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = consumerInstance;
-      enabled = true;
-      lifecycle = {
-        description = "Evaluate host configuration to a converged manifest";
-        execution_model = "oneshot";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {output = "packageRuntime";};
-              entry_point = "bin/aos-package-runtime";
-              arguments = [
-                "__eval-service"
-                "--store-view"
-                storeViewLocator
-                "--base-lib"
-                cfg.baseLib
-                "--module-abi"
-                (toString cfg.moduleAbi)
-                "--desired"
-                cfg.desired
-                "--out"
-                cfg.manifest
-                "--eval-root"
-                cfg.evalRoot
-              ];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "never";
-        restart_delay_millis = 0;
-        configuration_change_action = "restart";
-        remain_after_exit = true;
-        start_timeout_millis = 300000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        prerequisites = [
-          (resultOf "nix-store-database" "resource")
-          storeViewResource
-        ];
-        after = [
-          hostStageReceivedReadiness
-          (resultOf "local-filesystems" "resource")
-          (resultOf "network-readiness" "resource")
-          registryReadiness
-        ];
-        before = [(resultOf "user-sessions-ready" "resource")];
-        requires = [
-          hostStageReceivedReadiness
-          (resultOf "local-filesystems" "resource")
-        ];
-        wants = [
-          (resultOf "network-readiness" "resource")
-          registryReadiness
-        ];
-        requisite = [];
-        conflicts = [];
-        binds_to = [];
-        part_of = [];
-        upholds = [];
-        required_by = [];
-        wanted_by = [(resultOf "user-sessions-ready" "resource")];
-        required_mounts = [];
-        implicit_dependencies = false;
-      };
-      manager_identity = {
-        name = "aos-eval";
-        aliases = [];
-      };
-      readiness = {
-        mechanism = "successful-exit";
-        signal_scope = "none";
-        timeout_millis = 300000;
-      };
-      directories.managed = [
-        {
-          path = "aos/nix-eval";
-          purpose = "cache";
-          mode = "0700";
-          retention = "persistent";
-        }
-        {
-          path = "aos";
-          purpose = "runtime";
-          mode = "0755";
-          retention = "service-lifetime";
-        }
-        {
-          path = "aos-eval";
-          purpose = "runtime";
-          mode = "0700";
-          retention = "service-lifetime";
+          ignore_failure = false;
         }
       ];
-      environment = {
-        variables.XDG_CACHE_HOME = "/var/cache/aos/nix-eval";
-        search_path = [];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      configuration_change_action = "restart";
+      remain_after_exit = true;
+      start_timeout_millis = 300000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      prerequisites = [
+        (resultOf "nix-store-database" "resource")
+        storeViewResource
+      ];
+      after = [
+        hostStageReceivedReadiness
+        (resultOf "local-filesystems" "resource")
+        (resultOf "network-readiness" "resource")
+        registryReadiness
+      ];
+      before = [(resultOf "user-sessions-ready" "resource")];
+      requires = [
+        hostStageReceivedReadiness
+        (resultOf "local-filesystems" "resource")
+      ];
+      wants = [
+        (resultOf "network-readiness" "resource")
+        registryReadiness
+      ];
+      requisite = [];
+      conflicts = [];
+      binds_to = [];
+      part_of = [];
+      upholds = [];
+      required_by = [];
+      wanted_by = [(resultOf "user-sessions-ready" "resource")];
+      required_mounts = [];
+      implicit_dependencies = false;
+    };
+    manager_identity = {
+      name = "aos-eval";
+      aliases = [];
+    };
+    readiness = {
+      mechanism = "successful-exit";
+      signal_scope = "none";
+      timeout_millis = 300000;
+    };
+    directories.managed = [
+      {
+        path = "aos/nix-eval";
+        purpose = "cache";
+        mode = "0700";
+        retention = "persistent";
+      }
+      {
+        path = "aos";
+        purpose = "runtime";
+        mode = "0755";
+        retention = "service-lifetime";
+      }
+      {
+        path = "aos-eval";
+        purpose = "runtime";
+        mode = "0700";
+        retention = "service-lifetime";
+      }
+    ];
+    environment = {
+      variables.XDG_CACHE_HOME = "/var/cache/aos/nix-eval";
+      search_path = [];
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "read-only-system";
+      home_access = "inaccessible";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [
+        {
+          source = "/nix";
+          mode = "read-write";
+        }
+        {
+          source = "/run/aos";
+          mode = "read-write";
+        }
+        {
+          source = "/run/aos-eval";
+          mode = "read-write";
+        }
+        {
+          source = "/var/cache/aos/nix-eval";
+          mode = "read-write";
+        }
+      ];
+      permit_core_dumps = false;
+    };
+    resources = {
+      memory_high_bytes = {
+        kind = "maximum";
+        value = 1610612736;
       };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "read-only-system";
-        home_access = "inaccessible";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [
-          {
-            source = "/nix";
-            mode = "read-write";
-          }
-          {
-            source = "/run/aos";
-            mode = "read-write";
-          }
-          {
-            source = "/run/aos-eval";
-            mode = "read-write";
-          }
-          {
-            source = "/var/cache/aos/nix-eval";
-            mode = "read-write";
-          }
-        ];
-        permit_core_dumps = false;
+      memory_max_bytes = {
+        kind = "maximum";
+        value = 2147483648;
       };
-      resources = {
-        memory_high_bytes = {
-          kind = "maximum";
-          value = 1610612736;
-        };
-        memory_max_bytes = {
-          kind = "maximum";
-          value = 2147483648;
-        };
-        tasks = {
-          kind = "maximum";
-          value = 4096;
-        };
+      tasks = {
+        kind = "maximum";
+        value = 4096;
       };
     };
   };
-  coreFragments = [
+  coreProducers = [
     localFilesystems
     networkReadiness
     userSessions
     multiUser
     espReady
     hostStageReceived
-    registrySynchronization
-    service
-    bootCommit
+    storeDatabase
+    storeView
   ];
-  measurementFragments = [runtimeEntryPopulation];
-  declaredFragments = coreFragments ++ measurementFragments;
-  configuredFragments =
-    coreFragments
-    ++ lib.optionals cfg.measuredBoot (
-      if cfg.pcrPublicKey == null
-      then throw "measured boot requires aos.packageRuntime.configurationEvaluation.pcrPublicKey"
-      else measurementFragments
-    );
-  baseContributions = builtins.map serviceManagement.splitDefinition declaredFragments;
-  storeDatabaseContribution = serviceManagement.splitDefinition storeDatabase;
-  storeViewContribution = serviceManagement.splitDefinition storeView;
-  definitions = builtins.map serviceManagement.splitDefinition (configuredFragments ++ [storeDatabase storeView]);
+  measurementEnabled =
+    if cfg.measuredBoot && cfg.pcrPublicKey == null
+    then throw "measured boot requires aos.packageRuntime.configurationEvaluation.pcrPublicKey"
+    else cfg.measuredBoot;
 in {
   options.aos.packageRuntime.configurationEvaluation = {
     enable = lib.mkOption {
@@ -605,19 +567,21 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge (
-        builtins.map (definition: definition.declarations) baseContributions
-        ++ lib.optionals cfg.enable [
-          storeDatabaseContribution.declarations
-          storeViewContribution.declarations
-        ]
-      );
+      aos.services = {
+        "configuration-evaluation.registry-synchronization" = registrySynchronization // {enable = hostStage && cfg.enable;};
+        "configuration-evaluation.configuration-evaluation" = service // {enable = hostStage && cfg.enable;};
+        "configuration-evaluation.image-boot-commit" = bootCommit // {enable = hostStage && cfg.enable;};
+      };
     }
-    (lib.mkIf (hostStage && cfg.enable) {
-      aos.abilities = lib.mkMerge (
-        [{instances.${consumerInstance} = {};}]
-        ++ builtins.map (definition: definition.configured) definitions
-      );
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = coreProducers;
+      enabled = hostStage && cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [runtimeEntryPopulation];
+      enabled = hostStage && cfg.enable && measurementEnabled;
     })
   ];
 }
