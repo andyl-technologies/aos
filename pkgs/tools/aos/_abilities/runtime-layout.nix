@@ -100,25 +100,16 @@
       group = "root";
     }
   ];
-  definitions = builtins.map serviceManagement.splitDefinition [
+  producers = [
     abilityRuntime
     apmRuntime
   ];
 in {
-  config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
-    (lib.mkIf (
-        config.aos.abilities.environment
-        != null
-        && config.aos.abilities.environment.stage == "host"
-      ) {
-        aos.abilities = lib.mkMerge (
-          [
-            {instances.ability-runtime = {};}
-            {instances.apm-runtime = {};}
-          ]
-          ++ builtins.map (entry: entry.configured) definitions
-        );
-      })
-  ];
+  config = serviceManagement.producerModule {
+    inherit config lib producers;
+    enabled =
+      config.aos.abilities.environment
+      != null
+      && config.aos.abilities.environment.stage == "host";
+  };
 }

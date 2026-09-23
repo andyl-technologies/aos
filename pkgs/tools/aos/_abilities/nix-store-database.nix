@@ -21,15 +21,10 @@
       prerequisites = [];
     };
   };
-  definition = serviceManagement.splitDefinition database;
 in {
-  config = lib.mkMerge [
-    {aos.abilities = definition.declarations;}
-    (lib.mkIf (config.aos.abilities.environment != null) {
-      aos.abilities = lib.mkMerge [
-        {instances.${consumerInstance} = {};}
-        definition.configured
-      ];
-    })
-  ];
+  config = serviceManagement.producerModule {
+    inherit config lib;
+    producers = [database];
+    enabled = true;
+  };
 }

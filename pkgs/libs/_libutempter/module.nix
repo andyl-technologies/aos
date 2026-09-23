@@ -23,7 +23,6 @@
       maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
     };
   };
-  definition = serviceManagement.splitDefinition wrapper;
 in {
   options.aos.security.utempter.enable = lib.mkOption {
     type = lib.abilities.types.boolean;
@@ -31,13 +30,9 @@ in {
     description = "Allow terminal programs to update utmp through libutempter.";
   };
 
-  config = lib.mkMerge [
-    {aos.abilities = definition.declarations;}
-    (lib.mkIf (cfg.enable && config.aos.abilities.environment != null) {
-      aos.abilities = lib.mkMerge [
-        {instances.runtime = {};}
-        definition.configured
-      ];
-    })
-  ];
+  config = serviceManagement.producerModule {
+    inherit config lib;
+    producers = [wrapper];
+    enabled = cfg.enable;
+  };
 }

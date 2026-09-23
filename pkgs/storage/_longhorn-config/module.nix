@@ -5,7 +5,7 @@
   packageVersion,
   ...
 }: let
-  inherit (lib) mkIf mkOption;
+  inherit (lib) mkOption;
   abilityTypes = lib.abilities.types;
   cfg = config.longhorn;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -86,7 +86,6 @@
       };
     };
   };
-  definitions = map serviceManagement.splitDefinition [objects integration];
 in {
   options.longhorn = {
     enable = mkOption {
@@ -122,15 +121,9 @@ in {
     };
   };
 
-  config.aos.abilities = lib.mkMerge (
-    (map (definition: definition.declarations) definitions)
-    ++ [
-      (mkIf cfg.enable (
-        lib.mkMerge (
-          [{instances.integration = {};}]
-          ++ map (definition: definition.configured) definitions
-        )
-      ))
-    ]
-  );
+  config = serviceManagement.producerModule {
+    inherit config lib;
+    producers = [objects integration];
+    enabled = cfg.enable;
+  };
 }

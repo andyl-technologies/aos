@@ -27,18 +27,13 @@
         maximum_size_bytes = lib.abilities.types.limits.maxSafeInteger;
       };
     };
-  definitions = builtins.map serviceManagement.splitDefinition [
+  producers = [
     (wrapper "ping")
     (wrapper "ping6")
   ];
 in {
-  config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
-    (lib.mkIf configured {
-      aos.abilities = lib.mkMerge (
-        [{instances.runtime = {};}]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
-    })
-  ];
+  config = serviceManagement.producerModule {
+    inherit config lib producers;
+    enabled = configured;
+  };
 }
