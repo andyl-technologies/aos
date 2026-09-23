@@ -11,7 +11,10 @@ use aos_sandbox_core::{AttachmentId, AttachmentSlotId, OperationId, RawPairedClo
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
 };
-use crate::attachment_slot_state::{self, AttachmentSlotStateError, DurableAttachmentSlotV1};
+use crate::attachment_slot_state::{
+    self, AttachmentSlotMutationV1, AttachmentSlotStateError, CommittedCurrentAttachmentSlotV1,
+    DurableAttachmentSlotV1,
+};
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
@@ -120,6 +123,30 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     ) -> Result<Option<DurableAttachmentSlotV1>, AttachmentSlotStateError> {
         self.journal.ensure_protected_authority()?;
         attachment_slot_state::get_current(self.journal, slot_id)
+    }
+
+    /// Commits a destination slot declared by the current signed sandbox spec.
+    ///
+    /// The existing slot state machine derives its binding from the fresh
+    /// namespace target and compare-and-swaps the exact operation. This only
+    /// records the logical slot; Mount must separately materialize and confirm
+    /// its physical destination before an attachment can use it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, stale target authority, undeclared slots,
+    /// conflicting history, or failed durability.
+    pub fn commit_current_slot<T>(
+        &mut self,
+        target: CurrentNamespaceTarget,
+        mutation: AttachmentSlotMutationV1,
+        clock: &mut T,
+    ) -> Result<CommittedCurrentAttachmentSlotV1, AttachmentSlotStateError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        attachment_slot_state::commit_current(self.journal, target, mutation, clock)
     }
 
     /// Loads the exact historical generation committed by an operation.
