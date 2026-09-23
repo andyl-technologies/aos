@@ -5,9 +5,9 @@ use super::*;
 mod host_oracle;
 
 pub use host_oracle::*;
-pub(crate) use host_oracle::{
-    SearchScheduleNamedPredicateHostOracle, unchecked_host_assertion_oracle_for_test,
-};
+pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
+#[cfg(any(debug_assertions, feature = "test-support"))]
+pub(crate) use host_oracle::unchecked_host_assertion_oracle_for_test;
 
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
