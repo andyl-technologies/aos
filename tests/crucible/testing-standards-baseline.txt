@@ -26,6 +26,9 @@
 # and bounded process-state waits; each unmet signal/watchdog assertion fails.
 # The exact-closure archive delay is a deterministic backend input; correctness
 # compares authenticated output and observed traffic rather than wall time.
+# The exact-finding VM fixture polls one retained relay and packaged QEMU
+# process under deadlines. The worker watchdog fixtures use fixed deadlines
+# to exercise cancellation and child reaping, then assert the terminal state.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
@@ -50,8 +53,10 @@ crucible-cli	src/cli/campaign/tests/render_status	retry	1
 crucible-cli	src/cli/campaign/tests	retry	1
 crucible-cli	src/main	retry	1
 crucible-cli	tests/campaign_store_process	thread::sleep	1
+crucible-cli	tests/campaign_store_process/finding_exact_vm	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process/guest_choice	retry	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/maintenance_transfer	retry	1
 crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
 crucible-daemon	src/campaign_transfer/tests	retry	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
@@ -67,6 +72,8 @@ crucible-daemon	src/executor_pool	thread::sleep	1
 crucible-daemon	src/executor_server/tests	thread::sleep	1
 crucible-daemon	src/executor_server	thread::sleep	1
 crucible-daemon	src/executor_supervisor/tests	retry	1
+crucible-daemon	src/executor_worker/tests	std::thread::sleep	1
+crucible-daemon	src/executor_worker/tests	thread::sleep	1
 crucible-daemon	src/crucible_artifact/finding_replay	retry	1
 crucible-daemon	src/executor_worker/result/operations	retry	1
 crucible-daemon	src/lib	retry	1
@@ -100,7 +107,6 @@ crucible-api	src/vm_lifecycle/network_faults/route_tests/medium	retry	1
 crucible-api	src/vm_lifecycle/network_faults/route_tests/medium/protocol	retry	1
 crucible-api	src/vm_lifecycle/network_faults/route_tests/resource_limits	retry	1
 crucible-cli	tests/serve_process	thread::sleep	1
-crucible-debug-gateway	tests/process_lifecycle	thread::sleep	1
 crucible-device	src/block/fault	retry	1
 crucible-device	src/block/fault/state_admission	retry	1
 crucible-device	src/block/fault/state_execution	retry	1
