@@ -544,11 +544,35 @@ where
     let exact_directory = guard.prepare_generation_run_directory(requirements)?;
 
     guard.check_operational_boundary()?;
-    let thin_directory = guard.prepare_generation_run_directory(requirements)?;
+    let mut thin_directory = guard.prepare_generation_run_directory(requirements)?;
     guard.check_operational_boundary()?;
 
     let exact_config = profile.for_generation(exact_directory.path(), 1);
     let thin_config = profile.for_generation(thin_directory.path(), 2);
+    // The thin leg cold-boots QEMU, so its pinned directory needs the same
+    // guarded VMState and root-overlay preparation as an ordinary fresh launch.
+    let preparation = thin_directory.prepare_fresh_artifacts_guarded(
+        thin_config.qemu_executable(),
+        thin_config.root_image(),
+        guard.child_process_contract()?,
+    );
+    if let Err(mut error) = preparation {
+        let message = error.to_string();
+        if let Some(child) = error.take_unreaped_child() {
+            guard.retain_failed_launch_child(child);
+            guard.quarantine();
+            return Err(QemuVmRealizationError::ReapQuarantined {
+                operation: "prepare fresh thin replay artifacts",
+                message,
+            });
+        }
+        return Err(QemuVmRealizationError::Executor {
+            operation: "prepare fresh thin replay artifacts",
+            message,
+        });
+    }
+    guard.check_operational_boundary()?;
+
     let exact_node = exact.node().clone();
     let exact_launcher = exact
         .into_replay_admission(
