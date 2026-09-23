@@ -3,6 +3,8 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
+use std::sync::atomic::AtomicBool;
+
 use crucible_campaign::{
     AssignmentId, AttemptId, AttemptResourceLimits, AttemptStartMode, CampaignHash,
     CampaignLineageId, ConfigurationArtifact, ConfigurationId, DaemonEpoch,
@@ -13,6 +15,7 @@ use crucible_campaign::{
 
 use super::*;
 use crate::executor_supervisor::{AllowAllAttemptAdmission, ExecutionCancellationHook};
+use crate::supervision::ProcessDeadline;
 use crate::{
     AssignmentLedger, AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState,
     ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
@@ -162,7 +165,8 @@ fn host_watchdog_kills_live_child_and_reconciles_infrastructure_failure() {
 
     assert!(watchdog.stop());
     assert!(signaled.load(Ordering::Acquire));
-    let reap_deadline = Instant::now() + Duration::from_secs(2);
+    let reap_deadline = ProcessDeadline::after(Duration::from_secs(2))
+        .expect("representable child reap deadline");
     loop {
         if child
             .lock()
@@ -174,7 +178,7 @@ fn host_watchdog_kills_live_child_and_reconciles_infrastructure_failure() {
             break;
         }
         assert!(
-            Instant::now() < reap_deadline,
+            !reap_deadline.expired(),
             "watchdog did not reap child"
         );
         std::thread::sleep(Duration::from_millis(5));
