@@ -56,11 +56,14 @@ pub struct ProductionFaultRuntimeCheckpoint {
     /// Committed host network and storage adapter state.
     host: HostFaultActionState,
     /// Execution fingerprints of the exact QEMU snapshots paired with this state.
-    qemu_fingerprints: QemuNodeMap<ContentHash>,
+    /// Restore only reads this map, so sibling checkpoints can share its backing.
+    qemu_fingerprints: Arc<QemuNodeMap<ContentHash>>,
     /// Per-node fault-command continuation paired with the QEMU snapshots.
-    qemu_fault_sequences: QemuNodeMap<u64>,
+    /// Child restore reads this map before installing its own mutable sequence state.
+    qemu_fault_sequences: Arc<QemuNodeMap<u64>>,
     /// Per-node fault-event continuation paired with the QEMU snapshots.
-    qemu_fault_event_sequences: QemuNodeMap<u64>,
+    /// Child restore reads this map before installing its own mutable sequence state.
+    qemu_fault_event_sequences: Arc<QemuNodeMap<u64>>,
     /// Issued QEMU actions needed to authenticate asynchronous occurrence events.
     qemu_issued_actions: QemuActionMap<ResolvedBindingAction>,
     /// Authenticated APPLY results that bind occurrences to exact commands.
@@ -136,7 +139,7 @@ impl ProductionNetworkStateCheckpoint {
 }
 
 impl ProductionFaultRuntimeCheckpoint {
-    /// Fallibly duplicates this process-neutral checkpoint for a sibling world.
+    /// Duplicates mutable state for a sibling while sharing immutable QEMU maps.
     ///
     /// # Errors
     ///
@@ -148,21 +151,9 @@ impl ProductionFaultRuntimeCheckpoint {
         Ok(Self {
             runtime: self.runtime.clone(),
             host: self.host.clone(),
-            qemu_fingerprints: self.qemu_fingerprints.try_clone_with(
-                |node| Ok(node.clone()),
-                |fingerprint| Ok(*fingerprint),
-                allocation_error,
-            )?,
-            qemu_fault_sequences: self.qemu_fault_sequences.try_clone_with(
-                |node| Ok(node.clone()),
-                |sequence| Ok(*sequence),
-                allocation_error,
-            )?,
-            qemu_fault_event_sequences: self.qemu_fault_event_sequences.try_clone_with(
-                |node| Ok(node.clone()),
-                |sequence| Ok(*sequence),
-                allocation_error,
-            )?,
+            qemu_fingerprints: Arc::clone(&self.qemu_fingerprints),
+            qemu_fault_sequences: Arc::clone(&self.qemu_fault_sequences),
+            qemu_fault_event_sequences: Arc::clone(&self.qemu_fault_event_sequences),
             qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
                 |identity| Ok(*identity),
                 |action| try_clone_action(action, allocation_error),
@@ -262,9 +253,9 @@ impl ProductionFaultRuntimeCheckpoint {
             .try_insert(node, 1)
             .map_err(|_| allocation_error())?;
 
-        self.qemu_fingerprints = qemu_fingerprints;
-        self.qemu_fault_sequences = qemu_fault_sequences;
-        self.qemu_fault_event_sequences = qemu_fault_event_sequences;
+        self.qemu_fingerprints = Arc::new(qemu_fingerprints);
+        self.qemu_fault_sequences = Arc::new(qemu_fault_sequences);
+        self.qemu_fault_event_sequences = Arc::new(qemu_fault_event_sequences);
         self.identity = production_checkpoint_identity(
             plan.id(),
             limits,
