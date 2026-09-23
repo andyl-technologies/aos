@@ -23,6 +23,7 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 
 const PACKAGE_BINDING_FILE: &str = "package-binding";
+const ROOT_TREE_DIGEST_FILE: &str = "root-tree-digest";
 const ROOT_DIRECTORY: &str = "root";
 const MARKER_FILE: &str = "etc/aos/sandbox-guest-root/publication-v1";
 const O_NOFOLLOW: i32 = 0o400_000;
@@ -63,33 +64,15 @@ impl ProtectedGuestRootTemplateV1 {
         let root = package_path.join(ROOT_DIRECTORY);
         verify_protected_directory(&root)?;
 
-        let binding_path = package_path.join(PACKAGE_BINDING_FILE);
-        let metadata = fs::symlink_metadata(&binding_path)?;
-        if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-            return Err(GuestRootInventoryErrorV1::InvalidTemplate);
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-            .open(&binding_path)?;
-        if file.metadata()?.ino() != metadata.ino() {
-            return Err(GuestRootInventoryErrorV1::InvalidTemplate);
-        }
-        let mut encoded = Vec::new();
-        file.take(66).read_to_end(&mut encoded)?;
-        if encoded.len() != 65 || encoded[64] != b'\n' {
-            return Err(GuestRootInventoryErrorV1::InvalidTemplate);
-        }
-        let mut package_binding = [0_u8; 32];
-        for (index, pair) in encoded[..64].chunks_exact(2).enumerate() {
-            package_binding[index] = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
-        }
-        if package_binding == [0; 32] {
-            return Err(GuestRootInventoryErrorV1::InvalidTemplate);
-        }
+        let package_binding = read_protected_digest(&package_path.join(PACKAGE_BINDING_FILE))?;
+        let expected_tree_digest =
+            read_protected_digest(&package_path.join(ROOT_TREE_DIGEST_FILE))?;
 
         let root_tree_digest = compare_guest_root_template_v1(&root, &root)
             .map_err(|_| GuestRootInventoryErrorV1::InvalidTemplate)?;
+        if root_tree_digest != expected_tree_digest {
+            return Err(GuestRootInventoryErrorV1::InvalidTemplate);
+        }
         Ok(Self {
             root,
             package_binding,
@@ -206,6 +189,33 @@ fn verify_protected_directory(path: &Path) -> Result<(), GuestRootInventoryError
         return Err(GuestRootInventoryErrorV1::InvalidTemplate);
     }
     Ok(())
+}
+
+fn read_protected_digest(path: &Path) -> Result<[u8; 32], GuestRootInventoryErrorV1> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(GuestRootInventoryErrorV1::InvalidTemplate);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+        .open(path)?;
+    if file.metadata()?.ino() != metadata.ino() {
+        return Err(GuestRootInventoryErrorV1::InvalidTemplate);
+    }
+    let mut encoded = Vec::new();
+    file.take(66).read_to_end(&mut encoded)?;
+    if encoded.len() != 65 || encoded[64] != b'\n' {
+        return Err(GuestRootInventoryErrorV1::InvalidTemplate);
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in encoded[..64].chunks_exact(2).enumerate() {
+        digest[index] = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
+    }
+    if digest == [0; 32] {
+        return Err(GuestRootInventoryErrorV1::InvalidTemplate);
+    }
+    Ok(digest)
 }
 
 fn hex_digit(byte: u8) -> Result<u8, GuestRootInventoryErrorV1> {

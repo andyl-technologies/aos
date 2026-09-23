@@ -81,6 +81,9 @@ in
             "$out/root${openssh}/libexec/sshd-session"
           chmod u-w "$out/root${openssh}/libexec"
 
+          ${rootBuilder}/bin/aos-sandbox-guest-root-tree-digest \
+            "$out/root" > "$out/root-tree-digest"
+
           test -s "$out/root/etc/aos/sandbox-agent/guest-executable-v1"
           test -x "$out/root/usr/libexec/aos-sandbox-guest-init"
           test -x "$out/root/usr/lib/systemd/systemd"

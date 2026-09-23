@@ -32,19 +32,54 @@ pub fn compare_guest_root_template_v1(
     template: &Path,
     workspace: &Path,
 ) -> Result<[u8; 32], GuestRootTreeErrorV1> {
+    compare_guest_root_tree(template, workspace, true)
+}
+
+/// Measures an offline build-user-owned template with the runtime tree algorithm.
+///
+/// Nix installs derivation outputs as root-owned only after the build phase.
+/// This entry point keeps every type, mode, byte, and symlink check identical
+/// while deferring UID-zero enforcement to the runtime protected readback.
+///
+/// # Errors
+///
+/// Returns an error for malformed or unsafe template entries, excessive
+/// content, unsupported types, or filesystem failure.
+pub fn measure_offline_guest_root_template_v1(
+    template: &Path,
+) -> Result<[u8; 32], GuestRootTreeErrorV1> {
+    compare_guest_root_tree(template, template, false)
+}
+
+fn compare_guest_root_tree(
+    template: &Path,
+    workspace: &Path,
+    require_root_ownership: bool,
+) -> Result<[u8; 32], GuestRootTreeErrorV1> {
     if !template.is_absolute() || !workspace.is_absolute() {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
     let source = fs::symlink_metadata(template)?;
     let destination = fs::symlink_metadata(workspace)?;
-    verify_pair(&source, &destination, EntryKind::Directory)?;
+    verify_pair(
+        &source,
+        &destination,
+        EntryKind::Directory,
+        require_root_ownership,
+    )?;
 
     let mut state = TreeHashState {
         digest: Sha256::new(),
         entries: 0,
     };
     state.digest.update(DOMAIN);
-    compare_directory(template, workspace, Path::new(""), &mut state)?;
+    compare_directory(
+        template,
+        workspace,
+        Path::new(""),
+        &mut state,
+        require_root_ownership,
+    )?;
     if state.entries == 0 {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
@@ -68,6 +103,7 @@ fn compare_directory(
     workspace: &Path,
     relative: &Path,
     state: &mut TreeHashState,
+    require_root_ownership: bool,
 ) -> Result<(), GuestRootTreeErrorV1> {
     let mut names = fs::read_dir(template)?
         .map(|entry| entry.map(|entry| entry.file_name()))
@@ -91,16 +127,21 @@ fn compare_directory(
         let source = fs::symlink_metadata(&source_path)?;
         let destination = fs::symlink_metadata(&destination_path)?;
         let kind = classify(&source)?;
-        verify_pair(&source, &destination, kind)?;
+        verify_pair(&source, &destination, kind, require_root_ownership)?;
         hash_entry_header(state, path_bytes, kind, source.permissions().mode());
 
         match kind {
-            EntryKind::Directory => {
-                compare_directory(&source_path, &destination_path, &child_relative, state)?
-            }
+            EntryKind::Directory => compare_directory(
+                &source_path,
+                &destination_path,
+                &child_relative,
+                state,
+                require_root_ownership,
+            )?,
             EntryKind::Regular => {
-                let source_digest = hash_file(&source_path, source.len())?;
-                let destination_digest = hash_file(&destination_path, destination.len())?;
+                let source_digest = hash_file(&source_path, source.len(), require_root_ownership)?;
+                let destination_digest =
+                    hash_file(&destination_path, destination.len(), require_root_ownership)?;
                 if source_digest != destination_digest {
                     return Err(GuestRootTreeErrorV1::InvalidTree);
                 }
@@ -141,6 +182,7 @@ fn verify_pair(
     source: &Metadata,
     destination: &Metadata,
     kind: EntryKind,
+    require_root_ownership: bool,
 ) -> Result<(), GuestRootTreeErrorV1> {
     let expected_type = match kind {
         EntryKind::Directory => source.is_dir() && destination.is_dir(),
@@ -152,8 +194,7 @@ fn verify_pair(
     let protected_mode = matches!(kind, EntryKind::Symlink)
         || source.mode() & 0o022 == 0 && destination.mode() & 0o022 == 0;
     if !expected_type
-        || source.uid() != 0
-        || destination.uid() != 0
+        || require_root_ownership && (source.uid() != 0 || destination.uid() != 0)
         || !protected_mode
         || source.mode() & 0o7777 != destination.mode() & 0o7777
         || !matches!(kind, EntryKind::Directory) && source.len() != destination.len()
@@ -174,13 +215,17 @@ fn hash_entry_header(state: &mut TreeHashState, path: &[u8], kind: EntryKind, mo
     state.digest.update((mode & 0o7777).to_be_bytes());
 }
 
-fn hash_file(path: &PathBuf, length: u64) -> Result<[u8; 32], GuestRootTreeErrorV1> {
+fn hash_file(
+    path: &PathBuf,
+    length: u64,
+    require_root_ownership: bool,
+) -> Result<[u8; 32], GuestRootTreeErrorV1> {
     if length > MAXIMUM_FILE_BYTES {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
     let mut file = File::open(path)?;
     let opened = file.metadata()?;
-    if !opened.is_file() || opened.len() != length || opened.uid() != 0 {
+    if !opened.is_file() || opened.len() != length || require_root_ownership && opened.uid() != 0 {
         return Err(GuestRootTreeErrorV1::InvalidTree);
     }
     let mut digest = Sha256::new();
@@ -211,4 +256,34 @@ pub enum GuestRootTreeErrorV1 {
     /// A filesystem operation failed during physical comparison.
     #[error("guest root tree I/O failed: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn offline_digest_tracks_bytes_modes_and_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let file = root.join("agent");
+        fs::write(&file, b"first").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o500)).unwrap();
+        std::os::unix::fs::symlink("agent", root.join("current")).unwrap();
+
+        let first = measure_offline_guest_root_template_v1(&root).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&file, b"second").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o500)).unwrap();
+        let second = measure_offline_guest_root_template_v1(&root).unwrap();
+        assert_ne!(first, second);
+
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+        let third = measure_offline_guest_root_template_v1(&root).unwrap();
+        assert_ne!(second, third);
+    }
 }

@@ -16,6 +16,10 @@ path = "src/bin/aos-sandbox-exec-gate.rs"
 name = "aos-sandbox-guest-root-builder"
 path = "src/bin/aos-sandbox-guest-root-builder.rs"
 
+[[bin]]
+name = "aos-sandbox-guest-root-tree-digest"
+path = "src/bin/aos-sandbox-guest-root-tree-digest.rs"
+
 [dependencies]
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
@@ -28,6 +32,9 @@ rustix = { workspace = true, features = ["fs"] }
 ssh-key.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
