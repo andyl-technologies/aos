@@ -426,7 +426,7 @@ in {
         )));
     }
     (lib.mkIf cfg.enable {
-      aos.services.zfsMaintenance.enable = lib.mkDefault true;
+      aos.filesystems.zfs.maintenance.enable = lib.mkDefault true;
     })
   ];
 }
