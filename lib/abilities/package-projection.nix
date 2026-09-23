@@ -34,16 +34,14 @@
     };
   defaultArtifact = abilities.packageOutput {};
   implementationNames = ownedNames evaluated.implementations;
-  structuredEffects = builtins.any (name: let
-    implementation = evaluated.implementations.${name};
-  in
-    implementation.compose
-    != null
-    || implementation.transition != null
-    || implementation.provide != null
-    || implementation.providerModule != null
-    || implementation.handlerDescriptor != null)
-  implementationNames;
+  structuredEffects =
+    handlerPairs
+    != []
+    || builtins.any (provider:
+      provider ? provider_module
+      || provider.owns_resource_kinds != []
+      || provider ? handler)
+    providers;
 
   guaranteeFor = reference:
     if !builtins.isString reference
