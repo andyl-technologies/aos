@@ -495,12 +495,7 @@ in rec {
       };
       typedChoiceProductCheckpoint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.typedChoiceProductCheckpoint";
-        # lint needle: typedChoiceProductCheckpoint = import ./phase2-qemu-live-selectable-product.nix
-        gate = import ./phase2-qemu-live-selectable-product.nix {
-          inherit pkgs lib;
-          attrPath = "checks.crucible.phase2.gates.typedChoiceProductCheckpoint";
-          taskIds = ["T-CAM-2.8"];
-        };
+        gate = phase4.packagedCampaignChoiceVm;
         dependencies = [typedChoice];
       };
       layer1Injection = greenBeforeAdvance {
