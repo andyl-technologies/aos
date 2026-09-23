@@ -347,151 +347,131 @@
       mode = "0444";
     };
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = ["bind-privileged-network-port"];
-          };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "shared";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = true;
-          writable_executable_memory = false;
-          isolation_domains = [];
-          network_families = ["ipv4" "ipv6" "local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "all";
-          security_label = "aos-pkg-envoy";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "restricted";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+  service = {
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = ["bind-privileged-network-port"];
+      };
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "shared";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      isolation_domains = [];
+      network_families = ["ipv4" "ipv6" "local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "all";
+      security_label = "aos-pkg-envoy";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "restricted";
+      isolated_identity_mapping = "none";
+    };
     consumerInstance = "envoy";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle = {
-        description = "Envoy proxy";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [(command ["--mode" "validate" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
-        start = [(command ["--disable-hot-restart" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_token = cfg.restartToken;
-        restart_delay_millis = 2000;
-        configuration_change_action = "restart";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 60000;
+    service = "main";
+    lifecycle = {
+      description = "Envoy proxy";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [(command ["--mode" "validate" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
+      start = [(command ["--disable-hot-restart" "--config-path" (resultOf "bootstrap-configuration" "planned-path")])];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_token = cfg.restartToken;
+      restart_delay_millis = 2000;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 60000;
+    };
+    dependencies = {
+      after = [(resultOf "network-readiness" "resource")];
+      before = [];
+      requires = [];
+      wants = [(resultOf "network-readiness" "resource")];
+    };
+    supervision = {
+      startup_protocol = "process";
+      notification_access = "none";
+    };
+    readiness = {
+      mechanism = "process-running";
+      signal_scope = "none";
+      timeout_millis = 90000;
+    };
+    credentials =
+      if configuredCredentials == []
+      then null
+      else {
+        views =
+          builtins.map (name: {
+            inherit name;
+            inherit (cfg.credentials.${name}) encrypted;
+            reference = resultOf "credential-${name}" "credential-path";
+            optional = false;
+          })
+          configuredCredentials;
       };
-      dependencies = {
-        after = [(resultOf "network-readiness" "resource")];
-        before = [];
-        requires = [];
-        wants = [(resultOf "network-readiness" "resource")];
-      };
-      supervision = {
-        startup_protocol = "process";
-        notification_access = "none";
-      };
-      readiness = {
-        mechanism = "process-running";
-        signal_scope = "none";
-        timeout_millis = 90000;
-      };
-      credentials.views =
-        builtins.map (name: {
-          inherit name;
-          inherit (cfg.credentials.${name}) encrypted;
-          reference = resultOf "credential-${name}" "credential-path";
-          optional = false;
-        })
-        configuredCredentials;
-      configuration.views = [
-        {
-          name = "bootstrap";
-          source = resultOf "bootstrap-configuration" "planned-path";
-          optional = false;
-        }
-      ];
-      storage.mounts = [
-        {
-          name = "state";
-          source = resultOf "state-storage" "planned-path";
-          access = "read-write";
-        }
-        {
-          name = "logs";
-          source = resultOf "log-storage" "planned-path";
-          access = "read-write";
-        }
-      ];
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = [];
-        directory_mode = "0750";
-      };
-      identity = {
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0027";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "read-only-system";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
-      };
-      resources.open_files = {
-        kind = "maximum";
-        value = 1048576;
-      };
+    configuration.views = [
+      {
+        name = "bootstrap";
+        source = resultOf "bootstrap-configuration" "planned-path";
+        optional = false;
+      }
+    ];
+    storage.mounts = [
+      {
+        name = "state";
+        source = resultOf "state-storage" "planned-path";
+        access = "read-write";
+      }
+      {
+        name = "logs";
+        source = resultOf "log-storage" "planned-path";
+        access = "read-write";
+      }
+    ];
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = [];
+      directory_mode = "0750";
+    };
+    identity = {
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0027";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "read-only-system";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
+    };
+    resources.open_files = {
+      kind = "maximum";
+      value = 1048576;
     };
   };
-  potentialAbilityFragments = [
-    storage
-    adminLogView
-    networkReadiness
-    credentialRequests
-    configuration
-    service
-  ];
-  serviceRequests =
-    if configuredCredentials == []
-    then builtins.removeAttrs service.requests ["main-credentials"]
-    else service.requests;
 in {
   options.envoy = {
     enable = lib.mkOption {
@@ -560,8 +540,7 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities.requirementTemplates =
-        lib.mkMerge (builtins.map (fragment: fragment.requirementTemplates) potentialAbilityFragments);
+      aos.services."envoy.main" = service // {enable = cfg.enable;};
 
       assertions = [
         {
@@ -637,22 +616,20 @@ in {
         }
       ];
     }
-    (lib.mkIf cfg.enable {
-      aos.abilities = {
-        instances.envoy = {};
-        requests = lib.mkMerge [
-          storage.requests
-          networkReadiness.requests
-          configuration.requests
-          serviceRequests
-        ];
-      };
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [storage networkReadiness configuration];
+      enabled = cfg.enable;
     })
-    (lib.mkIf (cfg.enable && configuredCredentials != []) {
-      aos.abilities.requests = credentialRequests.requests;
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [credentialRequests];
+      enabled = cfg.enable && configuredCredentials != [];
     })
-    (lib.mkIf (cfg.enable && adminLogEnabled) {
-      aos.abilities.requests = adminLogView.requests;
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [adminLogView];
+      enabled = cfg.enable && adminLogEnabled;
     })
   ];
 }
