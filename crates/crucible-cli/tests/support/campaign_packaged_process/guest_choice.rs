@@ -1705,7 +1705,10 @@ fn wait_for_promoted_checkpoint(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(180);
+    // The two-node oracle replays roughly 750 bounded QEMU advances. A 180s
+    // wait stopped during the first node; a 360s diagnostic reached the peer
+    // comparison. Allow margin for the strict comparison and publication.
+    let deadline = Instant::now() + Duration::from_secs(480);
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
         "guest-choice-checkpoint-inspection",
         &fixture.objects,
