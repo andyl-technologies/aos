@@ -21,7 +21,10 @@ macro_rules! stored_id {
 fn campaign_policy_deadlines_are_bounded_and_preserve_primary_precedence() {
     assert!(CampaignAttemptTimeoutPolicy::new(None, None, Some(240_000)).is_err());
     assert!(CampaignAttemptTimeoutPolicy::new(Some(0), None, None).is_err());
-    assert!(CampaignAttemptTimeoutPolicy::new(Some(10), None, Some(3_600_001)).is_err());
+    assert!(CampaignAttemptTimeoutPolicy::new(Some(10), None, Some(0)).is_err());
+    let long_watchdog = CampaignAttemptTimeoutPolicy::new(Some(10), None, Some(u64::MAX))
+        .expect("long operational watchdog");
+    assert_eq!(long_watchdog.host_completion_watchdog_ms(), Some(u64::MAX));
 
     let policy = CampaignAttemptTimeoutPolicy::new(Some(10), Some(4), Some(240_000))
         .expect("bounded policy");

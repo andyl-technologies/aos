@@ -803,17 +803,18 @@ scheduler quantum, virtual time is the reporting priority.
 Campaign policies may additionally bind every attempt's primary stop to an
 absolute virtual-time deadline, an absolute scheduler-quantum deadline, or
 both. At least one modeled deadline is required when this policy is present.
-An optional host completion watchdog is operational supervision; its expiry
-quarantines the attempt without an observation or modeled stop. A primary
-boundary reached before both deadlines carries proof of the virtual-time and
-quantum coordinates. A policy deadline produces a distinct, proof-bearing
-`PolicyTimeout` observation, never a reached primary boundary. Terminal and
-assertion outcomes win first; virtual time wins a tie with quanta, and either
-policy deadline wins a tie with the primary boundary. Policy timeout cannot
-authorize a selected continuation or statistical primary-stop sample. The
-intrinsic quantum fallback of `NextChoiceOrExecutionQuanta` has its own
-proof-bearing `BoundedPrimaryTimeout` outcome; it also cannot authorize a
-selected continuation, while a choice reached before that fallback can.
+An optional positive u64-millisecond host completion watchdog is operational
+supervision; its expiry quarantines the attempt without an observation or
+modeled stop. A primary boundary reached before both deadlines carries proof
+of the virtual-time and quantum coordinates. A policy deadline produces a
+distinct, proof-bearing `PolicyTimeout` observation, never a reached primary
+boundary. Terminal and assertion outcomes win first. Virtual time wins a tie
+with quanta, and either policy deadline wins a tie with the primary boundary.
+Policy timeout cannot authorize a selected continuation or statistical
+primary-stop sample. The intrinsic quantum fallback of
+`NextChoiceOrExecutionQuanta` has its own proof-bearing
+`BoundedPrimaryTimeout` outcome. It cannot authorize a selected continuation;
+a choice reached before that fallback can.
 
 These stop tags occur only in the current enclosing records: `Attempt` v9,
 `BranchRequest` v10, `CampaignFact` v15, `Observation` v13, and discovery-service
