@@ -185,14 +185,20 @@
             exit 1
           }
 
+          # External finalization builds the UKIs from this recipe, so carry
+          # the same root hash token that aos-uki adds for locally built UKIs.
+          root_hash=$(cat "$out/inputs/root.roothash")
+          kernel_params_a=$(printf '%s roothash=%s' ${lib.escapeShellArg kernelParams} "$root_hash")
+          kernel_params_b=$(printf '%s roothash=%s' ${lib.escapeShellArg kernelParamsB} "$root_hash")
+
           ${pkgs.jq}/bin/jq -cS -n \
             --arg schema aos.image.assembly-recipe/v2 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
             --arg variant ${lib.escapeShellArg systemVariant} \
             --arg kernelRelease ${lib.escapeShellArg kernel.configuration.release} \
-            --arg kernelParams ${lib.escapeShellArg kernelParams} \
-            --arg kernelParamsB ${lib.escapeShellArg kernelParamsB} \
+            --arg kernelParams "$kernel_params_a" \
+            --arg kernelParamsB "$kernel_params_b" \
             --arg recoveryCmdline ${lib.escapeShellArg recoveryCmdline} \
             --argjson moduleAbi ${toString system.config.aos.system.moduleAbi} \
             --argjson recoveryAbi ${toString recovery.abi} \

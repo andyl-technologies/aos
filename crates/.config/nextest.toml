@@ -16,6 +16,12 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 filter = 'test(crucible_features_resolve_for_declared_powersets)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# This channel test advances 256 signed partitions and reads them through a
+# loopback origin. Run it alone so concurrent tests cannot exhaust its deadline.
+[[profile.default.overrides]]
+filter = 'test(apr_release_channel_upload_supports_verified_consumer_sync)'
+threads-required = "num-test-threads"
+
 # This end-to-end registry test deliberately cancels an in-flight upload and
 # waits for the server-side transaction to release before issuing DELETE. Keep
 # it isolated so unrelated I/O-heavy tests cannot consume its bounded retry
