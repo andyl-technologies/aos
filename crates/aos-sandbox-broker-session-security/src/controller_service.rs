@@ -218,9 +218,9 @@ enum ControllerCommandFailure {
 /// Composes explicitly supplied controller and public-client dependencies without activation.
 ///
 /// This factory does not register a service, bind a socket, start a worker, or
-/// alter [`run_from_environment`]. Production therefore retains its fail-closed
-/// unavailable compiler and executor until a separately qualified activation
-/// change selects concrete dependencies.
+/// alter [`run_from_environment`]. Production selects its concrete compiler
+/// and executor separately; constructing this dormant composition cannot
+/// activate them or bypass the installed service's authority checks.
 #[must_use]
 pub fn dormant_controller_composition<C, E, T>(
     scope: ControllerRequestScopeV1,

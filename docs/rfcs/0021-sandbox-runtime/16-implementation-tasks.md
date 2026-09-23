@@ -296,25 +296,18 @@ they gate any affected runtime backend.
 The production composition is not complete. The following entry points make
 the outstanding work concrete:
 
-- `crates/aos-sandbox-broker-session-security/src/controller_service.rs` constructs
-  `NodeController<UnavailableCompiler, UnavailableExecutor>`. Its worker
-  attempts inventory publication but rejects pending mutation work.
-  Replace those unavailable dependencies with the authenticated request
-  compiler and durable effect dispatcher, including restart recovery.
-  Newly admitted generic effects now retain an exact closed broker method and
-  reject a method from another fixed domain. Legacy opaque V1 effects remain
-  readable but block before executor I/O; they are never assigned an inferred
-  method. The production compiler and dispatcher still need to consume that
-  method-explicit V2 boundary.
-  Admission now lends the reconciler's sole journal writer to the compiler
-  for current authorization and precondition checks. Compilation must not
-  create a second journal owner or independently commit desired/effect
-  admission; protected authorization maintenance does not accept a request.
-  The separate public admission entry point carries live TLS peer evidence
-  into compilation, binds principal/project into the request digest, and
-  rechecks peer liveness before atomic admission. Its compiler hook rejects by
-  default and never falls back to byte-only compilation. The packaged daemon
-  has not selected a public compiler or registered a caller of this entry point.
+- `crates/aos-sandbox-broker-session-security/src/controller_service.rs` now
+  constructs `NodeController<ProductionOperationCompilerV1,
+  ProductionEffectExecutor>` with one protected journal writer. Public admission
+  carries live TLS peer evidence into the compiler, binds principal/project
+  into the request digest, and rechecks peer liveness before atomic admission.
+  The worker registers a caller of this entry point and dispatches method-typed
+  effects. The lifecycle, ownership retry, and cancellation paths have
+  production handlers; `ExecutionControl`, `CachePin`, and `CacheUnpin`
+  currently admit but fall through to a retry-only controller effect. Other
+  operator recovery actions also lack a completing effect path. Connect these
+  methods to their protected owners before claiming the public mutation family
+  is complete.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
@@ -342,45 +335,40 @@ the outstanding work concrete:
   RootMount roles across bounded request cycles while keeping effects serial.
   Production qualification must exercise both roles concurrently; readiness
   polling and round-robin unit checks alone do not qualify the deployed path.
-- That service registers `DiscoveryService` and `OperationService` only.
-  Root diagnostics expose restart-stable `GetOperation`. The registered TLS
-  endpoint also exposes `GetOperation`, but only after the sole controller
-  worker loads the operation's immutable admission scope and rechecks current
-  capability, policy, revocation, clock, project, registered principal,
-  certificate key, TLS-exporter, exact method, and exact protobuf-body binding.
+- The registered TLS endpoint now exposes Discovery, Sandbox, Execution,
+  FilesystemView, Snapshot, Capability, Cache, Operator, and Operation services,
+  including `CancelOperation` and `Watch`. Root diagnostics remain limited to
+  Discovery and restart-stable `GetOperation`. Public operation reads load the
+  operation's immutable admission scope and recheck current authorization.
   The `aos-capability-id` header is a canonical lookup key, never bearer proof;
   absent or unauthorized scoped observations are concealed. Older operation
   observations without an admission scope remain root-diagnostic-only.
-  `CancelOperation` and `Watch` still return unavailable errors. Register and
-  connect the remaining public services to their authorized controller
-  handlers; protobuf declarations alone do not implement RPCs.
-- `crates/aos/src/commands/sandbox.rs::run` supports local completions,
-  discovery, and validated `GetOperation` output. Discovery can use either the
-  root-only diagnostic socket or the registered mutual-TLS public socket with a
-  protected client credential bundle. Operation reads use the root diagnostic
-  socket by default; public reads additionally load an exact canonical
-  capability ID from the protected credential directory and send it only as
-  the controller's lookup header. Other command families use
-  `DormantValidatedRequestSinkV1` and return `TransportRejected`. Connect those
-  commands to the authenticated public API, including operation waits,
-  structured output, watch, and the separately authorized execution data plane.
+  Registration and admission are not evidence that every accepted mutation
+  reaches a terminal effect or that the deployed endpoint has been qualified.
+- `crates/aos/src/commands/sandbox.rs::run` supports local completions and
+  discovery through diagnostics or the registered mutual-TLS public socket.
+  Operation reads use the root diagnostic socket by default; public reads load
+  the exact canonical capability ID from the protected credential directory.
+  With `--public-api`, the packaged CLI dispatches read, mutation, and watch
+  routes through generated clients; without it, those routes fail closed.
+  Qualify the packaged CLI against the deployed endpoint for each route,
+  including operation waits, structured output, watch, and the separately
+  authorized execution data plane.
 - The root-only diagnostic socket is not a project authentication mechanism.
   `aos-sandbox::public_api_session` supplies a TLS 1.3/HTTP/2 transport
   foundation with mandatory client certificates, protected explicit
   certificate-to-principal/project registration, and connection-bound peer
   evidence. The controller's internal authorization adapter joins that evidence
   to current protected capabilities and independently checks the authenticated
-  project, but has no production mutation RPC caller. The opt-in
+  project. The opt-in
   `controllerService.publicApi.enable` endpoint at
-  `/run/aos/sandboxd/public.sock` connects this transport to discovery and the
-  currently authorized `GetOperation` read.
+  `/run/aos/sandboxd/public.sock` connects this transport to the registered
+  public services.
   Activation requires all four public TLS credentials before readiness;
   connection metadata comes from the accepted TLS stream and is rechecked per
   request. Admission is bounded to 32 connections and eight concurrent
-  handshakes. Socket access and identity headers grant no authority. Mutation
-  services remain unconnected; the packaged CLI public transport is selected
-  only for discovery until those services exist. Credential formats and
-  activation constraints are documented in the
+  handshakes. Socket access and identity headers grant no authority. Credential
+  formats and activation constraints are documented in the
   [controller deployment notes](../../sandbox-controller.md). Shared
   production TLS configuration has in-memory client/server handshake coverage
   for mandatory client proof, trust and certificate usage, TLS 1.3/HTTP/2,

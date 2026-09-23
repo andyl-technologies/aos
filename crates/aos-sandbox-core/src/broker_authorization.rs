@@ -1468,6 +1468,7 @@ mod tests {
             (34, BrokerVerb::GuardianArm),
             (35, BrokerVerb::MountAcquireSource),
             (36, BrokerVerb::MountReleaseSourceAcquisition),
+            (37, BrokerVerb::StorageAtomicSnapshot),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1476,7 +1477,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(37),
+            BrokerVerb::from_code(38),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1644,7 +1645,7 @@ mod tests {
             BrokerGrantTargetShape::Assignment
         );
 
-        for code in (15..=22).chain(32..=33) {
+        for code in (15..=22).chain(32..=33).chain([37]) {
             assert_eq!(
                 BrokerVerb::from_code(code)
                     .unwrap_or_else(|error| panic!("storage verb {code}: {error}"))

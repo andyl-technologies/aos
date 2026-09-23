@@ -701,8 +701,8 @@ mod tests {
             audience: PrincipalId::new(),
             holder: PrincipalId::new(),
             channel_binding: ChannelBinding::new([0x33; 32]),
-            sandbox: Some(SandboxId::new()),
-            incarnation: Some(IncarnationId::new()),
+            sandbox: fixture.context.sandbox,
+            incarnation: fixture.context.incarnation,
             grants: vec![grant(
                 OperationSet::one(Operation::ContentRead),
                 selector.clone(),
