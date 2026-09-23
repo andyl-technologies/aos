@@ -604,13 +604,24 @@ impl HostAgentLiveSessionV1 {
         request: &[u8],
         deadline: Instant,
     ) -> Result<Vec<u8>, HostAgentLiveErrorV1> {
+        // A timed-out gate reply may still be queued on this stop-and-wait
+        // socket. Never send a later effect into an ambiguous frame stream.
+        self.poisoned = true;
         send_frame(&mut self.socket, request, deadline, None)?;
-        receive_record(
+        let response = receive_record(
             &mut self.socket,
             aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES,
             deadline,
             None,
-        )
+        )?;
+        if !matches!(
+            decode_frame_v1(&response),
+            Ok(AgentFrameV1::OpenSshGateReadback(_))
+        ) {
+            return Err(HostAgentLiveErrorV1::Unauthenticated);
+        }
+        self.poisoned = false;
+        Ok(response)
     }
 }
 
