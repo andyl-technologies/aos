@@ -1458,8 +1458,30 @@
           (candidate: ownerForProvenance (candidate.provenance or "@base"))
           samePath);
         pathStr = builtins.concatStringsSep "." decl.path;
+        extensibleBaseTypes =
+          builtins.map
+          (candidate: submoduleParts candidate.option.type)
+          (builtins.filter
+            (candidate:
+              candidate.provenance
+              == "@base"
+              && candidate.option.extensible)
+            samePath);
+        baseSubmodule =
+          if extensibleBaseTypes == []
+          then null
+          else builtins.head extensibleBaseTypes;
+        sharedSubmodule =
+          baseSubmodule
+          != null
+          && builtins.all
+          (candidate: let
+            parts = submoduleParts candidate.option.type;
+          in
+            parts != null && parts.isAttrsOf == baseSubmodule.isAttrsOf)
+          samePath;
       in
-        if declaringOwners == [package]
+        if declaringOwners == [package] || sharedSubmodule
         then true
         else throw "evalModules: package '${package}' does not uniquely own declaration '${pathStr}'";
 
@@ -1746,15 +1768,22 @@
           then elementType
           else optionType;
         modules = nestedType._submodule or null;
+        originRecords =
+          if builtins.isAttrs modules && modules ? _aosOriginRecords
+          then modules._aosOriginRecords
+          else null;
       in
         if modules == null
         then null
         else {
           isAttrsOf = elementType != null;
           modules =
-            if builtins.isList modules
+            if originRecords != null
+            then builtins.map (record: record.module) originRecords
+            else if builtins.isList modules
             then modules
             else [modules];
+          inherit originRecords;
         };
 
       mergeOptionDeclarations = earlier: later: let
@@ -1765,8 +1794,19 @@
           != null
           && laterParts != null
           && earlierParts.isAttrsOf == laterParts.isAttrsOf;
-        mergedSubmodule =
-          types.submodule (earlierParts.modules ++ laterParts.modules);
+        recordsFor = decl: parts:
+          if parts.originRecords != null
+          then parts.originRecords
+          else
+            builtins.map
+            (module: {
+              inherit module;
+              provenance = decl.provenance;
+            })
+            parts.modules;
+        mergedSubmodule = types.submodule {
+          _aosOriginRecords = recordsFor earlier earlierParts ++ recordsFor later laterParts;
+        };
         mergedType =
           if earlierParts.isAttrsOf
           then

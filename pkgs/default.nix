@@ -440,10 +440,11 @@
             (declaration:
               declaration.owner
               == packageName
-              && !(lib.hasPrefix "aos.serviceOptionModules." declaration.pathStr))
+              && !(lib.hasPrefix "aos.serviceOptionModules." declaration.pathStr)
+              && declaration.pathStr != "aos.services")
             abilityEvaluation._optionDecls);
         packageServiceOption = name: path: let
-          schema = abilityEvaluation.config.aos.serviceOptionModules.${name};
+          schema = abilityEvaluation.config.aos.serviceOptionModules.${name} or {};
           declaration =
             builtins.foldl'
             (value: segment:
@@ -455,20 +456,28 @@
         in
           builtins.isAttrs declaration && (declaration._type or null) == "option";
         serviceType = abilityEvaluation.options.aos.services.type._elementType;
-        serviceOptions = builtins.concatMap (name:
+        serviceOptions = builtins.concatMap (name: let
+          declarations = lib.submoduleOptionDeclarations serviceType ["aos" "services" name];
+          owned = builtins.filter (declaration: declaration.owner == packageName) declarations;
+          selected =
+            builtins.filter
+            (declaration:
+              declaration.path
+              != []
+              && (declaration.owner
+                == packageName
+                || packageServiceOption name declaration.path
+                || (owned != [] && declaration.pathStr == "enable")))
+            declarations;
+        in
           builtins.map
           (declaration:
             optionDocumentFor
             abilityModuleSource.path
             (["aos" "services" name] ++ declaration.path)
             declaration)
-          (builtins.filter
-            (declaration:
-              declaration.path
-              != []
-              && packageServiceOption name declaration.path)
-            (lib.submoduleOptionDeclarations serviceType ["aos" "services" name])))
-        (builtins.attrNames abilityEvaluation.config.aos.serviceOptionModules);
+          selected)
+        (builtins.attrNames abilityEvaluation.config.aos.services);
       in
         packageOptions ++ serviceOptions;
     packageProjectionResult =

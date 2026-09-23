@@ -978,6 +978,18 @@
           lib,
           ...
         }: {
+          options.aos.services = lib.mkOption {
+            type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+              options = lib.optionalAttrs (name == "policy-owner.main") {
+                ownerPort = lib.mkOption {
+                  type = lib.types.int;
+                  default = 5511;
+                };
+              };
+            }));
+            default = {};
+          };
+
           config = lib.mkMerge [
             {
               aos.services."policy-owner.main" = {
@@ -998,7 +1010,19 @@
       }
       {
         name = "policy-extension";
-        module = {
+        module = {lib, ...}: {
+          options.aos.services = lib.mkOption {
+            type = lib.types.lazyAttrsOf (lib.types.submodule ({name, ...}: {
+              options = lib.optionalAttrs (name == "policy-owner.main") {
+                extensionMode = lib.mkOption {
+                  type = lib.types.enum ["standard" "strict"];
+                  default = "strict";
+                };
+              };
+            }));
+            default = {};
+          };
+
           config.aos.services."policy-owner.main".policy.devicePolicy = {
             baseline_access = "declared-devices-only";
             rules = [];
@@ -1008,6 +1032,14 @@
       }
     ];
   };
+  composedServiceOptions =
+    lib.submoduleOptionDeclarations
+    composedServiceFixedPoint.options.aos.services.type._elementType
+    ["aos" "services" "policy-owner.main"];
+  ownerOfServiceOption = option:
+    (builtins.head (builtins.filter
+      (declaration: declaration.pathStr == option)
+      composedServiceOptions)).owner;
   sharedGuarantee = {
     name = "aos.guarantee.test";
     version = 1;
@@ -1579,4 +1611,8 @@ in
       value = 128;
     };
     processes.kind = "unbounded";
-  }; true
+  };
+  assert composedServiceFixedPoint.config.aos.services."policy-owner.main".ownerPort == 5511;
+  assert composedServiceFixedPoint.config.aos.services."policy-owner.main".extensionMode == "strict";
+  assert ownerOfServiceOption "ownerPort" == "policy-owner";
+  assert ownerOfServiceOption "extensionMode" == "policy-extension"; true
