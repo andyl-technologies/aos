@@ -22,6 +22,7 @@ pub mod accounting;
 pub mod admission;
 pub mod catalog;
 mod controller_adapter;
+mod controller_bootstrap;
 pub mod domain;
 #[cfg(target_os = "linux")]
 mod effect_owner;
@@ -51,6 +52,9 @@ pub use catalog::{
 pub use controller_adapter::{
     CacheResidencyAuthorityRequestV1, CacheResidencyControllerCommitV1,
     CacheResidencyControllerRecordV1, cache_residency_controller_commit_v1,
+};
+pub use controller_bootstrap::{
+    CacheReplayControllerBootstrapErrorV1, CacheReplayControllerBootstrapOwnerV1,
 };
 pub use domain::{
     AuthorizedLookupKey, BackingIsolationV1, CacheAuthorityError, CacheAuthorityOwner,

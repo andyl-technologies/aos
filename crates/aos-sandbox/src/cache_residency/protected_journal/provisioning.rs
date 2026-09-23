@@ -19,6 +19,59 @@ use super::{
 };
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    /// Installs a Replay record supplied by the locked controller source.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale time, a conflicting record, or an unconfirmed append.
+    pub(crate) fn install_controller_replay_record(
+        &self,
+        evidence: &CacheResidencyReplayPartitionEvidenceV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let now = self.current_time.current_unix_seconds()?;
+        if now >= evidence.scope.valid_until() {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let mut journal = self
+            .journal
+            .lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+        let owner =
+            CacheAuthorityOwner::new(&authority, self.owner_scope, self.maximum_record_bytes)
+                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let record = owner.canonical_record(CacheAuthorityPurposeV1::Replay, evidence.scope);
+        if let Some(existing) = authority.get(&evidence.record_key)? {
+            if existing != record {
+                return Err(ProtectedDomainJournalErrorV1::CompareAndSwapFailed.into());
+            }
+            return Ok(());
+        }
+        let digest = Sha256::new()
+            .chain_update(b"aos.sandbox.cache-residency.controller-replay-authority.v1\0")
+            .chain_update(&evidence.record_key)
+            .chain_update(record)
+            .finalize();
+        let transaction_id = digest[..16]
+            .try_into()
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                evidence.record_key.clone(),
+                record.to_vec(),
+            )],
+        )?;
+        let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
+        authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
+        authority.commit(&transaction)?;
+        if authority.get(&evidence.record_key)? != Some(record.as_slice()) {
+            return Err(ProtectedDomainJournalErrorV1::DivergentRecovery.into());
+        }
+        Ok(())
+    }
+
     /// Publishes one authenticated empty-partition manifest into this owner.
     ///
     /// # Errors

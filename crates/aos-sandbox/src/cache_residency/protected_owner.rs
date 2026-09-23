@@ -46,6 +46,8 @@ use super::{
 
 mod provisioning;
 
+pub(crate) use provisioning::validate_genesis_checkpoint;
+
 const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const CACHE_STATE_JOURNAL: &str = "state.journal";
 const CACHE_AUTHORITY_JOURNAL: &str = "authority.journal";
@@ -1632,7 +1634,7 @@ fn recover_cache_replay_evidence(
     Ok(evidence)
 }
 
-fn decode_cache_replay_manifest(
+pub(super) fn decode_cache_replay_manifest(
     bytes: &[u8],
     limits: CacheRecoveryLimitsV1,
 ) -> Result<CacheResidencyReplayPartitionEvidenceV1, CacheResidencyProtectedJournalErrorV1> {
