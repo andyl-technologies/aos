@@ -9,11 +9,12 @@
 //! Apply is deliberately absent. The sole advertised method is the read-only
 //! Network 1.0 authoritative inventory implemented by [`NetworkNamespaceCatalogV1`].
 
-use std::os::fd::BorrowedFd;
-
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_sandbox_linux::seqpacket::bounded::{
+    BoundedRecordError, accept_connection, boottime, receive, send,
+};
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, RecordSubjectListener, SeqpacketError, SeqpacketSocket,
 };
@@ -26,7 +27,6 @@ use aos_sandbox_protocol::{
     validate_request_descriptor_roles,
 };
 use buffa::Message as _;
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::broker::advertised_network_methods;
 use crate::namespace_catalog::{NetworkNamespaceCatalogError, NetworkNamespaceCatalogV1};
@@ -70,6 +70,16 @@ pub enum NetworkServiceError {
     /// Process startup did not provide the exact fixed activation contract.
     #[error("Network service activation is invalid: {0}")]
     Activation(String),
+}
+
+impl From<BoundedRecordError> for NetworkServiceError {
+    fn from(error: BoundedRecordError) -> Self {
+        match error {
+            BoundedRecordError::Transport(error) => Self::Transport(error),
+            BoundedRecordError::Io(error) => Self::Io(error),
+            BoundedRecordError::Clock => Self::Clock,
+        }
+    }
 }
 
 /// Serves authoritative Network inventory to one fixed controller execution.
@@ -300,26 +310,6 @@ fn send_hello_error(
     }
 }
 
-fn accept_connection(
-    listener: &mut RecordSubjectListener,
-) -> Result<Option<SeqpacketSocket>, NetworkServiceError> {
-    loop {
-        listener.validate_current()?;
-        match listener.accept() {
-            Ok(connection) => return Ok(Some(connection)),
-            Err(SeqpacketError::WouldBlock) => wait_unbounded(listener.as_fd(), PollFlags::IN)?,
-            Err(SeqpacketError::Interrupted) => {}
-            // The listener was valid immediately before accept, so this is an
-            // old queued child that inherited incomplete identity options.
-            Err(SeqpacketError::Kernel(aos_sandbox_linux::Error::InvalidInput {
-                field: "record subject options",
-                ..
-            })) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
 struct ControllerExecution {
     subject: KernelAuthorizedRecordSubject,
     info: PidFdInfo,
@@ -463,94 +453,6 @@ fn same_process(left: PidFdInfo, right: PidFdInfo) -> bool {
     left.pid() == right.pid()
         && left.thread_group_id() == right.thread_group_id()
         && left.cgroup_id() == right.cgroup_id()
-}
-
-fn boottime() -> Result<u64, NetworkServiceError> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(now.tv_sec).map_err(|_| NetworkServiceError::Clock)?;
-    let nanoseconds = u64::try_from(now.tv_nsec).map_err(|_| NetworkServiceError::Clock)?;
-
-    seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or(NetworkServiceError::Clock)
-}
-
-fn send(
-    socket: &mut SeqpacketSocket,
-    payload: &[u8],
-    deadline: u64,
-) -> Result<(), NetworkServiceError> {
-    loop {
-        check_deadline(deadline)?;
-        match socket.send(payload) {
-            Ok(()) => return check_deadline(deadline),
-            Err(SeqpacketError::WouldBlock) => {
-                wait_until(socket.as_fd()?, PollFlags::OUT, deadline)?;
-            }
-            Err(SeqpacketError::Interrupted) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-fn receive(
-    socket: &mut SeqpacketSocket,
-    maximum_bytes: usize,
-    deadline: u64,
-) -> Result<aos_sandbox_linux::seqpacket::ReceivedRecord, NetworkServiceError> {
-    loop {
-        check_deadline(deadline)?;
-        match socket.receive(maximum_bytes) {
-            Ok(record) => {
-                check_deadline(deadline)?;
-                return Ok(record);
-            }
-            Err(SeqpacketError::WouldBlock) => {
-                wait_until(socket.as_fd()?, PollFlags::IN, deadline)?;
-            }
-            Err(SeqpacketError::Interrupted) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-fn check_deadline(deadline: u64) -> Result<(), NetworkServiceError> {
-    if boottime()? >= deadline {
-        return Err(NetworkServiceError::Clock);
-    }
-
-    Ok(())
-}
-
-fn wait_unbounded(fd: BorrowedFd<'_>, events: PollFlags) -> Result<(), NetworkServiceError> {
-    let mut descriptors = [PollFd::from_borrowed_fd(fd, events)];
-    match poll(&mut descriptors, None) {
-        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn wait_until(
-    fd: BorrowedFd<'_>,
-    events: PollFlags,
-    deadline: u64,
-) -> Result<(), NetworkServiceError> {
-    let remaining = deadline
-        .checked_sub(boottime()?)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(NetworkServiceError::Clock)?;
-    let timeout = Timespec {
-        tv_sec: i64::try_from(remaining / 1_000_000_000).map_err(|_| NetworkServiceError::Clock)?,
-        tv_nsec: i64::try_from(remaining % 1_000_000_000)
-            .map_err(|_| NetworkServiceError::Clock)?,
-    };
-    let mut descriptors = [PollFd::from_borrowed_fd(fd, events)];
-    match poll(&mut descriptors, Some(&timeout)) {
-        Ok(0) => Err(NetworkServiceError::Clock),
-        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 #[cfg(test)]

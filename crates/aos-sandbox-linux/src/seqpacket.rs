@@ -38,6 +38,7 @@ pub use listener::RecordSubjectListener;
 mod socket_binding;
 use socket_binding::{ConnectedSocketBinding, ReceivedSocketOrigin};
 
+pub mod bounded;
 pub mod descriptor_subject;
 
 #[cfg(test)]

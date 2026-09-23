@@ -19,6 +19,7 @@ use aos_proto::aos::sandbox::local::v1::{
     ApplyStorageRequest, BrokerErrorCode, BrokerMethod, StorageResult,
 };
 use aos_sandbox_core::{FeatureRef, ProtocolId, ProtocolVersion};
+use aos_sandbox_linux::seqpacket::bounded::BoundedRecordError;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
@@ -86,6 +87,16 @@ pub enum StorageServiceError {
     /// Process startup did not provide the exact fixed activation contract.
     #[error("Storage service activation is invalid: {0}")]
     Activation(String),
+}
+
+impl From<BoundedRecordError> for StorageServiceError {
+    fn from(error: BoundedRecordError) -> Self {
+        match error {
+            BoundedRecordError::Transport(error) => Self::Transport(error),
+            BoundedRecordError::Io(error) => Self::Io(error),
+            BoundedRecordError::Clock => Self::Clock,
+        }
+    }
 }
 
 /// Defines the narrow runtime surface reachable from public Storage RPC.
