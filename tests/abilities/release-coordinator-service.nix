@@ -42,7 +42,7 @@
             key = "release-coordinator-test";
             stage = "host";
           };
-          aos.services.releaseCoordinator = releaseCoordinator;
+          aos.release.coordinator = releaseCoordinator;
         }
       ];
       packageModules = [
@@ -104,8 +104,10 @@ in
   assert !assertionsHold sharedCredential;
   assert !(abilities disabled).instances ? "aos:release-coordinator";
   assert releaseCoordinatorRequests disabled == {};
+  assert enabled.config.aos.services."release-coordinator.release".enable;
+  assert !enabled.config.aos.services."release-coordinator.release".autoStart;
   assert (abilities disabled).requirementTemplates == (abilities enabled).requirementTemplates;
-  assert portableOptionTree (builtins.removeAttrs (lib.submoduleOptions enabled.options.aos.services.type._elementType ["aos" "services" "releaseCoordinator"]) ["_module"]);
+  assert portableOptionTree enabled.options.aos.release.coordinator;
   assert builtins.all
   (name: (request "${name}-lifecycle").service == name)
   lifecycleNames;

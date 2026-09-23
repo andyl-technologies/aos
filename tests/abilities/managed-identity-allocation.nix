@@ -41,7 +41,7 @@
           extensible = true;
         };
         aos.abilities.environment = builtins.removeAttrs environmentId ["_type"];
-        aos.services.releaseCoordinator = {
+        aos.release.coordinator = {
           enable = true;
           releaseProgram = program "release";
           timestampProgram = program "timestamp";
