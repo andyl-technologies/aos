@@ -319,11 +319,6 @@ impl QemuNode {
                 "exact checkpoint pause requires a running QEMU node",
             ));
         }
-        if self.active_gdbstub.is_some() {
-            return Err(QemuNodeError::checkpoint(
-                "exact checkpoint pause is forbidden while a debugger proxy is active",
-            ));
-        }
         if let Some(message) = &self.fault_event_terminal_failure {
             return Err(QemuNodeError::checkpoint(format!(
                 "fault-event transport is terminally invalid: {message}"

@@ -13,8 +13,8 @@ use std::thread;
 
 use crucible::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendRngEvidence, BackendSnapshot,
-    FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
-    SimulationBackend, StepObservation, VirtualTime,
+    FingerprintSample, Icount, NodeId, ObservableEvent, SimulationBackend, StepObservation,
+    VirtualTime,
 };
 #[cfg(target_os = "linux")]
 use crucible::{ContentHash, EventLog};
@@ -1882,14 +1882,6 @@ impl SimulationBackend for QemuNodeSet {
 
     fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
         self.node_mut(&node)?.fingerprint(node)
-    }
-
-    fn open_gdbstub(
-        &mut self,
-        node: NodeId,
-        listen: GdbListen,
-    ) -> Result<GdbAttachInfo, BackendError> {
-        self.node_mut(&node)?.open_gdbstub(node, listen)
     }
 
     fn activate_debug_guest(&mut self, node: &NodeId) -> Result<(), BackendError> {

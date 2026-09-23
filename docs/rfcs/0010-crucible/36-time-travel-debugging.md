@@ -1260,10 +1260,10 @@ peer-credential completion remain open in T-DBG-11.
   resulting runtime together with an explicit four-channel debug boundary:
   plugin-IPC, shared memory, QMP, and a mediated gdbstub. The QEMU launch builder
   adds a validated `-gdb` endpoint only for debug launches, and the
-  `QemuGdbstubProxy` binds the operator `--gdb-listen` address, connects to
-  QEMU's raw gdbstub endpoint, and forwards debugger bytes outside the scheduler
-  hot path. The tests assert both the four-channel contract and local proxy
-  mediation, with no per-quantum timing or frame payload. The packaged
+  lifecycle debug gateway binds an owner-only Unix operator socket and connects
+  to QEMU's private raw gdbstub endpoint outside the scheduler hot path. The
+  tests assert the four-channel contract and private gateway mediation, with no
+  per-quantum timing or frame payload. The packaged
   `crucible debug` route additionally requires a successful live QEMU/plugin
   boot and reports its protocol/ABI/icount/fingerprint proof before exposing the
   mediated debug plan.
@@ -1299,10 +1299,10 @@ peer-credential completion remain open in T-DBG-11.
   gdbstub as a QEMU hardware breakpoint when available, and returns
   `EngineError::DebugBreakpointRequiresAllowMutate` with `--allow-mutate` guidance
   when the request has no canonical mechanism. The gate asserts the report never
-  mutates guest memory, never uses a memory patch, the proxy rewrites real `Z0`
-  software-breakpoint packets to `Z1` hardware-breakpoint packets, and the proxy
-  refuses `Z0` locally when no hardware breakpoint mechanism is available.
-  The live CLI route composes this proxy policy with hermetic QEMU/plugin
+  mutates guest memory or uses a memory patch, and the gateway rewrites real
+  `Z0` software-breakpoint packets to `Z1` hardware-breakpoint packets. A QEMU
+  refusal is forwarded to the debugger without trying a guest-memory trap.
+  The live CLI route composes this gateway policy with hermetic QEMU/plugin
   execution; it never enables raw gdb single-step or a guest-memory trap patch.
 - [x] **T-DBG-4** Implement `goto` as restore-nearest-checkpoint-≤-T-then-replay (the
   ancestor-replay branch of `instantiate`), reverse-step grains mirroring the forward

@@ -23,16 +23,16 @@ use crate::supervision::HostSupervisionDeadline;
 use crate::{
     QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverPolicy,
     QemuAsyncDriverTargetError, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget,
-    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuGdbstubProxy,
-    QemuGdbstubProxyServer, QemuHostIoRuntime, run_bounded_qemu_node_step,
+    QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostIoRuntime,
+    run_bounded_qemu_node_step,
 };
 #[cfg(target_os = "linux")]
 use crucible::model::{FaultCoordinate, ResolvedBindingAction};
 use crucible::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
     BackendRngEvidence, BackendSnapshot, Checkpoint, EventLog, ExecutionFingerprint,
-    ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
-    SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
+    ExecutionHorizon, FingerprintSample, Icount, NodeId, ObservableEvent, SchedulerEventLogAppend,
+    SimulationBackend, StepObservation, VirtualTime,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
@@ -525,7 +525,6 @@ pub struct QemuNode {
     // Console polling proves availability only at the scheduler-requested boundary.
     console_observation_boundary: VirtualTime,
     gdbstub: Option<QemuGdbstubChannelConfig>,
-    active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
     bounded_scheduler_preemption: Option<crate::BoundedSchedulerPreemptionEvidenceClaim>,
     selectable_resume_pending: bool,
@@ -739,7 +738,6 @@ impl QemuNode {
             last_step_inbound_frames_consumed: 0,
             console_observation_boundary: VirtualTime::default(),
             gdbstub: None,
-            active_gdbstub: None,
             pending_preemption: None,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
@@ -2286,9 +2284,6 @@ impl QemuNode {
     }
 
     fn shutdown_child_after_coverage_drain(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
-        if let Some(active_gdbstub) = self.active_gdbstub.take() {
-            active_gdbstub.request_shutdown();
-        }
         shutdown_node_child(
             &mut self.child,
             &mut self.channels,
@@ -2519,46 +2514,6 @@ impl SimulationBackend for QemuNode {
             at: self.last_observed_time,
             fingerprint: self.execution_fingerprint().map_err(BackendError::from)?,
         })
-    }
-
-    fn open_gdbstub(
-        &mut self,
-        node: NodeId,
-        listen: GdbListen,
-    ) -> Result<GdbAttachInfo, BackendError> {
-        if self.active_gdbstub.is_some() {
-            return Err(BackendError::Rejected {
-                message: String::from("qemu gdbstub proxy is already active"),
-            });
-        }
-        let Some(gdbstub) = self.gdbstub.as_ref() else {
-            return Err(BackendError::Unsupported {
-                capability: "open_gdbstub",
-            });
-        };
-        if listen.as_str() != gdbstub.operator_listen() {
-            return Err(BackendError::Rejected {
-                message: format!(
-                    "qemu gdbstub listen {} does not match configured operator listen {}",
-                    listen.as_str(),
-                    gdbstub.operator_listen()
-                ),
-            });
-        }
-        let proxy = QemuGdbstubProxy::new(gdbstub).map_err(|error| BackendError::Rejected {
-            message: error.to_string(),
-        })?;
-        let server = proxy.spawn_one().map_err(|error| BackendError::Rejected {
-            message: error.to_string(),
-        })?;
-        let actual_listen = GdbListen::new(server.local_addr().to_string()).map_err(|error| {
-            BackendError::Rejected {
-                message: error.to_string(),
-            }
-        })?;
-        let info = GdbAttachInfo::new(node, gdbstub.qemu_endpoint().to_owned(), actual_listen)?;
-        self.active_gdbstub = Some(server);
-        Ok(info)
     }
 
     fn send_guest_introspection(

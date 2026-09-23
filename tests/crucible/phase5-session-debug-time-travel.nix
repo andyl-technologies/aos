@@ -17,8 +17,8 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionEventLogStream = builtins.readFile ../../crates/crucible-session/tests/event_log_stream.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  qemuNodeTests = builtins.readFile ../../crates/crucible-qemu/src/node/tests/shutdown_and_preemption.rs;
-  qemuGdbstubProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
+  productionDebugLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
+  gatewayOwner = builtins.readFile ../../crates/crucible-api/src/debug_gateway.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -222,24 +222,12 @@
         needle = "gdbstub: Option<QemuGdbstubChannelConfig>";
       }
       {
-        label = "QEMU node retains active gdbstub proxy";
-        needle = "active_gdbstub: Option<QemuGdbstubProxyServer>";
-      }
-      {
         label = "QEMU gdbstub builder hook";
         needle = "pub fn with_gdbstub";
       }
       {
         label = "QEMU gdbstub accessor";
         needle = "pub const fn gdbstub_channel";
-      }
-      {
-        label = "QEMU reports bound open_gdbstub listener";
-        needle = "fn open_gdbstub";
-      }
-      {
-        label = "QEMU open_gdbstub binds proxy server";
-        needle = "spawn_one()";
       }
     ]
     ++ failuresFor "crates/crucible-session/tests/event_log_stream.rs" sessionEventLogStream [
@@ -248,20 +236,20 @@
         needle = "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node/tests/shutdown_and_preemption.rs" qemuNodeTests [
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionDebugLoop [
       {
-        label = "QEMU gdbstub source test";
-        needle = "qemu_node_open_gdbstub_reports_configured_channel";
+        label = "production gdbstub attaches through gateway";
+        needle = "DebugGatewayProcess::launch_with_owner_unix";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/gdbstub_proxy.rs" qemuGdbstubProxy [
+    ++ failuresFor "crates/crucible-api/src/debug_gateway.rs" gatewayOwner [
       {
-        label = "cancellable background gdbstub server";
-        needle = "pub struct QemuGdbstubProxyServer";
+        label = "owner-only gateway launch";
+        needle = "pub fn launch_with_owner_unix";
       }
       {
-        label = "actual gdbstub listener address";
-        needle = "pub const fn local_addr";
+        label = "private operator directory";
+        needle = "std::fs::Permissions::from_mode(0o700)";
       }
     ];
 
@@ -301,7 +289,7 @@ in
             printf 'schedule_exclusion=query_pause_class\n'
             printf 'non_canonical_branch_guard=true\n'
             printf 'backend_open_gdbstub=optional\n'
-            printf 'qemu_open_gdbstub=bound_mediated_listener\n'
+  printf 'production_open_gdbstub=owner_only_unix_gateway\n'
             printf 'simdouble_open_gdbstub=unsupported\n'
             printf 'mock_open_gdbstub=unsupported\n'
           } > "$out/result"

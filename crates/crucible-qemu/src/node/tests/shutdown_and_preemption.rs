@@ -90,55 +90,6 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
 }
 
 #[test]
-fn qemu_node_open_gdbstub_reports_configured_channel() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let mut node = scripted_node_with_runtime(
-        Arc::clone(&log),
-        false,
-        false,
-        false,
-        [QemuAsyncWaitOutcome::Completed],
-    )?
-    .with_gdbstub(QemuGdbstubChannelConfig::new(
-        "tcp:127.0.0.1:9001",
-        "127.0.0.1:0",
-    )?);
-
-    let info = SimulationBackend::open_gdbstub(
-        &mut node,
-        node_id("vm-a"),
-        GdbListen::new("127.0.0.1:0")?,
-    )?;
-
-    assert_eq!(info.node, node_id("vm-a"));
-    assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
-    let active_listener = node
-        .active_gdbstub
-        .as_ref()
-        .map(QemuGdbstubProxyServer::local_addr)
-        .expect("open_gdbstub should bind an operator listener");
-    assert_ne!(active_listener.port(), 0);
-    assert_eq!(info.operator_listen.as_str(), active_listener.to_string());
-    assert!(
-        TcpListener::bind(active_listener).is_err(),
-        "gdbstub attach should keep the operator listener bound"
-    );
-    assert!(info.is_out_of_band_debug_proxy());
-    assert!(matches!(
-        SimulationBackend::open_gdbstub(
-            &mut node,
-            node_id("vm-a"),
-            GdbListen::new("127.0.0.1:0")?,
-        ),
-        Err(BackendError::Rejected { message }) if message.contains("already active")
-    ));
-    assert_eq!(recorded(&log), Vec::<ChannelCall>::new());
-    assert!(node.shutdown_child()?.reaped);
-
-    Ok(())
-}
-
-#[test]
 fn qemu_node_reports_shmem_failures_as_backend_rejections() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let mut node = scripted_node(Arc::clone(&log), false, true, false)?;

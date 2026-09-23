@@ -1871,8 +1871,8 @@ pub struct DebugCliSurfaceContract {
     pub cli_holds_debug_state: bool,
     /// Whether the CLI delegates to existing session operations.
     pub delegates_to_session_commands: bool,
-    /// Whether gdb traffic is exposed only through the mediated gdbstub proxy.
-    pub delegates_to_gdbstub_proxy: bool,
+    /// Whether GDB traffic is exposed only through the mediated debug gateway.
+    pub delegates_to_debug_gateway: bool,
     /// Source-level debug-info ownership policy.
     pub symbol_resolution: DebugSymbolResolutionPolicy,
     /// Multi-vCPU debugger coherence policy.
@@ -1908,7 +1908,7 @@ impl DebugCliSurfaceContract {
             ],
             cli_holds_debug_state: false,
             delegates_to_session_commands: true,
-            delegates_to_gdbstub_proxy: true,
+            delegates_to_debug_gateway: true,
             symbol_resolution: DebugSymbolResolutionPolicy::no_symbol_server(),
             multi_vcpu: DebugMultiVcpuPolicy::coherent_round_robin_threads(),
             read_mutate_boundary:
@@ -1967,7 +1967,7 @@ impl DebugCliSurfaceContract {
             && self.has_required_interactive_verbs()
             && !self.cli_holds_debug_state
             && self.delegates_to_session_commands
-            && self.delegates_to_gdbstub_proxy
+            && self.delegates_to_debug_gateway
             && self.symbol_resolution.proves_no_crucible_symbol_server()
             && self.multi_vcpu.proves_multi_vcpu_coherence()
             && self.read_mutate_boundary.proves_read_mutate_boundary()
