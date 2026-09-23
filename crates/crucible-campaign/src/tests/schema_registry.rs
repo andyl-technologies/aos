@@ -396,6 +396,50 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(message[3], "component-message");
         owned_campaign_schemas.insert(schema);
     }
+    for (schema, version, owner, kind) in [
+        (
+            "crucible.campaign.debug-session-request",
+            "1",
+            "crucible-daemon::campaign_debug_control",
+            "component-message",
+        ),
+        (
+            "crucible.campaign.debug-session-response",
+            "1",
+            "crucible-daemon::campaign_debug_control",
+            "component-message",
+        ),
+        (
+            "crucible.campaign.debug-session-inventory",
+            "1",
+            "crucible-daemon::campaign_debug_inventory",
+            "operational-record",
+        ),
+        (
+            "crucible.campaign.transfer-journal",
+            "1",
+            "crucible-daemon::campaign_transfer",
+            "operational-record",
+        ),
+        (
+            "crucible.campaign-packaged-executor",
+            "2",
+            "crucible-cli::verify_serve::packaged_executor",
+            "deployment-config",
+        ),
+        (
+            "crucible.cli.packed-repack-journal",
+            "1",
+            "crucible-cli::campaign::transform",
+            "operational-record",
+        ),
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing campaign boundary schema {schema}"));
+        assert_eq!((record[1], record[2], record[3]), (version, owner, kind));
+        owned_campaign_schemas.insert(schema);
+    }
     let campaign_policy = rows
         .get("crucible.campaign-local-policy")
         .unwrap_or_else(|| panic!("missing local campaign policy schema"));
