@@ -262,6 +262,8 @@ pub(crate) fn export_finding_bundle(
         plan.manifest_id()
     );
     let (output, ()) = write_new_bundle(&args.output, "finding bundle", |staged, _| {
+        std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o700))
+            .map_err(CliError::Io)?;
         let archive = archive_repository(&staged.join("archive"));
         source
             .export_campaign_archive_to_repository(
