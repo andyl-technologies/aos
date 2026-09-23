@@ -521,6 +521,7 @@ let
     "aos-recovery"
     "aos-registry-server"
     "aos-sandbox-agent"
+    "aos-sandbox-guest-root-template"
     "aos-sandbox-guardian"
     "aos-sandbox-hostd"
     "aos-sandbox-mountd"
