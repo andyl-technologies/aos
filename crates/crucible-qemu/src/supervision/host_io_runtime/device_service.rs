@@ -24,6 +24,11 @@ impl QemuLiveHostIoRuntime {
                 .map_err(|source| {
                     QemuAsyncDriverRuntimeError::new("pin block host work", source.to_string())
                 })?;
+            if pin.observed.is_none() && pin.next_completion_icount.is_none() {
+                // An empty pass has no device work to advance. Leaving it in
+                // flight can race coordinator installation during startup.
+                return Ok(false);
+            }
             if !block.coordinator_required {
                 block
                     .worker
@@ -37,9 +42,6 @@ impl QemuLiveHostIoRuntime {
                             source.to_string(),
                         )
                     })?;
-                if pin.observed.is_none() {
-                    return Ok(false);
-                }
             } else {
                 block
                     .worker

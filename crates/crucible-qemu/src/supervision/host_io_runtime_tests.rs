@@ -846,6 +846,32 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
 
 #[cfg(target_os = "linux")]
 #[test]
+fn empty_block_poll_does_not_block_late_fault_coordinator_installation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::fd::AsFd;
+
+    let (region, _unused_region, region_len) = private_region_pair()?;
+    let wake = tempfile::tempfile()?;
+    let block =
+        QemuLiveBlockIoServicer::from_shmem_fd(region.as_fd(), region_len, 0, 0, 16 * 1024)?;
+    let mut runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(region.as_fd(), wake.as_fd(), region_len, 0)?
+            .with_block_servicer(block, BlockIoDiagnostics::shared())?;
+    let snapshot = runtime.region.node_slot(0)?.snapshot();
+
+    assert!(!runtime.service_block_io(&snapshot)?);
+    assert!(!runtime
+        .block
+        .as_ref()
+        .ok_or("block servicer should be present")?
+        .worker
+        .work_in_flight());
+    runtime.install_block_fault_coordinator(Box::new(TestBlockCoordinator))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
