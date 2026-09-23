@@ -9,10 +9,15 @@
 //! terminal  = admission[32] || operation[16] || terminal_effect[32]
 //!             || global_capacity_reservation[32]
 //! route     = 'q' || operation[16] => AOSHRQ01 protected agent request
+//! outcome   = 'u' || operation[16] => AOSAGW01 signed agent outcome
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use aos_sandbox_agent::{
+    SignedAgentOutcomePacketV1, decode_signed_agent_outcome_packet_v1,
+    encode_signed_agent_outcome_packet_v1,
+};
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitDispositionV1, AdmissionCommitError, AdmissionCurrentnessV1,
     AdmissionStoreCommitV1, AdmittedExecutionV1, DurableAdmissionCommitV1,
@@ -34,7 +39,9 @@ use crate::journal::{
 use super::evidence::{
     JournalExecutionCompletionV1, completion_observes_terminal_execution, validate_completion,
 };
-use super::route_record::{ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key};
+use super::route_record::{
+    ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key,
+};
 
 const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
@@ -42,6 +49,7 @@ const ADMISSION_RESOURCE_KEY_PREFIX: u8 = b'r';
 const EFFECT_KEY_PREFIX: u8 = b'e';
 const SEQUENCE_KEY_PREFIX: u8 = b's';
 const TERMINAL_KEY_PREFIX: u8 = b't';
+const AGENT_OUTCOME_KEY_PREFIX: u8 = b'u';
 const STORE_MARKER_KEY: &[u8] = b"runtime-execution-owner-v1";
 const ADMISSION_AUTHORITY_KEY: &[u8] = b"runtime-execution-admission-authority-v1";
 const ADMISSION_AUTHORITY_MAGIC: &[u8; 8] = b"AOSRAA01";
@@ -140,6 +148,7 @@ pub(crate) struct PreparedExecutionDispatchV1 {
 pub(crate) struct JournalRuntimeExecutionStoreV1<'journal> {
     authority: ProtectedJournalAuthority<'journal>,
     store_binding: ObjectDigest,
+    agent_peer: ProtectedAgentRoutePeerV1,
     freshly_issued: BTreeSet<[u8; 16]>,
     live_dispatches: BTreeSet<[u8; 16]>,
     authorized_completions: BTreeSet<ObjectDigest>,
@@ -156,6 +165,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         journal: &'journal mut Journal,
         store_binding: ObjectDigest,
         admission_state: ProtectedExecutionAdmissionStateV1,
+        agent_peer: ProtectedAgentRoutePeerV1,
     ) -> Result<Self, JournalRuntimeExecutionError> {
         if store_binding.as_bytes() == &[0; 32] {
             return Err(JournalRuntimeExecutionError::InvalidBinding);
@@ -190,6 +200,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         Ok(Self {
             authority,
             store_binding,
+            agent_peer,
             freshly_issued: BTreeSet::new(),
             live_dispatches: BTreeSet::new(),
             authorized_completions: BTreeSet::new(),
@@ -205,6 +216,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
     pub(crate) fn claim(
         journal: &'journal mut Journal,
         store_binding: ObjectDigest,
+        agent_peer: ProtectedAgentRoutePeerV1,
     ) -> Result<Self, JournalRuntimeExecutionError> {
         if store_binding.as_bytes() == &[0; 32] {
             return Err(JournalRuntimeExecutionError::InvalidBinding);
@@ -212,10 +224,11 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         let authority = journal.claim_global_capacity_reservation_authority(
             GlobalCapacityReservationPurposeV1::RuntimeExecution,
         )?;
-        validate_runtime_execution_replay(&authority, store_binding)?;
+        validate_runtime_execution_replay(&authority, store_binding, agent_peer)?;
         Ok(Self {
             authority,
             store_binding,
+            agent_peer,
             freshly_issued: BTreeSet::new(),
             live_dispatches: BTreeSet::new(),
             authorized_completions: BTreeSet::new(),
@@ -458,7 +471,85 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
         route.validate_effect(&effect, false)?;
+        route.validate_peer(self.agent_peer)?;
         Ok(Some(route))
+    }
+
+    /// Commits one authenticated agent outcome before Host observation escapes.
+    ///
+    /// A failed append is ambiguous. The caller must cold-reopen and inspect
+    /// the exact operation, not accept another packet in the same process.
+    pub(crate) fn commit_signed_agent_outcome_packet(
+        &mut self,
+        operation: &[u8; 16],
+        packet: &SignedAgentOutcomePacketV1,
+    ) -> Result<(), JournalRuntimeExecutionError> {
+        let route = self
+            .load_agent_route(operation)?
+            .ok_or(JournalRuntimeExecutionError::MissingRecord)?;
+        route.validate_signed_outcome(packet, self.agent_peer)?;
+        let bytes = encode_signed_agent_outcome_packet_v1(packet)
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        let key = agent_outcome_key(operation);
+        if let Some(previous) = self.authority.get(&key)? {
+            return if previous == bytes {
+                Ok(())
+            } else {
+                Err(JournalRuntimeExecutionError::RecordConflict)
+            };
+        }
+
+        let effect = self
+            .load_effect(operation)?
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        if !matches!(
+            effect.phase(),
+            EffectPhaseV1::Issued | EffectPhaseV1::Indeterminate
+        ) {
+            return Err(JournalRuntimeExecutionError::WrongPhase);
+        }
+        let digest = ObjectDigest::from_bytes(Sha256::digest(&bytes).into());
+        let transaction = JournalTransaction::new(
+            transaction_id(b"agent-outcome", digest),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                key.clone(),
+                bytes.clone(),
+            )],
+        )?;
+        let preflight = self
+            .authority
+            .preflight_transactions(std::slice::from_ref(&transaction))?;
+        self.authority
+            .validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
+        self.authority.commit(&transaction)?;
+        if self.authority.get(&key)? != Some(bytes.as_slice()) {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        Ok(())
+    }
+
+    /// Reads one exact signed packet from protected Host custody after restart.
+    pub(crate) fn load_signed_agent_outcome_packet(
+        &self,
+        operation: &[u8; 16],
+    ) -> Result<Option<SignedAgentOutcomePacketV1>, JournalRuntimeExecutionError> {
+        let Some(bytes) = self.authority.get(&agent_outcome_key(operation))? else {
+            return Ok(None);
+        };
+        let packet = decode_signed_agent_outcome_packet_v1(bytes)
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        if encode_signed_agent_outcome_packet_v1(&packet)
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?
+            != bytes
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        let route = self
+            .load_agent_route(operation)?
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        route.validate_signed_outcome(&packet, self.agent_peer)?;
+        Ok(Some(packet))
     }
 
     pub(crate) fn disarm_recovery_issue(&mut self, effect: &DurableExecutionEffectV1) {
@@ -1217,6 +1308,13 @@ fn admission_key(execution: ExecutionId) -> Vec<u8> {
     key
 }
 
+fn agent_outcome_key(operation: &[u8; 16]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(17);
+    key.push(AGENT_OUTCOME_KEY_PREFIX);
+    key.extend_from_slice(operation);
+    key
+}
+
 fn owned_key(key: &[u8]) -> bool {
     key == STORE_MARKER_KEY
         || key == ADMISSION_AUTHORITY_KEY
@@ -1227,11 +1325,13 @@ fn owned_key(key: &[u8]) -> bool {
         )
         || matches!(key, [SEQUENCE_KEY_PREFIX, ..] if key.len() == 33)
         || matches!(key, [ROUTE_KEY_PREFIX, ..] if key.len() == 17)
+        || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
 }
 
 fn validate_runtime_execution_replay(
     authority: &ProtectedJournalAuthority<'_>,
     store_binding: ObjectDigest,
+    agent_peer: ProtectedAgentRoutePeerV1,
 ) -> Result<(), JournalRuntimeExecutionError> {
     let protected_sequence = authority.snapshot()?.sequence();
     let mut marker_seen = false;
@@ -1241,6 +1341,7 @@ fn validate_runtime_execution_replay(
     let mut resources = BTreeMap::new();
     let mut effects = BTreeMap::new();
     let mut routes = BTreeMap::new();
+    let mut agent_outcomes = BTreeMap::new();
     let mut sequence_heads = BTreeMap::new();
     let mut terminals = BTreeMap::new();
     let mut record_count = 0_usize;
@@ -1329,6 +1430,19 @@ fn validate_runtime_execution_replay(
                 let route = ProtectedAgentRouteRecordV1::decode(value)?;
                 let operation = *route.request().operation_id().as_bytes();
                 if route_key(&operation) != key || routes.insert(operation, route).is_some() {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
+            Some(AGENT_OUTCOME_KEY_PREFIX) if key.len() == 17 => {
+                let packet = decode_signed_agent_outcome_packet_v1(value)
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+                let operation = *packet.outcome().operation_id().as_bytes();
+                if agent_outcome_key(&operation) != key
+                    || encode_signed_agent_outcome_packet_v1(&packet)
+                        .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?
+                        != value
+                    || agent_outcomes.insert(operation, packet).is_some()
+                {
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
                 }
             }
@@ -1482,6 +1596,13 @@ fn validate_runtime_execution_replay(
             .get(operation)
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
         route.validate_effect(effect, false)?;
+        route.validate_peer(agent_peer)?;
+    }
+    for (operation, packet) in &agent_outcomes {
+        let route = routes
+            .get(operation)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        route.validate_signed_outcome(packet, agent_peer)?;
     }
     if effects_by_runtime.len() != sequence_heads.len()
         || terminal_effect_by_execution.len() != terminals.len()

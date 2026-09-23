@@ -96,7 +96,8 @@ use super::agent_store::{
 use super::evidence::JournalExecutionCompletionV1;
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
 use super::route_record::{
-    ProtectedAgentRouteRecordV1, route_binding as protected_agent_route_binding,
+    ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1,
+    route_binding as protected_agent_route_binding,
 };
 use super::store::{
     AuthenticatedJournalExecutionRecoveryV1 as JournalRecoveryV1, ExecutionJournalRecoveryTokenV1,
@@ -597,6 +598,11 @@ impl DormantRuntimeExecutionOwnerV1 {
             execution_journal,
             resolved.execution_store_binding,
             admission_state,
+            ProtectedAgentRoutePeerV1::new(
+                resolved.agent_peer.public_key,
+                resolved.agent_peer.channel_binding,
+                resolved.agent_peer.authority_binding,
+            )?,
         )?;
         let agent = open_agent_store(
             agent_journal,
@@ -1777,6 +1783,48 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         })
     }
 
+    /// Commits a signed guest packet under its original Host request custody.
+    ///
+    /// This independently verifies the fixed peer signature and exact route
+    /// before append. An ambiguous error requires cold protected replay before
+    /// the caller may accept another result for this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] for stale currentness,
+    /// a foreign packet, conflicting prior outcome, or uncertain durability.
+    pub fn commit_signed_host_agent_outcome_packet(
+        &mut self,
+        operation: &[u8; 16],
+        packet: &aos_sandbox_agent::SignedAgentOutcomePacketV1,
+    ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .commit_signed_agent_outcome_packet(operation, packet)?;
+        Ok(())
+    }
+
+    /// Recovers a committed signed guest result without contacting the guest.
+    ///
+    /// A missing record is not evidence that a prior append failed; callers
+    /// must first cold-open the protected owner after an ambiguous outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] for stale currentness,
+    /// corrupt custody, an invalid signature, or missing route evidence.
+    pub fn recover_committed_host_agent_outcome(
+        &self,
+        operation: &[u8; 16],
+    ) -> Result<Option<AuthenticatedRecoveredHostAgentOutcomeV1>, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        self.validate_current()?;
+        self.execution
+            .load_signed_agent_outcome_packet(operation)?
+            .map(|packet| self.authenticate_recovered_agent_outcome_packet(operation, packet))
+            .transpose()
+    }
+
     /// Verifies a fixed-peer handshake and binds one exact AOSAGE request to an effect.
     ///
     /// Authorization and control requests must match the issued effect's closed
@@ -2806,6 +2854,7 @@ fn open_execution_store<'journal>(
     journal: &'journal mut Journal,
     store_binding: ObjectDigest,
     admission_state: ProtectedExecutionAdmissionStateV1,
+    agent_peer: ProtectedAgentRoutePeerV1,
 ) -> Result<JournalRuntimeExecutionStoreV1<'journal>, JournalRuntimeExecutionError> {
     let empty = {
         let authority = journal.claim_global_capacity_reservation_authority(
@@ -2814,9 +2863,14 @@ fn open_execution_store<'journal>(
         authority.is_materialized_empty()?
     };
     if empty {
-        JournalRuntimeExecutionStoreV1::initialize(journal, store_binding, admission_state)
+        JournalRuntimeExecutionStoreV1::initialize(
+            journal,
+            store_binding,
+            admission_state,
+            agent_peer,
+        )
     } else {
-        let store = JournalRuntimeExecutionStoreV1::claim(journal, store_binding)?;
+        let store = JournalRuntimeExecutionStoreV1::claim(journal, store_binding, agent_peer)?;
         if store.load_admission_state()? != admission_state {
             return Err(JournalRuntimeExecutionError::InvalidBinding);
         }

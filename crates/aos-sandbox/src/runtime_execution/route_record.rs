@@ -10,14 +10,19 @@
 //! Cold recovery may inspect it, but it never mints a new dispatch permit.
 
 use aos_sandbox_agent::protocol::MAX_AGENT_FRAME_BYTES;
-use aos_sandbox_agent::{AgentFrameV1, AgentOperationRequestV1, decode_frame_v1, encode_frame_v1};
+use aos_sandbox_agent::{
+    AgentFrameV1, AgentOperationRequestV1, SignedAgentOutcomePacketV1, decode_frame_v1,
+    encode_frame_v1,
+};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_core::runtime_backend::{
     BackendExecutionInspectionRequestV1, DurableExecutionEffectV1, EffectPhaseV1,
     backend_execution_inspection_binding_v1,
 };
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
+use super::agent_reducer::agent_outcome_signing_message_v1;
 use super::store::JournalRuntimeExecutionError;
 
 const MAGIC: &[u8; 8] = b"AOSHRQ01";
@@ -25,6 +30,35 @@ const HEADER_BYTES: usize = 8 + 32 * 4 + 4;
 const DIGEST_BYTES: usize = 32;
 
 pub(super) const ROUTE_KEY_PREFIX: u8 = b'q';
+
+/// Fixes the only peer allowed to own Host request and outcome custody.
+#[derive(Clone, Copy)]
+pub(super) struct ProtectedAgentRoutePeerV1 {
+    public_key: [u8; 32],
+    channel_binding: ObjectDigest,
+    authority_binding: ObjectDigest,
+}
+
+impl ProtectedAgentRoutePeerV1 {
+    pub(super) fn new(
+        public_key: [u8; 32],
+        channel_binding: ObjectDigest,
+        authority_binding: ObjectDigest,
+    ) -> Result<Self, JournalRuntimeExecutionError> {
+        if public_key == [0; 32]
+            || channel_binding.as_bytes() == &[0; 32]
+            || authority_binding.as_bytes() == &[0; 32]
+            || VerifyingKey::from_bytes(&public_key).is_err()
+        {
+            return Err(JournalRuntimeExecutionError::InvalidBinding);
+        }
+        Ok(Self {
+            public_key,
+            channel_binding,
+            authority_binding,
+        })
+    }
+}
 
 /// Retains one exact previously prepared request without granting redispatch.
 pub(super) struct ProtectedAgentRouteRecordV1 {
@@ -77,6 +111,40 @@ impl ProtectedAgentRouteRecordV1 {
         self,
     ) -> (AgentOperationRequestV1, ObjectDigest, ObjectDigest) {
         (self.request, self.effect_request, self.route_binding)
+    }
+
+    pub(super) fn validate_peer(
+        &self,
+        peer: ProtectedAgentRoutePeerV1,
+    ) -> Result<(), JournalRuntimeExecutionError> {
+        if self.peer_authority != peer.authority_binding
+            || self.channel_binding != peer.channel_binding
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_signed_outcome(
+        &self,
+        packet: &SignedAgentOutcomePacketV1,
+        peer: ProtectedAgentRoutePeerV1,
+    ) -> Result<(), JournalRuntimeExecutionError> {
+        self.validate_peer(peer)?;
+        let outcome = packet.outcome();
+        if outcome.session() != self.request.session()
+            || outcome.sequence() != self.request.sequence()
+            || outcome.operation_id() != self.request.operation_id()
+            || outcome.request_commitment() != self.request.request_commitment()
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        let message =
+            agent_outcome_signing_message_v1(peer.channel_binding, &self.request, outcome);
+        VerifyingKey::from_bytes(&peer.public_key)
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?
+            .verify_strict(&message, &Signature::from_bytes(packet.signature()))
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)
     }
 
     pub(super) fn validate_effect(

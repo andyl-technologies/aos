@@ -17,7 +17,7 @@ use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
     AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentOperationIdV1,
     AgentOperationRequestV1, AgentOperationSequenceV1, AgentRuntimeBindingV1,
-    AgentSessionBindingV1, decode_signed_agent_outcome_packet_v1,
+    AgentSessionBindingV1, SignedAgentOutcomePacketV1, decode_signed_agent_outcome_packet_v1,
 };
 use aos_sandbox_core::runtime_backend::{
     BackendCapabilitiesV1, BackendEffectOutcome, BackendEvidenceVerifierV1, BackendExecutionHandle,
@@ -364,6 +364,7 @@ pub struct DormantProtectedRuntimeBackendV1<'owner> {
     last_observation_sequence: u64,
     pending_agent_handshake: Option<AgentHandshakeRequestV1>,
     agent_session: Option<CoownedAgentSessionV1>,
+    agent_outcome_recovery_required: bool,
 }
 
 impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
@@ -445,6 +446,7 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             last_observation_sequence: protected_observation_floor,
             pending_agent_handshake: None,
             agent_session: None,
+            agent_outcome_recovery_required: false,
         })
     }
 
@@ -1323,11 +1325,11 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         self.accept_agent_execution_outcome(SignedAgentOutcomeV1::new(outcome, signature))
     }
 
-    /// Authenticates the exact outstanding agent response and releases its backend request.
+    /// Authenticates and durably retains the exact outstanding agent response.
     ///
     /// The returned request is accepted by [`RuntimeBackend::exec`] once. No
-    /// second protected dispatch is acquired and no second peer journal is
-    /// opened or locked.
+    /// second protected dispatch is acquired. A failed Host outcome append
+    /// fences this backend until a fresh protected claim classifies the record.
     ///
     /// # Errors
     ///
@@ -1433,6 +1435,17 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             .next_operation_sequence
             .checked_next()
             .map_err(|_| RuntimeBackendError::InvalidSequence)?;
+        let packet = SignedAgentOutcomePacketV1::new(outcome.clone(), signature)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        if self
+            .authority
+            .commit_signed_host_agent_outcome_packet(outcome.operation_id().as_bytes(), &packet)
+            .is_err()
+        {
+            // The append may have committed; only a fresh protected claim can classify it.
+            self.agent_outcome_recovery_required = true;
+            return Err(RuntimeBackendError::AgentUnavailable);
+        }
         let outstanding = session
             .outstanding
             .take()
@@ -1464,10 +1477,11 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         self.accept_agent_execution_control_outcome(SignedAgentOutcomeV1::new(outcome, signature))
     }
 
-    /// Authenticates a control reply and queues its exact execution observation.
+    /// Authenticates and durably retains a control reply before queuing it.
     ///
     /// The protected execution owner must still verify and commit the semantic
     /// effect completion; accepting an agent reply alone does not complete it.
+    /// Ambiguous Host outcome custody requires a fresh protected claim.
     ///
     /// # Errors
     ///
@@ -1550,6 +1564,16 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             .next_operation_sequence
             .checked_next()
             .map_err(|_| RuntimeBackendError::InvalidSequence)?;
+        let packet = SignedAgentOutcomePacketV1::new(outcome.clone(), signature)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        if self
+            .authority
+            .commit_signed_host_agent_outcome_packet(outcome.operation_id().as_bytes(), &packet)
+            .is_err()
+        {
+            self.agent_outcome_recovery_required = true;
+            return Err(RuntimeBackendError::AgentUnavailable);
+        }
         session.control_outstanding = None;
         session.next_operation_sequence = next_operation_sequence;
         self.execution_observations.push_back(observation);
@@ -1705,6 +1729,9 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
     }
 
     fn revalidate(&self) -> Result<(), RuntimeBackendError> {
+        if self.agent_outcome_recovery_required {
+            return Err(RuntimeBackendError::AgentUnavailable);
+        }
         self.authority
             .revalidate()
             .map_err(|_| RuntimeBackendError::StaleCurrentness)
