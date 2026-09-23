@@ -20,7 +20,7 @@ fn planner_attempt_explanations_render_guidance_and_accounting() {
             BranchRequestId,
             "crucible.campaign.branch-request",
             ObjectKind::CampaignFact,
-            9,
+            CampaignRecordKind::BranchRequest.schema_version(),
             "planner-explanation-request"
         ),
     );
