@@ -76,21 +76,24 @@ fn session(id: u64, epoch: u64) -> SessionRef {
     )
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn relay_connects_only_to_private_unix_gateway_endpoint() {
+fn private_gateway_listener(name: &str) -> (tempfile::TempDir, tokio::net::UnixListener, String) {
     let directory = tempfile::tempdir().expect("temporary gateway directory");
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
         .expect("private gateway directory");
-    let socket = directory.path().join("operator.sock");
+    let socket = directory.path().join(name);
     let listener = tokio::net::UnixListener::bind(&socket).expect("operator socket");
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
         .expect("owner operator socket");
     let endpoint = format!("unix:{}", socket.display());
+    (directory, listener, endpoint)
+}
 
-    assert!(matches!(
-        DebugRelayRegistry::connect(&endpoint).await,
-        Ok(DebugRelayStream::Unix(_))
-    ));
+#[tokio::test(flavor = "current_thread")]
+async fn relay_connects_only_to_private_unix_gateway_endpoint() {
+    let (_directory, listener, endpoint) = private_gateway_listener("operator.sock");
+    let socket = Path::new(endpoint.strip_prefix("unix:").expect("Unix endpoint"));
+
+    assert!(DebugRelayRegistry::connect(&endpoint).await.is_ok());
     let _accepted = listener.accept().await.expect("private relay connection");
 
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o666))
@@ -102,13 +105,8 @@ async fn relay_connects_only_to_private_unix_gateway_endpoint() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn relay_is_loopback_bounded_and_lease_owned() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|error| panic!("test gateway should bind: {error}"));
-    let address = listener
-        .local_addr()
-        .unwrap_or_else(|error| panic!("test gateway should have address: {error}"));
+async fn relay_is_private_unix_bounded_and_lease_owned() {
+    let (_directory, listener, endpoint) = private_gateway_listener("relay.sock");
     let gateway = tokio::spawn(async move {
         let (mut stream, _) = listener
             .accept()
@@ -132,9 +130,9 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
     };
     let holder = uuid::Uuid::from_u128(7);
     let mut registry = DebugRelayRegistry::default();
-    let stream = DebugRelayRegistry::connect(&address.to_string())
+    let stream = DebugRelayRegistry::connect(&endpoint)
         .await
-        .unwrap_or_else(|error| panic!("loopback relay should open: {error}"));
+        .unwrap_or_else(|error| panic!("private Unix relay should open: {error}"));
     let id = registry
         .register(
             stream,
@@ -143,7 +141,7 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
             holder,
             DebugRelayAccess::ReadWrite,
         )
-        .unwrap_or_else(|error| panic!("loopback relay should register: {error}"));
+        .unwrap_or_else(|error| panic!("private Unix relay should register: {error}"));
     assert_eq!(
         registry.existing(
             session_ref,
@@ -237,19 +235,15 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
         }
     ));
 
-    let replacement_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap_or_else(|error| panic!("replacement gateway should bind: {error}"));
-    let replacement_address = replacement_listener
-        .local_addr()
-        .unwrap_or_else(|error| panic!("replacement gateway should have address: {error}"));
+    let (_replacement_directory, replacement_listener, replacement_endpoint) =
+        private_gateway_listener("replacement.sock");
     let replacement_gateway = tokio::spawn(async move {
         let (_stream, _) = replacement_listener
             .accept()
             .await
             .unwrap_or_else(|error| panic!("replacement relay should connect: {error}"));
     });
-    let stream = DebugRelayRegistry::connect(&replacement_address.to_string())
+    let stream = DebugRelayRegistry::connect(&replacement_endpoint)
         .await
         .unwrap_or_else(|error| panic!("replacement relay should open: {error}"));
     let replacement_holder = uuid::Uuid::from_u128(8);
@@ -290,12 +284,12 @@ async fn relay_is_loopback_bounded_and_lease_owned() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn relay_rejects_non_loopback_and_oversized_requests() {
+async fn relay_rejects_tcp_and_oversized_requests() {
     let owner = client("owner");
     let mut registry = DebugRelayRegistry::default();
     assert!(matches!(
         DebugRelayRegistry::connect("192.0.2.1:1234").await,
-        Err(DebugRelayError::GatewayEndpointNotLoopback)
+        Err(DebugRelayError::InvalidGatewayEndpoint)
     ));
     assert_eq!(
         registry.read(

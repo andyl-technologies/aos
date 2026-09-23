@@ -5,6 +5,79 @@ use super::*;
 #[path = "engine_state/guest_introspection.rs"]
 mod guest_introspection;
 
+struct RejectingGuestWriteGatewayLoop;
+
+impl QuantumLoop for RejectingGuestWriteGatewayLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        DebugGdbLoop.drive_quantum(request)
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        DebugGdbLoop.open_gdbstub(node, listen)
+    }
+
+    fn authorize_noncanonical_guest_write(&mut self) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("injected private gateway unlock failure"),
+        })
+    }
+}
+
+#[test]
+fn failed_guest_write_unlock_leaves_a_paused_noncanonical_branch() {
+    let (_, _, configuration, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(configuration.clone(), graph, RejectingGuestWriteGatewayLoop);
+    engine
+        .apply_command(SessionCommand::Start)
+        .expect("debug session start");
+    engine
+        .apply_command(SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
+            reply: CommandReply::discard(),
+        })
+        .expect("debugger attach");
+    let request = DebugNonCanonicalBranchRequest::new(
+        configuration.clone(),
+        engine.frontier(),
+        DebugNonCanonicalBranchTrigger::GuestRegisterWrite,
+    )
+    .with_action(DebugNonCanonicalBranchAction::guest_edit(
+        crucible::DebugGuestEdit::new(
+            node_id("guest-a"),
+            crucible::DebugGuestEditKind::RegisterWrite,
+            crucible::DebugCoordinate::configuration(configuration),
+            "rax",
+            vec![1],
+        ),
+    ));
+
+    let error = engine
+        .apply_command(SessionCommand::DebugForkNonCanonical {
+            request,
+            reply: CommandReply::discard(),
+        })
+        .expect_err("gateway unlock failure must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected private gateway unlock failure")
+    );
+    assert_eq!(engine.graph.debug_non_canonical_branch_count(), 1);
+    assert_eq!(engine.event_log_len(), 1);
+    assert!(!engine.debug_branch_required());
+    assert!(matches!(
+        engine.snapshot().state,
+        EngineState::Paused { .. }
+    ));
+}
+
 #[test]
 fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
     assert_eq!(
