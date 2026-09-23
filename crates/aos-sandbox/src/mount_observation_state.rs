@@ -126,6 +126,10 @@ impl CurrentMountFilesystemInventoryV1 {
         &self.resources
     }
 
+    pub(crate) fn into_resources(self) -> DurableMountInventorySnapshotV1 {
+        self.resources
+    }
+
     /// Borrows the complete exact Mount source-acquisition snapshot.
     #[must_use]
     pub const fn source_acquisitions(&self) -> &DurableMountSourceAcquisitionInventorySnapshotV1 {

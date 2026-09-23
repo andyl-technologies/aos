@@ -157,6 +157,8 @@ pub enum AttachmentSourceActionV1 {
         acquisition_id: [u8; 32],
         mount_handle: [u8; 32],
         lifecycle: MountLifecycle,
+        /// Whether the exact detached-create receipt is durably custodied.
+        consume_attempt_recorded: bool,
     },
     /// Exact receipt and post-attach evidence may close Consume custody.
     CompleteConsume {
@@ -228,6 +230,20 @@ impl CurrentAttachmentSourcePlanV1 {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.plan.bytes
+    }
+
+    /// Returns the live target and resource snapshot for a following Mount decision.
+    ///
+    /// Consuming this nonauthorizing source plan does not grant a Mount effect;
+    /// resource reconciliation must independently recheck both returned inputs.
+    #[must_use]
+    pub fn into_mount_reconciliation_inputs(
+        self,
+    ) -> (
+        CurrentNamespaceTarget,
+        crate::mount_attempt::DurableMountInventorySnapshotV1,
+    ) {
+        (self.target, self.inventory.into_resources())
     }
 
     pub(super) fn recheck<T>(
@@ -839,6 +855,7 @@ fn decide(
                     acquisition_id,
                     mount_handle: *resource.mount_handle(),
                     lifecycle: resource.lifecycle(),
+                    consume_attempt_recorded: false,
                 });
             }
             if !selected.consume_attempted {
@@ -846,6 +863,7 @@ fn decide(
                     acquisition_id,
                     mount_handle: *resource.mount_handle(),
                     lifecycle: resource.lifecycle(),
+                    consume_attempt_recorded: false,
                 });
             }
             if must_release && !selected.consume_completed {
@@ -907,6 +925,7 @@ fn decide(
                 acquisition_id,
                 mount_handle: *resource.mount_handle(),
                 lifecycle: resource.lifecycle(),
+                consume_attempt_recorded: true,
             })
         }
         MountSourceAcquisitionPhase::MOUNT_SOURCE_ACQUISITION_PHASE_RELEASING => {

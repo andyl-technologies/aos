@@ -24,6 +24,9 @@ use crate::attachment_slot_state::{
     self, AttachmentSlotMutationV1, AttachmentSlotStateError, CommittedCurrentAttachmentSlotV1,
     DurableAttachmentSlotV1,
 };
+use crate::attachment_source::{
+    self, AttachmentSourceBoundsV1, AttachmentSourceError, CurrentAttachmentSourcePlanV1,
+};
 use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
@@ -336,6 +339,26 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         sources: DurableMountSourceAcquisitionInventorySnapshotV1,
     ) -> Result<CurrentMountFilesystemInventoryV1, MountFilesystemInventoryError> {
         CurrentMountFilesystemInventoryV1::join(self.journal, resources, sources)
+    }
+
+    /// Selects one nonauthorizing source-custody action from exact current state.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired state, stale Host or Mount observations,
+    /// conflicting custody, and invalid provider bounds.
+    pub fn plan_current_source<T>(
+        &mut self,
+        desired: DurableAttachmentDesiredStateV1,
+        inventory: CurrentMountFilesystemInventoryV1,
+        target: CurrentNamespaceTarget,
+        bounds: AttachmentSourceBoundsV1,
+        clock: &mut T,
+    ) -> Result<CurrentAttachmentSourcePlanV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::plan_current(self.journal, desired, inventory, target, bounds, clock)
     }
 
     /// Joins a fresh Mount resource inventory to one current namespace target.
