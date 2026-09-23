@@ -20,7 +20,7 @@ in
     inherit (llvm) version;
     # Compiler wrappers need the GCC installation and libc headers whenever
     # invoked, including after package reference scrubbing has completed.
-    runtimeDeps = [llvm bash sed bootstrapTools stdenv.gcc stdenv.glibc stdenv.glibc.dev];
+    runtimeDeps = [llvm bash sed bootstrapTools stdenv.gcc stdenv.binutils stdenv.glibc stdenv.glibc.dev];
     phases = [
       {
         name = "install";
@@ -49,7 +49,11 @@ in
           # Mixing static libc startup code with a dynamic interpreter breaks
           # TLS initialization. compiler-rt and libunwind provide the matching
           # LLVM exception runtime without depending on libgcc_eh.a.
-          LINK_COMMON="-L$REAL_LIBC/lib --gcc-install-dir=$GCC_DIR -B$REAL_LIBC/lib -B$GCC_DIR -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind -L${buildLlvm}/lib/x86_64-unknown-linux-gnu -Wl,-dynamic-linker=$DL -Wl,-rpath,$REAL_LIBC/lib"
+          # Bazel executes linked generators during the build. Use the AOS
+          # linker that produced complete ELF outputs in the release build.
+          # Its flag must follow Bazel's own linker selection. Bazel's static
+          # archive order also needs a group for GNU BFD to resolve zlib.
+          LINK_COMMON="-L$REAL_LIBC/lib --gcc-install-dir=$GCC_DIR -B$REAL_LIBC/lib -B$GCC_DIR --rtlib=compiler-rt --unwindlib=libunwind -L${buildLlvm}/lib/x86_64-unknown-linux-gnu -Wl,-dynamic-linker=$DL -Wl,-rpath,$REAL_LIBC/lib"
 
           {
             printf '%s\n' '#!${buildBash}/bin/bash'
@@ -73,7 +77,7 @@ in
             printf '%s\n' '  esac'
             printf '%s\n' '  link_args+=("$arg")'
             printf '%s\n' 'done'
-            printf '%s\n' "exec ${buildLlvm}/bin/clang $LINK_COMMON \"\''${link_args[@]}\""
+            printf '%s\n' "exec ${buildLlvm}/bin/clang $LINK_COMMON -Wl,--start-group \"\''${link_args[@]}\" -Wl,--end-group -fuse-ld=${stdenv.binutils}/bin/ld.bfd"
           } > "$out/bin/clang"
           chmod +x "$out/bin/clang"
 
@@ -94,7 +98,7 @@ in
             printf '%s\n' '  esac'
             printf '%s\n' '  link_args+=("$arg")'
             printf '%s\n' 'done'
-            printf '%s\n' "exec ${buildLlvm}/bin/clang++ -nostdlib++ $LINK_COMMON \"\''${link_args[@]}\""
+            printf '%s\n' "exec ${buildLlvm}/bin/clang++ -nostdlib++ $LINK_COMMON -Wl,--start-group \"\''${link_args[@]}\" -Wl,--end-group -fuse-ld=${stdenv.binutils}/bin/ld.bfd"
           } > "$out/bin/clang++"
           chmod +x "$out/bin/clang++"
 
