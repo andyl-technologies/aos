@@ -14,19 +14,33 @@
 //!
 //! Each input is compact, canonical JSON with the same generation, a distinct
 //! `magic` (`AOSPNI01`, `AOSPSI01`, `AOSPBI01`, or `AOSPCI01`), and an `input`
-//! object. This stage authenticates those exact bytes but deliberately does
-//! not reinterpret the object as a compiled policy or backend readiness fact.
+//! object. Node and site inputs contain complete ordered `portable` (16) and
+//! `accounting` (22) limit arrays. Each entry is either
+//! `{"kind":"inherit"}` or
+//! `{"amount":4096,"enforcement":"zfs-quota","kind":"bounded"}` with
+//! an enforcement registered for its exact dimension. Backend input carries
+//! a strictly ordered `enforcement` array; catalog input requires empty
+//! `destinations` and `endpoints` arrays in this bounded v1. Unsupported
+//! shapes never become policy authority.
 
 use std::path::Path;
 
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
+
+use aos_sandbox_core::ResourceDimension;
 
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
+};
+use super::{
+    BackendCapabilitiesV1, BackendEnforcementSetV1, HardEnforcementV1, HardLimitRequestV1,
+    HardLimitValueV1, HardResourceKeyV1, HardResourceProfileV1, NodePolicyInputV1,
+    PORTABLE_LIMIT_DIMENSIONS, PolicyLayerV1, SitePolicyInputV1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSPDH01";
@@ -73,6 +87,73 @@ pub struct PolicyDeploymentHeadV1 {
     generation: u64,
     expires_at: i64,
     input_digests: [[u8; 32]; 4],
+}
+
+/// Retains constructor-validated node, site, and backend policy sources.
+///
+/// V1 deliberately supports only finite or inherited hard limits. Grants,
+/// namespace rules, advisory actions, nonempty catalogs, and unlimited limits
+/// require separate authenticated source contracts and are rejected here.
+pub struct PolicyDeploymentSourcesV1 {
+    node: NodePolicyInputV1,
+    site: SitePolicyInputV1,
+    backend: BackendCapabilitiesV1,
+}
+
+impl PolicyDeploymentSourcesV1 {
+    /// Returns the signed, constructor-validated node policy input.
+    #[must_use]
+    pub const fn node(&self) -> &NodePolicyInputV1 {
+        &self.node
+    }
+
+    /// Returns the signed, constructor-validated site policy input.
+    #[must_use]
+    pub const fn site(&self) -> &SitePolicyInputV1 {
+        &self.site
+    }
+
+    /// Returns the signed, constructor-validated backend capabilities.
+    #[must_use]
+    pub const fn backend(&self) -> &BackendCapabilitiesV1 {
+        &self.backend
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentEnvelopeV1<T> {
+    generation: u64,
+    input: T,
+    magic: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentLayerV1 {
+    portable: Vec<DeploymentLimitV1>,
+    accounting: Vec<DeploymentLimitV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentLimitV1 {
+    kind: String,
+    amount: Option<u64>,
+    enforcement: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentBackendV1 {
+    enforcement: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentCatalogsV1 {
+    endpoints: Vec<Value>,
+    destinations: Vec<Value>,
 }
 
 impl PolicyDeploymentHeadV1 {
@@ -150,6 +231,56 @@ pub fn verify_policy_deployment_head_v1(
     })
 }
 
+/// Decodes the signed deployment bytes into the bounded v1 typed source class.
+///
+/// The caller must first verify the exact packet and input commitments with
+/// [`verify_policy_deployment_head_v1`]. The fixed root owner also invokes this
+/// decoder before admitting a head, so it cannot durably bless an unsupported
+/// input shape.
+///
+/// # Errors
+///
+/// Returns [`PolicyDeploymentHeadErrorV1::InvalidHead`] for an unsupported
+/// feature, incomplete resource profile, mismatched generation, or malformed
+/// typed input.
+pub fn decode_policy_deployment_sources_v1(
+    inputs: &PolicyDeploymentInputsV1<'_>,
+    head: PolicyDeploymentHeadV1,
+) -> Result<PolicyDeploymentSourcesV1, PolicyDeploymentHeadErrorV1> {
+    let node: DeploymentEnvelopeV1<DeploymentLayerV1> =
+        decode_envelope(inputs.node, INPUT_MAGICS[0], head.generation)?;
+    let site: DeploymentEnvelopeV1<DeploymentLayerV1> =
+        decode_envelope(inputs.site, INPUT_MAGICS[1], head.generation)?;
+    let backend: DeploymentEnvelopeV1<DeploymentBackendV1> =
+        decode_envelope(inputs.backend, INPUT_MAGICS[2], head.generation)?;
+    let catalogs: DeploymentEnvelopeV1<DeploymentCatalogsV1> =
+        decode_envelope(inputs.catalogs, INPUT_MAGICS[3], head.generation)?;
+    if !catalogs.input.endpoints.is_empty() || !catalogs.input.destinations.is_empty() {
+        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
+    }
+
+    let node = NodePolicyInputV1::new(decode_layer(node.input)?)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    let site = SitePolicyInputV1::new(decode_layer(site.input)?)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    let enforcement = backend
+        .input
+        .enforcement
+        .iter()
+        .map(|name| decode_enforcement(name))
+        .collect::<Result<Vec<_>, _>>()?;
+    let enforcement = BackendEnforcementSetV1::new(enforcement)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    let backend = BackendCapabilitiesV1::new(enforcement, Vec::new(), Vec::new())
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+
+    Ok(PolicyDeploymentSourcesV1 {
+        node,
+        site,
+        backend,
+    })
+}
+
 /// Commits the verified head to the fixed root-owned policy authority journal.
 ///
 /// Exact packet replay is harmless. A successor must advance the protected
@@ -169,6 +300,7 @@ pub fn admit_fixed_policy_deployment_head_v1(
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
     let verified =
         verify_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
+    let _sources = decode_policy_deployment_sources_v1(inputs, verified)?;
     let (mut journal, _) = Journal::open_protected_at(
         Path::new(PROTECTED_POLICY_ROOT),
         POLICY_AUTHORITY_JOURNAL,
@@ -211,6 +343,79 @@ pub fn admit_fixed_policy_deployment_head_v1(
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(verified)
+}
+
+fn decode_envelope<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    magic: &str,
+    generation: u64,
+) -> Result<DeploymentEnvelopeV1<T>, PolicyDeploymentHeadErrorV1> {
+    let envelope: DeploymentEnvelopeV1<T> =
+        serde_json::from_slice(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    if envelope.magic != magic || envelope.generation != generation {
+        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
+    }
+    Ok(envelope)
+}
+
+fn decode_layer(wire: DeploymentLayerV1) -> Result<PolicyLayerV1, PolicyDeploymentHeadErrorV1> {
+    if wire.portable.len() != PORTABLE_LIMIT_DIMENSIONS.len()
+        || wire.accounting.len() != ResourceDimension::COUNT
+    {
+        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
+    }
+    let portable = wire
+        .portable
+        .into_iter()
+        .zip(PORTABLE_LIMIT_DIMENSIONS)
+        .map(|(limit, dimension)| decode_limit(limit, HardResourceKeyV1::Portable(dimension)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let accounting = wire
+        .accounting
+        .into_iter()
+        .zip(ResourceDimension::ALL)
+        .map(|(limit, dimension)| decode_limit(limit, HardResourceKeyV1::Accounting(dimension)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let resources = HardResourceProfileV1::new(portable, accounting)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    PolicyLayerV1::new(
+        Vec::new(),
+        resources,
+        Vec::new(),
+        Vec::new(),
+        super::CacheDomainInputV1::Inherit,
+        super::RevocationInputV1::Inherit,
+    )
+    .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)
+}
+
+fn decode_limit(
+    wire: DeploymentLimitV1,
+    key: HardResourceKeyV1,
+) -> Result<HardLimitRequestV1, PolicyDeploymentHeadErrorV1> {
+    let (value, enforcement) = match (wire.kind.as_str(), wire.amount, wire.enforcement) {
+        ("inherit", None, None) => (HardLimitValueV1::Inherit, None),
+        ("bounded", Some(amount), Some(name)) => (
+            HardLimitValueV1::Bounded(amount),
+            Some(decode_enforcement(&name)?),
+        ),
+        _ => return Err(PolicyDeploymentHeadErrorV1::InvalidHead),
+    };
+    HardLimitRequestV1::new(key, value, enforcement)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)
+}
+
+fn decode_enforcement(name: &str) -> Result<HardEnforcementV1, PolicyDeploymentHeadErrorV1> {
+    match name {
+        "cgroup-v2" => Ok(HardEnforcementV1::CgroupV2),
+        "broker-ledger" => Ok(HardEnforcementV1::BrokerLedger),
+        "zfs-quota" => Ok(HardEnforcementV1::ZfsQuota),
+        "node-bounded-shared-residency" => Ok(HardEnforcementV1::NodeBoundedSharedResidency),
+        "hard-isolated-residency" => Ok(HardEnforcementV1::HardIsolatedResidency),
+        "combined-file-descriptor" => Ok(HardEnforcementV1::CombinedFileDescriptor),
+        "combined-memory-accounting" => Ok(HardEnforcementV1::CombinedMemoryAccounting),
+        _ => Err(PolicyDeploymentHeadErrorV1::InvalidHead),
+    }
 }
 
 fn verify_historical_packet(
