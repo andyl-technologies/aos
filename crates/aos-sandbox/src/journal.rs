@@ -3650,9 +3650,9 @@ mod tests {
             RecordNamespace::AttachmentSourceDispatch,
             RecordNamespace::StorageGuestRootPublicationAttempt,
         ];
-        for namespace in namespaces {
+        for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;
-            assert_ne!(code, 0);
+            assert_eq!(code, u8::try_from(index + 1).unwrap());
             assert_eq!(RecordNamespace::from_byte(code).unwrap(), namespace);
         }
         for code in [0, 255] {
