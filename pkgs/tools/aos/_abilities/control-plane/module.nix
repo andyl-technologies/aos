@@ -246,7 +246,8 @@
     };
   };
 
-  producers = [hostStageReceived configGroup];
+  graphEnabled = config.aos.services."control-plane.aos-graph-compile".enable;
+  activationEnabled = config.aos.services."control-plane.aos-activate".enable;
 in {
   options.aos.config.unitGraph = {
     enable = lib.mkOption {
@@ -269,8 +270,22 @@ in {
       };
     }
     (serviceManagement.producerModule {
-      inherit config lib producers;
-      enabled = cfg.enable && hostStage;
+      inherit config lib;
+      producers = [hostStageReceived];
+      enabled = graphEnabled || activationEnabled;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [configGroup];
+      enabled = activationEnabled;
+    })
+    (lib.mkIf activationEnabled {
+      assertions = [
+        {
+          assertion = graphEnabled;
+          message = "AOS activation requires the graph compilation service";
+        }
+      ];
     })
   ];
 }

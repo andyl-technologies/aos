@@ -57,7 +57,7 @@
     package = pkgs.systemd;
     implementation = "service-lifecycle";
   };
-  evaluate = selection:
+  evaluateWith = selection: serviceOverrides:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -76,6 +76,7 @@
             aos.config.unitGraph.enable = true;
           };
         }
+        serviceOverrides
       ];
       packageModules = [
         {
@@ -96,6 +97,7 @@
         };
       };
     };
+  evaluate = selection: evaluateWith selection {};
   emptySelection = {
     instances = {};
     bindings = {};
@@ -110,6 +112,13 @@
     requirements = current.requirements // additions.requirements;
   };
   initial = evaluate emptySelection;
+  activationDisabled = evaluateWith emptySelection {
+    aos.services."control-plane.aos-activate".enable = lib.mkForce false;
+  };
+  allDisabled = evaluateWith emptySelection {
+    aos.services."control-plane.aos-activate".enable = lib.mkForce false;
+    aos.services."control-plane.aos-graph-compile".enable = lib.mkForce false;
+  };
   authoredSelection = select initial.config.aos.abilities;
   composedSelection = mergeSelection emptySelection authoredSelection;
   composed = evaluate composedSelection;
@@ -153,6 +162,8 @@
   ];
 in
   assert builtins.length (builtins.attrNames initial.config.aos.abilities.requests) > 0;
+  assert !(activationDisabled.config.aos.abilities.requests ? "aos:aos-config");
+  assert !(allDisabled.config.aos.abilities.requests ? "aos:host-stage-received");
   assert initrd.config.aos.abilities.requests == {};
   assert builtins.length (builtins.attrNames abilities.bindings) > 0;
   assert abilities.compositionPendingRequests == {};

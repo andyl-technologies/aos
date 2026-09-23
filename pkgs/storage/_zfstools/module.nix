@@ -56,6 +56,7 @@
   };
   intervalNames = builtins.attrNames cfg.intervals;
   enabledIntervals = builtins.filter (name: cfg.intervals.${name}.enable) intervalNames;
+  activeIntervals = builtins.filter (name: config.aos.services."zfs-auto-snapshot.${name}".enable) enabledIntervals;
   unitName = name: "zfs-auto-snapshot-${name}";
 
   command = artifact: entry_point: arguments: {
@@ -173,7 +174,7 @@
           randomized_delay_millis = cfg.randomizedDelayMillis;
         };
       })
-      enabledIntervals;
+      activeIntervals;
   };
   intervalService = name: let
     scheduleKey = "${name}-schedule";
@@ -275,7 +276,7 @@ in {
     {
       aos.services =
         lib.optionalAttrs (cfg.datasets != []) {
-          "zfs-auto-snapshot.prepare" = prepareService // {enable = cfg.enable;};
+          "zfs-auto-snapshot.prepare" = prepareService // {enable = activeIntervals != [];};
         }
         // builtins.listToAttrs (builtins.map (name: {
             name = "zfs-auto-snapshot.${name}";
@@ -295,10 +296,18 @@ in {
         }
       ];
     })
+    (lib.mkIf (activeIntervals != [] && cfg.datasets != []) {
+      assertions = [
+        {
+          assertion = config.aos.services."zfs-auto-snapshot.prepare".enable;
+          message = "enabled ZFS snapshot intervals require the dataset preparation service";
+        }
+      ];
+    })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [schedules];
-      enabled = cfg.enable;
+      enabled = activeIntervals != [];
     })
   ];
 }

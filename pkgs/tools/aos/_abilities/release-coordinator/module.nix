@@ -104,14 +104,15 @@
         (groupName: resultOf "${groupName}-group" "group-name")
         definition.supplementaryGroups;
     };
-  identityFragments =
+  identityFragmentsFor = active:
     lib.concatMap
     (name: let
       definition = identities.${name};
-    in [
-      (group name)
-      (principal name definition)
-    ])
+    in
+      lib.optionals active.${name} [
+        (group name)
+        (principal name definition)
+      ])
     (builtins.attrNames identities);
   storage = {
     key,
@@ -454,9 +455,14 @@
       hardening = hardening true;
     };
 
-  producersFor = credentials:
-    identityFragments
-    ++ [
+  producersFor = credentials: active:
+    (identityFragmentsFor {
+      aos-release = active.release || active.backup;
+      aos-release-timestamp = active.timestamp || active.backup;
+      aos-release-backup = active.backup || active."restore-check";
+      aos-release-monitor = active.alert;
+    })
+    ++ lib.optionals (active.release || active.backup) [
       (storage {
         key = "release-state";
         name = "aos-release-coordinator";
@@ -465,6 +471,8 @@
         path = "/var/lib/aos-release-coordinator";
         owner = "aos-release";
       })
+    ]
+    ++ lib.optionals active.release [
       (storage {
         key = "release-runtime";
         name = "aos-release-coordinator";
@@ -473,6 +481,8 @@
         path = "/run/aos-release-coordinator";
         owner = "aos-release";
       })
+    ]
+    ++ lib.optionals (active.timestamp || active.backup) [
       (storage {
         key = "timestamp-state";
         name = "aos-release-timestamp";
@@ -481,6 +491,8 @@
         path = "/var/lib/aos-release-timestamp";
         owner = "aos-release-timestamp";
       })
+    ]
+    ++ lib.optionals active.timestamp [
       (storage {
         key = "timestamp-runtime";
         name = "aos-release-timestamp";
@@ -489,6 +501,8 @@
         path = "/run/aos-release-timestamp";
         owner = "aos-release-timestamp";
       })
+    ]
+    ++ lib.optionals (active.backup || active."restore-check") [
       (storage {
         key = "backup-state";
         name = "aos-release-backup";
@@ -497,6 +511,8 @@
         path = "/var/lib/aos-release-backup";
         owner = "aos-release-backup";
       })
+    ]
+    ++ lib.optionals active.backup [
       (storage {
         key = "backup-runtime";
         name = "aos-release-backup";
@@ -505,6 +521,8 @@
         path = "/run/aos-release-backup";
         owner = "aos-release-backup";
       })
+    ]
+    ++ lib.optionals active."restore-check" [
       (storage {
         key = "restore-runtime";
         name = "aos-release-restore-check";
@@ -513,6 +531,8 @@
         path = "/run/aos-release-restore-check";
         owner = "aos-release-backup";
       })
+    ]
+    ++ lib.optionals active.alert [
       (storage {
         key = "monitor-state";
         name = "aos-release-monitor";
@@ -529,15 +549,15 @@
         path = "/run/aos-release-monitor";
         owner = "aos-release-monitor";
       })
-      networkReadiness
-      (schedule "timestamp" cfg.timestampCalendar)
-      (schedule "backup" cfg.backupCalendar)
-      (schedule "restore-check" cfg.restoreCheckCalendar)
     ]
-    ++ credentialFragments "release" credentials.release
-    ++ credentialFragments "timestamp" credentials.timestamp
-    ++ credentialFragments "backup" credentials.backup
-    ++ credentialFragments "alert" credentials.alert;
+    ++ lib.optionals (active.release || active.timestamp) [networkReadiness]
+    ++ lib.optional active.timestamp (schedule "timestamp" cfg.timestampCalendar)
+    ++ lib.optional active.backup (schedule "backup" cfg.backupCalendar)
+    ++ lib.optional active."restore-check" (schedule "restore-check" cfg.restoreCheckCalendar)
+    ++ lib.optionals active.release (credentialFragments "release" credentials.release)
+    ++ lib.optionals active.timestamp (credentialFragments "timestamp" credentials.timestamp)
+    ++ lib.optionals active.backup (credentialFragments "backup" credentials.backup)
+    ++ lib.optionals active.alert (credentialFragments "alert" credentials.alert);
 
   configuredPrograms = {
     release = configuredProgram cfg.releaseProgram;
@@ -552,7 +572,6 @@
     backup = cfg.backupCredentials;
     alert = cfg.alertCredentials;
   };
-  configuredProducers = producersFor configuredCredentials;
   configuredServices = {
     release = releaseService configuredPrograms configuredCredentials;
     timestamp = timestampService configuredPrograms configuredCredentials;
@@ -563,11 +582,27 @@
     alert-backup = alertService configuredPrograms configuredCredentials "backup";
     alert-restore-check = alertService configuredPrograms configuredCredentials "restore-check";
   };
+  activeServices =
+    builtins.mapAttrs
+    (name: _: config.aos.services."release-coordinator.${name}".enable)
+    configuredServices;
+  anyServiceEnabled = builtins.any (name: activeServices.${name}) (builtins.attrNames configuredServices);
+  activeRoles =
+    activeServices
+    // {
+      alert =
+        builtins.any
+        (name: activeServices."alert-${name}")
+        ["release" "timestamp" "backup" "restore-check"];
+    };
+  allRoles = builtins.mapAttrs (_: _: true) configuredServices // {alert = true;};
+  configuredProducers = producersFor configuredCredentials allRoles;
+  activeProducers = producersFor configuredCredentials activeRoles;
   allCredentialSources =
-    builtins.attrValues cfg.releaseCredentials
-    ++ builtins.attrValues cfg.timestampCredentials
-    ++ builtins.attrValues cfg.backupCredentials
-    ++ builtins.attrValues cfg.alertCredentials;
+    lib.optionals activeServices.release (builtins.attrValues cfg.releaseCredentials)
+    ++ lib.optionals activeServices.timestamp (builtins.attrValues cfg.timestampCredentials)
+    ++ lib.optionals activeServices.backup (builtins.attrValues cfg.backupCredentials)
+    ++ lib.optionals activeRoles.alert (builtins.attrValues cfg.alertCredentials);
 in {
   options.aos.release.coordinator = {
     enable = lib.mkOption {
@@ -644,37 +679,56 @@ in {
         (lib.mapAttrs' (name: value: lib.nameValuePair "release-coordinator.${name}" value) configuredServices);
       assertions = [
         {
-          assertion = !cfg.enable || cfg.releaseProgram != null;
+          assertion = !activeServices.release || cfg.releaseProgram != null;
           message = "releaseCoordinator.releaseProgram must be configured";
         }
         {
-          assertion = !cfg.enable || cfg.timestampProgram != null;
+          assertion = !activeServices.timestamp || cfg.timestampProgram != null;
           message = "releaseCoordinator.timestampProgram must be configured";
         }
         {
-          assertion = !cfg.enable || cfg.backupProgram != null;
+          assertion = !activeServices.backup || cfg.backupProgram != null;
           message = "releaseCoordinator.backupProgram must be configured";
         }
         {
-          assertion = !cfg.enable || cfg.restoreCheckProgram != null;
+          assertion = !activeServices."restore-check" || cfg.restoreCheckProgram != null;
           message = "releaseCoordinator.restoreCheckProgram must be configured";
         }
         {
-          assertion = !cfg.enable || cfg.alertProgram != null;
+          assertion = !activeRoles.alert || cfg.alertProgram != null;
           message = "releaseCoordinator.alertProgram must be configured";
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || builtins.length allCredentialSources == builtins.length (lib.unique allCredentialSources);
           message = "release maintenance roles must use disjoint named credentials";
+        }
+        {
+          assertion = !activeServices.release || activeServices."alert-release";
+          message = "release maintenance requires its failure alert service";
+        }
+        {
+          assertion = !activeServices.timestamp || activeServices."alert-timestamp";
+          message = "timestamp maintenance requires its failure alert service";
+        }
+        {
+          assertion = !activeServices.backup || activeServices."alert-backup";
+          message = "backup maintenance requires its failure alert service";
+        }
+        {
+          assertion =
+            !activeServices."restore-check"
+            || (activeServices.backup && activeServices."alert-restore-check");
+          message = "restore verification requires backup and its failure alert service";
         }
       ];
     }
     (serviceManagement.producerModule {
       inherit config lib;
       producers = configuredProducers;
-      enabled = cfg.enable;
+      inherit activeProducers;
+      enabled = anyServiceEnabled;
     })
   ];
 }

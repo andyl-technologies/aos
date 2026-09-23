@@ -26,7 +26,7 @@
     backupCredentials.backup-key = "backup-encryption-key";
     alertCredentials.alert-token = "alert-delivery-token";
   };
-  evaluate = releaseCoordinator:
+  evaluateWith = releaseCoordinator: serviceOverrides:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -44,6 +44,7 @@
           };
           aos.release.coordinator = releaseCoordinator;
         }
+        serviceOverrides
       ];
       packageModules = [
         (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
@@ -54,8 +55,20 @@
         }
       ];
     };
+  evaluate = releaseCoordinator: evaluateWith releaseCoordinator {};
   disabled = evaluate {};
   enabled = evaluate enabledConfiguration;
+  timestampDisabled = evaluateWith enabledConfiguration {
+    aos.services."release-coordinator.timestamp".enable = lib.mkForce false;
+  };
+  allServicesDisabled = evaluateWith enabledConfiguration {
+    aos.services = builtins.listToAttrs (builtins.map
+      (name: {
+        name = "release-coordinator.${name}";
+        value.enable = lib.mkForce false;
+      })
+      ["release" "timestamp" "backup" "restore-check" "alert-release" "alert-timestamp" "alert-backup" "alert-restore-check"]);
+  };
   missingPrograms = evaluate {enable = true;};
   sharedCredential = evaluate (enabledConfiguration
     // {
@@ -104,6 +117,10 @@ in
   assert !assertionsHold sharedCredential;
   assert !(abilities disabled).instances ? "aos:release-coordinator";
   assert releaseCoordinatorRequests disabled == {};
+  assert releaseCoordinatorRequests allServicesDisabled == {};
+  assert !(requests timestampDisabled ? "aos:timestamp-schedule");
+  assert (requests timestampDisabled) ? "aos:timestamp-state";
+  assert !(requests timestampDisabled ? "aos:timestamp-runtime");
   assert enabled.config.aos.services."release-coordinator.release".enable;
   assert !enabled.config.aos.services."release-coordinator.release".autoStart;
   assert (abilities disabled).requirementTemplates == (abilities enabled).requirementTemplates;
