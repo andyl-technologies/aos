@@ -455,6 +455,12 @@
     systemName = "server";
   };
   serverSystem = serverSystemState.system;
+  renderedEvalSuites = import ./lib/testing/eval.nix {
+    inherit pkgs lib;
+    mkDeployableSystem = mkSystem;
+    mkSystem = mkFixtureSystem;
+    system = serverSystem;
+  };
   # Single-VM checks use a writable ext4 test disk assembled by
   # lib/testing/vm.nix. Evaluate their system with the matching root contract;
   # the production server system remains EROFS + dm-verity and is exercised by
@@ -1699,12 +1705,6 @@ in {
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };
-    eval-standalone = import ./lib/testing/eval.nix {
-      inherit pkgs lib;
-      mkDeployableSystem = mkSystem;
-      mkSystem = mkFixtureSystem;
-      system = serverSystem;
-    };
     abilities = import ./tests/abilities {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;
@@ -1733,13 +1733,13 @@ in {
     eval-suites =
       {
         core = eval;
-        rendered-system = eval-standalone;
         config-eval = config-eval;
         config-manifest = config-manifest;
         config-provenance = config-provenance;
         config-materialize = config-materialize;
         darling-harness = darling-harness;
       }
+      // renderedEvalSuites
       // builtins.listToAttrs (map (variant: {
         name = "system-${variant}";
         value = system-structure-variants.${variant};

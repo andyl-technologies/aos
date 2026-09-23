@@ -118,8 +118,9 @@ crates/target/debug/aos fmt --check
 crates/target/debug/aos test eval
 ```
 
-`aos test eval` runs the complete evaluation suite, including rendered-system
-fixtures and each discovered system variant, through separate Nix evaluators.
+`aos test eval` runs the complete evaluation suite, including focused
+rendered-system, module-ABI, runtime-role, registry-policy, and storage-profile
+checks plus each discovered system variant, through separate Nix evaluators.
 Use `aos test eval <suite>` to run one suite while iterating.
 `checks.eval` is the smaller core gate for a quick local pass; the other suites
 are available individually under `checks.eval-suites` and in flake checks.

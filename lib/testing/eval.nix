@@ -1,11 +1,10 @@
-# lib/testing/eval.nix — Layer 1: Evaluation and rendered-artifact checks
+# lib/testing/eval.nix — Focused evaluation and rendered-artifact checks
 #
 # No VMs and no host tools. Instantiation forces the module graph to resolve;
 # the derivation then runs AOS-built tools over evaluated artifacts that need
 # command-line validation.
 #
-# Usage:
-#   nix-build -A checks.eval
+# Each returned derivation forces only the fixtures used by its assertions.
 {
   pkgs,
   lib,
@@ -13,6 +12,21 @@
   mkSystem,
   mkDeployableSystem,
 }: let
+  mkPureCheck = name: assertions:
+    builtins.derivation {
+      name = "aos-eval-${name}-0";
+      system = lib.system;
+      builder = "${pkgs.bash}/bin/bash";
+      args = [
+        "-c"
+        ''
+          set -euo pipefail
+          ${assertions}
+          echo PASS > "$out"
+        ''
+      ];
+    };
+
   baseLib = system.config.aos.config.evalAtBoot.baseLib;
   abilityRequests = system.config.aos.abilities.requests;
   imageBootCommitLifecycle = abilityRequests."aos:image-boot-commit-lifecycle".parameters;
@@ -879,11 +893,11 @@
     else if bareMetalStorageSystem.config.system.build.installBundle == null
     then throw "ZFS-backed bare-metal systems must expose an installer bundle"
     else "ok";
-in
+in {
   # Use a raw derivation with AOS bash so we don't pull in host tools. The
   # builtins.toJSON calls still force the system config at instantiation time;
   # the builder covers rendered artifacts that require AOS command-line tools.
-  builtins.derivation {
+  rendered-system = builtins.derivation {
     name = "aos-eval-checks-0";
     system = lib.system;
     builder = "${pkgs.bash}/bin/bash";
@@ -895,7 +909,7 @@ in
         jq=${pkgs.jq}/bin/jq
         systemd_analyze=${pkgs.systemd}/bin/systemd-analyze
         coreutils=${pkgs.coreutils}/bin
-        echo "==> AOS Evaluation Checks"
+        echo "==> AOS Rendered-System Evaluation Checks"
         echo ""
 
         artifact_count=0
@@ -928,22 +942,15 @@ in
 
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "config artifacts: $artifact_count frozen closure root(s) verified"
-        echo "base-lib ABI:    follows source-backed image module overrides (${baseLibFollowsImageAbi})"
-        echo "inline modules:  rejected for image/base-lib outputs (${inlineImageModuleRejected})"
         echo "config input ABI: advertised in os-release and toplevel metadata (2)"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
-        echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
-        echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
-        echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       package-owned typed ruleset (${firewallUsesTypedRuleset})"
         echo "derivations:    meta.execute uses build execution identity (${executionCompatibilityUsesBuildExecutionSystem})"
         echo "named outputs:  preserve ${namedOutputsPreservePackageMetadata}"
-        echo "bare metal:    encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
 
         # Force the build attributes to ensure they evaluate
         echo "toplevel:       ${system.config.system.build.toplevel.name}"
@@ -952,8 +959,28 @@ in
         echo "systemPkgs:     ${builtins.toString (builtins.length system.config.environment.systemPackages)}"
 
         echo ""
-        echo "==> All eval checks passed."
+        echo "==> Rendered-system eval checks passed."
         echo "PASS" > $out
       ''
     ];
-  }
+  };
+
+  module-abi = mkPureCheck "module-abi" ''
+    echo "base-lib ABI: follows source-backed image module overrides (${baseLibFollowsImageAbi})"
+    echo "inline modules: rejected for image/base-lib outputs (${inlineImageModuleRejected})"
+  '';
+
+  runtime-roles = mkPureCheck "runtime-roles" ''
+    echo "server SSH: waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
+    echo "edge boundary: image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
+  '';
+
+  registry-policy = mkPureCheck "registry-policy" ''
+    echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
+    echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
+  '';
+
+  storage-profile = mkPureCheck "storage-profile" ''
+    echo "bare metal: encrypted ZFS zvol slots and authoritative ESPs (${bareMetalStorageProfile})"
+  '';
+}
