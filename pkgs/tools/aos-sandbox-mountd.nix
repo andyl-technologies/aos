@@ -20,7 +20,7 @@
     inherit src;
     name = "aos-sandbox-mountd-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-9WcNC5RWMw3rqMFTdHEF73ai4Edf6lxxkOGviTNxfw0=";
+    hash = "sha256-KZOyMSlKc2Qr4LjVk6+iyd0jnCpsGvvAeqzbcFDtopQ=";
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";

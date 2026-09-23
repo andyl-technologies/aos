@@ -262,7 +262,9 @@ fn wait_ready(
     let mut descriptors = [PollFd::new(&fd, interest)];
     match poll(&mut descriptors, Some(&timeout)) {
         Ok(0) => Err(OwnershipSessionTransportError::Unavailable),
-        Ok(_) if descriptors[0].revents() == interest => Ok(()),
+        // A peer may close immediately after sending its last record, leaving
+        // readable data and HUP set together. Read the queued record first.
+        Ok(_) if descriptors[0].revents().contains(interest) => Ok(()),
         Ok(_) => Err(OwnershipSessionTransportError::Unavailable),
         Err(rustix::io::Errno::INTR) => Ok(()),
         Err(_) => Err(OwnershipSessionTransportError::Unavailable),
@@ -420,5 +422,25 @@ mod tests {
             run_exchange(true),
             Err(OwnershipSessionTransportError::IntegrityFailure),
         );
+    }
+
+    #[test]
+    fn queued_record_remains_readable_after_peer_hangup() {
+        let (mut receiver, endpoint) = SeqpacketSocket::pair_with_record_subjects()
+            .unwrap_or_else(|error| panic!("test socket pair failed: {error}"));
+        let uid = receiver.peer().credentials().uid();
+        let gid = receiver.peer().credentials().gid();
+        let mut sender = SeqpacketSocket::from_owned(endpoint)
+            .unwrap_or_else(|error| panic!("test sender adoption failed: {error}"));
+        sender
+            .send(b"last record")
+            .unwrap_or_else(|error| panic!("test record send failed: {error}"));
+        drop(sender);
+
+        let until = production_deadline_after(Duration::from_secs(1))
+            .unwrap_or_else(|error| panic!("test deadline failed: {error}"));
+        let record = receive_record(&mut receiver, 64, uid, gid, until)
+            .unwrap_or_else(|error| panic!("queued record was lost: {error}"));
+        assert_eq!(record, b"last record");
     }
 }
