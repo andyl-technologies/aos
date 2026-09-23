@@ -67,6 +67,88 @@ struct Provisioning {
     package_binding: ObjectDigest,
 }
 
+/// Builds the exact sealed launch record supplied to inherited FD 4.
+///
+/// The Host must publish the returned verifying key in its protected peer
+/// binding and deliver the encoded bytes through a fully sealed memfd.
+pub struct GuestAgentLaunchRecordV1 {
+    runtime: AgentRuntimeBindingV1,
+    channel: ObjectDigest,
+    instance: [u8; 16],
+    signing_key: SigningKey,
+    features: AgentFeatureSetV1,
+    package_binding: ObjectDigest,
+}
+
+impl GuestAgentLaunchRecordV1 {
+    /// Constructs one non-sentinel launch record for a protected Host owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtectedGuestAgentErrorV1::InvalidProvisioning`] for a zero
+    /// channel, instance, signing seed, or package binding.
+    pub fn new(
+        runtime: AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        instance: [u8; 16],
+        signing_seed: [u8; 32],
+        features: AgentFeatureSetV1,
+        package_binding: ObjectDigest,
+    ) -> Result<Self, ProtectedGuestAgentErrorV1> {
+        if channel.as_bytes() == &[0; 32]
+            || instance == [0; 16]
+            || signing_seed == [0; 32]
+            || package_binding.as_bytes() == &[0; 32]
+        {
+            return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
+        }
+        Ok(Self {
+            runtime,
+            channel,
+            instance,
+            signing_key: SigningKey::from_bytes(&signing_seed),
+            features,
+            package_binding,
+        })
+    }
+
+    /// Returns the public key the Host must bind to this exact channel.
+    #[must_use]
+    pub fn verifying_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
+    /// Encodes the canonical 258-byte `AOSAGP01` sealed-memfd payload.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let runtime = &self.runtime;
+        let mut bytes = Vec::with_capacity(PROVISIONING_BYTES);
+        bytes.extend_from_slice(PROVISIONING_MAGIC);
+        bytes.extend_from_slice(runtime.sandbox().as_bytes());
+        bytes.extend_from_slice(runtime.incarnation().as_bytes());
+        bytes.extend_from_slice(&runtime.assignment_epoch().get().to_be_bytes());
+        bytes.extend_from_slice(runtime.assignment_digest().as_bytes());
+        bytes.extend_from_slice(&runtime.desired_generation().get().to_be_bytes());
+        bytes.extend_from_slice(&runtime.namespace_generation().get().to_be_bytes());
+        bytes.extend_from_slice(runtime.payload_boot_id());
+        bytes.extend_from_slice(self.channel.as_bytes());
+        bytes.extend_from_slice(&self.instance);
+        bytes.extend_from_slice(&self.signing_key.to_bytes());
+        let feature_mask = self
+            .features
+            .as_slice()
+            .iter()
+            .fold(0_u16, |mask, feature| {
+                mask | (1_u16 << (*feature as u8 - 1))
+            });
+        bytes.extend_from_slice(&feature_mask.to_be_bytes());
+        bytes.extend_from_slice(self.package_binding.as_bytes());
+        let checksum: [u8; 32] = Sha256::digest(&bytes).into();
+        bytes.extend_from_slice(&checksum);
+        bytes
+    }
+}
+
 /// Applies a previously decoded operation within the guest-local effect owner.
 ///
 /// An implementation must durably resolve a side effect before returning an
@@ -86,6 +168,7 @@ pub trait GuestOperationEffectsV1 {
         request: &AgentOperationRequestV1,
         runtime: &AgentRuntimeBindingV1,
         channel: ObjectDigest,
+        deadline: Instant,
     ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1>;
 }
 
@@ -116,6 +199,7 @@ impl GuestOperationEffectsV1 for RejectingGuestEffectsV1 {
         request: &AgentOperationRequestV1,
         _runtime: &AgentRuntimeBindingV1,
         _channel: ObjectDigest,
+        _deadline: Instant,
     ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1> {
         match request.operation() {
             AgentExecutionOperationV1::Authorize { execution, .. } if !self.quiesced => {
@@ -227,10 +311,17 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                 return Err(ProtectedGuestAgentErrorV1::SequenceMismatch);
             }
             validate_operation(&request, &provisioning)?;
+            check_deadline(deadline)?;
 
-            let (phase, result) =
-                self.effects
-                    .apply(&request, &provisioning.runtime, provisioning.channel)?;
+            let (phase, result) = self.effects.apply(
+                &request,
+                &provisioning.runtime,
+                provisioning.channel,
+                deadline,
+            )?;
+            // A late durable effect is recovered from its owner; it cannot
+            // become a fresh response on an expired exchange.
+            check_deadline(deadline)?;
             validate_outcome_phase(request.operation(), phase)?;
             let outcome = AgentExecutionOutcomeV1::new(&request, phase, result)?;
             let message =
@@ -466,6 +557,7 @@ fn receive(
     deadline: Instant,
 ) -> Result<Vec<u8>, ProtectedGuestAgentErrorV1> {
     loop {
+        check_deadline(deadline)?;
         match socket.receive(MAX_AGENT_FRAME_BYTES) {
             Ok(record) => return Ok(record.payload().to_vec()),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
@@ -487,6 +579,7 @@ fn send(
     deadline: Instant,
 ) -> Result<(), ProtectedGuestAgentErrorV1> {
     loop {
+        check_deadline(deadline)?;
         match socket.send(bytes) {
             Ok(()) => return Ok(()),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
@@ -499,6 +592,14 @@ fn send(
             }
             Err(error) => return Err(error.into()),
         }
+    }
+}
+
+fn check_deadline(deadline: Instant) -> Result<(), ProtectedGuestAgentErrorV1> {
+    if Instant::now() >= deadline {
+        Err(ProtectedGuestAgentErrorV1::Deadline)
+    } else {
+        Ok(())
     }
 }
 
@@ -600,4 +701,68 @@ pub enum ProtectedGuestAgentErrorV1 {
     /// A signed outcome packet cannot be encoded.
     #[error("guest-agent signed outcome is invalid: {0}")]
     SignedOutcome(#[from] SignedAgentOutcomePacketErrorV1),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_record_round_trips_the_exact_sealed_layout() {
+        let runtime = AgentRuntimeBindingV1::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            ObjectDigest::from_bytes([4; 32]),
+            DesiredGeneration::new(5),
+            NamespaceGeneration::new(6),
+            [7; 16],
+        )
+        .expect("valid runtime");
+        let features = AgentFeatureSetV1::new(vec![
+            AgentFeatureV1::Readiness,
+            AgentFeatureV1::ExecutionHandoff,
+            AgentFeatureV1::Quiesce,
+        ])
+        .expect("valid features");
+        let launch = GuestAgentLaunchRecordV1::new(
+            runtime,
+            ObjectDigest::from_bytes([8; 32]),
+            [9; 16],
+            [10; 32],
+            features.clone(),
+            ObjectDigest::from_bytes([11; 32]),
+        )
+        .expect("valid launch record");
+
+        let bytes = launch.encode();
+        assert_eq!(bytes.len(), PROVISIONING_BYTES);
+        let decoded = decode_provisioning(&bytes).expect("canonical provisioning");
+        assert_eq!(decoded.runtime, runtime);
+        assert_eq!(decoded.channel, ObjectDigest::from_bytes([8; 32]));
+        assert_eq!(decoded.instance, [9; 16]);
+        assert_eq!(decoded.features, features);
+        assert_eq!(
+            decoded.signing_key.verifying_key().to_bytes(),
+            launch.verifying_key_bytes()
+        );
+        assert_eq!(decoded.package_binding, ObjectDigest::from_bytes([11; 32]));
+
+        let mut malformed = bytes;
+        malformed[193] |= 0x40;
+        let checksum: [u8; 32] = Sha256::digest(&malformed[..226]).into();
+        malformed[226..].copy_from_slice(&checksum);
+        assert!(matches!(
+            decode_provisioning(&malformed),
+            Err(ProtectedGuestAgentErrorV1::InvalidProvisioning)
+        ));
+    }
+
+    #[test]
+    fn expired_exchange_is_rejected_before_io() {
+        assert!(matches!(
+            check_deadline(Instant::now() - Duration::from_millis(1)),
+            Err(ProtectedGuestAgentErrorV1::Deadline)
+        ));
+    }
 }
