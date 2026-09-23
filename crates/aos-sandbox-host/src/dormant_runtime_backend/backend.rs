@@ -8,8 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use aos_sandbox::runtime_execution::{
-    DormantRuntimeExecutionClaimV1, JournalRuntimeExecutionError,
+    DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
+    ExecutionJournalRecoveryTokenV1, JournalRuntimeExecutionError, RuntimeExecutionEvidenceError,
     agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
+    completion_from_backend_observation_v1,
 };
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
@@ -25,11 +27,11 @@ use aos_sandbox_core::runtime_backend::{
     BackendOperationSequenceV1, BackendProbeReportV1, BackendRecoveryOutcome,
     BackendRuntimeInspectionV1, BackendRuntimePhaseV1, BackendStartObservationV1,
     BackendStopDeadlineV1, BackendStopObservationV1, DestroyableRuntime, DestroyedRuntime,
-    DurableExecutionEffectV1, EffectOperationV1, EffectPhaseV1, FrozenRuntime, PreparedRuntime,
-    ResolvedRuntimePlanV1, RunningRuntime, RuntimeBackend, RuntimeBackendError,
-    RuntimeHandleCommitmentV1, RuntimeRecoveryToken, SignedBackendExecutionInspectionV1,
-    SignedBackendRuntimeInspectionV1, StoppableRuntime, StoppedRuntime,
-    backend_execution_inspection_binding_v1,
+    DurableExecutionEffectV1, EffectOperationV1, EffectPhaseV1, ExecutionEffectTransitionV1,
+    FrozenRuntime, PreparedRuntime, ResolvedRuntimePlanV1, RunningRuntime, RuntimeBackend,
+    RuntimeBackendError, RuntimeHandleCommitmentV1, RuntimeRecoveryToken,
+    SignedBackendExecutionInspectionV1, SignedBackendRuntimeInspectionV1, StoppableRuntime,
+    StoppedRuntime, backend_execution_inspection_binding_v1,
 };
 use aos_sandbox_core::{
     DecodeLimits, ExecutionId, ObjectDigest, ObservationSequence, decode_execution_spec_v1,
@@ -1498,6 +1500,63 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         Ok(())
     }
 
+    /// Settles one control effect from the queued authenticated agent observation.
+    ///
+    /// The observation sequence is durably consumed before effect completion.
+    /// If completion is ambiguous, the returned recovery token must be
+    /// resolved without redispatching the guest operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantControlCompletionErrorV1`] for stale or substituted
+    /// effect state, an absent or mismatched observation, or invalid completion
+    /// evidence. A failure after sequence consumption requires protected
+    /// recovery, never a fresh dispatch of the same effect.
+    pub fn settle_authenticated_execution_control(
+        &mut self,
+        effect: &DurableExecutionEffectV1,
+    ) -> Result<
+        ExecutionEffectTransitionV1<ExecutionJournalRecoveryTokenV1>,
+        DormantControlCompletionErrorV1,
+    > {
+        self.revalidate()?;
+        if effect.issue().operation() == EffectOperationV1::AuthorizeExecution
+            || !matches!(
+                effect.phase(),
+                EffectPhaseV1::Issued | EffectPhaseV1::Indeterminate
+            )
+            || effect.admission().currentness() != self.authority.currentness()
+            || self
+                .authority
+                .load_effect(effect.issue().idempotency().operation().as_bytes())?
+                .as_ref()
+                != Some(effect)
+        {
+            return Err(RuntimeBackendError::StateConflict.into());
+        }
+
+        let admission = effect.admission();
+        let expected = BackendExecutionInspectionRequestV1::new(
+            self.agent_evidence_authority(),
+            effect.issue().idempotency().operation(),
+            effect.issue().sequence(),
+            effect.issue().idempotency().request_digest(),
+            admission.execution(),
+            admission.specification_digest(),
+            admission.admission_commitment(),
+            *self.authority.currentness().runtime(),
+            self.authority.currentness().payload_boot_id(),
+        )
+        .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        let observation = self.peek_execution(&expected)?;
+        let evidence = completion_from_backend_observation_v1(effect, observation)?;
+
+        self.take_execution(&expected)?;
+        self.authority
+            .commit_verified_completion(effect, &evidence)
+            .map_err(Into::into)
+    }
+
     /// Verifies and submits one signed response for an ambiguous exec handoff.
     ///
     /// # Errors
@@ -2291,6 +2350,20 @@ pub enum DormantBackendHandoffErrorV1 {
     /// Fixed-root ownership or currentness validation failed.
     #[error("dormant backend protected owner failed: {0}")]
     Owner(#[from] aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerErrorV1),
+}
+
+/// Reports protected settlement failure for an authenticated control outcome.
+#[derive(Debug, thiserror::Error)]
+pub enum DormantControlCompletionErrorV1 {
+    /// The backend cannot validate or consume the exact queued observation.
+    #[error("dormant control observation is unavailable: {0}")]
+    Backend(#[from] RuntimeBackendError),
+    /// The fixed protected execution owner rejected the durable transition.
+    #[error("dormant control owner rejected completion: {0}")]
+    Owner(#[from] DormantRuntimeExecutionOwnerErrorV1),
+    /// The authenticated phase cannot complete this exact control operation.
+    #[error("dormant control completion evidence is invalid: {0}")]
+    Evidence(#[from] RuntimeExecutionEvidenceError),
 }
 
 fn agent_runtime_binding(

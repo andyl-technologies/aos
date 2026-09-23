@@ -20,10 +20,10 @@ use aos_sandbox_protocol::ValidatedRuntimeRequest;
 mod backend;
 mod composition;
 pub use backend::{
-    DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1, DormantExecutionHandleV1,
-    DormantExecutionRecoveryHandleV1, DormantForcedKillHandoffV1, DormantKillEscalationErrorV1,
-    DormantKillStopOutcomeV1, DormantLifecycleRecoveryHandleV1, DormantPendingKillV1,
-    DormantPreparedHandleV1, DormantProtectedRuntimeBackendV1,
+    DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1, DormantControlCompletionErrorV1,
+    DormantExecutionHandleV1, DormantExecutionRecoveryHandleV1, DormantForcedKillHandoffV1,
+    DormantKillEscalationErrorV1, DormantKillStopOutcomeV1, DormantLifecycleRecoveryHandleV1,
+    DormantPendingKillV1, DormantPreparedHandleV1, DormantProtectedRuntimeBackendV1,
     DormantRuntimeBackendReadinessEvidenceV1, DormantRuntimeHandleV1, SignedAgentOutcomeV1,
     SignedDormantKillDeadlineObservationV1, dormant_kill_deadline_signing_message_v1,
 };
