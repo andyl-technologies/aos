@@ -71,7 +71,7 @@ pub(crate) fn stage_sparse_checkpoint_artifact_chunks_with_boundary(
     let mut prior_chunk = None;
     while cursor < source_length {
         boundary()?;
-        let data = match rustix::fs::seek(&source_file, rustix::fs::SeekFrom::Data(cursor)) {
+        let data = match rustix::fs::seek(source_file, rustix::fs::SeekFrom::Data(cursor)) {
             Ok(data) => data,
             Err(rustix::io::Errno::NXIO) => break,
             Err(error) => {
@@ -84,7 +84,7 @@ pub(crate) fn stage_sparse_checkpoint_artifact_chunks_with_boundary(
             break;
         }
         let hole =
-            rustix::fs::seek(&source_file, rustix::fs::SeekFrom::Hole(data)).map_err(|error| {
+            rustix::fs::seek(source_file, rustix::fs::SeekFrom::Hole(data)).map_err(|error| {
                 store_error(format!(
                     "discover stopped sparse exact-checkpoint {role} hole extents: {error}"
                 ))
