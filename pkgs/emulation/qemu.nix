@@ -2833,18 +2833,18 @@ in
                    r"exit_request[^\n;]*,\s*1\)", 0),
                   ("virtio core fingerprint has one current layout",
                    virtio,
-                   r'schema\[\] = "crucible\.qemu\.virtio-core\.v2";'
-                   r".*?qemu_put_be32\(f, 2\);", 1),
+                   r'schema\[\] = "crucible\.qemu\.virtio-core\.v3";'
+                   r".*?qemu_put_be32\(f, 3\);", 1),
                   ("virtio fingerprint omits host avail-ring caches",
                    virtio_projection_queue,
                    r"shadow_avail_(?:idx|wrap_counter)", 0),
                   ("virtio providers advertise the current core layout",
                    virtio_providers,
-                   r'\.schema = "crucible\.qemu\.virtio-(?:rng|net|blk|9p|console|crucible-accelerator)\.v2",\s*'
-                   r"\.version = 2,", 6),
+                   r'\.schema = "crucible\.qemu\.virtio-(?:rng|net|blk|9p|console|crucible-accelerator)\.v3",\s*'
+                   r"\.version = 3,", 6),
                   ("fingerprint qtest requires the current virtio layout",
                    fingerprint_test,
-                   r'VIRTIO_CORE_SCHEMA = b"crucible\.qemu\.virtio-core\.v2"'
+                   r'VIRTIO_CORE_SCHEMA = b"crucible\.qemu\.virtio-core\.v3"'
                    r".*?if material\.count\(VIRTIO_CORE_SCHEMA\) != "
                    r"len\(provider_markers\):", 1),
                   ("time advance signals both durable RR wait objects",
@@ -2934,8 +2934,8 @@ in
                    timer_fingerprint_projection,
                    r'static const CrucibleFingerprintProjection\s*'
                    r"cpu_timers_fingerprint = \{\s*"
-                   r'\.schema = "crucible\.qemu\.cpu-timers\.v2",\s*'
-                   r"\.version = 2,\s*"
+                   r'\.schema = "crucible\.qemu\.cpu-timers\.v3",\s*'
+                   r"\.version = 3,\s*"
                    r"\.save = cpu_timers_fingerprint_projection,\s*\};", 1),
                   ("timer fingerprint excludes transient RR selection",
                    timer_fingerprint_projection,
@@ -2943,7 +2943,7 @@ in
                    r"s->crucible_rr_selection_pending\);", 0),
                   ("timer fingerprint qtest requires current marker",
                    fingerprint_test,
-                   r'timer_marker = section_marker\("timer", 0, 2\)\s*'
+                   r'timer_marker = section_marker\("timer", 0, 3\)\s*'
                    r"if live\.last_material\.count\(timer_marker\) != 1:",
                    1),
                   ("determinism idle canonical facts", idle_trace,
