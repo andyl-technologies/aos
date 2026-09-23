@@ -50,7 +50,7 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
     {
         return Err(format!("packaged timeout carried the wrong proof: {observation:?}").into());
     }
-    println!("packaged_policy_timeout_observation_authenticated=true");
+    println!("\npackaged_policy_timeout_observation_authenticated=true");
 
     let finding = wait_for_timeout_finding(fixture, &observation_id)?;
     let signature = finding.finding().signature();
