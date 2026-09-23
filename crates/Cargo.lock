@@ -2313,6 +2313,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-session",
  "libc",
+ "rcgen",
  "rustix 1.1.4",
  "serde",
  "serde_json",
