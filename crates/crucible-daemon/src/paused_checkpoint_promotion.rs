@@ -660,6 +660,7 @@ pub(crate) fn validate_and_prepare_production_paused_checkpoint_promotion<F>(
 where
     F: ProductionPausedCheckpointReplayFactory,
 {
+    eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=install-start");
     let mut installed = install_attempt_production_exact_checkpoint(
         checkpoints,
         target.raw,
@@ -668,6 +669,7 @@ where
         target.post_selection,
         target.cancellation,
     )?;
+    eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=install-complete");
     match target.start_mode {
         AttemptStartMode::CaptureMaterializedStart { .. } => {
             validate_materialized_start_configuration(
@@ -719,6 +721,7 @@ where
                 ));
             }
         };
+    eprintln!("CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=guard-ready");
     if guard.resource_limits() != target.resources
         || !guard.cancellation().same_incarnation(target.cancellation)
     {
@@ -745,6 +748,10 @@ where
             break;
         };
         let node = next.node().clone();
+        eprintln!(
+            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=target-open node={:?}",
+            node.name
+        );
         let snapshot = next.snapshot().clone();
         let session = factory.begin_target(
             target.source.world(),
@@ -760,6 +767,10 @@ where
                 ));
             }
         };
+        eprintln!(
+            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=target-ready node={:?}",
+            node.name
+        );
         if executor.node() != &node {
             let error = QemuVmRealizationError::Executor {
                 operation: "admit production replay-oracle target",
@@ -775,6 +786,10 @@ where
                 return Err(finish_replay_guard(&mut guard).unwrap_or(error).into());
             }
         };
+        eprintln!(
+            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=baked-ready node={:?}",
+            node.name
+        );
         let mut session = QemuGuardedReplayOracleSession::new(&mut executor, &mut guard);
         let comparison = session.check_snapshot_replay_oracle(
             target.source.world(),
@@ -782,7 +797,17 @@ where
             &snapshot,
             &baked,
         );
+        eprintln!(
+            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=oracle-returned node={:?} success={}",
+            node.name,
+            comparison.is_ok()
+        );
         let cleanup = session.finish();
+        eprintln!(
+            "CRUCIBLE-PROMOTION-PREPARATION-TRACE-V1 stage=oracle-cleanup-returned node={:?} success={}",
+            node.name,
+            cleanup.is_ok()
+        );
         let matched = match (comparison, cleanup) {
             (Err(comparison), Err(cleanup)) => {
                 return Err(PausedCheckpointPromotionPreparationError::Realization(
