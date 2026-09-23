@@ -174,7 +174,8 @@ pub(super) fn is_binary_boundary_source(package: &str, package_dir: &Path, sourc
         Ok(relative)
             if package == BINARY_BOUNDARY_PACKAGE && relative.starts_with(Path::new("src"))
                 || BINARY_ENTRY_PACKAGES.contains(&package)
-                    && relative == Path::new("src/main.rs")
+                    && (relative == Path::new("src/main.rs")
+                        || relative.starts_with(Path::new("src/main")))
                 || relative.starts_with(Path::new("src/bin"))
     )
 }
