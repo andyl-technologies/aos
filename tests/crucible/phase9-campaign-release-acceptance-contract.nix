@@ -47,6 +47,7 @@
     "gate:campaign-policy-timeout-real-qemu"
     "gate:campaign-finding-exact-read-only"
     "gate:campaign-finding-signal-bundle"
+    "gate:campaign-finding-fork-write"
   ];
   requiredClaimCount = builtins.length expectedRequiredClaimGates;
   expectedManualGates = [
