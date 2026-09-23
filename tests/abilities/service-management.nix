@@ -983,6 +983,10 @@
               aos.services."policy-owner.main" = {
                 enable = true;
                 inherit (minimalService) lifecycle;
+                resources.open_files = {
+                  kind = "maximum";
+                  value = 128;
+                };
               };
             }
             (serviceManagement.projectService {
@@ -999,6 +1003,7 @@
             baseline_access = "declared-devices-only";
             rules = [];
           };
+          config.aos.services."policy-owner.main".resources.processes.kind = "unbounded";
         };
       }
     ];
@@ -1564,4 +1569,14 @@ in
     enabled = true;
     baseline_access = "declared-devices-only";
     rules = [];
+  };
+  assert composedServiceFixedPoint.config.aos.abilities.requests."policy-owner:main-resources".parameters
+  == {
+    service = "main";
+    enabled = true;
+    open_files = {
+      kind = "maximum";
+      value = 128;
+    };
+    processes.kind = "unbounded";
   }; true
