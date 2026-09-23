@@ -6,6 +6,7 @@
 //! lock is released. Publication and ledger failures retain their phase token
 //! and retry that phase without re-running modeled execution.
 
+use std::fmt::{self, Write};
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
@@ -772,8 +773,122 @@ pub struct LocalExecutorPoolReport {
     promotions_reconciled: u64,
     promotions_discarded: u64,
     promotion_failures: u64,
+    promotion_failure_phases: LocalExecutorPromotionFailureReport,
+    last_promotion_activity: Option<(AttemptExecutionKey, LocalExecutorPromotionPhase)>,
+    last_promotion_failure: Option<LocalExecutorPromotionFailure>,
     terminal_stops: u64,
     worker_panics: u64,
+}
+
+const MAX_PROMOTION_FAILURE_DETAIL_BYTES: usize = 1024;
+
+/// Processing phase of one checkpoint promotion in this pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalExecutorPromotionPhase {
+    /// The durable ledger state could not be checked before preparation.
+    Preflight,
+    /// Repository resolution or replay preparation failed.
+    Preparation,
+    /// The prepared replacement could not be staged in the ledger.
+    Stage,
+    /// Immutable replacement publication failed and staging was reverted.
+    Publication,
+    /// The published replacement could not be reconciled in the ledger.
+    Reconcile,
+    /// A recovered staged replacement could not return to its raw pause.
+    Revert,
+}
+
+/// Bounded diagnostic for the last failed promotion, retained through shutdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalExecutorPromotionFailure {
+    key: AttemptExecutionKey,
+    phase: LocalExecutorPromotionPhase,
+    detail: BoundedPromotionFailureDetail,
+}
+
+impl LocalExecutorPromotionFailure {
+    /// Returns the exact lineage, attempt, and scope of the failed work.
+    #[must_use]
+    pub const fn key(self) -> AttemptExecutionKey {
+        self.key
+    }
+
+    /// Returns the processing phase that rejected the work.
+    #[must_use]
+    pub const fn phase(self) -> LocalExecutorPromotionPhase {
+        self.phase
+    }
+
+    /// Returns a bounded Debug rendering of the typed failure.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        self.detail.as_str()
+    }
+
+    /// Returns whether the failure rendering exceeded its fixed byte limit.
+    #[must_use]
+    pub const fn detail_truncated(self) -> bool {
+        self.detail.truncated
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BoundedPromotionFailureDetail {
+    bytes: [u8; MAX_PROMOTION_FAILURE_DETAIL_BYTES],
+    len: usize,
+    truncated: bool,
+}
+
+impl BoundedPromotionFailureDetail {
+    fn new() -> Self {
+        Self {
+            bytes: [0; MAX_PROMOTION_FAILURE_DETAIL_BYTES],
+            len: 0,
+            truncated: false,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len]).unwrap_or("<invalid promotion detail>")
+    }
+}
+
+impl Write for BoundedPromotionFailureDetail {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        for character in value.chars() {
+            let mut encoded = [0; 4];
+            let bytes = character.encode_utf8(&mut encoded).as_bytes();
+            if self.len + bytes.len() > self.bytes.len() {
+                self.truncated = true;
+                break;
+            }
+            self.bytes[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+            self.len += bytes.len();
+        }
+        Ok(())
+    }
+}
+
+/// Terminal checkpoint-promotion failures grouped by the phase that rejected work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalExecutorPromotionFailureReport {
+    preparation_terminal: u64,
+    publication_terminal_reverted: u64,
+}
+
+impl LocalExecutorPromotionFailureReport {
+    /// Returns raw or recovered promotion preparations rejected as terminal.
+    #[must_use]
+    pub const fn preparation_terminal(self) -> u64 {
+        self.preparation_terminal
+    }
+
+    /// Returns stable publication failures whose staged ledger state was reverted.
+    #[must_use]
+    pub const fn publication_terminal_reverted(self) -> u64 {
+        self.publication_terminal_reverted
+    }
 }
 
 impl LocalExecutorPoolReport {
@@ -879,6 +994,26 @@ impl LocalExecutorPoolReport {
         self.promotion_failures
     }
 
+    /// Returns terminal promotion failures grouped by their exact processing phase.
+    #[must_use]
+    pub const fn promotion_failure_phases(self) -> LocalExecutorPromotionFailureReport {
+        self.promotion_failure_phases
+    }
+
+    /// Returns the last failed promotion's phase, exact key, and bounded cause.
+    #[must_use]
+    pub const fn last_promotion_failure(self) -> Option<LocalExecutorPromotionFailure> {
+        self.last_promotion_failure
+    }
+
+    /// Returns the last phase entered by a promotion worker, even after cancellation.
+    #[must_use]
+    pub const fn last_promotion_activity(
+        self,
+    ) -> Option<(AttemptExecutionKey, LocalExecutorPromotionPhase)> {
+        self.last_promotion_activity
+    }
+
     /// Returns canceled or terminal worker results durably stopped.
     #[must_use]
     pub const fn terminal_stops(self) -> u64 {
@@ -906,6 +1041,8 @@ struct SharedExecutor<L, V> {
     prepared_results: Option<PreparedResultJournalConfig>,
     completion: Arc<PoolCompletionState>,
     counters: PoolCounters,
+    last_promotion_activity: Mutex<Option<(AttemptExecutionKey, LocalExecutorPromotionPhase)>>,
+    last_promotion_failure: Mutex<Option<LocalExecutorPromotionFailure>>,
 }
 
 impl<L, V> SharedExecutor<L, V> {
@@ -935,6 +1072,8 @@ impl<L, V> SharedExecutor<L, V> {
                 worker_count.saturating_add(promotion_worker_count),
             )),
             counters: PoolCounters::default(),
+            last_promotion_activity: Mutex::new(None),
+            last_promotion_failure: Mutex::new(None),
         }
     }
 
@@ -1041,6 +1180,14 @@ impl<L, V> SharedExecutor<L, V> {
     }
 
     fn report(&self, supervisor: &LocalExecutorSupervisor<L, V>) -> LocalExecutorPoolReport {
+        let last_promotion_activity = match self.last_promotion_activity.lock() {
+            Ok(activity) => *activity,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+        let last_promotion_failure = match self.last_promotion_failure.lock() {
+            Ok(failure) => *failure,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
         LocalExecutorPoolReport {
             workers: self.worker_count,
             promotion_workers: self.promotion_worker_count,
@@ -1059,8 +1206,42 @@ impl<L, V> SharedExecutor<L, V> {
             promotions_reconciled: self.counters.promotions_reconciled.load(Ordering::Relaxed),
             promotions_discarded: self.counters.promotions_discarded.load(Ordering::Relaxed),
             promotion_failures: self.counters.promotion_failures.load(Ordering::Relaxed),
+            promotion_failure_phases: LocalExecutorPromotionFailureReport {
+                preparation_terminal: self
+                    .counters
+                    .promotion_preparation_terminal
+                    .load(Ordering::Relaxed),
+                publication_terminal_reverted: self
+                    .counters
+                    .promotion_publication_terminal_reverted
+                    .load(Ordering::Relaxed),
+            },
+            last_promotion_activity,
+            last_promotion_failure,
             terminal_stops: self.counters.terminal_stops.load(Ordering::Relaxed),
             worker_panics: self.counters.worker_panics.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_promotion_phase(&self, key: AttemptExecutionKey, phase: LocalExecutorPromotionPhase) {
+        match self.last_promotion_activity.lock() {
+            Ok(mut last) => *last = Some((key, phase)),
+            Err(poisoned) => *poisoned.into_inner() = Some((key, phase)),
+        }
+    }
+
+    fn record_promotion_failure(
+        &self,
+        key: AttemptExecutionKey,
+        phase: LocalExecutorPromotionPhase,
+        error: &impl fmt::Debug,
+    ) {
+        let mut detail = BoundedPromotionFailureDetail::new();
+        let _ = write!(detail, "{error:?}");
+        let failure = LocalExecutorPromotionFailure { key, phase, detail };
+        match self.last_promotion_failure.lock() {
+            Ok(mut last) => *last = Some(failure),
+            Err(poisoned) => *poisoned.into_inner() = Some(failure),
         }
     }
 }
@@ -1165,6 +1346,8 @@ struct PoolCounters {
     promotions_reconciled: AtomicU64,
     promotions_discarded: AtomicU64,
     promotion_failures: AtomicU64,
+    promotion_preparation_terminal: AtomicU64,
+    promotion_publication_terminal_reverted: AtomicU64,
     terminal_stops: AtomicU64,
     worker_panics: AtomicU64,
 }

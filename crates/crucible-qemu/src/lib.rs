@@ -308,8 +308,8 @@ pub use quantum::{
     assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
-    QemuBakedGenesisSnapshot, QemuReplayOracleMatch, QemuVmRealizationError, QemuVmReplayRequest,
-    QemuVmSnapshot, QemuVmSnapshotCodecError,
+    QemuBakedGenesisSnapshot, QemuReplayOracleEvidence, QemuReplayOracleMatch,
+    QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot, QemuVmSnapshotCodecError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use realization::{QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer};

@@ -44,8 +44,6 @@ const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v9";
 const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";
 const RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v2";
 const SPARSE_ARTIFACT_DOMAIN: &str = "crucible.production-exact-sparse-artifact.v1";
-const FINAL_RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
-const FINAL_RAM_FRONTIER_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
 const ARTIFACT_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 const ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
 const ROOT_SCHEMA_VERSION: u32 = 4;
@@ -272,6 +270,7 @@ pub struct ExactCheckpointClosureBinding {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ExactCheckpointTraversedClosureBinding {
     closure: ExactCheckpointClosureBinding,
+    fault_semantic_identity: ContentHash,
 }
 
 /// Structural repository relation for one exact-checkpoint target.
@@ -284,7 +283,7 @@ pub struct ExactCheckpointTraversedClosureBinding {
 pub struct ExactCheckpointStructuralTargetClaim {
     repository: Arc<ExactCheckpointRepositoryBinding>,
     configuration: ContentHash,
-    fault_checkpoint: ContentHash,
+    fault_semantic_identity: ContentHash,
     target: Arc<ExactCheckpointTargetRecord>,
 }
 
@@ -339,6 +338,9 @@ impl ExactCheckpointClosureBinding {
     /// Each object is opened, bounded, hashed, delivered, and closed before
     /// the next object is opened. Shared object identities count once against
     /// `byte_limit` while each semantic role is still delivered.
+    /// The visitor returns the decoded semantic identity for the fault
+    /// continuation and `None` for every other role. The resulting target
+    /// claims retain that identity for QMP RAM provenance authentication.
     ///
     /// # Errors
     ///
@@ -350,9 +352,12 @@ impl ExactCheckpointClosureBinding {
         byte_limit: u64,
         boundary: impl FnMut() -> std::io::Result<()>,
         open: impl FnMut(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>>,
-        visit: impl FnMut(ExactCheckpointSemanticObjectRole<'_>, &[u8]) -> std::io::Result<()>,
+        visit: impl FnMut(
+            ExactCheckpointSemanticObjectRole<'_>,
+            &[u8],
+        ) -> std::io::Result<Option<ContentHash>>,
     ) -> Result<ExactCheckpointTraversedClosureBinding, ExactCheckpointExecutionSourceError> {
-        semantics::visit_authenticated_semantic_objects(
+        let fault_semantic_identity = semantics::visit_authenticated_semantic_objects(
             &self.repository,
             &self.closure,
             &self.targets,
@@ -362,7 +367,10 @@ impl ExactCheckpointClosureBinding {
             visit,
         )?;
 
-        Ok(ExactCheckpointTraversedClosureBinding { closure: self })
+        Ok(ExactCheckpointTraversedClosureBinding {
+            closure: self,
+            fault_semantic_identity,
+        })
     }
 }
 
@@ -397,13 +405,23 @@ impl ExactCheckpointTraversedClosureBinding {
         Ok(ExactCheckpointStructuralTargetClaim {
             repository: Arc::clone(&self.closure.repository),
             configuration: self.closure.closure.configuration,
-            fault_checkpoint: self.closure.closure.fault_checkpoint,
+            fault_semantic_identity: self.fault_semantic_identity,
             target: Arc::new(target),
         })
     }
 }
 
 impl ExactCheckpointStructuralTargetClaim {
+    /// Converts an authenticated structural claim into test-only replay evidence.
+    ///
+    /// This bypasses concrete execution-state authentication so process-free
+    /// lifecycle tests can exercise consumers of a repository-bound claim.
+    #[cfg(any(test, feature = "test-double"))]
+    #[must_use]
+    pub fn into_verified_node_for_test(self) -> ExactCheckpointVerifiedNode {
+        ExactCheckpointVerifiedNode { target: self }
+    }
+
     /// Returns the authenticated repository root enclosing this closure.
     #[must_use]
     fn repository_root(&self) -> ExactCheckpointId {
@@ -498,32 +516,13 @@ impl ExactCheckpointStructuralTargetClaim {
             return Err(ExactCheckpointRelationError::TargetManifestMismatch);
         }
 
-        let final_target = ContentHash::from_canonical_material(
-            FINAL_RAM_TARGET_DOMAIN,
-            &format!(
-                "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nfault={}",
-                self.configuration.to_hex(),
-                self.target.immutable_backing.to_hex(),
-                self.target.node,
-                self.target.counter,
-                self.target.scheduler_time,
-                self.fault_checkpoint.to_hex(),
-            ),
-        );
-        let scheduler_bytes = scheduler
-            .canonical_bytes()
-            .map_err(|_| ExactCheckpointRelationError::TargetManifestMismatch)?;
-        let scheduler_hex = scheduler_bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let final_frontier =
-            ContentHash::from_canonical_material(FINAL_RAM_FRONTIER_DOMAIN, &scheduler_hex);
-        let expected = ExactCheckpointIdentity {
-            checkpoint: checkpoint.id,
-            target: final_target,
-            frontier: final_frontier,
-        };
+        let expected = final_ram_identity(
+            self.configuration,
+            &self.target,
+            self.fault_semantic_identity,
+            checkpoint.id,
+            scheduler,
+        )?;
         if self
             .target
             .exact_ram

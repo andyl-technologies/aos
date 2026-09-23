@@ -38,12 +38,12 @@ use crate::{
     CampaignLoopbackListenerError, CampaignLoopbackServer, CampaignLoopbackServerConfig,
     CampaignLoopbackServerReport, CampaignLoopbackServerShutdown, CanonicalCampaignRuntimeConfig,
     CanonicalCampaignRuntimeError, CanonicalPlannerProcessConfig, CrucibleArtifactError,
-    CrucibleCampaignArtifactStore, ExecutorLoopbackEndpointConfig, LocalComponentEndpointError,
-    MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES, MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor,
-    PackagedQemuExecutorConfig, PackagedQemuExecutorError, PackagedQemuExecutorJoinError,
-    PackagedQemuExecutorStartError, PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy,
-    UnixPeerCampaignPolicyLoadError, prepare_canonical_campaign_runtime,
-    prepare_canonical_campaign_runtime_endpoint,
+    CrucibleCampaignArtifactStore, ExecutorLocalServiceReport, ExecutorLoopbackEndpointConfig,
+    LocalComponentEndpointError, MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES,
+    MAX_CAMPAIGN_POLICY_BYTES, PackagedQemuExecutor, PackagedQemuExecutorConfig,
+    PackagedQemuExecutorError, PackagedQemuExecutorJoinError, PackagedQemuExecutorStartError,
+    PreparedCanonicalCampaignRuntime, UnixPeerCampaignPolicy, UnixPeerCampaignPolicyLoadError,
+    prepare_canonical_campaign_runtime, prepare_canonical_campaign_runtime_endpoint,
 };
 
 const STATE_LOCK_FILE: &str = ".crucible-campaign-repository.lock";
@@ -1321,6 +1321,27 @@ pub struct CampaignLocalService {
     // This owner is last so its repository lock outlives runtime and executor
     // cleanup even when the containing service is dropped without `serve`.
     runtime_registry: CampaignRuntimeRegistryOwner,
+}
+
+/// Final listener and packaged-executor reports from one campaign service incarnation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignLocalServiceReport {
+    listener: CampaignLoopbackServerReport,
+    executor: Option<ExecutorLocalServiceReport>,
+}
+
+impl CampaignLocalServiceReport {
+    /// Returns bounded campaign listener and connection counters.
+    #[must_use]
+    pub const fn listener(self) -> CampaignLoopbackServerReport {
+        self.listener
+    }
+
+    /// Returns the packaged executor shutdown report when one was attached.
+    #[must_use]
+    pub const fn executor(self) -> Option<ExecutorLocalServiceReport> {
+        self.executor
+    }
 }
 
 impl CampaignLocalService {

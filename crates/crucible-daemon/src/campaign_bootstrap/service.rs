@@ -26,7 +26,7 @@ impl CampaignLocalService {
     /// or a worker invariant fails, or the corresponding runtime, executor, or
     /// monitor error when a coupled owner fails. Unfinished executor workers
     /// retain repository and executor endpoint ownership.
-    pub fn serve(self) -> Result<CampaignLoopbackServerReport, CampaignLocalServiceError> {
+    pub fn serve(self) -> Result<CampaignLocalServiceReport, CampaignLocalServiceError> {
         let Self {
             server,
             executor,
@@ -41,7 +41,7 @@ impl CampaignLocalService {
                 let runtime_result = runtime_registry.close_and_join();
                 let executor_result = shutdown_executor(executor);
                 maintenance_result?;
-                executor_result?;
+                let _executor_report = executor_result?;
                 runtime_result?;
                 return Err(CampaignLocalServiceError::PackagedExecutorMonitorSpawn { source });
             }
@@ -55,9 +55,9 @@ impl CampaignLocalService {
 
         executor_monitor_result?;
         maintenance_result?;
-        executor_result?;
+        let executor = executor_result?;
         runtime_result?;
-        result
+        result.map(|listener| CampaignLocalServiceReport { listener, executor })
     }
 }
 
@@ -103,11 +103,10 @@ fn shutdown_maintenance(
 
 fn shutdown_executor(
     executor: Option<AttachedPackagedQemuExecutor>,
-) -> Result<(), CampaignLocalServiceError> {
+) -> Result<Option<ExecutorLocalServiceReport>, CampaignLocalServiceError> {
     executor
         .map(AttachedPackagedQemuExecutor::shutdown_and_join)
         .transpose()
-        .map(|_| ())
         .map_err(CampaignLocalServiceError::PackagedExecutorJoin)
 }
 

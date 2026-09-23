@@ -52,7 +52,50 @@ pub struct QemuReplayOracleMatch {
     runtime_hash: ContentHash,
 }
 
+/// Repository-bound fields authenticated by one successful replay comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuReplayOracleEvidence {
+    snapshot: ContentHash,
+    target_manifest: ContentHash,
+    runtime: ContentHash,
+}
+
+impl QemuReplayOracleEvidence {
+    /// Returns the exact snapshot object bound by the compared target.
+    #[must_use]
+    pub const fn snapshot(self) -> ContentHash {
+        self.snapshot
+    }
+
+    /// Returns the exact target manifest bound by the compared target.
+    #[must_use]
+    pub const fn target_manifest(self) -> ContentHash {
+        self.target_manifest
+    }
+
+    /// Returns the matching concrete runtime fingerprint.
+    #[must_use]
+    pub const fn runtime(self) -> ContentHash {
+        self.runtime
+    }
+}
+
 impl QemuReplayOracleMatch {
+    /// Builds a source-bound match from an already authenticated node for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn from_authenticated_source_for_test(
+        node: crucible::NodeId,
+        source: crucible::exact_checkpoint::ExactCheckpointVerifiedNode,
+        runtime_hash: ContentHash,
+    ) -> Self {
+        Self {
+            node,
+            source,
+            runtime_hash,
+        }
+    }
+
     /// Consumes this match after authenticating its complete source relation.
     ///
     /// # Errors
@@ -63,10 +106,10 @@ impl QemuReplayOracleMatch {
         self,
         repository_root: ExactCheckpointId,
         production_identity: ContentHash,
-        target_manifest: ContentHash,
         node: &crucible::NodeId,
-        snapshot: &QemuVmSnapshot,
-    ) -> Result<ContentHash, QemuVmRealizationError> {
+    ) -> Result<QemuReplayOracleEvidence, QemuVmRealizationError> {
+        let target_manifest = self.source.target_manifest();
+        let snapshot = self.source.snapshot();
         if node != &self.node
             || self
                 .source
@@ -75,7 +118,7 @@ impl QemuReplayOracleMatch {
                     production_identity,
                     target_manifest,
                     node,
-                    snapshot.id(),
+                    snapshot,
                 )
                 .is_err()
         {
@@ -86,7 +129,11 @@ impl QemuReplayOracleMatch {
                 ),
             });
         }
-        Ok(self.runtime_hash)
+        Ok(QemuReplayOracleEvidence {
+            snapshot,
+            target_manifest,
+            runtime: self.runtime_hash,
+        })
     }
 }
 

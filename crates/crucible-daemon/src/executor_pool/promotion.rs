@@ -30,8 +30,8 @@ use crucible_cas::content_store::StoreError;
 use crucible_qemu::QemuVmRealizationError;
 
 use super::{
-    POOL_RUNNING, SharedExecutor, WORKER_RETRY_INTERVAL, increment, retain_forever,
-    supervisor_error_is_retryable,
+    LocalExecutorPromotionPhase, POOL_RUNNING, SharedExecutor, WORKER_RETRY_INTERVAL, increment,
+    retain_forever, supervisor_error_is_retryable,
 };
 
 /// Maximum fixed promotion threads accepted by one local executor pool.
@@ -43,7 +43,7 @@ pub const MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE: usize = 65_536;
 /// No-actor preparation boundary for one durable paused-root promotion phase.
 pub(crate) trait LocalCheckpointPromotionWorker {
     /// Operational or semantic preparation failure.
-    type Error;
+    type Error: std::fmt::Debug;
 
     /// Resolves and prepares one raw or staged durable promotion phase.
     ///
@@ -418,7 +418,7 @@ pub(super) fn promotion_worker_loop<L, V, W>(
     }
 }
 
-fn process_promotion_work<L, V, W>(
+pub(super) fn process_promotion_work<L, V, W>(
     shared: &SharedExecutor<L, V>,
     worker: &mut W,
     work: &mut CheckpointPromotionRestartWork,
@@ -428,12 +428,18 @@ fn process_promotion_work<L, V, W>(
     V: AttemptAdmissionValidator,
     W: LocalCheckpointPromotionWorker,
 {
+    let key = work_key(work);
     loop {
         if cancellation.is_canceled()
             || shared.state.load(std::sync::atomic::Ordering::Acquire) != POOL_RUNNING
         {
             return;
         }
+        shared.record_promotion_phase(key, LocalExecutorPromotionPhase::Preflight);
+        if !preflight_promotion_work(shared, work, &cancellation) {
+            return;
+        }
+        shared.record_promotion_phase(key, LocalExecutorPromotionPhase::Preparation);
         let prepared = match worker.prepare(work, cancellation.clone()) {
             Ok(prepared) => prepared,
             Err(AttemptWorkerFailure::Retryable(_)) => {
@@ -442,7 +448,13 @@ fn process_promotion_work<L, V, W>(
                 continue;
             }
             Err(AttemptWorkerFailure::Canceled(_)) => return,
-            Err(AttemptWorkerFailure::Terminal(_)) => {
+            Err(AttemptWorkerFailure::Terminal(error)) => {
+                increment(&shared.counters.promotion_preparation_terminal);
+                shared.record_promotion_failure(
+                    key,
+                    LocalExecutorPromotionPhase::Preparation,
+                    &error,
+                );
                 if let CheckpointPromotionRestartWork::Staged(recovery) = work
                     && let Some(raw) = revert_recovered(shared, *recovery)
                 {
@@ -455,12 +467,62 @@ fn process_promotion_work<L, V, W>(
         };
         match prepared {
             PreparedPausedCheckpointPromotionRestart::Stage(prepared) => {
-                process_prepared(shared, *prepared, &cancellation);
+                process_prepared(shared, key, *prepared, &cancellation);
                 return;
             }
             PreparedPausedCheckpointPromotionRestart::Reconcile(published) => {
-                reconcile_published(shared, *published);
+                reconcile_published(shared, key, *published);
                 return;
+            }
+        }
+    }
+}
+
+fn preflight_promotion_work<L, V>(
+    shared: &SharedExecutor<L, V>,
+    work: &CheckpointPromotionRestartWork,
+    cancellation: &ExecutionCancellation,
+) -> bool
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    loop {
+        if cancellation.is_canceled()
+            || shared.state.load(std::sync::atomic::Ordering::Acquire) != POOL_RUNNING
+        {
+            return false;
+        }
+        let executor = match shared.executor.lock() {
+            Ok(executor) => executor,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                shared.fail_closed();
+                return false;
+            }
+        };
+        match executor
+            .supervisor()
+            .checkpoint_promotion_work_is_current(work)
+        {
+            Ok(true) => return true,
+            Ok(false) => {
+                increment(&shared.counters.promotions_discarded);
+                return false;
+            }
+            Err(error) if supervisor_error_is_retryable(&error) => {
+                increment(&shared.counters.promotion_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                shared.record_promotion_failure(
+                    work_key(work),
+                    LocalExecutorPromotionPhase::Preflight,
+                    &error.to_string(),
+                );
+                increment(&shared.counters.promotion_failures);
+                return false;
             }
         }
     }
@@ -468,6 +530,7 @@ fn process_promotion_work<L, V, W>(
 
 fn process_prepared<L, V>(
     shared: &SharedExecutor<L, V>,
+    key: AttemptExecutionKey,
     mut prepared: PreparedPausedCheckpointPromotion,
     cancellation: &ExecutionCancellation,
 ) where
@@ -479,6 +542,7 @@ fn process_prepared<L, V>(
             retire_prepared_native_source(shared, prepared);
             return;
         }
+        shared.record_promotion_phase(key, LocalExecutorPromotionPhase::Stage);
         let mut executor = match shared.executor.lock() {
             Ok(executor) => executor,
             Err(poisoned) => {
@@ -494,7 +558,7 @@ fn process_prepared<L, V>(
             }) => {
                 drop(executor);
                 retire_prepared_native_source(shared, *prepared);
-                record_stage_outcome(shared, outcome);
+                record_stage_outcome(shared, key, outcome);
                 return;
             }
             Err(error) if supervisor_error_is_retryable(&error.source) => {
@@ -504,6 +568,11 @@ fn process_prepared<L, V>(
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
+                shared.record_promotion_failure(
+                    key,
+                    LocalExecutorPromotionPhase::Stage,
+                    &error.source.to_string(),
+                );
                 drop(executor);
                 retire_prepared_native_source(shared, *error.prepared);
                 increment(&shared.counters.promotion_failures);
@@ -512,11 +581,12 @@ fn process_prepared<L, V>(
         }
     };
 
-    publish_staged(shared, staged, cancellation);
+    publish_staged(shared, key, staged, cancellation);
 }
 
 fn publish_staged<L, V>(
     shared: &SharedExecutor<L, V>,
+    key: AttemptExecutionKey,
     mut staged: StagedPausedCheckpointPromotion,
     cancellation: &ExecutionCancellation,
 ) where
@@ -530,9 +600,10 @@ fn publish_staged<L, V>(
             revert_staged(shared, staged);
             return;
         }
+        shared.record_promotion_phase(key, LocalExecutorPromotionPhase::Publication);
         match publish_staged_paused_checkpoint_promotion(&shared.checkpoints, staged) {
             Ok(published) => {
-                reconcile_published(shared, published);
+                reconcile_published(shared, key, published);
                 return;
             }
             Err(error) if error.source.is_retryable() => {
@@ -541,6 +612,12 @@ fn publish_staged<L, V>(
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
+                shared.record_promotion_failure(
+                    key,
+                    LocalExecutorPromotionPhase::Publication,
+                    &error.source,
+                );
+                increment(&shared.counters.promotion_publication_terminal_reverted);
                 staged = *error.staged;
                 revert_staged(shared, staged);
                 increment(&shared.counters.promotion_failures);
@@ -552,6 +629,7 @@ fn publish_staged<L, V>(
 
 fn reconcile_published<L, V>(
     shared: &SharedExecutor<L, V>,
+    key: AttemptExecutionKey,
     mut published: PublishedPausedCheckpointPromotion,
 ) where
     L: AssignmentLedger,
@@ -564,6 +642,7 @@ fn reconcile_published<L, V>(
         if shared.state.load(std::sync::atomic::Ordering::Acquire) != POOL_RUNNING {
             return;
         }
+        shared.record_promotion_phase(key, LocalExecutorPromotionPhase::Reconcile);
         let mut executor = match shared.executor.lock() {
             Ok(executor) => executor,
             Err(poisoned) => {
@@ -599,7 +678,12 @@ fn reconcile_published<L, V>(
                 drop(executor);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(_) => {
+            Err(error) => {
+                shared.record_promotion_failure(
+                    key,
+                    LocalExecutorPromotionPhase::Reconcile,
+                    &error.source.to_string(),
+                );
                 increment(&shared.counters.promotion_failures);
                 return;
             }
@@ -687,6 +771,7 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    shared.record_promotion_phase(recovery.key(), LocalExecutorPromotionPhase::Revert);
     loop {
         let mut executor = match shared.executor.lock() {
             Ok(executor) => executor,
@@ -704,7 +789,12 @@ where
                     .paused_checkpoint_promotion_recovery(recovery.key());
                 return match raw {
                     Ok(raw) => raw,
-                    Err(_) => {
+                    Err(error) => {
+                        shared.record_promotion_failure(
+                            recovery.key(),
+                            LocalExecutorPromotionPhase::Revert,
+                            &error.to_string(),
+                        );
                         increment(&shared.counters.promotion_failures);
                         None
                     }
@@ -725,6 +815,7 @@ where
 
 fn record_stage_outcome<L, V>(
     shared: &SharedExecutor<L, V>,
+    key: AttemptExecutionKey,
     outcome: CheckpointPromotionStageOutcome,
 ) {
     match outcome {
@@ -736,6 +827,7 @@ fn record_stage_outcome<L, V>(
         }
         CheckpointPromotionStageOutcome::Staged
         | CheckpointPromotionStageOutcome::AlreadyStaged => {
+            shared.record_promotion_failure(key, LocalExecutorPromotionPhase::Stage, &outcome);
             increment(&shared.counters.promotion_failures);
         }
     }

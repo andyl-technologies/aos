@@ -927,11 +927,11 @@ struct RunningLocalCampaignService {
     shutdown: crucible_daemon::CampaignLoopbackServerShutdown,
     thread: std::thread::JoinHandle<
         Result<
-            crucible_daemon::CampaignLoopbackServerReport,
+            crucible_daemon::CampaignLocalServiceReport,
             Box<crucible_daemon::CampaignLocalServiceError>,
         >,
     >,
-    done: tokio::sync::oneshot::Receiver<()>,
+    done: tokio::sync::oneshot::Receiver<Option<crucible_daemon::CampaignLocalServiceReport>>,
 }
 
 fn start_local_campaign_service(
@@ -943,7 +943,8 @@ fn start_local_campaign_service(
         .name(String::from("crucible-campaign-service"))
         .spawn(move || {
             let result = prepared.service.serve().map_err(Box::new);
-            let _ = done_sender.send(());
+            let report = result.as_ref().ok().copied();
+            let _ = done_sender.send(report);
             result
         })
         .map_err(|error| serve_error(format!("campaign service thread error: {error}")))?;
@@ -998,8 +999,8 @@ where
                 wait_shutdown.shutdown();
                 result
             }
-            crate::host_boundary::HostRaceOutcome::Second(_) => {
-                Err(serve_error("campaign service stopped unexpectedly"))
+            crate::host_boundary::HostRaceOutcome::Second(report) => {
+                Err(campaign_service_stopped_error(report.ok().flatten()))
             }
         }
     };
@@ -1017,9 +1018,87 @@ where
         Err(error) => Err(serve_error(format!("campaign service join error: {error}"))),
         Ok(Err(_)) => Err(serve_error("campaign service thread panicked")),
         Ok(Ok(Err(error))) => Err(campaign_service_join_error(error.as_ref())),
-        Ok(Ok(Ok(_))) => Ok(()),
+        Ok(Ok(Ok(report))) => {
+            emit_campaign_promotion_report(report);
+            Ok(())
+        }
     };
     combine_lifecycle_and_campaign_results(lifecycle_result, campaign_result)
+}
+
+fn emit_campaign_promotion_report(report: crucible_daemon::CampaignLocalServiceReport) {
+    let Some(executor) = report.executor() else {
+        return;
+    };
+    let pool = executor.pool();
+    let phases = pool.promotion_failure_phases();
+    let (activity_phase, activity_attempt) = match pool.last_promotion_activity() {
+        Some((key, phase)) => (format!("{phase:?}"), key.attempt().to_string()),
+        None => (String::from("none"), String::from("none")),
+    };
+    let failure = pool.last_promotion_failure();
+    let (phase, attempt, detail, truncated) = match failure {
+        Some(failure) => (
+            format!("{:?}", failure.phase()),
+            failure.key().attempt().to_string(),
+            failure.detail().to_owned(),
+            failure.detail_truncated(),
+        ),
+        None => (
+            String::from("none"),
+            String::from("none"),
+            String::from("none"),
+            false,
+        ),
+    };
+    eprintln!(
+        "CRUCIBLE-CHECKPOINT-PROMOTION-REPORT-V1 active={} queued={} retries={} reconciled={} discarded={} failures={} preparation_terminal={} publication_terminal_reverted={} last_activity_phase={} last_activity_attempt={} last_failure_phase={} last_failure_attempt={} last_failure_detail={:?} last_failure_detail_truncated={}",
+        pool.promotions_active(),
+        pool.promotions_queued(),
+        pool.promotion_retries(),
+        pool.promotions_reconciled(),
+        pool.promotions_discarded(),
+        pool.promotion_failures(),
+        phases.preparation_terminal(),
+        phases.publication_terminal_reverted(),
+        activity_phase,
+        activity_attempt,
+        phase,
+        attempt,
+        detail,
+        truncated,
+    );
+}
+
+pub(super) fn campaign_service_stopped_error(
+    report: Option<crucible_daemon::CampaignLocalServiceReport>,
+) -> CliError {
+    let promotion_failures = report
+        .and_then(crucible_daemon::CampaignLocalServiceReport::executor)
+        .map(|executor| {
+            let pool = executor.pool();
+            let phases = pool.promotion_failure_phases();
+            (
+                pool.promotion_failures(),
+                phases.preparation_terminal(),
+                phases.publication_terminal_reverted(),
+            )
+        });
+    campaign_service_stopped_error_with_promotion_failures(promotion_failures)
+}
+
+pub(super) fn campaign_service_stopped_error_with_promotion_failures(
+    promotion_failures: Option<(u64, u64, u64)>,
+) -> CliError {
+    let Some((total, preparation_terminal, publication_terminal_reverted)) = promotion_failures
+    else {
+        return serve_error("campaign service stopped unexpectedly");
+    };
+
+    serve_error(format!(
+        "campaign service stopped unexpectedly; checkpoint promotions failed={} preparation_terminal={} publication_terminal_reverted={}",
+        total, preparation_terminal, publication_terminal_reverted,
+    ))
 }
 
 /// Converts a joined campaign service failure while retaining its typed cause chain.
