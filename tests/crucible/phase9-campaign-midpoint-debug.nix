@@ -34,6 +34,7 @@ in
           require_serial_line authenticated_replay_selection_sequence=fast,q7
           require_serial_line authenticated_replay_marker=selected-fast-q7
           require_serial_line retry_session_identity_stable=true
+          require_serial_line imported_production_capture_handoff=true
           test "$(grep -Ec '^authenticated_replay_causal_entries=[1-9][0-9]*$' "$serial" || true)" -eq 1
           test "$(grep -Ec '^minimization_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' "$serial" || true)" -eq 1
           test "$(grep -Ec '^verification_original_replay=crucible\.campaign\.finding-triage-replay@finding-triage-replay\.[0-9]+\.[0-9a-f]{64}$' "$serial" || true)" -eq 1
@@ -66,6 +67,7 @@ in
           minimization_original_replay=$minimization_original
           verification_original_replay=$verification_original
           retry_session_identity_stable=true
+          imported_production_capture_handoff=true
           evidence_retained=true
           evidence_manifest_sha256=$evidence_digest
           RESULT
