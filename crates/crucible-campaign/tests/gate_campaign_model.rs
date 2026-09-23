@@ -117,14 +117,47 @@ fn campaign_model_public_repository_flight_is_exact() -> Result<(), Box<dyn Erro
         resumed.new_snapshot
     );
 
-    let derived = repository.derive_campaign("source", resumed.new_snapshot, "derived", None)?;
+    let pause = ControlRequest {
+        command: command_id("pause"),
+        expected_snapshot: resumed.new_snapshot,
+        action: CampaignControlAction::Pause(ActiveAttemptPolicy::Drain),
+    };
+    let paused = repository.apply_control("source", &pause)?;
+    assert_eq!(repository.state("source")?, CampaignState::Paused);
+
+    let resume_after_pause = ControlRequest {
+        command: command_id("resume-after-pause"),
+        expected_snapshot: paused.new_snapshot,
+        action: CampaignControlAction::Resume,
+    };
+    let continued = repository.apply_control("source", &resume_after_pause)?;
+    assert_eq!(repository.state("source")?, CampaignState::Running);
+
+    let source_ancestry = [
+        (continued.new_snapshot, Some(paused.new_snapshot)),
+        (paused.new_snapshot, Some(resumed.new_snapshot)),
+        (resumed.new_snapshot, Some(created.snapshot_id())),
+        (created.snapshot_id(), None),
+    ];
+    for (snapshot_id, expected_parent) in source_ancestry {
+        let snapshot = repository.snapshot_in_campaign("source", snapshot_id)?;
+        assert_eq!(snapshot.parent(), expected_parent);
+    }
+
+    let derived = repository.derive_campaign("source", continued.new_snapshot, "derived", None)?;
     assert!(!derived.replayed);
-    assert_eq!(derived.source_snapshot, resumed.new_snapshot);
+    assert_eq!(derived.source_snapshot, continued.new_snapshot);
 
     let restarted = CampaignRepository::new(blobs, refs);
     let rebuilt = restarted.head("derived")?;
     assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot);
-    assert_eq!(rebuilt.snapshot().parent(), Some(resumed.new_snapshot));
+    assert_eq!(rebuilt.snapshot().parent(), Some(continued.new_snapshot));
+    assert_eq!(
+        restarted
+            .snapshot_in_campaign("derived", created.snapshot_id())?
+            .parent(),
+        None
+    );
     assert_eq!(restarted.state("source")?, CampaignState::Running);
     assert_eq!(restarted.state("derived")?, CampaignState::Running);
 
