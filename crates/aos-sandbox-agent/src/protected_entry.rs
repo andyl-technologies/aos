@@ -23,7 +23,9 @@ use aos_sandbox_core::{
     ObjectDigest, SandboxId,
 };
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
-use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
+use aos_sandbox_linux::inherited_fd::{
+    duplicate_inherited_descriptor, mark_inherited_descriptor_close_on_exec,
+};
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
@@ -251,6 +253,8 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
     fn run(&mut self) -> Result<(), Self::Error> {
         let channel = duplicate_inherited_descriptor(CHANNEL_DESCRIPTOR)?;
         let provisioning_fd = duplicate_inherited_descriptor(PROVISIONING_DESCRIPTOR)?;
+        mark_inherited_descriptor_close_on_exec(CHANNEL_DESCRIPTOR)?;
+        mark_inherited_descriptor_close_on_exec(PROVISIONING_DESCRIPTOR)?;
         let mut socket = SeqpacketSocket::from_owned(channel)?;
         let provisioning = SealedMemfdMapping::run(
             provisioning_fd,

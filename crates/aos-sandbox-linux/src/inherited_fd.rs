@@ -303,6 +303,51 @@ pub fn duplicate_inherited_descriptor(raw: RawFd) -> Result<OwnedFd> {
     unsafe { owned_fresh_descriptor(duplicated) }
 }
 
+/// Marks an inherited numeric descriptor close-on-exec without taking ownership.
+///
+/// A fixed-role service may retain a fresh owned duplicate while this original
+/// table entry remains open. Marking the original prevents a later process
+/// effect from inheriting the channel or provisioning credential. The caller
+/// must perform this during single-threaded startup so no concurrent code can
+/// replace or change the descriptor between the checked kernel operations.
+///
+/// # Errors
+///
+/// Returns an error for a negative or closed number, a failed flag update, or
+/// a kernel readback that does not retain `FD_CLOEXEC`.
+pub fn mark_inherited_descriptor_close_on_exec(raw: RawFd) -> Result<()> {
+    if raw < 0 {
+        return Err(Error::invalid(
+            "inherited descriptor",
+            "number must be non-negative",
+        ));
+    }
+
+    // SAFETY: fcntl observes or changes descriptor-table flags for a numeric
+    // entry. It creates no Rust owner or borrowed reference to that entry.
+    let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(Error::syscall("fcntl(F_GETFD)"));
+    }
+    // SAFETY: the same numeric table entry was checked above during the fixed
+    // single-threaded startup interval; no Rust descriptor ownership changes.
+    if unsafe { libc::fcntl(raw, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(Error::syscall("fcntl(F_SETFD)"));
+    }
+    // SAFETY: readback inspects only descriptor-table flags for this entry.
+    let observed = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    if observed < 0 {
+        return Err(Error::syscall("fcntl(F_GETFD)"));
+    }
+    if observed & libc::FD_CLOEXEC == 0 {
+        return Err(Error::invalid(
+            "inherited descriptor",
+            "close-on-exec was not retained",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Presence {
     Required,
