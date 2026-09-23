@@ -21,7 +21,9 @@
 //! signed-hello/context checkpoint; V1 remains readable but cannot cold-recover
 //! a historical trio. The versioned digest covers all preceding bytes.
 
-use aos_proto::aos::sandbox::local::v1::{ApplyAtomicStorageSnapshotRequest, BrokerMethod};
+use aos_proto::aos::sandbox::local::v1::{
+    ApplyAtomicStorageSnapshotRequest, BrokerMethod, BrokerRequestEnvelope,
+};
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -341,6 +343,115 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
             || actual_authorization.ownership_lease() != expected_authorization.ownership_lease
             || actual_authorization.ownership_lease_signature()
                 != expected_authorization.ownership_lease_signature
+            || successor.current().session() != predecessor.session()
+            || !successor.matches_exact_exchange(predecessor_outcome, group, successor_outcome)
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        };
+        let receipt = aos_sandbox_protocol::decode_atomic_storage_snapshot_response(exact_body)
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+        if receipt.program().as_slice() != successor.program().as_bytes()
+            || receipt.observation().as_slice() != successor.observation().as_bytes()
+            || !same_signed_inventory(successor_outcome, successor.current())?
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+
+        let completion = SourceCompletion {
+            signed_request: group.request().signed_request_digest(),
+            signed_outcome: digest(group.canonical_packet()),
+            successor: *successor.current().commitment().as_bytes(),
+            successor_packet: digest(successor_outcome.canonical_packet()),
+            successor_generation: successor.current().generation(),
+            program: *successor.program().as_bytes(),
+            observation: *successor.observation().as_bytes(),
+        };
+        let observation = effect
+            .observe_atomic_dataset_snapshot(plan, successor)
+            .map_err(stale_lifecycle)?;
+        if let Some(existing) = retained.completion {
+            return if existing == completion {
+                Ok(LifecycleAtomicSnapshotSourceCompletionV1::Replay(
+                    observation,
+                ))
+            } else {
+                Err(LifecycleAtomicSnapshotSourceErrorV1::Stale)
+            };
+        }
+
+        self.commit(&SourceRecord {
+            completion: Some(completion),
+            ..retained
+        })?;
+        Ok(LifecycleAtomicSnapshotSourceCompletionV1::Recorded(
+            observation,
+        ))
+    }
+
+    /// Completes a checkpointed reservation from fully reauthenticated history.
+    ///
+    /// The original unsigned authority envelope is recovered from the signed
+    /// group request, not reminted from a current publication. Its exact digest
+    /// must equal the one made durable before the original Apply. The successor
+    /// must already carry the fixed-endpoint attestation over this exact trio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a legacy or changed reservation, a different
+    /// original authority envelope, invalid adjacent successor, or journal I/O.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_verified_history(
+        &mut self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        barrier: &LifecycleSnapshotBarrierV1,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        predecessor: &LifecycleAuthenticatedStorageInventoryV1,
+        predecessor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        fence: LiveRuntimeFenceV1,
+        checkpoint: ObjectDigest,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        successor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
+    ) -> Result<LifecycleAtomicSnapshotSourceCompletionV1, LifecycleAtomicSnapshotSourceErrorV1>
+    {
+        self.journal.ensure_protected_authority()?;
+        let operation = current.operation().operation_id().into_bytes();
+        let retained = self
+            .load(operation)?
+            .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+        let effect = barrier.next_effect(current).map_err(stale_lifecycle)?;
+        if retained.version != 2
+            || retained.checkpoint == [0; 32]
+            || retained.checkpoint != *checkpoint.as_bytes()
+            || retained.operation_record != *current.record().digest().as_bytes()
+            || retained.projection != *current.projection_root().as_bytes()
+            || retained.plan != *plan.commitment().as_bytes()
+            || retained.effect != *effect.payload().as_bytes()
+            || barrier
+                .atomic_dataset_snapshot_plan(current, predecessor)
+                .map_err(stale_lifecycle)?
+                != *plan
+            || retained.predecessor != *predecessor.commitment().as_bytes()
+            || retained.predecessor_packet != digest(predecessor_outcome.canonical_packet())
+            || retained.generation != predecessor.generation()
+            || retained.source != *predecessor.source().as_bytes()
+            || retained.session != *predecessor.session().as_bytes()
+            || !same_signed_inventory(predecessor_outcome, predecessor)?
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+
+        effect
+            .validate_authenticated_atomic_storage_snapshot_request(group.request(), plan, fence)
+            .map_err(stale_lifecycle)?;
+        if group.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            || group.request().request_id() != retained.request_id
+            || digest(group.request().exact_body()) != retained.request_body
+            || original_authority_packet_digest(group.request().canonical_packet())?
+                != retained.request_packet
             || successor.current().session() != predecessor.session()
             || !successor.matches_exact_exchange(predecessor_outcome, group, successor_outcome)
         {
@@ -804,6 +915,16 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
+fn original_authority_packet_digest(
+    signed_request_packet: &[u8],
+) -> Result<[u8; 32], LifecycleAtomicSnapshotSourceErrorV1> {
+    let mut envelope = BrokerRequestEnvelope::decode_from_slice(signed_request_packet)
+        .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+    envelope.signed_session_request.clear();
+    envelope.semantic_bindings = Default::default();
+    Ok(digest(&envelope.encode_to_vec()))
+}
+
 fn stale_lifecycle(_: LifecyclePhase6ErrorV1) -> LifecycleAtomicSnapshotSourceErrorV1 {
     LifecycleAtomicSnapshotSourceErrorV1::Stale
 }
@@ -891,5 +1012,33 @@ mod tests {
             ..pending
         };
         assert!(SourceRecord::decode(&partial.encode()).is_err());
+    }
+
+    #[test]
+    fn signed_group_packet_recovers_original_authority_envelope_digest() {
+        use aos_proto::aos::sandbox::local::v1::BrokerSemanticBindingsV1;
+
+        let original = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT.into(),
+            body: vec![1, 2, 3],
+            ..Default::default()
+        };
+        let mut signed = original.clone();
+        signed.signed_session_request = vec![4, 5, 6];
+        signed.semantic_bindings = Some(BrokerSemanticBindingsV1 {
+            storage_catalog_generation: 1,
+            storage_catalog_digest: vec![7; 32],
+            ..Default::default()
+        })
+        .into();
+
+        assert_ne!(
+            digest(&signed.encode_to_vec()),
+            digest(&original.encode_to_vec())
+        );
+        assert_eq!(
+            original_authority_packet_digest(&signed.encode_to_vec()).unwrap(),
+            digest(&original.encode_to_vec())
+        );
     }
 }

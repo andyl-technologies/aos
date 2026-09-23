@@ -22,7 +22,6 @@ use super::{
     ProductionEffectExecutor, current_lifecycle_time, lifecycle_plan_resource_id,
     lifecycle_progress_transaction_id, missing_broker_session, production_authority_effect_timing,
 };
-use crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1;
 use crate::{
     DormantAtomicStorageInventoryCompletionV1, DormantAtomicStorageInventoryFinishProgressV1,
     DormantAtomicStorageInventoryFinishRecoveryV1, DormantAtomicStorageInventoryPredecessorV1,
@@ -150,20 +149,67 @@ impl ProductionEffectExecutor {
                             session,
                             checkpoint,
                         )?;
-                        return Err(match history {
-                            ProtectedVerifiedAtomicStorageHistoryV1::Absent
-                            | ProtectedVerifiedAtomicStorageHistoryV1::Incomplete => retryable(
+                        let crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete {
+                            predecessor,
+                            ..
+                        } = history
+                        else {
+                            return Err(retryable(
                                 "reserved Storage group lacks an adjacent terminal successor",
-                            ),
-                            ProtectedVerifiedAtomicStorageHistoryV1::Complete { .. } => {
-                                // The old session is fully reauthenticated, but its fixed
-                                // endpoint attestation and durable authority must also be
-                                // recovered before source completion can progress.
-                                retryable(
-                                    "verified Storage trio awaits authority and attestation recovery",
-                                )
+                            ));
+                        };
+                        let predecessor_inventory =
+                            LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(
+                                &predecessor,
+                            )
+                            .map_err(permanent)?;
+                        let plan = barrier
+                            .atomic_dataset_snapshot_plan(&current, &predecessor_inventory)
+                            .map_err(permanent)?;
+                        let completion = storage.recover_verified_atomic_snapshot_completion(
+                            request_id,
+                            request_packet,
+                            predecessor_packet,
+                            session,
+                            checkpoint,
+                            &challenge,
+                            &current,
+                            &plan,
+                        )?;
+                        drop(sessions);
+                        let completion = completion.ok_or_else(|| {
+                            retryable("verified Storage trio changed during recovery")
+                        })?;
+                        let result = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
+                            .complete_verified_history(
+                                &current,
+                                &barrier,
+                                &plan,
+                                &predecessor_inventory,
+                                completion.predecessor_outcome(),
+                                fence,
+                                checkpoint,
+                                completion.group_outcome(),
+                                completion.successor_outcome(),
+                                completion.successor().clone(),
+                            )
+                            .map_err(retryable)?;
+                        let observation = match result {
+                            LifecycleAtomicSnapshotSourceCompletionV1::Recorded(observation)
+                            | LifecycleAtomicSnapshotSourceCompletionV1::Replay(observation) => {
+                                observation
                             }
-                        });
+                        };
+                        drop(effect);
+                        drop(current);
+                        drop(coordination);
+                        drop(owner);
+                        return self.commit_storage_snapshot_progress(
+                            operation_id,
+                            operation_key,
+                            operation_record,
+                            observation,
+                        );
                     }
                     LifecycleAtomicSnapshotSourceRecoveryV1::Complete { .. } => {
                         let observation = LifecycleAtomicSnapshotSourceStoreV1::new(journal)

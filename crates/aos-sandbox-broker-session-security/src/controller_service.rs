@@ -970,7 +970,7 @@ fn run_controller_cycle(
             .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
         ensure_controller_broker_sessions(node_id, &mut sessions)?;
         if cold_start {
-            audit_pending_atomic_snapshot_sources(controller, &mut sessions)?;
+            audit_pending_atomic_snapshot_sources(controller, &mut sessions, true)?;
         }
     }
     let mut state = (controller, sessions);
@@ -997,7 +997,7 @@ fn run_controller_cycle(
             let mut sessions = sessions
                 .lock()
                 .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
-            audit_pending_atomic_snapshot_sources(controller, &mut sessions)?;
+            audit_pending_atomic_snapshot_sources(controller, &mut sessions, false)?;
             refresh_catalog(controller, node_id, &mut sessions)
         },
     )
@@ -1006,6 +1006,7 @@ fn run_controller_cycle(
 fn audit_pending_atomic_snapshot_sources(
     controller: &mut ProductionController,
     sessions: &mut ControllerBrokerSessions,
+    before_reconciliation: bool,
 ) -> Result<(), CycleFailure> {
     // A crash after the group terminal but before its immediate successor
     // cannot be repaired with a fresh inventory: it would have a new session
@@ -1032,7 +1033,7 @@ fn audit_pending_atomic_snapshot_sources(
                 "pending Storage source scan returned a terminal record".to_owned(),
             ));
         };
-        storage
+        let history = storage
             .recover_verified_atomic_snapshot_history(
                 request_id,
                 request_packet,
@@ -1041,10 +1042,23 @@ fn audit_pending_atomic_snapshot_sources(
                 checkpoint,
             )
             .map_err(|error| CycleFailure::Retryable(format!("{error:?}")))?;
+        if !matches!(
+            history,
+            crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete { .. }
+        ) {
+            return Err(CycleFailure::Retryable(
+                "pending Storage source lacks a verified adjacent successor".to_owned(),
+            ));
+        }
+        if !before_reconciliation {
+            return Err(CycleFailure::Retryable(
+                "verified Storage source awaits lifecycle completion".to_owned(),
+            ));
+        }
     }
-    Err(CycleFailure::Retryable(
-        "pending Storage source holds the prior broker-session history".to_owned(),
-    ))
+    // Reconciliation completes the source before catalog refresh can install
+    // a new Storage request and roll this old terminal history forward.
+    Ok(())
 }
 
 fn pending_first_reconciliation_cycle<State, Pending, Status, Error>(

@@ -24,7 +24,9 @@ use aos_sandbox::lifecycle::{
 };
 use aos_sandbox::{EffectFailure, PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1};
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
+};
 use buffa::Message as _;
 
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
@@ -946,6 +948,86 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
                     "protected historical Storage trio is unavailable".to_owned(),
                 )
             })
+    }
+
+    /// Reattests a fully verified old trio with the current fixed Storage key.
+    ///
+    /// This issues no broker request. The fresh signature binds the current
+    /// protected lifecycle challenge to the exact historical packets after
+    /// read-only session verification; absent successors remain unresolved.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn recover_verified_atomic_snapshot_completion(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: aos_sandbox_core::ObjectDigest,
+        predecessor_packet: aos_sandbox_core::ObjectDigest,
+        session_binding: aos_sandbox_core::ObjectDigest,
+        checkpoint: aos_sandbox_core::ObjectDigest,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        operation: &CurrentLifecycleOperationV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+    ) -> Result<Option<DormantAtomicStorageInventoryCompletionV1>, EffectFailure> {
+        let history = self.recover_verified_atomic_snapshot_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            checkpoint,
+        )?;
+        let ProtectedVerifiedAtomicStorageHistoryV1::Complete {
+            predecessor,
+            group,
+            successor: current,
+        } = history
+        else {
+            return Ok(None);
+        };
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
+            return Err(EffectFailure::Permanent(
+                "historical Storage group was not successful".to_owned(),
+            ));
+        };
+        let receipt = aos_sandbox_protocol::decode_atomic_storage_snapshot_response(exact_body)
+            .map_err(|_| {
+                EffectFailure::Permanent("historical Storage receipt is invalid".to_owned())
+            })?;
+        let program = aos_sandbox_core::ObjectDigest::from_bytes(receipt.program());
+        let observation = aos_sandbox_core::ObjectDigest::from_bytes(receipt.observation());
+        let message = challenge
+            .storage_atomic_snapshot_signing_message(&predecessor, &group, &current)
+            .map_err(|_| {
+                EffectFailure::Permanent("historical Storage trio is not adjacent".to_owned())
+            })?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "Storage fixed endpoint attestation is unavailable".to_owned(),
+                )
+            })?;
+        let successor =
+            LifecycleAuthenticatedAtomicStorageSuccessorV1::from_fixed_endpoint_attestation(
+                challenge,
+                operation,
+                plan,
+                program,
+                observation,
+                &predecessor,
+                &group,
+                &current,
+                signature,
+            )
+            .map_err(|_| {
+                EffectFailure::Permanent("historical Storage successor is invalid".to_owned())
+            })?;
+        Ok(Some(DormantAtomicStorageInventoryCompletionV1 {
+            successor,
+            predecessor,
+            group,
+            current,
+        }))
     }
 
     /// Inspects the exact old Storage session before a new request rolls it over.
