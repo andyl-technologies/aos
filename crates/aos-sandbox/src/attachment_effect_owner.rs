@@ -19,6 +19,10 @@ use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
 };
+use crate::destination_slot_effect::{
+    self, DestinationSlotEffectError, PreparedCurrentDestinationSlotResumeV1,
+    PreparedCurrentDestinationSlotV1,
+};
 use crate::destination_slot_inventory::{
     self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryClient,
     DurableDestinationSlotInventorySnapshotV1,
@@ -26,9 +30,9 @@ use crate::destination_slot_inventory::{
 use crate::mount_attempt::{CurrentMountInventoryReconciliationV1, MountAttemptError};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
-    self, CurrentNamespaceTarget, CurrentRuntimeScopeError, CurrentRuntimeScopePolicy,
-    NamespaceTargetError, NamespaceTargetOutcome, RuntimeGenerationError, RuntimeScopeClient,
-    RuntimeScopeHolder,
+    self, CurrentAssignmentTarget, CurrentNamespaceTarget, CurrentRuntimeScopeError,
+    CurrentRuntimeScopePolicy, NamespaceTargetError, NamespaceTargetOutcome,
+    RuntimeGenerationError, RuntimeScopeClient, RuntimeScopeHolder,
 };
 use crate::{Journal, JournalError};
 
@@ -186,6 +190,51 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     ) -> Result<CurrentDestinationSlotReconciliationV1, MountAttemptError> {
         self.journal.ensure_protected_authority()?;
         destination_slot_inventory::reconcile_current(self.journal, slot, snapshot)
+    }
+
+    /// Prepares a signed-plan candidate for exact slot materialization or reap.
+    ///
+    /// The prepared request cannot be dispatched until a separately signed
+    /// Mount plan is bound and a protected attempt is durably admitted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale slot, inventory, or signed assignment authority, an
+    /// action without a new effect, invalid request semantics, or expired time.
+    pub fn prepare_current_slot_effect<T>(
+        &mut self,
+        reconciliation: CurrentDestinationSlotReconciliationV1,
+        target: CurrentAssignmentTarget,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentDestinationSlotV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::prepare_current(self.journal, reconciliation, target, clock)
+    }
+
+    /// Rebinds a pending slot effect to its original protected attempt bytes.
+    ///
+    /// Recovery cannot substitute a newly signed plan or current inventory for
+    /// the original request; the existing state machine checks every durable
+    /// correlation before returning a resumable candidate.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or changed attempts, stale slot or assignment authority,
+    /// invalid original request bytes, and expired time.
+    pub fn prepare_current_slot_resume<T>(
+        &mut self,
+        reconciliation: CurrentDestinationSlotReconciliationV1,
+        target: CurrentAssignmentTarget,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentDestinationSlotResumeV1, DestinationSlotEffectError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_effect::prepare_current_resume(self.journal, reconciliation, target, clock)
     }
 
     /// Loads the exact historical generation committed by an operation.
