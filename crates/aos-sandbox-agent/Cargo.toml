@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "aos-sandbox-exec-gate"
 path = "src/bin/aos-sandbox-exec-gate.rs"
 
+[[bin]]
+name = "aos-sandbox-guest-root-builder"
+path = "src/bin/aos-sandbox-guest-root-builder.rs"
+
 [dependencies]
 aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
