@@ -106,7 +106,7 @@ shape-review|crates/crucible-daemon/src/qemu_campaign_driver/tests.rs|sha256:213
 shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle.rs|sha256:23f135ce8760b72914eb4eb36e06b7a1cbf06037c6cbc8ba14cc2fce5a50dc36|implementation|2340|Attempt-guarded construction, replay-closure validation, and terminal evidence capture for the production QEMU lifecycle.|Guard installation, lifecycle construction, replay-closure admission, modeled driving, terminal-fingerprint preparation, final drain, and teardown transfer one indivisible attempt authority.
 shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/campaign_run.rs|sha256:30eced19488d06f94e8c427f2c87ef6597fd7c72032093d2b3aa16946d30a1d0|implementation|2685|Shared ownership for guarded scenario-default campaign runs, savepoints, and closure-bound portable resumes.|Request validation, source admission, exact capture, replay-closure validation, continuation selection, and bounded execution share one campaign state machine.
 shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/campaign_run/tests.rs|sha256:a1e2329ab80d6c20efa2b7f26e15e029c3669696e4e096851163df41aa544dc3|tests|2503|Shared-owner regressions for guarded campaign runs, savepoints, closure-bound resumes, and terminal evidence.|Discovery, savepoint, replay-closure reconstruction and rejection, restart, resume, and terminal-fingerprint cases reuse one guarded campaign lifecycle fixture and repository contract.
-shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/tests.rs|sha256:54ec56d5bd4af22250fc35202d8103c3ec4798eb0c735c02195a1264637944ae|tests|4081|QEMU campaign lifecycle restart, terminal-evidence, promotion, and recovery tests.|Construction, promotion, restart, terminal-fingerprint capture, guard transfer, and recovery cases exercise one production lifecycle ownership model.
+shape-review|crates/crucible-daemon/src/qemu_campaign_lifecycle/tests.rs|sha256:8b1774f4d004fb7627586254e1be9f8b0fef558eae3c908bb4426020c066add2|tests|3941|QEMU campaign lifecycle restart, terminal-evidence, promotion, and recovery tests.|Construction, promotion, restart, terminal-fingerprint capture, guard transfer, and recovery cases exercise one production lifecycle ownership model.
 shape-review|crates/crucible-daemon/src/qemu_campaign_resume/tests.rs|sha256:a06d908d97ece5cdf65aec0fcc60dea8ccd3198776709f73158523319f06bf14|tests|1032|Campaign resume authentication, restoration, and failure-recovery regressions.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs|sha256:4265dfe7e7b5f5e806b626ffe2591d85e32c1f13db05be5efb67d421c160c8ef|implementation|1453|Whole-world retained-source selection, launch, execution, terminal-fingerprint preparation, and recovery.|threshold-not-reached
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs|sha256:02f568112ab387824fe58f760d794f748413d541d3e2d7c7dad8c113aa3d46dc|tests|1486|Scripted production whole-world composition and terminal-preparation regressions.|threshold-not-reached
@@ -620,9 +620,9 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live.rs|qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/fuzz/corpus.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save/qemu_live/probe.rs|qemu
