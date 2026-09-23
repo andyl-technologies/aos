@@ -19,7 +19,11 @@ use crate::attachment_state::{
     self, AttachmentDesiredMutationV1, AttachmentDesiredStateError,
     CommittedCurrentAttachmentDesiredStateV1, DurableAttachmentDesiredStateV1,
 };
-use crate::mount_attempt::CurrentMountInventoryReconciliationV1;
+use crate::destination_slot_inventory::{
+    self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryClient,
+    DurableDestinationSlotInventorySnapshotV1,
+};
+use crate::mount_attempt::{CurrentMountInventoryReconciliationV1, MountAttemptError};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     self, CurrentNamespaceTarget, CurrentRuntimeScopeError, CurrentRuntimeScopePolicy,
@@ -147,6 +151,41 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     {
         self.journal.ensure_protected_authority()?;
         attachment_slot_state::commit_current(self.journal, target, mutation, clock)
+    }
+
+    /// Records one complete, freshly queried Mount destination-slot inventory.
+    ///
+    /// The snapshot is observation evidence; it cannot authorize a materialize
+    /// or reap effect without current signed assignment authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, unauthenticated or malformed broker state,
+    /// stale controller state, and failed durability.
+    pub fn record_slot_inventory(
+        &mut self,
+        client: DestinationSlotInventoryClient,
+    ) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_inventory::record_snapshot(self.journal, client)
+    }
+
+    /// Classifies an exact current logical slot against a retained Mount query.
+    ///
+    /// The classification is nonauthorizing. Effect preparation must recheck
+    /// the slot, inventory, and current signed assignment.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody, changed slot or inventory state, invalid
+    /// Mount correlation, or malformed protected history.
+    pub fn reconcile_current_slot(
+        &mut self,
+        slot: DurableAttachmentSlotV1,
+        snapshot: DurableDestinationSlotInventorySnapshotV1,
+    ) -> Result<CurrentDestinationSlotReconciliationV1, MountAttemptError> {
+        self.journal.ensure_protected_authority()?;
+        destination_slot_inventory::reconcile_current(self.journal, slot, snapshot)
     }
 
     /// Loads the exact historical generation committed by an operation.
