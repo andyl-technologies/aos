@@ -634,4 +634,11 @@ mod tests {
             assert!(encode_ready(invalid).is_err());
         }
     }
+
+    #[test]
+    fn health_packet_cannot_decode_as_publication_request() {
+        assert!(decode_request(HEALTH_REQUEST_MAGIC).is_err());
+        assert_ne!(HEALTH_REQUEST_MAGIC, RESULT_MAGIC);
+        assert_ne!(HEALTH_RESULT_MAGIC, RESULT_MAGIC);
+    }
 }

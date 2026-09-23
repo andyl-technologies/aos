@@ -74,6 +74,9 @@ fn run() -> Result<(), StorageServiceError> {
     storage.probe_guest_root_publisher()?;
 
     loop {
+        if !storage.runtime().is_inventory_ready() {
+            return Err(StorageRuntimeError::Recovery.into());
+        }
         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
             .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
         let mut session = match activation.accept_authenticated(accept_deadline) {
@@ -82,6 +85,9 @@ fn run() -> Result<(), StorageServiceError> {
             Err(error) => return Err(production_error(error)),
         };
         loop {
+            if !storage.runtime().is_inventory_ready() {
+                return Err(StorageRuntimeError::Recovery.into());
+            }
             let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
                 .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
             match session.serve_production_storage_request(&mut storage, request_deadline) {

@@ -151,6 +151,7 @@ in {
       ];
       after = [
         "aos-storaged.socket"
+        "aos-sandbox-guest-root-publisher.socket"
         "aos-sandbox-zfs-ready.service"
         "local-fs.target"
       ];
