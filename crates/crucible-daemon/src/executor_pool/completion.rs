@@ -99,6 +99,10 @@ impl PoolCompletionState {
         self.finished_workers.load(Ordering::Acquire) >= self.worker_count
     }
 
+    pub(super) fn finished_worker_count(&self) -> usize {
+        self.finished_workers.load(Ordering::Acquire)
+    }
+
     fn worker_finished(&self) {
         let mut wait = match self.wait.lock() {
             Ok(wait) => wait,
