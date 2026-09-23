@@ -679,22 +679,15 @@ impl<W: MountWorker> MountBroker<W> {
         request: &ValidatedMountRequest,
         admission: &VerifiedMountAdmissionV1,
     ) -> Result<()> {
-        let records = vec![
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                request.fence().sandbox_id().to_vec(),
-                self.authority
-                    .seal_fence(request.fence().sandbox_id(), &admission.fence)
-                    .map_err(|_| MountError::Fence("mount authority fence could not be sealed"))?,
-            ),
-            JournalRecord::put(
-                RecordNamespace::Effect,
-                request.header().request_id().to_vec(),
-                self.authority
-                    .seal_effect(request.header().request_id(), &admission.effect)
-                    .map_err(|_| MountError::Fence("mount effect intent could not be sealed"))?,
-            ),
-        ];
+        let records = self
+            .sealed_admission_records(
+                request.fence().sandbox_id(),
+                request.header().request_id(),
+                admission,
+                "mount authority fence could not be sealed",
+                "mount effect intent could not be sealed",
+            )?
+            .to_vec();
         self.journal.commit(&JournalTransaction::new(
             authority_refresh_transaction(
                 *request.header().request_id(),
@@ -704,6 +697,28 @@ impl<W: MountWorker> MountBroker<W> {
             records,
         )?)?;
         Ok(())
+    }
+
+    fn sealed_admission_records(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+        admission: &VerifiedMountAdmissionV1,
+        fence_error: &'static str,
+        effect_error: &'static str,
+    ) -> Result<[JournalRecord; 2]> {
+        let fence = self
+            .authority
+            .seal_fence(sandbox_id, &admission.fence)
+            .map_err(|_| MountError::Fence(fence_error))?;
+        let effect = self
+            .authority
+            .seal_effect(request_id, &admission.effect)
+            .map_err(|_| MountError::Fence(effect_error))?;
+        Ok([
+            JournalRecord::put(RecordNamespace::DesiredState, sandbox_id.to_vec(), fence),
+            JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), effect),
+        ])
     }
 
     fn persist_intent(
@@ -785,22 +800,17 @@ impl<W: MountWorker> MountBroker<W> {
             MountAction::MOUNT_ACTION_UNSPECIFIED => return Err(invalid_pending_state()),
         };
         let applied_records = resource_records.clone();
+        let [fence, effect] = self.sealed_admission_records(
+            request.fence().sandbox_id(),
+            request.header().request_id(),
+            admission,
+            "mount authority fence could not be sealed",
+            "mount effect intent could not be sealed",
+        )?;
         let mut records = vec![
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                request.fence().sandbox_id().to_vec(),
-                self.authority
-                    .seal_fence(request.fence().sandbox_id(), &admission.fence)
-                    .map_err(|_| MountError::Fence("mount authority fence could not be sealed"))?,
-            ),
+            fence,
             JournalRecord::idempotency(idempotency, request_digest, operation_id),
-            JournalRecord::put(
-                RecordNamespace::Effect,
-                request.header().request_id().to_vec(),
-                self.authority
-                    .seal_effect(request.header().request_id(), &admission.effect)
-                    .map_err(|_| MountError::Fence("mount effect intent could not be sealed"))?,
-            ),
+            effect,
         ];
         records.append(&mut resource_records);
         let transaction =
@@ -1187,26 +1197,15 @@ impl<W: MountWorker> MountBroker<W> {
         request: &ValidatedDestinationSlotRequest,
         admission: &VerifiedMountAdmissionV1,
     ) -> Result<()> {
-        let records = vec![
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                request.fence().sandbox_id().to_vec(),
-                self.authority
-                    .seal_fence(request.fence().sandbox_id(), &admission.fence)
-                    .map_err(|_| {
-                        MountError::Fence("destination-slot authority fence could not be sealed")
-                    })?,
-            ),
-            JournalRecord::put(
-                RecordNamespace::Effect,
-                request.header().request_id().to_vec(),
-                self.authority
-                    .seal_effect(request.header().request_id(), &admission.effect)
-                    .map_err(|_| {
-                        MountError::Fence("destination-slot effect intent could not be sealed")
-                    })?,
-            ),
-        ];
+        let records = self
+            .sealed_admission_records(
+                request.fence().sandbox_id(),
+                request.header().request_id(),
+                admission,
+                "destination-slot authority fence could not be sealed",
+                "destination-slot effect intent could not be sealed",
+            )?
+            .to_vec();
         self.journal.commit(&JournalTransaction::new(
             authority_refresh_transaction(
                 *request.header().request_id(),
@@ -1226,26 +1225,17 @@ impl<W: MountWorker> MountBroker<W> {
         request_digest: [u8; 32],
         admission: &VerifiedMountAdmissionV1,
     ) -> Result<()> {
+        let [fence, effect] = self.sealed_admission_records(
+            request.fence().sandbox_id(),
+            request.header().request_id(),
+            admission,
+            "destination-slot authority fence could not be sealed",
+            "destination-slot effect intent could not be sealed",
+        )?;
         let records = vec![
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                request.fence().sandbox_id().to_vec(),
-                self.authority
-                    .seal_fence(request.fence().sandbox_id(), &admission.fence)
-                    .map_err(|_| {
-                        MountError::Fence("destination-slot authority fence could not be sealed")
-                    })?,
-            ),
+            fence,
             JournalRecord::idempotency(idempotency, request_digest, operation_id),
-            JournalRecord::put(
-                RecordNamespace::Effect,
-                request.header().request_id().to_vec(),
-                self.authority
-                    .seal_effect(request.header().request_id(), &admission.effect)
-                    .map_err(|_| {
-                        MountError::Fence("destination-slot effect intent could not be sealed")
-                    })?,
-            ),
+            effect,
         ];
         self.journal.commit(&JournalTransaction::new(
             destination_slot_intent_transaction(*request.header().request_id()),
