@@ -8,10 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use aos_sandbox::runtime_execution::{
-    DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    ExecutionJournalRecoveryTokenV1, JournalExecutionCompletionV1, JournalRuntimeExecutionError,
-    RuntimeExecutionEvidenceError, agent_handshake_signing_message_v1,
-    agent_outcome_signing_message_v1, completion_from_backend_observation_v1,
+    CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
+    DormantRuntimeExecutionOwnerErrorV1, ExecutionJournalRecoveryTokenV1,
+    JournalExecutionCompletionV1, JournalRuntimeExecutionError, RuntimeExecutionEvidenceError,
+    agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
+    completion_from_backend_observation_v1,
 };
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
@@ -1635,6 +1636,9 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             self.authority.currentness().payload_boot_id(),
         )
         .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        if self.execution_observations.is_empty() {
+            self.submit_committed_agent_control_observation(effect, &expected)?;
+        }
         let observation = self.peek_execution(&expected)?;
         let evidence = completion_from_backend_observation_v1(effect, observation)?;
 
@@ -1778,11 +1782,6 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         else {
             return Ok(false);
         };
-        let authenticated = recovered.authenticated();
-        if authenticated.effect_request() != token.request_commitment() {
-            return Err(RuntimeBackendError::IntegrityFailure);
-        }
-
         let expected = BackendExecutionInspectionRequestV1::new(
             self.agent_evidence_authority(),
             operation,
@@ -1795,8 +1794,39 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             self.authority.currentness().payload_boot_id(),
         )
         .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
+        self.submit_committed_agent_observation(&expected, &recovered)
+    }
+
+    // Replays only the Host's committed packet; absence never authorizes a second dispatch.
+    fn submit_committed_agent_control_observation(
+        &mut self,
+        effect: &DurableExecutionEffectV1,
+        expected: &BackendExecutionInspectionRequestV1,
+    ) -> Result<bool, RuntimeBackendError> {
+        let operation = effect.issue().idempotency().operation();
+        let Some(recovered) = self
+            .authority
+            .recover_committed_host_agent_outcome(operation.as_bytes())
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?
+        else {
+            return Ok(false);
+        };
+
+        self.submit_committed_agent_observation(expected, &recovered)
+    }
+
+    fn submit_committed_agent_observation(
+        &mut self,
+        expected: &BackendExecutionInspectionRequestV1,
+        recovered: &CommittedHostAgentOutcomeV1,
+    ) -> Result<bool, RuntimeBackendError> {
+        self.revalidate()?;
+        let authenticated = recovered.authenticated();
+        if authenticated.effect_request() != expected.effect_request_digest() {
+            return Err(RuntimeBackendError::IntegrityFailure);
+        }
         if authenticated.request().backend_request_binding()
-            != backend_execution_inspection_binding_v1(&expected)
+            != backend_execution_inspection_binding_v1(expected)
         {
             return Err(RuntimeBackendError::IntegrityFailure);
         }
@@ -1812,13 +1842,13 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         }
         let input = aos_sandbox_core::runtime_backend::BackendExecutionInspectionInputV1 {
             authority_binding: ObjectDigest::from_bytes([0; 32]),
-            operation,
-            operation_sequence: token.sequence(),
-            effect_request_digest: token.request_commitment(),
-            execution: handle.execution,
-            specification_digest: handle.specification_digest,
-            admission_commitment: handle.admission_commitment,
-            runtime: handle.runtime,
+            operation: expected.operation(),
+            operation_sequence: expected.operation_sequence(),
+            effect_request_digest: expected.effect_request_digest(),
+            execution: expected.execution(),
+            specification_digest: expected.specification_digest(),
+            admission_commitment: expected.admission_commitment(),
+            runtime: *expected.runtime(),
             payload_boot_id: expected.payload_boot_id(),
             phase: core_execution_phase(outcome.phase())?,
             sequence: observation_sequence,
@@ -1835,8 +1865,10 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
             outcome.result_digest(),
             *authenticated.signature(),
         );
-        let observation =
-            self.verify_signed_execution_observation(token, observation_sequence, envelope)?;
+        let observation = self
+            .agent_evidence_verifier
+            .verify_execution_inspection(expected, observation_sequence, envelope)
+            .map_err(|_| RuntimeBackendError::IntegrityFailure)?;
         if observation.observation_commitment() != recovered.observation_commitment() {
             return Err(RuntimeBackendError::IntegrityFailure);
         }
