@@ -65,7 +65,7 @@ impl ProductionVmPortableReplayAssetPaths {
         &self.guest_assets
     }
 
-    /// Returns the shared initrd path passed to every VM, when configured.
+    /// Returns the shared initrd path used by nodes that declare its hash.
     #[must_use]
     pub fn initrd(&self) -> Option<&Path> {
         self.initrd.as_deref()
@@ -95,6 +95,7 @@ impl ProductionVmLifecycleConfig {
         scenario: &crucible::ScenarioDefForm,
     ) -> Result<ProductionVmPortableReplayAssetPaths, LifecycleApiError> {
         let mut selected = std::collections::BTreeMap::new();
+        let mut selected_initrd = None;
         for vm in scenario.world().vm_nodes() {
             let assets = self.guest_assets.get(&vm.arch).ok_or_else(|| {
                 loop_factory_error(format!(
@@ -103,17 +104,8 @@ impl ProductionVmLifecycleConfig {
                 ))
             })?;
             validate_guest_asset_references(vm, assets)?;
-            match (vm.initrd, self.initrd.as_ref()) {
-                (Some(expected), Some(path)) => {
-                    validate_guest_asset_reference(&vm.id, "initrd", Some(expected), path)?;
-                }
-                (Some(_), None) => {
-                    return Err(loop_factory_error(format!(
-                        "QEMU node `{}` declares an initrd but no materialized initrd was configured",
-                        vm.id.name
-                    )));
-                }
-                (None, _) => {}
+            if let Some(path) = selected_initrd_for_vm(vm, self)? {
+                selected_initrd = Some(path.to_path_buf());
             }
             selected
                 .entry(vm.arch)
@@ -127,10 +119,28 @@ impl ProductionVmLifecycleConfig {
         }
         Ok(ProductionVmPortableReplayAssetPaths {
             guest_assets: selected.into_values().collect(),
-            initrd: self.initrd.clone(),
+            initrd: selected_initrd,
             root_image_format: self.root_image_format,
         })
     }
+}
+
+/// Selects the shared initrd only for a node that binds it by content hash.
+pub(super) fn selected_initrd_for_vm<'a>(
+    vm: &crucible::WorldNode,
+    config: &'a ProductionVmLifecycleConfig,
+) -> Result<Option<&'a Path>, LifecycleApiError> {
+    let Some(expected) = vm.initrd else {
+        return Ok(None);
+    };
+    let path = config.initrd.as_deref().ok_or_else(|| {
+        loop_factory_error(format!(
+            "QEMU node `{}` declares an initrd but no materialized initrd was configured",
+            vm.id.name
+        ))
+    })?;
+    validate_guest_asset_reference(&vm.id, "initrd", Some(expected), path)?;
+    Ok(Some(path))
 }
 
 /// Selects a command-line prefix without crossing guest architectures.
@@ -295,6 +305,105 @@ mod tests {
         );
 
         fs::write(&initrd, b"changed-initrd")?;
+        assert!(config.portable_replay_asset_paths(&scenario).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn initrd_is_selected_only_for_nodes_that_bind_its_content()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let kernel = directory.path().join("kernel");
+        let root_image = directory.path().join("root.img");
+        let initrd = directory.path().join("initrd");
+        fs::write(&kernel, b"kernel-bytes")?;
+        fs::write(&root_image, b"root-image-bytes")?;
+        fs::write(&initrd, b"shared-initrd")?;
+
+        let mut bound = test_node(b"kernel-bytes", b"root-image-bytes");
+        bound.id.name = String::from("bound");
+        bound.initrd = Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            b"shared-initrd",
+        )));
+        let mut unbound = test_node(b"kernel-bytes", b"root-image-bytes");
+        unbound.id.name = String::from("unbound");
+
+        let config = ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            &kernel,
+            &root_image,
+            directory.path().join("run"),
+        )
+        .with_initrd(&initrd);
+        assert_eq!(
+            selected_initrd_for_vm(&bound, &config)?,
+            Some(initrd.as_path())
+        );
+        assert_eq!(selected_initrd_for_vm(&unbound, &config)?, None);
+
+        let world = World::from_nodes(vec![bound, unbound])?;
+        let scenario = ScenarioDefForm::from_components(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(2),
+        )?;
+        let selected = config.portable_replay_asset_paths(&scenario)?;
+        assert_eq!(selected.initrd(), Some(initrd.as_path()));
+        Ok(())
+    }
+
+    #[test]
+    fn different_per_node_initrd_identities_fail_closed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let kernel = directory.path().join("kernel");
+        let root_image = directory.path().join("root.img");
+        let initrd = directory.path().join("initrd");
+        fs::write(&kernel, b"kernel-bytes")?;
+        fs::write(&root_image, b"root-image-bytes")?;
+        fs::write(&initrd, b"first-initrd")?;
+
+        let mut first = test_node(b"kernel-bytes", b"root-image-bytes");
+        first.id.name = String::from("first");
+        first.initrd = Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            b"first-initrd",
+        )));
+        let mut second = test_node(b"kernel-bytes", b"root-image-bytes");
+        second.id.name = String::from("second");
+        second.initrd = Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            b"second-initrd",
+        )));
+
+        let config = ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            &kernel,
+            &root_image,
+            directory.path().join("run"),
+        )
+        .with_initrd(&initrd);
+        assert_eq!(
+            selected_initrd_for_vm(&first, &config)?,
+            Some(initrd.as_path())
+        );
+        let error = selected_initrd_for_vm(&second, &config)
+            .err()
+            .ok_or("different node initrd unexpectedly selected")?;
+        assert!(
+            error
+                .to_string()
+                .contains("production node `second` declares initrd")
+        );
+
+        let world = World::from_nodes(vec![first, second])?;
+        let scenario = ScenarioDefForm::from_components(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(3),
+        )?;
         assert!(config.portable_replay_asset_paths(&scenario).is_err());
         Ok(())
     }

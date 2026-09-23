@@ -97,6 +97,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     let nodes = source.world().vm_nodes();
+    // Reject incompatible per-node initrd identities before launching any VM.
+    for vm in nodes {
+        selected_initrd_for_vm(vm, config)?;
+    }
     let cold_branches = configured_branches(config).cloned().collect::<Vec<_>>();
     validate_configured_branch_sequence(scenario, &cold_branches)?;
     validate_app_random_branch_replay_config(nodes, config)?;
@@ -522,13 +526,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             }
             ninep_bindings.insert(vm.id.clone(), ninep);
         }
-        if vm.initrd.is_some() && config.initrd.is_none() {
-            return Err(loop_factory_error(format!(
-                "QEMU node `{}` declares an initrd but no materialized initrd was configured",
-                vm.id.name
-            )));
-        }
-        if let Some(initrd) = &config.initrd {
+        if let Some(initrd) = selected_initrd_for_vm(vm, config)? {
             launch = launch.with_initrd(initrd);
         }
         if config.debug.as_ref().is_some_and(|debug| {
