@@ -206,7 +206,7 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
     fs::write(
         &policy_input,
         format!(
-            r#"schema_version = 2
+            r#"schema_version = 3
 scenario = {:?}
 campaign_seed = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 mode = "strict"

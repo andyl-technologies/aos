@@ -436,6 +436,20 @@ pub(super) fn campaign_stop_condition_label(stop: &StopCondition) -> String {
         StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
             format!("next-choice-or-execution-quanta:{execution_quanta}")
         }
+        StopCondition::Bounded {
+            primary,
+            virtual_time_nanoseconds,
+            execution_quanta,
+        } => {
+            let virtual_time = virtual_time_nanoseconds
+                .map_or_else(|| String::from("none"), |value| value.to_string());
+            let quanta =
+                execution_quanta.map_or_else(|| String::from("none"), |value| value.to_string());
+            format!(
+                "bounded:{}:virtual-time-ns={virtual_time}:execution-quanta={quanta}",
+                campaign_stop_condition_label(primary)
+            )
+        }
     }
 }
 
