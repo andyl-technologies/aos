@@ -11,7 +11,6 @@
   mkCargoDummySource,
   aosWorkspaceSource,
   aosWorkspaceVendor,
-  rust,
   wasm-bindgen-cli,
   stdenv,
   buildPackages,
@@ -21,6 +20,9 @@
   # target-independent WebAssembly distribution.
   buildProtobuf = buildPackages.protobuf;
   buildCc = buildPackages.cc;
+  buildBash = buildPackages.bash;
+  buildCoreutils = buildPackages.coreutils;
+  buildRust = buildPackages.rust;
   nativeRustTarget = stdenv.buildPlatform.config;
   nativeRustCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] nativeRustTarget);
   nativeRustCcPrefix = builtins.replaceStrings ["-"] ["_"] nativeRustTarget;
@@ -178,7 +180,7 @@ in
 
     inherit version src;
 
-    buildDeps = [rust wasm-bindgen-cli buildProtobuf buildCc];
+    buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils];
     inherit cargoDeps;
 
     phases = [
@@ -209,6 +211,45 @@ in
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           export PROTOC="${buildProtobuf}/bin/protoc"
+
+          # rust-lld may leave a zero-filled output on the build filesystem.
+          # Link on tmpfs, then copy the completed wasm into Cargo's target dir.
+          cat > "$TMPDIR/aos-wasm-linker" <<'LINKER'
+          #!${buildBash}/bin/bash
+          set -euo pipefail
+
+          stage_dir=$(${buildCoreutils}/bin/mktemp -d /dev/shm/aos-wasm-link.XXXXXXXX)
+          trap '${buildCoreutils}/bin/rm -rf "$stage_dir"' EXIT
+
+          output=
+          arguments=()
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              -o)
+                [ "$#" -ge 2 ]
+                output="$2"
+                arguments+=("-o" "$stage_dir/output.wasm")
+                shift 2
+                ;;
+              -o=*)
+                output="''${1#-o=}"
+                arguments+=("-o" "$stage_dir/output.wasm")
+                shift
+                ;;
+              *)
+                arguments+=("$1")
+                shift
+                ;;
+            esac
+          done
+
+          [ -n "$output" ]
+          ${buildRust}/lib/rustlib/${nativeRustTarget}/bin/rust-lld "''${arguments[@]}"
+          ${buildCoreutils}/bin/cat "$stage_dir/output.wasm" > "$output"
+          LINKER
+          chmod +x "$TMPDIR/aos-wasm-linker"
+          export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$TMPDIR/aos-wasm-linker"
+
           cargo build -p aos-hub-console --target wasm32-unknown-unknown \
             --release --frozen --offline -j"$NIX_BUILD_CORES"
           mkdir -p generated
