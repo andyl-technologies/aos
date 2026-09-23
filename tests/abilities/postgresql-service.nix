@@ -24,21 +24,23 @@
       operations = ["observe"];
       lifetime = "persistent";
     };
-  evaluate = postgresqlConfig:
+  evaluateWith = postgresqlConfig: extraModules:
     lib.evalModules {
       inherit lib;
-      modules = [
-        ../../modules/abilities/default.nix
-        {
-          options.assertions = lib.mkOption {
-            type = lib.types.listOf lib.types.attrs;
-            default = [];
-            extensible = true;
-          };
-          aos.abilities.environment = environment;
-          postgresql = postgresqlConfig;
-        }
-      ];
+      modules =
+        [
+          ../../modules/abilities/default.nix
+          {
+            options.assertions = lib.mkOption {
+              type = lib.types.listOf lib.types.attrs;
+              default = [];
+              extensible = true;
+            };
+            aos.abilities.environment = environment;
+            postgresql = postgresqlConfig;
+          }
+        ]
+        ++ extraModules;
       packageModules = [
         (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
@@ -47,6 +49,7 @@
         }
       ];
     };
+  evaluate = postgresqlConfig: evaluateWith postgresqlConfig [];
   disabled = evaluate {};
   standalone = evaluate {
     enable = true;
@@ -58,6 +61,16 @@
     bootstrap.password.name = "bootstrap-password";
     settings.log_min_duration_statement = 250;
   };
+  disabledServices =
+    evaluateWith {
+      enable = true;
+      bootstrap.password.name = "bootstrap-password";
+    } [
+      ({lib, ...}: {
+        aos.services."postgresql.initialize".enable = lib.mkForce false;
+        aos.services."postgresql.main".enable = lib.mkForce false;
+      })
+    ];
   standby = evaluate {
     enable = true;
     topology = "standby";
@@ -118,6 +131,8 @@ in
   assert !assertionsHold reservedSetting;
   assert postgresqlInstances disabled == {};
   assert postgresqlRequests disabled == {};
+  assert postgresqlRequests disabledServices == {};
+  assert disabledServices.config.aos.abilities.requirementTemplates == standalone.config.aos.abilities.requirementTemplates;
   assert !disabled.config.aos.services."postgresql.main".enable;
   assert standalone.config.aos.services."postgresql.initialize".enable;
   assert standalone.config.aos.services."postgresql.main".enable;

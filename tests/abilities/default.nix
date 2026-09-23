@@ -242,6 +242,9 @@
   mariadbService = import ./mariadb-service.nix {
     inherit lib pkgs;
   };
+  krb5KdcService = import ./krb5-kdc-service.nix {
+    inherit lib pkgs;
+  };
   serviceManagement = import ./service-management.nix {
     inherit lib;
   };
@@ -662,6 +665,7 @@ in
   assert libvirtService;
   assert nginxService;
   assert mariadbService;
+  assert krb5KdcService;
   assert serviceManagement;
   assert dbusService;
   assert bindService;

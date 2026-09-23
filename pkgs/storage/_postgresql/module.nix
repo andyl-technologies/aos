@@ -5,6 +5,9 @@
   ...
 }: let
   cfg = config.postgresql;
+  anyServiceEnabled =
+    config.aos.services."postgresql.initialize".enable
+    || config.aos.services."postgresql.main".enable;
   inherit (lib.abilities) pathWithin resultOf;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -805,42 +808,42 @@ in {
       };
       assertions = [
         {
-          assertion = !cfg.enable || (cfg.listen.addresses != [] && builtins.length cfg.listen.addresses == builtins.length (lib.unique cfg.listen.addresses));
+          assertion = !anyServiceEnabled || (cfg.listen.addresses != [] && builtins.length cfg.listen.addresses == builtins.length (lib.unique cfg.listen.addresses));
           message = "postgresql.listen.addresses must be non-empty and contain no duplicates";
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || cfg.topology == "standby"
             || serviceManagement.credentialReferenceConfigured bootstrapPassword;
           message = "postgresql.bootstrap.password requires a credential reference for an enabled primary or standalone cluster";
         }
         {
-          assertion = !cfg.enable || builtins.all (rule: (rule.type == "local") == (rule.address == null)) hba;
+          assertion = !anyServiceEnabled || builtins.all (rule: (rule.type == "local") == (rule.address == null)) hba;
           message = "local PostgreSQL authentication rules must omit address; host rules must set address";
         }
         {
-          assertion = !cfg.enable || builtins.all (rule: rule.databases != [] && rule.users != []) hba;
+          assertion = !anyServiceEnabled || builtins.all (rule: rule.databases != [] && rule.users != []) hba;
           message = "PostgreSQL authentication rules require at least one database and user";
         }
         {
-          assertion = !cfg.enable || cfg.topology != "standby" || primary != null;
+          assertion = !anyServiceEnabled || cfg.topology != "standby" || primary != null;
           message = "PostgreSQL standby topology requires replication.primary";
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || cfg.topology != "standby"
             || serviceManagement.credentialReferenceConfigured replicationPassfile;
           message = "PostgreSQL standby topology requires a replication.passfile credential reference";
         }
         {
-          assertion = !cfg.enable || cfg.topology == "standalone" || (cfg.replication.walLevel != "minimal" && cfg.replication.maxWalSenders > 0);
+          assertion = !anyServiceEnabled || cfg.topology == "standalone" || (cfg.replication.walLevel != "minimal" && cfg.replication.maxWalSenders > 0);
           message = "PostgreSQL primary and standby topology require replica/logical WAL and at least one WAL sender";
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || !cfg.tls.enable
             || (
               serviceManagement.credentialReferenceConfigured tlsCertificate
@@ -850,7 +853,7 @@ in {
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || builtins.all
             (rule:
               rule.method
@@ -865,12 +868,12 @@ in {
           message = "PostgreSQL cert authentication requires a hostssl rule, TLS, and a CA resource reference";
         }
         {
-          assertion = !cfg.enable || builtins.all (name: settingName.check name) (builtins.attrNames cfg.settings);
+          assertion = !anyServiceEnabled || builtins.all (name: settingName.check name) (builtins.attrNames cfg.settings);
           message = "postgresql.settings names must use lowercase PostgreSQL parameter syntax";
         }
         {
           assertion =
-            !cfg.enable
+            !anyServiceEnabled
             || builtins.all (name:
               !(builtins.elem name [
                 "cluster_name"
@@ -902,7 +905,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = anyServiceEnabled;
     })
   ];
 }

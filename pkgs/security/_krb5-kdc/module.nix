@@ -5,6 +5,11 @@
   ...
 }: let
   cfg = config.krb5Kdc;
+  administrationEnabled = config.aos.services."krb5.administration".enable;
+  anyServiceEnabled =
+    config.aos.services."krb5.initialize".enable
+    || config.aos.services."krb5.kdc".enable
+    || administrationEnabled;
   inherit (lib) mkOption;
   inherit (lib.abilities) resultOf;
   abilityTypes = lib.abilities.types;
@@ -547,11 +552,11 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || cfg.kdcServers != [];
+          assertion = !anyServiceEnabled || cfg.kdcServers != [];
           message = "krb5Kdc.enable requires at least one krb5Kdc.kdcServers entry";
         }
         {
-          assertion = !cfg.enable || cfg.masterPassword.name != null;
+          assertion = !anyServiceEnabled || cfg.masterPassword.name != null;
           message = "krb5Kdc.enable requires krb5Kdc.masterPassword.name";
         }
         {
@@ -567,12 +572,12 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = anyServiceEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [administrationIngress];
-      enabled = cfg.enable && cfg.enableAdminServer;
+      enabled = administrationEnabled;
     })
   ];
 }
