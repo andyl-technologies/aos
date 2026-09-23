@@ -12,6 +12,7 @@ kernel-tests = []
 libc.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "mount", "net", "pipe", "process", "time"] }
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

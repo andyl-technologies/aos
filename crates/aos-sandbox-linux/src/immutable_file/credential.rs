@@ -15,6 +15,7 @@ use rustix::fs::{
     FileType, MemfdFlags, OFlags, SealFlags, fcntl_add_seals, fcntl_get_seals, fcntl_getfl, fstat,
     memfd_create,
 };
+use zeroize::Zeroizing;
 
 use super::ImmutableFileError;
 use crate::Error;
@@ -79,9 +80,9 @@ impl SealedReadOnlyCredential {
         let maximum_bytes =
             u64::try_from(maximum_bytes).map_err(|_| ImmutableFileError::MappingLimitExceeded)?;
         let credential = Self::from_owned(reader.into(), expected_bytes, maximum_bytes)?;
-        let mut observed = vec![0; bytes.len()];
+        let mut observed = Zeroizing::new(vec![0; bytes.len()]);
         read_exact_at(credential.descriptor.as_fd(), &mut observed)?;
-        if observed != bytes {
+        if observed.as_slice() != bytes {
             return Err(ImmutableFileError::AdmissionRace);
         }
         credential.revalidate()?;

@@ -18,6 +18,9 @@ use aos_sandbox::runtime_execution::{
     RuntimeExecutionEvidenceError, agent_handshake_signing_message_v1,
     completion_from_backend_observation_v1,
 };
+use aos_sandbox_agent::guest_attach_trust::{
+    GuestAttachTrustErrorV1, GuestAttachTrustRecordV1, MAX_GUEST_ATTACH_TRUST_BYTES,
+};
 use aos_sandbox_agent::protected_entry::GuestAgentLaunchRecordV1;
 use aos_sandbox_agent::signed_outcome_packet::{
     MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES, SignedAgentOutcomePacketErrorV1,
@@ -45,7 +48,7 @@ use rustix::fs::{Mode, OFlags, open, openat};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::attach_route::OpenSshGateAgentExchangeV1;
+use crate::attach_route::{HostOpenSshStaticTrustV1, OpenSshGateAgentExchangeV1};
 
 const PROVISIONING_BYTES: usize = 258;
 const RETRY_INTERVAL: Duration = Duration::from_millis(2);
@@ -54,6 +57,8 @@ const SEED_DIRECTORY: &str = "/run/credentials/aos-sandbox-hostd.service";
 const SEED_FILE: &str = "guest-agent-signing-seed-v1";
 const SEED_MAGIC: &[u8; 8] = b"AOSGSK01";
 const SEED_CREDENTIAL_BYTES: usize = 72;
+const ATTACH_PRIVATE_KEY_FILE: &str = "openssh-attach-host-private-key-v1";
+const MAX_ATTACH_PRIVATE_KEY_BYTES: u64 = 16 * 1024;
 
 /// Reports a stale launch binding or a failed authenticated channel exchange.
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +78,12 @@ pub enum HostAgentLiveErrorV1 {
     /// The fixed protected launch seed is absent or insecure.
     #[error("protected guest signing seed is unavailable")]
     SeedUnavailable,
+    /// The dedicated protected OpenSSH private key or public pins are absent.
+    #[error("protected guest attach trust is unavailable")]
+    AttachTrustUnavailable,
+    /// The sealed guest attach-trust record is invalid.
+    #[error(transparent)]
+    AttachTrust(#[from] GuestAttachTrustErrorV1),
     /// Protected runtime ownership changed or became unavailable.
     #[error(transparent)]
     Owner(#[from] DormantRuntimeExecutionOwnerErrorV1),
@@ -100,6 +111,122 @@ pub enum HostAgentLiveErrorV1 {
     /// One effect route or outcome requires cold protected recovery.
     #[error("guest effect requires protected cold recovery")]
     RecoveryRequired,
+}
+
+/// Retains private attach trust checked against independent protected Host pins.
+///
+/// The private key is supplied through the fixed systemd credential
+/// `openssh-attach-host-private-key-v1`; it is never generated from or copied
+/// into the public Host attach-trust pin. The material is consumed only by an
+/// exact current launch and delivered through fully sealed FD 5.
+pub struct HostAgentProtectedAttachTrustV1 {
+    record: GuestAttachTrustRecordV1,
+    trust_digest: [u8; 32],
+    runtime: AgentRuntimeBindingV1,
+}
+
+impl HostAgentProtectedAttachTrustV1 {
+    /// Opens and verifies the dedicated private key against protected pins.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale runtime ownership, absent or insecure credentials,
+    /// malformed OpenSSH keys, or a mismatch with independently pinned keys.
+    pub fn open_for_claim(
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<Self, HostAgentLiveErrorV1> {
+        claim.revalidate()?;
+        let runtime = agent_runtime(claim.currentness())?;
+        let pins = HostOpenSshStaticTrustV1::load_protected()
+            .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+        let private_key = read_protected_attach_private_key()?;
+        let record = GuestAttachTrustRecordV1::new(
+            runtime,
+            private_key,
+            pins.host_public_key().as_bytes().to_vec(),
+            pins.trusted_user_ca_public_key().as_bytes().to_vec(),
+        )?;
+        claim.revalidate()?;
+        Ok(Self {
+            record,
+            trust_digest: pins.credential_digest(),
+            runtime,
+        })
+    }
+
+    fn seal_for_claim(
+        self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<SealedReadOnlyCredential, HostAgentLiveErrorV1> {
+        claim.revalidate()?;
+        let pins = HostOpenSshStaticTrustV1::load_protected()
+            .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+        if self.runtime != agent_runtime(claim.currentness())?
+            || self.trust_digest != pins.credential_digest()
+            || self.record.host_public_key_bytes() != pins.host_public_key().as_bytes()
+            || self.record.trusted_ca_public_key_bytes()
+                != pins.trusted_user_ca_public_key().as_bytes()
+        {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+
+        let bytes = self.record.encode();
+        let credential = SealedReadOnlyCredential::create(
+            "aos-sandbox-guest-attach-trust-v1",
+            &bytes,
+            MAX_GUEST_ATTACH_TRUST_BYTES,
+        )?;
+        claim.revalidate()?;
+        Ok(credential)
+    }
+}
+
+fn read_protected_attach_private_key() -> Result<Vec<u8>, HostAgentLiveErrorV1> {
+    let directory = open(
+        SEED_DIRECTORY,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    let directory = File::from(directory);
+    let directory_metadata = directory
+        .metadata()
+        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    if !directory_metadata.is_dir()
+        || directory_metadata.uid() != 0
+        || directory_metadata.mode() & 0o022 != 0
+    {
+        return Err(HostAgentLiveErrorV1::AttachTrustUnavailable);
+    }
+
+    let descriptor = openat(
+        &directory,
+        Path::new(ATTACH_PRIVATE_KEY_FILE),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    let mut file = File::from(descriptor);
+    let metadata = file
+        .metadata()
+        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o277 != 0
+        || metadata.mode() & 0o400 == 0
+        || metadata.len() == 0
+        || metadata.len() > MAX_ATTACH_PRIVATE_KEY_BYTES
+    {
+        return Err(HostAgentLiveErrorV1::AttachTrustUnavailable);
+    }
+
+    let length = usize::try_from(metadata.len())
+        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    let mut bytes = Zeroizing::new(vec![0; length]);
+    file.read_exact(&mut bytes)
+        .map_err(|_| HostAgentLiveErrorV1::AttachTrustUnavailable)?;
+    Ok(std::mem::take(&mut *bytes))
 }
 
 /// Retains a zeroizing seed verified against the fixed protected agent peer.
@@ -217,6 +344,7 @@ impl HostAgentProtectedSeedV1 {
 pub struct HostAgentGuestLaunchDescriptorsV1 {
     channel: OwnedFd,
     provisioning: SealedReadOnlyCredential,
+    attach_trust: SealedReadOnlyCredential,
 }
 
 impl HostAgentGuestLaunchDescriptorsV1 {
@@ -232,6 +360,12 @@ impl HostAgentGuestLaunchDescriptorsV1 {
     pub fn provisioning_fd4(&self) -> BorrowedFd<'_> {
         self.provisioning.as_fd()
     }
+
+    /// Borrows the fully sealed attach trust to install as guest FD 5.
+    #[must_use]
+    pub fn attach_trust_fd5(&self) -> BorrowedFd<'_> {
+        self.attach_trust.as_fd()
+    }
 }
 
 /// Prepares an exact launch without allowing a socket or signer substitution.
@@ -241,7 +375,7 @@ pub struct HostAgentLaunchHandoffV1 {
 }
 
 impl HostAgentLaunchHandoffV1 {
-    /// Creates a private channel and sealed FD 4 from a matching launch record.
+    /// Creates a private channel and mandatory sealed FD 4 and FD 5 credentials.
     ///
     /// The record must come from the trusted runtime launch owner. This method
     /// never synthesizes a signing seed from protected public information.
@@ -253,6 +387,7 @@ impl HostAgentLaunchHandoffV1 {
     pub fn prepare(
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         record: GuestAgentLaunchRecordV1,
+        attach_trust: HostAgentProtectedAttachTrustV1,
     ) -> Result<Self, HostAgentLiveErrorV1> {
         claim.revalidate()?;
         let currentness = *claim.currentness();
@@ -272,9 +407,11 @@ impl HostAgentLaunchHandoffV1 {
             &provisioning_bytes,
             PROVISIONING_BYTES,
         )?;
+        let attach_trust = attach_trust.seal_for_claim(claim)?;
         let guest = HostAgentGuestLaunchDescriptorsV1 {
             channel,
             provisioning,
+            attach_trust,
         };
         let pending = HostAgentPendingSessionV1 {
             socket,
@@ -289,7 +426,7 @@ impl HostAgentLaunchHandoffV1 {
         Ok(Self { pending, guest })
     }
 
-    /// Splits the still-private Host endpoint from the two guest descriptors.
+    /// Splits the still-private Host endpoint from three guest descriptors.
     #[must_use]
     pub fn into_parts(self) -> (HostAgentPendingSessionV1, HostAgentGuestLaunchDescriptorsV1) {
         (self.pending, self.guest)
