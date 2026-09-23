@@ -78,6 +78,15 @@
     };
   };
   disabledKubelet = evaluate pkgs.kubelet {};
+  disabledServiceKubelet = evaluate pkgs.kubelet ({lib, ...}: {
+    kubelet = {
+      enable = true;
+      nodeName = "worker-a";
+      registerNode = true;
+      kubeconfig.name = "kubelet";
+    };
+    aos.services."service.kubelet".enable = lib.mkForce false;
+  });
   k3sWorker = evaluate pkgs.k3s-worker {
     k3s = {
       enable = true;
@@ -91,6 +100,14 @@
       token.name = "k3s-token";
     };
   };
+  disabledServiceK3sWorker = evaluate pkgs.k3s-worker ({lib, ...}: {
+    k3s = {
+      enable = true;
+      serverUrl = "https://control.example.test:6443";
+      token.name = "k3s-token";
+    };
+    aos.services."k3s.service".enable = lib.mkForce false;
+  });
   k3sCombined = evaluate pkgs.k3s-combined {
     k3s = {
       enable = true;
@@ -256,9 +273,11 @@ in
   assert packageRequests disabledCloudcore "cloudcore" == {};
   assert packageRequests disabledEdgecore "edgecore" == {};
   assert packageRequests disabledKubelet "kubelet" == {};
+  assert packageRequests disabledServiceKubelet "kubelet" == {};
   assert disabledCloudcore.config.aos.abilities.requirementTemplates == cloudcore.config.aos.abilities.requirementTemplates;
   assert disabledEdgecore.config.aos.abilities.requirementTemplates == edgecore.config.aos.abilities.requirementTemplates;
   assert disabledKubelet.config.aos.abilities.requirementTemplates == kubelet.config.aos.abilities.requirementTemplates;
+  assert disabledServiceKubelet.config.aos.abilities.requirementTemplates == kubelet.config.aos.abilities.requirementTemplates;
   assert portableOptionTree cloudcore.options.cloudcore;
   assert portableOptionTree edgecore.options.edgecore;
   assert portableOptionTree kubelet.options.kubelet;
@@ -266,10 +285,13 @@ in
   assert portableOptionTree cilium.options.cilium;
   assert portableOptionTree longhorn.options.longhorn;
   assert packageRequests disabledK3sWorker "k3s-worker" == {};
+  assert packageRequests disabledServiceK3sWorker "k3s-worker" == {};
+  assert !(disabledServiceK3sWorker.config.aos.abilities.instances ? "k3s-worker:configuration-controller");
   assert !disabledK3sWorker.config.aos.services."k3s.service".enable;
   assert k3sWorker.config.aos.services."k3s.service".enable;
   assert k3sControlPlane.config.aos.services."k3s.service".enable;
   assert disabledK3sWorker.config.aos.abilities.requirementTemplates == k3sWorker.config.aos.abilities.requirementTemplates;
+  assert disabledServiceK3sWorker.config.aos.abilities.requirementTemplates == k3sWorker.config.aos.abilities.requirementTemplates;
   assert packageRequests disabledCilium "cilium" == {};
   assert packageRequests disabledLonghorn "longhorn-manager" == {};
   assert disabledCilium.config.aos.abilities.requirementTemplates == cilium.config.aos.abilities.requirementTemplates;

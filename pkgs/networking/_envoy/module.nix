@@ -103,6 +103,7 @@
     };
   };
   cfg = envoyTypes.normalize config.envoy;
+  serviceEnabled = config.aos.services."envoy.main".enable;
   named = attrs: builtins.map (name: attrs.${name}) (builtins.attrNames attrs);
   allChains = lib.concatLists (builtins.map (listener: named listener.filterChains) (named cfg.listeners));
   downstreamTls = builtins.filter (value: value != null) (builtins.map (chain: chain.tls) allChains);
@@ -544,28 +545,28 @@ in {
 
       assertions = [
         {
-          assertion = !cfg.enable || cfg.listeners != {} || cfg.dynamicResources.listenersFromAds;
+          assertion = !serviceEnabled || cfg.listeners != {} || cfg.dynamicResources.listenersFromAds;
           message = "envoy.enable requires at least one static listener or listenersFromAds";
         }
         {
-          assertion = !cfg.enable || builtins.length listenerSockets == builtins.length (lib.unique listenerSockets);
+          assertion = !serviceEnabled || builtins.length listenerSockets == builtins.length (lib.unique listenerSockets);
           message = "envoy.listeners must not bind duplicate protocol/address/port tuples";
         }
         {
-          assertion = !cfg.enable || builtins.all (chain: (chain.virtualHosts != {}) != (chain.tcpProxyCluster != null)) allChains;
+          assertion = !serviceEnabled || builtins.all (chain: (chain.virtualHosts != {}) != (chain.tcpProxyCluster != null)) allChains;
           message = "each Envoy filter chain must configure exactly one of virtualHosts or tcpProxyCluster";
         }
         {
-          assertion = !cfg.enable || builtins.all (route: routeActionCount route == 1) allRoutes;
+          assertion = !serviceEnabled || builtins.all (route: routeActionCount route == 1) allRoutes;
           message = "each Envoy route must configure exactly one action";
         }
         {
-          assertion = !cfg.enable || builtins.all (route: routeMatchCount route == 1) allRoutes;
+          assertion = !serviceEnabled || builtins.all (route: routeMatchCount route == 1) allRoutes;
           message = "each Envoy route must configure exactly one of prefix, path, or safeRegex";
         }
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || (
               builtins.all (certificateSourceValid true) downstreamTls
               && builtins.all (certificateSourceValid false) upstreamTls
@@ -574,7 +575,7 @@ in {
         }
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || builtins.all
             (name:
               cfg.credentials ? ${name}
@@ -583,35 +584,35 @@ in {
           message = "each Envoy TLS credential handle must have a typed envoy.credentials resource";
         }
         {
-          assertion = !cfg.enable || builtins.all (name: builtins.elem name credentialNames) (builtins.attrNames cfg.credentials);
+          assertion = !serviceEnabled || builtins.all (name: builtins.elem name credentialNames) (builtins.attrNames cfg.credentials);
           message = "envoy.credentials contains an unknown credential handle";
         }
         {
-          assertion = !cfg.enable || builtins.all (tls: !tls.requireClientCertificate || validationSourceCount tls == 1) downstreamTls;
+          assertion = !serviceEnabled || builtins.all (tls: !tls.requireClientCertificate || validationSourceCount tls == 1) downstreamTls;
           message = "Envoy downstream client-certificate verification requires exactly one CA credential or SDS validation context";
         }
         {
-          assertion = !cfg.enable || builtins.all (tls: validationSourceCount tls == 1) upstreamTls;
+          assertion = !serviceEnabled || builtins.all (tls: validationSourceCount tls == 1) upstreamTls;
           message = "Envoy upstream TLS requires exactly one CA credential or SDS validation context";
         }
         {
-          assertion = !cfg.enable || !builtins.any (tls: tls.sdsSecret != null || tls.validationSdsSecret != null) allTls || cfg.dynamicResources.enableAds;
+          assertion = !serviceEnabled || !builtins.any (tls: tls.sdsSecret != null || tls.validationSdsSecret != null) allTls || cfg.dynamicResources.enableAds;
           message = "Envoy SDS secret references require dynamicResources.enableAds";
         }
         {
-          assertion = !cfg.enable || builtins.all (name: cfg.clusters ? ${name} || cfg.dynamicResources.clustersFromAds) referencedClusters;
+          assertion = !serviceEnabled || builtins.all (name: cfg.clusters ? ${name} || cfg.dynamicResources.clustersFromAds) referencedClusters;
           message = "Envoy routes and TCP proxies may reference only configured clusters unless CDS is enabled";
         }
         {
-          assertion = !cfg.enable || (!cfg.dynamicResources.listenersFromAds && !cfg.dynamicResources.clustersFromAds) || cfg.dynamicResources.enableAds;
+          assertion = !serviceEnabled || (!cfg.dynamicResources.listenersFromAds && !cfg.dynamicResources.clustersFromAds) || cfg.dynamicResources.enableAds;
           message = "Envoy LDS/CDS over ADS requires dynamicResources.enableAds";
         }
         {
-          assertion = !cfg.enable || !cfg.dynamicResources.enableAds || cfg.clusters ? ${cfg.dynamicResources.adsCluster};
+          assertion = !serviceEnabled || !cfg.dynamicResources.enableAds || cfg.clusters ? ${cfg.dynamicResources.adsCluster};
           message = "Envoy ADS requires a static cluster named by dynamicResources.adsCluster";
         }
         {
-          assertion = !cfg.enable || !cfg.admin.enable || cfg.admin.address == "127.0.0.1" || cfg.admin.address == "::1";
+          assertion = !serviceEnabled || !cfg.admin.enable || cfg.admin.address == "127.0.0.1" || cfg.admin.address == "::1";
           message = "Envoy admin is restricted to a loopback address";
         }
       ];
@@ -619,17 +620,17 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [storage networkReadiness configuration];
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [credentialRequests];
-      enabled = cfg.enable && configuredCredentials != [];
+      enabled = serviceEnabled && configuredCredentials != [];
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [adminLogView];
-      enabled = cfg.enable && adminLogEnabled;
+      enabled = serviceEnabled && adminLogEnabled;
     })
   ];
 }

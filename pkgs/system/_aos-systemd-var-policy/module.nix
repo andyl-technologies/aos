@@ -172,7 +172,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable && initrdStage;
+      enabled = config.aos.services."measured-var.aos-var-crypt".enable;
     })
   ];
 }

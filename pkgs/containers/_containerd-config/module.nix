@@ -477,7 +477,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = config.aos.services."containerd.main".enable;
     })
   ];
 }

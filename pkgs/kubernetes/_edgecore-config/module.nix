@@ -7,6 +7,7 @@
   ...
 }: let
   cfg = config.edgecore;
+  serviceEnabled = config.aos.services."service.edgecore".enable;
   inherit (lib) mkOption;
   abilityTypes = lib.abilities.types;
   positiveInt = abilityTypes.integer {
@@ -453,7 +454,7 @@ in {
       assertions = [
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || builtins.all
             (reference:
               reference
@@ -467,7 +468,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
   ];
 }

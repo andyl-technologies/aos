@@ -7,6 +7,7 @@
   ...
 }: let
   cfg = config.cloudcore;
+  serviceEnabled = config.aos.services."service.cloudcore".enable;
   inherit (lib) mkOption;
   abilityTypes = lib.abilities.types;
   positiveInt = abilityTypes.integer {
@@ -442,12 +443,12 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || cfg.advertiseAddresses != [];
+          assertion = !serviceEnabled || cfg.advertiseAddresses != [];
           message = "cloudcore.enable requires at least one cloudcore.advertiseAddresses entry";
         }
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || builtins.all
             (reference:
               reference
@@ -457,7 +458,7 @@ in {
           message = "cloudcore.enable requires kubeconfig and all CloudHub TLS credential references";
         }
         {
-          assertion = !cfg.enable || cfg.https.enable || cfg.websocket.enable;
+          assertion = !serviceEnabled || cfg.https.enable || cfg.websocket.enable;
           message = "cloudcore.enable requires HTTPS or WebSocket CloudHub transport";
         }
       ];
@@ -465,7 +466,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
   ];
 }

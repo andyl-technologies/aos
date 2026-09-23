@@ -7,6 +7,7 @@
   ...
 }: let
   cfg = config.kubelet;
+  serviceEnabled = config.aos.services."service.kubelet".enable;
   inherit (lib) mkOption;
   abilityTypes = lib.abilities.types;
   positiveInt = abilityTypes.integer {
@@ -396,7 +397,7 @@ in {
       assertions = [
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || !cfg.registerNode
             || (
               kubeconfigRef
@@ -415,12 +416,12 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       producers = serviceProducers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [credential];
-      enabled = cfg.enable && kubeconfigRef != null;
+      enabled = serviceEnabled && kubeconfigRef != null;
     })
   ];
 }

@@ -6,6 +6,11 @@
   ...
 }: let
   cfg = config.aos.virtualization.libvirt;
+  libvirtdEnabled = config.aos.services."libvirt.libvirtd".enable;
+  anyDaemonEnabled =
+    libvirtdEnabled
+    || config.aos.services."libvirt.virtlogd".enable
+    || config.aos.services."libvirt.virtlockd".enable;
   abilityTypes = lib.abilities.types;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceTypes = serviceManagement.types;
@@ -567,8 +572,10 @@ in {
         "libvirt.libvirtd" = libvirtd // {enable = cfg.enable;};
       };
     }
-    (lib.mkIf cfg.enable {
+    (lib.mkIf anyDaemonEnabled {
       environment.etc."libvirt".source = "${packageArtifactFor (lib.abilities.packageOutput {})}/etc/libvirt";
+    })
+    (lib.mkIf libvirtdEnabled {
       aos.abilities.runtimeChecks.libvirt = {
         description = "Libvirt local connection checks";
         checks = [
@@ -589,7 +596,7 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       producers = producers ++ [requirements];
-      enabled = cfg.enable;
+      enabled = anyDaemonEnabled;
     })
   ];
 }

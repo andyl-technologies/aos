@@ -13,6 +13,7 @@
   package = packageName;
   role = roleSpec.role;
   cfg = config.k3s;
+  serviceEnabled = config.aos.services."k3s.service".enable;
 
   nonEmptyStr = abilityTypes.refined {
     name = "non-empty K3s string";
@@ -691,7 +692,7 @@ in {
       assertions = [
         {
           assertion =
-            !cfg.enable
+            !serviceEnabled
             || (
               cfg.token
               != null
@@ -700,7 +701,7 @@ in {
           message = "k3s.token must reference a credential when k3s is enabled";
         }
         {
-          assertion = !cfg.enable || role != "worker" || cfg.serverUrl != null;
+          assertion = !serviceEnabled || role != "worker" || cfg.serverUrl != null;
           message = "k3s.serverUrl is required for the worker role";
         }
         {
@@ -725,14 +726,14 @@ in {
         }
       ];
     }
-    (mkIf cfg.enable {
+    (mkIf serviceEnabled {
       aos.abilities.instances =
         {configuration-controller = {};}
         // lib.optionalAttrs serverRole {object-controller = {};};
     })
     (serviceManagement.producerModule {
       inherit config lib producers;
-      enabled = cfg.enable;
+      enabled = serviceEnabled;
     })
   ];
 }

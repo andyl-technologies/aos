@@ -10,6 +10,9 @@
 }: let
   cfg = config.aos.services.getty.autologin;
   isInitrd = cfg.stage == "initrd";
+  anyConsoleEnabled =
+    config.aos.services."getty.virtual-console".enable
+    || config.aos.services."getty.serial-console".enable;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
@@ -159,12 +162,12 @@ in {
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [startupMilestone];
-      enabled = cfg.enable;
+      enabled = anyConsoleEnabled;
     })
     (serviceManagement.producerModule {
       inherit config lib;
       producers = [userSessionsMilestone];
-      enabled = cfg.enable && !isInitrd;
+      enabled = anyConsoleEnabled && !isInitrd;
     })
   ];
 }
