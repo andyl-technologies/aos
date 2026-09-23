@@ -200,7 +200,7 @@ impl ProductionVmLifecycleConfig {
             .transpose()
     }
 
-    /// Returns this configuration with the materialized initrd passed to QEMU.
+    /// Returns this configuration with the initrd selected by nodes that declare its hash.
     #[must_use]
     pub fn with_initrd(mut self, initrd: impl Into<PathBuf>) -> Self {
         self.initrd = Some(initrd.into());
