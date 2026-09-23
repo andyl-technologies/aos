@@ -35,6 +35,33 @@
     };
   disabled = evaluate false;
   enabled = evaluate true;
+  disabledInterval = evaluateBase {
+    name = "zfstools";
+    module = {
+      aos.filesystems.zfs = {
+        enable = true;
+        poolName = "tank";
+        systemState = false;
+        reservedSpace.enable = false;
+        datasets.data = {
+          mountPoint = "/tank/data";
+          compression = "zstd";
+        };
+      };
+      aos.filesystems.zfs.autoSnapshot = {
+        enable = true;
+        datasets = ["tank/data"];
+        intervals.hourly = {
+          calendar = "hourly";
+          keep = 24;
+        };
+      };
+      aos.services."zfs-auto-snapshot.hourly".enable = lib.mkForce false;
+    };
+    packages = [pkgs.aos-zfs-provider pkgs.systemd pkgs.zfstools];
+    extraModules = [../../modules/image/_platform.nix];
+    enableAbilitySelection = true;
+  };
   disabledZfstoolsRequests = lib.filterAttrs (_: request: lib.abilities.packageForDeclarationAuthority request.authority == "zfstools") disabled.config.aos.abilities.requests;
   requests = enabled.config.aos.abilities.requests;
   outputReference = request: output: {
@@ -75,6 +102,8 @@
     (builtins.attrNames options);
 in
   assert disabledZfstoolsRequests == {};
+  assert !(disabledInterval.config.aos.abilities.requests ? "zfstools:hourly-schedule");
+  assert !(disabledInterval.config.aos.abilities.requests ? "zfstools:prepare-lifecycle");
   assert disabled.config.aos.abilities.requirementTemplates != {};
   assert enabled.config.aos.abilities.instances ? "zfstools:zfs-auto-snapshot";
   assert (builtins.head snapshotLifecycle.start).executable
