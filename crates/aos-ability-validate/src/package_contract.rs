@@ -2,8 +2,8 @@
 //!
 //! A package companion contains one `package.json` and the exact interface
 //! documents retained below `interfaces/`. Publication may leave interfaces
-//! named only by deployment requirements unresolved, while every exported or
-//! implemented interface must be present in this local catalog.
+//! named only by deployment requirements unresolved. Exported, implemented,
+//! and method-target interfaces must be present in this local catalog.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -145,7 +145,7 @@ fn validate_local_declarations(
     package: &PackageDocument,
     context: &ValidationContext,
 ) -> anyhow::Result<()> {
-    let retained = package
+    let mut retained = package
         .interfaces
         .iter()
         .map(|(alias, key)| {
@@ -164,9 +164,35 @@ fn validate_local_declarations(
             Ok(key.clone())
         })
         .collect::<anyhow::Result<BTreeSet<InterfaceKey>>>()?;
+    let mut pending = retained.iter().cloned().collect::<Vec<_>>();
+
+    while let Some(key) = pending.pop() {
+        let document = context
+            .interface(&key)
+            .ok_or_else(|| anyhow::anyhow!("checked retained interface disappeared"))?;
+
+        for method in document.interface.methods.values() {
+            let mut targets = context
+                .interface_catalog()
+                .keys()
+                .filter(|candidate| candidate.name == method.target_resource);
+            let target = targets.next().ok_or_else(|| {
+                anyhow::anyhow!("method target resource lacks a retained interface document")
+            })?;
+            anyhow::ensure!(
+                targets.next().is_none(),
+                "method target resource has conflicting retained interface documents"
+            );
+
+            if retained.insert(target.clone()) {
+                pending.push(target.clone());
+            }
+        }
+    }
+
     anyhow::ensure!(
         retained.len() == context.interface_catalog().len(),
-        "retained interface catalog contains documents not owned by a package interface alias"
+        "retained interface catalog differs from the package's method-target closure"
     );
 
     let declared_guarantees = package
@@ -350,6 +376,36 @@ mod tests {
 
         validate_package_contract(&package, &interfaces)
             .expect("reference package contract must validate");
+    }
+
+    #[test]
+    fn retains_method_targets_without_package_interface_aliases() {
+        let fixture = crate::test_support::stateful_owner_plan_fixture();
+        let mut package = fixture.binding_inputs.packages[0].clone();
+        package
+            .interfaces
+            .remove(&LocalKey::new("handler").expect("fixture alias"));
+        let package = encode_canonical(&package).expect("fixture package must encode");
+        let interfaces = fixture
+            .interfaces
+            .iter()
+            .map(|document| encode_canonical(document).expect("fixture interface must encode"))
+            .collect::<Vec<_>>();
+
+        validate_package_contract(&package, &interfaces)
+            .expect("method target may be retained without a package alias");
+
+        let mut unrelated = fixture.interfaces[0].clone();
+        unrelated.interface.name = InterfaceName::new("test.unrelated").expect("valid name");
+        for method in unrelated.interface.methods.values_mut() {
+            method.target_resource = unrelated.interface.name.clone();
+        }
+        let mut with_unrelated = interfaces;
+        with_unrelated.push(encode_canonical(&unrelated).expect("unrelated interface must encode"));
+
+        let error = validate_package_contract(&package, &with_unrelated)
+            .expect_err("unreachable interface must be rejected");
+        assert!(format!("{error:?}").contains("method-target closure"));
     }
 
     #[test]
