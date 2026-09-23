@@ -42,7 +42,12 @@ const MOUNT_RESPONSE_BYTES: u32 = 16 * 1024;
 /// Retains an exact Acquire request and its current nonauthorizing source plan.
 #[must_use = "admit the exact source request before sending it to Mount"]
 pub struct PreparedCurrentAttachmentSourceAcquireV1 {
-    pub(super) plan: CurrentAttachmentSourcePlanV1,
+    request: PreparedSourceRequestV1,
+}
+
+/// Retains common exact bytes without erasing the public Acquire/Release types.
+struct PreparedSourceRequestV1 {
+    plan: CurrentAttachmentSourcePlanV1,
     operation_id: OperationId,
     request_digest: ObjectDigest,
     deadline_boottime_nanoseconds: u64,
@@ -61,13 +66,7 @@ pub struct PreparedCurrentAttachmentSourceDispatchV1 {
 /// Retains one exact current Mount source Release request before signing.
 #[must_use = "bind an independent Mount plan and durably admit Release before broker I/O"]
 pub struct PreparedCurrentAttachmentSourceReleaseV1 {
-    plan: CurrentAttachmentSourcePlanV1,
-    operation_id: OperationId,
-    request_digest: ObjectDigest,
-    deadline_boottime_nanoseconds: u64,
-    body: Vec<u8>,
-    body_without_deadline: Vec<u8>,
-    semantics: CanonicalMountSourceAcquisitionSemanticsV1,
+    request: PreparedSourceRequestV1,
 }
 
 /// Retains exact Release bytes after independent Mount-plan binding.
@@ -92,31 +91,31 @@ impl PreparedCurrentAttachmentSourceAcquireV1 {
     /// Returns the request identifier used for exact Mount and custody replay.
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
-        self.operation_id
+        self.request.operation_id
     }
 
     /// Returns SHA-256 of the exact canonical Acquire protobuf body.
     #[must_use]
     pub const fn request_digest(&self) -> ObjectDigest {
-        self.request_digest
+        self.request.request_digest
     }
 
     /// Borrows the exact request body retained for later admission and recovery.
     #[must_use]
     pub fn exact_request_body(&self) -> &[u8] {
-        &self.body
+        &self.request.body
     }
 
     /// Borrows the deadline-free bytes used for signed dispatch-template binding.
     #[must_use]
     pub fn body_without_deadline(&self) -> &[u8] {
-        &self.body_without_deadline
+        &self.request.body_without_deadline
     }
 
     /// Borrows the validated portable Mount Acquire plan-match tuple.
     #[must_use]
     pub const fn semantics(&self) -> &CanonicalMountSourceAcquisitionSemanticsV1 {
-        &self.semantics
+        &self.request.semantics
     }
 
     /// Constructs a Mount-only plan for this exact Acquire request.
@@ -138,14 +137,7 @@ impl PreparedCurrentAttachmentSourceAcquireV1 {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
-        source_plan_at(
-            journal,
-            &self.plan,
-            &self.semantics,
-            &self.body_without_deadline,
-            mount_revocation_scope,
-            clock,
-        )
+        source_plan_at(journal, &self.request, mount_revocation_scope, clock)
     }
 
     /// Binds an independently signed Mount plan to the exact Acquire template.
@@ -163,30 +155,12 @@ impl PreparedCurrentAttachmentSourceAcquireV1 {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
-        self.plan.recheck(journal, clock)?;
-        self.plan
-            .target
-            .runtime_generation()
-            .scope()
-            .verify_mount_plan_version(
-                journal,
-                &signed_plan,
-                aos_sandbox_core::ProtocolVersion::new(2, 0),
-                clock,
-            )?;
-        let semantics = BrokerDispatchSemanticIdentityV1::new(
-            self.semantics.verb(),
-            self.semantics.target(),
-            self.semantics.commitment(),
-        );
-        let template = BrokerDispatchTemplateV1::new(
+        let template = self.request.bind_signed_plan(
+            journal,
             signed_plan,
             BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
-            self.body_without_deadline.clone(),
-            Vec::new(),
-            semantics,
+            clock,
         )?;
-        self.plan.recheck(journal, clock)?;
         Ok(PreparedCurrentAttachmentSourceDispatchV1 {
             prepared: self,
             template,
@@ -196,29 +170,28 @@ impl PreparedCurrentAttachmentSourceAcquireV1 {
 
 fn source_plan_at<T>(
     journal: &mut Journal,
-    current: &CurrentAttachmentSourcePlanV1,
-    semantics: &CanonicalMountSourceAcquisitionSemanticsV1,
-    body_without_deadline: &[u8],
+    request: &PreparedSourceRequestV1,
     mount_revocation_scope: RevocationScopeId,
     clock: &mut T,
 ) -> Result<BrokerAuthorizationPlan, AttachmentSourceError>
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    current.recheck(journal, clock)?;
-    let scope = current.target.runtime_generation().scope();
+    request.plan.recheck(journal, clock)?;
+    let scope = request.plan.target.runtime_generation().scope();
     let (lease, fresh) = scope.verified_plan_lease(journal, clock)?;
     let manifest = scope.binding().manifest().manifest();
     // Budget the maximum encoded deadline field, not only this request's varint.
-    let request_bytes = body_without_deadline
+    let request_bytes = request
+        .body_without_deadline
         .len()
         .checked_add(11)
         .and_then(|length| u32::try_from(length).ok())
         .ok_or(AttachmentSourceError::Capacity)?;
     let grant = BrokerGrant::new(
-        semantics.verb(),
-        semantics.target(),
-        semantics.commitment(),
+        request.semantics.verb(),
+        request.semantics.target(),
+        request.semantics.commitment(),
         request_bytes,
         0,
     )?;
@@ -240,120 +213,18 @@ where
         scope.expires_wall_seconds(),
         Vec::new(),
     )?;
-    current.recheck(journal, clock)?;
+    request.plan.recheck(journal, clock)?;
     Ok(plan)
 }
 
-impl PreparedCurrentAttachmentSourceDispatchV1 {
-    /// Atomically custodies exact Acquire intent and its signed Mount packet.
-    ///
-    /// The returned live token is the only warm-path dispatch input. Neither
-    /// a recovered packet nor a durable source attempt alone can create it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed source, Host, ownership or Mount authority; a mismatched
-    /// attempt body; predecessor conflict; or any failed protected commit.
-    pub fn admit_current<T>(
-        self,
-        journal: &mut Journal,
-        clock: &mut T,
-    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        self.prepared.plan.recheck(journal, clock)?;
-        let deadline = self.prepared.deadline_boottime_nanoseconds;
-        let scope = self.prepared.plan.target.runtime_generation().scope();
-        let dispatch = scope.prepare_mount_attempt_version(
-            journal,
-            &self.template,
-            deadline,
-            aos_sandbox_core::ProtocolVersion::new(2, 0),
-            clock,
-        )?;
-        if dispatch.body() != self.prepared.body
-            || dispatch.deadline_boottime_nanoseconds() != deadline
-        {
-            return Err(AttachmentSourceError::Conflict);
-        }
-        let predecessor =
-            custody::current_predecessor(journal, self.prepared.plan.plan.attachment_id)?;
-        let (source, sidecar) = custody::record_current_attempt_with_dispatch(
-            journal,
-            &self.prepared.plan,
-            AttachmentSourceAttemptKindV1::Acquire,
-            self.prepared.operation_id,
-            self.prepared.request_digest,
-            self.prepared.body,
-            None,
-            predecessor,
-            Some(dispatch.packet().to_vec()),
-            clock,
-        )?;
-        if sidecar.is_none() {
-            return Err(AttachmentSourceError::CorruptState);
-        }
-        let live = dispatch_custody::live_dispatch(
-            source,
-            dispatch,
-            self.prepared.plan.target,
-            self.prepared.plan.desired,
-        );
-        live.recheck(journal, clock)?;
-        Ok(live)
-    }
-}
-
-impl PreparedCurrentAttachmentSourceReleaseV1 {
-    /// Returns the exact Release operation ID selected by the Mount session.
-    #[must_use]
-    pub const fn operation_id(&self) -> OperationId {
-        self.operation_id
-    }
-
-    /// Borrows the exact canonical Release request body.
-    #[must_use]
-    pub fn exact_request_body(&self) -> &[u8] {
-        &self.body
-    }
-
-    /// Builds the independent Mount-only plan for the exact Release grant.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed source or ownership authority and invalid grant bounds.
-    pub fn plan_at<T>(
+impl PreparedSourceRequestV1 {
+    fn bind_signed_plan<T>(
         &self,
         journal: &mut Journal,
-        mount_revocation_scope: RevocationScopeId,
-        clock: &mut T,
-    ) -> Result<BrokerAuthorizationPlan, AttachmentSourceError>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        source_plan_at(
-            journal,
-            &self.plan,
-            &self.semantics,
-            &self.body_without_deadline,
-            mount_revocation_scope,
-            clock,
-        )
-    }
-
-    /// Binds an independently signed Mount plan to the exact Release request.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed authority, a wrong Mount signature, scope, grant, or
-    /// canonical request template.
-    pub fn bind_signed_plan<T>(
-        self,
-        journal: &mut Journal,
         signed_plan: SignedBrokerPlan,
+        method: BrokerMethod,
         clock: &mut T,
-    ) -> Result<PreparedCurrentAttachmentSourceReleaseDispatchV1, AttachmentSourceError>
+    ) -> Result<BrokerDispatchTemplateV1, AttachmentSourceError>
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
@@ -375,12 +246,139 @@ impl PreparedCurrentAttachmentSourceReleaseV1 {
         );
         let template = BrokerDispatchTemplateV1::new(
             signed_plan,
-            BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+            method,
             self.body_without_deadline.clone(),
             Vec::new(),
             semantics,
         )?;
         self.plan.recheck(journal, clock)?;
+        Ok(template)
+    }
+
+    fn admit_current<T>(
+        self,
+        journal: &mut Journal,
+        template: BrokerDispatchTemplateV1,
+        kind: AttachmentSourceAttemptKindV1,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.plan.recheck(journal, clock)?;
+        let deadline = self.deadline_boottime_nanoseconds;
+        let scope = self.plan.target.runtime_generation().scope();
+        let dispatch = scope.prepare_mount_attempt_version(
+            journal,
+            &template,
+            deadline,
+            aos_sandbox_core::ProtocolVersion::new(2, 0),
+            clock,
+        )?;
+        if dispatch.body() != self.body || dispatch.deadline_boottime_nanoseconds() != deadline {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        let predecessor = custody::current_predecessor(journal, self.plan.plan.attachment_id)?;
+        let (source, sidecar) = custody::record_current_attempt_with_dispatch(
+            journal,
+            &self.plan,
+            kind,
+            self.operation_id,
+            self.request_digest,
+            self.body,
+            None,
+            predecessor,
+            Some(dispatch.packet().to_vec()),
+            clock,
+        )?;
+        if sidecar.is_none() {
+            return Err(AttachmentSourceError::CorruptState);
+        }
+        let live =
+            dispatch_custody::live_dispatch(source, dispatch, self.plan.target, self.plan.desired);
+        live.recheck(journal, clock)?;
+        Ok(live)
+    }
+}
+
+impl PreparedCurrentAttachmentSourceDispatchV1 {
+    /// Atomically custodies exact Acquire intent and its signed Mount packet.
+    ///
+    /// The returned live token is the only warm-path dispatch input. Neither
+    /// a recovered packet nor a durable source attempt alone can create it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed source, Host, ownership or Mount authority; a mismatched
+    /// attempt body; predecessor conflict; or any failed protected commit.
+    pub fn admit_current<T>(
+        self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentSourceDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.prepared.request.admit_current(
+            journal,
+            self.template,
+            AttachmentSourceAttemptKindV1::Acquire,
+            clock,
+        )
+    }
+}
+
+impl PreparedCurrentAttachmentSourceReleaseV1 {
+    /// Returns the exact Release operation ID selected by the Mount session.
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId {
+        self.request.operation_id
+    }
+
+    /// Borrows the exact canonical Release request body.
+    #[must_use]
+    pub fn exact_request_body(&self) -> &[u8] {
+        &self.request.body
+    }
+
+    /// Builds the independent Mount-only plan for the exact Release grant.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed source or ownership authority and invalid grant bounds.
+    pub fn plan_at<T>(
+        &self,
+        journal: &mut Journal,
+        mount_revocation_scope: RevocationScopeId,
+        clock: &mut T,
+    ) -> Result<BrokerAuthorizationPlan, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        source_plan_at(journal, &self.request, mount_revocation_scope, clock)
+    }
+
+    /// Binds an independently signed Mount plan to the exact Release request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed authority, a wrong Mount signature, scope, grant, or
+    /// canonical request template.
+    pub fn bind_signed_plan<T>(
+        self,
+        journal: &mut Journal,
+        signed_plan: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentSourceReleaseDispatchV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let template = self.request.bind_signed_plan(
+            journal,
+            signed_plan,
+            BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION,
+            clock,
+        )?;
         Ok(PreparedCurrentAttachmentSourceReleaseDispatchV1 {
             prepared: self,
             template,
@@ -403,46 +401,12 @@ impl PreparedCurrentAttachmentSourceReleaseDispatchV1 {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
-        self.prepared.plan.recheck(journal, clock)?;
-        let deadline = self.prepared.deadline_boottime_nanoseconds;
-        let scope = self.prepared.plan.target.runtime_generation().scope();
-        let dispatch = scope.prepare_mount_attempt_version(
+        self.prepared.request.admit_current(
             journal,
-            &self.template,
-            deadline,
-            aos_sandbox_core::ProtocolVersion::new(2, 0),
-            clock,
-        )?;
-        if dispatch.body() != self.prepared.body
-            || dispatch.deadline_boottime_nanoseconds() != deadline
-        {
-            return Err(AttachmentSourceError::Conflict);
-        }
-        let predecessor =
-            custody::current_predecessor(journal, self.prepared.plan.plan.attachment_id)?;
-        let (source, sidecar) = custody::record_current_attempt_with_dispatch(
-            journal,
-            &self.prepared.plan,
+            self.template,
             AttachmentSourceAttemptKindV1::Release,
-            self.prepared.operation_id,
-            self.prepared.request_digest,
-            self.prepared.body,
-            None,
-            predecessor,
-            Some(dispatch.packet().to_vec()),
             clock,
-        )?;
-        if sidecar.is_none() {
-            return Err(AttachmentSourceError::CorruptState);
-        }
-        let live = dispatch_custody::live_dispatch(
-            source,
-            dispatch,
-            self.prepared.plan.target,
-            self.prepared.plan.desired,
-        );
-        live.recheck(journal, clock)?;
-        Ok(live)
+        )
     }
 }
 
@@ -747,13 +711,15 @@ where
         .map_err(|_| AttachmentSourceError::Protocol)?;
     plan.recheck(journal, clock)?;
     Ok(PreparedCurrentAttachmentSourceReleaseV1 {
-        plan,
-        operation_id,
-        request_digest: validated.request_digest(),
-        deadline_boottime_nanoseconds,
-        body,
-        body_without_deadline,
-        semantics,
+        request: PreparedSourceRequestV1 {
+            plan,
+            operation_id,
+            request_digest: validated.request_digest(),
+            deadline_boottime_nanoseconds,
+            body,
+            body_without_deadline,
+            semantics,
+        },
     })
 }
 
@@ -854,12 +820,14 @@ where
     }
     plan.recheck(journal, clock)?;
     Ok(PreparedCurrentAttachmentSourceAcquireV1 {
-        plan,
-        operation_id,
-        request_digest: validated.request_digest(),
-        deadline_boottime_nanoseconds,
-        body,
-        body_without_deadline,
-        semantics,
+        request: PreparedSourceRequestV1 {
+            plan,
+            operation_id,
+            request_digest: validated.request_digest(),
+            deadline_boottime_nanoseconds,
+            body,
+            body_without_deadline,
+            semantics,
+        },
     })
 }
