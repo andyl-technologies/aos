@@ -172,7 +172,8 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
 /// Failed resource construction and any selection claim not yet spent.
 #[derive(Debug)]
 pub(crate) struct QemuAttemptResourceGuardBeginFailure {
-    error: QemuVmRealizationError,
+    // Box only the large diagnostic; this failure still owns the selection claim.
+    error: Box<QemuVmRealizationError>,
     selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
 }
 
@@ -182,14 +183,14 @@ impl QemuAttemptResourceGuardBeginFailure {
         selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
     ) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             selected_checkpoint,
         }
     }
 
     pub(crate) fn after_checkpoint_claim(error: QemuVmRealizationError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             selected_checkpoint: None,
         }
     }
@@ -200,7 +201,7 @@ impl QemuAttemptResourceGuardBeginFailure {
         QemuVmRealizationError,
         Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
     ) {
-        (self.error, self.selected_checkpoint)
+        (*self.error, self.selected_checkpoint)
     }
 }
 
