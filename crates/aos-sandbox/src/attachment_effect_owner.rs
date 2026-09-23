@@ -12,6 +12,9 @@ use aos_sandbox_core::{
     RawPairedClockSample, RevocationScopeId,
 };
 
+use crate::attachment_mount::{
+    self, AttachmentMountError, PreparedCurrentAttachmentMountCatalogQueryV1,
+};
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
 };
@@ -555,5 +558,33 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             .ensure_protected_authority()
             .map_err(AttachmentDesiredStateError::from)?;
         attachment_reconciliation::reconcile_current(self.journal, desired, inventory, clock)
+    }
+
+    /// Builds an exact Host-authorized Mount catalog query from reconciliation.
+    ///
+    /// The returned query is not an Apply permit. Its eventual signed response
+    /// must be completed against the same desired, inventory, and live target.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected evidence, unsupported actions, failed Host
+    /// authority, invalid source revision, or an expired request deadline.
+    pub fn prepare_authenticated_mount_catalog_query<T>(
+        &mut self,
+        reconciliation: CurrentAttachmentReconciliationV1,
+        request_id: [u8; 16],
+        session_deadline_boottime_nanoseconds: u64,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentMountCatalogQueryV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::prepare_current_authenticated_catalog_query(
+            self.journal,
+            reconciliation,
+            request_id,
+            session_deadline_boottime_nanoseconds,
+            clock,
+        )
     }
 }

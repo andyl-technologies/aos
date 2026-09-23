@@ -47,8 +47,9 @@ use crate::mount_attempt::{
 };
 use crate::mount_preparation::{
     self, MountCatalogClient, MountCatalogIntentV1, MountCatalogPreparationError,
-    PreparedCurrentMountCatalogV1, PreparedCurrentMountDispatchV1,
-    PreparedCurrentMountReleaseDispatchV1, PreparedCurrentMountReleaseV1,
+    PreparedCurrentMountCatalogQueryV1, PreparedCurrentMountCatalogV1,
+    PreparedCurrentMountDispatchV1, PreparedCurrentMountReleaseDispatchV1,
+    PreparedCurrentMountReleaseV1,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentNamespaceTarget;
@@ -94,6 +95,45 @@ pub enum AttachmentMountError {
 pub struct PreparedCurrentAttachmentMountV1 {
     evidence: AttachmentReconciliationEvidenceV1,
     operation: PreparedAttachmentMountOperation,
+}
+
+/// Retains exact attachment reconciliation beside a live authenticated catalog query.
+#[must_use = "complete the exact authenticated Mount catalog exchange"]
+pub struct PreparedCurrentAttachmentMountCatalogQueryV1 {
+    evidence: AttachmentReconciliationEvidenceV1,
+    query: PreparedCurrentMountCatalogQueryV1,
+}
+
+impl PreparedCurrentAttachmentMountCatalogQueryV1 {
+    /// Borrows the exact Host-authorized Mount query for retained session custody.
+    #[must_use]
+    pub const fn query(&self) -> &PreparedCurrentMountCatalogQueryV1 {
+        &self.query
+    }
+
+    /// Completes the authenticated catalog query under the original reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed desired generation, inventory, namespace, lease or
+    /// authenticated response, or a catalog that expired before completion.
+    pub fn complete_authenticated<T>(
+        self,
+        journal: &mut Journal,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentMountV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let catalog = self.query.complete_authenticated(journal, outcome, clock)?;
+        let prepared = PreparedCurrentAttachmentMountV1 {
+            evidence: self.evidence,
+            operation: PreparedAttachmentMountOperation::Catalog(catalog),
+        };
+        prepared.recheck(journal, clock)?;
+        Ok(prepared)
+    }
 }
 
 enum PreparedAttachmentMountOperation {
@@ -684,6 +724,55 @@ where
     };
     prepared.recheck(journal, clock)?;
     Ok(prepared)
+}
+
+/// Derives the exact catalog-backed Apply request from current reconciliation.
+///
+/// The request's source, recipe, destination, and consumer remain derived from
+/// protected desired state and fresh authenticated Mount inventory. The caller
+/// must send the returned query on the retained authenticated Mount session.
+///
+/// # Errors
+///
+/// Rejects an inapplicable action, stale evidence or target, invalid source
+/// revision, failed Host authorization, or an expired session deadline.
+pub fn prepare_current_authenticated_catalog_query<T>(
+    journal: &mut Journal,
+    reconciliation: CurrentAttachmentReconciliationV1,
+    request_id: [u8; 16],
+    session_deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<PreparedCurrentAttachmentMountCatalogQueryV1, AttachmentMountError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let (evidence, target) = reconciliation.into_evidence_and_target();
+    evidence.recheck(journal, &target, clock)?;
+    if !matches!(
+        evidence.action(),
+        AttachmentReconciliationActionV1::Prepare { .. }
+            | AttachmentReconciliationActionV1::Install { .. }
+            | AttachmentReconciliationActionV1::Replace { .. }
+            | AttachmentReconciliationActionV1::Detach { .. }
+    ) {
+        return Err(AttachmentMountError::NotPreparable);
+    }
+    let request = request_for_action(
+        journal,
+        evidence.desired().intent(),
+        evidence.action(),
+        evidence.snapshot().inventory().mounts(),
+    )?;
+    let intent = MountCatalogIntentV1::new(request)?;
+    let query = mount_preparation::prepare_current_authenticated_query(
+        journal,
+        target,
+        &intent,
+        request_id,
+        session_deadline_boottime_nanoseconds,
+        clock,
+    )?;
+    Ok(PreparedCurrentAttachmentMountCatalogQueryV1 { evidence, query })
 }
 
 pub(crate) fn prepare_current_resume<T>(
