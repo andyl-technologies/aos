@@ -13,7 +13,7 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 const EXECUTABLE_RELATIVE_PATH: &str = "usr/libexec/aos-sandbox-agent";
-const CREDENTIAL_RELATIVE_PATH: &str = "run/credentials/aos-sandbox-agent/guest-executable-v1";
+const CREDENTIAL_RELATIVE_PATH: &str = "etc/aos/sandbox-agent/guest-executable-v1";
 const CONCRETE_AGENT_PATH: &str = "usr/libexec/aos-sandbox-guest-agent";
 const CONCRETE_HELPER_PATH: &str = "usr/libexec/aos-sandbox-guest-exec";
 const CONCRETE_GATE_PATH: &str = "usr/libexec/aos-sandbox-exec-gate";

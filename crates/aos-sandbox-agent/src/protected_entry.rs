@@ -49,9 +49,10 @@ use crate::signed_outcome_packet::{
 
 const CHANNEL_DESCRIPTOR: i32 = 3;
 const PROVISIONING_DESCRIPTOR: i32 = 4;
-const PROVISIONING_BYTES: usize = 258;
+/// Exact length of the fully sealed `AOSAGP01` guest launch record.
+pub const GUEST_AGENT_PROVISIONING_BYTES_V1: usize = 258;
 const PROVISIONING_MAGIC: &[u8; 8] = b"AOSAGP01";
-const CREDENTIAL_PATH: &str = "/run/credentials/aos-sandbox-agent/guest-executable-v1";
+const CREDENTIAL_PATH: &str = "/etc/aos/sandbox-agent/guest-executable-v1";
 const CREDENTIAL_MAGIC: &[u8; 8] = b"AOSGEX01";
 const CREDENTIAL_BYTES: usize = 104;
 const MAX_EXECUTABLE_BYTES: u64 = 128 * 1_048_576;
@@ -150,7 +151,7 @@ impl GuestAgentLaunchRecordV1 {
     /// Encodes the canonical 258-byte `AOSAGP01` sealed-memfd payload.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(PROVISIONING_BYTES);
+        let mut bytes = Vec::with_capacity(GUEST_AGENT_PROVISIONING_BYTES_V1);
         bytes.extend_from_slice(PROVISIONING_MAGIC);
         bytes.extend_from_slice(&encode_agent_runtime_binding_v1(self.runtime));
         bytes.extend_from_slice(self.channel.as_bytes());
@@ -311,8 +312,8 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
         let mut socket = SeqpacketSocket::from_owned(channel)?;
         let provisioning = SealedMemfdMapping::run(
             provisioning_fd,
-            PROVISIONING_BYTES as u64,
-            PROVISIONING_BYTES as u64,
+            GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
+            GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
             |bytes, _identity| decode_provisioning(bytes),
         )??;
         verify_package_credential(provisioning.package_binding)?;
@@ -555,13 +556,7 @@ fn sign_handshake(
 }
 
 fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgentErrorV1> {
-    if bytes.len() != PROVISIONING_BYTES || bytes.get(..8) != Some(PROVISIONING_MAGIC.as_slice()) {
-        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
-    }
-    let expected: [u8; 32] = Sha256::digest(&bytes[..226]).into();
-    if bytes[226..] != expected {
-        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
-    }
+    let runtime_prefix = validated_guest_agent_runtime_prefix_v1(bytes)?;
     let mut cursor = ProvisioningCursor::new(&bytes[8..226]);
     let runtime = AgentRuntimeBindingV1::new(
         SandboxId::from_bytes(cursor.array()?),
@@ -572,6 +567,9 @@ fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgent
         NamespaceGeneration::new(cursor.u64()?),
         cursor.array()?,
     )?;
+    if encode_agent_runtime_binding_v1(runtime) != runtime_prefix {
+        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
+    }
     let channel = ObjectDigest::from_bytes(cursor.array()?);
     let instance = cursor.array()?;
     let seed: [u8; 32] = cursor.array()?;
@@ -607,7 +605,38 @@ fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgent
     })
 }
 
+/// Validates sealed launch framing and returns only its non-secret runtime prefix.
+///
+/// The caller must still authenticate FD custody and decode the full record;
+/// this helper never copies or returns its signing seed.
+///
+/// # Errors
+///
+/// Returns an error for wrong length, magic, or checksum.
+pub fn validated_guest_agent_runtime_prefix_v1(
+    bytes: &[u8],
+) -> Result<[u8; 104], ProtectedGuestAgentErrorV1> {
+    if bytes.len() != GUEST_AGENT_PROVISIONING_BYTES_V1
+        || bytes.get(..8) != Some(PROVISIONING_MAGIC.as_slice())
+    {
+        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
+    }
+    let expected: [u8; 32] = Sha256::digest(&bytes[..226]).into();
+    if bytes[226..] != expected {
+        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
+    }
+    bytes[8..112]
+        .try_into()
+        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidProvisioning)
+}
+
 fn verify_package_credential(binding: ObjectDigest) -> Result<(), ProtectedGuestAgentErrorV1> {
+    for directory in ["/etc", "/etc/aos", "/etc/aos/sandbox-agent"] {
+        let metadata = std::fs::symlink_metadata(directory)?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return Err(ProtectedGuestAgentErrorV1::InvalidCredential);
+        }
+    }
     let credential = OpenOptions::new()
         .read(true)
         .custom_flags(O_CLOEXEC | O_NOFOLLOW)
@@ -839,7 +868,7 @@ mod tests {
         .expect("valid launch record");
 
         let bytes = launch.encode();
-        assert_eq!(bytes.len(), PROVISIONING_BYTES);
+        assert_eq!(bytes.len(), GUEST_AGENT_PROVISIONING_BYTES_V1);
         let decoded = decode_provisioning(&bytes).expect("canonical provisioning");
         assert_eq!(decoded.runtime, runtime);
         assert_eq!(decoded.channel, ObjectDigest::from_bytes([8; 32]));

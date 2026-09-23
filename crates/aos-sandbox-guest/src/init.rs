@@ -17,17 +17,18 @@ use std::process::{Command, Stdio};
 use aos_sandbox_agent::guest_attach_trust::{
     GuestAttachTrustRecordV1, MAX_GUEST_ATTACH_TRUST_BYTES,
 };
+use aos_sandbox_agent::protected_entry::{
+    GUEST_AGENT_PROVISIONING_BYTES_V1, validated_guest_agent_runtime_prefix_v1,
+};
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_linux::inherited_fd::{
     duplicate_inherited_descriptor, mark_inherited_descriptor_close_on_exec,
 };
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
-use sha2::{Digest as _, Sha256};
 
 const CHANNEL_FD: i32 = 3;
 const PROVISIONING_FD: i32 = 4;
 const ATTACH_TRUST_FD: i32 = 5;
-const PROVISIONING_BYTES: usize = 258;
 const AGENT_PATH: &str = "/usr/libexec/aos-sandbox-guest-agent";
 const SYSTEMD_PATH: &str = "/usr/lib/systemd/systemd";
 const TRUST_DIRECTORY: &str = "/etc/aos/sandbox-attach";
@@ -57,9 +58,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = SealedMemfdMapping::run(
         provisioning,
-        PROVISIONING_BYTES as u64,
-        PROVISIONING_BYTES as u64,
-        |bytes, _identity| validate_provisioning_runtime(bytes),
+        GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
+        GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
+        |bytes, _identity| validated_guest_agent_runtime_prefix_v1(bytes),
     )??;
     let trust_file = File::from(trust);
     let trust_length = trust_file.metadata()?.len();
@@ -97,19 +98,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut systemd = Command::new(SYSTEMD_PATH);
     systemd.env_clear();
     Err(systemd.exec().into())
-}
-
-fn validate_provisioning_runtime(bytes: &[u8]) -> Result<[u8; 104], &'static str> {
-    if bytes.len() != PROVISIONING_BYTES || &bytes[..8] != b"AOSAGP01" {
-        return Err("guest agent provisioning is invalid");
-    }
-    let checksum: [u8; 32] = Sha256::digest(&bytes[..226]).into();
-    if bytes[226..] != checksum {
-        return Err("guest agent provisioning checksum is invalid");
-    }
-    bytes[8..112]
-        .try_into()
-        .map_err(|_| "guest agent runtime prefix is invalid")
 }
 
 fn install_trust(record: &GuestAttachTrustRecordV1) -> Result<(), Box<dyn std::error::Error>> {
