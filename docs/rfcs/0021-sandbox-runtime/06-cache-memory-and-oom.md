@@ -226,6 +226,18 @@ unpin resolves the exact retained obligation without a caller-supplied pin ID.
 An attachment replacement does not erase the old view's pin before its drain.
 View-scoped logical pins block eviction but do not grant runtime read access.
 
+Cache Replay bootstrap uses a controller-custodied, owner-checked journal of
+immutable partition manifests. A protected controller credential may supply a
+canonical, digest-framed Replay bundle; import appends each previously absent
+partition once and rejects changed, omitted, duplicated, or noncanonical
+records. Each manifest carries the complete node and project quotas, including
+pin-class ceilings, an empty typed checkpoint, and its exact Replay scope.
+Publisher byte/object limits do not substitute for that configuration. At
+startup the controller compares every retained cache manifest with this source
+and installs missing partitions only against clean or already-replayed state.
+The `aos.sandbox.controllerService.credentials.cacheReplayBundle` option loads
+the bounded `AOSCRB01` bundle; each import commits its new partitions atomically.
+
 A valid attachment lease admits creation of the minimum metadata and kernel
 pins needed to honor active opens; expiry does not erase pins already held.
 Lazy views need not reserve an unknowable complete closure; they use a hard

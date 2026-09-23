@@ -28,7 +28,8 @@
 //! durable controller journal execute through their exact authenticated broker
 //! sessions without manufacturing replacement identity.
 
-use std::io::IoSlice;
+use std::fs::File;
+use std::io::{IoSlice, Read};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -57,6 +58,7 @@ use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
 use futures::Stream;
+use rustix::fs::{Mode, OFlags, open};
 use rustix::net::{
     AddressFamily, SendAncillaryBuffer, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
     sendmsg_addr, socket_with,
@@ -118,6 +120,8 @@ const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const JOURNAL_NAME: &str = "controller.journal";
 const DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const NODE_ID_CREDENTIAL: &str = "node-id";
+const CACHE_REPLAY_BUNDLE_CREDENTIAL: &str = "cache-replay-bundle";
+const MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLER_COMMAND_CAPACITY: usize = 64;
@@ -266,6 +270,13 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
     let node_id = read_node_id()?;
+    if let Some(bundle) = read_cache_replay_bundle()? {
+        CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
+            configuration.uid,
+            &bundle,
+        )
+        .map_err(ControllerRuntimeError::CacheReplaySource)?;
+    }
     let ownership = ControllerOwnershipConfigurationV1::from_process_credentials_optional()
         .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
@@ -1366,6 +1377,49 @@ fn read_node_id() -> Result<[u8; 16], ControllerRuntimeError> {
         return Err(ControllerRuntimeError::InvalidCredential);
     }
     Ok(node_id)
+}
+
+fn read_cache_replay_bundle() -> Result<Option<Vec<u8>>, ControllerRuntimeError> {
+    let directory = std::env::var_os("CREDENTIALS_DIRECTORY")
+        .ok_or(ControllerRuntimeError::InvalidCacheReplayBundle)?;
+    let path = Path::new(&directory).join(CACHE_REPLAY_BUNDLE_CREDENTIAL);
+    let descriptor = match open(
+        &path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(_) => return Err(ControllerRuntimeError::InvalidCacheReplayBundle),
+    };
+    let mut file = File::from(descriptor);
+    let metadata = file
+        .metadata()
+        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?;
+    let size = usize::try_from(metadata.len())
+        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?;
+    let current_uid = rustix::process::geteuid().as_raw();
+    if !metadata.is_file()
+        || (metadata.uid() != 0 && metadata.uid() != current_uid)
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o077 != 0
+        || size == 0
+        || size > MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES
+    {
+        return Err(ControllerRuntimeError::InvalidCacheReplayBundle);
+    }
+    let mut bytes = vec![0; size];
+    file.read_exact(&mut bytes)
+        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?;
+    let mut trailing = [0];
+    if file
+        .read(&mut trailing)
+        .map_err(|_| ControllerRuntimeError::InvalidCacheReplayBundle)?
+        != 0
+    {
+        return Err(ControllerRuntimeError::InvalidCacheReplayBundle);
+    }
+    Ok(Some(bytes))
 }
 
 fn bind_diagnostic_socket(
@@ -4543,6 +4597,12 @@ pub enum ControllerRuntimeError {
     /// The protected node identity credential could not be read.
     #[error("protected controller node identity could not be read: {0}")]
     CredentialRead(std::io::Error),
+    /// The optional cache Replay credential is unsafe or malformed.
+    #[error("protected controller cache Replay bundle is invalid")]
+    InvalidCacheReplayBundle,
+    /// Protected cache Replay source import failed.
+    #[error("protected controller cache Replay source failed: {0}")]
+    CacheReplaySource(aos_sandbox::cache_residency::CacheReplayControllerBootstrapErrorV1),
     /// The optional protected broker-plan signing credential is unsafe or malformed.
     #[error("protected controller broker-plan signing credential is invalid")]
     InvalidBrokerPlanCredential,

@@ -51,6 +51,9 @@
   nodeCredentials =
     lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
+  cacheReplayCredentials =
+    lib.optional (cfg.credentials.cacheReplayBundle != null)
+    "cache-replay-bundle:/run/credentials/@system/${cfg.credentials.cacheReplayBundle}";
   brokerPlanCredentials = lib.optionals (cfg.credentials.brokerPlanSigningKey != null) (
     ["broker-plan-signing-key:/run/credentials/@system/${cfg.credentials.brokerPlanSigningKey}"]
     ++ lib.optional (brokers.hostBroker.credentials.brokerPlanPolicy != null)
@@ -100,6 +103,11 @@ in {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
           description = "Optional external 32-byte controller broker-plan signing seed for authority publications and Guardian arm plans.";
+        };
+        cacheReplayBundle = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional protected canonical cache Replay bundle; required for clean cache bootstrap unless the controller source journal was provisioned earlier.";
         };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
@@ -200,7 +208,7 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        LoadCredential = nodeCredentials ++ brokerPlanCredentials ++ ownershipCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
+        LoadCredential = nodeCredentials ++ cacheReplayCredentials ++ brokerPlanCredentials ++ ownershipCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

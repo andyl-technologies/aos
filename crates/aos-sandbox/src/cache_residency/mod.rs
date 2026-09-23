@@ -55,6 +55,7 @@ pub use controller_adapter::{
 };
 pub use controller_bootstrap::{
     CacheReplayControllerBootstrapErrorV1, CacheReplayControllerBootstrapOwnerV1,
+    encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,
 };
 pub use domain::{
     AuthorizedLookupKey, BackingIsolationV1, CacheAuthorityError, CacheAuthorityOwner,
