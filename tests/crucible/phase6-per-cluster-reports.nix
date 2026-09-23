@@ -120,8 +120,8 @@
         needle = "failure_signature_for_report_failure";
       }
       {
-        label = "property anchor validation";
-        needle = "validate_violation_point(event_log, record)";
+        label = "replayed property anchor validation";
+        needle = "validated_property_violation(finding, event_log, record, canonicalizer)";
       }
       {
         label = "divergence anchor validation";

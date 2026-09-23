@@ -20,15 +20,23 @@ pub(super) fn recorded_event_log_with_assertion_time(
     decision: Decision,
     assertion_ticks: u64,
 ) -> Vec<crucible::SchedulerEventLogEntry> {
+    let observed_marker = ObservableEvent::guest_marker(
+        icount(assertion_ticks),
+        node("triage-node"),
+        marker("forbidden"),
+    );
     vec![
         crucible::test_support::condition_payload_entry_for_test(
             0,
             VirtualTime { ticks: 1 },
             crucible::SchedulerEventLogPayload::Decision(decision),
         ),
-        condition_observation_entry_for_test(
+        crucible::test_support::condition_payload_entry_for_test(
             1,
-            &ObservableEvent::coverage_marker(icount(7), node("triage-node"), marker("hot-path")),
+            VirtualTime {
+                ticks: assertion_ticks,
+            },
+            SchedulerEventLogPayload::Observable(observed_marker.payload().clone()),
         ),
         condition_observation_entry_for_test(
             2,
@@ -80,34 +88,37 @@ pub(super) fn recorded_event_log_for_finding(
 pub(super) fn property_violation_record(
     reproduction_artifact: ContentHash,
 ) -> FailurePropertyViolationRecord {
-    property_violation_record_for_node(reproduction_artifact, node("triage-node"))
+    property_violation_record_at(reproduction_artifact, 8)
 }
 
-pub(super) fn property_violation_record_for_node(
+pub(super) fn property_violation_record_at(
     reproduction_artifact: ContentHash,
-    node: NodeId,
-) -> FailurePropertyViolationRecord {
-    property_violation_record_for_node_at(reproduction_artifact, node, 8)
-}
-
-pub(super) fn property_violation_record_for_node_at(
-    reproduction_artifact: ContentHash,
-    node: NodeId,
     assertion_ticks: u64,
 ) -> FailurePropertyViolationRecord {
-    FailurePropertyViolationRecord::new(HostAssertionViolation {
-        assertion: assertion_id("no-forbidden-marker"),
-        message: "forbidden marker must stay absent".to_owned(),
-        quantifier: AssertionQuantifierKind::Always,
-        event_kind: "assertion_state_changed".to_owned(),
-        at_icount: Some(icount(assertion_ticks)),
-        at_virtual_time: VirtualTime {
-            ticks: assertion_ticks,
-        },
-        node: Some(node),
-        detail: "observed forbidden marker".to_owned(),
-        reproduction_artifact,
-    })
+    let entries = recorded_event_log_with_assertion_time(
+        override_decision("fixture-decision", "fixture-choice"),
+        assertion_ticks,
+    );
+    property_violation_record_for_entries(reproduction_artifact, &entries)
+}
+
+pub(super) fn property_violation_record_for_entries(
+    reproduction_artifact: ContentHash,
+    entries: &[SchedulerEventLogEntry],
+) -> FailurePropertyViolationRecord {
+    let scenario = scenario_form().expect("failure-signature scenario must compile");
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(scenario.world())
+        .check_run(scenario.properties(), entries)
+        .expect("failure-signature fixture must replay");
+    let mut violation = report
+        .violations()
+        .iter()
+        .find(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
+        .expect("failure-signature fixture must violate declared property")
+        .clone();
+    violation.reproduction_artifact = reproduction_artifact;
+    FailurePropertyViolationRecord::new(violation)
 }
 
 pub(super) fn finding_artifact(
@@ -137,12 +148,17 @@ pub(super) fn scenario_form() -> Result<ScenarioDefForm, EngineError> {
         root_image: None,
         initrd: None,
     }])?;
-    ScenarioDefForm::from_components(
+    let properties = Properties::from_assertions_for_world(
         &world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::default(),
-    )
+        vec![AssertionDef {
+            id: assertion_id("no-forbidden-marker"),
+            message: String::from("forbidden marker must stay absent"),
+            property: Property::Always {
+                predicate: Predicate::not(Predicate::guest_marker(marker("forbidden"))),
+            },
+        }],
+    )?;
+    ScenarioDefForm::from_components(&world, &Plan::empty(), &properties, Seed::default())
 }
 
 pub(super) fn override_decision(point: &str, choice: &str) -> Decision {

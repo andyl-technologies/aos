@@ -510,12 +510,9 @@ impl FailureSignature {
         validate_recorded_event_log_for_finding(finding, event_log)?;
         validate_violation_for_finding(finding, violation)?;
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
-        let causal_cone = match validate_violation_point(event_log, violation) {
-            Ok(causal_index) => {
-                failure_causal_cone_through_index(event_log, causal_index, &canonicalizer)
-            }
-            Err(_) => validated_host_violation_cone(finding, event_log, violation, &canonicalizer)?,
-        };
+        let causal_cone =
+            validated_property_violation(finding, event_log, violation, &canonicalizer)?
+                .causal_cone;
         Ok(Self {
             failure_kind: FailureKind::PropertyViolation,
             property: Some(violation.property_key()),
