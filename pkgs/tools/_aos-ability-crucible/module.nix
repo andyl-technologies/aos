@@ -155,16 +155,19 @@ in {
     ./endpoint-provider.nix
   ];
 
-  options.aos.services.abilityCrucible = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Run the protected Ability Crucible execution-boundary adapter.";
-    };
-    socketName = lib.mkOption {
-      type = abilityTypes.localKey;
-      default = "controller.sock";
-      description = "Runtime-directory entry used for the protected observer socket.";
+  options.aos.serviceOptionModules.abilityCrucible = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Run the protected Ability Crucible execution-boundary adapter.";
+      };
+      socketName = lib.mkOption {
+        type = abilityTypes.localKey;
+        default = "controller.sock";
+        description = "Runtime-directory entry used for the protected observer socket.";
+      };
     };
   };
 

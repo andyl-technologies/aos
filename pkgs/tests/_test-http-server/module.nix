@@ -36,75 +36,69 @@
     };
   };
 
-  service = serviceManagement.forService {
-    inherit serviceTypes;
-    consumerInstance = "test-http-server";
-    declaration = {
-      service = "main";
-      enabled = true;
-      lifecycle =
-        {
-          description = "AOS test HTTP server";
-          execution_model = "foreground";
-          environment_files = [];
-          condition = [];
-          pre_start = [];
-          start = [
-            {
-              executable = {
-                artifact = lib.abilities.packageOutput {};
-                entry_point = "bin/test-http-server";
-                arguments = [
-                  "--port=${builtins.toString cfg.port}"
-                  (resultOf "content" "planned-path")
-                ];
-              };
-              ignore_failure = false;
-            }
-          ];
-          post_start = [];
-          stop = [];
-          post_stop = [];
-          restart = "on-failure";
-          restart_delay_millis = 1000;
-          configuration_change_action = "restart";
-          remain_after_exit = false;
-          start_timeout_millis = 90000;
-          stop_timeout_millis = 90000;
-        }
-        // lib.optionalAttrs (cfg.restartToken != null) {
-          restart_token = cfg.restartToken;
-        };
-      storage.mounts = [
-        {
-          name = "content";
-          source = resultOf "content" "planned-path";
-          access = "read-write";
-        }
-      ];
-      isolation = {
-        privilege = "unprivileged";
-        filesystem = "read-only-software";
-        network = "host";
-        process_visibility = "private";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
+  serviceDefinition = {
+    lifecycle =
+      {
+        description = "AOS test HTTP server";
+        execution_model = "foreground";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [
+          {
+            executable = {
+              artifact = lib.abilities.packageOutput {};
+              entry_point = "bin/test-http-server";
+              arguments = [
+                "--port=${builtins.toString cfg.port}"
+                (resultOf "content" "planned-path")
+              ];
+            };
+            ignore_failure = false;
+          }
+        ];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "on-failure";
+        restart_delay_millis = 1000;
+        configuration_change_action = "restart";
+        remain_after_exit = false;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      }
+      // lib.optionalAttrs (cfg.restartToken != null) {
+        restart_token = cfg.restartToken;
       };
-      dependencies = let
-        readiness = resultOf "ingress" "resource";
-      in {
-        prerequisites = [readiness];
-        after = [readiness];
-        before = [];
-        requires = [readiness];
-        wants = [];
-      };
+    storage.mounts = [
+      {
+        name = "content";
+        source = resultOf "content" "planned-path";
+        access = "read-write";
+      }
+    ];
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-software";
+      network = "host";
+      process_visibility = "private";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
+    };
+    dependencies = let
+      readiness = resultOf "ingress" "resource";
+    in {
+      prerequisites = [readiness];
+      after = [readiness];
+      before = [];
+      requires = [readiness];
+      wants = [];
     };
   };
-  fragments = [content ingress service];
+  fragments = [content ingress];
 in {
   options.test-http-server = {
     enable = lib.mkOption {
@@ -129,14 +123,19 @@ in {
 
   config = lib.mkMerge [
     {
+      aos.services.main = serviceDefinition // {enable = cfg.enable;};
       aos.abilities = lib.mkMerge (builtins.map
         (fragment: (serviceManagement.splitContribution fragment).declarations)
         fragments);
     }
+    (serviceManagement.projectService {
+      inherit config lib;
+      name = "main";
+      consumerInstance = "test-http-server";
+    })
     (lib.mkIf cfg.enable {
       aos.abilities = lib.mkMerge (
-        [{instances.test-http-server = {};}]
-        ++ builtins.map
+        builtins.map
         (fragment: (serviceManagement.splitContribution fragment).configured)
         fragments
       );

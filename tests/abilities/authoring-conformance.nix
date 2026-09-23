@@ -399,7 +399,7 @@
     };
   crossTargetEvaluation = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities = {
           environment = plainIdentity.environment;
@@ -455,7 +455,7 @@
   in
     (lib.evalModules {
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           config.aos.abilities = {
             environment = plainIdentity.environment;
@@ -561,7 +561,7 @@
   missingCrossTarget = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           config.aos.abilities = {
             environment = plainIdentity.environment;
@@ -605,7 +605,7 @@
   };
   validExecutableRequest = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       (executableModule {
         entryPoint = "bin/server";
         selector = selfOutput;
@@ -615,7 +615,7 @@
 
   canonicalAbilityEvaluation = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities.requirementTemplates.database = {
           description = "Requires the database lifecycle methods used by this conformance case.";
@@ -628,7 +628,7 @@
     ];
   };
   nonPackageProvenanceEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
+    modules = [../../modules/abilities/default.nix];
     operatorModules = [
       {
         config.aos.abilities.requirementTemplates.operator-policy = {
@@ -651,7 +651,7 @@
   invalidCanonicalAbility = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           config.aos.abilities.requirementTemplates.database = {
             description = "Malformed requirement used to exercise strict nested rejection.";
@@ -723,7 +723,7 @@
   };
   evaluateImplementation = implementation:
     (lib.evalModules {
-      modules = [lib.abilities.module];
+      modules = [../../modules/abilities/default.nix];
       packageModules = [
         {
           name = "authoring";
@@ -761,7 +761,7 @@
       guarantees = ["authoring"];
     };
   guaranteeReferenceEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
+    modules = [../../modules/abilities/default.nix];
     packageModules = [
       {
         name = "authoring";
@@ -780,7 +780,7 @@
     })
     .value;
   missingGuaranteeReferenceEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
+    modules = [../../modules/abilities/default.nix];
     packageModules = [
       {
         name = "missing";
@@ -795,7 +795,7 @@
   conflictingGuaranteeCatalog = builtins.tryEval (builtins.deepSeq (
       (lib.evalModules {
         modules = [
-          lib.abilities.module
+          ../../modules/abilities/default.nix
           {config.aos.abilities.guarantees.authoring = authoredGuarantee;}
           {config.aos.abilities.guarantees.authoring = proseChangedGuarantee;}
         ];
@@ -817,7 +817,7 @@
   );
   sharedImplementationEvaluation = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {config.aos.abilities.interfaces.shared = implementationInterface;}
     ];
     packageModules = [
@@ -835,7 +835,7 @@
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   serviceGuarantees = serviceManagement.guaranteeAliases;
   coreGuaranteeProviderEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
+    modules = [../../modules/abilities/default.nix];
     packageModules = [
       {
         name = "core-guarantee-provider";
@@ -864,7 +864,7 @@
     projectAbilityConfig "core-guarantee-provider" coreGuaranteeProviderEvaluation;
   sharedImplementationFixedPoint = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities = {
           environment = plainIdentity.environment;
@@ -903,7 +903,7 @@
     };
   };
   combinedPackageEvaluation = lib.evalModules {
-    modules = [lib.abilities.module];
+    modules = [../../modules/abilities/default.nix];
     packageModules = [
       (packageModuleFor "alpha")
       (packageModuleFor "beta")
@@ -1004,7 +1004,7 @@
   };
   packageSelectionEvaluation = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities = {
           environment = plainIdentity.environment;
@@ -1039,7 +1039,7 @@
   };
   malformedQualifiedReference = builtins.tryEval (builtins.deepSeq
     (lib.evalModules {
-      modules = [lib.abilities.module];
+      modules = [../../modules/abilities/default.nix];
       packageModules = [
         {
           name = "authoring";
@@ -1399,7 +1399,7 @@
   instanceIdentityEvaluation = lib.evalModules {
     inherit lib;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities = {
           environment = {
@@ -1594,7 +1594,7 @@
   rejectsAbilityModule = module:
     !(builtins.tryEval (builtins.deepSeq
       (lib.evalModules {
-        modules = [lib.abilities.module module];
+        modules = [../../modules/abilities/default.nix module];
       })
       .config
       .aos
@@ -1611,7 +1611,7 @@
   };
   revisionIdentityEvaluation = lib.evalModules {
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities = {
           environment = plainIdentity.environment;
@@ -1657,7 +1657,7 @@
 in
   assert corpus.schema == "aos.ability.authoring-conformance/v1";
   assert unique caseIds;
-  assert builtins.attrNames (lib.abilities.module {config = null;}).options == ["aos"];
+  assert builtins.attrNames (../../modules/abilities/default.nix {config = null;}).options == ["aos"];
   assert canonicalAbilityEvaluation.config.aos.abilities.requirementTemplates."aos:database"
   == {
     abi = 1;

@@ -11,7 +11,7 @@
   evaluated = lib.evalModules {
     inherit lib pkgs;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       ../../modules/_package-contributions.nix
       {
         aos.security.sudo.enable = true;

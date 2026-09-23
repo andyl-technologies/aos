@@ -25,7 +25,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           aos.security.ebpfLsm.enable = true;
           aos.abilities = {

@@ -44,7 +44,7 @@
       inherit lib;
       enableAbilitySelection = true;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           aos.abilities = {
             environment = {

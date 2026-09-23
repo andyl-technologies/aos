@@ -11,7 +11,7 @@
   evaluation = lib.evalModules {
     inherit lib pkgs;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities.environment = {
           authority = "test";

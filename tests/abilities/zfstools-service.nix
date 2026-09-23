@@ -131,6 +131,6 @@ in
     io_class = "idle";
     io_priority = 7;
   };
-  assert portableOptionTree enabled.options.aos.services.zfsAutoSnapshot;
+  assert portableOptionTree (builtins.removeAttrs (lib.submoduleOptions enabled.options.aos.services.type._elementType ["aos" "services" "zfsAutoSnapshot"]) ["_module"]);
   assert portableOptionTree enabled.options.aos.filesystems.zfs;
   assert !(enabled.config ? systemd); true

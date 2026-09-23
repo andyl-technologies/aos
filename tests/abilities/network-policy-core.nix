@@ -5,43 +5,43 @@
   contributions = lib.mkMerge [
     {instances.workload = {};}
     (serviceManagement.forProducer {
-        consumerInstance = "workload";
-        key = "kerberos-ingress";
-        interface = networkPolicy.interfaces.ingress;
-        methods = ["observe"];
-        parameters = {
-          endpoints = [
-            {
-              transport = "tcp";
-              port = 749;
-            }
-            {
-              transport = "tcp";
-              port = 88;
-            }
-            {
-              transport = "udp";
-              port = 88;
-            }
-          ];
-          prerequisites = [];
-        };
+      consumerInstance = "workload";
+      key = "kerberos-ingress";
+      interface = networkPolicy.interfaces.ingress;
+      methods = ["observe"];
+      parameters = {
+        endpoints = [
+          {
+            transport = "tcp";
+            port = 749;
+          }
+          {
+            transport = "tcp";
+            port = 88;
+          }
+          {
+            transport = "udp";
+            port = 88;
+          }
+        ];
+        prerequisites = [];
+      };
     })
     (serviceManagement.forProducer {
-        consumerInstance = "workload";
-        key = "packet-forwarding";
-        interface = networkPolicy.interfaces.forwarding;
-        methods = ["observe"];
-        parameters = {
-          policy = "accept";
-          prerequisites = [];
-        };
+      consumerInstance = "workload";
+      key = "packet-forwarding";
+      interface = networkPolicy.interfaces.forwarding;
+      methods = ["observe"];
+      parameters = {
+        policy = "accept";
+        prerequisites = [];
+      };
     })
   ];
   evaluated = lib.evalModules {
     inherit lib;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         aos.abilities.environment = {
           authority = "test";
@@ -67,7 +67,8 @@ in
   assert abilities.interfaces.network-ruleset.name == "aos.network.ruleset";
   assert abilities.requirementTemplates."consumer:network-ingress-policy".interface == ingressIdentity.name;
   assert abilities.requirementTemplates."consumer:network-ingress-policy".methods == ["observe"];
-  assert ingress.parameters.endpoints == [
+  assert ingress.parameters.endpoints
+  == [
     {
       transport = "tcp";
       port = 749;

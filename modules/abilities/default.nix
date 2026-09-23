@@ -4,5 +4,5 @@
 ##! the same option types. Auto-discovery imports it into every system fixed
 ##! point exactly once.
 {lib, ...}: {
-  imports = [lib.abilities.module];
+  imports = [lib.abilities.module ./_service.nix];
 }

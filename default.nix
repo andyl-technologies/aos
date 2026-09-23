@@ -34,6 +34,7 @@
 }: let
   lib = import ./lib {
     inherit system;
+    abilityInterfaceDirectory = ./modules/abilities/_interfaces;
     # Every Nix builder executes on buildPlatform, including during a cross
     # build. Never select a target bash as the derivation builder.
     bash = buildStdenv.bash;

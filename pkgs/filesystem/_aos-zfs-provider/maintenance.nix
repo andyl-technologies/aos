@@ -254,82 +254,85 @@
     ++ lib.optionals cfg.metrics.enable [metrics metricsSchedule];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
-  options.aos.services.zfsMaintenance = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Retain package-owned OpenZFS event, health, scrub, trim, and telemetry resources.";
-    };
-    eventDaemon = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Observe pool events so device faults and resilvers produce durable actions.";
-    };
-    scrubAfterResilver = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Start a scrub after each resilver completes.";
-    };
-    scrub = {
+  options.aos.serviceOptionModules.zfsMaintenance = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options = {
       enable = lib.mkOption {
         type = abilityTypes.boolean;
-        default = true;
-        description = "Verify every pool block against its checksum on a schedule.";
+        default = false;
+        description = "Retain package-owned OpenZFS event, health, scrub, trim, and telemetry resources.";
       };
-      calendar = lib.mkOption {
-        type = calendar;
-        default = "monthly";
-        description = "Calendar expression for pool scrubs.";
-      };
-    };
-    trim = {
-      enable = lib.mkOption {
+      eventDaemon = lib.mkOption {
         type = abilityTypes.boolean;
         default = true;
-        description = "Discard unused pool blocks on a schedule.";
+        description = "Observe pool events so device faults and resilvers produce durable actions.";
       };
-      calendar = lib.mkOption {
-        type = calendar;
-        default = "weekly";
-        description = "Calendar expression for pool trims.";
-      };
-    };
-    healthCheck = {
-      enable = lib.mkOption {
+      scrubAfterResilver = lib.mkOption {
         type = abilityTypes.boolean;
         default = true;
-        description = "Report pool degradation, device errors, and unpinned feature sets.";
+        description = "Start a scrub after each resilver completes.";
       };
-      calendar = lib.mkOption {
-        type = calendar;
-        default = "*:0/15";
-        description = "Calendar expression for pool health checks.";
+      scrub = {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Verify every pool block against its checksum on a schedule.";
+        };
+        calendar = lib.mkOption {
+          type = calendar;
+          default = "monthly";
+          description = "Calendar expression for pool scrubs.";
+        };
       };
-    };
-    metrics = {
-      enable = lib.mkOption {
-        type = abilityTypes.boolean;
-        default = true;
-        description = "Publish ARC, fragmentation, compaction, and NUMA memory evidence.";
+      trim = {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Discard unused pool blocks on a schedule.";
+        };
+        calendar = lib.mkOption {
+          type = calendar;
+          default = "weekly";
+          description = "Calendar expression for pool trims.";
+        };
       };
-      calendar = lib.mkOption {
-        type = calendar;
-        default = "*:0/1";
-        description = "Calendar expression for metric snapshots.";
+      healthCheck = {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Report pool degradation, device errors, and unpinned feature sets.";
+        };
+        calendar = lib.mkOption {
+          type = calendar;
+          default = "*:0/15";
+          description = "Calendar expression for pool health checks.";
+        };
       };
-      path = lib.mkOption {
-        type = abilityTypes.executionPath;
-        default = "/var/lib/aos-metrics/zfs.prom";
-        description = "Absolute Prometheus textfile-collector destination.";
+      metrics = {
+        enable = lib.mkOption {
+          type = abilityTypes.boolean;
+          default = true;
+          description = "Publish ARC, fragmentation, compaction, and NUMA memory evidence.";
+        };
+        calendar = lib.mkOption {
+          type = calendar;
+          default = "*:0/1";
+          description = "Calendar expression for metric snapshots.";
+        };
+        path = lib.mkOption {
+          type = abilityTypes.executionPath;
+          default = "/var/lib/aos-metrics/zfs.prom";
+          description = "Absolute Prometheus textfile-collector destination.";
+        };
       };
-    };
-    randomizedDelayMillis = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 0;
-        maximum = 86400000;
+      randomizedDelayMillis = lib.mkOption {
+        type = abilityTypes.integer {
+          minimum = 0;
+          maximum = 86400000;
+        };
+        default = 600000;
+        description = "Maximum fleet-wide jitter for scrub and trim schedules.";
       };
-      default = 600000;
-      description = "Maximum fleet-wide jitter for scrub and trim schedules.";
     };
   };
 

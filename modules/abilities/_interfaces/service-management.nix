@@ -24,6 +24,9 @@
     inherit serviceTypes;
     serviceInterfaces = interfaces;
   };
+  projectService = import ../_service-projection.nix {
+    serviceManagement = readView;
+  };
   moduleDeclaration = interface:
     interface.declaration
     // {
@@ -51,6 +54,7 @@
     inherit (interfaceCatalog) aggregation guaranteeAliases guaranteeDeclarations mergeContract milestones;
     inherit interfaces declarations moduleDeclarations guarantees;
     inherit (constructors) credentialReferenceConfigured featureContribution featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitContribution structuredSource validate valueFromStructuredSource;
+    inherit projectService;
   };
 in {
   name = "serviceManagement";

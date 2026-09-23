@@ -328,6 +328,152 @@
     )
     .success;
 
+  composedServiceEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      {
+        options.services = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            config._module.strict = true;
+            options.command = lib.mkOption {type = lib.types.str;};
+          });
+          default = {};
+        };
+        config.services.web.command = "serve";
+      }
+      {
+        options.services = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule {
+            options.order.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+          });
+          default = {};
+        };
+        config.services.web.order.after = ["database"];
+      }
+    ];
+  };
+  composedServiceOptions =
+    composedServiceEvaluation.config.services.web
+    == {
+      command = "serve";
+      order.after = ["database"];
+    };
+  composedServiceRejectsUnknown =
+    !(builtins.tryEval
+      (composedServiceEvaluation.extendModules {
+        modules = [{services.web.unknown = true;}];
+      })
+      .config
+      .services
+      .web)
+    .success;
+  deferredServiceFeatureEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      ({config, ...}: {
+        options.serviceFeatures = lib.mkOption {
+          type = lib.types.listOf lib.types.deferredModule;
+          default = [];
+        };
+        options.services = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.submodule (
+            [{config._module.strict = true;}]
+            ++ config.serviceFeatures
+          ));
+          default = {};
+        };
+      })
+      {
+        serviceFeatures = [
+          {options.command = lib.mkOption {type = lib.types.str;};}
+          {
+            options.order.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+          }
+        ];
+        services.web = {
+          command = "serve";
+          order.after = ["database"];
+        };
+      }
+    ];
+  };
+  deferredServiceFeaturesCompose =
+    deferredServiceFeatureEvaluation.config.services.web
+    == {
+      command = "serve";
+      order.after = ["database"];
+    };
+  serviceRegistryEvaluation = lib.evalModules {
+    inherit lib;
+    modules = [
+      ../../modules/abilities/_service.nix
+      ({config, ...}: {
+        options.aos.serviceOptionModules.first = lib.mkOption {
+          type = lib.types.deferredModule;
+          default.options.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+        };
+        options.aos.serviceOptionModules.second = lib.mkOption {
+          type = lib.types.deferredModule;
+          default.options.command = lib.mkOption {
+            type = lib.types.str;
+            default = "idle";
+            description = "The second service command.";
+          };
+        };
+        config = lib.mkIf config.aos.services.first.enable {
+          aos.services.second.command = "run";
+        };
+      })
+      {
+        aos.serviceFeatureModules = [
+          {
+            options.extensions.start.command = lib.mkOption {
+              type = lib.types.str;
+            };
+          }
+        ];
+        aos.services.second.extensions.start.command = "start";
+      }
+      {
+        aos.serviceFeatureModules = [
+          {
+            options.extensions.order.after = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [];
+            };
+          }
+        ];
+        aos.services.second.extensions.order.after = ["first"];
+      }
+    ];
+  };
+  serviceRegistryAvoidsSiblingCycle =
+    serviceRegistryEvaluation.config.aos.services.second.command == "idle";
+  serviceFeatureModulesCompose =
+    serviceRegistryEvaluation.config.aos.services.second.extensions
+    == {
+      start.command = "start";
+      order.after = ["first"];
+    };
+  serviceRegistryProjectsNestedOptions =
+    builtins.any
+    (declaration:
+      declaration.pathStr
+      == "command"
+      && declaration.description == "The second service command.")
+    (lib.submoduleOptionDeclarations
+      serviceRegistryEvaluation.options.aos.services.type._elementType
+      ["aos" "services" "second"]);
+
   # --- Contributable option surface -----------------------------------
   #
   # An owner marks the curated extension points `contributable = true` and
@@ -1409,6 +1555,16 @@
           && nestedSubmodulePublic
           && strictSubmoduleRejectsUndeclared;
         message = "submodule hides engine metadata and preserves strict/freeform/nested semantics";
+      }
+      {
+        ok =
+          composedServiceOptions
+          && composedServiceRejectsUnknown
+          && deferredServiceFeaturesCompose
+          && serviceRegistryAvoidsSiblingCycle
+          && serviceFeatureModulesCompose
+          && serviceRegistryProjectsNestedOptions;
+        message = "feature modules compose one strict named submodule";
       }
       {
         ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean" && f3bDocumentationIsStructured;

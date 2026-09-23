@@ -141,17 +141,20 @@
   ];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
-  options.aos.services.getty.autologin = {
-    enable = lib.mkOption {
-      type = lib.abilities.types.boolean;
-      default = false;
-      description = "Run passwordless root gettys on the primary virtual and serial consoles.";
-    };
+  options.aos.serviceOptionModules.getty = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options.autologin = {
+      enable = lib.mkOption {
+        type = lib.abilities.types.boolean;
+        default = false;
+        description = "Run passwordless root gettys on the primary virtual and serial consoles.";
+      };
 
-    stage = lib.mkOption {
-      type = lib.abilities.types.enum ["host" "initrd"];
-      default = "host";
-      description = "Select the host or initrd console and activation contract.";
+      stage = lib.mkOption {
+        type = lib.abilities.types.enum ["host" "initrd"];
+        default = "host";
+        description = "Select the host or initrd console and activation contract.";
+      };
     };
   };
 

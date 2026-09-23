@@ -38,12 +38,14 @@
   providersText = builtins.concatStringsSep "\n" (
     builtins.map (
       entry: "${entry.issuer} ${entry.clientId} ${entry.expirationPolicy}"
-    ) cfg.providers
+    )
+    cfg.providers
   );
   authIdText = builtins.concatStringsSep "\n" (
     builtins.map (
       entry: "${entry.identity} ${entry.principal} ${entry.issuer}"
-    ) cfg.authRules
+    )
+    cfg.authRules
   );
   configYaml =
     ''
@@ -59,55 +61,58 @@
       ${builtins.concatStringsSep "\n" (builtins.map (user: "  - ${user}") cfg.denyUsers)}
     '';
 in {
-  options.aos.services.opkssh = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable OpenID Connect authentication for OpenSSH through opkssh.";
-    };
-
-    providers = lib.mkOption {
-      type = abilityTypes.list {
-        element = provider;
-        maxItems = 256;
+  options.aos.serviceOptionModules.opkssh = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Enable OpenID Connect authentication for OpenSSH through opkssh.";
       };
-      default = [];
-      description = "OIDC providers allowed to authenticate.";
-      example = [
-        {
-          issuer = "https://accounts.google.com";
-          clientId = "client.apps.googleusercontent.com";
-          expirationPolicy = "24h";
-        }
-      ];
-    };
 
-    authRules = lib.mkOption {
-      type = abilityTypes.list {
-        element = authRule;
-        maxItems = 4096;
+      providers = lib.mkOption {
+        type = abilityTypes.list {
+          element = provider;
+          maxItems = 256;
+        };
+        default = [];
+        description = "OIDC providers allowed to authenticate.";
+        example = [
+          {
+            issuer = "https://accounts.google.com";
+            clientId = "client.apps.googleusercontent.com";
+            expirationPolicy = "24h";
+          }
+        ];
       };
-      default = [];
-      description = "OIDC identity-to-principal mappings.";
-      example = [
-        {
-          principal = "root";
-          identity = "alice@example.com";
-          issuer = "https://accounts.google.com";
-        }
-      ];
-    };
 
-    denyEmails = lib.mkOption {
-      type = strings 4096;
-      default = [];
-      description = "Email addresses denied authentication.";
-    };
+      authRules = lib.mkOption {
+        type = abilityTypes.list {
+          element = authRule;
+          maxItems = 4096;
+        };
+        default = [];
+        description = "OIDC identity-to-principal mappings.";
+        example = [
+          {
+            principal = "root";
+            identity = "alice@example.com";
+            issuer = "https://accounts.google.com";
+          }
+        ];
+      };
 
-    denyUsers = lib.mkOption {
-      type = strings 4096;
-      default = [];
-      description = "Runtime principals denied authentication.";
+      denyEmails = lib.mkOption {
+        type = strings 4096;
+        default = [];
+        description = "Email addresses denied authentication.";
+      };
+
+      denyUsers = lib.mkOption {
+        type = strings 4096;
+        default = [];
+        description = "Runtime principals denied authentication.";
+      };
     };
   };
 

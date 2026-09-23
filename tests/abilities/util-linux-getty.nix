@@ -91,7 +91,7 @@ in
     "virtual-console-service-readiness"
     "virtual-console-service-terminal"
   ];
-  assert portableOptionTree host.options.aos.services.getty.autologin;
+  assert portableOptionTree (lib.submoduleOptions host.options.aos.services.type._elementType ["aos" "services" "getty"]).autologin;
   assert !invalidStage.success;
   assert builtins.attrNames host.config.aos.abilities.instances == ["util-linux:getty"];
   assert (request hostRequests "startup-milestone").milestone == "interactive-console";

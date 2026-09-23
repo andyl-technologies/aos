@@ -37,7 +37,7 @@
     inherit lib;
     enableAbilitySelection = true;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       ../../modules/base/_kernel-parameter-contributions.nix
       ../../modules/base/_manager-contributions.nix
       ../../modules/image/_platform.nix

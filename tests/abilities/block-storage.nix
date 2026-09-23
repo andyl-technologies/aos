@@ -42,7 +42,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         ../../modules/_package-contributions.nix
         {
           options.system.build.staticAbilityContract = lib.mkOption {

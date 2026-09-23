@@ -4,10 +4,10 @@
   pkgs,
 }: let
   genericSources = builtins.map builtins.readFile [
-    ../../lib/abilities/_service-types.nix
-    ../../lib/abilities/_service-interfaces.nix
-    ../../lib/abilities/_service-declaration.nix
-    ../../lib/abilities/interfaces/service-policy.nix
+    ../../modules/abilities/_service-types.nix
+    ../../modules/abilities/_service-interfaces.nix
+    ../../modules/abilities/_service-declaration.nix
+    ../../modules/abilities/_interfaces/service-policy.nix
   ];
   genericSourcesArePlatformNeutral =
     builtins.all
@@ -41,7 +41,7 @@
   selected = lib.evalModules {
     inherit lib;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config.aos.abilities.environment = {
           authority = "test";

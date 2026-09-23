@@ -87,7 +87,7 @@
   # only the defs at the winning (lowest) override priority.
   peelProperties = defs: let
     peeled = builtins.concatLists (
-      builtins.map (d: peelDef d true (d._priority or 100) d.value) defs
+      builtins.map (d: peelDef d (d.condition or true) (d._priority or 100) d.value) defs
     );
   in
     builtins.filter (d: d._condition) peeled;
@@ -503,8 +503,12 @@ in rec {
 
   ## # Type
   ## `type -> type`
-  attrsOf = elemType: {
-    name = "attrsOf(${elemType.name})";
+  attrsOfWith = lazy: elemType: {
+    name = "${
+      if lazy
+      then "lazyAttrsOf"
+      else "attrsOf"
+    }(${elemType.name})";
     description = "attribute set of ${elemType.description}";
     # Resolver provenance priority is applied independently to each dynamic
     # attribute, matching the ordinary mkOverride discharge performed here.
@@ -512,6 +516,7 @@ in rec {
     # discard every unrelated package/base entry in the attrsOf option.
     mergeProvenanceByKey = true;
     _elementType = elemType;
+    _lazyAttrsOf = lazy;
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
     merge = loc: defs: let
       allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
@@ -570,7 +575,7 @@ in rec {
               then peelProperties valueDefs
               else dischargeProperties valueDefs;
           in
-            if filteredDefs == []
+            if !lazy && filteredDefs == []
             then []
             else [
               {
@@ -594,6 +599,16 @@ in rec {
       placeholder = "name";
     };
   };
+
+  attrsOf = attrsOfWith false;
+
+  ## Keeps syntactically declared keys while resolving their conditions only
+  ## when an individual value is demanded. This supports sibling submodules
+  ## whose conditional definitions refer to each other's evaluated values.
+  lazyAttrsOf = elemType:
+    if elemType ? _submodule
+    then attrsOfWith true elemType
+    else throw "lazyAttrsOf requires a submodule element type";
 
   ## # Type
   ## `type -> type`
@@ -723,6 +738,34 @@ in rec {
       kind = "submodule";
       fields = {};
       open = true;
+    };
+  };
+
+  ## A module held as an option value for a later nested evaluation. It does
+  ## not evaluate the module here; the consumer supplies its fixed-point
+  ## context when it constructs the submodule type.
+  deferredModule = {
+    name = "deferredModule";
+    description = "module evaluated by a later module fixed point";
+    check = value:
+      builtins.isFunction value
+      || builtins.isPath value
+      || (builtins.isAttrs value && !(value ? _type));
+    merge = loc: defs:
+      if
+        builtins.all (definition:
+          builtins.isFunction definition.value
+          || builtins.isPath definition.value
+          || (builtins.isAttrs definition.value && !(definition.value ? _type)))
+        defs
+      then
+        if builtins.length defs == 1
+        then (builtins.head defs).value
+        else {imports = builtins.map (definition: definition.value) defs;}
+      else throw "The option '${showLoc loc}' must contain module values.";
+    _aosDocType = {
+      kind = "opaque";
+      signature = "deferred module";
     };
   };
 

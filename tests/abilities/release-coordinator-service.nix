@@ -30,7 +30,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           options.assertions = lib.mkOption {
             type = lib.types.listOf lib.types.attrs;
@@ -105,7 +105,7 @@ in
   assert !(abilities disabled).instances ? "aos:release-coordinator";
   assert releaseCoordinatorRequests disabled == {};
   assert (abilities disabled).requirementTemplates == (abilities enabled).requirementTemplates;
-  assert portableOptionTree enabled.options.aos.services.releaseCoordinator;
+  assert portableOptionTree (builtins.removeAttrs (lib.submoduleOptions enabled.options.aos.services.type._elementType ["aos" "services" "releaseCoordinator"]) ["_module"]);
   assert builtins.all
   (name: (request "${name}-lifecycle").service == name)
   lifecycleNames;
