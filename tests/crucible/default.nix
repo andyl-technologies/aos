@@ -3128,6 +3128,7 @@ in rec {
           phase7.gates.worldForkAtomicity
           campaignFindingExactVm
           campaignFindingSignalVm
+          campaignFindingForkWriteVm
         ];
         requiredClaims = [
           {
@@ -3314,6 +3315,18 @@ in rec {
               "gate=gate:campaign-finding-signal-bundle"
               "finding_bundle_selected_fault_and_guest_response=true"
               "finding_bundle_signal_archive_unchanged=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-finding-fork-write";
+            result = campaignFindingForkWriteVm;
+            requiredLines = [
+              "gate=gate:campaign-finding-fork-write"
+              "finding_bundle_fork_source_owner_absent=true"
+              "finding_bundle_two_live_packaged_qemu=true"
+              "finding_bundle_noncanonical_register_write=true"
+              "finding_bundle_canonical_checkpoint_and_bundle_unchanged=true"
+              "finding_bundle_fork_qemu_teardown=true"
             ];
           }
         ];
