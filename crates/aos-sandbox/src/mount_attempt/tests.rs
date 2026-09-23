@@ -363,6 +363,16 @@ fn current_mount_plan(
     node: NodeId,
     semantics: BrokerDispatchSemanticIdentityV1,
 ) -> SignedBrokerPlan {
+    mount_plan_with_revocation_scope(assignment, node, semantics, 52)
+}
+
+#[cfg(feature = "kernel-tests")]
+fn mount_plan_with_revocation_scope(
+    assignment: BrokerAssignment,
+    node: NodeId,
+    semantics: BrokerDispatchSemanticIdentityV1,
+    scope_byte: u8,
+) -> SignedBrokerPlan {
     let broker_key = SigningKey::from_bytes(&[40; 32]);
     let lease_key = SigningKey::from_bytes(&[41; 32]);
     let lease_authority = key_reference("lease", KeyUsage::OwnershipLease, &lease_key);
@@ -384,7 +394,7 @@ fn current_mount_plan(
             .unwrap(),
         ],
         ObjectDigest::from_bytes([50; 32]),
-        RevocationScopeId::from_bytes([51; 16]),
+        RevocationScopeId::from_bytes([scope_byte; 16]),
         100,
         180,
         Vec::new(),
@@ -549,6 +559,24 @@ fn exact_mount_two_zero_apply_and_release_bind_admit_and_resume() {
     let resumed = resume_current(fixture.journal_mut(), record, prepared, &mut clock).unwrap();
     assert_eq!(resumed.outcome(), MountAttemptAdmissionOutcomeV1::Replay);
     drop(resumed);
+
+    let target = fixture.current_target();
+    let prepared = prepared_catalog_for_test(
+        fixture.journal_mut(),
+        target,
+        &create_intent,
+        [95; 16],
+        catalog_digest,
+        &mut clock,
+    )
+    .unwrap();
+    let host_scoped_plan =
+        mount_plan_with_revocation_scope(assignment, node, prepared.semantics(), 51);
+    assert!(
+        bind_signed_mount_plan(fixture.journal_mut(), prepared, host_scoped_plan, &mut clock)
+            .is_err(),
+        "Mount Apply accepted the Host revocation scope"
+    );
 
     let target = fixture.current_target();
     let mut release = request(assignment, 0, MountAction::MOUNT_ACTION_RELEASE);

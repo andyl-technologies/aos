@@ -166,12 +166,22 @@ fn policy_keys(broker_key: u8, lease_key: u8) -> CurrentRuntimeScopePolicy {
         20,
     );
     let broker_anchor = BrokerPlanTrustAnchor::from_trusted_configuration(
+        bytes.clone(),
+        descriptor.clone(),
+        scope,
+        reference.clone(),
+        broker.verifying_key().to_bytes(),
+        RevocationScopeId::from_bytes([51; 16]),
+        DecodeLimits::default(),
+    )
+    .unwrap();
+    let mount_broker_anchor = BrokerPlanTrustAnchor::from_trusted_configuration(
         bytes,
         descriptor,
         scope,
         reference,
         broker.verifying_key().to_bytes(),
-        RevocationScopeId::from_bytes([51; 16]),
+        RevocationScopeId::from_bytes([52; 16]),
         DecodeLimits::default(),
     )
     .unwrap();
@@ -199,6 +209,7 @@ fn policy_keys(broker_key: u8, lease_key: u8) -> CurrentRuntimeScopePolicy {
         runtime_limits: RuntimeAuthorityLimits::default(),
         ownership_verifier: OwnershipAuthorityVerifier::new(lease_anchor, reference),
         broker_anchor,
+        mount_broker_anchor,
     }
 }
 

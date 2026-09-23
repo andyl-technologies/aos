@@ -62,6 +62,8 @@ pub struct CurrentRuntimeScopePolicy {
     pub ownership_verifier: OwnershipAuthorityVerifier,
     /// Pinned controller-plan trust anchor, independent of returned artifacts.
     pub broker_anchor: BrokerPlanTrustAnchor,
+    /// Independently pinned Mount-plan trust anchor and revocation scope.
+    pub mount_broker_anchor: BrokerPlanTrustAnchor,
 }
 
 /// Reports failure to establish or use current assignment or runtime evidence.
@@ -399,7 +401,7 @@ impl CurrentRuntimeScope {
         let verified = verify_broker_plan(
             signed.canonical_plan(),
             &signature,
-            &self.policy.broker_anchor,
+            &self.policy.mount_broker_anchor,
             BrokerPlanExpectation {
                 audience: BrokerAudience::Mount,
                 protocol: aos_sandbox_core::ProtocolId::MountBroker,
@@ -587,7 +589,7 @@ impl CurrentAssignmentTarget {
         let verified = verify_broker_plan(
             signed.canonical_plan(),
             &signature,
-            &self.policy.broker_anchor,
+            &self.policy.mount_broker_anchor,
             BrokerPlanExpectation {
                 audience: BrokerAudience::Mount,
                 protocol: aos_sandbox_core::ProtocolId::MountBroker,

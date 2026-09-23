@@ -250,6 +250,8 @@ impl ControllerAttachmentTargetInputsV1 {
         let ownership = ControllerOwnershipConfigurationV1::from_process_credentials_optional()?
             .ok_or(ControllerAttachmentProvisionErrorV1::MissingOwnership)?;
         let broker_anchor = ControllerBrokerPlanSignerV1::trust_anchor_from_process_credentials()?;
+        let mount_broker_anchor =
+            ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials()?;
         Ok(Self {
             host: HostServiceIdentity {
                 uid: host.uid,
@@ -263,6 +265,7 @@ impl ControllerAttachmentTargetInputsV1 {
                 runtime_limits: RuntimeAuthorityLimits::default(),
                 ownership_verifier: ownership.into_verifier(),
                 broker_anchor,
+                mount_broker_anchor,
             },
         })
     }
