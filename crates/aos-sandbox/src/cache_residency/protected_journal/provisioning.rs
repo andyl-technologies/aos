@@ -6,18 +6,17 @@
 
 use sha2::{Digest as _, Sha256};
 
+use crate::cache_residency::CachePinV1;
 use crate::cache_residency::protected_owner::{
     CACHE_MANIFEST_KEY_PREFIX, MAXIMUM_CACHE_MANIFESTS, encode_cache_replay_manifest,
 };
-use crate::cache_residency::CachePinV1;
 use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
 use super::{
-    CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheHistoryFloorV1,
-    CacheRecoveryInventoryV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyReplayPartitionEvidenceV1, PhysicalPartitionId,
-    ProtectedCacheResidencyReplayAuthorityV1,
+    CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheHistoryFloorV1, CacheRecoveryInventoryV1,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyReplayPartitionEvidenceV1,
+    PhysicalPartitionId, ProtectedCacheResidencyReplayAuthorityV1,
 };
 
 const LOGICAL_PIN_DRAIN_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-drain.v1/";
