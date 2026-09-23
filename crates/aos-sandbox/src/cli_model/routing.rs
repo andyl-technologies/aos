@@ -7,6 +7,7 @@
 
 use aos_proto::aos::sandbox::v1 as wire;
 
+use super::execution::MAXIMUM_ENDPOINT_PROOF_BYTES;
 use super::grammar::{MAXIMUM_CLI_EVENTS, MAXIMUM_CLI_PAGES, MAXIMUM_CLI_WAIT_NANOSECONDS};
 use super::grammar::{
     MAXIMUM_EXEC_ARGUMENT_BYTES, MAXIMUM_EXEC_ARGUMENT_VECTOR_BYTES, MAXIMUM_EXEC_ARGUMENTS,
@@ -659,16 +660,24 @@ impl DormantSandboxRequestV1 {
                             r.terminal_rows == 0
                                 && r.terminal_columns == 0
                                 && r.signal.to_i32() == 0
+                                && (1..=MAXIMUM_ENDPOINT_PROOF_BYTES)
+                                    .contains(&r.client_public_key.len())
+                                && (1..=MAXIMUM_ENDPOINT_PROOF_BYTES)
+                                    .contains(&r.proof_of_possession.len())
                         }
                         2 => {
                             (1..=u32::from(u16::MAX)).contains(&r.terminal_rows)
                                 && (1..=u32::from(u16::MAX)).contains(&r.terminal_columns)
                                 && r.signal.to_i32() == 0
+                                && r.client_public_key.is_empty()
+                                && r.proof_of_possession.is_empty()
                         }
                         3 => {
                             r.terminal_rows == 0
                                 && r.terminal_columns == 0
                                 && (1..=7).contains(&r.signal.to_i32())
+                                && r.client_public_key.is_empty()
+                                && r.proof_of_possession.is_empty()
                         }
                         _ => false,
                     }

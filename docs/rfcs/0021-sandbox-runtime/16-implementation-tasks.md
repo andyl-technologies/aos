@@ -305,10 +305,12 @@ the outstanding work concrete:
   effects. The lifecycle, ownership retry, and cancellation paths have
   production handlers. `CacheUnpin` now drains every retained partition pin
   through protected and physical owners, retains ambiguous in-process custody,
-  and cold-reconciles released tombstones before completing. `ExecutionControl`
-  still admits but falls through to a retry-only controller effect. `CachePin`
-  can cold-recover an existing protected acquisition and its exact physical
-  pin, but a fresh acquisition remains retry-only.
+  and cold-reconciles released tombstones before completing. Resize and signal
+  `ExecutionControl` still admit but fall through to a retry-only controller
+  effect. Attach is rejected before admission until holder proof verification
+  and OpenSSH route issuance are active. `CachePin` can cold-recover an existing
+  protected acquisition and its exact physical pin, but a fresh acquisition
+  remains retry-only.
   Cache pin admission fences the named view or attachment to its project and
   current resource version, and the source-membership and protected pin helpers
   exist. The protected current View revision can supply canonical View bytes;
@@ -333,8 +335,10 @@ the outstanding work concrete:
   recovery, fixed-owner provisioning and guest-agent activation, then a
   completing controller effect and public projection. Attach requires its
   separately authorized OpenSSH data route; it is not an agent control effect.
-  `ExecutionControlResult` can carry a checked holder-bound attach endpoint,
-  but the service still returns admission alone and does not issue that route.
+  `ExecutionControlRequest` now carries attach-only holder key and possession
+  proof fields, and `ExecutionControlResult` can carry a checked holder-bound
+  endpoint. The service rejects attach before admission until it can verify
+  that proof and issue the route.
 - Grouped Storage snapshots are not production-dispatchable yet. Method 25 is
   deliberately absent from the authenticated broker profile even though the
   Storage owner, session adapter, lifecycle plan codec, and predecessor/successor

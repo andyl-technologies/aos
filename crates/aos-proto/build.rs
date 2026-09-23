@@ -257,7 +257,11 @@ fn verify_sandbox_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     verify_scoped_declarations(
         &source_declarations,
         "message ExecutionControlRequest {",
-        &["MutationContext mutation = 6;"],
+        &[
+            "MutationContext mutation = 6;",
+            "bytes client_public_key = 7;",
+            "bytes proof_of_possession = 8;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,

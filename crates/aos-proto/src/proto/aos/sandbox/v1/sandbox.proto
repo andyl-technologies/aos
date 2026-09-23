@@ -957,6 +957,9 @@ message ExecutionControlRequest {
   uint32 terminal_columns = 4;
   ExecutionSignal signal = 5;
   MutationContext mutation = 6;
+  // Attach-only holder key and proof-of-possession evidence.
+  bytes client_public_key = 7;
+  bytes proof_of_possession = 8;
 }
 
 message ExecutionControlResult {

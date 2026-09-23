@@ -787,11 +787,14 @@ impl ResolvedPublicMutationV1 {
             Self::ExecutionControl(value) => match value {
                 ExecutionControlCommandV1::Attach {
                     execution,
+                    endpoint_proof,
                     mutation,
                 } => {
                     ResolvedPublicMutationProtoV1::ExecutionControl(wire::ExecutionControlRequest {
                         execution_id: execution.as_bytes().to_vec(),
                         action: 1.into(),
+                        client_public_key: endpoint_proof.public_key().to_vec(),
+                        proof_of_possession: endpoint_proof.proof().to_vec(),
                         mutation: execution_mutation_context_proto(mutation).into(),
                         ..Default::default()
                     })
@@ -1298,10 +1301,13 @@ impl ResolvedPublicMutationV1 {
                 match value {
                     ExecutionControlCommandV1::Attach {
                         execution,
+                        endpoint_proof,
                         mutation,
                     } => {
                         binding.variant(0);
                         binding.identity(execution);
+                        binding.bytes(endpoint_proof.public_key());
+                        binding.bytes(endpoint_proof.proof());
                         binding.execution_fence(mutation);
                     }
                     ExecutionControlCommandV1::Resize {

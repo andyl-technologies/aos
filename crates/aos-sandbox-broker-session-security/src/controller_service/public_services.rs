@@ -762,8 +762,18 @@ impl ExecutionService for CapabilityService {
         context: RequestContext,
         request: ServiceRequest<'_, ExecutionControlRequest>,
     ) -> ServiceResult<impl Encodable<ExecutionControlResult> + Send + use<'a>> {
+        use aos_proto::aos::sandbox::v1::ExecutionControlAction as Action;
+
         let execution_id = request.view().execution_id.to_vec();
         let action = request.view().action;
+        if action.as_known() == Some(Action::EXECUTION_CONTROL_ACTION_ATTACH) {
+            // Admission cannot claim success before the holder proof is verified
+            // and a short-lived OpenSSH route is actually issued.
+            return Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "execution attachment route is not available",
+            ));
+        }
         let admitted = self
             .admit_public_command(
                 &context,

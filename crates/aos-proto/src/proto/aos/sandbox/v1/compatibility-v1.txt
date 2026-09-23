@@ -46,6 +46,8 @@ rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
 rpc ControlExecution(ExecutionControlRequest) returns (ExecutionControlResult);
 message ExecutionControlRequest {
 MutationContext mutation = 6;
+bytes client_public_key = 7;
+bytes proof_of_possession = 8;
 message ExecutionControlResult {
 Operation operation = 4;
 OpenSshAccessEndpoint access = 5;

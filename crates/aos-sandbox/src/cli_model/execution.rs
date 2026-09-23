@@ -465,6 +465,8 @@ pub enum ExecutionControlCommandV1 {
     Attach {
         /// Selects the execution.
         execution: CliIdentityV1,
+        /// Proves custody of the OpenSSH key to be certified for this attach.
+        endpoint_proof: EndpointProofV1,
         /// Supplies the full authenticated incarnation mutation fence.
         mutation: ExecutionMutationFenceV1,
     },

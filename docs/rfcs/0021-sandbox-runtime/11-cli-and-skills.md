@@ -100,6 +100,8 @@ execution resource; attaching to that historical output is not stream replay.
 No execution data path travels through the privileged host daemon. The client
 uses the authorized OpenSSH route. The in-sandbox agent is an internal control
 participant, not a client-selectable stream transport.
+`attach-exec` supplies `--client-public-key` and `--proof-of-possession` as
+hex-encoded evidence for the holder key; no private key enters the public API.
 
 ## Tree inspection
 

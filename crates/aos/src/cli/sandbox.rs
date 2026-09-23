@@ -266,6 +266,10 @@ pub struct ListArgs {
 pub struct ExecutionIdArgs {
     #[arg(value_parser = identity_hex)]
     execution_id: HexValue,
+    #[arg(long, value_parser = nonempty_hex)]
+    client_public_key: HexValue,
+    #[arg(long, value_parser = nonempty_hex)]
+    proof_of_possession: HexValue,
     #[command(flatten)]
     mutation: MutationArgs,
 }
@@ -1267,6 +1271,8 @@ fn execution_control(a: &ExecutionIdArgs, action: i32) -> wire::ExecutionControl
     wire::ExecutionControlRequest {
         execution_id: a.execution_id.clone(),
         action: action.into(),
+        client_public_key: a.client_public_key.clone(),
+        proof_of_possession: a.proof_of_possession.clone(),
         mutation: a.mutation.proto().into(),
         ..Default::default()
     }
