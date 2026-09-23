@@ -390,8 +390,10 @@ fn replay_realization_cause_survives_failing_operational_boundary() {
         message: String::from("secondary boundary failure"),
     };
 
-    let result =
-        observed_realization::<()>(Err(cause), Err(boundary)).expect_err("realization must fail");
+    let result = match observed_realization::<()>(Err(cause), Err(boundary)) {
+        Ok(()) => panic!("realization must fail"),
+        Err(error) => error,
+    };
     assert!(matches!(
         result,
         QemuVmRealizationError::Executor { operation: "load exact fat probe", message }
@@ -406,8 +408,10 @@ fn replay_realization_cause_survives_failing_operational_boundary() {
         operation: "check QEMU attempt resources",
         message: String::from("boundary quarantined"),
     };
-    let result = observed_realization::<()>(Err(cause), Err(boundary))
-        .expect_err("quarantine must remain terminal");
+    let result = match observed_realization::<()>(Err(cause), Err(boundary)) {
+        Ok(()) => panic!("quarantine must remain terminal"),
+        Err(error) => error,
+    };
     let QemuVmRealizationError::ReapQuarantined { message, .. } = result else {
         panic!("boundary quarantine classification must survive");
     };
