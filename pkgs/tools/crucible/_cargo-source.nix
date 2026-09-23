@@ -19,5 +19,11 @@ in
         == repoRootString
         || pathString == "${repoRootString}/crates"
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        || builtins.elem pathString [
+          "${repoRootString}/tests"
+          "${repoRootString}/tests/crucible"
+          "${repoRootString}/tests/crucible/fixtures"
+          "${repoRootString}/tests/crucible/fixtures/live-qemu-fuzz.family.toml"
+        ]
       );
   }
