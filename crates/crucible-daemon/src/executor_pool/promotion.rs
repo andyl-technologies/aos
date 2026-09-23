@@ -292,14 +292,6 @@ impl PromotionQueue {
         }
     }
 
-    pub(super) fn try_counts(&self) -> Result<(usize, usize), &'static str> {
-        match self.state.try_lock() {
-            Ok(state) => Ok((state.active.len(), state.pending.len())),
-            Err(std::sync::TryLockError::WouldBlock) => Err("busy"),
-            Err(std::sync::TryLockError::Poisoned(_)) => Err("poisoned"),
-        }
-    }
-
     pub(super) fn enqueue<L, V>(
         &self,
         shared: &SharedExecutor<L, V>,
@@ -848,20 +840,5 @@ fn work_key(work: &CheckpointPromotionRestartWork) -> AttemptExecutionKey {
     match work {
         CheckpointPromotionRestartWork::Paused(recovery) => recovery.key(),
         CheckpointPromotionRestartWork::Staged(recovery) => recovery.key(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::PromotionQueue;
-
-    #[test]
-    fn pending_cleanup_can_inspect_a_busy_promotion_queue() {
-        let queue = PromotionQueue::default();
-        let Ok(_held) = queue.state.lock() else {
-            panic!("promotion queue lock poisoned");
-        };
-
-        assert_eq!(queue.try_counts(), Err("busy"));
     }
 }
