@@ -543,8 +543,8 @@ pub use boundary::{
 pub struct ProductionVmHotForkWorldContinuation {
     config: ProductionVmLifecycleConfig,
     configuration: Configuration,
-    scheduler: SingleSchedulerCheckpoint,
-    // Closure bytes stay immutable and share backing with admitted siblings.
+    // Child admission restores independent runtime state from these immutable captures.
+    scheduler: Arc<SingleSchedulerCheckpoint>,
     event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,
@@ -577,7 +577,7 @@ impl ProductionVmHotForkWorldContinuation {
         Ok(Self {
             config: self.config.clone(),
             configuration: self.configuration.clone(),
-            scheduler: self.scheduler.clone(),
+            scheduler: Arc::clone(&self.scheduler),
             event_log_objects: self.event_log_objects.clone(),
             signal_artifact_objects: self.signal_artifact_objects.clone(),
             trigger_state: self.trigger_state.clone(),
@@ -609,7 +609,7 @@ impl ProductionVmHotForkWorldContinuation {
 
     /// Returns the canonical scheduler continuation at the fork boundary.
     #[must_use]
-    pub const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
+    pub fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
     }
 
@@ -1389,7 +1389,7 @@ impl ProductionVmLifecycleLoop {
         let continuation = ProductionVmHotForkWorldContinuation {
             config: self.config.clone(),
             configuration,
-            scheduler,
+            scheduler: Arc::new(scheduler),
             event_log_objects: Arc::new(event_log_objects),
             signal_artifact_objects: Arc::clone(&self.signal_artifact_objects),
             trigger_state: self.trigger_state.clone(),

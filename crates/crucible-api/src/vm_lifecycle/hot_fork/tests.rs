@@ -88,7 +88,7 @@ fn exact_boundary_from_continuation(
 
     ProductionVmExactHotForkSourceBoundary {
         configuration: continuation.configuration.clone(),
-        scheduler: continuation.scheduler.clone(),
+        scheduler: Arc::clone(&continuation.scheduler),
         event_log_objects: Arc::clone(&continuation.event_log_objects),
         signal_artifact_objects: Arc::clone(&continuation.signal_artifact_objects),
         node_generations: continuation.node_generations.clone(),
@@ -171,7 +171,7 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
 }
 
 #[test]
-fn child_materialization_retains_immutable_closure_backing() {
+fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
     let (_source, mut captured) = permanently_failed_continuation();
     let event_bytes = vec![3; 4 * 1024 * 1024];
     let event = ContentHash::from_bytes(&event_bytes);
@@ -186,6 +186,10 @@ fn child_materialization_retains_immutable_closure_backing() {
     let generations = child.node_generations.clone();
     let restored = child.into_restore_parts(generations, "child-run-state");
 
+    assert!(Arc::ptr_eq(
+        &captured.scheduler,
+        &restored.checkpoint.scheduler
+    ));
     assert_eq!(captured.event_log_objects[&event].len(), 4 * 1024 * 1024);
     assert_eq!(
         captured.signal_artifact_objects[&signal].len(),
@@ -378,6 +382,10 @@ fn source_world_forks_independent_process_neutral_continuations() {
     let mut sibling = source_world
         .fork_continuation()
         .unwrap_or_else(|error| panic!("process-neutral continuation should fork: {error}"));
+    assert!(Arc::ptr_eq(
+        &sibling.scheduler,
+        &source_world.continuation().scheduler
+    ));
     let node = sibling
         .nodes
         .first()
