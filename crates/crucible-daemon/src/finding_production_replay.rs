@@ -269,6 +269,23 @@ impl FindingProductionReplayExecutionSide {
         limits: FindingProductionReplayCaptureLimits,
     ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>
     {
+        Self::from_snapshot_with_terminal_entry(outcome, event_log_prefix, snapshot, None, limits)
+    }
+
+    /// Includes one authenticated host-owned terminal marker after native QEMU evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindingProductionReplayCaptureError`] when the combined log is invalid or
+    /// exceeds `limits`.
+    pub(crate) fn from_snapshot_with_terminal_entry(
+        outcome: FindingProductionReplayTerminalOutcome,
+        event_log_prefix: &[SchedulerEventLogEntry],
+        snapshot: &QemuAttemptExecutionEvidenceSnapshot,
+        terminal_entry: Option<&SchedulerEventLogEntry>,
+        limits: FindingProductionReplayCaptureLimits,
+    ) -> Result<FindingProductionReplayCaptureOutcome<Self>, FindingProductionReplayCaptureError>
+    {
         if event_log_prefix.is_empty()
             && snapshot
                 .event_log_entries()
@@ -279,19 +296,10 @@ impl FindingProductionReplayExecutionSide {
                 FindingProductionReplayIncomplete::MissingEventLogPrefix,
             ));
         }
-        validate_event_log_parts(
-            event_log_prefix,
-            snapshot.event_log_entries(),
-            snapshot.frontier(),
-        )?;
-        let Some(terminal_fingerprints) = snapshot.terminal_fingerprints() else {
-            return Ok(FindingProductionReplayCaptureOutcome::Incomplete(
-                FindingProductionReplayIncomplete::MissingTerminalFingerprints,
-            ));
-        };
         let event_count = event_log_prefix
             .len()
             .checked_add(snapshot.event_log_entries().len())
+            .and_then(|count| count.checked_add(usize::from(terminal_entry.is_some())))
             .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
                 limit: "finding-production-replay-event-count",
             })?;
@@ -303,6 +311,7 @@ impl FindingProductionReplayExecutionSide {
         let event_bytes = event_log_prefix
             .iter()
             .chain(snapshot.event_log_entries())
+            .chain(terminal_entry)
             .try_fold(0_usize, |total, entry| {
                 total.checked_add(entry.canonical_material_len()).ok_or(
                     FindingProductionReplayCaptureError::LimitExceeded {
@@ -323,6 +332,13 @@ impl FindingProductionReplayExecutionSide {
         })?;
         event_log.extend_from_slice(event_log_prefix);
         event_log.extend_from_slice(snapshot.event_log_entries());
+        event_log.extend(terminal_entry.cloned());
+        validate_event_log_parts(&[], &event_log, snapshot.frontier())?;
+        let Some(terminal_fingerprints) = snapshot.terminal_fingerprints() else {
+            return Ok(FindingProductionReplayCaptureOutcome::Incomplete(
+                FindingProductionReplayIncomplete::MissingTerminalFingerprints,
+            ));
+        };
 
         Ok(FindingProductionReplayCaptureOutcome::Complete(Self {
             outcome,
