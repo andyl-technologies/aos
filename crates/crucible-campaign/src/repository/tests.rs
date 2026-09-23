@@ -136,9 +136,7 @@ impl CampaignRepository {
                 return self.incorporate_finding_candidate_bundle(
                     name,
                     expected_snapshot,
-                    finding
-                        .latest_candidate_bundle()
-                        .ok_or_else(|| integrity("test-finding-candidate-bundle"))?,
+                    finding.latest_candidate_bundle(),
                 );
             }
         }

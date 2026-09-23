@@ -300,12 +300,7 @@ impl QueryCampaignFindingOccurrencesResponse {
                 reason: "campaign finding occurrence is not in the snapshot",
             });
         }
-        let root =
-            self.finding
-                .candidate_occurrences()
-                .ok_or(CampaignCodecError::InvalidValue {
-                    reason: "campaign finding has no authenticated candidate occurrence set",
-                })?;
+        let root = self.finding.candidate_occurrences();
         let verified =
             MerkleMap::verify_scan_proof(root, request.after(), limit, &self.occurrence_proof)
                 .map_err(|_| CampaignCodecError::InvalidValue {
@@ -772,12 +767,7 @@ impl GetCampaignFindingOccurrenceObjectResponse {
         .map_err(|_| CampaignCodecError::InvalidValue {
             reason: "campaign finding occurrence object finding proof is invalid",
         })?;
-        let occurrence_root =
-            self.finding
-                .candidate_occurrences()
-                .ok_or(CampaignCodecError::InvalidValue {
-                    reason: "campaign finding has no authenticated candidate occurrence set",
-                })?;
+        let occurrence_root = self.finding.candidate_occurrences();
         let indexed_bundle = MerkleMap::verify_lookup_proof(
             occurrence_root,
             crate::repository::finding_candidate_occurrence_key(request.bundle()),
