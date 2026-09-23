@@ -106,10 +106,40 @@
       value = semanticRequirement evaluated.requirementTemplates.${name};
     })
     (ownedNames evaluated.requirementTemplates)));
-  retainedInterfaceNames = lib.unique (
+  initialInterfaceNames = lib.unique (
     ownedNames evaluated.interfaces
     ++ map (name: interfaceNameFor evaluated.implementations.${name}) implementationNames
   );
+  interfacesByQualifiedName = builtins.groupBy (alias:
+    interfaceDocuments.${alias}.interface.name)
+  (builtins.attrNames interfaceDocuments);
+  interfaceAliasForTarget = target: let
+    aliases = interfacesByQualifiedName.${target} or [];
+    descriptors = lib.unique (map (alias:
+      (abilities.interfaceIdentity interfaceDocuments.${alias}).descriptor)
+    aliases);
+  in
+    if aliases == []
+    then throw "Ability method target resource '${target}' has no shared interface declaration."
+    else if builtins.length descriptors != 1
+    then throw "Ability method target resource '${target}' has conflicting shared interface declarations."
+    else builtins.head aliases;
+  targetInterfacesFor = alias:
+    map (method: interfaceAliasForTarget method.target_resource)
+    (builtins.attrValues interfaceDocuments.${alias}.interface.methods);
+  closeTargetInterfaces = retained: pending:
+    if pending == []
+    then retained
+    else let
+      referenced = targetInterfacesFor (builtins.head pending);
+      newlyRetained = lib.unique (builtins.filter (alias:
+        !(builtins.elem alias retained))
+      referenced);
+    in
+      closeTargetInterfaces
+      (retained ++ newlyRetained)
+      (builtins.tail pending ++ newlyRetained);
+  retainedInterfaceNames = closeTargetInterfaces initialInterfaceNames initialInterfaceNames;
   referencedGuaranteeNames =
     lib.concatMap (name: let
       interface = evaluated.interfaces.${name};
@@ -296,9 +326,8 @@
       entry: projectedInterfaces.${entry.name} == abilities.interfaceIdentity entry.value
     )
     allInterfaceAliases;
-  implementedInterfaceEntries =
-    map (name: let
-      document = interfaceFor semanticImplementations.${name};
+  interfaceEntries = builtins.attrValues (builtins.listToAttrs (map (name: let
+      document = interfaceDocuments.${name};
       identity = abilities.interfaceIdentity document;
     in {
       name = identity.descriptor;
@@ -307,15 +336,7 @@
         value = document;
       };
     })
-    implementationNames;
-  interfaceEntries = builtins.attrValues (builtins.listToAttrs (
-    (map (entry: {
-        name = entry.descriptor;
-        value = entry;
-      })
-      interfaceAliases)
-    ++ implementedInterfaceEntries
-  ));
+    retainedInterfaceNames));
   projectionValue = {
     schema = "aos.ability.package-projection/v1";
     required_features = lib.sort builtins.lessThan (lib.unique (

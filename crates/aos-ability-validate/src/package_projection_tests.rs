@@ -5,7 +5,7 @@ use super::{
     validate_projection_value_budget,
 };
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, ArtifactReference, LimitProfile, LocalKey, VersionedDocument,
+    ABILITY_LIMITS_V1, ArtifactReference, InterfaceName, LimitProfile, LocalKey, VersionedDocument,
 };
 use aos_contract::Sha256Digest;
 use serde_json::json;
@@ -418,6 +418,65 @@ fn retains_distinct_local_aliases_for_one_interface_document() {
         document.interfaces[&LocalKey::new("echo-alias").unwrap()],
         identity
     );
+}
+
+#[test]
+fn retains_method_target_interfaces_without_exposing_them_as_package_aliases() {
+    let fixture = crate::test_support::stateful_owner_plan_fixture();
+    let owner = fixture
+        .interfaces
+        .iter()
+        .find(|document| document.interface.name.as_str() == "test.state-owner")
+        .expect("fixture owns a state interface");
+    let target = fixture
+        .interfaces
+        .iter()
+        .find(|document| document.interface.name.as_str() == "test.service")
+        .expect("fixture retains a target interface");
+    let owner_identity = owner.interface_key().unwrap();
+    let target_identity = target.interface_key().unwrap();
+    let mut value = projection();
+    value["interfaces"] = json!({"owner": owner_identity});
+
+    let mut documents = vec![
+        json!({"descriptor": owner_identity.descriptor, "document": owner}),
+        json!({"descriptor": target_identity.descriptor, "document": target}),
+    ];
+    documents.sort_by(|left, right| {
+        left["descriptor"]
+            .as_str()
+            .cmp(&right["descriptor"].as_str())
+    });
+    value["interface_documents"] = json!(documents);
+
+    let bytes = aos_contract::canonical::to_vec(&value).unwrap();
+    decode_package_projection(&bytes).expect("a method target may be retained without an alias");
+
+    value["interface_documents"] = json!([{
+        "descriptor": owner_identity.descriptor,
+        "document": owner,
+    }]);
+    let missing_target = aos_contract::canonical::to_vec(&value).unwrap();
+    assert!(decode_package_projection(&missing_target).is_err());
+
+    let mut unrelated = target.clone();
+    unrelated.interface.name = InterfaceName::new("test.unrelated").unwrap();
+    for method in unrelated.interface.methods.values_mut() {
+        method.target_resource = unrelated.interface.name.clone();
+    }
+    let unrelated_identity = unrelated.interface_key().unwrap();
+    documents.push(json!({
+        "descriptor": unrelated_identity.descriptor,
+        "document": unrelated,
+    }));
+    documents.sort_by(|left, right| {
+        left["descriptor"]
+            .as_str()
+            .cmp(&right["descriptor"].as_str())
+    });
+    value["interface_documents"] = json!(documents);
+    let unrelated_document = aos_contract::canonical::to_vec(&value).unwrap();
+    assert!(decode_package_projection(&unrelated_document).is_err());
 }
 
 #[test]
