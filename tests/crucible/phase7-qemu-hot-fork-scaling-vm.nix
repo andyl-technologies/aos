@@ -204,14 +204,35 @@ in
         name="$2"
         result="$3"
         binary=${flight}/bin/"$package"-clone-cost
-        listing=$("$binary" --exact "$name" --list)
+        if listing=$("$binary" --exact "$name" --list 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$listing" >&2
+          return "$status"
+        fi
         count=$(printf '%s\n' "$listing" \
           | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
-        [ "$count" -eq 1 ]
-        ${pkgs.coreutils}/bin/timeout -k 30 120 \
-          "$binary" --exact "$name" --nocapture > "$result" 2>&1
-        ${pkgs.grep}/bin/grep -Fq \
-          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"
+        if [ "$count" -ne 1 ]; then
+          printf '%s\n' "$listing" >&2
+          echo "expected exactly one $package library test named $name, found $count" >&2
+          return 1
+        fi
+
+        if ${pkgs.coreutils}/bin/timeout -k 30 120 \
+          "$binary" --exact "$name" --nocapture > "$result" 2>&1; then
+          :
+        else
+          status=$?
+          cat "$result" >&2
+          return "$status"
+        fi
+        if ! ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"; then
+          cat "$result" >&2
+          echo "expected one passing $package library test named $name" >&2
+          return 1
+        fi
         cat "$result"
       }
 
