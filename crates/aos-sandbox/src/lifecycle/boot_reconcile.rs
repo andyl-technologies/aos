@@ -2,8 +2,8 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, BrokerMethod, InventoryRuntimeResponse,
-    InventoryStorageResourcesResponse, RuntimeState, StorageLifecycleInventoryRecord,
-    StorageLifecycleTransitionRecord,
+    InventoryStorageResourcesResponse, RuntimeState, StorageAtomicSnapshotCheckpoint,
+    StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceId, SandboxId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -260,6 +260,50 @@ impl LifecycleBootInventoryBootstrapChallengeV1 {
             .chain_update(current_packet_digest)
             .chain_update(previous.commitment.as_bytes())
             .chain_update(current.commitment.as_bytes())
+            .finalize()
+            .into())
+    }
+
+    /// Derives a fixed-endpoint signature over an original group and fresh status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless all three outcomes are
+    /// authenticated Storage receive packets and the group result succeeded.
+    pub fn storage_atomic_snapshot_status_signing_message(
+        &self,
+        previous: &AuthenticatedBrokerMethodOutcomeV1,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        current: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<[u8; 32], LifecyclePhase6ErrorV1> {
+        let previous_inventory =
+            LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(previous)?;
+        let current_inventory =
+            LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(current)?;
+        if group.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || group.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            || !matches!(
+                group.result(),
+                AuthenticatedBrokerMethodResultV1::Success { .. }
+            )
+            || previous_inventory.source_version != 3
+            || current_inventory.source_version != 3
+            || previous_inventory.source != current_inventory.source
+        {
+            return Err(LifecyclePhase6ErrorV1::InvalidInput);
+        }
+        Ok(Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.boot-storage-atomic-status-attestation.v1\0")
+            .chain_update(self.nonce)
+            .chain_update(self.operation.as_bytes())
+            .chain_update(self.operation_record.digest().as_bytes())
+            .chain_update(self.projection_root.as_bytes())
+            .chain_update(self.host_boot)
+            .chain_update(Sha256::digest(previous.canonical_packet()))
+            .chain_update(Sha256::digest(group.canonical_packet()))
+            .chain_update(Sha256::digest(current.canonical_packet()))
+            .chain_update(previous_inventory.commitment.as_bytes())
+            .chain_update(current_inventory.commitment.as_bytes())
             .finalize()
             .into())
     }
@@ -1044,6 +1088,85 @@ pub struct LifecycleAuthenticatedAtomicStorageSuccessorV1 {
     previous_packet: ObjectDigest,
     group_packet: ObjectDigest,
     current_packet: ObjectDigest,
+    evidence: AtomicStorageSuccessorEvidenceV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AtomicStorageSuccessorEvidenceV1 {
+    Adjacent,
+    ProtectedStatus,
+}
+
+struct AtomicStorageStatusBindingV1 {
+    operation: [u8; 16],
+    request: [u8; 16],
+    request_digest: [u8; 32],
+    program: ObjectDigest,
+    observation: ObjectDigest,
+    source: ObjectDigest,
+    pre_generation: u64,
+    pre_head: ObjectDigest,
+    post_generation: u64,
+    post_head: ObjectDigest,
+}
+
+impl AtomicStorageStatusBindingV1 {
+    fn matches(&self, checkpoint: &StorageAtomicSnapshotCheckpoint) -> bool {
+        checkpoint.operation_id.as_slice() == self.operation
+            && checkpoint.request_id.as_slice() == self.request
+            && checkpoint.request_digest.as_slice() == self.request_digest
+            && checkpoint.program.as_slice() == self.program.as_bytes()
+            && checkpoint.observation.as_slice() == self.observation.as_bytes()
+            && checkpoint.catalog_source.as_slice() == self.source.as_bytes()
+            && checkpoint.pre_catalog_generation == self.pre_generation
+            && checkpoint.pre_catalog_head.as_slice() == self.pre_head.as_bytes()
+            && checkpoint.post_catalog_generation == self.post_generation
+            && checkpoint.post_catalog_head.as_slice() == self.post_head.as_bytes()
+    }
+}
+
+#[cfg(test)]
+mod atomic_status_tests {
+    use super::*;
+
+    #[test]
+    fn cold_status_requires_original_request_and_exact_current_post_head() {
+        let binding = AtomicStorageStatusBindingV1 {
+            operation: [1; 16],
+            request: [2; 16],
+            request_digest: [3; 32],
+            program: ObjectDigest::from_bytes([4; 32]),
+            observation: ObjectDigest::from_bytes([5; 32]),
+            source: ObjectDigest::from_bytes([6; 32]),
+            pre_generation: 7,
+            pre_head: ObjectDigest::from_bytes([8; 32]),
+            post_generation: 8,
+            post_head: ObjectDigest::from_bytes([9; 32]),
+        };
+        let mut checkpoint = StorageAtomicSnapshotCheckpoint {
+            operation_id: binding.operation.to_vec(),
+            request_id: binding.request.to_vec(),
+            request_digest: binding.request_digest.to_vec(),
+            program: binding.program.as_bytes().to_vec(),
+            observation: binding.observation.as_bytes().to_vec(),
+            catalog_source: binding.source.as_bytes().to_vec(),
+            pre_catalog_generation: binding.pre_generation,
+            pre_catalog_head: binding.pre_head.as_bytes().to_vec(),
+            post_catalog_generation: binding.post_generation,
+            post_catalog_head: binding.post_head.as_bytes().to_vec(),
+            ..Default::default()
+        };
+        assert!(binding.matches(&checkpoint));
+
+        checkpoint.request_digest[0] ^= 1;
+        assert!(!binding.matches(&checkpoint));
+        checkpoint.request_digest[0] ^= 1;
+        checkpoint.post_catalog_generation += 1;
+        assert!(!binding.matches(&checkpoint));
+        checkpoint.post_catalog_generation -= 1;
+        checkpoint.post_catalog_head[0] ^= 1;
+        assert!(!binding.matches(&checkpoint));
+    }
 }
 
 impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
@@ -1066,11 +1189,81 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
         current: &AuthenticatedBrokerMethodOutcomeV1,
         signature: [u8; 64],
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        let message =
+            challenge.storage_atomic_snapshot_signing_message(previous, group, current)?;
+        Self::from_verified_storage_attestation(
+            challenge,
+            operation,
+            plan,
+            program,
+            observation,
+            previous,
+            group,
+            current,
+            message,
+            signature,
+            AtomicStorageSuccessorEvidenceV1::Adjacent,
+        )
+    }
+
+    /// Verifies a historical group from an exact protected post-head status.
+    ///
+    /// Unlike the adjacent constructor, this accepts a fresh inventory in a
+    /// later session only when the protected catalog has not advanced since
+    /// the original group committed. It never authorizes another group send.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecyclePhase6ErrorV1`] unless the signed status binds the
+    /// original request and result to the still-current post-catalog head.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_fixed_endpoint_status_attestation(
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        operation: &super::CurrentLifecycleOperationV1<'_>,
+        plan: &super::LifecycleAtomicDatasetSnapshotPlanV1,
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        previous: &AuthenticatedBrokerMethodOutcomeV1,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        current: &AuthenticatedBrokerMethodOutcomeV1,
+        signature: [u8; 64],
+    ) -> Result<Self, LifecyclePhase6ErrorV1> {
+        let message =
+            challenge.storage_atomic_snapshot_status_signing_message(previous, group, current)?;
+        Self::from_verified_storage_attestation(
+            challenge,
+            operation,
+            plan,
+            program,
+            observation,
+            previous,
+            group,
+            current,
+            message,
+            signature,
+            AtomicStorageSuccessorEvidenceV1::ProtectedStatus,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    fn from_verified_storage_attestation(
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        operation: &super::CurrentLifecycleOperationV1<'_>,
+        plan: &super::LifecycleAtomicDatasetSnapshotPlanV1,
+        program: ObjectDigest,
+        observation: ObjectDigest,
+        previous: &AuthenticatedBrokerMethodOutcomeV1,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        current: &AuthenticatedBrokerMethodOutcomeV1,
+        message: [u8; 32],
+        signature: [u8; 64],
+        evidence: AtomicStorageSuccessorEvidenceV1,
+    ) -> Result<Self, LifecyclePhase6ErrorV1> {
         if program.as_bytes() == &[0; 32] || observation.as_bytes() == &[0; 32] {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
-        let message =
-            challenge.storage_atomic_snapshot_signing_message(previous, group, current)?;
         verify_fixed_bootstrap_signature(
             LifecycleBootBootstrapEndpointV1::Storage,
             &message,
@@ -1138,18 +1331,29 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             ObjectDigest::from_bytes(Sha256::digest(group.canonical_packet()).into());
         let current_packet =
             ObjectDigest::from_bytes(Sha256::digest(current.canonical_packet()).into());
+        let status_checkpoint = if evidence == AtomicStorageSuccessorEvidenceV1::ProtectedStatus {
+            let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = current.result()
+            else {
+                return Err(LifecyclePhase6ErrorV1::InvalidInput);
+            };
+            let inventory = InventoryStorageResourcesResponse::decode_from_slice(exact_body)
+                .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?;
+            Some(
+                inventory
+                    .atomic_snapshot_checkpoints
+                    .into_iter()
+                    .find(|checkpoint| {
+                        checkpoint.operation_id.as_slice() == plan.operation().as_bytes()
+                    })
+                    .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?,
+            )
+        } else {
+            None
+        };
         let previous =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(previous)?;
         let current =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(current)?;
-        let expected_client = previous
-            .client_generation
-            .checked_add(2)
-            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let expected_broker = previous
-            .broker_generation
-            .checked_add(2)
-            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
         let expected_catalog = previous
             .generation
             .checked_add(1)
@@ -1159,15 +1363,65 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             || previous.source != plan.inventory_source()
             || previous.source_version != 3
             || previous.head != plan.inventory_head()
-            || current.session != previous.session
-            || current.client_generation != expected_client
-            || current.broker_generation != expected_broker
             || current.generation != expected_catalog
             || current.source != previous.source
             || current.source_version != 3
             || current.head == previous.head
         {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        match evidence {
+            AtomicStorageSuccessorEvidenceV1::Adjacent => {
+                let expected_client = previous
+                    .client_generation
+                    .checked_add(2)
+                    .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+                let expected_broker = previous
+                    .broker_generation
+                    .checked_add(2)
+                    .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+                if current.session != previous.session
+                    || current.client_generation != expected_client
+                    || current.broker_generation != expected_broker
+                {
+                    return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+                }
+            }
+            AtomicStorageSuccessorEvidenceV1::ProtectedStatus => {
+                let checkpoint = status_checkpoint
+                    .as_ref()
+                    .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+                let expected_group_client = previous
+                    .client_generation
+                    .checked_add(1)
+                    .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+                let expected_group_broker = previous
+                    .broker_generation
+                    .checked_add(1)
+                    .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+                let binding = AtomicStorageStatusBindingV1 {
+                    operation: plan.operation().into_bytes(),
+                    request: group.request().request_id(),
+                    request_digest: Sha256::digest(group.request().exact_body()).into(),
+                    program,
+                    observation,
+                    source: previous.source,
+                    pre_generation: previous.generation,
+                    pre_head: previous.head,
+                    post_generation: current.generation,
+                    post_head: current.head,
+                };
+                if ObjectDigest::from_bytes(group.request().session_binding()) != previous.session
+                    || group.request().client_sequence() != expected_group_client
+                    || group.broker_sequence() != expected_group_broker
+                    || !binding.matches(checkpoint)
+                {
+                    return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+                }
+                // The protected catalog increments on every mutation. Equality
+                // with this operation's authenticated post-head proves that no
+                // catalog mutation intervened before the fresh status query.
+            }
         }
         let snapshot = LifecycleResourceV1::Snapshot(plan.snapshot());
         let mut expected_transitions = plan
@@ -1239,7 +1493,19 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             previous_packet,
             group_packet,
             current_packet,
+            evidence,
         })
+    }
+
+    pub(super) const fn is_status_attested(&self) -> bool {
+        matches!(
+            self.evidence,
+            AtomicStorageSuccessorEvidenceV1::ProtectedStatus
+        )
+    }
+
+    pub(super) const fn is_adjacent(&self) -> bool {
+        matches!(self.evidence, AtomicStorageSuccessorEvidenceV1::Adjacent)
     }
 
     pub(super) fn matches_exact_exchange(

@@ -1375,8 +1375,8 @@ impl CurrentLifecycleEffectV1<'_> {
     /// # Errors
     ///
     /// Returns [`LifecyclePhase6ErrorV1`] unless this is the exact persisted
-    /// Storage effect compiled into `plan` and Storage's adjacent authenticated
-    /// inventory proves every member's committed group transition.
+    /// Storage effect compiled into `plan` and an authenticated adjacent or
+    /// protected no-intervening status proves every member's transition.
     pub fn observe_atomic_dataset_snapshot(
         self,
         plan: &super::LifecycleAtomicDatasetSnapshotPlanV1,

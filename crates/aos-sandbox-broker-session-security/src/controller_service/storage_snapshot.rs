@@ -149,14 +149,20 @@ impl ProductionEffectExecutor {
                             session,
                             checkpoint,
                         )?;
-                        let crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete {
-                            predecessor,
-                            ..
-                        } = history
-                        else {
-                            return Err(retryable(
-                                "reserved Storage group lacks an adjacent terminal successor",
-                            ));
+                        let predecessor = match &history {
+                            crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete {
+                                predecessor,
+                                ..
+                            }
+                            | crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::GroupCommitted {
+                                predecessor,
+                                ..
+                            } => predecessor.clone(),
+                            _ => {
+                                return Err(retryable(
+                                    "reserved Storage group has no authenticated result",
+                                ));
+                            }
                         };
                         let predecessor_inventory =
                             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(
@@ -166,34 +172,62 @@ impl ProductionEffectExecutor {
                         let plan = barrier
                             .atomic_dataset_snapshot_plan(&current, &predecessor_inventory)
                             .map_err(permanent)?;
-                        let completion = storage.recover_verified_atomic_snapshot_completion(
-                            request_id,
-                            request_packet,
-                            predecessor_packet,
-                            session,
-                            checkpoint,
-                            &challenge,
-                            &current,
-                            &plan,
-                        )?;
+                        let (completion, status) = match history {
+                            crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete {
+                                ..
+                            } => (
+                                storage
+                                    .recover_verified_atomic_snapshot_completion(
+                                        request_id,
+                                        request_packet,
+                                        predecessor_packet,
+                                        session,
+                                        checkpoint,
+                                        &challenge,
+                                        &current,
+                                        &plan,
+                                    )?
+                                    .ok_or_else(|| {
+                                        retryable("verified Storage trio changed during recovery")
+                                    })?,
+                                false,
+                            ),
+                            crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::GroupCommitted {
+                                predecessor,
+                                group,
+                            } => (
+                                storage.recover_verified_atomic_snapshot_status(
+                                    predecessor,
+                                    group,
+                                    &challenge,
+                                    &current,
+                                    &plan,
+                                )?,
+                                true,
+                            ),
+                            _ => return Err(retryable("protected Storage history changed")),
+                        };
                         drop(sessions);
-                        let completion = completion.ok_or_else(|| {
-                            retryable("verified Storage trio changed during recovery")
-                        })?;
-                        let result = LifecycleAtomicSnapshotSourceStoreV1::new(journal)
-                            .complete_verified_history(
-                                &current,
-                                &barrier,
-                                &plan,
-                                &predecessor_inventory,
-                                completion.predecessor_outcome(),
-                                fence,
-                                checkpoint,
-                                completion.group_outcome(),
-                                completion.successor_outcome(),
-                                completion.successor().clone(),
-                            )
-                            .map_err(retryable)?;
+                        let mut source = LifecycleAtomicSnapshotSourceStoreV1::new(journal);
+                        let complete = if status {
+                            LifecycleAtomicSnapshotSourceStoreV1::complete_verified_status
+                        } else {
+                            LifecycleAtomicSnapshotSourceStoreV1::complete_verified_history
+                        };
+                        let result = complete(
+                            &mut source,
+                            &current,
+                            &barrier,
+                            &plan,
+                            &predecessor_inventory,
+                            completion.predecessor_outcome(),
+                            fence,
+                            checkpoint,
+                            completion.group_outcome(),
+                            completion.successor_outcome(),
+                            completion.successor().clone(),
+                        )
+                        .map_err(retryable)?;
                         let observation = match result {
                             LifecycleAtomicSnapshotSourceCompletionV1::Recorded(observation)
                             | LifecycleAtomicSnapshotSourceCompletionV1::Replay(observation) => {

@@ -1017,9 +1017,9 @@ fn audit_pending_atomic_snapshot_sources(
     sessions: &mut ControllerBrokerSessions,
     before_reconciliation: bool,
 ) -> Result<(), CycleFailure> {
-    // A crash after the group terminal but before its immediate successor
-    // cannot be repaired with a fresh inventory: it would have a new session
-    // binding and would not prove the adjacent one-generation transition.
+    // Historical group success may recover from a fresh read-only status only
+    // when Storage attests the original protected post-head is still current.
+    // An absent or incomplete group has no such authority.
     let pending = controller
         .pending_atomic_snapshot_sources()
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
@@ -1054,9 +1054,10 @@ fn audit_pending_atomic_snapshot_sources(
         if !matches!(
             history,
             crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::Complete { .. }
+                | crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1::GroupCommitted { .. }
         ) {
             return Err(CycleFailure::Retryable(
-                "pending Storage source lacks a verified adjacent successor".to_owned(),
+                "pending Storage source lacks a verified group result".to_owned(),
             ));
         }
         if !before_reconciliation {

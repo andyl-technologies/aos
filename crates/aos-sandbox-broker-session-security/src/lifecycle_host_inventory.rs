@@ -1036,10 +1036,10 @@ pub enum DormantAtomicStorageInventoryFinishProgressV1 {
 
 /// Retains the verified successor with all three exact signed exchanges.
 ///
-/// These packets are moved from the adjacent query and group custody only after
-/// the fixed endpoint attestation verifies their predecessor/group/successor
-/// relationship. A lifecycle source record can then commit their exact hashes.
-#[must_use = "retain the verified successor and adjacent signed packet evidence"]
+/// The successor is either adjacent to the group or a fresh signed status
+/// whose protected catalog head equals the exact original group post-head.
+/// A lifecycle source record then commits their exact packet hashes.
+#[must_use = "retain the verified successor and signed packet evidence"]
 #[derive(Clone)]
 pub struct DormantAtomicStorageInventoryCompletionV1 {
     successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
@@ -1204,6 +1204,76 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             group,
             current,
         }))
+    }
+
+    /// Attests a successful historical group with a fresh read-only status.
+    ///
+    /// The protected history has already reconstructed the original signed
+    /// predecessor and group. The only new broker exchange is an inventory
+    /// query; its checkpoint must still name the exact post-group catalog head.
+    pub(crate) fn recover_verified_atomic_snapshot_status(
+        &mut self,
+        predecessor: AuthenticatedBrokerMethodOutcomeV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        operation: &CurrentLifecycleOperationV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+    ) -> Result<DormantAtomicStorageInventoryCompletionV1, EffectFailure> {
+        let (current, currentness) = self
+            .0
+            .query_complete(LifecycleInventoryMethodV1::Storage)
+            .map_err(|_| {
+                EffectFailure::Retryable("Storage status inventory is unavailable".to_owned())
+            })?;
+        self.0.recheck(currentness).map_err(|_| {
+            EffectFailure::Retryable("Storage status inventory is no longer current".to_owned())
+        })?;
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
+            return Err(EffectFailure::Permanent(
+                "historical Storage group was not successful".to_owned(),
+            ));
+        };
+        let receipt = aos_sandbox_protocol::decode_atomic_storage_snapshot_response(exact_body)
+            .map_err(|_| {
+                EffectFailure::Permanent("historical Storage receipt is invalid".to_owned())
+            })?;
+        let program = aos_sandbox_core::ObjectDigest::from_bytes(receipt.program());
+        let observation = aos_sandbox_core::ObjectDigest::from_bytes(receipt.observation());
+        let message = challenge
+            .storage_atomic_snapshot_status_signing_message(&predecessor, &group, &current)
+            .map_err(|_| {
+                EffectFailure::Permanent("Storage status cannot attest the group".to_owned())
+            })?;
+        let signature = self
+            .0
+            .session
+            .sign_lifecycle_bootstrap_attestation(&message)
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "Storage fixed endpoint status attestation is unavailable".to_owned(),
+                )
+            })?;
+        let successor =
+            LifecycleAuthenticatedAtomicStorageSuccessorV1::from_fixed_endpoint_status_attestation(
+                challenge,
+                operation,
+                plan,
+                program,
+                observation,
+                &predecessor,
+                &group,
+                &current,
+                signature,
+            )
+            .map_err(|_| {
+                EffectFailure::Permanent("Storage status does not prove the group".to_owned())
+            })?;
+        Ok(DormantAtomicStorageInventoryCompletionV1 {
+            successor,
+            predecessor,
+            group,
+            current,
+        })
     }
 
     /// Inspects the exact old Storage session before a new request rolls it over.

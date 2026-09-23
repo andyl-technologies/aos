@@ -1,9 +1,9 @@
 //! Durable controller custody for one grouped Storage snapshot effect.
 //!
 //! The controller journal stores a reservation before transport and a terminal
-//! join after the authenticated session has observed the adjacent whole Storage
-//! inventories. A pending reservation never grants a second dispatch. Recovery
-//! must use the broker-session journal's exact signed request and outcome.
+//! join after an adjacent successor or a protected no-intervening status proof.
+//! A pending reservation never grants a second dispatch. Recovery must use the
+//! broker-session journal's exact signed request and outcome.
 //!
 //! ```text
 //! AOSLSS01/AOSLSS02 | state:1 | operation:16 | operation-record:32 | projection:32 |
@@ -49,6 +49,12 @@ const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.lifecycle.atomic-snapshot-source
 const RECORD_BYTES_V1: usize = 8 + 1 + 16 + (18 * 32) + 16 + 8 + 8 + 32;
 const RECORD_BYTES_V2: usize = RECORD_BYTES_V1 + 32;
 
+#[derive(Clone, Copy)]
+enum VerifiedRecoveryKind {
+    Adjacent,
+    ProtectedStatus,
+}
+
 /// Reports a stale or malformed source attempt, or protected journal failure.
 #[derive(Debug, thiserror::Error)]
 pub enum LifecycleAtomicSnapshotSourceErrorV1 {
@@ -77,9 +83,9 @@ pub enum LifecycleAtomicSnapshotSourceAdmissionV1 {
 /// Distinguishes a new durable successor from an exact idempotent replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleAtomicSnapshotSourceCompletionV1 {
-    /// The adjacent successor was recorded in this call.
+    /// The authenticated successor was recorded in this call.
     Recorded(LifecycleEffectObservationV1),
-    /// The exact adjacent successor was previously recorded.
+    /// The exact authenticated successor was previously recorded.
     Replay(LifecycleEffectObservationV1),
 }
 
@@ -343,6 +349,7 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
             || actual_authorization.ownership_lease() != expected_authorization.ownership_lease
             || actual_authorization.ownership_lease_signature()
                 != expected_authorization.ownership_lease_signature
+            || !successor.is_adjacent()
             || successor.current().session() != predecessor.session()
             || !successor.matches_exact_exchange(predecessor_outcome, group, successor_outcome)
         {
@@ -417,6 +424,77 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
         successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
     ) -> Result<LifecycleAtomicSnapshotSourceCompletionV1, LifecycleAtomicSnapshotSourceErrorV1>
     {
+        self.complete_verified_recovery(
+            current,
+            barrier,
+            plan,
+            predecessor,
+            predecessor_outcome,
+            fence,
+            checkpoint,
+            group,
+            successor_outcome,
+            successor,
+            VerifiedRecoveryKind::Adjacent,
+        )
+    }
+
+    /// Completes an original group from its protected no-intervening status.
+    ///
+    /// This path requires the historical signed request and result, the source
+    /// reservation checkpoint, and a distinct fixed-endpoint status proof. It
+    /// never creates or dispatches a replacement Storage effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a changed source reservation, a non-status
+    /// successor, an original request mismatch, or journal I/O failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_verified_status(
+        &mut self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        barrier: &LifecycleSnapshotBarrierV1,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        predecessor: &LifecycleAuthenticatedStorageInventoryV1,
+        predecessor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        fence: LiveRuntimeFenceV1,
+        checkpoint: ObjectDigest,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        successor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
+    ) -> Result<LifecycleAtomicSnapshotSourceCompletionV1, LifecycleAtomicSnapshotSourceErrorV1>
+    {
+        self.complete_verified_recovery(
+            current,
+            barrier,
+            plan,
+            predecessor,
+            predecessor_outcome,
+            fence,
+            checkpoint,
+            group,
+            successor_outcome,
+            successor,
+            VerifiedRecoveryKind::ProtectedStatus,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete_verified_recovery(
+        &mut self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        barrier: &LifecycleSnapshotBarrierV1,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+        predecessor: &LifecycleAuthenticatedStorageInventoryV1,
+        predecessor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        fence: LiveRuntimeFenceV1,
+        checkpoint: ObjectDigest,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        successor_outcome: &AuthenticatedBrokerMethodOutcomeV1,
+        successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
+        recovery: VerifiedRecoveryKind,
+    ) -> Result<LifecycleAtomicSnapshotSourceCompletionV1, LifecycleAtomicSnapshotSourceErrorV1>
+    {
         self.journal.ensure_protected_authority()?;
         let operation = current.operation().operation_id().into_bytes();
         let retained = self
@@ -452,7 +530,13 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
             || digest(group.request().exact_body()) != retained.request_body
             || original_authority_packet_digest(group.request().canonical_packet())?
                 != retained.request_packet
-            || successor.current().session() != predecessor.session()
+            || match recovery {
+                VerifiedRecoveryKind::Adjacent => {
+                    !successor.is_adjacent()
+                        || successor.current().session() != predecessor.session()
+                }
+                VerifiedRecoveryKind::ProtectedStatus => !successor.is_status_attested(),
+            }
             || !successor.matches_exact_exchange(predecessor_outcome, group, successor_outcome)
         {
             return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
