@@ -217,19 +217,19 @@ canonical schema version 1 and a 64 MiB outer bound:
 
 ```text
 CreateCampaignRequestV1 = version | principal | campaign |
-                          CampaignLineageV1 | CampaignPolicyV1
+                          CampaignLineageV1 | CampaignPolicyV5
 CreateCampaignResponseV1 = version | request_digest | genesis_snapshot |
                            lineage | active_policy | replayed
 
 DeriveCampaignRequestV1 = version | principal | source_campaign |
                           source_snapshot | target_campaign |
-                          optional CampaignPolicyV1
+                          optional CampaignPolicyV5
 DeriveCampaignResponseV1 = version | request_digest | source_snapshot |
                            new_snapshot | active_policy | replayed
 
 GetCampaignRequestV1 = version | principal | campaign
-GetCampaignResponseV1 = version | request_digest | snapshot | lineage |
-                        active_policy | lifecycle_state
+GetCampaignResponseV2 = version | request_digest | snapshot | lineage |
+                        active_policy | CampaignPolicyV5 | lifecycle_state
 
 GetCampaignStatusRequestV1 = version | principal | campaign | snapshot
 GetCampaignStatusResponseV1 = version | request_digest | snapshot |
@@ -290,19 +290,19 @@ GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
 GetCampaignFindingObjectResponseV1 = version | request_digest |
                                      CampaignSnapshotV3 | FindingV4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV12 |
-                  1 latest ObservationV12 |
+FindingObjectV1 = 0 ObservationV13 |
+                  1 latest ObservationV13 |
                   2 ReproductionArtifactV2 |
                   3 minimized ReproductionArtifactV2
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
 ExplainCampaignAttemptResponseV2 = version | request_digest |
-                                   CampaignSnapshotV3 | AttemptV8 |
+                                   CampaignSnapshotV3 | AttemptV9 |
                                    AttemptAdmissionV3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV2 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV12 |
+                                   optional ObservationV13 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -363,7 +363,7 @@ GetCampaignFrontierObjectRequestV1 = version | principal | campaign |
 GetCampaignFrontierObjectResponseV1 = version | request_digest |
                                       CampaignSnapshotV3 |
                                       ContinuationProjectionV1 |
-                                     BranchRequestV9 |
+                                     BranchRequestV10 |
                                       MerkleLookupProofV1 |
                                       MerkleLookupProofV1
 
@@ -385,15 +385,15 @@ PinCampaignRequestV1 = version | principal | campaign | PinRequestV1
 PinCampaignResponseV1 = version | request_digest | prior_snapshot |
                         new_snapshot | replayed
 
-DiscoveryRequestV3 = command | expected_snapshot | configuration_artifact |
-                     StopConditionV3
-SubmitCampaignDiscoveryRequestV3 = version | principal | campaign |
-                                   DiscoveryRequestV3
+DiscoveryRequestV4 = command | expected_snapshot | configuration_artifact |
+                     StopConditionV4
+SubmitCampaignDiscoveryRequestV4 = version | principal | campaign |
+                                   DiscoveryRequestV4
 SubmitCampaignDiscoveryResponseV1 = version | request_digest | prior_snapshot |
                                     new_snapshot | attempt | admission | replayed
 
 SubmitCampaignBranchRequestV1 = version | principal | campaign |
-                                expected_snapshot | BranchRequestV9
+                                expected_snapshot | BranchRequestV10
 SubmitCampaignBranchResponseV2 = version | request_digest | prior_snapshot |
                                  new_snapshot | branch_request | replayed
 
@@ -530,7 +530,7 @@ pin_request_digest =
   H("crucible.campaign-service.pin-campaign.v1", PinCampaignRequestV1)
 discovery_request_digest =
   H("crucible.campaign-service.submit-campaign-discovery.v1",
-    SubmitCampaignDiscoveryRequestV3)
+    SubmitCampaignDiscoveryRequestV4)
 branch_request_digest =
   H("crucible.campaign-service.submit-branch-request.v1",
     SubmitCampaignBranchRequestV1)
@@ -720,10 +720,10 @@ does not grant evidence bodies, checkpoint bytes, or any other child closure.
 
 `ExplainCampaignAttempt` is the separately authorized provenance view for one
 exact attempt in the current authenticated snapshot. Two minimal accounting
-lookup proofs bind the complete `AttemptV8` body and its unique execution-basis
+lookup proofs bind the complete `AttemptV9` body and its unique execution-basis
 `AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV2` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV12` or authenticated absence. The response
+either the canonical `ObservationV13` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -808,7 +808,7 @@ at the anchored snapshot.
 
 `GetFrontierObject` is the separately authorized body read for one exact
 `BranchRequestId` returned by `QueryFrontier`. The response repeats the
-authenticated projection and returns the strict current `BranchRequestV9`
+authenticated projection and returns the strict current `BranchRequestV10`
 body. The
 first minimal lookup proof authenticates the fixed frontier-index anchor; the
 second authenticates the request-keyed projection ID inside that index. A
@@ -851,12 +851,12 @@ opportunity's declared default, a one-proposal/one-attempt budget, and no
 alternative candidates. Local publication and imported-history validation
 require `admits_scenario_defaults`, the active policy child, the exact default,
 and the finite singleton shape. Every branch-request source, cause, and stop
-variant uses schema v9; noncurrent branch-request bodies and envelopes are rejected.
+variant uses schema v10; noncurrent branch-request bodies and envelopes are rejected.
 
 Stop-condition tags 5 and 6 encode a nonzero absolute scheduler-quantum
 coordinate and a flat nonzero virtual-time-or-scheduler-quantum pair. They use
-`AttemptV8`, `BranchRequestV9`, `ObservationV12`, version-14
-`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV3`. Every enclosing
+`AttemptV9`, `BranchRequestV10`, `ObservationV13`, version-15
+`DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV4`. Every enclosing
 decoder requires that exact current schema. The scheduler coordinate
 comes from `SingleSchedulerCheckpointV2.quanta`; discovery-only calls that make
 no scheduler progress do not consume it. Exact resume evaluates the restored
@@ -919,7 +919,7 @@ local transport frames exactly one canonical request or response as:
 CampaignLoopbackFrameV21 = "CRUCCS21" | kind:u8 | reserved[3] |
                           body_length:u32be | canonical_body[body_length]
 kind = 1 (GetCampaignRequestV1) |
-       2 (GetCampaignResponseV1) |
+       2 (GetCampaignResponseV2) |
        3 (ApplyCampaignCommandRequestV1) |
        4 (ApplyCampaignCommandResponseV1) |
        5 (SubmitCampaignBranchRequestV1) |
@@ -961,11 +961,11 @@ kind = 1 (GetCampaignRequestV1) |
       41 (AttachCampaignRuntimeResponseV1) |
       42 (GetCampaignStatusRequestV1) |
       43 (GetCampaignStatusResponseV1) |
-      44 (SubmitCampaignDiscoveryRequestV3) |
+      44 (SubmitCampaignDiscoveryRequestV4) |
       45 (SubmitCampaignDiscoveryResponseV1)
 ```
 
-An accepted explicit discovery request is a version-14 `CampaignFact` whose
+An accepted explicit discovery request is a version-15 `CampaignFact` whose
 canonical payload contains the command, exact parent snapshot, exact
 campaign-owned configuration artifact, and stop condition. Any other fact or
 request schema is rejected. The repository admits it only while the
@@ -1316,7 +1316,7 @@ Planner-request schema v3 contains the owner-derived coordinate and parent basis
 for finite statistical draws plus the complete SMC generation, particle,
 parent, selected opportunity, and domain basis. Only canonical frontier implementation version 8
 may receive a nonempty SMC basis, and the pure planner validates it against the
-version-four policy before emitting a schema-v9 branch request.
+version-five policy before emitting a schema-v10 branch request.
 
 The current planner engines require, for every served position, the exact
 `ContinuationProjectionV1` envelope authenticated by the expected snapshot's
@@ -1452,7 +1452,7 @@ invocation dependencies. Basis objects require closure authentication, and the g
 preserved. Roots lacking the scan index fail closed.
 
 Bounded model-resolved finite masses and modeled generated sources are retained
-in the sole current branch-request schema v9. Their model and generator IDs are
+in the sole current branch-request schema v10. Their model and generator IDs are
 exact-checked against the opportunity. The
 first closed adapter maps standardized uniform app-random integer models to
 permuted-integer implementation version 17, supports power-of-two cardinality
