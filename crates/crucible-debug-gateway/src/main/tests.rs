@@ -170,6 +170,12 @@ fn direct_operator_writes_require_private_branch_authorization() {
         backend.read(&mut [0_u8; 8]).is_err(),
         "run control reached QEMU"
     );
+    with_gateway(&process, |gateway| {
+        assert_eq!(gateway.run_control_requests.len(), 1);
+        gateway.run_control_requests.clear();
+        Ok(())
+    })
+    .expect("clear queued run control before testing branch writes");
 
     let unlock = DebugGatewayFrame::v1(
         DebugGatewayMessageKind::OperatorAccess,
@@ -190,6 +196,131 @@ fn direct_operator_writes_require_private_branch_authorization() {
         .read_exact(&mut forwarded)
         .expect("authorized QEMU write");
     assert_eq!(forwarded, write);
+}
+
+#[test]
+fn forwarded_rsp_queue_rejects_flood_at_fixed_capacity() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/flood-qemu.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("install operator writer");
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+
+    for _ in 0..MAX_PENDING_RSP_REQUESTS {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encode_rsp_packet(b"g")),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("admit bounded query");
+    }
+    handle_operator_rsp_unit(
+        &process,
+        RspUnit::Packet(encode_rsp_packet(b"g")),
+        &mut pending,
+        &mut synthetic_stop,
+    )
+    .expect("reject excess query");
+    assert_eq!(pending.len(), MAX_PENDING_RSP_REQUESTS);
+    let expected = [b"+".as_slice(), encode_rsp_packet(b"E20").as_slice()].concat();
+    let mut rejection = vec![0_u8; expected.len()];
+    operator
+        .read_exact(&mut rejection)
+        .expect("read bounded rejection");
+    assert_eq!(rejection, expected);
+
+    backend
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("set backend read timeout");
+    let packet = encode_rsp_packet(b"g");
+    let mut forwarded = vec![0_u8; packet.len() * MAX_PENDING_RSP_REQUESTS];
+    backend
+        .read_exact(&mut forwarded)
+        .expect("read admitted queries");
+    assert_eq!(forwarded, packet.repeat(MAX_PENDING_RSP_REQUESTS));
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "excess query reached QEMU"
+    );
+}
+
+#[test]
+fn forwarded_rsp_queue_rejects_oversized_byte_total() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/byte-cap-qemu.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("install operator writer");
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+    let mut query = vec![b'0'; 40 * 1024];
+    query[0] = b'm';
+    let encoded = encode_rsp_packet(&query);
+
+    for _ in 0..2 {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encoded.clone()),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("admit or reject large query");
+    }
+    assert_eq!(pending.len(), 1);
+    let expected = [b"+".as_slice(), encode_rsp_packet(b"E20").as_slice()].concat();
+    let mut rejection = vec![0_u8; expected.len()];
+    operator
+        .read_exact(&mut rejection)
+        .expect("read byte-cap rejection");
+    assert_eq!(rejection, expected);
+
+    backend
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("set backend read timeout");
+    let mut forwarded = vec![0_u8; encoded.len()];
+    backend
+        .read_exact(&mut forwarded)
+        .expect("read admitted large query");
+    assert_eq!(forwarded, encoded);
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "second query reached QEMU"
+    );
+}
+
+#[test]
+fn initial_stop_nack_replays_to_operator_without_reaching_backend() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/initial-stop.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("install operator writer");
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = true;
+
+    handle_operator_rsp_unit(&process, RspUnit::Nack, &mut pending, &mut synthetic_stop)
+        .expect("replay initial stop");
+    let mut packet = vec![0_u8; encode_rsp_packet(b"T05").len()];
+    operator
+        .read_exact(&mut packet)
+        .expect("read replayed initial stop");
+    assert_eq!(packet, encode_rsp_packet(b"T05"));
+    backend
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("set backend read timeout");
+    assert!(backend.read(&mut [0_u8; 1]).is_err(), "NACK reached QEMU");
 }
 
 #[test]

@@ -253,9 +253,11 @@ impl DebugGatewayProcess {
     /// version negotiation fails.
     pub fn reconnect_control(&mut self) -> Result<(), DebugGatewayClientError> {
         let pending_run_control_stream = self.client.pending_run_control_stream;
+        let pending_interrupt_delivered = self.client.pending_interrupt_delivered;
         self.client.disconnect();
         self.client = DebugGatewayControlClient::connect(&self.control_socket)?;
         self.client.pending_run_control_stream = pending_run_control_stream;
+        self.client.pending_interrupt_delivered = pending_interrupt_delivered;
         Ok(())
     }
 
@@ -391,6 +393,7 @@ fn format_reconciliation(
 pub struct DebugGatewayControlClient {
     stream: UnixStream,
     pending_run_control_stream: Option<u32>,
+    pending_interrupt_delivered: bool,
 }
 
 impl DebugGatewayControlClient {
@@ -406,6 +409,7 @@ impl DebugGatewayControlClient {
         let mut client = Self {
             stream,
             pending_run_control_stream: None,
+            pending_interrupt_delivered: false,
         };
         let reply = client.request(DebugGatewayMessageKind::Hello, 0, Vec::new())?;
         if reply.kind != DebugGatewayMessageKind::HelloAck
@@ -499,9 +503,15 @@ impl DebugGatewayControlClient {
             DebugGatewayMessageKind::RunControl if reply.payload.is_empty() => Ok(None),
             DebugGatewayMessageKind::RunControl => {
                 if self.pending_run_control_stream == Some(reply.stream_id) {
+                    // Ctrl-C supersedes the in-flight run without opening a second request.
+                    if reply.payload == [0x03] && !self.pending_interrupt_delivered {
+                        self.pending_interrupt_delivered = true;
+                        return Ok(Some(reply.payload));
+                    }
                     return Ok(None);
                 }
                 self.pending_run_control_stream = Some(reply.stream_id);
+                self.pending_interrupt_delivered = reply.payload == [0x03];
                 Ok(Some(reply.payload))
             }
             actual => Err(DebugGatewayClientError::UnexpectedReply {
@@ -540,6 +550,7 @@ impl DebugGatewayControlClient {
             });
         }
         self.pending_run_control_stream = None;
+        self.pending_interrupt_delivered = false;
         Ok(())
     }
 
@@ -836,6 +847,67 @@ mod tests {
         stream
             .write_all(&bytes)
             .unwrap_or_else(|error| panic!("reply should write: {error}"));
+    }
+
+    #[test]
+    fn client_delivers_interrupt_once_for_outstanding_run() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let socket = directory.path().join("gateway.sock");
+        let listener = UnixListener::bind(&socket).expect("bind test gateway");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            assert_eq!(
+                read_frame(&mut stream).expect("read hello").kind,
+                DebugGatewayMessageKind::Hello
+            );
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(
+                    DebugGatewayMessageKind::HelloAck,
+                    0,
+                    DEBUG_GATEWAY_V1_CAPABILITY.to_vec(),
+                )
+                .expect("build hello reply"),
+            );
+            for payload in [b"c".as_slice(), b"c", &[0x03], &[0x03]] {
+                assert_eq!(
+                    read_frame(&mut stream).expect("read scheduler poll").kind,
+                    DebugGatewayMessageKind::RunControl
+                );
+                write_reply(
+                    &mut stream,
+                    DebugGatewayFrame::v1(DebugGatewayMessageKind::RunControl, 7, payload.to_vec())
+                        .expect("build scheduler poll reply"),
+                );
+            }
+            let completion = read_frame(&mut stream).expect("read scheduler completion");
+            assert_eq!(completion.kind, DebugGatewayMessageKind::RspData);
+            assert_eq!(completion.stream_id, 7);
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(DebugGatewayMessageKind::Ack, 0, Vec::new())
+                    .expect("build completion reply"),
+            );
+        });
+
+        let mut client = DebugGatewayControlClient::connect(&socket).expect("connect gateway");
+        assert_eq!(
+            client.poll_run_control().expect("first poll"),
+            Some(b"c".to_vec())
+        );
+        assert_eq!(client.poll_run_control().expect("duplicate poll"), None);
+        assert_eq!(
+            client.poll_run_control().expect("interrupt poll"),
+            Some(vec![0x03])
+        );
+        assert_eq!(
+            client.poll_run_control().expect("duplicate interrupt"),
+            None
+        );
+        client
+            .complete_run_control(b"T02")
+            .expect("complete interrupted run");
+        server.join().expect("gateway server thread");
     }
 
     #[test]

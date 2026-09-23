@@ -129,17 +129,6 @@ fn stable_gdb_connection_survives_backend_replacement() {
     assert_eq!(read_rsp_payload(&mut gdb), b"O6869");
     assert_eq!(read_rsp_payload(&mut gdb), b"ff");
 
-    gdb.write_all(&encode_rsp_packet(b"s"))
-        .unwrap_or_else(|error| panic!("direct scheduler step should write: {error}"));
-    assert_eq!(read_rsp_payload(&mut gdb), b"E22");
-
-    gdb.write_all(&encode_rsp_packet(b"c"))
-        .unwrap_or_else(|error| panic!("direct scheduler continue should write: {error}"));
-    assert_eq!(read_rsp_payload(&mut gdb), b"E22");
-    gdb.write_all(&[0x03])
-        .unwrap_or_else(|error| panic!("direct scheduler interrupt should write: {error}"));
-    assert_eq!(read_rsp_payload(&mut gdb), b"E22");
-
     drop(gdb);
     process
         .shutdown()

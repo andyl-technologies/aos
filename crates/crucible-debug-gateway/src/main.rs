@@ -12,8 +12,8 @@
 //! the process and active backend remain available for the next client. The
 //! private operator Unix listener relays allowlisted read-only RSP traffic
 //! across backend replacement. An owner control transition admits guest writes
-//! only after a noncanonical fork. Direct run control remains denied; guest
-//! channels fail closed until their shared-memory routes are active.
+//! only after a noncanonical fork. Run control crosses the scheduler ownership
+//! protocol; guest channels fail closed until their shared-memory routes are active.
 
 #![forbid(unsafe_code)]
 
@@ -56,8 +56,10 @@ struct GatewayProcess {
     rsp_state_epoch: u64,
     replacement_epoch: u64,
     operator_epoch: u32,
+    next_run_control_id: u32,
     run_control_requests: VecDeque<(u32, u32, Vec<u8>)>,
     run_control_inflight: Option<(u32, u32, Vec<u8>)>,
+    run_control_cancelled: Option<u32>,
     run_control_completed: Option<(u32, Vec<u8>, Vec<u8>)>,
     scheduler_response_pending: Option<Vec<u8>>,
     scheduler_lease_active: bool,
@@ -66,6 +68,8 @@ struct GatewayProcess {
 
 const QEMU_RSP_TIMEOUT: Duration = Duration::from_secs(5);
 const RSP_RELAY_POLL_TIMEOUT: Duration = Duration::from_millis(10);
+const MAX_PENDING_RSP_REQUESTS: usize = 64;
+const MAX_PENDING_RSP_BYTES: usize = 64 * 1024;
 
 impl GatewayProcess {
     fn new(operator_listen: Option<String>) -> Self {
@@ -81,8 +85,10 @@ impl GatewayProcess {
             rsp_state_epoch: 0,
             replacement_epoch: 0,
             operator_epoch: 0,
+            next_run_control_id: 0,
             run_control_requests: VecDeque::new(),
             run_control_inflight: None,
+            run_control_cancelled: None,
             run_control_completed: None,
             scheduler_response_pending: None,
             scheduler_lease_active: false,
@@ -213,6 +219,7 @@ impl GatewayProcess {
         self.rsp_responses_pending == 0
             && self.run_control_requests.is_empty()
             && self.run_control_inflight.is_none()
+            && self.run_control_cancelled.is_none()
             && self.scheduler_response_pending.is_none()
             && !self.scheduler_lease_active
             && self.gdb_scheduler_run_active.is_none()
@@ -388,6 +395,10 @@ fn dispatch_request(
             return Err(String::from("scheduler RSP response must not be empty"));
         }
         with_gateway(process, |gateway| {
+            if gateway.run_control_cancelled == Some(frame.stream_id) {
+                gateway.run_control_cancelled = None;
+                return Ok(());
+            }
             if gateway
                 .run_control_completed
                 .as_ref()
@@ -428,6 +439,7 @@ fn dispatch_request(
                         *queued_epoch == operator_epoch && queued == &[0x03]
                     })
                 {
+                    // An accepted Ctrl-C wins over a stop completed in the same relay interval.
                     let _interrupt = gateway.run_control_requests.pop_front();
                     b"T02".to_vec()
                 } else {
@@ -461,6 +473,10 @@ fn dispatch_request(
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "wall-clock deadline bounds gateway transport waiting, not simulation time"
+)]
 fn commit_backend_at_packet_boundary(
     process: &SharedGatewayProcess,
     frame: DebugGatewayFrame,
@@ -551,7 +567,15 @@ fn operator_listener_loop(process: &SharedGatewayProcess, listener: UnixListener
         match connection {
             Ok(stream) => {
                 let result = serve_operator_connection(process, stream);
-                let cleanup = restore_backend_after_operator_disconnect(process, result.is_ok());
+                let cleanup =
+                    with_gateway(process, |gateway| Ok(gateway.operator_writer.is_some()))
+                        .and_then(|attached| {
+                            if attached {
+                                restore_backend_after_operator_disconnect(process, result.is_ok())
+                            } else {
+                                Ok(())
+                            }
+                        });
                 if let Err(error) = result {
                     eprintln!(
                         "crucible-debug-gateway: operator gdb connection closed: {}",
@@ -581,6 +605,7 @@ fn restore_backend_after_operator_disconnect(
 ) -> Result<(), String> {
     let ownership_recovered = with_gateway(process, |gateway| {
         if gateway.gdb_scheduler_run_active.is_some() {
+            let cancelled = gateway.gdb_scheduler_run_active;
             let active = gateway
                 .active
                 .as_mut()
@@ -590,6 +615,7 @@ fn restore_backend_after_operator_disconnect(
             gateway.rsp_responses_pending = 0;
             gateway.run_control_requests.clear();
             gateway.run_control_inflight = None;
+            gateway.run_control_cancelled = cancelled;
             gateway.run_control_completed = None;
             gateway.scheduler_response_pending = None;
             gateway.gdb_scheduler_run_active = None;
@@ -613,6 +639,10 @@ fn restore_backend_after_operator_disconnect(
     }
 
     let reconnect = with_gateway(process, |gateway| {
+        // An operator disconnect cancels scheduler work owned by that connection.
+        gateway.run_control_requests.clear();
+        gateway.run_control_completed = None;
+        gateway.scheduler_response_pending = None;
         let recovery_is_unambiguous =
             relay_closed_cleanly && gateway.replacement_boundary_is_clean();
         let active = recovery_is_unambiguous
@@ -695,6 +725,11 @@ fn serve_operator_connection(
         with_gateway(process, |gateway| {
             if gateway.operator_writer.is_some() {
                 return Err(String::from("an operator gdb connection is already active"));
+            }
+            if gateway.run_control_cancelled.is_some() {
+                return Err(String::from(
+                    "previous operator run control is awaiting scheduler cancellation",
+                ));
             }
             let active = gateway.active.is_some();
             gateway.operator_epoch = gateway
@@ -815,6 +850,10 @@ fn handle_operator_rsp_unit(
     match unit {
         RspUnit::Ack => {
             if acknowledge_scheduler_response(process, false)? {
+                with_gateway(process, |gateway| {
+                    gateway.run_control_completed = None;
+                    Ok(())
+                })?;
                 return Ok(());
             }
             if *synthetic_stop_ack_pending {
@@ -827,22 +866,33 @@ fn handle_operator_rsp_unit(
             if acknowledge_scheduler_response(process, true)? {
                 return Ok(());
             }
+            if *synthetic_stop_ack_pending {
+                return write_operator_bytes(process, &encode_rsp_packet(b"T05"));
+            }
             write_active_backend(process, b"-").map(|_| ())
         }
-        RspUnit::Interrupt => write_rsp_rejection(process, b"E22", false),
+        RspUnit::Interrupt => enqueue_scheduler_run_control(process, &[0x03], false),
         RspUnit::Packet(packet) => match classify_rsp_packet(&packet) {
             RspDisposition::ForwardToQemu => {
                 // A canonical software-breakpoint request may use hardware only.
                 // QEMU's reply still determines whether that mechanism exists.
                 let packet = canonical_breakpoint_packet(&packet);
+                if !pending_rsp_capacity(pending_state, packet.len()) {
+                    return write_rsp_rejection(process, b"E20", true);
+                }
                 if !admit_operator_request(process, &packet)? {
                     return write_rsp_rejection(process, b"E20", true);
                 }
                 pending_state.push_back(packet);
                 Ok(())
             }
-            RspDisposition::SchedulerRunControl => write_rsp_rejection(process, b"E22", true),
+            RspDisposition::SchedulerRunControl => {
+                enqueue_scheduler_run_control(process, rsp_payload(&packet), true)
+            }
             RspDisposition::RejectReadOnly if branch_guest_write_allowed(process, &packet)? => {
+                if !pending_rsp_capacity(pending_state, packet.len()) {
+                    return write_rsp_rejection(process, b"E20", true);
+                }
                 if !admit_operator_request(process, &packet)? {
                     return write_rsp_rejection(process, b"E20", true);
                 }
@@ -853,6 +903,89 @@ fn handle_operator_rsp_unit(
             RspDisposition::RejectUnsupported => write_rsp_rejection(process, b"E01", true),
         },
     }
+}
+
+fn pending_rsp_capacity(pending: &VecDeque<Vec<u8>>, next_len: usize) -> bool {
+    pending.len() < MAX_PENDING_RSP_REQUESTS
+        && pending.iter().map(Vec::len).sum::<usize>() + next_len <= MAX_PENDING_RSP_BYTES
+}
+
+fn enqueue_scheduler_run_control(
+    process: &SharedGatewayProcess,
+    packet: &[u8],
+    acknowledge_request: bool,
+) -> Result<(), String> {
+    with_gateway(process, |gateway| {
+        let operator = gateway
+            .operator_writer
+            .as_mut()
+            .ok_or_else(|| String::from("operator gdb connection is not active"))?;
+        let duplicate = gateway
+            .run_control_requests
+            .front()
+            .is_some_and(|(_, epoch, queued)| *epoch == gateway.operator_epoch && queued == packet)
+            || gateway
+                .run_control_inflight
+                .as_ref()
+                .is_some_and(|(_, epoch, inflight)| {
+                    *epoch == gateway.operator_epoch && inflight == packet
+                })
+            || gateway
+                .run_control_completed
+                .as_ref()
+                .is_some_and(|(_, completed, _)| completed == packet);
+        if duplicate {
+            if acknowledge_request {
+                operator
+                    .write_all(b"+")
+                    .map_err(|error| format!("acknowledge duplicate GDB run control: {error}"))?;
+            }
+            if let Some(response) = gateway.scheduler_response_pending.as_ref() {
+                operator
+                    .write_all(response)
+                    .map_err(|error| format!("replay scheduler RSP response: {error}"))?;
+            }
+            return Ok(());
+        }
+
+        let interrupt = packet == [0x03];
+        let queued = gateway.run_control_requests.front().is_some();
+        let inflight = gateway.run_control_inflight.is_some();
+        let busy = gateway.scheduler_response_pending.is_some()
+            || gateway.run_control_cancelled.is_some()
+            || gateway.prepared.is_some()
+            || gateway.active.is_none();
+        if busy || ((queued || inflight) && !interrupt) {
+            if acknowledge_request {
+                operator
+                    .write_all(b"+")
+                    .map_err(|error| format!("acknowledge rejected GDB run control: {error}"))?;
+            }
+            return operator
+                .write_all(&encode_rsp_packet(b"E22"))
+                .map_err(|error| format!("reject GDB run control: {error}"));
+        }
+        let request_id = gateway
+            .next_run_control_id
+            .checked_add(1)
+            .ok_or_else(|| String::from("scheduler run-control request ID exhausted"))?;
+        if acknowledge_request {
+            operator
+                .write_all(b"+")
+                .map_err(|error| format!("acknowledge GDB run control: {error}"))?;
+        }
+        // The operator acknowledgement precedes visibility to scheduler polls.
+        gateway.next_run_control_id = request_id;
+        if interrupt && queued {
+            gateway.run_control_requests.clear();
+        }
+        gateway.run_control_requests.push_back((
+            request_id,
+            gateway.operator_epoch,
+            packet.to_vec(),
+        ));
+        Ok(())
+    })
 }
 
 fn canonical_breakpoint_packet(packet: &[u8]) -> Vec<u8> {
@@ -889,6 +1022,13 @@ fn branch_guest_write_allowed(
 fn admit_operator_request(process: &SharedGatewayProcess, packet: &[u8]) -> Result<bool, String> {
     loop {
         let admitted = with_gateway(process, |gateway| {
+            if !gateway.run_control_requests.is_empty()
+                || gateway.run_control_inflight.is_some()
+                || gateway.run_control_cancelled.is_some()
+                || gateway.scheduler_response_pending.is_some()
+            {
+                return Ok(Some(false));
+            }
             if gateway.operator_admission_paused {
                 return Ok(None);
             }

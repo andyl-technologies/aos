@@ -274,10 +274,7 @@ impl RspStreamDecoder {
         self.buffered.extend_from_slice(bytes);
         let mut units = Vec::new();
         let mut consumed = 0;
-        loop {
-            let Some(first) = self.buffered.get(consumed).copied() else {
-                break;
-            };
+        while let Some(first) = self.buffered.get(consumed).copied() {
             match first {
                 b'+' => {
                     consumed += 1;
