@@ -1,6 +1,67 @@
 schema = "crucible.scenario-family.v3"
 topology_shapes = ["ring"]
-fault_densities = [0]
+fault_densities = [1]
+fault_plan_toml = '''
+id = "blake3:6e593374732f4f4b5c53d2677487b0b622755ed99edfe28cecef6de95c732963"
+fault_model = "signal_bindings_v2"
+fault_signal_semantic_version = 2
+
+[[signal]]
+domain = "virtual_time"
+exported = true
+id = "cpu-capacity"
+kind = "constant"
+scale_decimal_exponent = 0
+unit = "dimensionless"
+value_type = "ratio"
+
+[signal.value]
+denominator = 2
+numerator = 1
+
+[[fault_binding]]
+id = "fuzz-cpu-capacity"
+phases = ["run"]
+sampling = "at_boundary"
+search = "branch_parameter"
+signals = ["cpu-capacity"]
+
+[fault_binding.effect]
+kind = "node.cpu_service"
+lifetime = "persistent"
+quantum_instructions = 64
+semantic_version = 1
+service_rule = "strict_cap"
+vcpus = [0]
+
+[fault_binding.effect.capacity]
+denominator = 2
+numerator = 1
+
+[fault_binding.mapping]
+kind = "map_parameter"
+parameter = "capacity_ratio"
+
+[fault_binding.observability]
+record_inactive_opportunities = false
+retain_mapped_values = true
+samples = "changes_and_effects"
+
+[fault_binding.search_policy]
+parameter = "capacity_ratio"
+
+[[fault_binding.search_policy.candidates]]
+denominator = 2
+numerator = 1
+
+[[fault_binding.search_policy.candidates]]
+denominator = 4
+numerator = 1
+
+[fault_binding.selector]
+kind = "node"
+node = "node-0"
+'''
 
 [seed_space]
 kind = "generated"

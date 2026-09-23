@@ -1138,14 +1138,18 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   event-log coverage feedback view for the `CoverageGuidedFuzzing` consumer,
   deterministically samples one finite family parameter point per iteration,
   selects a deterministic in-memory corpus parent and energy, pins the sampled
-  point to a concrete `ScenarioDef`, appends an explicit `Decision::Override`
-  schedule mutation, and returns a coverage-biased candidate order plus first-seen
-  coverage markers. The gate proves identical `(family, meta-seed, feedback,
-  budget)` inputs reproduce the same mutants and choices, that generated
-  candidates reduce as ordinary `(def, schedule)` configurations, and that
-  fault-plan variation comes through the family density axis; durable DagStore
-  corpus admission, pruning, persisted energy state, and throughput measurement
-  were completed under the T-ADV-13 scope.
+  point to a concrete `ScenarioDef`, records a typed campaign `Selection`, and
+  returns a coverage-biased candidate order plus first-seen coverage markers.
+  This sampler supplies reproducible family points; the guarded production
+  campaign adopted by RFC-0020 explores live typed fault choices, which can
+  record causal `Decision::Override`s. The phase 5 CLI search/fuzz workflow gate
+  requires a replay-validated accepted override from a searchable fault-plan
+  fixture. The phase 6 gate proves identical `(family, meta-seed, feedback,
+  budget)` inputs reproduce the same sampled choices, that generated candidates
+  reduce as ordinary `(def, schedule)` configurations, and that fault-plan
+  variation comes through the family density axis. Durable DagStore corpus
+  admission, pruning, persisted energy state, and throughput measurement were
+  completed under the T-ADV-13 scope.
 - [x] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
   admission, seeded pruning/energy, each entry a reproduction artifact in the
   DagStore) and meet the fuzzing throughput target of 25 without weakening
