@@ -257,6 +257,20 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             .inspect_campaign_archive_ref("policy")
             .expect("inspect transferred policy archive");
         assert_eq!(inspection.manifest().policy(), archive_policy);
+        let exact_handoff =
+            destination.inspect_archived_exact_finding(plan.manifest_id(), found.finding);
+        let expected_reason = if matches!(
+            archive_policy,
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        ) {
+            "archived finding has no retained exact checkpoint"
+        } else {
+            "exact finding handoff requires an executable archive"
+        };
+        assert!(matches!(
+            exact_handoff,
+            Err(CampaignRepositoryError::InvalidRequest { reason }) if reason == expected_reason
+        ));
         assert_eq!(inspection.selected(), plan.selected());
         assert_eq!(inspection.omitted(), plan.omitted());
         assert_eq!(

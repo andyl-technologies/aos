@@ -370,6 +370,44 @@ impl CampaignRepository {
         .map_err(CampaignRepositoryError::from)
     }
 
+    /// Authenticates one exact-capable finding in a complete imported archive.
+    ///
+    /// The archive binds the original snapshot, finding evidence, scenario and
+    /// configuration artifacts, and every finding-retained checkpoint closure.
+    /// Only executable policies can publish the private campaign head required
+    /// by the existing debug-session service. The returned finding retains its
+    /// role-tagged checkpoints for that service's ordinary selection path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when the archive is partial or
+    /// corrupt, the finding is absent from its source snapshot, or the finding
+    /// has no exact checkpoint for a midpoint debug session.
+    pub fn inspect_archived_exact_finding(
+        &self,
+        archive: CampaignArchiveManifestId,
+        finding: crate::FindingId,
+    ) -> Result<Finding, CampaignRepositoryError> {
+        let inspection = self.inspect_campaign_archive(archive)?;
+        if !matches!(
+            inspection.manifest().policy(),
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        ) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "exact finding handoff requires an executable archive",
+            });
+        }
+
+        let snapshot = self.read_snapshot(inspection.manifest().source_snapshot().content_id())?;
+        let (finding, _) = self.finding_with_proof(snapshot.snapshot.roots().findings, finding)?;
+        if finding.exact_pins().is_empty() {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "archived finding has no retained exact checkpoint",
+            });
+        }
+        Ok(finding)
+    }
+
     /// Copies every missing selected object and canonical archive metadata.
     ///
     /// Destination presence is never trusted. An existing object is read to
