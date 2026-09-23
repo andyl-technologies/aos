@@ -13,8 +13,9 @@ use aos_sandbox::{BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, Si
 use aos_sandbox_core::format::decode_trust_policy;
 use aos_sandbox_core::model::{KeyUsage, SignaturePurpose};
 use aos_sandbox_core::{
-    BrokerAuthorizationPlan, BrokerPlanTrustAnchor, DecodeLimits, MediaType, ObjectDigest,
-    PortableMediaType, RevocationScopeId, descriptor_for_bytes, sign_statement,
+    BrokerAudience, BrokerAuthorizationPlan, BrokerPlanTrustAnchor, DecodeLimits, MediaType,
+    ObjectDigest, PortableMediaType, ProtocolId, RevocationScopeId, descriptor_for_bytes,
+    sign_statement,
 };
 use ed25519_dalek::SigningKey;
 use rustix::fs::{CWD, Mode, OFlags, openat};
@@ -25,12 +26,16 @@ const CREDENTIAL_NAME: &str = "broker-plan-signing-key";
 const POLICY_CREDENTIAL_NAME: &str = "broker-plan-policy.cbor";
 const PUBLIC_KEY_CREDENTIAL_NAME: &str = "broker-plan-public-key";
 const REVOCATION_SCOPE_CREDENTIAL_NAME: &str = "broker-revocation-scope";
+const MOUNT_POLICY_CREDENTIAL_NAME: &str = "mount-broker-plan-policy.cbor";
+const MOUNT_PUBLIC_KEY_CREDENTIAL_NAME: &str = "mount-broker-plan-public-key";
+const MOUNT_REVOCATION_SCOPE_CREDENTIAL_NAME: &str = "mount-broker-revocation-scope";
 const SEED_BYTES: usize = 32;
 const MAXIMUM_POLICY_BYTES: usize = 64 * 1024;
 
 pub(crate) struct ControllerBrokerPlanSignerV1 {
     seed: Zeroizing<[u8; SEED_BYTES]>,
     authority: SigningAuthority,
+    mount_authority: SigningAuthority,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +59,28 @@ impl ControllerBrokerPlanSignerV1 {
     /// Rejects missing, unsafe, or inconsistent policy, key, or scope bytes.
     pub(crate) fn trust_anchor_from_process_credentials()
     -> Result<BrokerPlanTrustAnchor, ControllerBrokerPlanSignerError> {
+        Self::trust_anchor_from_credentials(
+            POLICY_CREDENTIAL_NAME,
+            PUBLIC_KEY_CREDENTIAL_NAME,
+            REVOCATION_SCOPE_CREDENTIAL_NAME,
+        )
+    }
+
+    /// Loads Mount's independent public policy, key, and revocation scope.
+    pub(crate) fn mount_trust_anchor_from_process_credentials()
+    -> Result<BrokerPlanTrustAnchor, ControllerBrokerPlanSignerError> {
+        Self::trust_anchor_from_credentials(
+            MOUNT_POLICY_CREDENTIAL_NAME,
+            MOUNT_PUBLIC_KEY_CREDENTIAL_NAME,
+            MOUNT_REVOCATION_SCOPE_CREDENTIAL_NAME,
+        )
+    }
+
+    fn trust_anchor_from_credentials(
+        policy_name: &str,
+        public_key_name: &str,
+        revocation_scope_name: &str,
+    ) -> Result<BrokerPlanTrustAnchor, ControllerBrokerPlanSignerError> {
         let directory = std::env::var_os("CREDENTIALS_DIRECTORY")
             .ok_or(ControllerBrokerPlanSignerError::Credential)?;
         if !Path::new(&directory).is_absolute() {
@@ -61,15 +88,14 @@ impl ControllerBrokerPlanSignerV1 {
         }
         let directory = Path::new(&directory);
         let public_key: [u8; SEED_BYTES] =
-            read_public_credential(directory, PUBLIC_KEY_CREDENTIAL_NAME, SEED_BYTES)?
+            read_public_credential(directory, public_key_name, SEED_BYTES)?
                 .try_into()
                 .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
         let revocation_scope: [u8; 16] =
-            read_public_credential(directory, REVOCATION_SCOPE_CREDENTIAL_NAME, 16)?
+            read_public_credential(directory, revocation_scope_name, 16)?
                 .try_into()
                 .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
-        let policy_bytes =
-            read_public_credential(directory, POLICY_CREDENTIAL_NAME, MAXIMUM_POLICY_BYTES)?;
+        let policy_bytes = read_public_credential(directory, policy_name, MAXIMUM_POLICY_BYTES)?;
         let policy = decode_trust_policy(&policy_bytes, DecodeLimits::default())
             .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
         if policy.purpose() != SignaturePurpose::BrokerAuthorization {
@@ -146,48 +172,26 @@ impl ControllerBrokerPlanSignerV1 {
             return Err(ControllerBrokerPlanSignerError::Credential);
         }
 
-        let public_key = read_public_credential(directory, PUBLIC_KEY_CREDENTIAL_NAME, SEED_BYTES)?;
-        let public_key: [u8; SEED_BYTES] = public_key
-            .try_into()
-            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
         let signing_key = SigningKey::from_bytes(&seed);
-        if signing_key.verifying_key().to_bytes() != public_key {
-            return Err(ControllerBrokerPlanSignerError::Credential);
-        }
+        let expected_public_key = signing_key.verifying_key().to_bytes();
+        let authority = signing_authority_from_credentials(
+            directory,
+            POLICY_CREDENTIAL_NAME,
+            PUBLIC_KEY_CREDENTIAL_NAME,
+            expected_public_key,
+        )?;
+        let mount_authority = signing_authority_from_credentials(
+            directory,
+            MOUNT_POLICY_CREDENTIAL_NAME,
+            MOUNT_PUBLIC_KEY_CREDENTIAL_NAME,
+            expected_public_key,
+        )?;
 
-        let policy_bytes =
-            read_public_credential(directory, POLICY_CREDENTIAL_NAME, MAXIMUM_POLICY_BYTES)?;
-        let policy = decode_trust_policy(&policy_bytes, DecodeLimits::default())
-            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
-        if policy.purpose() != SignaturePurpose::BrokerAuthorization {
-            return Err(ControllerBrokerPlanSignerError::Credential);
-        }
-        let fingerprint = ObjectDigest::from_bytes(Sha256::digest(public_key).into());
-        let mut matches = policy.allowed_keys().iter().filter(|key| {
-            key.usage() == KeyUsage::BrokerAuthorization && key.public_key_sha256() == fingerprint
-        });
-        let signer = matches
-            .next()
-            .cloned()
-            .ok_or(ControllerBrokerPlanSignerError::Credential)?;
-        if matches.next().is_some() {
-            return Err(ControllerBrokerPlanSignerError::Credential);
-        }
-        let media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
-            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
-        let policy_descriptor = descriptor_for_bytes(media_type, &policy_bytes);
-        let authority = SigningAuthority::new(
-            policy_bytes,
-            policy_descriptor,
-            policy.trust_scope(),
-            signer,
-            public_key,
-            SignaturePurpose::BrokerAuthorization,
-            DecodeLimits::default(),
-        )
-        .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
-
-        Ok(Some(Self { seed, authority }))
+        Ok(Some(Self {
+            seed,
+            authority,
+            mount_authority,
+        }))
     }
 
     /// Signs one immutable broker plan and verifies its completed artifact.
@@ -196,7 +200,28 @@ impl ControllerBrokerPlanSignerV1 {
         plan: BrokerAuthorizationPlan,
         now_seconds: i64,
     ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError> {
-        let preparation = BrokerPlanPreparation::new(plan, self.authority.clone())
+        self.sign_with_authority(plan, now_seconds, &self.authority)
+    }
+
+    /// Signs only Mount-scoped plans under Mount's independent policy.
+    pub(crate) fn sign_mount_plan(
+        &self,
+        plan: BrokerAuthorizationPlan,
+        now_seconds: i64,
+    ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError> {
+        if plan.audience() != BrokerAudience::Mount || plan.protocol() != ProtocolId::MountBroker {
+            return Err(ControllerBrokerPlanSignerError::Completion);
+        }
+        self.sign_with_authority(plan, now_seconds, &self.mount_authority)
+    }
+
+    fn sign_with_authority(
+        &self,
+        plan: BrokerAuthorizationPlan,
+        now_seconds: i64,
+        authority: &SigningAuthority,
+    ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError> {
+        let preparation = BrokerPlanPreparation::new(plan, authority.clone())
             .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
         let signing_key = SigningKey::from_bytes(&self.seed);
         let signature = sign_statement(
@@ -208,6 +233,52 @@ impl ControllerBrokerPlanSignerV1 {
             .complete(ReturnedSignature::Bytes(signature.signature()), now_seconds)
             .map_err(|_| ControllerBrokerPlanSignerError::Completion)
     }
+}
+
+fn signing_authority_from_credentials(
+    directory: &Path,
+    policy_name: &str,
+    public_key_name: &str,
+    expected_public_key: [u8; SEED_BYTES],
+) -> Result<SigningAuthority, ControllerBrokerPlanSignerError> {
+    let public_key: [u8; SEED_BYTES] =
+        read_public_credential(directory, public_key_name, SEED_BYTES)?
+            .try_into()
+            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
+    if public_key != expected_public_key {
+        return Err(ControllerBrokerPlanSignerError::Credential);
+    }
+
+    let policy_bytes = read_public_credential(directory, policy_name, MAXIMUM_POLICY_BYTES)?;
+    let policy = decode_trust_policy(&policy_bytes, DecodeLimits::default())
+        .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
+    if policy.purpose() != SignaturePurpose::BrokerAuthorization {
+        return Err(ControllerBrokerPlanSignerError::Credential);
+    }
+    let fingerprint = ObjectDigest::from_bytes(Sha256::digest(public_key).into());
+    let mut matches = policy.allowed_keys().iter().filter(|key| {
+        key.usage() == KeyUsage::BrokerAuthorization && key.public_key_sha256() == fingerprint
+    });
+    let signer = matches
+        .next()
+        .cloned()
+        .ok_or(ControllerBrokerPlanSignerError::Credential)?;
+    if matches.next().is_some() {
+        return Err(ControllerBrokerPlanSignerError::Credential);
+    }
+    let media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+        .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
+    let policy_descriptor = descriptor_for_bytes(media_type, &policy_bytes);
+    SigningAuthority::new(
+        policy_bytes,
+        policy_descriptor,
+        policy.trust_scope(),
+        signer,
+        public_key,
+        SignaturePurpose::BrokerAuthorization,
+        DecodeLimits::default(),
+    )
+    .map_err(|_| ControllerBrokerPlanSignerError::Credential)
 }
 
 fn read_public_credential(

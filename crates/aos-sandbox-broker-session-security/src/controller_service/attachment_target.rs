@@ -14,6 +14,7 @@ use aos_sandbox::attachment_effect_owner::{
 use aos_sandbox::controller_service::public_projection::{
     PublicProjectionResourceV1, PublicProjectionStoreV1,
 };
+use aos_sandbox::mount_preparation::MountServiceIdentity;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_authority::{
     RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
@@ -23,7 +24,7 @@ use aos_sandbox::runtime_scope::{
     RuntimeScopeError, RuntimeScopeHolder,
 };
 use aos_sandbox_core::{NodeId, OperationId, ProjectId, SandboxId};
-use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_systemd::SystemdClient;
 use rustix::fs::{Mode, OFlags, open};
@@ -39,6 +40,7 @@ use crate::controller_plan_signer::{
 
 const HOST_SOCKET: &str = "/run/aos/sandbox-host/control.sock";
 const HOST_UNIT: &str = "aos-sandbox-hostd.service";
+const MOUNT_UNIT: &str = "aos-sandbox-mountd.service";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SERVICE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -88,12 +90,12 @@ pub(super) fn admitted_consumer_sandbox(
     Ok(SandboxId::from_bytes(sandbox))
 }
 
-/// Reports failure to pin the exact systemd Host service's kernel cgroup.
+/// Reports failure to pin a named root service's exact kernel cgroup.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum ControllerHostIdentityErrorV1 {
-    #[error("systemd Host service observation timed out")]
+pub(super) enum ControllerServiceIdentityErrorV1 {
+    #[error("systemd service observation timed out")]
     Timeout,
-    #[error("systemd Host service identity changed or is not root-owned")]
+    #[error("systemd service identity changed or is not root-owned")]
     Changed,
     #[error(transparent)]
     Systemd(#[from] aos_systemd::Error),
@@ -129,10 +131,30 @@ pub(super) enum ControllerAttachmentProvisionErrorV1 {
 /// Rejects unavailable or changing systemd service state, an invalid cgroup
 /// locator, a non-root main process, failed exact membership, or a deadline.
 pub(super) async fn observe_host_service_identity()
--> Result<HostServiceIdentity, ControllerHostIdentityErrorV1> {
+-> Result<HostServiceIdentity, ControllerServiceIdentityErrorV1> {
+    Ok(HostServiceIdentity {
+        uid: 0,
+        gid: 0,
+        cgroup: observe_root_service_cgroup(HOST_UNIT).await?,
+    })
+}
+
+/// Pins Mount's exact PID 1-selected service cgroup independently of Host.
+pub(super) async fn observe_mount_service_identity()
+-> Result<MountServiceIdentity, ControllerServiceIdentityErrorV1> {
+    Ok(MountServiceIdentity {
+        uid: 0,
+        gid: 0,
+        cgroup: observe_root_service_cgroup(MOUNT_UNIT).await?,
+    })
+}
+
+async fn observe_root_service_cgroup(
+    unit: &str,
+) -> Result<RetainedCgroupAnchor, ControllerServiceIdentityErrorV1> {
     tokio::time::timeout(SERVICE_OBSERVATION_TIMEOUT, async {
         let systemd = SystemdClient::connect().await?;
-        let first = systemd.observe_service_control_group(HOST_UNIT).await?;
+        let first = systemd.observe_service_control_group(unit).await?;
         let root = CgroupV2Root::from_owned(open(
             CGROUP_ROOT,
             OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -141,13 +163,13 @@ pub(super) async fn observe_host_service_identity()
         let relative = first
             .control_group
             .strip_prefix('/')
-            .ok_or(ControllerHostIdentityErrorV1::Changed)?;
+            .ok_or(ControllerServiceIdentityErrorV1::Changed)?;
         let cgroup = root.resolve(Path::new(relative))?;
         let process = PidFd::open(first.main_pid)?;
         let info = cgroup.verify_exact_membership(&process)?;
         let credentials = info
             .credentials()
-            .ok_or(ControllerHostIdentityErrorV1::Changed)?;
+            .ok_or(ControllerServiceIdentityErrorV1::Changed)?;
         if info.pid() != first.main_pid.get()
             || info.thread_group_id() != first.main_pid.get()
             || credentials.real_user_id() != 0
@@ -155,21 +177,17 @@ pub(super) async fn observe_host_service_identity()
             || credentials.real_group_id() != 0
             || credentials.effective_group_id() != 0
         {
-            return Err(ControllerHostIdentityErrorV1::Changed);
+            return Err(ControllerServiceIdentityErrorV1::Changed);
         }
-        let second = systemd.observe_service_control_group(HOST_UNIT).await?;
+        let second = systemd.observe_service_control_group(unit).await?;
         if first != second || !process.is_alive()? {
-            return Err(ControllerHostIdentityErrorV1::Changed);
+            return Err(ControllerServiceIdentityErrorV1::Changed);
         }
         cgroup.verify_exact_membership(&process)?;
-        Ok(HostServiceIdentity {
-            uid: 0,
-            gid: 0,
-            cgroup,
-        })
+        Ok(cgroup)
     })
     .await
-    .map_err(|_| ControllerHostIdentityErrorV1::Timeout)?
+    .map_err(|_| ControllerServiceIdentityErrorV1::Timeout)?
 }
 
 /// Reports why a production attachment target could not be freshly established.

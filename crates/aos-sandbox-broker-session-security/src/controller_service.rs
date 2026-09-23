@@ -318,11 +318,20 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
             None
         }
     };
+    let attachment_mount =
+        match runtime.block_on(attachment_target::observe_mount_service_identity()) {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                eprintln!("aos-sandboxd: Mount attachment identity unavailable: {error}");
+                None
+            }
+        };
     let controller = open_controller(
         &configuration,
         node_id,
         Arc::clone(&sessions),
         attachment_host,
+        attachment_mount,
     )?;
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
@@ -1451,6 +1460,7 @@ fn open_controller(
     node_id: [u8; 16],
     sessions: SharedControllerBrokerSessions,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
+    attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     let (journal, _) = Journal::open_protected_at_for_uid(
         &configuration.state_directory,
@@ -1465,6 +1475,7 @@ fn open_controller(
         sessions,
         configuration.uid,
         attachment_host,
+        attachment_mount,
     )
 }
 
@@ -1474,6 +1485,7 @@ fn controller_from_journal(
     sessions: SharedControllerBrokerSessions,
     controller_uid: u32,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
+    attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -1489,6 +1501,7 @@ fn controller_from_journal(
                 controller_uid,
                 NodeId::from_bytes(node_id),
                 attachment_host,
+                attachment_mount,
             )?,
         ),
     ))
@@ -1658,6 +1671,7 @@ struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
+    attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_physical: Option<DormantCacheOwnerV1>,
@@ -1696,6 +1710,7 @@ impl ProductionEffectExecutor {
         controller_uid: u32,
         node: NodeId,
         attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
+        attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     ) -> Result<Self, ControllerRuntimeError> {
         let broker_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
             .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
@@ -1708,6 +1723,7 @@ impl ProductionEffectExecutor {
             sessions,
             broker_plan_signer,
             attachment_host,
+            attachment_mount,
             source_domains,
             cache_inventory: None,
             cache_physical: None,
@@ -3752,6 +3768,14 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             let host = self.attachment_host.as_ref().ok_or_else(|| {
                 EffectFailure::Retryable("exact Host attachment identity is unavailable".to_owned())
             })?;
+            let _mount = self.attachment_mount.as_ref().ok_or_else(|| {
+                EffectFailure::Retryable(
+                    "exact Mount attachment identity is unavailable".to_owned(),
+                )
+            })?;
+            let _mount_anchor =
+                ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials()
+                    .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
             let inputs = attachment_target::ControllerAttachmentTargetInputsV1::from_protected_configuration(
                 host,
                 self.node,

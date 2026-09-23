@@ -63,6 +63,14 @@
     ++ lib.optional (brokers.hostBroker.credentials.brokerRevocationScope != null)
     "broker-revocation-scope:/run/credentials/@system/${brokers.hostBroker.credentials.brokerRevocationScope}"
   );
+  mountPlanCredentials = lib.optionals (cfg.credentials.brokerPlanSigningKey != null) (
+    lib.optional (brokers.mountBroker.credentials.brokerPlanPolicy != null)
+    "mount-broker-plan-policy.cbor:/run/credentials/@system/${brokers.mountBroker.credentials.brokerPlanPolicy}"
+    ++ lib.optional (brokers.mountBroker.credentials.brokerPlanPublicKey != null)
+    "mount-broker-plan-public-key:/run/credentials/@system/${brokers.mountBroker.credentials.brokerPlanPublicKey}"
+    ++ lib.optional (brokers.mountBroker.credentials.brokerRevocationScope != null)
+    "mount-broker-revocation-scope:/run/credentials/@system/${brokers.mountBroker.credentials.brokerRevocationScope}"
+  );
   attachTrustCredential = brokers.hostBroker.credentials.opensshAttachTrust or null;
   attachGrantPublicKeyCredential = brokers.hostBroker.credentials.opensshAttachGrantPublicKey or null;
   opensshAttachCredentials = lib.optionals (cfg.credentials.opensshAttachGrantSigningKey != null) (
@@ -179,6 +187,18 @@ in {
           message = "aos.sandbox.controllerService OpenSSH attach grants require the dedicated signing key and both Host attach trust credentials together";
         }
         {
+          assertion =
+            cfg.credentials.brokerPlanSigningKey
+            == null
+            || (
+              brokers.mountBroker.credentials.brokerPlanPolicy
+              != null
+              && brokers.mountBroker.credentials.brokerPlanPublicKey != null
+              && brokers.mountBroker.credentials.brokerRevocationScope != null
+            );
+          message = "aos.sandbox.controllerService broker-plan signing requires the Mount broker's independent public plan policy, key, and revocation scope";
+        }
+        {
           assertion = brokers.storageBroker.enable;
           message = "aos.sandbox.controllerService requires aos.sandbox.storageBroker";
         }
@@ -244,7 +264,15 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        LoadCredential = nodeCredentials ++ cacheReplayCredentials ++ brokerPlanCredentials ++ opensshAttachCredentials ++ ownershipCredentials ++ brokerSessionConfiguration.loadCredentials ++ publicCredentials;
+        LoadCredential =
+          nodeCredentials
+          ++ cacheReplayCredentials
+          ++ brokerPlanCredentials
+          ++ mountPlanCredentials
+          ++ opensshAttachCredentials
+          ++ ownershipCredentials
+          ++ brokerSessionConfiguration.loadCredentials
+          ++ publicCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";
