@@ -552,6 +552,8 @@ fn capture_qemu_finding_replay_material(
                 terminal,
                 evidence.causal_entries(),
                 first,
+                evidence.timeout_record(),
+                evidence.policy_timeout(),
                 limits,
             )?;
             match side {
@@ -574,6 +576,8 @@ fn capture_qemu_finding_replay_material(
                     crate::FindingProductionReplayTerminalOutcome::Passed,
                     log,
                     snapshot,
+                    None,
+                    None,
                     limits,
                 )? {
                     crate::FindingProductionReplayCaptureOutcome::Complete(side) => {
@@ -605,27 +609,142 @@ fn capture_qemu_finding_replay_side(
     outcome: crate::FindingProductionReplayTerminalOutcome,
     complete_log: &[crucible::SchedulerEventLogEntry],
     snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    timeout_record: Option<&crucible::FailureTimeoutRecord>,
+    policy_timeout: Option<&(
+        crucible_campaign::StopCondition,
+        crucible_campaign::PolicyTimeoutKind,
+        crucible_campaign::BoundedStopProof,
+    )>,
     limits: crate::FindingProductionReplayCaptureLimits,
 ) -> Result<
     crate::FindingProductionReplayCaptureOutcome<crate::FindingProductionReplayExecutionSide>,
     crate::FindingProductionReplayCaptureError,
 > {
     let suffix = snapshot.event_log_entries();
-    let prefix_len = suffix.first().map_or(complete_log.len(), |entry| {
-        usize::try_from(entry.sequence()).unwrap_or(usize::MAX)
-    });
-    if prefix_len > complete_log.len()
-        || complete_log.len().saturating_sub(prefix_len) != suffix.len()
-        || complete_log[prefix_len..] != *suffix
-    {
+    let prefix_len = suffix.first().map_or_else(
+        || {
+            complete_log.len().saturating_sub(usize::from(
+                outcome == crate::FindingProductionReplayTerminalOutcome::Timeout,
+            ))
+        },
+        |entry| usize::try_from(entry.sequence()).unwrap_or(usize::MAX),
+    );
+    let Some(native_end) = prefix_len.checked_add(suffix.len()) else {
+        return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog);
+    };
+    if complete_log.get(prefix_len..native_end) != Some(suffix) {
         return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog);
     }
-    crate::FindingProductionReplayExecutionSide::from_snapshot(
+    let trailing = complete_log
+        .get(native_end..)
+        .ok_or(crate::FindingProductionReplayCaptureError::InvalidEventLog)?;
+    let terminal_entry = match trailing {
+        [] => None,
+        [marker] if outcome == crate::FindingProductionReplayTerminalOutcome::Timeout => {
+            Some(marker)
+        }
+        _ => return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog),
+    };
+    if outcome == crate::FindingProductionReplayTerminalOutcome::Timeout {
+        authenticate_timeout_capture(
+            complete_log,
+            snapshot,
+            timeout_record,
+            policy_timeout,
+            terminal_entry,
+        )?;
+    } else if timeout_record.is_some() || policy_timeout.is_some() {
+        return Err(crate::FindingProductionReplayCaptureError::InvalidEventLog);
+    }
+    crate::FindingProductionReplayExecutionSide::from_snapshot_with_terminal_entry(
         outcome,
         &complete_log[..prefix_len],
         snapshot,
+        terminal_entry,
         limits,
     )
+}
+
+fn authenticate_timeout_capture(
+    complete_log: &[crucible::SchedulerEventLogEntry],
+    snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    timeout_record: Option<&crucible::FailureTimeoutRecord>,
+    policy_timeout: Option<&(
+        crucible_campaign::StopCondition,
+        crucible_campaign::PolicyTimeoutKind,
+        crucible_campaign::BoundedStopProof,
+    )>,
+    terminal_entry: Option<&crucible::SchedulerEventLogEntry>,
+) -> Result<(), crate::FindingProductionReplayCaptureError> {
+    use crate::FindingProductionReplayCaptureError::InvalidEventLog;
+
+    let record = timeout_record.ok_or(InvalidEventLog)?;
+    let budget_kind = match record.budget_kind {
+        crucible::FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
+        crucible::FailureTimeoutBudgetKind::ExecutionQuanta => "execution-quanta",
+    };
+    let marker = complete_log.last().ok_or(InvalidEventLog)?;
+    if record.event_kind != "execution_budget_exhausted"
+        || marker.event_payload().kind() != "execution_budget_exhausted"
+        || marker.event_payload().string("budget_kind") != Some(budget_kind)
+        || marker.at() != record.at_virtual_time
+        || marker.at() != snapshot.frontier()
+        || record.observed_quanta != snapshot.quanta()
+        || marker.time().icount.node != record.node
+        || record
+            .at_icount
+            .is_some_and(|icount| marker.time().icount.icount != icount)
+    {
+        return Err(InvalidEventLog);
+    }
+    if let Some(terminal_entry) = terminal_entry {
+        // Only the deterministic host budget marker may follow native QEMU evidence.
+        let expected = crucible::SchedulerEventLogEntry::execution_budget_exhausted(
+            terminal_entry.sequence(),
+            snapshot.frontier(),
+            budget_kind,
+        );
+        if *terminal_entry != expected {
+            return Err(InvalidEventLog);
+        }
+    }
+    if let Some((stop, kind, proof)) = policy_timeout {
+        let expected_kind = match kind {
+            crucible_campaign::PolicyTimeoutKind::VirtualTime => {
+                crucible::FailureTimeoutBudgetKind::VirtualTime
+            }
+            crucible_campaign::PolicyTimeoutKind::ExecutionQuanta => {
+                crucible::FailureTimeoutBudgetKind::ExecutionQuanta
+            }
+        };
+        let expected_limit = stop
+            .bounded_deadlines()
+            .and_then(|(virtual_time, quanta)| match kind {
+                crucible_campaign::PolicyTimeoutKind::VirtualTime => virtual_time,
+                crucible_campaign::PolicyTimeoutKind::ExecutionQuanta => quanta,
+            })
+            .ok_or(InvalidEventLog)?;
+        if record.budget_kind != expected_kind
+            || record.configured_limit != Some(expected_limit)
+            || proof.frontier_nanoseconds() != snapshot.frontier().ticks
+            || proof.completed_quanta() != snapshot.quanta()
+            || match kind {
+                crucible_campaign::PolicyTimeoutKind::VirtualTime => {
+                    proof.frontier_nanoseconds() < expected_limit
+                }
+                crucible_campaign::PolicyTimeoutKind::ExecutionQuanta => {
+                    proof.completed_quanta() < expected_limit
+                }
+            }
+            || (*kind == crucible_campaign::PolicyTimeoutKind::ExecutionQuanta
+                && stop.bounded_deadlines().is_some_and(|(virtual_time, _)| {
+                    virtual_time.is_some_and(|limit| proof.frontier_nanoseconds() >= limit)
+                }))
+        {
+            return Err(InvalidEventLog);
+        }
+    }
+    Ok(())
 }
 
 fn probe_exhausted_physical_work<F>(

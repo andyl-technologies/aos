@@ -273,6 +273,7 @@ pub(crate) struct QemuFindingCandidateBoundaryEvidence {
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
     final_events: Vec<SchedulerEventLogEntry>,
     triage: QemuFindingCandidateTriageInputs,
+    policy_timeout: Option<(StopCondition, PolicyTimeoutKind, BoundedStopProof)>,
     paired_reproduced_coverage: Option<CoverageProjection>,
 }
 
@@ -378,6 +379,23 @@ fn divergence_entry_summary(entry: Option<&SchedulerEventLogEntry>) -> String {
 impl QemuFindingCandidateBoundaryEvidence {
     pub(crate) fn causal_entries(&self) -> &[SchedulerEventLogEntry] {
         &self.triage.causal_entries
+    }
+
+    pub(crate) fn timeout_record(&self) -> Option<&FailureTimeoutRecord> {
+        self.triage
+            .failures
+            .iter()
+            .find_map(|failure| match failure {
+                FailureClusterReportFailure::Timeout(record) => Some(record),
+                FailureClusterReportFailure::Property(_)
+                | FailureClusterReportFailure::Divergence(_) => None,
+            })
+    }
+
+    pub(crate) fn policy_timeout(
+        &self,
+    ) -> Option<&(StopCondition, PolicyTimeoutKind, BoundedStopProof)> {
+        self.policy_timeout.as_ref()
     }
 
     pub(crate) fn paired_divergence_logs(
@@ -2656,6 +2674,10 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
     final_events: Vec<SchedulerEventLogEntry>,
     supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
 ) -> Result<QemuFindingCandidateBoundaryEvidence, QemuFreshModeledDriverError> {
+    let policy_timeout = match &pending.stop {
+        ModeledStop::PolicyTimeout { stop, kind, proof } => Some((stop.clone(), *kind, *proof)),
+        _ => None,
+    };
     append_event_entries(
         &mut pending.event_log,
         &mut pending.event_log_bytes,
@@ -2693,6 +2715,7 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
             recorded_event_frames: Vec::new(),
             paired_divergence_logs: None,
         },
+        policy_timeout,
         paired_reproduced_coverage: None,
     })
 }

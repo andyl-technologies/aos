@@ -46,6 +46,147 @@ use crate::{
     CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExecutionCancellation,
     ExecutionCheckpointRequest, PreparedSemanticAttemptResult,
 };
+
+fn replay_capture_limits() -> crate::FindingProductionReplayCaptureLimits {
+    crate::FindingProductionReplayCaptureLimits {
+        max_events_per_side: 16,
+        max_event_bytes_per_side: 16 * 1024,
+        max_lifecycle_objects: 0,
+        max_lifecycle_bytes: 0,
+        max_guest_asset_bytes: 0,
+        max_encoded_bytes: 16 * 1024,
+    }
+}
+
+#[test]
+fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
+    use crucible::{FailureTimeoutBudgetKind, FailureTimeoutRecord};
+    use crucible_campaign::{BoundedStopProof, PolicyTimeoutKind};
+
+    let frontier = VirtualTime { ticks: 2_000_000 };
+    let native =
+        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta");
+    let marker = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "virtual-time");
+    let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
+        1,
+        frontier,
+        vec![native.clone()],
+    );
+    let record = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::VirtualTime,
+        Some(frontier.ticks),
+        1,
+        frontier,
+        None,
+        None,
+        ContentHash::default(),
+    );
+    let policy = (
+        StopCondition::Bounded {
+            primary: Box::new(StopCondition::NextChoice),
+            virtual_time_nanoseconds: Some(frontier.ticks),
+            execution_quanta: None,
+        },
+        PolicyTimeoutKind::VirtualTime,
+        BoundedStopProof::new(frontier.ticks, 1),
+    );
+    let timeout = crate::FindingProductionReplayTerminalOutcome::Timeout;
+    let complete_log = [native.clone(), marker.clone()];
+    let mut forged_material = serde_json::to_value(&marker).expect("encode marker fixture");
+    forged_material["content_hash"] =
+        serde_json::to_value(ContentHash::default()).expect("encode mismatched hash");
+    let forged_hash: SchedulerEventLogEntry =
+        serde_json::from_value(forged_material).expect("decode forged marker fixture");
+    assert!(!forged_hash.has_valid_content_hash());
+
+    let captured = capture_qemu_finding_replay_side(
+        timeout,
+        &complete_log,
+        &snapshot,
+        Some(&record),
+        Some(&policy),
+        replay_capture_limits(),
+    )
+    .expect("authenticated timeout capture");
+    assert!(matches!(
+        captured,
+        crate::FindingProductionReplayCaptureOutcome::Complete(side)
+            if side.event_log() == complete_log
+    ));
+
+    for forged in [
+        SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "execution-quanta"),
+        SchedulerEventLogEntry::execution_budget_exhausted(
+            1,
+            VirtualTime { ticks: 1 },
+            "virtual-time",
+        ),
+        SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "virtual-time"),
+        forged_hash,
+    ] {
+        assert!(matches!(
+            capture_qemu_finding_replay_side(
+                timeout,
+                &[native.clone(), forged],
+                &snapshot,
+                Some(&record),
+                Some(&policy),
+                replay_capture_limits(),
+            ),
+            Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
+        ));
+    }
+    assert!(matches!(
+        capture_qemu_finding_replay_side(
+            timeout,
+            std::slice::from_ref(&native),
+            &snapshot,
+            Some(&record),
+            Some(&policy),
+            replay_capture_limits(),
+        ),
+        Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
+    ));
+}
+
+#[test]
+fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
+    let frontier = VirtualTime { ticks: 7 };
+    let native =
+        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta");
+    let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
+        1,
+        frontier,
+        vec![native.clone()],
+    );
+    let passed = crate::FindingProductionReplayTerminalOutcome::Passed;
+
+    assert!(matches!(
+        capture_qemu_finding_replay_side(
+            passed,
+            std::slice::from_ref(&native),
+            &snapshot,
+            None,
+            None,
+            replay_capture_limits(),
+        ),
+        Ok(crate::FindingProductionReplayCaptureOutcome::Complete(side))
+            if side.event_log() == [native]
+    ));
+    let changed_native =
+        SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "virtual-time");
+    assert!(matches!(
+        capture_qemu_finding_replay_side(
+            passed,
+            std::slice::from_ref(&changed_native),
+            &snapshot,
+            None,
+            None,
+            replay_capture_limits(),
+        ),
+        Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
+    ));
+}
 #[cfg(target_os = "linux")]
 use crate::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,

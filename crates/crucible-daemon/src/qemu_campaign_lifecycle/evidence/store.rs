@@ -22,6 +22,26 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
 }
 
 impl QemuAttemptExecutionEvidenceSnapshot {
+    #[cfg(test)]
+    pub(crate) fn for_replay_capture_test(
+        quanta: u64,
+        frontier: crucible::VirtualTime,
+        event_log_entries: Vec<SchedulerEventLogEntry>,
+    ) -> Self {
+        let event_log_bytes = event_log_entries
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+        Self {
+            quanta,
+            frontier,
+            event_log_entries,
+            event_log_bytes,
+            terminal_fingerprints: Some(Vec::new()),
+            ..Self::default()
+        }
+    }
+
     /// Returns the absolute scheduler-quantum coordinate at the latest retained boundary.
     #[must_use]
     pub const fn quanta(&self) -> u64 {
