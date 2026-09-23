@@ -1116,6 +1116,10 @@ mod fault_event_tests;
 mod coverage_tests;
 
 #[cfg(test)]
+#[path = "mapped_quantum/restore_tests.rs"]
+mod restore_tests;
+
+#[cfg(test)]
 #[path = "mapped_quantum/fingerprint_tests.rs"]
 mod fingerprint_tests;
 
