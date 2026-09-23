@@ -160,11 +160,11 @@ fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
     let observed_state_block = trigger_source
         .split("pub struct ObservedState")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("pub fn lint_host_assertion_harness_source")
-                .next()
-        })
         .expect("observed-state implementation block should be present");
+    let host_oracle_source = include_str!("../src/trigger/conditions/host_oracle.rs");
+    let (host_oracle_block, _) = host_oracle_source
+        .split_once("pub fn lint_host_assertion_harness_source")
+        .expect("host-oracle lint boundary should be present");
 
     for forbidden in [
         "HashMap",
@@ -174,10 +174,12 @@ fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
         "std::time",
         "thread::",
     ] {
-        assert!(
-            !observed_state_block.contains(forbidden),
-            "observed-state materialization must not use `{forbidden}`"
-        );
+        for block in [observed_state_block, host_oracle_block] {
+            assert!(
+                !block.contains(forbidden),
+                "observed-state materialization and host oracles must not use `{forbidden}`"
+            );
+        }
     }
 }
 
