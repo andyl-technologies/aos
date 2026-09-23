@@ -306,6 +306,8 @@ pub(crate) struct CliScenarioFamilyToml {
     pub(crate) seed_space: CliSeedSpaceToml,
     pub(crate) topology_size: CliTopologySizeToml,
     pub(crate) topology_shapes: Vec<String>,
+    pub(crate) fault_densities: Vec<u32>,
+    pub(crate) fault_plan_toml: Option<String>,
     pub(crate) node_template: CliNodeTemplateToml,
 }
 
@@ -1969,7 +1971,7 @@ pub(crate) fn scenario_family_from_toml(
     label: &str,
     authored: CliScenarioFamilyToml,
 ) -> Result<crucible::ScenarioFamily, CliError> {
-    const SCHEMA: &str = "crucible.scenario-family.v2";
+    const SCHEMA: &str = "crucible.scenario-family.v3";
 
     if authored.schema != SCHEMA {
         return Err(family_file_error(
@@ -1993,10 +1995,20 @@ pub(crate) fn scenario_family_from_toml(
         .map(|shape| topology_shape_from_toml(label, shape))
         .collect::<Result<Vec<_>, _>>()?;
     let space = crucible::FamilySpace::new(seeds, topology_size, topology_shapes)
+        .and_then(|space| space.with_fault_densities(authored.fault_densities))
         .map_err(|error| family_file_error(label, format!("has invalid family space: {error}")))?;
     let node_template = node_template_from_toml(label, authored.node_template)?;
-
-    Ok(crucible::ScenarioFamily::new(space, node_template))
+    let family = crucible::ScenarioFamily::new(space, node_template);
+    match authored.fault_plan_toml {
+        Some(plan) => family
+            .with_canonical_fault_plan_toml(&plan)
+            .map_err(|error| family_file_error(label, format!("has invalid fault plan: {error}"))),
+        None if family.space().fault_densities() == [0] => Ok(family),
+        None => Err(family_file_error(
+            label,
+            "requires fault_plan_toml when a fault density is nonzero".to_owned(),
+        )),
+    }
 }
 
 /// Converts an authored seed-space declaration into the core seed space.

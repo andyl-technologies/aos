@@ -907,6 +907,26 @@ impl ScenarioFamily {
         Ok(self)
     }
 
+    /// Loads a canonical, fault-only plan for the family's sampled worlds.
+    ///
+    /// The first world authenticates the authored plan. Each later pinned
+    /// instance revalidates its selected bindings against its own world.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] for malformed plan material, non-fault events,
+    /// or a fault density exceeding the plan's admitted binding count.
+    pub fn with_canonical_fault_plan_toml(self, input: &str) -> Result<Self, EngineError> {
+        let first_world = self.build_world(self.space.sample(0)?)?;
+        let plan = Plan::from_canonical_toml_for_world(&first_world, input)?;
+        if !plan.event_graph().events().is_empty() {
+            return Err(scenario_serialization_error(
+                "scenario-family fault plan must not contain event-graph actions".to_owned(),
+            ));
+        }
+        self.with_fault_plan(plan.fault_signals().clone())
+    }
+
     /// Instantiates a concrete validated scenario at `params`.
     ///
     /// The returned [`PinnedScenario`] contains the concrete [`ScenarioDefForm`]
