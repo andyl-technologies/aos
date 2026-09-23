@@ -7,7 +7,6 @@
   cfg = config.aos.boot.storageServices;
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   milestones = serviceManagement.milestones;
-  serviceTypes = serviceManagement.types;
   interfaces = serviceManagement.interfaces;
   resultOf = lib.abilities.resultOf;
   consumerInstance = "boot-storage";
@@ -70,41 +69,37 @@
     environment ? null,
     logging ? null,
   }:
-    serviceManagement.forService {
-      inherit serviceTypes consumerInstance;
-      declaration =
-        {
-          service = key;
-          enabled = true;
-          lifecycle = {
-            inherit description;
-            execution_model = "oneshot";
-            environment_files = [];
-            condition = [];
-            pre_start = [];
-            start = [(command entryPoint arguments)];
-            post_start = [];
-            stop = [];
-            post_stop = [];
-            restart = "never";
-            restart_delay_millis = 0;
-            configuration_change_action = "restart";
-            remain_after_exit = true;
-            start_timeout_millis = 90000;
-            stop_timeout_millis = 90000;
-          };
-          inherit dependencies;
-          readiness = {
-            mechanism = "successful-exit";
-            signal_scope = "none";
-            timeout_millis = 90000;
-          };
-        }
-        // lib.optionalAttrs (conditions != null) {inherit conditions;}
-        // lib.optionalAttrs (credentials != null) {inherit credentials;}
-        // lib.optionalAttrs (environment != null) {inherit environment;}
-        // lib.optionalAttrs (logging != null) {inherit logging;};
-    };
+    {
+      inherit consumerInstance;
+      service = key;
+      lifecycle = {
+        inherit description;
+        execution_model = "oneshot";
+        environment_files = [];
+        condition = [];
+        pre_start = [];
+        start = [(command entryPoint arguments)];
+        post_start = [];
+        stop = [];
+        post_stop = [];
+        restart = "never";
+        restart_delay_millis = 0;
+        configuration_change_action = "restart";
+        remain_after_exit = true;
+        start_timeout_millis = 90000;
+        stop_timeout_millis = 90000;
+      };
+      inherit dependencies;
+      readiness = {
+        mechanism = "successful-exit";
+        signal_scope = "none";
+        timeout_millis = 90000;
+      };
+    }
+    // lib.optionalAttrs (conditions != null) {inherit conditions;}
+    // lib.optionalAttrs (credentials != null) {inherit credentials;}
+    // lib.optionalAttrs (environment != null) {inherit environment;}
+    // lib.optionalAttrs (logging != null) {inherit logging;};
 
   mountEsp = service {
     key = "aos-mount-esp";
@@ -270,24 +265,6 @@
       }
     ];
   };
-  fragments = [
-    earlySystem
-    localFilesystems
-    multiUser
-    sysroot
-    deviceSettle
-    kernelModules
-    bootIdentity
-    initrdStage
-    espReady
-    imageBootCommitted
-    mountEsp
-    syncEsps
-    zfsUnlock
-    stageZfsCredential
-    transactionStorageMount
-  ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   options.aos.boot.storageServices = {
     espDevices = lib.mkOption {
@@ -349,64 +326,49 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = lib.mkMerge [
-        (lib.mkMerge (builtins.map (definition: definition.declarations) definitions))
-        {
-          requirementTemplates.${transactionStorageAlias} = {
-            description = "Requires the selected ESP-backed initrd transaction journal.";
-            abi = transactionStorage.identity.abi;
-            descriptor = null;
-            interface = transactionStorage.identity.name;
-            inherit (transactionStorage) methods;
-            guarantees = [];
-            strength = "required";
-            fallback = null;
-          };
-        }
-      ];
+      aos.services = {
+        "boot-storage.aos-mount-esp" = mountEsp // {enable = stage == "host";};
+        "boot-storage.aos-sync-esps" = syncEsps // {enable = stage == "host";};
+        "boot-storage.aos-stage-zfs-credential" = stageZfsCredential // {enable = stage == "initrd" && cfg.zfs.enable;};
+        "boot-storage.aos-zfs-unlock" = zfsUnlock // {enable = stage == "initrd" && cfg.zfs.enable;};
+        "boot-storage.aos-boot-transaction-storage" = transactionStorageMount // {enable = stage == "initrd";};
+      };
+      aos.abilities.requirementTemplates.${transactionStorageAlias} = {
+        description = "Requires the selected ESP-backed initrd transaction journal.";
+        abi = transactionStorage.identity.abi;
+        descriptor = null;
+        interface = transactionStorage.identity.name;
+        inherit (transactionStorage) methods;
+        guarantees = [];
+        strength = "required";
+        fallback = null;
+      };
     }
-    (lib.mkIf (stage == "host") {
-      aos.abilities = lib.mkMerge [
-        {instances.${consumerInstance} = {};}
-        (serviceManagement.splitDefinition localFilesystems).configured
-        (serviceManagement.splitDefinition multiUser).configured
-        (serviceManagement.splitDefinition espReady).configured
-        (serviceManagement.splitDefinition imageBootCommitted).configured
-        (serviceManagement.splitDefinition mountEsp).configured
-        (serviceManagement.splitDefinition syncEsps).configured
-      ];
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [localFilesystems multiUser espReady imageBootCommitted];
+      enabled = stage == "host";
     })
-    (lib.mkIf (stage == "initrd" && cfg.zfs.enable) {
-      aos.abilities = lib.mkMerge [
-        {instances.${consumerInstance} = {};}
-        (serviceManagement.splitDefinition earlySystem).configured
-        (serviceManagement.splitDefinition sysroot).configured
-        (serviceManagement.splitDefinition deviceSettle).configured
-        (serviceManagement.splitDefinition kernelModules).configured
-        (serviceManagement.splitDefinition stageZfsCredential).configured
-        (serviceManagement.splitDefinition zfsUnlock).configured
-      ];
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [bootIdentity deviceSettle initrdStage sysroot];
+      enabled = stage == "initrd";
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [earlySystem kernelModules];
+      enabled = stage == "initrd" && cfg.zfs.enable;
     })
     (lib.mkIf (stage == "initrd") {
-      aos.abilities = lib.mkMerge [
-        {instances.${consumerInstance} = {};}
-        {
-          requests.${transactionStorageAlias} = {
-            requirement = transactionStorageAlias;
-            consumer = consumerInstance;
-            scope = ["initrd-stage-journal"];
-            parameters = {
-              name = "initrd-stage-journal";
-              purpose = "initrd-stage-journal";
-            };
-          };
-        }
-        (serviceManagement.splitDefinition bootIdentity).configured
-        (serviceManagement.splitDefinition deviceSettle).configured
-        (serviceManagement.splitDefinition initrdStage).configured
-        (serviceManagement.splitDefinition sysroot).configured
-        (serviceManagement.splitDefinition transactionStorageMount).configured
-      ];
+      aos.abilities.requests.${transactionStorageAlias} = {
+        requirement = transactionStorageAlias;
+        consumer = consumerInstance;
+        scope = ["initrd-stage-journal"];
+        parameters = {
+          name = "initrd-stage-journal";
+          purpose = "initrd-stage-journal";
+        };
+      };
     })
   ];
 }
