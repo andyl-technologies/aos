@@ -3347,58 +3347,12 @@ impl FixedMountSourceAcquisitionOwnerV2 {
             })
             .map_err(|_| state_error("Root-Mount provider session is not current"))?
             .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))??;
-        self.cold_pending_attempts.remove(0);
-        match recovered {
-            RecoveredProviderOutcomeConsumptionV2::WithoutSourceRoot { outcome } => {
-                if provider_method == ProviderMethodV2::Release
-                    && outcome.status()
-                        == aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
-                {
-                    self.retained_terminal_release_outcomes
-                        .insert(acquisition_id, outcome);
-                } else if outcome.status()
-                    != aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
-                {
-                    self.retained_noncomplete_dispositions
-                        .insert((acquisition_id, provider_method.tag()), outcome);
-                }
-            }
-            RecoveredProviderOutcomeConsumptionV2::CompleteAcquire { postcommit } => {
-                match postcommit {
-                    SourceAcquisitionPostcommitOutcomeV2::Success(source_root) => {
-                        self.retained_source_roots
-                            .insert(acquisition_id, source_root);
-                    }
-                    SourceAcquisitionPostcommitOutcomeV2::RecoveryRequired(recovery) => {
-                        self.retained_postcommit_recovery
-                            .push(RetainedSourcePostcommitRecoveryV2 {
-                                acquisition_id,
-                                recovery,
-                                startup_acquire_terminal: None,
-                            });
-                        return Err(state_error(
-                            "cold-recovered SourceRoot postcommit recovery is required",
-                        ));
-                    }
-                }
-            }
-            RecoveredProviderOutcomeConsumptionV2::RetainedSourceRoot { source_root } => {
-                match source_root {
-                    aos_sandbox_source_provider_security::RecoveredRetainedMountSourceRootV2::Releasing(
-                        authority,
-                    ) => self.retained_release_authorities.push(authority),
-                    source_root => {
-                        self.retained_source_roots.insert(
-                            acquisition_id,
-                            aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2::StartupAdopted(
-                                source_root,
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-        Ok(())
+        self.retain_recovered_provider_outcome(
+            acquisition_id,
+            provider_method,
+            recovered,
+            "cold-recovered SourceRoot postcommit recovery is required",
+        )
     }
 
     /// Reauthenticates a replay-validated persisted Provider outcome.
@@ -3481,6 +3435,23 @@ impl FixedMountSourceAcquisitionOwnerV2 {
             })
             .map_err(|_| state_error("Root-Mount provider session is not current"))?
             .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))??;
+        self.retain_recovered_provider_outcome(
+            acquisition_id,
+            provider_method,
+            recovered,
+            "persisted SourceRoot postcommit recovery is required",
+        )
+    }
+
+    // Both recovery paths reach this custody update only after their distinct
+    // carrier or persisted-evidence checks have produced an authenticated result.
+    fn retain_recovered_provider_outcome(
+        &mut self,
+        acquisition_id: [u8; 32],
+        provider_method: ProviderMethodV2,
+        recovered: RecoveredProviderOutcomeConsumptionV2,
+        postcommit_error: &'static str,
+    ) -> Result<()> {
         self.cold_pending_attempts.remove(0);
         match recovered {
             RecoveredProviderOutcomeConsumptionV2::WithoutSourceRoot { outcome } => {
@@ -3510,9 +3481,7 @@ impl FixedMountSourceAcquisitionOwnerV2 {
                                 recovery,
                                 startup_acquire_terminal: None,
                             });
-                        return Err(state_error(
-                            "persisted SourceRoot postcommit recovery is required",
-                        ));
+                        return Err(state_error(postcommit_error));
                     }
                 }
             }
