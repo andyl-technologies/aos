@@ -113,6 +113,7 @@ use aos_sandbox::{
     public_operation_resource_from_journal_v1,
 };
 
+mod attachment_slot_effect;
 mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
@@ -3773,39 +3774,24 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 | DormantSandboxRequestKindV1::ViewReplace(_)
                 | DormantSandboxRequestKindV1::ViewDetach(_)
         ) {
-            let sandbox = attachment_target::admitted_consumer_sandbox(
+            let (sandbox, slot) = attachment_target::admitted_consumer_slot(
                 journal,
                 operation_id,
                 context.project(),
                 &request,
             )?;
-            let host = self.attachment_host.as_ref().ok_or_else(|| {
-                EffectFailure::Retryable("exact Host attachment identity is unavailable".to_owned())
-            })?;
-            let _mount = self.attachment_mount.as_ref().ok_or_else(|| {
-                EffectFailure::Retryable(
-                    "exact Mount attachment identity is unavailable".to_owned(),
-                )
-            })?;
-            let _mount_anchor =
-                ControllerBrokerPlanSignerV1::mount_trust_anchor_from_process_credentials()
-                    .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
-            let inputs = attachment_target::ControllerAttachmentTargetInputsV1::from_protected_configuration(
-                host,
-                self.node,
-            )
-            .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
-            let outcome = inputs
-                .acquire(journal, sandbox)
-                .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
-            return Err(EffectFailure::Retryable(match outcome {
-                aos_sandbox::runtime_scope::NamespaceTargetOutcome::Current(_) => {
-                    "attachment desired-state and Mount effect is pending".to_owned()
-                }
-                aos_sandbox::runtime_scope::NamespaceTargetOutcome::AdvanceRequired(_) => {
-                    "attachment namespace assignment successor is pending".to_owned()
-                }
-            }));
+            attachment_slot_effect::advance(
+                self,
+                operation_id,
+                &context,
+                &request,
+                sandbox,
+                slot,
+                journal,
+            )?;
+            return Err(EffectFailure::Retryable(
+                "attachment desired-state and Mount source effect is pending".to_owned(),
+            ));
         }
         let cache_consumer = if matches!(
             &request,

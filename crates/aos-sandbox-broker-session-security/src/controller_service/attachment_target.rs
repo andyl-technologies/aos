@@ -23,7 +23,7 @@ use aos_sandbox::runtime_scope::{
     CurrentRuntimeScopePolicy, HostServiceIdentity, NamespaceTargetOutcome, RuntimeScopeClient,
     RuntimeScopeError, RuntimeScopeHolder,
 };
-use aos_sandbox_core::{NodeId, OperationId, ProjectId, SandboxId};
+use aos_sandbox_core::{AttachmentSlotId, NodeId, OperationId, ProjectId, SandboxId};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_systemd::SystemdClient;
@@ -45,12 +45,12 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SERVICE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Selects the admitted consumer without treating the public projection as authority.
-pub(super) fn admitted_consumer_sandbox(
+pub(super) fn admitted_consumer_slot(
     journal: &Journal,
     operation: OperationId,
     project: ProjectId,
     request: &DormantSandboxRequestKindV1,
-) -> Result<SandboxId, EffectFailure> {
+) -> Result<(SandboxId, AttachmentSlotId), EffectFailure> {
     let projections = PublicProjectionStoreV1::new(journal)
         .list_operation(operation)
         .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
@@ -70,9 +70,16 @@ pub(super) fn admitted_consumer_sandbox(
         ));
     };
     let exact_request = match request {
-        DormantSandboxRequestKindV1::ViewAttach(value) => value.sandbox_id == attachment.sandbox_id,
+        DormantSandboxRequestKindV1::ViewAttach(value) => {
+            value.sandbox_id == attachment.sandbox_id
+                && value.destination_slot_id == attachment.destination_slot_id
+                && value.view_id == attachment.source_view_id
+                && value.view_revision == attachment.view_revision
+        }
         DormantSandboxRequestKindV1::ViewReplace(value) => {
             value.attachment_id == attachment.attachment_id
+                && value.new_view_id == attachment.source_view_id
+                && value.new_view_revision == attachment.view_revision
         }
         DormantSandboxRequestKindV1::ViewDetach(value) => {
             value.attachment_id == attachment.attachment_id
@@ -87,7 +94,17 @@ pub(super) fn admitted_consumer_sandbox(
     let sandbox: [u8; 16] = attachment.sandbox_id.as_slice().try_into().map_err(|_| {
         EffectFailure::Permanent("admitted attachment sandbox identity is invalid".to_owned())
     })?;
-    Ok(SandboxId::from_bytes(sandbox))
+    let slot: [u8; 16] = attachment
+        .destination_slot_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| {
+            EffectFailure::Permanent("admitted destination slot identity is invalid".to_owned())
+        })?;
+    Ok((
+        SandboxId::from_bytes(sandbox),
+        AttachmentSlotId::from_bytes(slot),
+    ))
 }
 
 /// Reports failure to pin a named root service's exact kernel cgroup.
