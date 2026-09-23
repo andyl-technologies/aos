@@ -16,7 +16,7 @@
   };
   backendArtifact = lib.abilities.packageOutput {};
   baseModules = [
-    lib.abilities.module
+    ../../modules/abilities/default.nix
     ../../modules/base/artifact-backend.nix
     {
       options.assertions = lib.mkOption {

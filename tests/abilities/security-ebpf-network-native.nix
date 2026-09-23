@@ -25,7 +25,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           aos.security.ebpfNetworkPolicy.enable = true;
           aos.security.ebpfNetworkPolicy.policies = [

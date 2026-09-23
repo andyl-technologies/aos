@@ -6,6 +6,7 @@
   types,
   mkOption,
   evalModules,
+  interfaceDirectory ? null,
 }: let
   moduleOptionTypes = types;
   schemas = import ./schema.nix;
@@ -66,15 +67,22 @@
     else if introducedDeclarations != []
     then throw "selected provider modules changed declaration collections: ${builtins.concatStringsSep ", " introducedDeclarations}"
     else after;
-  interfaceRegistry = import ./interfaces {
-    inherit
-      declareInterface
-      descriptorFor
-      interfaceDocumentFromDeclaration
-      interfaceIdentity
-      ;
-    types = abilityTypes;
-  };
+  interfaceRegistry =
+    if interfaceDirectory == null
+    then {
+      module.imports = [];
+      readView = {};
+    }
+    else
+      import interfaceDirectory {
+        inherit
+          declareInterface
+          descriptorFor
+          interfaceDocumentFromDeclaration
+          interfaceIdentity
+          ;
+        types = abilityTypes;
+      };
   inherit
     (packageOutputSelectors)
     canonicalizePackageOutputSelectors

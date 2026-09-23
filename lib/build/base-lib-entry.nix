@@ -36,6 +36,7 @@ let
   lib = import ./lib {
     inherit system;
     bash = null;
+    abilityInterfaceDirectory = ./modules/abilities/_interfaces;
   };
 
   freeze = import ./lib/build/freeze-pkgs.nix {inherit lib;};

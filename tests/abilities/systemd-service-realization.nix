@@ -240,7 +240,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           config.aos.abilities = baseBindings // {inherit bindings;};
         }
@@ -402,7 +402,7 @@
   rejectedProviderSelection = selectedProvider:
     builtins.tryEval (builtins.deepSeq ((lib.evalModules {
         inherit lib pkgs;
-        modules = [lib.abilities.module];
+        modules = [../../modules/abilities/default.nix];
         selectedProviderModules = [selectedProvider];
       }).config.aos.abilities.implementations)
       true);

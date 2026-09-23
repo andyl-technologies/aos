@@ -58,7 +58,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           config.aos.abilities = {
             environment = {
@@ -95,7 +95,8 @@
   networkEffectsChild = builtins.head (childrenFor "network-configuration-effects");
   networkServiceChildren = childrenFor "network-service-unit";
   disabledResolverPending = evaluateFor (consumerFor false) baseBindings;
-  disabledResolverServiceChildren = builtins.filter
+  disabledResolverServiceChildren =
+    builtins.filter
     (child: child.requirement == "network-service-unit")
     (builtins.attrValues disabledResolverPending.config.aos.abilities.compositionPendingRequests);
   abilities = pending.config.aos.abilities;

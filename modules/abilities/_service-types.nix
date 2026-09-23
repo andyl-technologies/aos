@@ -1530,113 +1530,112 @@
       deviceNode;
   };
 
-  serviceDeclaration = types.record {
-    fields =
-      serviceBaseFields
-      // {
-        lifecycle = lifecycleFeature;
-        dependencies = {
-          type = types.optional dependenciesFeature;
-          optional = true;
-        };
-        conditions = {
-          type = types.optional conditionsFeature;
-          optional = true;
-        };
-        instantiation = {
-          type = types.optional instantiationSelection;
-          optional = true;
-        };
-        manager_identity = {
-          type = types.optional managerIdentityFeature;
-          optional = true;
-        };
-        supervision = {
-          type = types.optional supervisionFeature;
-          optional = true;
-        };
-        readiness = {
-          type = types.optional readinessFeature;
-          optional = true;
-        };
-        reload = {
-          type = types.optional reloadFeature;
-          optional = true;
-        };
-        termination = {
-          type = types.optional terminationFeature;
-          optional = true;
-        };
-        watchdog = {
-          type = types.optional watchdogFeature;
-          optional = true;
-        };
-        start_policy = {
-          type = types.optional startPolicyFeature;
-          optional = true;
-        };
-        failure_policy = {
-          type = types.optional failurePolicyFeature;
-          optional = true;
-        };
-        concurrency = {
-          type = types.optional concurrencyFeature;
-          optional = true;
-        };
-        scheduling = {
-          type = types.optional schedulingFeature;
-          optional = true;
-        };
-        resources = {
-          type = types.optional resourcesFeature;
-          optional = true;
-        };
-        environment = {
-          type = types.optional environmentFeature;
-          optional = true;
-        };
-        directories = {
-          type = types.optional directoriesFeature;
-          optional = true;
-        };
-        activation = {
-          type = types.optional activationFeature;
-          optional = true;
-        };
-        credentials = {
-          type = types.optional credentialsFeature;
-          optional = true;
-        };
-        configuration = {
-          type = types.optional configurationFeature;
-          optional = true;
-        };
-        storage = {
-          type = types.optional storageFeature;
-          optional = true;
-        };
-        socket_activation = {
-          type = types.optional socketActivationFeature;
-          optional = true;
-        };
-        logging = {
-          type = types.optional loggingFeature;
-          optional = true;
-        };
-        terminal = {
-          type = types.optional terminalFeature;
-          optional = true;
-        };
-        identity = {
-          type = types.optional identityFeature;
-          optional = true;
-        };
-        isolation = {
-          type = types.optional isolationFeature;
-          optional = true;
-        };
+  serviceDeclarationFields =
+    serviceBaseFields
+    // {
+      lifecycle = lifecycleFeature;
+      dependencies = {
+        type = types.optional dependenciesFeature;
+        optional = true;
       };
-  };
+      conditions = {
+        type = types.optional conditionsFeature;
+        optional = true;
+      };
+      instantiation = {
+        type = types.optional instantiationSelection;
+        optional = true;
+      };
+      manager_identity = {
+        type = types.optional managerIdentityFeature;
+        optional = true;
+      };
+      supervision = {
+        type = types.optional supervisionFeature;
+        optional = true;
+      };
+      readiness = {
+        type = types.optional readinessFeature;
+        optional = true;
+      };
+      reload = {
+        type = types.optional reloadFeature;
+        optional = true;
+      };
+      termination = {
+        type = types.optional terminationFeature;
+        optional = true;
+      };
+      watchdog = {
+        type = types.optional watchdogFeature;
+        optional = true;
+      };
+      start_policy = {
+        type = types.optional startPolicyFeature;
+        optional = true;
+      };
+      failure_policy = {
+        type = types.optional failurePolicyFeature;
+        optional = true;
+      };
+      concurrency = {
+        type = types.optional concurrencyFeature;
+        optional = true;
+      };
+      scheduling = {
+        type = types.optional schedulingFeature;
+        optional = true;
+      };
+      resources = {
+        type = types.optional resourcesFeature;
+        optional = true;
+      };
+      environment = {
+        type = types.optional environmentFeature;
+        optional = true;
+      };
+      directories = {
+        type = types.optional directoriesFeature;
+        optional = true;
+      };
+      activation = {
+        type = types.optional activationFeature;
+        optional = true;
+      };
+      credentials = {
+        type = types.optional credentialsFeature;
+        optional = true;
+      };
+      configuration = {
+        type = types.optional configurationFeature;
+        optional = true;
+      };
+      storage = {
+        type = types.optional storageFeature;
+        optional = true;
+      };
+      socket_activation = {
+        type = types.optional socketActivationFeature;
+        optional = true;
+      };
+      logging = {
+        type = types.optional loggingFeature;
+        optional = true;
+      };
+      terminal = {
+        type = types.optional terminalFeature;
+        optional = true;
+      };
+      identity = {
+        type = types.optional identityFeature;
+        optional = true;
+      };
+      isolation = {
+        type = types.optional isolationFeature;
+        optional = true;
+      };
+    };
+  serviceDeclaration = types.record {fields = serviceDeclarationFields;};
   serviceResourceSchema = types.schemaOf "service resource" serviceDeclaration;
 
   lifecycleState = types.enum ["disabled" "failed" "inactive" "ready" "starting" "stopping" "unknown"];
@@ -1698,6 +1697,7 @@ in {
     command
     commands
     serviceDeclaration
+    serviceDeclarationFields
     serviceResourceSchema
     executionPath
     configurationPath

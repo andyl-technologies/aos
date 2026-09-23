@@ -16,7 +16,7 @@
       inherit lib packageModules;
       modules =
         [
-          lib.abilities.module
+          ../../modules/abilities/default.nix
           ../../modules/base/_kernel-parameter-contributions.nix
           {aos.abilities.environment = environment stage;}
         ]

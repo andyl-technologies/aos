@@ -16,7 +16,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           aos.abilities.environment = {
             authority = "test";
@@ -57,7 +57,7 @@
   composed = lib.evalModules {
     inherit lib;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         aos.abilities = {
           environment = {
@@ -186,5 +186,5 @@ in
   assert requests."aos-ability-crucible:adapter-readiness".parameters.timeout_millis == lifecycle.start_timeout_millis;
   assert requests."aos-ability-crucible:adapter-identity".parameters.file_creation_mask == "0077";
   assert requests."aos-ability-crucible:adapter-isolation".parameters.filesystem == "read-only-system";
-  assert portableOptionTree enabled.options.aos.services.abilityCrucible;
+  assert portableOptionTree (builtins.removeAttrs (lib.submoduleOptions enabled.options.aos.services.type._elementType ["aos" "services" "abilityCrucible"]) ["_module"]);
   assert !(enabled.config ? systemd); true

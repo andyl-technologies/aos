@@ -1733,12 +1733,84 @@
         evaluatedModules
       );
 
+      # Feature modules may add fields to the same nested option type. Preserve
+      # both submodule schemas instead of silently replacing the earlier one.
+      submoduleParts = optionType: let
+        elementType = optionType._elementType or null;
+        nestedType =
+          if elementType != null
+          then elementType
+          else optionType;
+        modules = nestedType._submodule or null;
+      in
+        if modules == null
+        then null
+        else {
+          isAttrsOf = elementType != null;
+          modules =
+            if builtins.isList modules
+            then modules
+            else [modules];
+        };
+
+      mergeOptionDeclarations = earlier: later: let
+        earlierParts = submoduleParts earlier.option.type;
+        laterParts = submoduleParts later.option.type;
+        compatibleSubmodules =
+          earlierParts
+          != null
+          && laterParts != null
+          && earlierParts.isAttrsOf == laterParts.isAttrsOf;
+        mergedSubmodule =
+          types.submodule (earlierParts.modules ++ laterParts.modules);
+        mergedType =
+          if earlierParts.isAttrsOf
+          then
+            if (earlier.option.type._lazyAttrsOf or false) || (later.option.type._lazyAttrsOf or false)
+            then types.lazyAttrsOf mergedSubmodule
+            else types.attrsOf mergedSubmodule
+          else mergedSubmodule;
+        earlierDefault = earlier.option.default;
+        laterDefault = later.option.default;
+        mergedDefault =
+          if isNoDefault laterDefault
+          then earlierDefault
+          else if isNoDefault earlierDefault || earlierDefault == laterDefault
+          then laterDefault
+          else throw "The option '${builtins.concatStringsSep "." later.path}' has conflicting submodule defaults.";
+      in
+        if !compatibleSubmodules
+        then later
+        else if earlier.option.apply != null && later.option.apply != null
+        then throw "The option '${builtins.concatStringsSep "." later.path}' has multiple submodule apply functions."
+        else
+          later
+          // {
+            option =
+              later.option
+              // {
+                type = mergedType;
+                default = mergedDefault;
+                apply =
+                  if later.option.apply != null
+                  then later.option.apply
+                  else earlier.option.apply;
+                contributable = earlier.option.contributable || later.option.contributable;
+              };
+          };
+
       optionMap =
         builtins.foldl' (
           acc: decl: let
             key = builtins.concatStringsSep "." decl.path;
           in
-            acc // {${key} = decl;}
+            acc
+            // {
+              ${key} =
+                if builtins.hasAttr key acc
+                then mergeOptionDeclarations acc.${key} decl
+                else decl;
+            }
         ) {}
         allOptionDecls;
 
@@ -1758,7 +1830,15 @@
             pathStr = builtins.concatStringsSep "." decl.path;
 
             # Filter out conditional definitions whose condition is false
-            activeDefs = builtins.filter (d: !(d ? condition) || d.condition) defs;
+            # An attrsOf type can discover dynamic keys without deciding the
+            # conditions that guard their values. Keep those conditions until
+            # the per-key merge so one service may depend on a sibling's
+            # already-merged configuration without recursing through the
+            # entire service map.
+            activeDefs =
+              if optType._lazyAttrsOf or false
+              then defs
+              else builtins.filter (d: !(d ? condition) || d.condition) defs;
 
             # Unwrap override markers and assign priorities.
             #

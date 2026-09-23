@@ -75,7 +75,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           config = {
             aos.abilities = {
@@ -132,7 +132,7 @@
   initrd = lib.evalModules {
     inherit lib;
     modules = [
-      lib.abilities.module
+      ../../modules/abilities/default.nix
       {
         config = {
           aos.abilities.environment = {

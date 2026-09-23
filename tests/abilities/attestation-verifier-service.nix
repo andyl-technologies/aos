@@ -7,7 +7,7 @@
     lib.evalModules {
       inherit lib;
       modules = [
-        lib.abilities.module
+        ../../modules/abilities/default.nix
         {
           aos.abilities.environment = {
             authority = "test";
@@ -109,5 +109,5 @@ in
   assert requests."aos:aos-attestation-verifier-identity".parameters.ephemeral;
   assert requests."aos:aos-attestation-verifier-isolation".parameters.network == "none";
   assert requests."aos:aos-attestation-verifier-hardening".parameters.isolation_domain_creation == "denied";
-  assert portableOptionTree enabled.options.aos.services.attestationVerifier;
+  assert portableOptionTree (builtins.removeAttrs (lib.submoduleOptions enabled.options.aos.services.type._elementType ["aos" "services" "attestationVerifier"]) ["_module"]);
   assert !(enabled.config ? systemd); true

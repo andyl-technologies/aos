@@ -11,7 +11,7 @@ The implementation has one source of truth for each kind of information:
 
 | Information | Authoritative value |
 | --- | --- |
-| Interface semantics | A provider-neutral typed module declaration using `lib.abilities` |
+| Interface semantics | A provider-neutral feature module in the relevant domain |
 | Package declarations | The package's first-class ability module |
 | Available implementations | `package.abilities.implementations` from packages selected for the target environment |
 | Consumer requirements | Package requirement templates and the final fixed point's concrete requests |
@@ -31,8 +31,10 @@ catalog.
 ## One typed module vocabulary
 
 Every authored configuration fact enters through the ordinary AOS module
-system. The shared schema module declares a single option tree under
-`aos.abilities`:
+system. The generic ability graph under `aos.abilities` is a derived,
+typed intermediate representation for resolution and execution. It is not the
+primary interface for packages to describe a service, network endpoint, or
+other domain object. The shared graph schema includes:
 
 ```nix
 options.aos.abilities = {
@@ -84,9 +86,10 @@ options.aos.abilities = {
 };
 ```
 
-The exact submodule definitions are supplied by `lib.abilities`, but these are
-ordinary `mkOption`, `types.attrsOf`, and `types.submodule` values. Base,
-system, operator, runtime, package, and provider modules use ordinary
+The graph submodules are supplied by `lib.abilities`, but they are ordinary
+`mkOption`, `types.attrsOf`, and `types.submodule` values. Domain feature
+modules own the public recursive option trees and derive the graph from their
+evaluated values. Base, system, operator, runtime, package, and provider modules use ordinary
 `options`, `config`, `imports`, `mkIf`, `mkMerge`, defaults, priorities, and
 assertions to contribute to this tree. Package and provider provenance is
 attached to the definitions by the existing module evaluator. There is no
@@ -192,6 +195,58 @@ The same normalized package documents, plans, and observations
 No frontend reconstructs this graph from source text, filenames, unit names,
 human-readable output, or a private copy of the provider inventory.
 
+## Composed domain option trees
+
+The service domain owns `aos.services`, declared as an attribute set of strict
+submodules. A service is one module value; feature modules extend its option
+schema and configuration in the same nested fixed point:
+
+```nix
+options.aos.services = lib.mkOption {
+  type = lib.types.attrsOf (lib.types.submodule [
+    serviceCore
+    commandLifecycle
+    ordering
+    readiness
+  ]);
+  default = {};
+};
+
+config.aos.services.web = {
+  enable = true;
+  lifecycle.start = [ /* typed command values */ ];
+  ordering.after = [ "database" ];
+};
+```
+
+The module list is illustrative. A target selects domain API modules before
+evaluating service values; no import depends on a selected provider or on a
+service's final `enable` value. Different modules may declare and define
+different fields of one named service. Normal module defaults, priorities,
+conditions, provenance, type checks, and option documentation apply at each
+field. The domain projection derives static requirement templates even when a
+service is disabled, then derives concrete instances and requests when it is
+enabled. Package authors do not call `splitContribution`, copy the service
+declaration into requirement and request maps, or add an empty instance solely
+to make resolution work.
+
+Feature schemas belong to the relevant domain modules, not to language-level
+`lib`. `lib.abilities` supplies generic option types, interface machinery,
+normalization, and graph validation. It does not auto-import a catalog of
+service, storage, network, boot, or kernel interfaces. A target without a
+service domain need not import its schema. A provider package owns its concrete
+implementation modules and handler artifacts; the service API remains
+provider-neutral.
+
+Schema composition and runtime composition are separate. A command lifecycle
+feature and an ordering feature can both extend `aos.services.web`. A manager
+that implements ordering must then schedule the start/stop operations supplied
+by the selected lifecycle implementation. Provider binding checks the required
+features, scope, and lower-interface dependencies. One controller owns each
+resource and transition; two managers cannot independently start the same
+service. A single manager can satisfy all requested features, or a composite
+manager can delegate to lower implementations.
+
 ## Package construction
 
 `abilities` is a first-class AOS package field whose value is an authenticated,
@@ -212,41 +267,32 @@ authenticated module output. It contributes typed options and ability values
 through the standard module fixed point:
 
 ```nix
-{ config, lib, ... }: let
-  serviceManagement = lib.abilities.interfaces.serviceManagement;
-  activation = serviceManagement.forProducer {
-    consumerInstance = "example";
-    key = "activation";
-    interface = serviceManagement.interfaces.activationMilestone;
-    parameters.milestone = "example-ready";
+{ lib, ... }: {
+  config.aos.services.example = {
+    enable = true;
+    lifecycle.start = [{
+      executable = {
+        artifact = lib.abilities.packageOutput {};
+        entry_point = "bin/example";
+        arguments = [];
+      };
+      ignore_failure = false;
+    }];
   };
-  contribution = serviceManagement.splitContribution activation;
-in {
-  options.services.example.enable = lib.mkEnableOption "the example service";
-
-  config = lib.mkMerge [
-    {
-      # Static declarations remain available to package discovery.
-      aos.abilities = contribution.declarations;
-    }
-    (lib.mkIf config.services.example.enable {
-      aos.abilities = lib.mkMerge [
-        { instances.example = {}; }
-        contribution.configured
-      ];
-    })
-  ];
 }
 ```
 
 Package definitions receive the composed AOS `lib` through the existing
-package call mechanism. They use `lib.abilities` constructors and MUST NOT
-import private library files by relative path.
+package call mechanism. They use generic `lib.abilities` value constructors
+and the selected domain option modules. They MUST NOT import private library
+files by relative path.
 
-The module owns the package's configuration options, static interfaces,
-implementations, requirement templates, guarantees, and conditional instance/request
-definitions. Package authors do not maintain a configuration module and a
-parallel ability manifest containing the same facts. The wrapper removes
+The module owns the package's configuration options and service declarations;
+domain modules derive their static interfaces, requirement templates, and
+conditional instances and requests. Provider packages also own their
+implementation declarations and guarantees. Package authors do not maintain a
+configuration module and a parallel ability manifest containing the same facts.
+The wrapper removes
 `abilities` before invoking the low-level derivation primitive, evaluates it
 against the shared ability schema, and returns the normalized package-local
 tree as `package.abilities`. Its public fields remain `interfaces`,
@@ -658,7 +704,8 @@ reimplementing semantic validation.
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `lib.abilities` | Shared ability submodules, portable option types, normalization, and local checks | Package/provider catalog, runtime commands, documentation inventory |
+| `lib.abilities` | Language-level ability types, graph primitives, normalization, and local checks | OS-domain interface catalogs, package/provider catalogs, runtime commands |
+| Domain feature modules | Typed recursive service, storage, network, boot, and other relevant option trees and graph projections | Assumptions about an unrelated target's available OS primitives |
 | AOS `mkDerivation` | Native ability-module field, package projection, and payload/contract separation | Provider selection or target-specific binding |
 | Package definitions | Their provided/consumed abilities, modules, handlers, service declarations | Generic resolver behavior or self-computed artifact identity |
 | AOS module evaluator | The sole deploy-time configuration fixed point, provider definitions, and provenance | Registry traversal, a parallel ability configuration graph, or runtime effects |

@@ -306,46 +306,49 @@
   fragments = [runtimeStorage networkReadiness configuration ingress service];
   contributions = builtins.map serviceManagement.splitContribution fragments;
 in {
-  options.aos.services.dnsmasq = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Run dnsmasq as a DNS and optional DHCP server.";
-    };
-    port = lib.mkOption {
-      type = port;
-      default = 53;
-      description = "UDP and TCP port on which dnsmasq serves DNS.";
-    };
-    listenAddresses = lib.mkOption {
-      type = addresses;
-      default = ["127.0.0.1"];
-      description = "Canonical addresses on which dnsmasq listens.";
-    };
-    servers = lib.mkOption {
-      type = servers;
-      default = [];
-      description = "Canonical upstream DNS server specifications.";
-    };
-    dhcpRanges = lib.mkOption {
-      type = dhcpRanges;
-      default = [];
-      description = "Canonical dnsmasq DHCP range specifications.";
-    };
-    domainNeeded = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Refuse to forward plain names without a domain.";
-    };
-    bogusPrivate = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = true;
-      description = "Do not forward reverse lookups for private addresses.";
-    };
-    extraConfig = lib.mkOption {
-      type = configurationText;
-      default = "";
-      description = "Additional lines appended to dnsmasq.conf.";
+  options.aos.serviceOptionModules.dnsmasq = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Run dnsmasq as a DNS and optional DHCP server.";
+      };
+      port = lib.mkOption {
+        type = port;
+        default = 53;
+        description = "UDP and TCP port on which dnsmasq serves DNS.";
+      };
+      listenAddresses = lib.mkOption {
+        type = addresses;
+        default = ["127.0.0.1"];
+        description = "Canonical addresses on which dnsmasq listens.";
+      };
+      servers = lib.mkOption {
+        type = servers;
+        default = [];
+        description = "Canonical upstream DNS server specifications.";
+      };
+      dhcpRanges = lib.mkOption {
+        type = dhcpRanges;
+        default = [];
+        description = "Canonical dnsmasq DHCP range specifications.";
+      };
+      domainNeeded = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Refuse to forward plain names without a domain.";
+      };
+      bogusPrivate = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = true;
+        description = "Do not forward reverse lookups for private addresses.";
+      };
+      extraConfig = lib.mkOption {
+        type = configurationText;
+        default = "";
+        description = "Additional lines appended to dnsmasq.conf.";
+      };
     };
   };
 

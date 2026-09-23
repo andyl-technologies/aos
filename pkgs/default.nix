@@ -372,6 +372,7 @@
           modules = [
             lib.abilities.module
             ../modules/_package-contributions.nix
+            ../modules/abilities/_service.nix
           ];
           packageModules = [
             {
@@ -419,21 +420,57 @@
           if lib.hasPrefix directoryPrefix source
           then builtins.substring (builtins.stringLength directoryPrefix) (-1) source
           else throw "ability option '${declaration.pathStr}' for package '${packageName}' is declared outside its authenticated module tree";
-      in
-        builtins.map (declaration:
+        optionDocumentFor = sourcePath: path: declaration:
           {
-            inherit (declaration) path description visibility contributable;
+            inherit (declaration) description visibility contributable;
+            inherit path;
             type_signature = declaration.typeSig;
             structured_type = normalizeOptionType declaration.type;
             read_only = declaration.readOnly;
-            source.path = sourceFor declaration;
+            source.path = sourcePath;
           }
           // lib.optionalAttrs (declaration.default != null) {inherit (declaration) default;}
           // lib.optionalAttrs (declaration.example != null) {inherit (declaration) example;}
           // lib.optionalAttrs (declaration.deprecated != null) {inherit (declaration) deprecated;}
-          // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;}) (builtins.filter
-          (declaration: declaration.owner == packageName)
-          abilityEvaluation._optionDecls);
+          // lib.optionalAttrs (declaration.replacement != null) {inherit (declaration) replacement;};
+        packageOptions =
+          builtins.map
+          (declaration: optionDocumentFor (sourceFor declaration) declaration.path declaration)
+          (builtins.filter
+            (declaration:
+              declaration.owner
+              == packageName
+              && !(lib.hasPrefix "aos.serviceOptionModules." declaration.pathStr))
+            abilityEvaluation._optionDecls);
+        packageServiceOption = name: path: let
+          schema = abilityEvaluation.config.aos.serviceOptionModules.${name};
+          declaration =
+            builtins.foldl'
+            (value: segment:
+              if builtins.isAttrs value && builtins.hasAttr segment value
+              then value.${segment}
+              else null)
+            (schema.options or {})
+            path;
+        in
+          builtins.isAttrs declaration && (declaration._type or null) == "option";
+        serviceType = abilityEvaluation.options.aos.services.type._elementType;
+        serviceOptions = builtins.concatMap (name:
+          builtins.map
+          (declaration:
+            optionDocumentFor
+            abilityModuleSource.path
+            (["aos" "services" name] ++ declaration.path)
+            declaration)
+          (builtins.filter
+            (declaration:
+              declaration.path
+              != []
+              && packageServiceOption name declaration.path)
+            (lib.submoduleOptionDeclarations serviceType ["aos" "services" name])))
+        (builtins.attrNames abilityEvaluation.config.aos.serviceOptionModules);
+      in
+        packageOptions ++ serviceOptions;
     packageProjectionResult =
       if evaluatedAbilities == null && authoredPackageProbe == null
       then null

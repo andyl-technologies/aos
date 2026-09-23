@@ -27,6 +27,7 @@
 {
   system,
   bash ? null,
+  abilityInterfaceDirectory ? null,
 }: let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
@@ -56,7 +57,7 @@
       ;
   };
 
-  evalSubmodule = moduleArgs: loc: defs: let
+  evalSubmoduleResult = moduleArgs: loc: defs: let
     # `submodule [m1 m2 m3]` and `submodule m` should both work; nixpkgs
     # accepts either a single module or a list of modules.
     baseModules =
@@ -141,7 +142,20 @@
       enforcePackageAuthorship = false;
     };
   in
-    evaluated.config;
+    evaluated;
+
+  evalSubmodule = moduleArgs: loc: defs:
+    (evalSubmoduleResult moduleArgs loc defs).config;
+
+  submoduleOptionDeclarations = optionType: loc:
+    if optionType ? _submodule
+    then (evalSubmoduleResult optionType._submodule loc [])._optionDecls
+    else throw "submoduleOptionDeclarations requires a submodule option type";
+
+  submoduleOptions = optionType: loc:
+    if optionType ? _submodule
+    then (evalSubmoduleResult optionType._submodule loc []).options
+    else throw "submoduleOptions requires a submodule option type";
 
   # Declaration-derived contributable-surface helpers.
   namespacing = import ./namespacing.nix {};
@@ -150,6 +164,7 @@
     inherit types;
     inherit (modules) mkOption;
     evalModules = modules.evalModules;
+    interfaceDirectory = abilityInterfaceDirectory;
   };
   abilities =
     abilityCore
@@ -220,6 +235,7 @@
     // strings
     // {
       inherit types system;
+      inherit submoduleOptionDeclarations submoduleOptions;
       inherit abilities;
       inherit qualification;
       inherit packagePlatform;

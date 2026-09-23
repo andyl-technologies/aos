@@ -167,29 +167,32 @@
     service
   ];
 in {
-  options.aos.services.tailscale = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Run the Tailscale mesh VPN daemon.";
-    };
-
-    port = lib.mkOption {
-      type = abilityTypes.integer {
-        minimum = 0;
-        maximum = 65535;
+  options.aos.serviceOptionModules.tailscale = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Run the Tailscale mesh VPN daemon.";
       };
-      default = 41641;
-      description = "UDP port used for direct WireGuard peer connections.";
-    };
 
-    extraArgs = lib.mkOption {
-      type = abilityTypes.list {
-        element = abilityTypes.runtimeString;
-        maxItems = 256;
+      port = lib.mkOption {
+        type = abilityTypes.integer {
+          minimum = 0;
+          maximum = 65535;
+        };
+        default = 41641;
+        description = "UDP port used for direct WireGuard peer connections.";
       };
-      default = [];
-      description = "Additional command-line arguments passed to tailscaled.";
+
+      extraArgs = lib.mkOption {
+        type = abilityTypes.list {
+          element = abilityTypes.runtimeString;
+          maxItems = 256;
+        };
+        default = [];
+        description = "Additional command-line arguments passed to tailscaled.";
+      };
     };
   };
 

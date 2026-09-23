@@ -591,71 +591,74 @@
     ++ builtins.attrValues cfg.backupCredentials
     ++ builtins.attrValues cfg.alertCredentials;
 in {
-  options.aos.services.releaseCoordinator = {
-    enable = lib.mkOption {
-      type = abilityTypes.boolean;
-      default = false;
-      description = "Enable the package-owned canonical release maintenance services.";
-    };
-    releaseProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
-      default = null;
-      description = "Authenticated executable for manually initiated content release operations.";
-    };
-    timestampProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
-      default = null;
-      description = "Authenticated executable for restricted TUF timestamp renewal.";
-    };
-    backupProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
-      default = null;
-      description = "Authenticated executable for encrypted release evidence backups.";
-    };
-    restoreCheckProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
-      default = null;
-      description = "Authenticated executable for clean-directory backup restore verification.";
-    };
-    alertProgram = lib.mkOption {
-      type = abilityTypes.optional abilityTypes.executableReference;
-      default = null;
-      description = "Authenticated executable for release operation failure alerts.";
-    };
-    releaseCredentials = lib.mkOption {
-      type = credentialSet;
-      default = {};
-      description = "System credential names delivered only to manual release operations.";
-    };
-    timestampCredentials = lib.mkOption {
-      type = credentialSet;
-      default = {};
-      description = "System credential names delivered only to timestamp renewal operations.";
-    };
-    backupCredentials = lib.mkOption {
-      type = credentialSet;
-      default = {};
-      description = "System credential names delivered only to encrypted backup operations.";
-    };
-    alertCredentials = lib.mkOption {
-      type = credentialSet;
-      default = {};
-      description = "System credential names delivered only to failure alert operations.";
-    };
-    timestampCalendar = lib.mkOption {
-      type = calendarExpression;
-      default = "*-*-* 00/12:00:00";
-      description = "Calendar schedule for short-lived TUF timestamp renewal.";
-    };
-    backupCalendar = lib.mkOption {
-      type = calendarExpression;
-      default = "*-*-* 02:00:00";
-      description = "Calendar schedule for encrypted release-state backups.";
-    };
-    restoreCheckCalendar = lib.mkOption {
-      type = calendarExpression;
-      default = "Mon *-*-* 04:00:00";
-      description = "Calendar schedule for unattended backup restore verification.";
+  options.aos.serviceOptionModules.releaseCoordinator = lib.mkOption {
+    type = lib.types.deferredModule;
+    default.options = {
+      enable = lib.mkOption {
+        type = abilityTypes.boolean;
+        default = false;
+        description = "Enable the package-owned canonical release maintenance services.";
+      };
+      releaseProgram = lib.mkOption {
+        type = abilityTypes.optional abilityTypes.executableReference;
+        default = null;
+        description = "Authenticated executable for manually initiated content release operations.";
+      };
+      timestampProgram = lib.mkOption {
+        type = abilityTypes.optional abilityTypes.executableReference;
+        default = null;
+        description = "Authenticated executable for restricted TUF timestamp renewal.";
+      };
+      backupProgram = lib.mkOption {
+        type = abilityTypes.optional abilityTypes.executableReference;
+        default = null;
+        description = "Authenticated executable for encrypted release evidence backups.";
+      };
+      restoreCheckProgram = lib.mkOption {
+        type = abilityTypes.optional abilityTypes.executableReference;
+        default = null;
+        description = "Authenticated executable for clean-directory backup restore verification.";
+      };
+      alertProgram = lib.mkOption {
+        type = abilityTypes.optional abilityTypes.executableReference;
+        default = null;
+        description = "Authenticated executable for release operation failure alerts.";
+      };
+      releaseCredentials = lib.mkOption {
+        type = credentialSet;
+        default = {};
+        description = "System credential names delivered only to manual release operations.";
+      };
+      timestampCredentials = lib.mkOption {
+        type = credentialSet;
+        default = {};
+        description = "System credential names delivered only to timestamp renewal operations.";
+      };
+      backupCredentials = lib.mkOption {
+        type = credentialSet;
+        default = {};
+        description = "System credential names delivered only to encrypted backup operations.";
+      };
+      alertCredentials = lib.mkOption {
+        type = credentialSet;
+        default = {};
+        description = "System credential names delivered only to failure alert operations.";
+      };
+      timestampCalendar = lib.mkOption {
+        type = calendarExpression;
+        default = "*-*-* 00/12:00:00";
+        description = "Calendar schedule for short-lived TUF timestamp renewal.";
+      };
+      backupCalendar = lib.mkOption {
+        type = calendarExpression;
+        default = "*-*-* 02:00:00";
+        description = "Calendar schedule for encrypted release-state backups.";
+      };
+      restoreCheckCalendar = lib.mkOption {
+        type = calendarExpression;
+        default = "Mon *-*-* 04:00:00";
+        description = "Calendar schedule for unattended backup restore verification.";
+      };
     };
   };
 
