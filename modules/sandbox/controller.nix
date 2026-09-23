@@ -31,6 +31,7 @@ in {
       || brokers.mountBroker.enable
       || brokers.networkBroker.enable
       || brokers.storageBroker.enable
+      || brokers.policyAuthority.enable
     ) {
       assertions = [
         {

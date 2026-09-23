@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.sandbox.policyAuthority;
+  controller = config.aos.sandbox.controller;
   requiredCredentials = {
     deploymentPublicKey = "deployment-public-key";
     deploymentHeadPacket = "deployment-head.packet";
@@ -46,14 +47,18 @@ in {
       wantedBy = ["multi-user.target"];
       after = ["local-fs.target"];
       serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd";
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid}";
         LoadCredential = lib.mapAttrsToList (option: name:
           "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
         (lib.filterAttrs (option: _: cfg.credentials.${option} != null) requiredCredentials);
         StateDirectory = "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";
-        UMask = "0077";
+        RuntimeDirectory = "aos/sandbox-policy-authority";
+        RuntimeDirectoryMode = "0710";
+        User = "root";
+        Group = "aos-sandboxd";
+        UMask = "0007";
 
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
@@ -71,7 +76,7 @@ in {
         ProtectKernelTunables = true;
         ProtectProc = "invisible";
         ProtectSystem = "strict";
-        RestrictAddressFamilies = [];
+        RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
