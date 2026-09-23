@@ -25,6 +25,21 @@
 
   defaultRequests = (evaluate null).config.aos.abilities.requests;
   limitedRequests = (evaluate 1024).config.aos.abilities.requests;
+  initrdRequests =
+    (lib.evalModules {
+      inherit lib;
+      modules = [
+        ../../modules/abilities/default.nix
+        {
+          aos.abilities.environment = {
+            authority = "test";
+            key = "dbus-service";
+            stage = "initrd";
+          };
+          aos.services.dbus.openFileLimit = 1024;
+        }
+      ];
+    }).config.aos.abilities.requests;
 in
   assert !(defaultRequests ? "dbus:dbus-resources");
   assert limitedRequests."dbus:dbus-resources".parameters
@@ -38,4 +53,5 @@ in
     processes.kind = "unbounded";
     tasks.kind = "unbounded";
   };
-  assert defaultRequests ? "dbus:dbus-lifecycle"; true
+  assert defaultRequests ? "dbus:dbus-lifecycle";
+  assert initrdRequests == {}; true
