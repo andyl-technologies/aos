@@ -489,6 +489,26 @@ fn fuzz_family_authoring_uses_current_density_and_fault_plan_schema() {
         .unwrap_or_else(|error| panic!("canonical fault plan should decode: {error}"));
 }
 
+#[test]
+fn live_qemu_fuzz_fixture_pins_a_searchable_fault_plan() {
+    let authored = include_str!("../../../../tests/crucible/fixtures/live-qemu-fuzz.family.toml");
+    let family = load_fuzz_family_toml("live QEMU fuzz fixture", authored)
+        .unwrap_or_else(|error| panic!("live QEMU fuzz family should decode: {error}"));
+    let pinned = family
+        .instantiate_sample(0)
+        .unwrap_or_else(|error| panic!("live QEMU fuzz family should pin: {error}"));
+    let bindings = pinned.form().plan().fault_signals().bindings();
+
+    assert_eq!(family.space().fault_densities(), &[1]);
+    assert_eq!(bindings.len(), 1);
+    let crucible_core::model::BindingSearchPolicy::BranchParameter { candidates, .. } =
+        bindings[0].search()
+    else {
+        panic!("live QEMU fuzz binding must expose typed parameter candidates");
+    };
+    assert_eq!(candidates.len(), 2);
+}
+
 pub(super) fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let path = temp.path().join("family.toml");
     fs::write(&path, valid_fuzz_family_toml())?;
