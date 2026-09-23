@@ -203,6 +203,8 @@ pub enum RecordNamespace {
     FilesystemWorkerRegistration = 50,
     /// Immutable public-operation project and capability-selector bindings.
     PublicOperationAuthorization = 51,
+    /// Controller custody of one lifecycle atomic Storage snapshot exchange.
+    LifecycleAtomicSnapshotSource = 52,
 }
 
 impl RecordNamespace {
@@ -259,6 +261,7 @@ impl RecordNamespace {
             49 => Ok(Self::OperatorRecovery),
             50 => Ok(Self::FilesystemWorkerRegistration),
             51 => Ok(Self::PublicOperationAuthorization),
+            52 => Ok(Self::LifecycleAtomicSnapshotSource),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

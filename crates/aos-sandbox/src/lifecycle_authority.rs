@@ -10,8 +10,8 @@ use aos_proto::aos::sandbox::local::v1::{
     RuntimeAction,
 };
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerAudience, BrokerGrantTarget, BrokerVerb, NodeId,
-    ProtocolVersion,
+    BrokerArgumentCommitment, BrokerAudience, BrokerGrantTarget, BrokerVerb,
+    CanonicalAssignmentManifestV1, NodeId, ProtocolVersion,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -21,10 +21,53 @@ use crate::runtime_authority::{
     RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
 };
 use crate::{
-    AuthorityEffectAttemptTimingV1, AuthorityPublicationStore, BrokerDispatchSemanticIdentityV1,
-    BrokerDispatchTemplateV1, Journal, PreparedAuthorityEffectV1, ReconcilerError,
-    SignedBrokerPlan,
+    AuthorityEffectAttemptTimingV1, AuthorityPublicationError, AuthorityPublicationProposalV1,
+    AuthorityPublicationStore, BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal,
+    PreparedAuthorityEffectV1, PreparedAuthorityPublicationV1, ReconcilerError, SignedBrokerPlan,
+    SignedOwnershipLease,
 };
+
+/// Reports plan compilation or complete publication validation failure.
+#[derive(Debug, thiserror::Error)]
+pub enum AtomicStorageLifecyclePublicationErrorV1 {
+    /// The canonical lifecycle group could not be compiled for the signed plan.
+    #[error("atomic Storage lifecycle template is invalid: {0}")]
+    Template(#[from] ReconcilerError),
+    /// The resulting complete authority publication is invalid.
+    #[error("atomic Storage lifecycle publication is invalid: {0}")]
+    Publication(#[from] AuthorityPublicationError),
+}
+
+/// Produces a complete authority publication containing the exact Storage group.
+///
+/// This keeps the snapshot template in the same signed assignment publication
+/// as its companion broker templates. The publication store must still commit
+/// the prepared value, and brokers independently verify its signed artifacts.
+///
+/// # Errors
+///
+/// Returns [`AtomicStorageLifecyclePublicationErrorV1`] if the group cannot be
+/// compiled or the complete publication has incomplete or inconsistent grants.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_atomic_storage_lifecycle_publication_v1(
+    manifest: CanonicalAssignmentManifestV1,
+    lease: SignedOwnershipLease,
+    mut required_audiences: Vec<BrokerAudience>,
+    mut companion_templates: Vec<BrokerDispatchTemplateV1>,
+    plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+    fence: LiveRuntimeFenceV1,
+    signed_storage_plan: SignedBrokerPlan,
+) -> Result<PreparedAuthorityPublicationV1, AtomicStorageLifecyclePublicationErrorV1> {
+    let group = compile_atomic_storage_lifecycle_template_v1(plan, fence, signed_storage_plan)?;
+    required_audiences.sort_unstable();
+    companion_templates.push(group);
+    companion_templates.sort_unstable_by_key(|template| {
+        (template.signed_plan().plan().audience(), template.digest())
+    });
+    AuthorityPublicationProposalV1::new(manifest, lease, required_audiences, companion_templates)
+        .prepare()
+        .map_err(Into::into)
+}
 
 /// Compiles one exact grouped Storage request into a signed publication template.
 ///

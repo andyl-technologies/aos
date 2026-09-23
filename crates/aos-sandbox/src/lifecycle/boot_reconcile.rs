@@ -1038,6 +1038,9 @@ pub struct LifecycleAuthenticatedAtomicStorageSuccessorV1 {
     current: LifecycleAuthenticatedStorageInventoryV1,
     program: ObjectDigest,
     observation: ObjectDigest,
+    previous_packet: ObjectDigest,
+    group_packet: ObjectDigest,
+    current_packet: ObjectDigest,
 }
 
 impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
@@ -1126,6 +1129,12 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
         {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
         }
+        let previous_packet =
+            ObjectDigest::from_bytes(Sha256::digest(previous.canonical_packet()).into());
+        let group_packet =
+            ObjectDigest::from_bytes(Sha256::digest(group.canonical_packet()).into());
+        let current_packet =
+            ObjectDigest::from_bytes(Sha256::digest(current.canonical_packet()).into());
         let previous =
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(previous)?;
         let current =
@@ -1220,7 +1229,22 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             current,
             program,
             observation,
+            previous_packet,
+            group_packet,
+            current_packet,
         })
+    }
+
+    pub(super) fn matches_exact_exchange(
+        &self,
+        previous: &AuthenticatedBrokerMethodOutcomeV1,
+        group: &AuthenticatedBrokerMethodOutcomeV1,
+        current: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> bool {
+        self.previous_packet.as_bytes() == Sha256::digest(previous.canonical_packet()).as_slice()
+            && self.group_packet.as_bytes() == Sha256::digest(group.canonical_packet()).as_slice()
+            && self.current_packet.as_bytes()
+                == Sha256::digest(current.canonical_packet()).as_slice()
     }
 
     pub(super) const fn current(&self) -> &LifecycleAuthenticatedStorageInventoryV1 {

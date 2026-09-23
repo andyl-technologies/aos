@@ -5,6 +5,7 @@
 //! recovery, and postcommit capabilities, but remains disconnected from the
 //! controller, public protocol, and readiness advertisement.
 
+mod atomic_snapshot_source;
 mod attempt;
 mod auxiliary_checkpoint;
 mod auxiliary_payload;
@@ -43,6 +44,11 @@ mod snapshot_barrier;
 mod suspension;
 mod verification;
 
+pub use atomic_snapshot_source::{
+    LifecycleAtomicSnapshotSourceAdmissionV1, LifecycleAtomicSnapshotSourceCompletionV1,
+    LifecycleAtomicSnapshotSourceErrorV1, LifecycleAtomicSnapshotSourceRecoveryV1,
+    LifecycleAtomicSnapshotSourceStoreV1,
+};
 pub use attempt::{
     LifecycleAmbiguousResumeV1, LifecycleAttemptHistoryV1, LifecycleAttemptStateV1,
     LifecycleEffectAttemptV1, LifecycleEffectDirectionV1, MAXIMUM_LIFECYCLE_ATTEMPTS,
