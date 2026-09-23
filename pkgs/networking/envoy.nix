@@ -1415,7 +1415,16 @@ in
                 find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
                   while read f; do
                     sed -i "1s|^#!/bin/sh|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
-                  done${lib.optionalString isDarwinCross ''
+                  done${lib.optionalString (!isDarwinCross) ''
+
+                # LuaJIT runs minilua during its build. Keep that helper native
+                # and omit target linker flags from its host link command.
+                luajit_build="$TMPDIR/repo-overrides/com_github_luajit_luajit/luajit_build.sh"
+                test -f "$luajit_build"
+                test "$(grep -Fc 'EXTRA_MAKE_ARGS=()' "$luajit_build")" = 1
+                sed -i '/^EXTRA_MAKE_ARGS=()$/a\
+        EXTRA_MAKE_ARGS+=("HOST_CC=${buildPackages.cc}/bin/cc" "HOST_ALDFLAGS=")' "$luajit_build"
+      ''}${lib.optionalString isDarwinCross ''
 
                 # LuaJIT uses small generators while producing its target library.
                 # Keep target flags captured by its configure wrapper, but build and
