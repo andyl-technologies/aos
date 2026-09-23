@@ -76,6 +76,8 @@
         licenses = ["Apache-2.0"];
         sources = [secureBootSource];
       }
+    ]
+    ++ lib.optionals (config.aos.boot.secureBoot.enable && config.aos.boot.secureBoot.externalFinalization.enable) [
       {
         output = artifacts.secure-boot-enrollment-public;
         outputName = "out";
