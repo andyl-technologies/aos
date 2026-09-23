@@ -7,7 +7,7 @@
 //! request validator before dispatch. The in-process client is intentionally a
 //! same-TCB composition aid and does not claim to create a security boundary.
 
-use aos_sandbox_core::{ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_core::{ProtocolVersion, RawPairedClockSample, model::KeyReference};
 use aos_sandbox_ownership_protocol::protocol::{
     MAXIMUM_OWNERSHIP_REQUEST_BYTES, MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
     MINIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipMethodV1,
@@ -39,6 +39,29 @@ pub enum OwnershipProtocolServiceError {
     /// A request or response violates the negotiated semantic protocol.
     #[error("ownership protocol service envelope is invalid: {0}")]
     Protocol(#[from] OwnershipProtocolValidationError),
+}
+
+/// Dispatches one authenticated request to a fixed ownership-authority owner.
+///
+/// The carrier validates its socket, MAC, sequence, and canonical request
+/// before calling this interface. Implementations must retain the durable
+/// authority and issuer in one protected process and reject a substituted
+/// negotiated session before producing a response.
+pub trait OwnershipProtocolRequestHandler {
+    /// Returns the authority generation fixed by protected configuration.
+    fn authority(&self) -> &KeyReference;
+
+    /// Handles one validated request under the exact negotiated session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipProtocolServiceError`] if the session or request
+    /// differs from the handler's protected authority contract.
+    fn handle(
+        &mut self,
+        session: &NegotiatedOwnershipSessionV1,
+        request: &OwnershipRequestEnvelopeV1,
+    ) -> Result<OwnershipResponseEnvelopeV1, OwnershipProtocolServiceError>;
 }
 
 /// Dispatches one negotiated session onto a protected durable authority.
@@ -181,6 +204,27 @@ where
             Ok(response) => status(OwnershipTransactionStatusV1::Completed(response)),
             Err(error) => protocol_error(map_durable_error(error, Some(action))),
         }
+    }
+}
+
+impl<I, C> OwnershipProtocolRequestHandler for DurableOwnershipProtocolService<'_, I, C>
+where
+    I: OwnershipAuthority,
+    C: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    fn authority(&self) -> &KeyReference {
+        self.session.authority()
+    }
+
+    fn handle(
+        &mut self,
+        session: &NegotiatedOwnershipSessionV1,
+        request: &OwnershipRequestEnvelopeV1,
+    ) -> Result<OwnershipResponseEnvelopeV1, OwnershipProtocolServiceError> {
+        if session != &self.session {
+            return Err(OwnershipProtocolServiceError::InvalidSession);
+        }
+        DurableOwnershipProtocolService::handle(self, request)
     }
 }
 

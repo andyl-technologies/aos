@@ -9,9 +9,8 @@
 
 use std::time::Duration;
 
-use aos_sandbox::ownership_service::DurableOwnershipProtocolService;
-use aos_sandbox::{OwnershipAuthority, ProtectedOwnershipClockError};
-use aos_sandbox_core::{RawPairedClockSample, model::KeyReference};
+use aos_sandbox::ownership_service::OwnershipProtocolRequestHandler;
+use aos_sandbox_core::model::KeyReference;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 use aos_sandbox_ownership_protocol::authenticated::{
     OwnershipRecordAuthenticatorV1, OwnershipRecordDirectionV1,
@@ -133,30 +132,28 @@ impl LocalOwnershipAuthorityServerV1 {
     ///
     /// Returns an unavailable error for delivery or deadline failure and an
     /// integrity error for record, sequence, or service-contract mismatch.
-    pub fn serve_one<I, C>(
+    pub fn serve_one<H>(
         &mut self,
-        service: &mut DurableOwnershipProtocolService<'_, I, C>,
+        handler: &mut H,
     ) -> Result<(), LocalOwnershipAuthorityServerErrorV1>
     where
-        I: OwnershipAuthority,
-        C: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+        H: OwnershipProtocolRequestHandler,
     {
-        let result = self.serve_one_inner(service);
+        let result = self.serve_one_inner(handler);
         if result.is_err() {
             self.socket.close();
         }
         result
     }
 
-    fn serve_one_inner<I, C>(
+    fn serve_one_inner<H>(
         &mut self,
-        service: &mut DurableOwnershipProtocolService<'_, I, C>,
+        handler: &mut H,
     ) -> Result<(), LocalOwnershipAuthorityServerErrorV1>
     where
-        I: OwnershipAuthority,
-        C: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+        H: OwnershipProtocolRequestHandler,
     {
-        if service.session() != &self.session {
+        if handler.authority() != self.session.authority() {
             return Err(LocalOwnershipAuthorityServerErrorV1::IntegrityFailure);
         }
         let next_sequence = self
@@ -184,8 +181,8 @@ impl LocalOwnershipAuthorityServerV1 {
         let request = decode_request_v1(&self.session, canonical)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
 
-        let response = service
-            .handle(&request)
+        let response = handler
+            .handle(&self.session, &request)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
         let canonical = encode_response_v1(&self.session, &request, &response)
             .map_err(|_| LocalOwnershipAuthorityServerErrorV1::IntegrityFailure)?;
@@ -208,14 +205,56 @@ impl LocalOwnershipAuthorityServerV1 {
 mod tests {
     use std::thread;
 
-    use aos_sandbox::ownership_resume::OwnershipAuthoritySessionClient;
+    use aos_sandbox::ownership_resume::{
+        OwnershipAuthoritySessionClient, UntrustedOwnershipResponsePartsV1,
+    };
+    use aos_sandbox::ownership_service::OwnershipProtocolServiceError;
     use aos_sandbox_core::{
         ObjectDigest,
         model::{KeyUsage, StableKeyId},
     };
+    use aos_sandbox_ownership_protocol::protocol::{
+        OwnershipRequestBodyV1, OwnershipRequestEnvelopeV1, OwnershipResponseEnvelopeV1,
+        OwnershipResponseOutcomeV1, OwnershipTransactionReferenceV1, OwnershipTransactionStatusV1,
+    };
 
     use super::*;
     use crate::ownership_authority_client::LocalOwnershipAuthorityClientV1;
+
+    struct QueryOnlyHandler {
+        authority: KeyReference,
+        calls: usize,
+    }
+
+    impl OwnershipProtocolRequestHandler for QueryOnlyHandler {
+        fn authority(&self) -> &KeyReference {
+            &self.authority
+        }
+
+        fn handle(
+            &mut self,
+            session: &NegotiatedOwnershipSessionV1,
+            request: &OwnershipRequestEnvelopeV1,
+        ) -> Result<OwnershipResponseEnvelopeV1, OwnershipProtocolServiceError> {
+            self.calls += 1;
+            session
+                .response(
+                    request,
+                    OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Absent),
+                )
+                .map_err(OwnershipProtocolServiceError::Protocol)
+        }
+    }
+
+    fn authority() -> KeyReference {
+        KeyReference::new(
+            StableKeyId::new("test-ownership-authority".to_owned())
+                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
+            3,
+            ObjectDigest::from_bytes([7; 32]),
+            KeyUsage::OwnershipLease,
+        )
+    }
 
     #[test]
     fn accepted_socket_negotiates_the_client_session() {
@@ -223,13 +262,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("test socket pair failed: {error}"));
         let uid = client_socket.peer().credentials().uid();
         let gid = client_socket.peer().credentials().gid();
-        let authority = KeyReference::new(
-            StableKeyId::new("test-ownership-authority".to_owned())
-                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
-            3,
-            ObjectDigest::from_bytes([7; 32]),
-            KeyUsage::OwnershipLease,
-        );
+        let authority = authority();
         let server_authority = authority.clone();
         let server = thread::spawn(move || {
             let socket = SeqpacketSocket::from_owned(server_endpoint)
@@ -258,5 +291,89 @@ mod tests {
             .join()
             .unwrap_or_else(|_| panic!("test server thread panicked"));
         assert_eq!(client.session(), &server_session);
+    }
+
+    fn serve_query(
+        client_secret: [u8; 32],
+    ) -> (
+        Result<UntrustedOwnershipResponsePartsV1, aos_sandbox::OwnershipSessionTransportError>,
+        Result<(), LocalOwnershipAuthorityServerErrorV1>,
+        usize,
+        [u8; 32],
+    ) {
+        let (client_socket, server_endpoint) = SeqpacketSocket::pair_with_record_subjects()
+            .unwrap_or_else(|error| panic!("test socket pair failed: {error}"));
+        let uid = client_socket.peer().credentials().uid();
+        let gid = client_socket.peer().credentials().gid();
+        let authority = authority();
+        let server_authority = authority.clone();
+        let server = thread::spawn(move || {
+            let socket = SeqpacketSocket::from_owned(server_endpoint)
+                .unwrap_or_else(|error| panic!("test server socket adoption failed: {error}"));
+            let mut server = LocalOwnershipAuthorityServerV1::from_accepted(
+                socket,
+                server_authority.clone(),
+                uid,
+                gid,
+                Zeroizing::new([9; 32]),
+                Duration::from_secs(5),
+            )
+            .unwrap_or_else(|error| panic!("test server negotiation failed: {error}"));
+            let mut handler = QueryOnlyHandler {
+                authority: server_authority,
+                calls: 0,
+            };
+            let result = server.serve_one(&mut handler);
+            (result, handler.calls)
+        });
+        let mut client = LocalOwnershipAuthorityClientV1::negotiate(
+            client_socket,
+            authority,
+            uid,
+            gid,
+            Zeroizing::new(client_secret),
+            Duration::from_secs(5),
+        )
+        .unwrap_or_else(|error| panic!("test client negotiation failed: {error}"));
+        let binding = *client.session().binding();
+        let transaction =
+            OwnershipTransactionReferenceV1::new([3; 16], ObjectDigest::from_bytes([4; 32]))
+                .unwrap_or_else(|error| panic!("test transaction failed: {error}"));
+        let request = client
+            .session()
+            .request(OwnershipRequestBodyV1::Query(transaction))
+            .unwrap_or_else(|error| panic!("test request failed: {error}"));
+        let response = client.exchange(&request);
+        let (server_result, calls) = server
+            .join()
+            .unwrap_or_else(|_| panic!("test server thread panicked"));
+        (response, server_result, calls, binding)
+    }
+
+    #[test]
+    fn authenticated_query_reaches_the_handler() {
+        let (response, server_result, calls, binding) = serve_query([9; 32]);
+        assert_eq!(server_result, Ok(()));
+        assert_eq!(calls, 1);
+        assert_eq!(
+            response,
+            Ok(UntrustedOwnershipResponsePartsV1::new(
+                binding,
+                aos_sandbox_ownership_protocol::protocol::OwnershipMethodV1::Query,
+                OwnershipTransactionReferenceV1::new([3; 16], ObjectDigest::from_bytes([4; 32]),)
+                    .unwrap_or_else(|error| panic!("test transaction failed: {error}")),
+                OwnershipResponseOutcomeV1::Status(OwnershipTransactionStatusV1::Absent),
+            )),
+        );
+    }
+
+    #[test]
+    fn wrong_client_mac_never_reaches_the_handler() {
+        let (_, server_result, calls, _) = serve_query([8; 32]);
+        assert_eq!(
+            server_result,
+            Err(LocalOwnershipAuthorityServerErrorV1::IntegrityFailure),
+        );
+        assert_eq!(calls, 0);
     }
 }

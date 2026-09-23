@@ -28,12 +28,18 @@ use aos_sandbox_core::{
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_ownership_protocol::OwnershipAuthorityError;
 use aos_sandbox_ownership_protocol::protocol::OwnershipTransactionReferenceV1;
+use aos_sandbox_ownership_protocol::protocol::{
+    NegotiatedOwnershipSessionV1, OwnershipRequestEnvelopeV1, OwnershipResponseEnvelopeV1,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::ownership_authority::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
     DurableOwnershipQueryOutcome, OwnershipAuthority, OwnershipAuthorityVerifier, OwnershipClaimV1,
     ProtectedOwnershipClockError, UnverifiedOwnershipLeaseResponse,
+};
+use crate::ownership_service::{
+    DurableOwnershipProtocolService, OwnershipProtocolRequestHandler, OwnershipProtocolServiceError,
 };
 
 const PROTECTED_MULTI_NODE_DIRECTORY: &str = "/var/lib/aos/sandbox/multi-node";
@@ -194,6 +200,32 @@ impl ProtectedFixedMultiNodeLeaseOwnerV1 {
     #[must_use]
     pub fn recover(&mut self, recovery: ProtectedLeaseRecoveryV1) -> ProtectedLeaseIssueOutcomeV1 {
         self.authority.recover(recovery)
+    }
+}
+
+impl OwnershipProtocolRequestHandler for ProtectedFixedMultiNodeLeaseOwnerV1 {
+    fn authority(&self) -> &aos_sandbox_core::model::KeyReference {
+        self.authority.durable.authority()
+    }
+
+    fn handle(
+        &mut self,
+        session: &NegotiatedOwnershipSessionV1,
+        request: &OwnershipRequestEnvelopeV1,
+    ) -> Result<OwnershipResponseEnvelopeV1, OwnershipProtocolServiceError> {
+        let ProtectedMultiNodeLeaseAuthorityV1 {
+            durable,
+            issuer,
+            clock,
+        } = &mut self.authority;
+        let mut observe_clock = || clock.sample();
+        let mut service = DurableOwnershipProtocolService::new(
+            session.clone(),
+            durable,
+            issuer,
+            &mut observe_clock,
+        )?;
+        service.handle(request)
     }
 }
 
