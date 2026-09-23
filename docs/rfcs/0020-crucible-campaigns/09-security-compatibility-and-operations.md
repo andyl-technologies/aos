@@ -38,7 +38,9 @@ unbounded guest strings into logs.
   admitted guest choice domain.
 - **[CSEC-3]** Guest choice deadlock is bounded by modeled timeout and lifecycle
   policy. The host MUST publish whether timeout occurred before or after a
-  selection was committed.
+  selection was committed. A campaign-policy virtual-time or scheduler-quantum
+  timeout is a replayable modeled result; expiry of the optional host watchdog
+  is an infrastructure abort and MUST NOT be published as a guest timeout.
 
 ## 09.3 Resource admission
 

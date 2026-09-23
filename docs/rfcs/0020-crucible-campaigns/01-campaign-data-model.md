@@ -123,6 +123,7 @@ pub struct CampaignPolicy {
     pub objectives: Vec<Objective>,
     pub guidance: Vec<GuidanceWeight>,
     pub stop_conditions: Vec<NamedStopCondition>,
+    pub attempt_timeout_policy: Option<CampaignAttemptTimeoutPolicy>,
     pub fairness: FairnessPolicy,
     pub retention: RetentionPolicy,
 }
@@ -142,6 +143,16 @@ reproducibility rather than arrival-order-independent campaign evolution.
 The mode is fixed for one campaign ref because it selects the observation-fold
 and reproducibility contract. Steering may activate another policy only with
 the same mode; changing mode requires deriving a new campaign.
+
+An optional attempt timeout bounds the requested stop by positive absolute
+virtual-time and/or completed-scheduler-quantum coordinates from scenario
+genesis. The first modeled bound reached produces a typed timeout observation;
+terminal and assertion outcomes take precedence, and virtual time wins a
+same-quantum tie between bounds. The policy may also name an optional finite
+host completion watchdog. Its wall-clock expiry aborts the assignment as an
+infrastructure failure and cannot become a modeled timeout or finding.
+An authenticated branch request carries the active policy's modeled bound in
+its canonical stop, including requests authored through the CLI.
 
 Resource placement is not policy. Worker count, memory limits, CPU affinity,
 host names, store endpoint, and cache inventory are daemon configuration.

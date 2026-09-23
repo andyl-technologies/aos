@@ -209,10 +209,11 @@ to those exact verifier-imported artifact IDs and fixes Crucible, QEMU,
 component-protocol, scenario-schema, and exact-closure-schema compatibility. It
 admits at most 1 MiB and reports the exact content-derived
 `CampaignLineageId`. The strict
-version-two TOML schema names the exact scenario semantic ID, 32-byte lowercase
+version-three TOML schema names the exact scenario semantic ID, 32-byte lowercase
 hexadecimal seed, campaign mode, one closed explorer variant, ordered choice
 generator references, objectives, guidance weights, stop conditions, fairness,
-retention, and default-admission intent. The compiler admits at most 16 MiB,
+retention, default-admission intent, and optional `[attempt_timeout]` modeled
+virtual-time/quantum bounds and host watchdog. The compiler admits at most 16 MiB,
 rejects unknown fields and duplicate semantic keys, constructs the public typed
 policy values so every canonical invariant is shared with repository decoding,
 and only then durably installs a new canonical binary record without replacing
