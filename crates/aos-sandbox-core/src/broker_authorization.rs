@@ -109,6 +109,10 @@ pub enum BrokerVerb {
     HostObserve,
     /// Inventories host runtimes for an assignment.
     HostInventory,
+    /// Admits one exact guest execution action for a protected runtime.
+    HostApplyExecution,
+    /// Reads one exact guest execution outcome for a protected runtime.
+    HostQueryExecution,
     /// Creates a detached mount and mints its handle.
     MountCreate,
     /// Installs an existing detached mount.
@@ -217,6 +221,8 @@ impl BrokerVerb {
             35 => Ok(Self::MountAcquireSource),
             36 => Ok(Self::MountReleaseSourceAcquisition),
             37 => Ok(Self::StorageAtomicSnapshot),
+            38 => Ok(Self::HostApplyExecution),
+            39 => Ok(Self::HostQueryExecution),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -262,6 +268,8 @@ impl BrokerVerb {
             Self::MountAcquireSource => 35,
             Self::MountReleaseSourceAcquisition => 36,
             Self::StorageAtomicSnapshot => 37,
+            Self::HostApplyExecution => 38,
+            Self::HostQueryExecution => 39,
         }
     }
 
@@ -275,7 +283,9 @@ impl BrokerVerb {
             | Self::HostThaw
             | Self::HostKill
             | Self::HostObserve
-            | Self::HostInventory => BrokerAudience::Host,
+            | Self::HostInventory
+            | Self::HostApplyExecution
+            | Self::HostQueryExecution => BrokerAudience::Host,
             Self::MountCreate
             | Self::MountInstall
             | Self::MountReplace
@@ -313,6 +323,8 @@ impl BrokerVerb {
         match self {
             Self::HostLaunch
             | Self::HostInventory
+            | Self::HostApplyExecution
+            | Self::HostQueryExecution
             | Self::MountCreate
             | Self::MountInventorySummary
             | Self::MountInventoryResources
@@ -1469,6 +1481,8 @@ mod tests {
             (35, BrokerVerb::MountAcquireSource),
             (36, BrokerVerb::MountReleaseSourceAcquisition),
             (37, BrokerVerb::StorageAtomicSnapshot),
+            (38, BrokerVerb::HostApplyExecution),
+            (39, BrokerVerb::HostQueryExecution),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1477,7 +1491,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(38),
+            BrokerVerb::from_code(40),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(

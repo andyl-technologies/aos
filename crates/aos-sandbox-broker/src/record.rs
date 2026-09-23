@@ -511,9 +511,13 @@ impl BrokerEffectIntentV1 {
 
     fn validate(&self) -> Result<(), AuthorizationRecordError> {
         let target_valid = match (self.verb, self.target) {
-            (BrokerVerb::HostLaunch | BrokerVerb::HostInventory, BrokerGrantTarget::Assignment) => {
-                true
-            }
+            (
+                BrokerVerb::HostLaunch
+                | BrokerVerb::HostInventory
+                | BrokerVerb::HostApplyExecution
+                | BrokerVerb::HostQueryExecution,
+                BrokerGrantTarget::Assignment,
+            ) => true,
             (
                 BrokerVerb::HostStop
                 | BrokerVerb::HostFreeze

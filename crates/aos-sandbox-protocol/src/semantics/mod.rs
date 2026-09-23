@@ -9,6 +9,7 @@
 
 pub mod destination_slot;
 pub mod host;
+pub mod host_execution;
 pub mod mount;
 pub mod mount_scope;
 pub mod mount_source_acquisition;
@@ -25,6 +26,11 @@ pub use destination_slot::{
 pub use host::{
     CanonicalHostSemanticsV1, HostSemanticError, canonical_host_semantics_v1, runtime_handle_v1,
     runtime_resource_handle,
+};
+pub use host_execution::{
+    CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1,
+    canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
+    host_execution_apply_grant_v1, host_execution_query_grant_v1,
 };
 pub use mount::{
     CanonicalMountSemanticsV1, CanonicalPrecatalogMountCreateV1, DecodedCanonicalMountSemanticsV1,

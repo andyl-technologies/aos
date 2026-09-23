@@ -434,6 +434,8 @@ mod tests {
             BrokerVerb::HostKill,
             BrokerVerb::HostObserve,
             BrokerVerb::HostInventory,
+            BrokerVerb::HostApplyExecution,
+            BrokerVerb::HostQueryExecution,
             BrokerVerb::MountCreate,
             BrokerVerb::MountInstall,
             BrokerVerb::MountReplace,
@@ -471,6 +473,8 @@ mod tests {
             let target = match verb {
                 BrokerVerb::HostLaunch
                 | BrokerVerb::HostInventory
+                | BrokerVerb::HostApplyExecution
+                | BrokerVerb::HostQueryExecution
                 | BrokerVerb::MountCreate
                 | BrokerVerb::MountInventorySummary
                 | BrokerVerb::MountInventoryResources
