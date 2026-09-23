@@ -197,7 +197,7 @@ impl CampaignAttemptTimeoutPolicy {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError::InvalidValue`] for absent or zero modeled
-    /// bounds, or a host watchdog outside 1 through 3,600,000 milliseconds.
+    /// bounds, or a zero host watchdog.
     pub fn new(
         virtual_time_nanoseconds: Option<u64>,
         execution_quanta: Option<u64>,
@@ -213,11 +213,9 @@ impl CampaignAttemptTimeoutPolicy {
                 reason: "attempt timeout policy has a zero modeled bound",
             });
         }
-        if host_completion_watchdog_ms
-            .is_some_and(|milliseconds| milliseconds == 0 || milliseconds > 3_600_000)
-        {
+        if host_completion_watchdog_ms == Some(0) {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "attempt timeout host watchdog is outside 1..=3600000 milliseconds",
+                reason: "attempt timeout host watchdog is zero",
             });
         }
         Ok(Self {
