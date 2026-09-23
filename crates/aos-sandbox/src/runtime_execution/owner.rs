@@ -691,6 +691,33 @@ pub struct AuthenticatedRecoveredHostAgentOutcomeV1 {
     effect_request: ObjectDigest,
 }
 
+/// Owns a Host-committed guest outcome and its original observation identity.
+pub struct CommittedHostAgentOutcomeV1 {
+    authenticated: AuthenticatedRecoveredHostAgentOutcomeV1,
+    observation_sequence: ObservationSequence,
+    observation_commitment: ObjectDigest,
+}
+
+impl CommittedHostAgentOutcomeV1 {
+    /// Borrows the signature-verified guest outcome and original request.
+    #[must_use]
+    pub const fn authenticated(&self) -> &AuthenticatedRecoveredHostAgentOutcomeV1 {
+        &self.authenticated
+    }
+
+    /// Returns the sole Host observation sequence assigned to this packet.
+    #[must_use]
+    pub const fn observation_sequence(&self) -> ObservationSequence {
+        self.observation_sequence
+    }
+
+    /// Returns the verified Host observation commitment assigned before crash.
+    #[must_use]
+    pub const fn observation_commitment(&self) -> ObjectDigest {
+        self.observation_commitment
+    }
+}
+
 impl AuthenticatedRecoveredHostAgentOutcomeV1 {
     /// Borrows the original protected Host-to-agent request.
     #[must_use]
@@ -1797,10 +1824,16 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         &mut self,
         operation: &[u8; 16],
         packet: &aos_sandbox_agent::SignedAgentOutcomePacketV1,
+        observation_sequence: ObservationSequence,
+        observation_commitment: ObjectDigest,
     ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
         self.validate_current()?;
-        self.execution
-            .commit_signed_agent_outcome_packet(operation, packet)?;
+        self.execution.commit_signed_agent_outcome_packet(
+            operation,
+            packet,
+            observation_sequence,
+            observation_commitment,
+        )?;
         Ok(())
     }
 
@@ -1816,12 +1849,19 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     pub fn recover_committed_host_agent_outcome(
         &self,
         operation: &[u8; 16],
-    ) -> Result<Option<AuthenticatedRecoveredHostAgentOutcomeV1>, DormantRuntimeExecutionOwnerErrorV1>
-    {
+    ) -> Result<Option<CommittedHostAgentOutcomeV1>, DormantRuntimeExecutionOwnerErrorV1> {
         self.validate_current()?;
         self.execution
             .load_signed_agent_outcome_packet(operation)?
-            .map(|packet| self.authenticate_recovered_agent_outcome_packet(operation, packet))
+            .map(|record| {
+                let (packet, observation_sequence, observation_commitment) = record.into_parts();
+                Ok(CommittedHostAgentOutcomeV1 {
+                    authenticated: self
+                        .authenticate_recovered_agent_outcome_packet(operation, packet)?,
+                    observation_sequence,
+                    observation_commitment,
+                })
+            })
             .transpose()
     }
 
