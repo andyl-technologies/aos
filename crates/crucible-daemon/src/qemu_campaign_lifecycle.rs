@@ -422,6 +422,7 @@ pub(crate) use evidence::{
 };
 
 mod campaign_run;
+pub(crate) use campaign_run::GuardedCampaignReplaySelection;
 #[cfg(any(test, feature = "test-support"))]
 pub use campaign_run::test_support::{
     GuardedDefaultCampaignTestTrace, run_guarded_default_campaign_test_fixture,

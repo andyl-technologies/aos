@@ -84,6 +84,7 @@ pub use finding_export::{
 };
 
 mod replay_closure;
+pub(crate) use replay_closure::GuardedCampaignReplaySelection;
 pub use replay_closure::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     validate_remote_resume_replay_closure,
