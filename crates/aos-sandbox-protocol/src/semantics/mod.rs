@@ -57,7 +57,8 @@ pub use storage::{
     CanonicalStorageSemanticsV1, CatalogBindingV1, StorageOperation, StorageSemanticsError,
 };
 pub use storage_guest_root::{
-    CanonicalStorageGuestRootSemanticsV1, decode_storage_guest_root_response_v1,
+    CanonicalStorageGuestRootArgumentsV1, CanonicalStorageGuestRootSemanticsV1,
+    decode_storage_guest_root_response_v1,
 };
 pub use storage_prepare::{
     CanonicalStoragePreparationSemanticsV1, StoragePreparationOperationV1,
