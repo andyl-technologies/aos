@@ -119,6 +119,7 @@ mod public_api;
 mod public_hierarchy;
 mod public_services;
 mod public_watch;
+mod storage_snapshot;
 mod view_mutations;
 
 const STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
@@ -465,7 +466,7 @@ fn controller_worker(
     let mut next_cycle = Instant::now();
     loop {
         if Instant::now() >= next_cycle {
-            match run_controller_cycle(&mut controller, node_id, &sessions) {
+            match run_controller_cycle(&mut controller, node_id, &sessions, !ready) {
                 Ok(catalog) => {
                     let update = capabilities
                         .lock()
@@ -892,12 +893,16 @@ fn run_controller_cycle(
     controller: &mut ProductionController,
     node_id: [u8; 16],
     sessions: &SharedControllerBrokerSessions,
+    cold_start: bool,
 ) -> Result<CatalogStatus, CycleFailure> {
     {
         let mut sessions = sessions
             .lock()
             .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
         ensure_controller_broker_sessions(node_id, &mut sessions)?;
+        if cold_start {
+            audit_pending_atomic_snapshot_sources(controller, &mut sessions)?;
+        }
     }
     let mut state = (controller, sessions);
     pending_first_reconciliation_cycle(
@@ -923,9 +928,52 @@ fn run_controller_cycle(
             let mut sessions = sessions
                 .lock()
                 .map_err(|_| CycleFailure::Fatal("broker session lock is poisoned".to_owned()))?;
+            audit_pending_atomic_snapshot_sources(controller, &mut sessions)?;
             refresh_catalog(controller, node_id, &mut sessions)
         },
     )
+}
+
+fn audit_pending_atomic_snapshot_sources(
+    controller: &mut ProductionController,
+    sessions: &mut ControllerBrokerSessions,
+) -> Result<(), CycleFailure> {
+    // A crash after the group terminal but before its immediate successor
+    // cannot be repaired with a fresh inventory: it would have a new session
+    // binding and would not prove the adjacent one-generation transition.
+    let pending = controller
+        .pending_atomic_snapshot_sources()
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let storage = sessions.storage.as_mut().ok_or_else(|| {
+        CycleFailure::Retryable("protected Storage session is unavailable".to_owned())
+    })?;
+    for (_, source) in pending {
+        let aos_sandbox::lifecycle::LifecycleAtomicSnapshotSourceRecoveryV1::Pending {
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session,
+        } = source
+        else {
+            return Err(CycleFailure::Fatal(
+                "pending Storage source scan returned a terminal record".to_owned(),
+            ));
+        };
+        storage
+            .recover_prior_atomic_snapshot_history(
+                request_id,
+                request_packet,
+                predecessor_packet,
+                session,
+            )
+            .map_err(|error| CycleFailure::Retryable(format!("{error:?}")))?;
+    }
+    Err(CycleFailure::Retryable(
+        "pending Storage source holds the prior broker-session history".to_owned(),
+    ))
 }
 
 fn pending_first_reconciliation_cycle<State, Pending, Status, Error>(
@@ -1545,6 +1593,7 @@ struct ProductionEffectExecutor {
     node: NodeId,
     process_start: Option<([u8; 16], u64)>,
     pending_source_commit: Option<PendingSourceCommit>,
+    pending_atomic_snapshot: Option<storage_snapshot::PendingAtomicSnapshotV1>,
 }
 
 struct PendingSourceCommit {
@@ -1592,6 +1641,7 @@ impl ProductionEffectExecutor {
             node,
             process_start: current_boot_and_boottime(),
             pending_source_commit: None,
+            pending_atomic_snapshot: None,
         })
     }
 
@@ -3658,6 +3708,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
                 ));
             }
+            if self.advance_storage_lifecycle_effect(operation_id, journal)? {
+                return Err(EffectFailure::Retryable(
+                    CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
+                ));
+            }
             if self.advance_lifecycle_semantic_commit(operation_id, journal)? {
                 return Err(EffectFailure::Retryable(
                     CONTROLLER_ORCHESTRATION_PENDING.to_owned(),
@@ -3746,6 +3801,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 EffectFailure::Permanent("durable authority effect is malformed".to_owned())
             })?
             .method();
+        if method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+            && self.pending_atomic_snapshot.is_some()
+        {
+            return Err(EffectFailure::Retryable(
+                "Storage session is reserved for an atomic snapshot".to_owned(),
+            ));
+        }
         let mut sessions = self
             .sessions
             .lock()

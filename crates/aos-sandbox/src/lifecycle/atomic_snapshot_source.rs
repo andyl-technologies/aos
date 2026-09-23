@@ -87,6 +87,10 @@ pub enum LifecycleAtomicSnapshotSourceRecoveryV1 {
         request_id: [u8; 16],
         /// The original authority request packet commitment.
         request_packet: ObjectDigest,
+        /// The exact signed predecessor inventory packet commitment.
+        predecessor_packet: ObjectDigest,
+        /// The original authenticated Storage session binding.
+        session: ObjectDigest,
     },
     /// The original request and adjacent inventory transition are durable.
     Complete {
@@ -109,6 +113,40 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
     #[must_use]
     pub const fn new(journal: &'a mut Journal) -> Self {
         Self { journal }
+    }
+
+    /// Lists durable pending reservations before any new Storage session request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protected authority is absent or a source record is
+    /// corrupt. Callers must not roll the broker-session history over on error.
+    pub fn pending_reservations(
+        &self,
+    ) -> Result<
+        Vec<(OperationId, LifecycleAtomicSnapshotSourceRecoveryV1)>,
+        LifecycleAtomicSnapshotSourceErrorV1,
+    > {
+        self.journal.ensure_protected_authority()?;
+        let mut pending = Vec::new();
+        for (key, bytes) in self.journal.records(NAMESPACE) {
+            let record = SourceRecord::decode(bytes)?;
+            if key != record.operation.as_slice() {
+                return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
+            }
+            if record.completion.is_none() {
+                pending.push((
+                    OperationId::from_bytes(record.operation),
+                    LifecycleAtomicSnapshotSourceRecoveryV1::Pending {
+                        request_id: record.request_id,
+                        request_packet: ObjectDigest::from_bytes(record.request_packet),
+                        predecessor_packet: ObjectDigest::from_bytes(record.predecessor_packet),
+                        session: ObjectDigest::from_bytes(record.session),
+                    },
+                ));
+            }
+        }
+        Ok(pending)
     }
 
     /// Durably reserves the exact selected Storage group before broker I/O.
@@ -304,8 +342,49 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
             None => Ok(LifecycleAtomicSnapshotSourceRecoveryV1::Pending {
                 request_id: record.request_id,
                 request_packet: ObjectDigest::from_bytes(record.request_packet),
+                predecessor_packet: ObjectDigest::from_bytes(record.predecessor_packet),
+                session: ObjectDigest::from_bytes(record.session),
             }),
         }
+    }
+
+    /// Reconstructs lifecycle progress from an already durable terminal join.
+    ///
+    /// The source record was written only after the exact three signed
+    /// exchanges passed the fixed Storage attestation. Recovery checks the
+    /// same operation revision and reserved effect before replaying progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for absent, pending, corrupt, or stale source custody.
+    pub fn recover_complete_observation(
+        &self,
+        current: &CurrentLifecycleOperationV1<'_>,
+        barrier: &LifecycleSnapshotBarrierV1,
+    ) -> Result<LifecycleEffectObservationV1, LifecycleAtomicSnapshotSourceErrorV1> {
+        self.journal.ensure_protected_authority()?;
+        let retained = self
+            .load(current.operation().operation_id().into_bytes())?
+            .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+        let completion = retained
+            .completion
+            .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
+        let effect = barrier.next_effect(current).map_err(stale_lifecycle)?;
+        if retained.operation_record != *current.record().digest().as_bytes()
+            || retained.projection != *current.projection_root().as_bytes()
+            || retained.effect != *effect.payload().as_bytes()
+        {
+            return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
+        }
+        LifecycleEffectObservationV1::from_authenticated_readback(
+            effect.request(),
+            ObjectDigest::from_bytes(completion.observation),
+            ObjectDigest::from_bytes(completion.successor),
+            completion.successor_generation,
+            ObjectDigest::from_bytes(retained.source),
+            ObjectDigest::from_bytes(completion.program),
+        )
+        .map_err(stale_lifecycle)
     }
 
     fn load(

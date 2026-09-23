@@ -1270,6 +1270,22 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn prior_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+    ) -> Result<crate::recovery::ProtectedPriorAtomicStorageHistoryV1, BrokerSessionSecurityError>
+    {
+        self.0.prior_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+        )
+    }
+
     /// Recovers this exact Apply from protected terminal session history.
     ///
     /// The lookup happens before a new initial request can roll over the prior

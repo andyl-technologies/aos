@@ -67,6 +67,34 @@ pub(crate) struct ProtectedPriorTerminalExchangeV1 {
     pub(crate) result: Result<Vec<u8>, String>,
 }
 
+/// Classifies the exact prior-session Storage group without sending another request.
+pub(crate) enum ProtectedPriorAtomicStorageHistoryV1 {
+    /// No request with the reserved ID and packet was journaled.
+    Absent,
+    /// The request or its adjacent signed successor is not terminal.
+    Incomplete,
+    /// The protected history retains all three adjacent successful exchanges.
+    Complete {
+        predecessor_request: Vec<u8>,
+        predecessor_outcome: Vec<u8>,
+        group_request: Vec<u8>,
+        group_outcome: Vec<u8>,
+        successor_request: Vec<u8>,
+        successor_outcome: Vec<u8>,
+    },
+}
+
+fn successful_terminal(
+    record: &aos_sandbox_broker_session_protocol::BrokerSessionDurableRecordV1,
+) -> Result<bool, BrokerSessionSecurityError> {
+    let packet = record
+        .outcome_packet()
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let outcome = decode_canonical_response_v1(packet)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    Ok(outcome.message().error.as_option().is_none())
+}
+
 /// Classifies a broker-side packet before request installation or effect dispatch.
 pub(crate) enum ProtectedBrokerReceivedRequestAdmissionV1 {
     /// A new authenticated request that still requires its protected request CAS.
@@ -370,6 +398,29 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Reads the exact protected Storage group and adjacent signed inventories.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prior_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<ProtectedPriorAtomicStorageHistoryV1, BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let history = self.journal.prior_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            transcript.protocol(),
+        )?;
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(history)
+    }
+
     /// Recovers an exact completed client exchange before session rollover.
     pub(crate) fn prior_terminal_exchange(
         &mut self,
@@ -984,6 +1035,98 @@ fn reconstruct_retained_server_request(
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    fn prior_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+        protocol: BrokerSessionProtocolV1,
+    ) -> Result<ProtectedPriorAtomicStorageHistoryV1, BrokerSessionSecurityError> {
+        let Some(stored) = self.read_optional(protocol)? else {
+            return Ok(ProtectedPriorAtomicStorageHistoryV1::Absent);
+        };
+        let history = stored.history_model()?;
+        let records = history.records();
+        let matching = records.iter().enumerate().filter(|(_, record)| {
+            record.endpoint() == BrokerSessionDurableEndpointV1::Client
+                && record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                && record.request_id() == request_id
+                && Sha256::digest(record.request_packet()).as_slice() == request_packet
+        });
+        let mut matching = matching.peekable();
+        let Some((index, group)) = matching.next() else {
+            return Ok(ProtectedPriorAtomicStorageHistoryV1::Absent);
+        };
+        let (group_index, group) = if group.phase() == BrokerSessionDurablePhaseV1::RequestPrepared
+        {
+            let Some((terminal_index, terminal)) = matching.next() else {
+                return Ok(ProtectedPriorAtomicStorageHistoryV1::Incomplete);
+            };
+            if terminal_index != index + 1
+                || terminal.phase() != BrokerSessionDurablePhaseV1::Terminal
+                || matching.next().is_some()
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            (terminal_index, terminal)
+        } else {
+            return Err(BrokerSessionSecurityError::Currentness);
+        };
+        let predecessor = group_index
+            .checked_sub(2)
+            .and_then(|index| records.get(index))
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let successor = records.get(group_index + 2);
+        if predecessor.phase() != BrokerSessionDurablePhaseV1::Terminal
+            || predecessor.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            || Sha256::digest(
+                predecessor
+                    .outcome_packet()
+                    .ok_or(BrokerSessionSecurityError::Currentness)?,
+            )
+            .as_slice()
+                != predecessor_packet
+            || predecessor.session_binding() != session_binding
+            || group.session_binding() != session_binding
+            || predecessor.client_sequence().checked_add(1) != Some(group.client_sequence())
+            || predecessor.broker_sequence().checked_add(1) != Some(group.broker_sequence())
+            || !successful_terminal(predecessor)?
+            || !successful_terminal(group)?
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let Some(successor) = successor else {
+            return Ok(ProtectedPriorAtomicStorageHistoryV1::Incomplete);
+        };
+        if successor.phase() != BrokerSessionDurablePhaseV1::Terminal
+            || successor.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            || successor.session_binding() != session_binding
+            || group.client_sequence().checked_add(1) != Some(successor.client_sequence())
+            || group.broker_sequence().checked_add(1) != Some(successor.broker_sequence())
+            || !successful_terminal(successor)?
+        {
+            return Ok(ProtectedPriorAtomicStorageHistoryV1::Incomplete);
+        }
+        Ok(ProtectedPriorAtomicStorageHistoryV1::Complete {
+            predecessor_request: predecessor.request_packet().to_vec(),
+            predecessor_outcome: predecessor
+                .outcome_packet()
+                .ok_or(BrokerSessionSecurityError::Currentness)?
+                .to_vec(),
+            group_request: group.request_packet().to_vec(),
+            group_outcome: group
+                .outcome_packet()
+                .ok_or(BrokerSessionSecurityError::Currentness)?
+                .to_vec(),
+            successor_request: successor.request_packet().to_vec(),
+            successor_outcome: successor
+                .outcome_packet()
+                .ok_or(BrokerSessionSecurityError::Currentness)?
+                .to_vec(),
+        })
+    }
+
     fn prior_terminal_exchange(
         &mut self,
         method: BrokerMethod,

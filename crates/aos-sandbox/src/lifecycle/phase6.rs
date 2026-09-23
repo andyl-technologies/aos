@@ -1918,7 +1918,7 @@ pub struct LifecycleEffectObservationV1 {
 }
 
 impl LifecycleEffectObservationV1 {
-    fn from_authenticated_readback(
+    pub(super) fn from_authenticated_readback(
         request: LifecycleEffectRequestV1,
         result: ObjectDigest,
         inventory: ObjectDigest,

@@ -866,7 +866,7 @@ impl LifecycleStorageTransitionEntryV1 {
 }
 
 /// Retains a complete authenticated Storage physical inventory, including empty families.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleAuthenticatedStorageInventoryV1 {
     generation: u64,
     source: ObjectDigest,
@@ -1034,6 +1034,7 @@ pub struct LifecycleAuthenticatedStorageReadbackV1 {
 }
 
 /// Carries one exact protected Storage inventory change for an atomic group.
+#[derive(Clone)]
 pub struct LifecycleAuthenticatedAtomicStorageSuccessorV1 {
     current: LifecycleAuthenticatedStorageInventoryV1,
     program: ObjectDigest,

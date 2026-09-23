@@ -25,7 +25,8 @@ use aos_sandbox_linux::seqpacket::{
 };
 
 use crate::recovery::{
-    FixedEndpointCustodyV1, ProtectedBrokerSessionOwnerV1, ProtectedPriorTerminalExchangeV1,
+    FixedEndpointCustodyV1, ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
+    ProtectedPriorTerminalExchangeV1,
 };
 use crate::{
     BrokerSessionSecurityError, ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1,
@@ -1205,6 +1206,23 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn prior_atomic_storage_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: [u8; 32],
+        predecessor_packet: [u8; 32],
+        session_binding: [u8; 32],
+    ) -> Result<ProtectedPriorAtomicStorageHistoryV1, BrokerSessionSecurityError> {
+        self.owner.prior_atomic_storage_history(
+            request_id,
+            request_packet,
+            predecessor_packet,
+            session_binding,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn prior_terminal_exchange(
         &mut self,
         method: aos_proto::aos::sandbox::local::v1::BrokerMethod,

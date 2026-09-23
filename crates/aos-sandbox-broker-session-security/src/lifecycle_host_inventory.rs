@@ -28,6 +28,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use buffa::Message as _;
 
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::recovery::ProtectedPriorAtomicStorageHistoryV1;
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
     DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
@@ -836,6 +837,14 @@ pub struct DormantAtomicStorageInventoryFinishRecoveryV1 {
     query: DormantLifecycleInventoryQueryRecoveryV1,
 }
 
+impl DormantAtomicStorageInventoryFinishRecoveryV1 {
+    /// Borrows the retained exact grouped response while its successor query resolves.
+    #[must_use]
+    pub const fn group_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.group
+    }
+}
+
 /// Reports a completed atomic Storage join or its exact resumable custody.
 #[must_use = "consume the successor or retain and resume protected custody"]
 pub enum DormantAtomicStorageInventoryFinishProgressV1 {
@@ -851,6 +860,7 @@ pub enum DormantAtomicStorageInventoryFinishProgressV1 {
 /// the fixed endpoint attestation verifies their predecessor/group/successor
 /// relationship. A lifecycle source record can then commit their exact hashes.
 #[must_use = "retain the verified successor and adjacent signed packet evidence"]
+#[derive(Clone)]
 pub struct DormantAtomicStorageInventoryCompletionV1 {
     successor: LifecycleAuthenticatedAtomicStorageSuccessorV1,
     predecessor: AuthenticatedBrokerMethodOutcomeV1,
@@ -898,6 +908,34 @@ impl DormantAtomicStorageInventoryCompletionV1 {
 }
 
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Inspects the exact old Storage session before a new request rolls it over.
+    pub(crate) fn recover_prior_atomic_snapshot_history(
+        &mut self,
+        request_id: [u8; 16],
+        request_packet: aos_sandbox_core::ObjectDigest,
+        predecessor_packet: aos_sandbox_core::ObjectDigest,
+        session_binding: aos_sandbox_core::ObjectDigest,
+    ) -> Result<ProtectedPriorAtomicStorageHistoryV1, EffectFailure> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
+            return Err(EffectFailure::Retryable(
+                "Storage session has retained recovery work".to_owned(),
+            ));
+        }
+        self.0
+            .session
+            .prior_atomic_storage_history(
+                request_id,
+                *request_packet.as_bytes(),
+                *predecessor_packet.as_bytes(),
+                *session_binding.as_bytes(),
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "protected Storage session history is unavailable".to_owned(),
+                )
+            })
+    }
+
     /// Sends one lifecycle-bound atomic Storage group through retained session custody.
     ///
     /// The caller must retain the predecessor until the authenticated group

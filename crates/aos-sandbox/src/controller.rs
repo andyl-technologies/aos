@@ -2744,6 +2744,25 @@ where
     C: ActivatedOperationCompiler,
     E: SingleNodeEffectExecutor,
 {
+    /// Lists pending grouped Storage sources before broker-session rollover.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sole controller journal is not protected or
+    /// one source record is corrupt.
+    pub fn pending_atomic_snapshot_sources(
+        &mut self,
+    ) -> Result<
+        Vec<(
+            OperationId,
+            crate::lifecycle::LifecycleAtomicSnapshotSourceRecoveryV1,
+        )>,
+        crate::lifecycle::LifecycleAtomicSnapshotSourceErrorV1,
+    > {
+        crate::lifecycle::LifecycleAtomicSnapshotSourceStoreV1::new(self.reconciler.journal_mut())
+            .pending_reservations()
+    }
+
     /// Borrows the sole protected journal for a dormant operator-recovery transition.
     ///
     /// The returned owner dispatches no runtime action and registers no route;
