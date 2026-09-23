@@ -176,6 +176,8 @@ in {
     system.build.staticAbilityContract = staticAbilityContract;
     aos.boot.initrd.packageRoots = lib.mkIf config.aos.boot.initrd.abilityHandoff.enable [
       pkgs.aos
+      # The initrd configuration materializer runs from this separate output.
+      pkgs.aos.packageRuntime
     ];
   };
 }
