@@ -359,6 +359,7 @@ in {
       maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
       maxDownloadMiB = positiveMiB 640 "Maximum compressed raw disk-image object size.";
       maxConvertedDownloadMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum uncompressed qcow2, VMDK, or VHD disk-image object size.";
+      maxRecoveryBundleMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum compressed recovery archive size.";
     };
   };
 
