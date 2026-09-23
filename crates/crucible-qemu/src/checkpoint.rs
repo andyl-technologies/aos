@@ -177,6 +177,12 @@ impl QemuNodeContinuationCheckpoint {
         self.next_fault_event_sequence
     }
 
+    /// Returns the number of host-routed frames admitted to this node at capture.
+    #[must_use]
+    pub const fn next_router_inbound_sequence(&self) -> u64 {
+        self.network_transport.next_router_inbound_sequence
+    }
+
     /// Returns the next plugin-owned network TX sequence after restore.
     #[must_use]
     pub const fn next_plugin_network_output_sequence(&self) -> u64 {

@@ -6,7 +6,9 @@
 
 use std::fmt::{self, Write as _};
 
-use crucible::{AdvanceOutcome, Configuration, Icount, ScenarioDefForm};
+use crucible::{
+    AdvanceOutcome, Configuration, Decision, Icount, ScenarioDefForm, SingleSchedulerCheckpoint,
+};
 use crucible_campaign::{CampaignHash, ConfigurationId, ScenarioDefId, SelectionOrigin};
 use crucible_protocol::SelectionReply;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
@@ -21,9 +23,23 @@ use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplaySelection,
 };
 
+mod network_inputs;
+
+use network_inputs::{ReplayStep, authenticated_replay_steps};
+
 // A physical step is charged separately and must not skip an unbounded guest span.
 const MAX_GUARDED_REPLAY_ADVANCE_ICOUNT: u64 = 10_000_000;
 const MAX_REPLAY_STALLED_REISSUES: u8 = 2;
+
+/// Root-bound scheduler evidence required to reconstruct physical replay.
+pub(crate) struct GuardedReplayAdmission<'a> {
+    /// Authenticated guest choices for the target schedule.
+    pub(crate) choices: &'a GuardedCampaignReplayClosure,
+    /// Complete authenticated scheduler event prefix.
+    pub(crate) scheduler: &'a SingleSchedulerCheckpoint,
+    /// Exact target QEMU process generation.
+    pub(crate) process_generation: u64,
+}
 
 /// Attempt-owned guarded executor for one exact fat/thin replay comparison.
 ///
@@ -89,12 +105,13 @@ where
         &mut self,
         world: &crucible::World,
         source: &ScenarioDefForm,
-        choices: &GuardedCampaignReplayClosure,
+        admission: GuardedReplayAdmission<'_>,
         configuration: &Configuration,
         snapshot: &QemuVmSnapshot,
         baked: &QemuBakedGenesisSnapshot,
     ) -> Result<QemuReplayOracleMatch, QemuVmRealizationError> {
-        choices
+        admission
+            .choices
             .validate_for_schedule(source, &configuration.schedule)
             .map_err(|error| invalid_replay_selection(error.to_string()))?;
         let target_icount = snapshot
@@ -106,6 +123,14 @@ where
                 role: "guarded replay physical target",
                 message: String::from("exact checkpoint has no count for the modeled node"),
             })?;
+        let steps = authenticated_replay_steps(
+            world,
+            configuration,
+            admission.scheduler,
+            admission.process_generation,
+            self.executor.node(),
+            snapshot.node_continuation().next_router_inbound_sequence(),
+        )?;
 
         self.guard.check_operational_boundary()?;
         let result = self
@@ -133,14 +158,24 @@ where
         let mut thin = self.observe_realization(result)?;
 
         let mut current = genesis;
-        for (decision_index, decision) in configuration.schedule.decisions().iter().enumerate() {
+        for step in steps {
+            let decision_index = match step {
+                ReplayStep::Input { input, delivery } => {
+                    reject_unrecorded_local_request(self)?;
+                    thin = self.enqueue_input(thin, input, delivery)?;
+                    continue;
+                }
+                ReplayStep::Decision { index } => index,
+            };
+            let decision = &configuration.schedule.decisions()[decision_index];
             let next = crucible::try_step(&current, decision.clone()).map_err(|source| {
                 QemuVmRealizationError::InvalidCheckpoint {
                     role: "baked-genesis replay target",
                     message: format!("decision violates the scenario model: {source}"),
                 }
             })?;
-            let recorded = choices
+            let recorded = admission
+                .choices
                 .selection_for_decision(decision_index, &configuration.schedule)
                 .map_err(|error| invalid_replay_selection(error.to_string()))?;
             match recorded {
@@ -167,7 +202,12 @@ where
                     thin = self.observe_realization(result)?;
                 }
                 None => {
-                    thin = replay_one_nonselection_boundary(self, thin, target_icount)?;
+                    thin = replay_one_nonselection_decision_boundary(
+                        self,
+                        thin,
+                        target_icount,
+                        decision,
+                    )?;
                     let result = self.executor.apply_materialized_replay_decision(
                         thin,
                         QemuVmReplayRequest::new(current, decision.clone())?,
@@ -280,6 +320,13 @@ trait GuardedReplayPhysicalNode {
         pending: &SelectablePlanPendingRequest,
         reply: &SelectionReply,
     ) -> Result<(), QemuVmRealizationError>;
+
+    fn enqueue_input(
+        &mut self,
+        state: Self::Observation,
+        input: crucible::BackendInput,
+        delivery: Icount,
+    ) -> Result<Self::Observation, QemuVmRealizationError>;
 }
 
 struct ReplayPhysicalAdvance<T> {
@@ -341,6 +388,35 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
             .executor
             .enqueue_replay_selectable_reply(pending, reply);
         self.observe_realization(result)
+    }
+
+    fn enqueue_input(
+        &mut self,
+        state: Self::Observation,
+        input: crucible::BackendInput,
+        delivery: Icount,
+    ) -> Result<Self::Observation, QemuVmRealizationError> {
+        self.guard.check_operational_boundary()?;
+        let result = self
+            .executor
+            .enqueue_materialized_replay_input(state, input, delivery);
+        self.observe_realization(result)
+    }
+}
+
+fn replay_one_nonselection_decision_boundary<T: GuardedReplayPhysicalNode>(
+    node: &mut T,
+    state: T::Observation,
+    target_icount: Icount,
+    decision: &Decision,
+) -> Result<T::Observation, QemuVmRealizationError> {
+    if matches!(decision, Decision::DeliveryOrder(_)) {
+        // Input delivery and its ordering record are one scheduler boundary.
+        // Retiring another instruction could cross the next stamped input.
+        reject_unrecorded_local_request(node)?;
+        Ok(state)
+    } else {
+        replay_one_nonselection_boundary(node, state, target_icount)
     }
 }
 

@@ -92,11 +92,17 @@ fn qemu_quantum_preserves_scheduler_resolved_delivery_icount() {
         icount(7),
     );
     assert!(delivered.is_ok());
+    let checkpoint = QemuShmemHotPathChannel::checkpoint_network_transport(&mut hot_path)
+        .unwrap_or_else(|error| panic!("future inbound frame should checkpoint: {error}"));
+    drop(hot_path);
     let entry = inbound_ring
         .peek(&inbound_entries)
         .unwrap_or_else(|error| panic!("timestamped inbound frame should be readable: {error}"))
         .unwrap_or_else(|| panic!("timestamped inbound frame should be queued"));
     assert_eq!(entry.delivery_icount, 7);
+    assert_eq!(slot.snapshot().current_icount, 0);
+    assert_eq!(checkpoint.next_router_inbound_sequence, 1);
+    assert_eq!(checkpoint.inbound.frames.len(), 1);
 }
 
 #[test]

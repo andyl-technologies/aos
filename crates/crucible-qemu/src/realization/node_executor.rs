@@ -7,8 +7,9 @@
 //! QMP save/restore on the scheduler-facing node.
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendError, Checkpoint, CheckpointKind, Configuration, ContentHash,
-    EventLog, Icount, NodeId, RuntimeState,
+    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, Checkpoint, CheckpointKind,
+    Configuration, ContentHash, EventLog, Icount, NodeId, RuntimeState, SimulationBackend,
+    VirtualTime,
 };
 use std::error::Error as _;
 use std::sync::Arc;
@@ -524,6 +525,39 @@ impl QemuReplayValidationExecutor {
             &thin.runtime,
             configuration.id(),
         )?;
+        let replay_transport = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "compare guarded replay network continuation",
+                message: String::from("no QEMU replay node is active"),
+            })?
+            .replay_network_transport_checkpoint()
+            .map_err(|source| {
+                node_backend_error("compare guarded replay network continuation", source.into())
+            })?;
+        let source_transport = &snapshot.node.network_transport;
+        // The source scheduler drains guest TX into modeled links, whereas the
+        // single-node oracle retains TX in its host ring. RX is the externally
+        // supplied input that must match exactly; the full VM fingerprint still
+        // compares guest-visible TX device state.
+        if replay_transport.inbound != source_transport.inbound
+            || replay_transport.next_router_inbound_sequence
+                != source_transport.next_router_inbound_sequence
+            || replay_transport.queue_capacity != source_transport.queue_capacity
+            || replay_transport.router_slot != source_transport.router_slot
+        {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded replay network continuation",
+                message: format!(
+                    "thin replay inbound ring differs from the exact source: source sequence={} pending={}, replay sequence={} pending={}",
+                    source_transport.next_router_inbound_sequence,
+                    source_transport.inbound.frames.len(),
+                    replay_transport.next_router_inbound_sequence,
+                    replay_transport.inbound.frames.len(),
+                ),
+            });
+        }
         self.exact_observation_generation = None;
         self.thin_observation_generation = None;
         if fat.runtime.id != thin.runtime.id {
