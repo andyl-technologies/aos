@@ -88,9 +88,11 @@ pub(super) struct IndexHardlinkMember {
 
 /// Authenticated commitments required to validate a candidate index.
 ///
-/// The index descriptor and the tree commitments must come from an
-/// authenticated sealed publication. They must never be derived from the
-/// untrusted candidate bytes or copied out of its header.
+/// For an externally supplied index, the descriptor and tree commitments must
+/// come from an authenticated sealed publication. A freshly compiled private
+/// index may instead use the compiler-owned [`super::CompiledIndexBinding`]
+/// and a descriptor computed from that compiler's output. Neither path may
+/// copy commitments out of untrusted candidate bytes or their header.
 pub struct IndexExpectation<'a> {
     /// Exact descriptor of the structural-index artifact.
     pub index: &'a ObjectDescriptor,
@@ -98,9 +100,9 @@ pub struct IndexExpectation<'a> {
     pub compiler_abi: [u8; 32],
     /// Exact portable tree descriptor.
     pub tree: &'a ObjectDescriptor,
-    /// Exact root-directory descriptor committed by the tree publisher.
+    /// Exact root-directory descriptor committed by the source tree.
     pub root: &'a ObjectDescriptor,
-    /// Closed tree-role feature bit set committed by the publisher.
+    /// Closed tree-role feature bit set observed during compilation or publication.
     pub tree_features: u32,
 }
 

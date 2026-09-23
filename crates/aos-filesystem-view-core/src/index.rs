@@ -51,7 +51,7 @@ mod validate;
 mod view;
 mod wire;
 
-pub use builder::{IndexNode, IndexRecord, IndexStaging, StagedIndex};
+pub use builder::{CompiledIndexBinding, IndexNode, IndexRecord, IndexStaging, StagedIndex};
 pub use semantic::{
     IndexAclEntries, IndexAclRange, IndexContentView, IndexExtentRange, IndexExtentView,
     IndexExtents, IndexFileView, IndexNodeBodyView, IndexNodeSemantics, IndexObjectDescriptorView,

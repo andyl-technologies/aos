@@ -80,8 +80,9 @@ mod recovery;
 mod self_execution;
 
 pub use cache_source_membership::{
-    CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1, join_cache_source_membership_v1,
-    with_cache_source_membership_v1,
+    CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
+    CompiledCacheSourceMembershipErrorV1, join_cache_source_membership_v1,
+    with_cache_source_membership_v1, with_compiled_cache_source_membership_v1,
 };
 pub use dormant_handshake::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,

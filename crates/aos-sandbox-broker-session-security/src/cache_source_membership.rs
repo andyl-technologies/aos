@@ -1,11 +1,18 @@
 //! Joins a rechecked public Cache consumer to authenticated View source data.
 
+use std::io::Cursor;
+
 use aos_filesystem_view_core::{
-    IndexError, IndexExpectation, ProjectionError, ProjectionLimits, ValidatedViewProjection,
-    ValidatedViewSourceObject, compile_view_projection, validate_index,
+    CompileError, INDEX_MEDIA_TYPE, IndexError, IndexExpectation, IndexStaging, ObjectSource,
+    ProjectionError, ProjectionLimits, SourceError, TreeCompileLimits, TreeCompiler,
+    ValidatedViewProjection, ValidatedViewSourceObject, compile_view_projection, load_exact,
+    validate_index,
 };
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
-use aos_sandbox_core::Revision;
+use aos_sandbox_core::model::ViewSource;
+use aos_sandbox_core::{
+    CanonicalCborError, MediaType, Revision, decode_view, descriptor_for_bytes,
+};
 
 /// Bounds structural-index validation and View projection for a public Cache pin.
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +43,32 @@ pub enum CacheSourceMembershipErrorV1 {
     /// Validated source-index traversal failed closed.
     #[error("authenticated View source could not be inspected: {0}")]
     Projection(#[from] ProjectionError),
+}
+
+/// Reports failure to compile source membership from exact portable objects.
+#[derive(Debug, thiserror::Error)]
+pub enum CompiledCacheSourceMembershipErrorV1<E: std::error::Error + 'static> {
+    /// A release-only consumer cannot acquire a source pin.
+    #[error("cache consumer has no current acquisition fence")]
+    ReleaseOnly,
+    /// The exact View object could not be loaded.
+    #[error(transparent)]
+    ViewSource(#[from] SourceError<E>),
+    /// The View object failed canonical decoding.
+    #[error(transparent)]
+    ViewFormat(#[from] CanonicalCborError),
+    /// This helper only compiles immutable portable tree sources.
+    #[error("cache source is not an immutable portable tree")]
+    NonImmutableSource,
+    /// The portable tree could not be compiled from exact source objects.
+    #[error(transparent)]
+    Compile(#[from] CompileError<E>),
+    /// The fixed index media type was not valid.
+    #[error("internal structural-index media type is invalid")]
+    InvalidIndexMediaType,
+    /// The compiled index did not prove the requested object's membership.
+    #[error(transparent)]
+    Membership(#[from] CacheSourceMembershipErrorV1),
 }
 
 /// Borrows source membership for one exactly rechecked public Cache consumer.
@@ -69,14 +102,15 @@ pub fn join_cache_source_membership_v1<'projection, 'index, 'bytes>(
         .ok_or(CacheSourceMembershipErrorV1::Absent)
 }
 
-/// Validates exact View and sealed-index bytes before using source membership.
+/// Validates exact View and authenticated-index bytes before using source membership.
 ///
-/// `index_expectation` must come from an independently authenticated, sealed
-/// index publication. Never construct it from the candidate index bytes or
-/// their header: an index can be well formed without faithfully representing
-/// the View's portable source tree. The callback retains the borrowed proof
-/// only while both validated inputs are alive. The caller must recheck desired
-/// state at the protected pin commit.
+/// For an externally supplied index, `index_expectation` must come from an
+/// independently authenticated, sealed publication. A private index compiled
+/// from exact source objects may use compiler-owned commitments instead.
+/// Never construct the expectation from untrusted candidate bytes or their
+/// header: a well-formed index need not faithfully represent the source tree.
+/// The callback retains the borrowed proof only while both validated inputs
+/// are alive. The caller must recheck desired state at the protected pin commit.
 ///
 /// # Errors
 ///
@@ -110,4 +144,66 @@ pub fn with_cache_source_membership_v1<R>(
     let membership = join_cache_source_membership_v1(consumer, &projection)?;
 
     Ok(use_membership(&membership))
+}
+
+/// Compiles exact portable source objects into a private membership proof.
+///
+/// The index and its expected commitments are both produced by the trusted
+/// compiler. This differs from validating an externally supplied index: no
+/// untrusted index header or candidate bytes supply the expectation. The
+/// caller must still recheck desired state at the protected pin commit.
+///
+/// # Errors
+///
+/// Returns an error when the consumer cannot acquire a pin, exact source
+/// loading or graph compilation fails, a limit is exceeded, or the requested
+/// object is absent from the compiled View source.
+pub fn with_compiled_cache_source_membership_v1<S, R>(
+    consumer: &RecheckedCacheConsumerV1,
+    source: &mut S,
+    compiler_abi: [u8; 32],
+    tree_limits: TreeCompileLimits,
+    membership_limits: CacheSourceMembershipLimitsV1,
+    use_membership: impl FnOnce(&ValidatedViewSourceObject<'_, '_, '_>) -> R,
+) -> Result<R, CompiledCacheSourceMembershipErrorV1<S::Error>>
+where
+    S: ObjectSource,
+{
+    let fence = consumer
+        .acquisition_fence()
+        .ok_or(CompiledCacheSourceMembershipErrorV1::ReleaseOnly)?;
+    let maximum_view_bytes = tree_limits
+        .object_bytes
+        .min(membership_limits.projection.decode.maximum_bytes);
+    let view_object = load_exact(source, fence.view_revision(), maximum_view_bytes)?;
+    let view = decode_view(view_object.bytes(), membership_limits.projection.decode)?;
+    let ViewSource::ImmutableTree { tree } = view.source() else {
+        return Err(CompiledCacheSourceMembershipErrorV1::NonImmutableSource);
+    };
+
+    let staging = IndexStaging::new(
+        Cursor::new(Vec::new()),
+        tree_limits
+            .index_bytes
+            .min(membership_limits.maximum_index_bytes),
+        tree_limits.index_record_bytes,
+    );
+    let (_, staged) =
+        TreeCompiler::new(tree_limits).compile(source, staging, tree, compiler_abi)?;
+    let (writer, _, binding) = staged.into_parts_with_binding();
+    let index_bytes = writer.into_inner();
+    let index_media = MediaType::new(INDEX_MEDIA_TYPE)
+        .map_err(|_| CompiledCacheSourceMembershipErrorV1::InvalidIndexMediaType)?;
+    let index_descriptor = descriptor_for_bytes(index_media, &index_bytes);
+    let expectation = binding.expectation(&index_descriptor);
+
+    with_cache_source_membership_v1(
+        consumer,
+        view_object.bytes(),
+        &index_bytes,
+        &expectation,
+        membership_limits,
+        use_membership,
+    )
+    .map_err(CompiledCacheSourceMembershipErrorV1::Membership)
 }

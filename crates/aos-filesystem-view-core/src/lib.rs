@@ -16,12 +16,12 @@ mod view_projection;
 
 pub use graph::{CompileError, CompileSummary, TreeCompiler};
 pub use index::{
-    DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE, IndexAclEntries,
-    IndexAclRange, IndexContentView, IndexCrosslinks, IndexError, IndexExpectation,
-    IndexExtentRange, IndexExtentView, IndexExtents, IndexFileView, IndexNodeBodyView,
-    IndexNodeKind, IndexNodeSemantics, IndexNodeView, IndexObjectDescriptorView, IndexRecords,
-    IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange, IndexXattrView,
-    IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
+    CompiledIndexBinding, DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE,
+    IndexAclEntries, IndexAclRange, IndexContentView, IndexCrosslinks, IndexError,
+    IndexExpectation, IndexExtentRange, IndexExtentView, IndexExtents, IndexFileView,
+    IndexNodeBodyView, IndexNodeKind, IndexNodeSemantics, IndexNodeView, IndexObjectDescriptorView,
+    IndexRecords, IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange,
+    IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{

@@ -79,6 +79,30 @@ impl<W> IndexStaging<W> {
 pub struct StagedIndex<W> {
     pub(super) writer: W,
     pub(super) summary: IndexSummary,
+    pub(super) binding: CompiledIndexBinding,
+}
+
+/// Retains the source commitments observed by a successful tree compilation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledIndexBinding {
+    tree: ObjectDescriptor,
+    root: ObjectDescriptor,
+    tree_features: u32,
+    compiler_abi: [u8; 32],
+}
+
+impl CompiledIndexBinding {
+    /// Borrows the compiler's source commitments for index validation.
+    #[must_use]
+    pub const fn expectation<'a>(&'a self, index: &'a ObjectDescriptor) -> IndexExpectation<'a> {
+        IndexExpectation {
+            index,
+            compiler_abi: self.compiler_abi,
+            tree: &self.tree,
+            root: &self.root,
+            tree_features: self.tree_features,
+        }
+    }
 }
 
 impl<W> StagedIndex<W> {
@@ -86,6 +110,12 @@ impl<W> StagedIndex<W> {
     #[must_use]
     pub fn into_parts(self) -> (W, IndexSummary) {
         (self.writer, self.summary)
+    }
+
+    /// Returns the finalized writer and its compiler-owned source commitments.
+    #[must_use]
+    pub fn into_parts_with_binding(self) -> (W, IndexSummary, CompiledIndexBinding) {
+        (self.writer, self.summary, self.binding)
     }
 }
 
@@ -495,6 +525,12 @@ impl<W: Write + Seek> StructuralIndexBuilder<W> {
         Ok(FinishIndexResult {
             staged: StagedIndex {
                 writer: self.writer,
+                binding: CompiledIndexBinding {
+                    tree: self.tree.clone(),
+                    root: self.root.clone(),
+                    tree_features: self.tree_features,
+                    compiler_abi: self.compiler_abi,
+                },
                 summary: IndexSummary {
                     compiler_abi: self.compiler_abi,
                     tree_digest: self.tree.digest(),
