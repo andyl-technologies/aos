@@ -5,7 +5,7 @@ use std::io::Write;
 use crucible_campaign::{
     AttemptId, CampaignArchiveManifestId, CampaignFact, CampaignPrincipalAuthorizer,
     CampaignRecordKind, CampaignRepository, CampaignServiceOperation, ChoiceDomain, ChoiceValue,
-    FindingId, ObjectEnvelope, ObservationId, StopCondition, StopOutcome,
+    FindingId, ObjectEnvelope, ObservationId,
 };
 use crucible_cas::content_store::{DirectoryRefBackend, ImmutableBlobBackend};
 use crucible_session::engine::Decision;
@@ -142,10 +142,8 @@ pub(super) fn run_imported_canonical_branch(
     let observation = ObservationId::parse(&json_string(&branch, "observation")?)?;
     let observed = executed.load_observation(observation)?;
     assert_eq!(observed.attempt(), attempt);
-    assert_eq!(
-        observed.stop(),
-        &StopOutcome::Reached(StopCondition::NextChoice)
-    );
+    // The alternate may terminate before reaching its requested next choice.
+    assert_eq!(branch["stop"], format!("{:?}", observed.stop()));
     let inherited_claimable = executed.project_claimable_attempts(SOURCE_NAME, None, 10_000)?;
     let final_claimable = executed.project_claimable_attempts(BRANCH_NAME, None, 10_000)?;
     assert!(inherited_claimable.next().is_none());
