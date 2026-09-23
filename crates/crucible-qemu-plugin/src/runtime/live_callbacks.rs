@@ -1628,20 +1628,6 @@ impl LiveVcpuTimeCallbackState {
         Ok(())
     }
 
-    /// Publishes an exact pause acknowledgement without advancing guest time.
-    ///
-    /// Busy guests acknowledge from the max-advance callback, while halted
-    /// guests acknowledge from the idle futex loop. Calling this helper from
-    /// every progress/resume entry also closes races where a pause arrives
-    /// between those two steady states.
-    #[cfg(test)]
-    fn publish_pause_if_requested(
-        &self,
-        raw_icount: u64,
-    ) -> Result<bool, LiveVcpuTimeCallbackError> {
-        self.publish_pause_for_boundary(raw_icount, true, false, None, "progress-publication")
-    }
-
     fn publish_pause_for_boundary(
         &self,
         raw_icount: u64,
