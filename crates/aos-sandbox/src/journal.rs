@@ -3685,6 +3685,7 @@ mod tests {
             [5; 16],
             [6; 16],
             100,
+            1_000,
         )
         .unwrap();
         assert_eq!(
@@ -3715,6 +3716,7 @@ mod tests {
                 [5; 16],
                 [6; 16],
                 101,
+                1_000,
             )
             .unwrap(),
             pending
@@ -3737,8 +3739,69 @@ mod tests {
                 [5; 16],
                 [6; 16],
                 101,
+                1_000,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn expired_public_attach_pending_renews_the_same_operation_id() {
+        use crate::public_attach_pending::{
+            load_public_attach_pending_v1, reserve_public_attach_pending_v1,
+        };
+
+        let directory = TestDirectory::new("public-attach-renewal");
+        let key = IdempotencyKey::new(b"attach-renewal".to_vec()).unwrap();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let reserve = |journal: &mut Journal, now| {
+            reserve_public_attach_pending_v1(
+                journal, &key, [1; 32], [2; 16], [3; 16], 4, [5; 16], [6; 16], now, 1_000,
+            )
+            .unwrap()
+        };
+
+        let original = reserve(&mut journal, 100);
+        let renewed = reserve(&mut journal, original.expires_at());
+        assert_eq!(renewed.operation_id(), original.operation_id());
+        assert_eq!(renewed.expires_at(), 700);
+        assert_ne!(renewed.record_digest(), original.record_digest());
+        assert_eq!(
+            journal.check_idempotency(&key, [1; 32]),
+            IdempotencyOutcome::Vacant
+        );
+        assert!(journal.records(RecordNamespace::Operation).next().is_none());
+        journal
+            .commit(&transaction(
+                7,
+                vec![JournalRecord::idempotency(
+                    &key,
+                    [1; 32],
+                    renewed.operation_id(),
+                )],
+            ))
+            .unwrap();
+        assert!(
+            reserve_public_attach_pending_v1(
+                &mut journal,
+                &key,
+                [1; 32],
+                [2; 16],
+                [3; 16],
+                4,
+                [5; 16],
+                [6; 16],
+                700,
+                1_000,
+            )
+            .is_err()
+        );
+        drop(journal);
+
+        let (reopened, _) = protected_open(&directory.0).unwrap();
+        assert_eq!(
+            load_public_attach_pending_v1(&reopened, &key).unwrap(),
+            Some(renewed)
         );
     }
 

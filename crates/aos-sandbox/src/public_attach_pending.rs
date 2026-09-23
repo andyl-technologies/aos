@@ -333,12 +333,14 @@ pub(crate) fn reserve_public_attach_pending_v1(
     principal: [u8; 16],
     audit: [u8; 16],
     now_seconds: i64,
+    authority_expires_at: i64,
 ) -> Result<PublicAttachPendingV1, PublicAttachPendingErrorV1> {
     journal
         .ensure_protected_authority()
         .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
     let expiry = now_seconds
         .checked_add(MAXIMUM_PENDING_SECONDS)
+        .map(|value| value.min(authority_expires_at))
         .filter(|value| now_seconds > 0 && *value > now_seconds)
         .ok_or(PublicAttachPendingErrorV1::Conflict)?;
     if request_digest == [0; 32]
@@ -359,13 +361,50 @@ pub(crate) fn reserve_public_attach_pending_v1(
                 &principal,
                 &audit,
             )
-            || existing.expires_at <= now_seconds
         {
             return Err(PublicAttachPendingErrorV1::Conflict);
         }
         match journal.check_idempotency(key, request_digest) {
-            IdempotencyOutcome::Vacant | IdempotencyOutcome::Replay(_) => return Ok(existing),
+            IdempotencyOutcome::Vacant if existing.expires_at > now_seconds => {
+                return Ok(existing);
+            }
+            IdempotencyOutcome::Vacant => {
+                // The previous grant can no longer authorize a live route.
+                // Keep its logical operation ID while advancing only expiry.
+                if journal
+                    .get(RecordNamespace::Operation, existing.operation.as_bytes())
+                    .is_some()
+                    || journal
+                        .get(
+                            RecordNamespace::PublicAttachRoute,
+                            existing.operation.as_bytes(),
+                        )
+                        .is_some()
+                {
+                    return Err(PublicAttachPendingErrorV1::Conflict);
+                }
+                let renewed = PublicAttachPendingV1 {
+                    expires_at: expiry,
+                    ..existing
+                };
+                let record = JournalRecord::put(
+                    RecordNamespace::PublicAttachPending,
+                    key.as_bytes().to_vec(),
+                    renewed.encode(),
+                );
+                let transaction =
+                    JournalTransaction::new(OperationId::new().into_bytes(), vec![record])
+                        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
+                journal
+                    .commit(&transaction)
+                    .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
+                return Ok(renewed);
+            }
+            IdempotencyOutcome::Replay(_) if existing.expires_at > now_seconds => {
+                return Ok(existing);
+            }
             IdempotencyOutcome::Conflict => return Err(PublicAttachPendingErrorV1::Conflict),
+            IdempotencyOutcome::Replay(_) => return Err(PublicAttachPendingErrorV1::Conflict),
         }
     }
     if journal.check_idempotency(key, request_digest) != IdempotencyOutcome::Vacant {

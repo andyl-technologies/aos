@@ -27,6 +27,8 @@ use crate::controller_service::public_projection::{
 #[cfg(target_os = "linux")]
 use crate::public_attach_pending::{PublicAttachPendingV1, reserve_public_attach_pending_v1};
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
+#[cfg(target_os = "linux")]
+use crate::publication::AuthorityPublicationStore;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
     EffectPlan, IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
@@ -106,6 +108,19 @@ pub(super) fn reserve_authorized_attach(
     {
         return Err(OperationCompilationError::Rejected);
     }
+    let sandbox = SandboxId::from_bytes(exact_id(&execution.sandbox_id)?);
+    let publication = AuthorityPublicationStore::new(journal)
+        .current(sandbox)
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .ok_or(OperationCompilationError::Rejected)?;
+    let manifest = publication.manifest().manifest();
+    if manifest.project() != authorized.project()
+        || manifest.sandbox() != sandbox
+        || manifest.incarnation().as_bytes() != execution.sandbox_incarnation_id.as_slice()
+        || manifest.epoch().get() != execution.assignment_epoch
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
     reserve_public_attach_pending_v1(
         journal,
         authorized.request().idempotency_key(),
@@ -116,6 +131,7 @@ pub(super) fn reserve_authorized_attach(
         *authorized.caller().as_bytes(),
         exact_id(&execution.audit_id)?,
         authorized.accepted_wall_seconds(),
+        publication.lease().lease().authority_expires_seconds(),
     )
     .map_err(|_| OperationCompilationError::Rejected)
 }
