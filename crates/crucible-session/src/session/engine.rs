@@ -1822,15 +1822,24 @@ impl<L: QuantumLoop> Engine<L> {
                             .quantum_loop
                             .append_noncanonical_debug_event_log_entries(entries)?;
                         self.append_boundary_event_log_entries(entries)?;
-                        if request.actions.iter().any(|action| {
+                        let guest_edit = request.actions.iter().any(|action| {
                             matches!(action, DebugNonCanonicalBranchAction::GuestEdit(_))
-                        }) {
-                            self.quantum_loop.authorize_noncanonical_guest_write()?;
-                        }
+                        });
                         self.graph = candidate_graph;
                         self.debug_branch_required = false;
                         self.debug_coordinator
                             .forked_non_canonical(self.configuration.id());
+                        if guest_edit {
+                            if matches!(self.state, EngineState::Running) {
+                                self.active_step = None;
+                                self.state = EngineState::Paused {
+                                    reason: PauseReason::UserRequested,
+                                };
+                            }
+                            // A failed gateway transition leaves an accurately marked,
+                            // paused branch whose operator relay still denies writes.
+                            self.quantum_loop.authorize_noncanonical_guest_write()?;
+                        }
                         if let Some(node) = introspection_node {
                             self.begin_debug_guest_activation(node, report, reply.clone());
                         } else if matches!(self.state, EngineState::Running) {

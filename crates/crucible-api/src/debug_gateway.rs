@@ -154,7 +154,7 @@ impl DebugGatewayProcess {
         &self.control_socket
     }
 
-    /// Returns the private or legacy operator RSP endpoint.
+    /// Returns the private owner Unix RSP endpoint.
     #[must_use]
     pub fn operator_endpoint(&self) -> Option<&str> {
         self.operator_endpoint.as_deref()
