@@ -7,6 +7,7 @@
 //! agent transport, keeping the agent-to-sandbox dependency graph acyclic.
 
 mod bridge;
+mod gate;
 mod ledger;
 mod process;
 

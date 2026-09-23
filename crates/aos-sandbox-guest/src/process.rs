@@ -8,6 +8,7 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::Instant;
 
+use aos_sandbox_agent::openssh_gate::{OpenSshGateObserveRequestV1, OpenSshGateReadbackV1};
 use aos_sandbox_agent::protected_entry::{GuestOperationEffectsV1, ProtectedGuestAgentErrorV1};
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionPhaseV1, AgentFeatureV1, AgentOperationRequestV1,
@@ -24,6 +25,7 @@ use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{Winsize, tcsetwinsize};
 
 use crate::bridge::AttachBridge;
+use crate::gate::GuestOpenSshGate;
 use crate::ledger::{Ledger, ProcessRecord, Reservation, StoredOutcome, runtime_identity};
 
 const MAX_SPECIFICATION_BYTES: usize = 15 * 1_048_576;
@@ -67,6 +69,7 @@ pub struct GuestProcessEffectsV1 {
     ledger: Ledger,
     bridge: AttachBridge,
     live: BTreeMap<[u8; 16], LiveProcess>,
+    gate: Option<GuestOpenSshGate>,
     quiesced: bool,
 }
 
@@ -85,6 +88,7 @@ impl GuestProcessEffectsV1 {
             ledger,
             bridge,
             live: BTreeMap::new(),
+            gate: None,
             quiesced,
         })
     }
@@ -372,6 +376,13 @@ impl GuestProcessEffectsV1 {
         let pid =
             Pid::from_raw(record.pid as i32).ok_or(GuestProcessEffectErrorV1::LedgerConflict)?;
         self.bridge.remove(*execution.as_bytes())?;
+        if self
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.execution() == *execution.as_bytes())
+        {
+            self.gate = None;
+        }
         kill_process_group(pid, Signal::KILL)?;
         record.canceled = true;
         self.ledger.replace_process(execution, &record)?;
@@ -405,6 +416,13 @@ impl GuestProcessEffectsV1 {
                 record.terminal = Some(result.clone());
                 self.ledger.replace_process(execution, &record)?;
                 self.bridge.remove(*execution.as_bytes())?;
+                if self
+                    .gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.execution() == *execution.as_bytes())
+                {
+                    self.gate = None;
+                }
                 self.live.remove(execution.as_bytes());
                 return Ok(result);
             }
@@ -420,6 +438,13 @@ impl GuestProcessEffectsV1 {
             record.terminal = Some(result.clone());
             self.ledger.replace_process(execution, &record)?;
             self.bridge.remove(*execution.as_bytes())?;
+            if self
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.execution() == *execution.as_bytes())
+            {
+                self.gate = None;
+            }
             Ok(result)
         }
     }
@@ -480,6 +505,39 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         Ok((phase, stored.result))
     }
 
+    fn observe_openssh_gate(
+        &mut self,
+        request: &OpenSshGateObserveRequestV1,
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        deadline: Instant,
+    ) -> Result<OpenSshGateReadbackV1, ProtectedGuestAgentErrorV1> {
+        check_deadline(deadline).map_err(effect_error)?;
+        request
+            .validate()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
+        if self.quiesced {
+            return Err(effect_error(GuestProcessEffectErrorV1::Unavailable(
+                "guest is quiesced",
+            )));
+        }
+        if self.gate.is_none() {
+            if !self.live.contains_key(&request.binding.execution_id) {
+                return Err(effect_error(GuestProcessEffectErrorV1::Unavailable(
+                    "admitted process is not held by this agent",
+                )));
+            }
+            self.gate = Some(
+                GuestOpenSshGate::install(request, runtime, &self.ledger, deadline)
+                    .map_err(effect_error)?,
+            );
+        }
+        self.gate
+            .as_mut()
+            .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?
+            .observe(request, runtime, channel, &self.ledger, deadline)
+            .map_err(effect_error)
+    }
 }
 
 pub(crate) fn check_deadline(deadline: Instant) -> Result<(), GuestProcessEffectErrorV1> {
