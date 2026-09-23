@@ -116,220 +116,194 @@
       "--kubeconfig"
       (resultOf "kubeconfig" "credential-path")
     ];
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "device_policy";
-        requirementAlias = "service-device-policy";
-        description = "Requires the selected service-management provider to enforce the declared device access policy.";
-        interface = "aos.service.device-policy";
-        abi = 1;
-        parameters = {
-          baseline_access = "standard-runtime-devices";
-          rules = [
-            {
-              selector = {
-                kind = "class";
-                device_type = "character";
-                class = "kernel-message";
-              };
-              read = true;
-              write = true;
-              create = false;
-            }
-          ];
-        };
-      })
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = true;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = [
-              "administer-host"
-              "administer-network"
-              "raw-network"
-              "administer-resource-limits"
-              "inspect-processes"
-            ];
+  service = {
+    policy.devicePolicy = {
+      baseline_access = "standard-runtime-devices";
+      rules = [
+        {
+          selector = {
+            kind = "class";
+            device_type = "character";
+            class = "kernel-message";
           };
-          resource_control_delegation = true;
-          resource_control_access = "host";
-          device_access_scope = "shared";
-          host_clock_mutation = true;
-          host_name_mutation = true;
-          operating_system_log_access = true;
-          operating_system_extension_access = true;
-          operating_system_tunable_access = true;
-          lock_execution_personality = false;
-          writable_executable_memory = true;
-          isolation_domains = [];
-          network_families = [
-            "ipv4"
-            "ipv6"
-            "route-control"
-            "raw-packet"
-            "local"
-          ];
-          memory_pressure_adjustment = 0;
-          permit_realtime = true;
-          permit_elevated_file_identity = true;
-          process_visibility = "all";
-          operation_architectures = [];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "privileged";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes;
+          read = true;
+          write = true;
+          create = false;
+        }
+      ];
+    };
+    policy.hardening = {
+      allow_privilege_escalation = true;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = [
+          "administer-host"
+          "administer-network"
+          "raw-network"
+          "administer-resource-limits"
+          "inspect-processes"
+        ];
+      };
+      resource_control_delegation = true;
+      resource_control_access = "host";
+      device_access_scope = "shared";
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
+      isolation_domains = [];
+      network_families = [
+        "ipv4"
+        "ipv6"
+        "route-control"
+        "raw-packet"
+        "local"
+      ];
+      memory_pressure_adjustment = 0;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
+      process_visibility = "all";
+      operation_architectures = [];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "privileged";
+      isolated_identity_mapping = "none";
+    };
     consumerInstance = "service";
-    declaration = {
-      service = "kubelet";
-      enabled = true;
-      lifecycle = {
-        description = "Standalone Kubernetes node agent (${packageName} ${packageVersion})";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "bin/kubelet";
-              arguments = commandArgs;
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "always";
-        restart_delay_millis = 5000;
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [
-          (resultOf "network" "resource")
-          (resultOf "kernel-modules" "resource")
-          (resultOf "ingress-policy" "resource")
-        ];
-        before = [];
-        requires = [
-          (resultOf "kernel-modules" "resource")
-          (resultOf "ingress-policy" "resource")
-        ];
-        wants = [(resultOf "network" "resource")];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      readiness = {
-        mechanism = "process-signal";
-        signal_scope = "main-process";
-        timeout_millis = 90000;
-      };
-      resources = {
-        open_files = {
-          kind = "maximum";
-          value = 1048576;
-        };
-        processes.kind = "unbounded";
-        tasks.kind = "unbounded";
-      };
-      directories.managed = [
+    service = "kubelet";
+    lifecycle = {
+      description = "Standalone Kubernetes node agent (${packageName} ${packageVersion})";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
         {
-          path = "kubelet";
-          purpose = "state";
-          mode = "0755";
-          retention = "persistent";
-        }
-        {
-          path = "kubelet";
-          purpose = "runtime";
-          mode = "0755";
-          retention = "restart";
-        }
-        {
-          path = "pods";
-          purpose = "logs";
-          mode = "0755";
-          retention = "persistent";
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "bin/kubelet";
+            arguments = commandArgs;
+          };
+          ignore_failure = false;
         }
       ];
-      configuration.views = [
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "always";
+      restart_delay_millis = 5000;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "network" "resource")
+        (resultOf "kernel-modules" "resource")
+        (resultOf "ingress-policy" "resource")
+      ];
+      before = [];
+      requires = [
+        (resultOf "kernel-modules" "resource")
+        (resultOf "ingress-policy" "resource")
+      ];
+      wants = [(resultOf "network" "resource")];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    readiness = {
+      mechanism = "process-signal";
+      signal_scope = "main-process";
+      timeout_millis = 90000;
+    };
+    resources = {
+      open_files = {
+        kind = "maximum";
+        value = 1048576;
+      };
+      processes.kind = "unbounded";
+      tasks.kind = "unbounded";
+    };
+    directories.managed = [
+      {
+        path = "kubelet";
+        purpose = "state";
+        mode = "0755";
+        retention = "persistent";
+      }
+      {
+        path = "kubelet";
+        purpose = "runtime";
+        mode = "0755";
+        retention = "restart";
+      }
+      {
+        path = "pods";
+        purpose = "logs";
+        mode = "0755";
+        retention = "persistent";
+      }
+    ];
+    configuration.views = [
+      {
+        name = "configuration";
+        source = resultOf "configuration" "planned-path";
+        optional = false;
+      }
+    ];
+    credentials.views = lib.optional (kubeconfigRef != null) {
+      name = "kubeconfig";
+      reference = resultOf "kubeconfig" "credential-path";
+      encrypted = kubeconfigRef.encrypted;
+      optional = true;
+    };
+    logging = {
+      standard_output = "structured";
+      standard_error = "structured";
+      directories = ["pods"];
+      directory_mode = "0755";
+    };
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "main-process";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [
         {
-          name = "configuration";
-          source = resultOf "configuration" "planned-path";
-          optional = false;
+          source = "/var/lib/kubelet";
+          mode = "read-write";
+        }
+        {
+          source = "/var/log/pods";
+          mode = "read-write";
+        }
+        {
+          source = "/run/containerd";
+          mode = "read-write";
+        }
+        {
+          source = "/sys/fs/cgroup";
+          mode = "read-write";
         }
       ];
-      credentials.views = lib.optional (kubeconfigRef != null) {
-        name = "kubeconfig";
-        reference = resultOf "kubeconfig" "credential-path";
-        encrypted = kubeconfigRef.encrypted;
-        optional = true;
-      };
-      logging = {
-        standard_output = "structured";
-        standard_error = "structured";
-        directories = ["pods"];
-        directory_mode = "0755";
-      };
-      isolation = {
-        privilege = "privileged";
-        filesystem = "host";
-        network = "host";
-        process_visibility = "host";
-        termination_scope = "main-process";
-        temporary_directory = "shared";
-        devices = [];
-        host_paths = [
-          {
-            source = "/var/lib/kubelet";
-            mode = "read-write";
-          }
-          {
-            source = "/var/log/pods";
-            mode = "read-write";
-          }
-          {
-            source = "/run/containerd";
-            mode = "read-write";
-          }
-          {
-            source = "/sys/fs/cgroup";
-            mode = "read-write";
-          }
-        ];
-        permit_core_dumps = true;
-      };
+      permit_core_dumps = true;
     };
   };
-  serviceFragments = [
+  serviceProducers = [
     network
     modules
     ingressPolicy
     configuration
-    service
   ];
-  credentialFragments = [credential];
-  fragments = serviceFragments ++ credentialFragments;
-  definitions = map serviceManagement.splitDefinition fragments;
-  serviceContributions = map serviceManagement.splitDefinition serviceFragments;
-  credentialContributions = map serviceManagement.splitDefinition credentialFragments;
 in {
   options.kubelet = {
     enable = mkOption {
@@ -436,20 +410,17 @@ in {
           message = "kubelet.clusterDns must contain at least one address";
         }
       ];
+      aos.services."service.kubelet" = service // {enable = cfg.enable;};
     }
-    (lib.mkMerge (
-      map (definition: {aos.abilities = definition.declarations;}) definitions
-    ))
-    (lib.mkIf cfg.enable (
-      lib.mkMerge (
-        [{aos.abilities.instances.service = {};}]
-        ++ map (definition: {aos.abilities = definition.configured;}) serviceContributions
-      )
-    ))
-    (lib.mkIf (cfg.enable && kubeconfigRef != null) (
-      lib.mkMerge (
-        map (definition: {aos.abilities = definition.configured;}) credentialContributions
-      )
-    ))
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = serviceProducers;
+      enabled = cfg.enable;
+    })
+    (serviceManagement.producerModule {
+      inherit config lib;
+      producers = [credential];
+      enabled = cfg.enable && kubeconfigRef != null;
+    })
   ];
 }
