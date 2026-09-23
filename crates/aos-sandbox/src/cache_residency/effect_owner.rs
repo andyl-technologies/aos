@@ -2305,22 +2305,43 @@ fn inspect_root(root: &OwnedFd) -> Result<RootIdentity, CacheOwnerErrorV1> {
 }
 
 fn open_owner_lock(root: &OwnedFd) -> Result<OwnedFd, CacheOwnerErrorV1> {
-    let lock = rustix::fs::openat(
-        root,
-        ".owner.lock",
-        OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let create_flags =
+        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let (lock, created) =
+        match rustix::fs::openat(root, ".owner.lock", create_flags, Mode::RUSR | Mode::WUSR) {
+            Ok(lock) => (lock, true),
+            Err(rustix::io::Errno::EXIST) => (
+                rustix::fs::openat(
+                    root,
+                    ".owner.lock",
+                    OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?,
+                false,
+            ),
+            Err(error) => return Err(error.into()),
+        };
+
+    rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| CacheOwnerErrorV1::OwnerBusy)?;
+    if created {
+        // Normalize a fresh lock independently of the caller's umask.
+        rustix::fs::fchmod(&lock, Mode::RUSR | Mode::WUSR)?;
+    }
     let stat = rustix::fs::fstat(&lock)?;
+    let named = rustix::fs::statat(root, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
         || stat.st_uid != rustix::process::geteuid().as_raw()
         || stat.st_mode & 0o7777 != 0o600
         || stat.st_nlink != 1
+        || named.st_dev != stat.st_dev
+        || named.st_ino != stat.st_ino
+        || named.st_mode != stat.st_mode
     {
         return Err(CacheOwnerErrorV1::RootChanged);
     }
-    rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
-        .map_err(|_| CacheOwnerErrorV1::OwnerBusy)?;
+    rustix::fs::fsync(&lock)?;
+    rustix::fs::fsync(root)?;
     Ok(lock)
 }
 
