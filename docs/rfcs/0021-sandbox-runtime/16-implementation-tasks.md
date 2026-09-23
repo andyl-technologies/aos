@@ -324,11 +324,14 @@ the outstanding work concrete:
   objects for the corresponding pin helper. The controller uses a conservative
   in-process compilation envelope; an isolated publisher for those project
   objects and a dedicated bounded worker for larger trees are still absent.
-  Operator recovery actions other than ownership-gate Retry lack a
-  completing effect path and are rejected before new admission. Retry is
-  admitted only for an operation with
-  a validated ownership gate. Connect the remaining methods to their protected
-  owners before claiming the public mutation family is complete.
+  Operator recovery Retry is admitted only for an operation with a validated
+  ownership gate. A bounded Abandon path can complete only for an already
+  terminal `PermanentlyBlocked` operation: it atomically records the exact
+  operator acknowledgment without changing the target or claiming cleanup.
+  `CommittedWithResidualCleanup` and nonterminal targets remain ineligible.
+  Reconcile and Repair still lack protected owner effect/receipt protocols and
+  are rejected before admission. Connect those methods before claiming the
+  public mutation family is complete.
 - Execution control is not a same-process owner call. Public admission now
   separates OpenSSH attach from checked resize and signal effects, and the
   dormant Host backend can bind issued authorize, resize, signal, cancel, and

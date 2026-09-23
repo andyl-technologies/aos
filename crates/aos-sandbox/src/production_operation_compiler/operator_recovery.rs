@@ -2,8 +2,9 @@
 //!
 //! The public body names only a resource identity. Protected controller state
 //! resolves whether that identity denotes a sandbox or an operation before the
-//! capability check is built. The checked recovery current head is then
-//! committed atomically with the public operation and its orchestration effect.
+//! capability check is built. Retry commits its checked current head with an
+//! orchestration effect; bounded abandonment commits only an acknowledgment
+//! of a protected, already terminal operation.
 
 use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_core::{CapabilityId, OperationId, ProjectId, ResourceId, ResourceKind, Selector};
@@ -13,7 +14,8 @@ use crate::cli_model::{
     PublicMutationRequestV1,
 };
 use crate::controller_query::{
-    CheckedOperationResourceV1, CheckedSandboxResourceV1, PublicOperationMethodV1,
+    CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedSandboxResourceV1,
+    PublicOperationMethodV1,
 };
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
@@ -56,6 +58,9 @@ pub(super) fn compile_public_operator_recovery(
                 canonical_request,
                 request_digest,
                 peer,
+                capability_id,
+                envelope.protobuf_body(),
+                &request,
             );
         }
         IdempotencyOutcome::Conflict => return Err(OperationCompilationError::Rejected),
@@ -65,6 +70,19 @@ pub(super) fn compile_public_operator_recovery(
     let target = resolve_recovery_target(journal, peer.project(), request.resource_id())?;
     if !target.current.validates_request(&request) {
         return Err(OperationCompilationError::Rejected);
+    }
+    if request.action() == OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_ABANDON as i32 {
+        return compile_blocked_abandon(
+            journal,
+            peer,
+            capability_id,
+            &envelope,
+            &request,
+            idempotency_key,
+            canonical_request,
+            request_digest,
+            target,
+        );
     }
     // Only ownership retry has a completing production effect. Reject other
     // recovery targets before creating an operation that cannot terminate.
@@ -135,9 +153,95 @@ pub(super) fn compile_public_operator_recovery(
         .map_err(|_| OperationCompilationError::Rejected)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compile_blocked_abandon(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    envelope: &PublicMutationRequestV1,
+    request: &OperatorRecoveryRequestV1,
+    idempotency_key: IdempotencyKey,
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+    target: ResolvedRecoveryTargetV1,
+) -> Result<OperationPlan, OperationCompilationError> {
+    // Abandonment acknowledges only a terminal blocked operation. In
+    // particular, residual cleanup is not silently declared complete.
+    if target.resource_kind != ResourceKind::Operation
+        || target.operation_phase != Some(CheckedOperationPhaseV1::PermanentlyBlocked)
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let target_id = OperationId::from_bytes(request.resource_id());
+    let acknowledgment_key = crate::operator_abandon_ack::key_v1(target_id);
+    if journal
+        .get(
+            crate::RecordNamespace::OperatorRecovery,
+            &acknowledgment_key,
+        )
+        .is_some()
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let selector = Selector::Resource {
+        resource: ResourceId::from_bytes(request.resource_id()),
+    };
+    let authorization = crate::controller::authorize_public_operator_recovery_v1(
+        journal,
+        peer,
+        capability_id,
+        ResourceKind::Operation,
+        selector.clone(),
+        envelope.protobuf_body(),
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+
+    let operation_id = OperationId::new();
+    let acknowledgment = crate::operator_abandon_ack::record_v1(
+        operation_id,
+        target_id,
+        peer.principal(),
+        peer.project(),
+        request.idempotency_key(),
+        request_digest,
+        request.authority_binding(),
+        request.expected_resource_version(),
+    )
+    .ok_or(OperationCompilationError::Rejected)?;
+    let desired = super::public_mutation::mutation_intent(
+        operation_id,
+        PublicOperationMethodV1::OperatorRecover,
+        canonical_request,
+    );
+    let plan = OperationPlan::completed_operator_abandon(
+        operation_id,
+        target_id,
+        idempotency_key,
+        request_digest,
+        desired.0,
+        desired.1,
+        acknowledgment,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let scope =
+        PublicOperationAuthorizationV1::new(peer.project(), ResourceKind::Operation, selector)
+            .map_err(|_| OperationCompilationError::Rejected)?;
+    let public = PublicOperationAdmissionV1::new(
+        PublicOperationMethodV1::OperatorRecover,
+        1,
+        operation_id.into_bytes(),
+        authorization.accepted_wall_seconds(),
+        scope,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    plan.with_public_operation(public)
+        .map_err(|_| OperationCompilationError::Rejected)
+}
+
 struct ResolvedRecoveryTargetV1 {
     resource_kind: ResourceKind,
     current: crate::controller::PreparedOperatorRecoveryCurrentV1,
+    operation_phase: Option<CheckedOperationPhaseV1>,
 }
 
 fn resolve_recovery_target(
@@ -169,6 +273,7 @@ fn resolve_recovery_target(
             Ok(ResolvedRecoveryTargetV1 {
                 resource_kind: ResourceKind::Sandbox,
                 current,
+                operation_phase: None,
             })
         }
         (None, Some(resource)) => {
@@ -190,6 +295,7 @@ fn resolve_recovery_target(
             Ok(ResolvedRecoveryTargetV1 {
                 resource_kind: ResourceKind::Operation,
                 current,
+                operation_phase: Some(resource.phase()),
             })
         }
         (Some(_), Some(_)) | (None, None) => Err(OperationCompilationError::Rejected),
@@ -197,12 +303,15 @@ fn resolve_recovery_target(
 }
 
 fn replay_operator_recovery(
-    journal: &Journal,
+    journal: &mut Journal,
     operation_id: OperationId,
     idempotency_key: IdempotencyKey,
     canonical_request: &[u8],
     request_digest: [u8; 32],
     peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    protobuf_body: &[u8],
+    request: &OperatorRecoveryRequestV1,
 ) -> Result<OperationPlan, OperationCompilationError> {
     let desired = super::public_mutation::mutation_intent(
         operation_id,
@@ -214,6 +323,47 @@ fn replay_operator_recovery(
         .ok_or(OperationCompilationError::Rejected)?;
     if public.project() != peer.project() {
         return Err(OperationCompilationError::Rejected);
+    }
+    if request.action() == OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_ABANDON as i32 {
+        let target = OperationId::from_bytes(request.resource_id());
+        let selector = Selector::Resource {
+            resource: ResourceId::from_bytes(request.resource_id()),
+        };
+        crate::controller::authorize_public_operator_recovery_v1(
+            journal,
+            peer,
+            capability_id,
+            ResourceKind::Operation,
+            selector,
+            protobuf_body,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        let acknowledgment = crate::operator_abandon_ack::record_v1(
+            operation_id,
+            target,
+            peer.principal(),
+            peer.project(),
+            request.idempotency_key(),
+            request_digest,
+            request.authority_binding(),
+            request.expected_resource_version(),
+        )
+        .ok_or(OperationCompilationError::Rejected)?;
+        if journal.get(acknowledgment.namespace(), acknowledgment.key()) != acknowledgment.value() {
+            return Err(OperationCompilationError::Rejected);
+        }
+        return OperationPlan::completed_operator_abandon(
+            operation_id,
+            target,
+            idempotency_key,
+            request_digest,
+            desired.0,
+            desired.1,
+            acknowledgment,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?
+        .with_public_operation(public)
+        .map_err(|_| OperationCompilationError::Rejected);
     }
     let effect = EffectPlan::authorized_public_mutation(
         PublicOperationMethodV1::OperatorRecover,

@@ -408,6 +408,15 @@ impl DurablePublicOperationV1 {
                 "reconciling",
                 RetryClass::RETRY_CLASS_SAME_REQUEST,
             ),
+            (OperationState::Succeeded, _)
+                if self.method == PublicOperationMethodV1::OperatorRecover && effect_count == 0 =>
+            {
+                (
+                    OperationPhase::OPERATION_PHASE_SUCCEEDED,
+                    "abandon-acknowledged",
+                    RetryClass::RETRY_CLASS_NEVER,
+                )
+            }
             (OperationState::Succeeded, _) => (
                 OperationPhase::OPERATION_PHASE_SUCCEEDED,
                 "complete",
@@ -526,5 +535,62 @@ const fn resource_kind_from_code(value: u8) -> Option<ResourceKind> {
         15 => Some(ResourceKind::Capability),
         16 => Some(ResourceKind::Operation),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_abandon_projects_an_acknowledgment_milestone() {
+        let public = DurablePublicOperationV1 {
+            method: PublicOperationMethodV1::OperatorRecover,
+            accepted_generation: 1,
+            observation_sequence: 1,
+            audit_id: [2; 16],
+            accepted_wall_seconds: 1,
+            last_reconciliation_wall_seconds: 1,
+            completed_wall_seconds: Some(1),
+        };
+        let operation_id = OperationId::from_bytes([3; 16]);
+
+        let acknowledgment = public.project(
+            operation_id,
+            OperationState::Succeeded,
+            0,
+            0,
+            false,
+            false,
+            b"record",
+            &[],
+        );
+        assert_eq!(
+            acknowledgment
+                .progress
+                .as_option()
+                .expect("progress")
+                .milestone,
+            "abandon-acknowledged"
+        );
+
+        let effect_completion = public.project(
+            operation_id,
+            OperationState::Succeeded,
+            1,
+            1,
+            false,
+            false,
+            b"record",
+            &[],
+        );
+        assert_eq!(
+            effect_completion
+                .progress
+                .as_option()
+                .expect("progress")
+                .milestone,
+            "complete"
+        );
     }
 }

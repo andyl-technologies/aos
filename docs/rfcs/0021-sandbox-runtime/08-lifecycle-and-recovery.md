@@ -272,6 +272,17 @@ durably activated and independently validated. Missing configuration,
 transport loss, or unverified artifacts leave the original gate closed; none
 of those conditions permits a new authority claim or ordinary effect dispatch.
 
+For a target operation already durably `PermanentlyBlocked`, a separately
+capability-authorized Recover `Abandon` acknowledges that exact terminal state.
+The controller checks the target resource version and request evidence, then
+atomically records the operator, idempotency commitment, and blocked-target
+binding with a completed acknowledgment operation. It does not change the
+target operation, perform cleanup, or assert that residual resources are gone.
+The new operation's public milestone is `abandon-acknowledged`, not a repair
+or cleanup result.
+`CommittedWithResidualCleanup` and nonterminal targets are not eligible for
+this bounded acknowledgment.
+
 ## View and lease recovery
 
 Every attachment lease binds sandbox and view identity, both incarnations where

@@ -80,6 +80,7 @@ pub mod mount_preparation;
 #[cfg(target_os = "linux")]
 pub mod mount_source_acquisition_inventory;
 pub mod multi_node;
+mod operator_abandon_ack;
 pub mod ownership_authority;
 pub mod ownership_resume;
 pub mod ownership_service;

@@ -240,6 +240,55 @@ impl OperationPlan {
         })
     }
 
+    /// Constructs a completed acknowledgment of an already blocked operation.
+    ///
+    /// The caller must have checked the protected target's terminal phase and
+    /// public resource-version fence. This plan atomically retains only the
+    /// acknowledgment; it neither changes the target nor dispatches cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched operation identities or a malformed protected
+    /// acknowledgment record.
+    pub(crate) fn completed_operator_abandon(
+        operation_id: OperationId,
+        target: OperationId,
+        idempotency_key: IdempotencyKey,
+        request_digest: [u8; 32],
+        desired_key: Vec<u8>,
+        desired_value: Vec<u8>,
+        acknowledgment: JournalRecord,
+    ) -> Result<Self, ReconcilerError> {
+        if operation_id.as_bytes() == &[0; 16]
+            || target.as_bytes() == &[0; 16]
+            || desired_key.is_empty()
+            || desired_value.is_empty()
+            || !crate::operator_abandon_ack::validates_record_v1(
+                &acknowledgment,
+                operation_id,
+                target,
+                idempotency_key.as_bytes(),
+                request_digest,
+            )
+        {
+            return Err(ReconcilerError::InvalidPlan(
+                "invalid completed operator abandonment",
+            ));
+        }
+        Ok(Self {
+            operation_id,
+            idempotency_key,
+            request_digest,
+            desired_key,
+            desired_value,
+            effects: Vec::new(),
+            ownership_gate: None,
+            runtime_authority: None,
+            public_operation: None,
+            local_records: vec![acknowledgment],
+        })
+    }
+
     /// Adds protected controller-local records to a still-active operation.
     ///
     /// These records are committed atomically with the operation and its
@@ -1278,6 +1327,14 @@ where
             .is_some()
         {
             return Err(ReconcilerError::OperationAlreadyExists);
+        }
+        // A second admission cannot replace another operator's terminal
+        // acknowledgment, even if a previously compiled plan is retained.
+        if plan.local_records.iter().any(|record| {
+            crate::operator_abandon_ack::is_acknowledgment_record_v1(record)
+                && self.journal.get(record.namespace(), record.key()).is_some()
+        }) {
+            return Err(ReconcilerError::IdempotencyConflict);
         }
         if let Some(maximum) = maximum_pending_operations {
             // Corrupt operation state must never be treated as spare capacity.
@@ -4513,6 +4570,53 @@ mod tests {
             reconciler.accept(&plan).unwrap(),
             AcceptOutcome::Replay(plan.operation_id())
         );
+    }
+
+    #[test]
+    fn operator_abandon_acknowledgment_cannot_be_replaced() {
+        let directory = TestDirectory::new();
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let target = OperationId::from_bytes([3; 16]);
+        let plan = |identity: u8, idempotency: &'static [u8]| {
+            let operation = OperationId::from_bytes([identity; 16]);
+            let acknowledgment = crate::operator_abandon_ack::record_v1(
+                operation,
+                target,
+                aos_sandbox_core::PrincipalId::from_bytes([4; 16]),
+                aos_sandbox_core::ProjectId::from_bytes([5; 16]),
+                idempotency,
+                [6; 32],
+                ObjectDigest::from_bytes([7; 32]),
+                b"version",
+            )
+            .unwrap();
+            OperationPlan::completed_operator_abandon(
+                operation,
+                target,
+                IdempotencyKey::new(idempotency.to_vec()).unwrap(),
+                [6; 32],
+                vec![identity],
+                b"desired".to_vec(),
+                acknowledgment,
+            )
+            .unwrap()
+        };
+        let first = plan(1, b"first");
+        let second = plan(2, b"second");
+
+        assert_eq!(
+            reconciler.accept(&first).unwrap(),
+            AcceptOutcome::Accepted(first.operation_id())
+        );
+        assert_eq!(
+            reconciler.accept(&first).unwrap(),
+            AcceptOutcome::Replay(first.operation_id())
+        );
+        assert!(matches!(
+            reconciler.accept(&second),
+            Err(ReconcilerError::IdempotencyConflict)
+        ));
     }
 
     #[test]
