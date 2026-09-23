@@ -155,186 +155,162 @@
         }
       ];
   };
-  service = serviceManagement.forService {
-    featureRequests = [
-      (serviceManagement.featureRequest {
-        key = "device_policy";
-        requirementAlias = "service-device-policy";
-        description = "Requires the selected service-management provider to enforce the declared device access policy.";
-        interface = "aos.service.device-policy";
-        abi = 1;
-        parameters = {
-          baseline_access = "declared-devices-only";
-          rules = [
-            {
-              selector = {
-                kind = "number";
-                device_type = "character";
-                major = 1;
-                minor = 3;
-              };
-              read = true;
-              write = true;
-              create = false;
-            }
-          ];
-        };
-      })
-      (serviceManagement.featureRequest {
-        key = "hardening";
-        requirementAlias = "service-hardening";
-        description = "Requires the selected service-management provider to enforce the declared service hardening policy.";
-        interface = "aos.service.hardening";
-        abi = 1;
-        parameters = {
-          allow_privilege_escalation = false;
-          ambient_privileges = [];
-          privilege_bounds = {
-            kind = "restricted";
-            privileges = ["change-user-identity" "change-group-identity"];
+  service = {
+    policy.devicePolicy = {
+      baseline_access = "declared-devices-only";
+      rules = [
+        {
+          selector = {
+            kind = "number";
+            device_type = "character";
+            major = 1;
+            minor = 3;
           };
-          resource_control_delegation = false;
-          resource_control_access = "read-only";
-          device_access_scope = "private";
-          host_clock_mutation = false;
-          host_name_mutation = false;
-          operating_system_log_access = false;
-          operating_system_extension_access = false;
-          operating_system_tunable_access = false;
-          lock_execution_personality = true;
-          writable_executable_memory = false;
-          remove_interprocess_communication = true;
-          isolation_domains = ["filesystem" "network"];
-          network_families = ["local"];
-          memory_pressure_adjustment = 0;
-          permit_realtime = false;
-          permit_elevated_file_identity = false;
-          process_visibility = "self";
-          operation_architectures = ["native"];
-          operation_allow = [];
-          operation_deny = [];
-          operation_profile = "system-service";
-          isolated_identity_mapping = "none";
-        };
-      })
-    ];
-    inherit serviceTypes consumerInstance;
-    declaration = {
-      service = "polkit";
-      enabled = true;
-      lifecycle = {
-        description = "Authorization Manager";
-        execution_model = "foreground";
-        environment_files = [];
-        condition = [];
-        pre_start = [];
-        start = [
-          {
-            executable = {
-              artifact = lib.abilities.packageOutput {};
-              entry_point = "lib/polkit-1/polkitd";
-              arguments = ["--no-debug" "--log-level=notice"];
-            };
-            ignore_failure = false;
-          }
-        ];
-        post_start = [];
-        stop = [];
-        post_stop = [];
-        restart = "on-failure";
-        restart_delay_millis = 100;
-        configuration_change_action = "reload";
-        remain_after_exit = false;
-        start_timeout_millis = 90000;
-        stop_timeout_millis = 90000;
-      };
-      dependencies = {
-        after = [
-          (resultOf "system-bus-availability" "resource")
-        ];
-        before = [];
-        requires = [(resultOf "system-bus-availability" "resource")];
-        wants = [];
-        prerequisites = [
-          (resultOf "local-rules-file" "resource")
-          (resultOf "packaged-actions-file" "resource")
-        ];
-      };
-      supervision = {
-        startup_protocol = "notification";
-        notification_access = "main-process";
-      };
-      reload = {
-        strategy = "signal";
-        commands = [];
-        signal = "HUP";
-        completion = "command-exit";
-      };
-      directories.managed = [
-        {
-          path = "polkit-1";
-          purpose = "state";
-          mode = "0700";
-          retention = "persistent";
-          owner = resultOf "service-principal" "principal-name";
-          group = resultOf "service-group" "group-name";
-        }
-        {
-          path = "polkit-1";
-          purpose = "runtime";
-          mode = "0750";
-          retention = "restart";
-          owner = resultOf "service-principal" "principal-name";
-          group = resultOf "service-group" "group-name";
+          read = true;
+          write = true;
+          create = false;
         }
       ];
-      identity = {
-        principal = resultOf "service-principal" "principal-name";
-        primary_group = resultOf "service-group" "group-name";
-        supplementary_groups = [];
-        ephemeral = false;
-        file_creation_mask = "0077";
+    };
+    policy.hardening = {
+      allow_privilege_escalation = false;
+      ambient_privileges = [];
+      privilege_bounds = {
+        kind = "restricted";
+        privileges = ["change-user-identity" "change-group-identity"];
       };
-      isolation = {
-        privilege = "unprivileged";
-        filesystem = "read-only-system";
-        home_access = "inaccessible";
-        network = "none";
-        process_visibility = "private";
-        termination_scope = "all-processes";
-        temporary_directory = "private";
-        devices = [];
-        host_paths = [];
-        permit_core_dumps = false;
+      resource_control_delegation = false;
+      resource_control_access = "read-only";
+      device_access_scope = "private";
+      host_clock_mutation = false;
+      host_name_mutation = false;
+      operating_system_log_access = false;
+      operating_system_extension_access = false;
+      operating_system_tunable_access = false;
+      lock_execution_personality = true;
+      writable_executable_memory = false;
+      remove_interprocess_communication = true;
+      isolation_domains = ["filesystem" "network"];
+      network_families = ["local"];
+      memory_pressure_adjustment = 0;
+      permit_realtime = false;
+      permit_elevated_file_identity = false;
+      process_visibility = "self";
+      operation_architectures = ["native"];
+      operation_allow = [];
+      operation_deny = [];
+      operation_profile = "system-service";
+      isolated_identity_mapping = "none";
+    };
+    lifecycle = {
+      description = "Authorization Manager";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            artifact = lib.abilities.packageOutput {};
+            entry_point = "lib/polkit-1/polkitd";
+            arguments = ["--no-debug" "--log-level=notice"];
+          };
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 100;
+      configuration_change_action = "reload";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [
+        (resultOf "system-bus-availability" "resource")
+      ];
+      before = [];
+      requires = [(resultOf "system-bus-availability" "resource")];
+      wants = [];
+      prerequisites = [
+        (resultOf "local-rules-file" "resource")
+        (resultOf "packaged-actions-file" "resource")
+      ];
+    };
+    supervision = {
+      startup_protocol = "notification";
+      notification_access = "main-process";
+    };
+    reload = {
+      strategy = "signal";
+      commands = [];
+      signal = "HUP";
+      completion = "command-exit";
+    };
+    directories.managed = [
+      {
+        path = "polkit-1";
+        purpose = "state";
+        mode = "0700";
+        retention = "persistent";
+        owner = resultOf "service-principal" "principal-name";
+        group = resultOf "service-group" "group-name";
+      }
+      {
+        path = "polkit-1";
+        purpose = "runtime";
+        mode = "0750";
+        retention = "restart";
+        owner = resultOf "service-principal" "principal-name";
+        group = resultOf "service-group" "group-name";
+      }
+    ];
+    identity = {
+      principal = resultOf "service-principal" "principal-name";
+      primary_group = resultOf "service-group" "group-name";
+      supplementary_groups = [];
+      ephemeral = false;
+      file_creation_mask = "0077";
+    };
+    isolation = {
+      privilege = "unprivileged";
+      filesystem = "read-only-system";
+      home_access = "inaccessible";
+      network = "none";
+      process_visibility = "private";
+      termination_scope = "all-processes";
+      temporary_directory = "private";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = false;
+    };
+    resources = {
+      locked_memory_bytes = {
+        kind = "maximum";
+        value = 0;
       };
-      resources = {
-        locked_memory_bytes = {
-          kind = "maximum";
-          value = 0;
-        };
-        memory_max_bytes = {
-          kind = "maximum";
-          value = 33554432;
-        };
-        memory_swap_max_bytes = {
-          kind = "maximum";
-          value = 33554432;
-        };
-        oom_policy = "stop";
+      memory_max_bytes = {
+        kind = "maximum";
+        value = 33554432;
       };
+      memory_swap_max_bytes = {
+        kind = "maximum";
+        value = 33554432;
+      };
+      oom_policy = "stop";
     };
   };
-  fragments = [
+  producers = [
     group
     principal
     localFilesystems
-    systemBusAvailability
     rulesConfiguration
     configurationFiles
     privilegedWrappers
-    service
   ];
-  definitions = builtins.map serviceManagement.splitDefinition fragments;
 in {
   imports = [
     ./availability-interface.nix
@@ -361,51 +337,47 @@ in {
   };
 
   config = lib.mkMerge [
-    {aos.abilities = lib.mkMerge (builtins.map (entry: entry.declarations) definitions);}
+    {
+      aos.services."polkit.polkit" = service // {enable = active;};
+      aos.abilities.requirementTemplates.system-bus-availability = systemBusAvailability.requirementTemplates.system-bus-availability;
+    }
+    (serviceManagement.producerModule {
+      inherit config lib producers;
+      enabled = active;
+    })
     (lib.mkIf active {
       aos.pam.packageServices."polkit-1" = {
         unixAuth = true;
         startSession = false;
         setLoginUid = false;
       };
-      aos.abilities = lib.mkMerge (
-        [
+      aos.abilities.instances.${availabilityAlias} = {};
+      aos.abilities.requests.system-bus-availability = systemBusAvailability.requests.system-bus-availability;
+      aos.abilities.runtimeChecks.polkit = {
+        description = "polkit policy and privilege checks";
+        checks = [
           {
-            instances = {
-              ${availabilityAlias} = {};
-              ${consumerInstance} = {};
-            };
+            name = "polkit-policy";
+            description = "polkit answers through D-Bus with packaged actions and local rules";
+            script = ''
+              vm.wait_until_succeeds(
+                  "pkaction | grep -Fx org.freedesktop.policykit.exec", timeout=30
+              )
+              vm.succeed("grep -Fq 'Generated by the package-owned polkit ability module' /etc/polkit-1/rules.d/10-aos.rules")
+              vm.succeed("grep -q pam_unix.so /etc/pam.d/polkit-1")
+            '';
           }
           {
-            runtimeChecks.polkit = {
-              description = "polkit policy and privilege checks";
-              checks = [
-                {
-                  name = "polkit-policy";
-                  description = "polkit answers through D-Bus with packaged actions and local rules";
-                  script = ''
-                    vm.wait_until_succeeds(
-                        "pkaction | grep -Fx org.freedesktop.policykit.exec", timeout=30
-                    )
-                    vm.succeed("grep -Fq 'Generated by the package-owned polkit ability module' /etc/polkit-1/rules.d/10-aos.rules")
-                    vm.succeed("grep -q pam_unix.so /etc/pam.d/polkit-1")
-                  '';
-                }
-                {
-                  name = "polkit-wrappers";
-                  description = "polkit privileged entry points are root-owned setuid wrappers";
-                  script = ''
-                    vm.wait_until_succeeds("test -u /run/wrappers/bin/pkexec", timeout=30)
-                    vm.succeed("test -u /run/wrappers/bin/polkit-agent-helper-1")
-                    vm.succeed("test $(stat -c %u:%g /run/wrappers/bin/pkexec) = 0:0")
-                  '';
-                }
-              ];
-            };
+            name = "polkit-wrappers";
+            description = "polkit privileged entry points are root-owned setuid wrappers";
+            script = ''
+              vm.wait_until_succeeds("test -u /run/wrappers/bin/pkexec", timeout=30)
+              vm.succeed("test -u /run/wrappers/bin/polkit-agent-helper-1")
+              vm.succeed("test $(stat -c %u:%g /run/wrappers/bin/pkexec) = 0:0")
+            '';
           }
-        ]
-        ++ builtins.map (entry: entry.configured) definitions
-      );
+        ];
+      };
     })
   ];
 }
