@@ -14,6 +14,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliLiveFuzz = builtins.readFile ../../crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -500,10 +501,6 @@
       {
         label = "fuzz executes live QEMU iterations";
         needle = "fn run_local_qemu_fuzz_workflow";
-      }
-      {
-        label = "live fuzz samples from accepted coverage";
-        needle = "sample_coverage_guided(context.plan.config, sequence, &execution.feedback)";
       }
       {
         label = "live fuzz explores authenticated typed choices";
@@ -1030,6 +1027,20 @@
       {
         label = "search assertion retained-log terminal guest reachable warn guard";
         needle = "guest_reachable_warn_with_terminal_quiescence_oracle";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs" cliLiveFuzz [
+      {
+        label = "live fuzz samples from accepted coverage";
+        needle = "sample_coverage_guided(context.plan.config, sequence, &guidance)";
+      }
+      {
+        label = "live fuzz updates sampling guidance from admitted coverage";
+        needle = "&mut guidance,\n            candidates,";
+      }
+      {
+        label = "live fuzz retains only novel coverage in guidance";
+        needle = "if novel > 0 {\n        observed.extend(coverage_ids.iter().copied());\n        guidance.push(feedback.clone());";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
