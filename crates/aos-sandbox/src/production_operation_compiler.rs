@@ -25,7 +25,9 @@ use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1, public_projection_deletion_record_v1,
 };
-use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
+use crate::public_mutation_compiler::{
+    AuthorizedPublicMutationRequestV1, PublicMutationAuthorizationErrorV1,
+};
 use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
@@ -83,6 +85,19 @@ pub struct PublicCapabilityAttenuationV1 {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProductionOperationCompilerV1;
 
+fn authorize_public_mutation(
+    journal: &mut Journal,
+    peer: &crate::public_api_session::PublicApiPeer,
+    capability_id: CapabilityId,
+    canonical_request: &[u8],
+) -> Result<AuthorizedPublicMutationRequestV1, OperationCompilationError> {
+    AuthorizedPublicMutationRequestV1::authorize(journal, peer, capability_id, canonical_request)
+        .map_err(|error| match error {
+            PublicMutationAuthorizationErrorV1::Malformed => OperationCompilationError::Malformed,
+            PublicMutationAuthorizationErrorV1::Rejected => OperationCompilationError::Rejected,
+        })
+}
+
 /// Compiles an authorized attach with an independently authenticated Host route.
 ///
 /// The ordinary production compiler has no route evidence and remains closed.
@@ -105,20 +120,7 @@ pub fn compile_public_attach_route_v1(
     route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
     issuer: &crate::attach_route_issuer::OpenSshAttachRouteIssuerV1,
 ) -> Result<OperationPlan, OperationCompilationError> {
-    let authorized = AuthorizedPublicMutationRequestV1::authorize(
-        journal,
-        peer,
-        capability_id,
-        canonical_request,
-    )
-    .map_err(|error| match error {
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
-            OperationCompilationError::Malformed
-        }
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
-            OperationCompilationError::Rejected
-        }
-    })?;
+    let authorized = authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
     public_mutation::compile_authorized_attach_route(
         journal,
         &authorized,
@@ -143,20 +145,7 @@ pub fn reserve_public_attach_v1(
     canonical_request: &[u8],
     request_digest: [u8; 32],
 ) -> Result<crate::public_attach_pending::PublicAttachPendingV1, OperationCompilationError> {
-    let authorized = AuthorizedPublicMutationRequestV1::authorize(
-        journal,
-        peer,
-        capability_id,
-        canonical_request,
-    )
-    .map_err(|error| match error {
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
-            OperationCompilationError::Malformed
-        }
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
-            OperationCompilationError::Rejected
-        }
-    })?;
+    let authorized = authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
     public_mutation::reserve_authorized_attach(journal, &authorized, request_digest)
 }
 
@@ -175,20 +164,7 @@ pub fn prepare_public_attach_readiness_v1(
     node: aos_sandbox_core::NodeId,
     now_seconds: i64,
 ) -> Result<crate::public_attach_pending::PublicAttachHostQueryDraftV1, OperationCompilationError> {
-    let authorized = AuthorizedPublicMutationRequestV1::authorize(
-        journal,
-        peer,
-        capability_id,
-        canonical_request,
-    )
-    .map_err(|error| match error {
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
-            OperationCompilationError::Malformed
-        }
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
-            OperationCompilationError::Rejected
-        }
-    })?;
+    let authorized = authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
     public_mutation::prepare_authorized_attach_readiness(journal, &authorized, node, now_seconds)
 }
 
@@ -209,20 +185,7 @@ pub fn lookup_public_attach_existing_v1(
     Option<(crate::public_attach_pending::PublicAttachPendingV1, bool)>,
     OperationCompilationError,
 > {
-    let authorized = AuthorizedPublicMutationRequestV1::authorize(
-        journal,
-        peer,
-        capability_id,
-        canonical_request,
-    )
-    .map_err(|error| match error {
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
-            OperationCompilationError::Malformed
-        }
-        crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
-            OperationCompilationError::Rejected
-        }
-    })?;
+    let authorized = authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
     public_mutation::lookup_authorized_attach_existing(journal, &authorized, request_digest)
 }
 
@@ -244,20 +207,8 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
         canonical_request: &[u8],
         request_digest: [u8; 32],
     ) -> Result<OperationPlan, OperationCompilationError> {
-        let authorized = AuthorizedPublicMutationRequestV1::authorize(
-            journal,
-            peer,
-            capability_id,
-            canonical_request,
-        )
-        .map_err(|error| match error {
-            crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Malformed => {
-                OperationCompilationError::Malformed
-            }
-            crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1::Rejected => {
-                OperationCompilationError::Rejected
-            }
-        })?;
+        let authorized =
+            authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
         let request = authorized.request();
         use crate::cli_model::DormantSandboxRequestKindV1 as Request;
 
