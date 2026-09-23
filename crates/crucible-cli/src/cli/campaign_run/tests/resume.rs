@@ -3,6 +3,61 @@
 use super::*;
 
 #[test]
+fn resume_authenticates_attempt_timeout_and_bounded_primary_frontier() {
+    let temporary = TempDir::new().or_panic("bounded resume workspace");
+    let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
+    let mut plan = default_resume_plan(&evidence, temporary.path());
+    plan.terminal_condition = RunTerminalCondition::VirtualTime;
+    plan.max_virtual_time_ticks = Some(10);
+    let primary =
+        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(10), Some(20), Some(8))
+            .or_panic("bounded resume stop");
+    let reached = StopOutcome::BoundedPrimaryReached {
+        stop: primary,
+        proof: crucible_campaign::BoundedStopProof::new(10, 2),
+    };
+
+    assert_eq!(
+        campaign_resume_status(&plan, &reached).or_panic("bounded primary status"),
+        (BackendCommandStatus::Passed, OutcomeKind::Passed)
+    );
+    assert_eq!(
+        campaign_resume_final_state(&plan, &reached, OutcomeKind::Passed),
+        "virtual-time"
+    );
+    validate_campaign_resume_frontier(
+        &plan,
+        VirtualTime { ticks: 5 },
+        &reached,
+        VirtualTime { ticks: 10 },
+    )
+    .or_panic("bounded primary frontier");
+    assert!(
+        validate_campaign_resume_frontier(
+            &plan,
+            VirtualTime { ticks: 5 },
+            &reached,
+            VirtualTime { ticks: 9 },
+        )
+        .is_err()
+    );
+
+    plan.max_virtual_time_ticks = Some(30);
+    let policy_stop =
+        StopCondition::bounded(StopCondition::VirtualTimeNanoseconds(30), Some(20), Some(8))
+            .or_panic("policy-preempted resume stop");
+    let timed_out = StopOutcome::PolicyTimeout {
+        stop: policy_stop,
+        kind: crucible_campaign::PolicyTimeoutKind::VirtualTime,
+        proof: crucible_campaign::BoundedStopProof::new(20, 3),
+    };
+    assert_eq!(
+        campaign_resume_status(&plan, &timed_out).or_panic("policy timeout status"),
+        (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
+    );
+}
+
+#[test]
 fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
     let temporary = TempDir::new().or_panic("resume route workspace");
     let supported = Schedule::from_decisions([

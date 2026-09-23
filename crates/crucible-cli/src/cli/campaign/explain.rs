@@ -832,6 +832,24 @@ fn stop_outcome_label(outcome: &StopOutcome) -> String {
         StopOutcome::Reached(stop) => {
             format!("reached:{}", campaign_stop_condition_label(stop))
         }
+        StopOutcome::BoundedPrimaryReached { stop, proof } => format!(
+            "bounded-primary-reached:{}:frontier-ns={}:quanta={}",
+            campaign_stop_condition_label(stop.primary()),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::BoundedPrimaryTimeout { stop, proof } => format!(
+            "bounded-primary-timeout:{}:frontier-ns={}:quanta={}",
+            campaign_stop_condition_label(stop.primary()),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
+        StopOutcome::PolicyTimeout { stop, kind, proof } => format!(
+            "policy-timeout:{kind:?}:{}:frontier-ns={}:quanta={}",
+            campaign_stop_condition_label(stop.primary()),
+            proof.frontier_nanoseconds(),
+            proof.completed_quanta()
+        ),
         StopOutcome::TerminalSuccess => String::from("terminal-success"),
         StopOutcome::ModeledTimeout(name) => format!("modeled-timeout:{name}"),
         StopOutcome::GuestCrash(class) => format!("guest-crash:{class}"),
