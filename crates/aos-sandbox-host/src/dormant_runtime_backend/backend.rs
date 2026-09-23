@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    ExecutionJournalRecoveryTokenV1, JournalRuntimeExecutionError, RuntimeExecutionEvidenceError,
-    agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
-    completion_from_backend_observation_v1,
+    ExecutionJournalRecoveryTokenV1, JournalExecutionCompletionV1, JournalRuntimeExecutionError,
+    RuntimeExecutionEvidenceError, agent_handshake_signing_message_v1,
+    agent_outcome_signing_message_v1, completion_from_backend_observation_v1,
 };
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentExecutionPhaseV1, AgentFeatureSetV1,
@@ -144,6 +144,23 @@ pub struct DormantExecutionRecoveryHandleV1 {
 #[must_use = "the exact agent request must be dispatched or retained for recovery"]
 pub struct DormantAgentExecutionHandoffV1 {
     request: AgentOperationRequestV1,
+}
+
+/// Retains exact completion evidence across an ambiguous protected journal commit.
+#[must_use = "control completion recovery must resolve before another guest dispatch"]
+pub struct DormantControlCompletionRecoveryV1 {
+    effect: DurableExecutionEffectV1,
+    evidence: JournalExecutionCompletionV1,
+    token: Option<ExecutionJournalRecoveryTokenV1>,
+}
+
+/// Reports durable control completion or retained commit-only recovery custody.
+#[must_use = "a control outcome must be published or durably recovered"]
+pub enum DormantControlCompletionOutcomeV1 {
+    /// The exact control effect reached its durable terminal record.
+    Committed(DurableExecutionEffectV1),
+    /// Only protected journal recovery is permitted; guest redispatch is not.
+    RecoveryRequired(DormantControlCompletionRecoveryV1),
 }
 
 /// Carries an untrusted signed protected-clock observation for Kill escalation.
@@ -1503,8 +1520,8 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
     /// Settles one control effect from the queued authenticated agent observation.
     ///
     /// The observation sequence is durably consumed before effect completion.
-    /// If completion is ambiguous, the returned recovery token must be
-    /// resolved without redispatching the guest operation.
+    /// Ambiguous completion retains both exact evidence and the journal token
+    /// for commit-only recovery without redispatching the guest operation.
     ///
     /// # Errors
     ///
@@ -1515,10 +1532,7 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
     pub fn settle_authenticated_execution_control(
         &mut self,
         effect: &DurableExecutionEffectV1,
-    ) -> Result<
-        ExecutionEffectTransitionV1<ExecutionJournalRecoveryTokenV1>,
-        DormantControlCompletionErrorV1,
-    > {
+    ) -> Result<DormantControlCompletionOutcomeV1, DormantControlCompletionErrorV1> {
         self.revalidate()?;
         if effect.issue().operation() == EffectOperationV1::AuthorizeExecution
             || !matches!(
@@ -1552,9 +1566,46 @@ impl<'owner> DormantProtectedRuntimeBackendV1<'owner> {
         let evidence = completion_from_backend_observation_v1(effect, observation)?;
 
         self.take_execution(&expected)?;
-        self.authority
-            .commit_verified_completion(effect, &evidence)
-            .map_err(Into::into)
+        let transition = self
+            .authority
+            .commit_verified_completion(effect, &evidence)?;
+        Ok(retain_control_completion(
+            effect.clone(),
+            evidence,
+            transition,
+        ))
+    }
+
+    /// Resolves one ambiguous control completion without contacting the agent.
+    ///
+    /// An authenticated negative commit classification retries only the exact
+    /// protected journal completion with the retained evidence. It never
+    /// recreates a dispatch permit or sends a second guest operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DormantControlCompletionErrorV1`] for stale fixed ownership,
+    /// substituted recovery authority, corrupt protected state, or a failed
+    /// exact completion replay.
+    pub fn recover_authenticated_execution_control(
+        &mut self,
+        recovery: DormantControlCompletionRecoveryV1,
+    ) -> Result<DormantControlCompletionOutcomeV1, DormantControlCompletionErrorV1> {
+        self.revalidate()?;
+        let DormantControlCompletionRecoveryV1 {
+            effect,
+            evidence,
+            token,
+        } = recovery;
+        let transition = match token {
+            Some(token) => self
+                .authority
+                .recover_verified_completion(&effect, &evidence, token)?,
+            None => self
+                .authority
+                .commit_verified_completion(&effect, &evidence)?,
+        };
+        Ok(retain_control_completion(effect, evidence, transition))
     }
 
     /// Verifies and submits one signed response for an ambiguous exec handoff.
@@ -2364,6 +2415,36 @@ pub enum DormantControlCompletionErrorV1 {
     /// The authenticated phase cannot complete this exact control operation.
     #[error("dormant control completion evidence is invalid: {0}")]
     Evidence(#[from] RuntimeExecutionEvidenceError),
+}
+
+fn retain_control_completion(
+    effect: DurableExecutionEffectV1,
+    evidence: JournalExecutionCompletionV1,
+    transition: ExecutionEffectTransitionV1<ExecutionJournalRecoveryTokenV1>,
+) -> DormantControlCompletionOutcomeV1 {
+    match transition {
+        ExecutionEffectTransitionV1::Committed(completed) => {
+            DormantControlCompletionOutcomeV1::Committed(completed)
+        }
+        ExecutionEffectTransitionV1::RecoveryRequired(token) => {
+            DormantControlCompletionOutcomeV1::RecoveryRequired(
+                DormantControlCompletionRecoveryV1 {
+                    effect,
+                    evidence,
+                    token: Some(token),
+                },
+            )
+        }
+        ExecutionEffectTransitionV1::NotCommitted => {
+            DormantControlCompletionOutcomeV1::RecoveryRequired(
+                DormantControlCompletionRecoveryV1 {
+                    effect,
+                    evidence,
+                    token: None,
+                },
+            )
+        }
+    }
 }
 
 fn agent_runtime_binding(

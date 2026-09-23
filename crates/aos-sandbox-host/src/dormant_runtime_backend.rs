@@ -21,6 +21,7 @@ mod backend;
 mod composition;
 pub use backend::{
     DormantAgentExecutionHandoffV1, DormantBackendHandoffErrorV1, DormantControlCompletionErrorV1,
+    DormantControlCompletionOutcomeV1, DormantControlCompletionRecoveryV1,
     DormantExecutionHandleV1, DormantExecutionRecoveryHandleV1, DormantForcedKillHandoffV1,
     DormantKillEscalationErrorV1, DormantKillStopOutcomeV1, DormantLifecycleRecoveryHandleV1,
     DormantPendingKillV1, DormantPreparedHandleV1, DormantProtectedRuntimeBackendV1,
