@@ -15,6 +15,7 @@ use crucible_daemon::{
     AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState, ExactCheckpointStore,
     visit_directory_attempt_states_bounded,
 };
+use crucible_session::engine::LinkDef;
 
 pub(crate) const FAST_ALTERNATIVE: &str =
     "0101010101010101010101010101010101010101010101010101010101010101";
@@ -61,7 +62,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     known_attempts.insert(discovery_attempt);
     let recovery = wait_for_choice(
         &fixture,
-        "campaign.recovery-policy",
+        "network.recovery-policy",
         &discovery_parent,
         &discovery_parent_configuration,
     )?;
@@ -95,7 +96,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     let fast_parent_configuration = json_string(&fast_explanation["observation"], "child")?;
     let retry = wait_for_choice(
         &fixture,
-        "campaign.retry-quanta",
+        "network.retry-quanta",
         &fast_parent,
         &fast_parent_configuration,
     )?;
@@ -104,8 +105,8 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     attest_guest_choice_immutable_inputs("safe-replay", &immutable_inputs, &authority)?;
     require_empty_guest_choice_run_root("safe-replay")?;
 
-    // A second branch proves that the result marker is computed from the
-    // guest's replies rather than emitted unconditionally by the fixture.
+    // A second branch proves the selected values change a frame received by
+    // the linked peer, rather than only a marker emitted by the sender.
     let safe_submission = submit_choice(
         &fixture,
         &recovery,
@@ -128,7 +129,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     let safe_parent_configuration = json_string(&safe_explanation["observation"], "child")?;
     let safe_retry = wait_for_choice(
         &fixture,
-        "campaign.retry-quanta",
+        "network.retry-quanta",
         &safe_parent,
         &safe_parent_configuration,
     )?;
@@ -141,7 +142,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &fixture,
         &safe_retry,
         "u64:1",
-        "boundary:selected-safe-q1",
+        "boundary:network-observed-selected-safe-q1",
         0x64,
     )?;
     let safe_retry_request = accepted_branch_request(&safe_retry_submission)?;
@@ -160,7 +161,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     assert_eq!(safe_retry_explanation["selection"]["value"], "u64:1");
     assert_eq!(
         safe_retry_explanation["observation"]["stop"],
-        "reached:boundary:selected-safe-q1"
+        "reached:boundary:network-observed-selected-safe-q1"
     );
 
     // The integer request belongs to the exact child state published by the
@@ -172,7 +173,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     let mut selected_service = start_packaged_service(&fixture, &authority)?;
     let retry_after_restart = wait_for_choice(
         &fixture,
-        "campaign.retry-quanta",
+        "network.retry-quanta",
         &fast_parent,
         &fast_parent_configuration,
     )?;
@@ -259,6 +260,7 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     println!("guest_choice_restart_process=true");
     println!("\nguest_choice_resume_source_exact=true");
     println!("\nguest_choice_post_resume_progress=true");
+    println!("guest_choice_network_frame_observed=true");
     Ok(())
 }
 
@@ -278,6 +280,7 @@ fn compile_guest_choice_campaign(
     let kernel = required_path("CRUCIBLE_KERNEL")?;
     let root_image = required_path("CRUCIBLE_ROOT_IMAGE")?;
     let initrd = required_path("CRUCIBLE_INITRD")?;
+    let peer_initrd = required_path("CRUCIBLE_PEER_INITRD")?;
     let node = WorldNode {
         id: NodeId {
             name: "choice-node".into(),
@@ -301,8 +304,18 @@ fn compile_guest_choice_campaign(
             &fs::read(initrd)?,
         ))),
     };
-    let world = World::from_nodes_and_links(vec![node], vec![])?;
-    let selectables = guest_choice_selectables(&world)?;
+    let peer = WorldNode {
+        id: NodeId {
+            name: "choice-peer".into(),
+        },
+        initrd: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
+            &fs::read(peer_initrd)?,
+        ))),
+        ..node.clone()
+    };
+    let link = LinkDef::new(node.id.clone(), peer.id.clone())?;
+    let world = World::from_nodes_and_links(vec![node, peer], vec![link])?;
+    let selectables = guest_choice_selectables_with_prefix(&world, "network")?;
     let graph = EventGraph::builder()
         .event("keep-selected-guest-running")
         .entrypoint()
@@ -328,6 +341,13 @@ fn compile_guest_choice_campaign(
 pub(crate) fn guest_choice_selectables(
     world: &World,
 ) -> Result<ScenarioSelectables, Box<dyn Error>> {
+    guest_choice_selectables_with_prefix(world, "campaign")
+}
+
+fn guest_choice_selectables_with_prefix(
+    world: &World,
+    prefix: &str,
+) -> Result<ScenarioSelectables, Box<dyn Error>> {
     let node = world
         .vm_nodes()
         .first()
@@ -348,7 +368,7 @@ pub(crate) fn guest_choice_selectables(
         ]),
     )?);
     let recovery = SelectableDeclaration::new(
-        "campaign.recovery-policy",
+        format!("{prefix}.recovery-policy"),
         source(),
         recovery_domain,
         ChoiceValue::Discrete(safe),
@@ -368,7 +388,7 @@ pub(crate) fn guest_choice_selectables(
         Vec::new(),
     )?);
     let retry = SelectableDeclaration::new(
-        "campaign.retry-quanta",
+        format!("{prefix}.retry-quanta"),
         source(),
         retry_domain,
         ChoiceValue::Integer(IntegerValue::Unsigned(3)),
@@ -483,6 +503,7 @@ fn guest_choice_immutable_inputs(
         ("plugin", required_path("CRUCIBLE_FLIGHT_PLUGIN")?),
         ("kernel", required_path("CRUCIBLE_KERNEL")?),
         ("initrd", required_path("CRUCIBLE_INITRD")?),
+        ("peer-initrd", required_path("CRUCIBLE_PEER_INITRD")?),
         ("root-image", required_path("CRUCIBLE_ROOT_IMAGE")?),
         (
             "executor-deployment",

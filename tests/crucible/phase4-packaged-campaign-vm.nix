@@ -125,6 +125,15 @@
     ''}
   '';
   choiceInitramfs = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
+  networkChoiceInitramfs = import ./phase2-qemu-live-network-io-guest.nix {
+    inherit pkgs;
+    selectable = true;
+    campaignFlight = true;
+  };
+  networkPeerInitramfs = import ./phase2-qemu-live-network-io-guest.nix {
+    inherit pkgs;
+    campaignPeer = true;
+  };
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
@@ -148,7 +157,9 @@
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
       ++ (
-        if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
+        if guestChoice
+        then [networkChoiceInitramfs networkPeerInitramfs]
+        else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
         then [choiceInitramfs]
         else []
       );
@@ -279,6 +290,8 @@
         ''
         else if guestChoice
         then ''
+          export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
+          export CRUCIBLE_PEER_INITRD=${networkPeerInitramfs}/initrd.img
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/guest-choice-flight-list.log 2>&1; then
             cat /tmp/guest-choice-flight-list.log
@@ -331,6 +344,7 @@
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_boundary_diagnostics=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_resume_source_exact=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fxq 'guest_choice_post_resume_progress=true' /tmp/guest-choice-flight.log
+          ${pkgs.grep}/bin/grep -Fxq 'guest_choice_network_frame_observed=true' /tmp/guest-choice-flight.log
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' \
             /tmp/guest-choice-flight.log
