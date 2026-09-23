@@ -10,6 +10,7 @@
 
 mod historical_checkpoint;
 mod owner;
+mod storage_inventory_archive;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
@@ -77,6 +78,7 @@ const STORAGE_GROUP_ARCHIVE_HEADER_BYTES: usize = 8 + 2 + 16 + 4;
 const STORAGE_GROUP_ARCHIVE_TRAILER_BYTES: usize = 32;
 const MAXIMUM_PROTOCOL_RECORDS: usize = 4;
 const MAXIMUM_STORAGE_GROUP_ARCHIVES: usize = 16;
+const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
 
 /// Carries one terminal client exchange recovered from protected history.
@@ -279,9 +281,13 @@ fn protected_session_journal_limits() -> JournalLimits {
         maximum_records_per_transaction: 1,
         maximum_transaction_bytes: maximum_record_bytes + 1024,
         maximum_transactions: 65_536,
-        maximum_materialized_bytes: (MAXIMUM_PROTOCOL_RECORDS + MAXIMUM_STORAGE_GROUP_ARCHIVES)
+        maximum_materialized_bytes: (MAXIMUM_PROTOCOL_RECORDS
+            + MAXIMUM_STORAGE_GROUP_ARCHIVES
+            + MAXIMUM_STORAGE_INVENTORY_ARCHIVES)
             * maximum_record_bytes,
-        maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS + MAXIMUM_STORAGE_GROUP_ARCHIVES,
+        maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS
+            + MAXIMUM_STORAGE_GROUP_ARCHIVES
+            + MAXIMUM_STORAGE_INVENTORY_ARCHIVES,
     }
 }
 
@@ -566,6 +572,61 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Reauthenticates the original post-group Storage inventory head.
+    ///
+    /// This is read-only historical evidence, not authority to send or roll
+    /// over a pending request.
+    pub(crate) fn original_storage_inventory_coordinates(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<storage_inventory_archive::ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError>
+    {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let before = self
+            .journal
+            .read_current(BrokerSessionProtocolV1::Storage)?;
+        let head = self
+            .journal
+            .original_storage_inventory_coordinates(group_request_id, group_request_digest)?;
+        if self
+            .journal
+            .read_current(BrokerSessionProtocolV1::Storage)?
+            != before
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(head)
+    }
+
+    /// Retains the exact old signed inventory across a recovery-only rollover.
+    ///
+    /// The archive is immutable and its write does not mark the request
+    /// abandoned or authorize a fresh inventory query.
+    pub(crate) fn archive_original_storage_inventory(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<storage_inventory_archive::ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError>
+    {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let head = self.journal.archive_original_storage_inventory(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+        )?;
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(head)
+    }
+
     /// Retires an archived group only after its protected source is complete.
     pub(crate) fn retire_atomic_storage_archive(
         &mut self,
@@ -2731,6 +2792,7 @@ impl ProtectedBrokerSessionJournalV1 {
         ] {
             let _ = self.read_optional(protocol)?;
         }
+        self.validate_storage_inventory_archives()?;
         Ok(())
     }
 

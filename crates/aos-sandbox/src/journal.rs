@@ -217,6 +217,8 @@ pub enum RecordNamespace {
     AttachmentSourceDispatch = 57,
     /// Durable ambiguous or completed Storage guest-root population attempts.
     StorageGuestRootPublicationAttempt = 58,
+    /// Immutable original signed Storage inventory histories for status recovery.
+    BrokerSessionStorageInventoryArchive = 59,
 }
 
 impl RecordNamespace {
@@ -280,6 +282,7 @@ impl RecordNamespace {
             56 => Ok(Self::GuestRootPublication),
             57 => Ok(Self::AttachmentSourceDispatch),
             58 => Ok(Self::StorageGuestRootPublicationAttempt),
+            59 => Ok(Self::BrokerSessionStorageInventoryArchive),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -3649,6 +3652,7 @@ mod tests {
             RecordNamespace::GuestRootPublication,
             RecordNamespace::AttachmentSourceDispatch,
             RecordNamespace::StorageGuestRootPublicationAttempt,
+            RecordNamespace::BrokerSessionStorageInventoryArchive,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;
