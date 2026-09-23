@@ -1063,7 +1063,7 @@ pub enum StopOutcome {
         /// Executor-attested coordinates at the intrinsic fallback.
         proof: BoundedStopProof,
     },
-    /// A campaign-policy deadline fired as a modeled, catchable timeout.
+    /// A campaign-policy deadline produced an authenticated campaign timeout.
     PolicyTimeout {
         /// Exact bounded attempt stop.
         stop: StopCondition,
