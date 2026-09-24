@@ -23,7 +23,6 @@ use aos_sandbox_core::{
     execution_spec_digest_v1,
 };
 use aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES;
-use sha2::{Digest as _, Sha256};
 use ssh_key::PublicKey;
 
 use super::{
@@ -39,6 +38,7 @@ use crate::controller_execution_argument_receipt::{
 use crate::controller_execution_output_settlement::{
     ControllerExecutionOutputSettlementErrorV1, read_current_controller_output_settlement_v1,
 };
+use crate::controller_execution_spec_attempt::execution_spec_attempt_request_digest_v1;
 use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
@@ -526,8 +526,8 @@ fn read_controller_spec_inputs(
         environment,
         credentials,
         principal: accepted.caller(),
-        accepted_request_digest: ObjectDigest::from_bytes(
-            Sha256::digest(accepted.canonical_request()).into(),
+        accepted_request_digest: execution_spec_attempt_request_digest_v1(
+            accepted.canonical_request(),
         ),
     })
 }

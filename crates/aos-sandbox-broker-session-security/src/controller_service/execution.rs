@@ -417,11 +417,9 @@ impl ControllerExecutionIntentV1 {
             .ok_or_else(|| {
                 EffectFailure::Retryable("protected execution spec attempt is absent".to_owned())
             })?;
-        let accepted_request_digest =
-            ObjectDigest::from_bytes(Sha256::digest(context.canonical_request()).into());
         if retained != *attempt
             || retained.create_operation() != operation_id
-            || retained.accepted_request_digest() != accepted_request_digest
+            || !retained.matches_accepted_request(context.canonical_request())
         {
             return Err(EffectFailure::Permanent(
                 "execution spec attempt differs from admitted Create custody".to_owned(),

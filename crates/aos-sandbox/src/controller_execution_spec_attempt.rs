@@ -41,6 +41,15 @@ const PREFIX_BYTES: usize = 8 + 16 + 16 + 32 + HEAD_BYTES + 8 + 4 + 32;
 const MINIMUM_RECORD_BYTES: usize = PREFIX_BYTES + 1 + 32;
 const MAXIMUM_RECORD_BYTES: usize = PREFIX_BYTES + MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 32;
 
+/// Hashes the accepted Create request as recorded by an AOSCSI01 attempt.
+///
+/// The Controller's accepted operation separately binds caller and project.
+/// The AOSCER01 reserve source uses a different domain-separated digest.
+#[must_use]
+pub fn execution_spec_attempt_request_digest_v1(canonical_request: &[u8]) -> ObjectDigest {
+    ObjectDigest::from_bytes(Sha256::digest(canonical_request).into())
+}
+
 /// Reports stale, equivocal, corrupt, or ambiguous protected attempt custody.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerExecutionSpecAttemptErrorV1 {
@@ -95,6 +104,12 @@ impl ControllerExecutionSpecAttemptV1 {
     #[must_use]
     pub const fn accepted_request_digest(&self) -> ObjectDigest {
         self.accepted_request_digest
+    }
+
+    /// Checks the exact accepted Create body retained with this attempt.
+    #[must_use]
+    pub fn matches_accepted_request(&self, canonical_request: &[u8]) -> bool {
+        self.accepted_request_digest == execution_spec_attempt_request_digest_v1(canonical_request)
     }
 
     /// Returns the independent source heads observed for this attempt.
@@ -539,6 +554,8 @@ mod tests {
 
     use super::*;
 
+    const ACCEPTED_REQUEST_FIXTURE: &[u8] = b"\x0a\x01\x01";
+
     fn descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {
         ObjectDescriptor::new(
             MediaType::new(kind.as_str().to_owned()).unwrap(),
@@ -667,7 +684,9 @@ mod tests {
         let mut record = ControllerExecutionSpecAttemptV1 {
             execution: ExecutionId::from_bytes([1; 16]),
             create_operation: OperationId::from_bytes([2; 16]),
-            accepted_request_digest: digest(3),
+            accepted_request_digest: execution_spec_attempt_request_digest_v1(
+                ACCEPTED_REQUEST_FIXTURE,
+            ),
             source_heads: ControllerExecutionSpecSourceHeadsV1 {
                 assignment_digest: specification.target().assignment_digest(),
                 assignment_epoch: 5,
@@ -713,6 +732,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(recovered, attempt);
+        assert!(recovered.matches_accepted_request(ACCEPTED_REQUEST_FIXTURE));
+        assert!(!recovered.matches_accepted_request(b"\x0a\x01\x02"));
         append_attempt(&mut reopened, &attempt).unwrap();
 
         let mut changed = attempt.clone();
@@ -746,6 +767,18 @@ mod tests {
             append_attempt(&mut reopened, &changed),
             Err(ControllerExecutionSpecAttemptErrorV1::Conflict)
         ));
+    }
+
+    #[test]
+    fn attempt_request_digest_has_stable_canonical_body_semantics() {
+        assert_eq!(
+            *execution_spec_attempt_request_digest_v1(ACCEPTED_REQUEST_FIXTURE).as_bytes(),
+            [
+                0xe2, 0x70, 0xef, 0x6d, 0x30, 0x67, 0x3a, 0xbe, 0x7a, 0xfc, 0xa8, 0x05, 0x76, 0xc5,
+                0x1b, 0xe1, 0x30, 0x51, 0x6f, 0x8d, 0xd1, 0x32, 0x4d, 0x7f, 0xc3, 0x6f, 0x6c, 0x10,
+                0x6c, 0x5e, 0x1e, 0xba,
+            ]
+        );
     }
 
     #[test]
