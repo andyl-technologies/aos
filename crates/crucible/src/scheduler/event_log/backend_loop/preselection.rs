@@ -9,6 +9,10 @@ pub(super) struct BackendPendingPreselection {
     pub(super) remaining_outputs: Vec<BackendNetworkOutput>,
     /// Drained physical TX suffix left unintercepted for selected thin replay.
     pub(super) remaining_unintercepted_outputs: Vec<BackendNetworkOutput>,
+    /// Future routed frames withheld with the branchable backend suffix.
+    pub(super) pending_network_outputs: Vec<BackendNetworkOutput>,
+    /// Previously queued observations retain ordinary post-network ordering.
+    pub(super) pending_observations: Vec<ObservableEvent>,
     pub(super) rng_evidence: Vec<BackendRngEvidence>,
     pub(super) observations: Vec<ObservableEvent>,
     pub(super) outcome: QuantumOutcome,
@@ -29,6 +33,16 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
     pub fn live_network_preselection(&self) -> Option<&LiveNetworkPreselection> {
         self.preselection.as_ref().map(|pending| &pending.choice)
     }
+
+    /// Poisons an unpublished reservation after its enclosing boundary fails.
+    ///
+    /// The withheld suffix remains owned by the unhanded reservation, so
+    /// teardown rejects it rather than publishing evidence from a failed RUN.
+    pub fn abort_live_network_preselection(&mut self) {
+        if self.preselection.is_some() {
+            self.continuation_poisoned = true;
+        }
+    }
 }
 
 impl<L, B, I> BackendQuantumLoop<L, B, I>
@@ -47,6 +61,11 @@ where
     /// Returns [`SchedulerError`] if the reservation changed or the remaining
     /// network and backend evidence cannot be committed exactly.
     pub fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        if self.continuation_poisoned {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("backend continuation is poisoned"),
+            });
+        }
         let pending =
             self.preselection
                 .take()
@@ -61,6 +80,8 @@ where
         &mut self,
         pending: BackendPendingPreselection,
     ) -> Result<QuantumOutcome, SchedulerError> {
+        self.pending_network_outputs = pending.pending_network_outputs;
+        self.pending_observations = pending.pending_observations;
         let mut outcome = pending.outcome;
         if outcome.discovered_choices.pop() != Some(pending.choice.discovery.clone()) {
             return Err(SchedulerError::BoundaryViolation {
@@ -171,6 +192,11 @@ where
         &mut self,
         expected: &LiveNetworkPreselection,
     ) -> Result<(), SchedulerError> {
+        if self.continuation_poisoned {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("backend continuation is poisoned"),
+            });
+        }
         let pending =
             self.preselection
                 .as_mut()
@@ -232,7 +258,7 @@ where
     }
 }
 
-fn append_to_outcome(outcome: &mut QuantumOutcome, append: SchedulerEventLogAppend) {
+pub(super) fn append_to_outcome(outcome: &mut QuantumOutcome, append: SchedulerEventLogAppend) {
     outcome.event_log_entries.extend(append.entries);
     outcome.event_log_segment_bytes = append.segment_bytes;
     outcome.event_log_segment_text = append.segment_text;

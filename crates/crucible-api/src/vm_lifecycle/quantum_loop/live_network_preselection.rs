@@ -6,10 +6,14 @@ impl ProductionVmLifecycleLoop {
     pub(super) fn finish_quantum_after_backend(
         &mut self,
         mut outcome: QuantumOutcome,
-        pre_quantum_decisions: Vec<Decision>,
-        pre_quantum_appends: Vec<SchedulerEventLogAppend>,
-        signal_fault_frontier_start: usize,
+        prefix: PendingLiveNetworkPrefix,
     ) -> Result<QuantumOutcome, SchedulerError> {
+        let PendingLiveNetworkPrefix {
+            decisions,
+            appends,
+            discoveries,
+            signal_fault_frontier_start,
+        } = prefix;
         let observations = Arc::clone(&self.storage_fault_observations);
         let mut queued = observations
             .lock()
@@ -43,12 +47,17 @@ impl ProductionVmLifecycleLoop {
         self.inner
             .loop_impl_mut()
             .record_pending_signal_fault_search_frontiers(pending_search_choices)?;
-        if !pre_quantum_decisions.is_empty() {
-            let mut decisions = pre_quantum_decisions;
-            decisions.extend(std::mem::take(&mut outcome.decisions));
-            outcome.decisions = decisions;
+        if !decisions.is_empty() {
+            let mut prefix_decisions = decisions;
+            prefix_decisions.extend(std::mem::take(&mut outcome.decisions));
+            outcome.decisions = prefix_decisions;
         }
-        prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+        if !discoveries.is_empty() {
+            let mut prefix_discoveries = discoveries;
+            prefix_discoveries.extend(std::mem::take(&mut outcome.discovered_choices));
+            outcome.discovered_choices = prefix_discoveries;
+        }
+        prepend_event_log_appends(&mut outcome, appends);
         for append in self.settle_trigger_graph()? {
             merge_event_log_append(&mut outcome, append);
         }
