@@ -13,8 +13,8 @@
 //! orchestration, setup descriptor passing, and control/data split contract.
 //! `app_random_branch_plan` owns the sealed branch-sequence body;
 //! `app_random_transport` owns the app-random observation transport;
-//! `choice` owns the portable typed choice values carried by selectable
-//! registration and reply bodies;
+//! `choice` owns the portable scalar values and atomic guest group bytes
+//! carried by selectable registration and reply bodies;
 //! `doorbell_abi` owns the shared white-box doorbell instruction ABI;
 //! `doorbell_frame` owns the shared white-box doorbell marker frame ABI; `doorbell_marker`
 //! owns the marker-kind vocabulary and body codecs; `selectable` owns the
@@ -65,7 +65,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 pub use choice::{
     AlternativeId, BooleanDomain, ChoiceCodecError, ChoiceDomain, ChoiceValue, DiscreteAlternative,
-    DiscreteDomain, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
+    DiscreteDomain, ExactRational, GuestChoiceGroup, IntegerDomain, IntegerRepresentation,
+    IntegerValue,
 };
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,
