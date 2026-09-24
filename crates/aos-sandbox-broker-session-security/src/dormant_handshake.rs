@@ -1733,6 +1733,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             method,
             BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
         ) && request.0.authorization().is_some();
         let (request, context) = self.begin_execution(request, method_matches)?;
         let Some(artifacts) = request.0.authorization() else {

@@ -3,18 +3,20 @@
 //! The Broker Session ClientRecord authenticates each transport attempt. This
 //! owner opens only fixed root-owned Host journals, derives runtime currentness
 //! and effect sequence there, and uses the stable controller operation digest
-//! solely as an idempotency and readback binding. Pending work never crosses
-//! the guest boundary without a separately authenticated AOSAGE route.
+//! solely as an idempotency and readback binding. Provisional output custody
+//! remains distinct from execution authority. Pending work never crosses the
+//! guest boundary without a separately authenticated AOSAGE route.
 
 use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, HostAttachGateReadinessV1, HostExecutionCompletionStatusV1,
-    HostExecutionOutcomeV1, HostExecutionPhaseV1,
+    HostExecutionOutcomeV1, HostExecutionOutputReservationStatusV1,
+    HostExecutionOutputReservationV1, HostExecutionPhaseV1,
 };
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    DormantRuntimeExecutionOwnerV1,
+    DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
 };
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitError, AdmissionIdempotencyV1, DurableExecutionEffectV1, EffectCommitError,
@@ -34,6 +36,7 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::host_execution::{
     HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
 };
+use aos_sandbox_protocol::host_output::HostOutputReservationLocatorV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, ValidatedHostExecutionApplyV1};
 use buffa::Message as _;
@@ -80,7 +83,9 @@ pub enum HostExecutionHandoffErrorV1 {
 ///
 /// An Apply commits Pending, then dispatches only through an installed signed
 /// AOSAGE session. Without a launch-owned session Pending remains the truthful
-/// durable outcome. Query reads protected state and never dispatches or writes.
+/// durable outcome. Output reserve commits AOSEOR02 and AOSHOP01 together,
+/// without proving physical backing; Query never dispatches or writes the
+/// protected runtime-execution journal.
 ///
 /// # Errors
 ///
@@ -331,12 +336,93 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
             return Ok(encoded);
         }
+        HostExecutionGrantRequestV1::ReserveOutput(request) => {
+            let verified = reservation
+                .verified_output_source()
+                .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
+            let receipt = claim.reserve_host_output_v1(verified)?;
+            let encoded = output_reservation_response(request.locator(), Some(receipt))?;
+            claim.revalidate()?;
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
+        }
+        HostExecutionGrantRequestV1::QueryOutput(request) => {
+            let locator = request.locator();
+            let receipt = claim.query_host_output_v1(
+                locator.execution(),
+                locator.create_operation(),
+                locator.preissue_digest(),
+                locator.claim_digest(),
+                locator.carrier_digest(),
+                locator.original_request_id(),
+                locator.assignment_digest(),
+                locator.host_boot_id(),
+            )?;
+            let encoded = output_reservation_response(locator, receipt)?;
+            claim.revalidate()?;
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
+        }
     };
     claim.revalidate()?;
     check_kernel_boot(protected_boot_id)?;
     let encoded = result.encode_to_vec();
     host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
     Ok(encoded)
+}
+
+fn output_reservation_response(
+    locator: HostOutputReservationLocatorV1,
+    receipt: Option<ProtectedHostOutputReservationV1>,
+) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
+    let (status, plan, semantic, correlation, sequence) = match receipt {
+        Some(receipt) => {
+            if receipt.execution() != locator.execution()
+                || receipt.create_operation() != locator.create_operation()
+                || receipt.original_request_id() != locator.original_request_id()
+                || receipt.preissue_digest() != locator.preissue_digest()
+                || receipt.claim_digest() != locator.claim_digest()
+                || receipt.carrier_digest() != locator.carrier_digest()
+                || receipt.assignment_digest() != locator.assignment_digest()
+                || receipt.host_boot_id() != locator.host_boot_id()
+            {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
+            (
+                HostExecutionOutputReservationStatusV1::HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_COMMITTED,
+                receipt.plan_digest().as_bytes().to_vec(),
+                receipt.semantic_request_digest().as_bytes().to_vec(),
+                receipt.correlation_digest().as_bytes().to_vec(),
+                receipt.original_journal_sequence(),
+            )
+        }
+        None => (
+            HostExecutionOutputReservationStatusV1::HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_ABSENT,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+        ),
+    };
+    Ok(HostExecutionOutputReservationV1 {
+        status: status.into(),
+        execution_id: locator.execution().as_bytes().to_vec(),
+        create_operation_id: locator.create_operation().as_bytes().to_vec(),
+        original_reserve_request_id: locator.original_request_id().to_vec(),
+        preissue_record_digest: locator.preissue_digest().as_bytes().to_vec(),
+        output_claim_digest: locator.claim_digest().as_bytes().to_vec(),
+        reserve_source_digest: locator.carrier_digest().as_bytes().to_vec(),
+        assignment_digest: locator.assignment_digest().as_bytes().to_vec(),
+        host_boot_id: locator.host_boot_id().to_vec(),
+        original_plan_digest: plan,
+        original_semantic_request_digest: semantic,
+        host_correlation_record_digest: correlation,
+        original_host_journal_sequence: sequence,
+        ..Default::default()
+    }
+    .encode_to_vec())
 }
 
 fn revoke_route_after_successful_cancel(
@@ -541,7 +627,34 @@ fn outcome(
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_protocol::host_output::{
+        HostOutputReservationStatusV1, decode_host_output_reservation_response_v1,
+        host_output_locator_from_source_v1,
+    };
+
     use super::*;
+
+    #[test]
+    fn output_absence_echoes_exact_original_locator_without_commit_fields() {
+        let mut source = [0_u8; 688];
+        source[..8].copy_from_slice(b"AOSCIR01");
+        source[8..16].copy_from_slice(b"AOSCIP01");
+        source[16..32].fill(1);
+        source[32..48].fill(2);
+        source[104..120].fill(3);
+        source[160..192].fill(4);
+        source[192..200].copy_from_slice(b"AOSEOR02");
+        source[200..216].fill(1);
+        source[216..232].fill(2);
+        source[624..656].fill(5);
+        source[656..688].fill(6);
+        let locator = host_output_locator_from_source_v1(&source, [7; 16]).unwrap();
+
+        let body = output_reservation_response(locator, None).unwrap();
+        let decoded = decode_host_output_reservation_response_v1(&body, locator, true).unwrap();
+        assert_eq!(decoded.status(), HostOutputReservationStatusV1::Absent);
+        assert!(decode_host_output_reservation_response_v1(&body, locator, false).is_err());
+    }
 
     #[test]
     fn authorize_query_requires_exact_persisted_spec_content() {

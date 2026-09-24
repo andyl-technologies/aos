@@ -164,6 +164,33 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Admits one provisional Host output reserve or read-only query grant.
+    ///
+    /// The signed Controller source still requires independent Host currentness
+    /// and protected output-ledger checks before a reservation can commit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a wrong domain or verb, stale plan/lease, semantic mismatch,
+    /// or a replaced shared Host base fence.
+    pub fn admit_host_output(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host
+            || !matches!(
+                request.verb,
+                BrokerVerb::HostReserveExecutionOutput | BrokerVerb::HostQueryExecutionOutput
+            )
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
     /// Admits a distinct Host ATTACH grant on the shared runtime lease.
     ///
     /// # Errors

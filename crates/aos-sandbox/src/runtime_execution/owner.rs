@@ -1543,22 +1543,31 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     ///
     /// # Errors
     ///
-    /// Rejects stale Host ownership, malformed custody, or a mismatched exact
-    /// original request/preissue/claim locator.
+    /// Rejects stale Host ownership, malformed custody, or any mismatched
+    /// original request, Create, source, assignment, or Host boot selector.
+    #[allow(clippy::too_many_arguments)]
     pub fn query_host_output_v1(
         &self,
         execution: ExecutionId,
+        create_operation: OperationId,
         preissue_digest: ObjectDigest,
         claim_digest: ObjectDigest,
+        carrier_digest: ObjectDigest,
         original_request_id: [u8; 16],
+        assignment_digest: ObjectDigest,
+        host_boot_id: [u8; 16],
     ) -> Result<Option<ProtectedHostOutputReservationV1>, DormantRuntimeExecutionOwnerErrorV1> {
         self.validate_current()?;
         self.execution
             .query_host_output_v1(
                 execution,
+                create_operation,
                 preissue_digest,
                 claim_digest,
+                carrier_digest,
                 original_request_id,
+                assignment_digest,
+                host_boot_id,
             )
             .map_err(Into::into)
     }

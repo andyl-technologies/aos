@@ -738,12 +738,17 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
     /// # Errors
     ///
     /// Rejects a mismatched request/correlation or corrupt protected record.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn query_host_output_v1(
         &self,
         execution: ExecutionId,
+        create_operation: OperationId,
         preissue_digest: ObjectDigest,
         claim_digest: ObjectDigest,
+        carrier_digest: ObjectDigest,
         original_request_id: [u8; 16],
+        assignment_digest: ObjectDigest,
+        host_boot_id: [u8; 16],
     ) -> Result<Option<ProtectedHostOutputReservationV1>, JournalRuntimeExecutionError> {
         let correlation_key = host_output_key(execution);
         let Some(bytes) = self.authority.get(&correlation_key)? else {
@@ -760,9 +765,13 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
         let retained = decode_claim(claim)?;
         if correlation.execution != execution
+            || correlation.create_operation != create_operation
             || correlation.preissue_digest != preissue_digest
             || correlation.claim_digest != claim_digest
+            || correlation.carrier_digest != carrier_digest
             || correlation.original_request_id != original_request_id
+            || correlation.assignment_digest != assignment_digest
+            || correlation.host_boot_id != host_boot_id
             || retained.create_operation != *correlation.create_operation.as_bytes()
             || retained.assignment != correlation.assignment_digest
             || ObjectDigest::from_bytes(Sha256::digest(claim).into()) != claim_digest
@@ -3117,9 +3126,13 @@ mod output_v2_tests {
             let observed = store
                 .query_host_output_v1(
                     correlation.execution,
+                    correlation.create_operation,
                     correlation.preissue_digest,
                     correlation.claim_digest,
+                    correlation.carrier_digest,
                     correlation.original_request_id,
+                    correlation.assignment_digest,
+                    correlation.host_boot_id,
                 )?
                 .expect("protected Host correlation");
             assert_eq!(
@@ -3130,13 +3143,73 @@ mod output_v2_tests {
             assert!(
                 store
                     .query_host_output_v1(
-                        correlation.execution,
+                        ExecutionId::from_bytes([98; 16]),
+                        correlation.create_operation,
                         correlation.preissue_digest,
                         correlation.claim_digest,
+                        correlation.carrier_digest,
+                        correlation.original_request_id,
+                        correlation.assignment_digest,
+                        correlation.host_boot_id,
+                    )?
+                    .is_none()
+            );
+            assert!(
+                store
+                    .query_host_output_v1(
+                        correlation.execution,
+                        correlation.create_operation,
+                        correlation.preissue_digest,
+                        correlation.claim_digest,
+                        correlation.carrier_digest,
                         [99; 16],
+                        correlation.assignment_digest,
+                        correlation.host_boot_id,
                     )
                     .is_err()
             );
+            let substitutions = [
+                (
+                    OperationId::from_bytes([99; 16]),
+                    correlation.carrier_digest,
+                    correlation.assignment_digest,
+                    correlation.host_boot_id,
+                ),
+                (
+                    correlation.create_operation,
+                    ObjectDigest::from_bytes([99; 32]),
+                    correlation.assignment_digest,
+                    correlation.host_boot_id,
+                ),
+                (
+                    correlation.create_operation,
+                    correlation.carrier_digest,
+                    ObjectDigest::from_bytes([99; 32]),
+                    correlation.host_boot_id,
+                ),
+                (
+                    correlation.create_operation,
+                    correlation.carrier_digest,
+                    correlation.assignment_digest,
+                    [99; 16],
+                ),
+            ];
+            for (create, carrier, assignment, boot) in substitutions {
+                assert!(
+                    store
+                        .query_host_output_v1(
+                            correlation.execution,
+                            create,
+                            correlation.preissue_digest,
+                            correlation.claim_digest,
+                            carrier,
+                            correlation.original_request_id,
+                            assignment,
+                            boot,
+                        )
+                        .is_err()
+                );
+            }
         }
         Ok(())
     }

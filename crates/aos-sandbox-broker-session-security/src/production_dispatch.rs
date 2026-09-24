@@ -549,6 +549,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
             BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => self

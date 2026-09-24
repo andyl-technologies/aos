@@ -13,22 +13,31 @@ use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, BrokerMethod, InventoryRuntimeResponse, QueryRuntimeEffectResponse,
     RuntimeAction, RuntimeEffectStatus, RuntimeObservation, RuntimeState,
 };
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
+use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
+use aos_sandbox::runtime_execution::{
+    DormantRuntimeExecutionClaimV1, VerifiedHostOutputReserveSourceV1,
+    verify_host_output_reserve_source_v1,
+};
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
     ProtectedBrokerPublicCredentialRole,
 };
 use aos_sandbox_core::{
-    BrokerAssignment, ObjectDigest, ProtocolVersion, RawClockProvenance, RawPairedClockSample,
-    VerifiedOwnershipLease,
+    BrokerAdmissionIntersection, BrokerAssignment, ObjectDigest, ProtocolVersion,
+    RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease,
 };
 use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_protocol::host_output::{
+    ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
+    decode_host_output_query_request_v1, decode_host_output_reserve_request_v1,
+};
 use aos_sandbox_protocol::semantics::{
     CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionSemanticsV1,
-    canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
-    canonical_host_attach_route_query_semantics_v1, canonical_host_execution_apply_semantics_v1,
-    canonical_host_execution_query_semantics_v1,
+    CanonicalHostOutputSemanticsV1, canonical_host_attach_gate_semantics_v1,
+    canonical_host_attach_readiness_semantics_v1, canonical_host_attach_route_query_semantics_v1,
+    canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
+    host_output_query_grant_v1, host_output_reserve_grant_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
@@ -114,6 +123,8 @@ pub struct HostExecutionGrantReservationV1 {
     request: HostExecutionGrantRequestV1,
     effect: BrokerEffectIntentV1,
     verified_lease: VerifiedOwnershipLease,
+    intersection: BrokerAdmissionIntersection,
+    verified_output_source: Option<VerifiedHostOutputReserveSourceV1>,
 }
 
 /// Retains only authenticated read-only ATTACH query authority and selectors.
@@ -158,6 +169,7 @@ impl HostAttachReadOnlyProofV1 {
 enum HostExactGrantSemanticsV1 {
     Execution(CanonicalHostExecutionSemanticsV1),
     AttachGate(CanonicalHostAttachGateSemanticsV1),
+    Output(CanonicalHostOutputSemanticsV1),
 }
 
 impl HostExactGrantSemanticsV1 {
@@ -165,6 +177,7 @@ impl HostExactGrantSemanticsV1 {
         match self {
             Self::Execution(semantics) => semantics.commitment(),
             Self::AttachGate(semantics) => semantics.commitment(),
+            Self::Output(semantics) => semantics.commitment(),
         }
     }
 }
@@ -177,6 +190,10 @@ pub enum HostExecutionGrantRequestV1 {
     Query(ValidatedHostExecutionQueryV1),
     /// Installs one exact signed pending OpenSSH gate and reads it back.
     AttachGate(ValidatedHostAttachGateRequestV1),
+    /// Reserves one exact Controller-signed provisional output claim.
+    ReserveOutput(ValidatedHostOutputReserveRequestV1),
+    /// Reads one prior original provisional output attempt without reserving.
+    QueryOutput(ValidatedHostOutputQueryRequestV1),
 }
 
 impl HostExecutionGrantReservationV1 {
@@ -200,6 +217,12 @@ impl HostExecutionGrantReservationV1 {
             ) | (
                 HostExecutionGrantRequestV1::AttachGate(_),
                 BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+            ) | (
+                HostExecutionGrantRequestV1::ReserveOutput(_),
+                BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            ) | (
+                HostExecutionGrantRequestV1::QueryOutput(_),
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             )
         ) && self.request_id == request_id
             && self.request_body_digest.as_bytes() == Sha256::digest(body).as_slice()
@@ -218,6 +241,12 @@ impl HostExecutionGrantReservationV1 {
     #[must_use]
     pub const fn verified_lease(&self) -> &VerifiedOwnershipLease {
         &self.verified_lease
+    }
+
+    /// Borrows the matched Controller source only after durable Host admission.
+    #[must_use]
+    pub const fn verified_output_source(&self) -> Option<&VerifiedHostOutputReserveSourceV1> {
+        self.verified_output_source.as_ref()
     }
 }
 
@@ -557,6 +586,63 @@ where
                         HostExecutionGrantRequestV1::AttachGate(request),
                     )
                 }
+                BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence(
+                            "Host output content descriptor is invalid",
+                        ));
+                    }
+                    let request = decode_host_output_reserve_request_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let source =
+                        ControllerExecutionReserveSourceV1::decode_structural(request.source())
+                            .map_err(|_| HostError::Fence("Host output source is invalid"))?;
+                    let semantics =
+                        host_output_reserve_grant_v1(assignment, request_id, request.source())
+                            .map_err(|_| HostError::Fence("Host output semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        *source.preissue().create_operation().as_bytes(),
+                        source.preissue().execution(),
+                        source.carrier_digest(),
+                        HostExactGrantSemanticsV1::Output(semantics),
+                        HostAction::ReserveExecutionOutput,
+                        HostExecutionGrantRequestV1::ReserveOutput(request),
+                    )
+                }
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence("Host output query content is invalid"));
+                    }
+                    let request = decode_host_output_query_request_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let locator = request.locator();
+                    if locator.assignment_digest() != assignment.digest()
+                        || locator.host_boot_id() != protected_boot_id
+                    {
+                        return Err(HostError::Fence("Host output query locator is stale"));
+                    }
+                    let semantics =
+                        host_output_query_grant_v1(assignment, request_id, request_body)
+                            .map_err(|_| HostError::Fence("Host output semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        *locator.create_operation().as_bytes(),
+                        locator.execution(),
+                        locator.carrier_digest(),
+                        HostExactGrantSemanticsV1::Output(semantics),
+                        HostAction::QueryExecutionOutput,
+                        HostExecutionGrantRequestV1::QueryOutput(request),
+                    )
+                }
                 _ => return Err(HostError::Fence("Host execution method is invalid")),
             };
         if header.request_id() != &request_id {
@@ -605,6 +691,34 @@ where
                 &admission_clock,
                 prior_fence,
             )?,
+            HostExactGrantSemanticsV1::Output(semantics) => self.authority.admit_output(
+                artifacts,
+                assignment,
+                request_id,
+                request_body,
+                semantics,
+                header.deadline_boottime_nanoseconds(),
+                &admission_clock,
+                prior_fence,
+            )?,
+        };
+        let verified_output_source = match &request {
+            HostExecutionGrantRequestV1::ReserveOutput(reserve) => {
+                let source =
+                    ControllerExecutionReserveSourceV1::decode_structural(reserve.source())
+                        .map_err(|_| HostError::Fence("Host output source changed"))?;
+                Some(
+                    verify_host_output_reserve_source_v1(
+                        source,
+                        assignment,
+                        claim.currentness().runtime().currentness().node(),
+                        &admitted.intersection,
+                        admission_clock,
+                    )
+                    .map_err(|_| HostError::Fence("Host output source authority is invalid"))?,
+                )
+            }
+            _ => None,
         };
         let sealed_base_fence = self.authority.advance_base_execution_fence(
             assignment.sandbox().as_bytes(),
@@ -654,6 +768,26 @@ where
             .check_before_effect(&admitted.effect, &mut || {
                 trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
             })?;
+        let verified_output_source = if verified_output_source.is_some() {
+            let effect_clock = trusted_clock()?;
+            let HostExecutionGrantRequestV1::ReserveOutput(reserve) = &request else {
+                return Err(HostError::Fence("Host output source request changed"));
+            };
+            let source = ControllerExecutionReserveSourceV1::decode_structural(reserve.source())
+                .map_err(|_| HostError::Fence("Host output source changed"))?;
+            Some(
+                verify_host_output_reserve_source_v1(
+                    source,
+                    assignment,
+                    claim.currentness().runtime().currentness().node(),
+                    &admitted.intersection,
+                    effect_clock,
+                )
+                .map_err(|_| HostError::Fence("Host output source expired before effect"))?,
+            )
+        } else {
+            None
+        };
 
         Ok(HostExecutionGrantReservationV1 {
             request_id,
@@ -663,6 +797,8 @@ where
             request,
             effect: admitted.effect,
             verified_lease: admitted.verified_lease,
+            intersection: admitted.intersection,
+            verified_output_source,
         })
     }
 
@@ -701,6 +837,8 @@ where
             .open_effect(&reservation.request_id, existing)?;
         if existing.transport_request_digest() != reservation.request_body_digest
             || existing.request_digest() != reservation.effect.request_digest()
+            || existing.request_digest() != reservation.intersection.request_digest()
+            || existing.plan_digest() != reservation.intersection.plan_digest()
             || existing.verb() != reservation.effect.verb()
             || existing.target() != reservation.effect.target()
         {
