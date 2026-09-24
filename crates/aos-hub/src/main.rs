@@ -30,9 +30,13 @@ use aos_hub::server::{router, AppState};
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
 struct Cli {
-    /// Hub state directory (holds hub.db).
+    /// Hub state directory; holds hub.db when using local SQLite.
     #[arg(long, global = true)]
     root: Option<PathBuf>,
+
+    /// Native database URL; defaults to the SQLite file under --root.
+    #[arg(long, global = true, env = "HUB_DATABASE_URL")]
+    database_url: Option<String>,
 
     /// Database target. The hard-cutover CLI admits only the native `local`
     /// database; Worker administration uses the typed Hub API.
@@ -599,7 +603,10 @@ async fn main() -> Result<()> {
                     "HUB_TLS_CERTIFICATE_FILE and HUB_TLS_PRIVATE_KEY_FILE must be configured together"
                 ),
             };
-            let db = Arc::new(Database::open(&root.join("hub.db")).await?);
+            let db = Arc::new(match cli.database_url.as_deref() {
+                Some(database_url) => Database::connect(database_url).await?,
+                None => Database::open(&root.join("hub.db")).await?,
+            });
             let storage_root = root.join("storage");
             std::fs::create_dir_all(&storage_root).with_context(|| {
                 format!(
@@ -610,9 +617,15 @@ async fn main() -> Result<()> {
             let storage_root_text = storage_root
                 .to_str()
                 .context("native Hub storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
-                .await
-                .context("provisioning native Hub instance-default binding")?;
+            if !cli.database_url.as_deref().is_some_and(|database_url| {
+                database_url.starts_with("postgres://")
+                    || database_url.starts_with("postgresql://")
+                    || database_url.starts_with("mysql://")
+            }) {
+                db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+                    .await
+                    .context("provisioning native Hub instance-default binding")?;
+            }
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
             let route_reservation_keys_path = route_reservation_keys_file
@@ -1142,7 +1155,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Index { slug } => {
-            let db = Arc::new(open_db(&cli.root, &cli.target).await?);
+            let db = Arc::new(open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?);
             let root = resolve_root(cli.root.clone(), false)?;
             let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
             image_snapshots.load_tracked(&db).await?;
@@ -1196,8 +1209,13 @@ async fn main() -> Result<()> {
         } => {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
-            let db = open_db(&cli.root, &cli.target).await?;
-            println!("schema migrated ({})", cli.target);
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
+            let database = if cli.database_url.is_some() {
+                "configured native database"
+            } else {
+                "local SQLite database"
+            };
+            println!("schema migrated ({database})");
             if let Some(email) = root_email {
                 let plaintext = read_password(root_password, root_password_stdin)?;
                 let (email, id) = ensure_root(&db, &email, &plaintext).await?;
@@ -1209,7 +1227,7 @@ async fn main() -> Result<()> {
             password,
             password_stdin,
         } => {
-            let db = open_db(&cli.root, &cli.target).await?;
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
             let plaintext = read_password(password, password_stdin)?;
             let (email, id) = ensure_root(&db, &email, &plaintext).await?;
             println!("reset root password for '{email}' (user id {id})");
@@ -1691,13 +1709,21 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Opens the native database for the closed `local` target.
+/// Opens the configured native database for the closed `local` target.
 ///
 /// # Errors
 ///
-/// Returns an error for an unknown target or if the local file cannot be opened.
-async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
+/// Returns an error for an unknown target, unsupported database URL, or failed
+/// connection or migration.
+async fn open_db(
+    root: &Option<PathBuf>,
+    target: &str,
+    database_url: Option<&str>,
+) -> Result<Database> {
     if target == "local" {
+        if let Some(database_url) = database_url {
+            return Database::connect(database_url).await;
+        }
         let root = resolve_root(root.clone(), false)?;
         return Database::open(&root.join("hub.db")).await;
     }
