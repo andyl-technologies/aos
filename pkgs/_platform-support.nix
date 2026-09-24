@@ -934,6 +934,7 @@ let
     "security/_aos-selinux-production-policy/effective_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/effective_policy_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/labeled_erofs_tar.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";

@@ -91,6 +91,8 @@ in
       }
     ];
 
+    passthru.evidenceSources = [./aos-sandbox-guest-root-template.nix];
+
     meta = {
       description = "Immutable AOS-built sandbox guest root template and exact package closure";
       license = "Apache-2.0";
