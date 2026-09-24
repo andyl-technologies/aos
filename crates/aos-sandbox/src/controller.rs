@@ -58,6 +58,9 @@ use crate::{
 mod destination_slot;
 
 #[cfg(target_os = "linux")]
+mod operator_recovery_issuance;
+
+#[cfg(target_os = "linux")]
 mod public_api_authorization;
 #[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::{

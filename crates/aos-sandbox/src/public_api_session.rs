@@ -25,7 +25,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsAcceptor;
 
-pub(crate) use credentials::load_entitlement_credentials;
+pub(crate) use credentials::{PinnedOperatorRecoveryKeyV1, load_entitlement_credentials};
 pub use stream::AuthenticatedPublicApiStream;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);

@@ -25,6 +25,66 @@ const NAMES: [&str; 4] = [
 ];
 const ENTITLEMENT_NAME: &str = "public-api-entitlements";
 const ENTITLEMENT_KEY_NAME: &str = "public-api-entitlement-public-key";
+const OPERATOR_RECOVERY_KEY_NAME: &str = "operator-recovery-controller-key-v1";
+
+/// Retains one fixed protected credential and rejects replacement before use.
+pub(crate) struct PinnedOperatorRecoveryKeyV1 {
+    path: PathBuf,
+    uid: u32,
+    directory_identity: (u64, u64),
+    file_identity: CredentialIdentity,
+    bytes: Zeroizing<Vec<u8>>,
+}
+
+impl PinnedOperatorRecoveryKeyV1 {
+    /// Opens the dedicated controller recovery key from systemd credentials.
+    pub(crate) fn load() -> Result<Self, PublicApiSessionError> {
+        let path = std::env::var_os("CREDENTIALS_DIRECTORY")
+            .map(PathBuf::from)
+            .ok_or(PublicApiSessionError::Configuration)?;
+        Self::open(path)
+    }
+
+    fn open(path: PathBuf) -> Result<Self, PublicApiSessionError> {
+        let uid = rustix::process::geteuid().as_raw();
+        let directory = open_directory(&path, uid)?;
+        let stat =
+            rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
+        let (bytes, file_identity) =
+            read_one_with_identity(&directory, OPERATOR_RECOVERY_KEY_NAME, uid)?;
+        let retained = Self {
+            path,
+            uid,
+            directory_identity: (stat.st_dev, stat.st_ino),
+            file_identity,
+            bytes,
+        };
+        retained.recheck()?;
+        Ok(retained)
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Reopens the fixed path and proves that its inode and bytes are unchanged.
+    pub(crate) fn recheck(&self) -> Result<(), PublicApiSessionError> {
+        if rustix::process::geteuid().as_raw() != self.uid {
+            return Err(PublicApiSessionError::Stale);
+        }
+        let directory = open_directory(&self.path, self.uid)?;
+        let stat = rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Stale)?;
+        if (stat.st_dev, stat.st_ino) != self.directory_identity {
+            return Err(PublicApiSessionError::Stale);
+        }
+        let (bytes, identity) =
+            read_one_with_identity(&directory, OPERATOR_RECOVERY_KEY_NAME, self.uid)?;
+        if identity != self.file_identity || bytes != self.bytes {
+            return Err(PublicApiSessionError::Stale);
+        }
+        Ok(())
+    }
+}
 
 /// Reads the current separately provisioned first-capability authority.
 ///
@@ -148,6 +208,16 @@ fn read_one(
     name: &str,
     uid: u32,
 ) -> Result<Zeroizing<Vec<u8>>, PublicApiSessionError> {
+    read_one_with_identity(directory, name, uid).map(|(bytes, _)| bytes)
+}
+
+type CredentialIdentity = (u64, u64, u32, u32, u32, u64, u64, i64, i64, i64, i64);
+
+fn read_one_with_identity(
+    directory: &OwnedFd,
+    name: &str,
+    uid: u32,
+) -> Result<(Zeroizing<Vec<u8>>, CredentialIdentity), PublicApiSessionError> {
     let descriptor = openat(
         directory,
         name,
@@ -179,12 +249,10 @@ fn read_one(
     if before.len() != bytes.len() as u64 || identity(&before) != identity(&after) {
         return Err(PublicApiSessionError::Stale);
     }
-    Ok(bytes)
+    Ok((bytes, identity(&after)))
 }
 
-fn identity(
-    metadata: &std::fs::Metadata,
-) -> (u64, u64, u32, u32, u32, u64, u64, i64, i64, i64, i64) {
+fn identity(metadata: &std::fs::Metadata) -> CredentialIdentity {
     (
         metadata.dev(),
         metadata.ino(),
@@ -261,5 +329,32 @@ mod tests {
 
         assert!(read_one(&descriptor, "directory", uid).is_err());
         assert!(open_directory(Path::new("relative"), uid).is_err());
+    }
+
+    #[test]
+    fn recovery_credential_identity_detects_same_bytes_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let key_path = directory.path().join(OPERATOR_RECOVERY_KEY_NAME);
+        std::fs::write(&key_path, b"same secret bytes").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let (original, original_identity) =
+            read_one_with_identity(&descriptor, OPERATOR_RECOVERY_KEY_NAME, uid).unwrap();
+
+        let replacement = directory.path().join("replacement");
+        std::fs::write(&replacement, b"same secret bytes").unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::rename(replacement, key_path).unwrap();
+        let (new_bytes, new_identity) =
+            read_one_with_identity(&descriptor, OPERATOR_RECOVERY_KEY_NAME, uid).unwrap();
+
+        assert_eq!(original, new_bytes);
+        assert_ne!(original_identity, new_identity);
     }
 }
