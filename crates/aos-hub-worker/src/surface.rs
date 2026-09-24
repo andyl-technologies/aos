@@ -33,6 +33,10 @@ use aos_hub_core::secret_version::SecretVersionResolver;
 use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
+use aos_hub_core::storage_work::{
+    StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
+    StorageWorkResult,
+};
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
 };
@@ -49,6 +53,130 @@ struct WorkerR2BucketAdapter {
     /// Raw JavaScript R2 binding. Keeping reflection behind this exact value
     /// makes the production adapter executable against a JS-shape fixture.
     bucket: wasm_bindgen::JsValue,
+}
+
+/// Executes a signed, validated storage plan against the deployment R2 bucket.
+///
+/// The Worker reads object bodies locally for verification and returns only
+/// bounded identity or digest evidence to Native. This function has no SQL
+/// access and cannot select a placement outside the signed plan.
+///
+/// # Errors
+///
+/// Returns an error for an unavailable object store, a source limit, or an
+/// object identity that fails the plan's digest check.
+pub(crate) async fn execute_r2_storage_work(
+    bucket: Bucket,
+    plan: &StorageWorkPlan,
+) -> Result<StorageWorkResult> {
+    let fetcher = R2SurfaceFetch {
+        contract: R2Contract::new(WorkerR2BucketAdapter {
+            bucket: bucket.as_ref().clone(),
+        }),
+        bucket,
+        prefix: plan.placement_prefix.clone(),
+    };
+    let (outcome, source_bytes) = match &plan.operation {
+        StorageWorkOperation::Head { path } => {
+            let key = plan.object_key(path)?;
+            let outcome = match fetcher.contract.head(&key).await? {
+                Some(head) => StorageWorkOutcome::Head {
+                    object: storage_object_identity(key, head),
+                },
+                None => StorageWorkOutcome::NotFound,
+            };
+            (outcome, 0)
+        }
+        StorageWorkOperation::ListPage {
+            prefix,
+            cursor,
+            limit,
+        } => {
+            let key_prefix = plan.object_key(prefix)?;
+            let page = fetcher
+                .contract
+                .list(&key_prefix, cursor.as_deref(), *limit)
+                .await?;
+            anyhow::ensure!(
+                page.objects
+                    .iter()
+                    .all(|object| object.key.starts_with(&key_prefix)),
+                "R2 listing escaped the selected placement prefix"
+            );
+            let objects = page
+                .objects
+                .into_iter()
+                .map(|object| StorageObjectIdentity {
+                    key: object.key,
+                    size: object.size,
+                    etag: object.etag,
+                })
+                .collect();
+            (
+                StorageWorkOutcome::ListPage {
+                    objects,
+                    cursor: page.cursor,
+                },
+                0,
+            )
+        }
+        StorageWorkOperation::InspectSha256 {
+            path,
+            expected_sha256,
+            max_source_bytes,
+        } => {
+            let key = plan.object_key(path)?;
+            let Some(evidence) = fetcher
+                .inventory_evidence_bounded(path, *max_source_bytes)
+                .await?
+            else {
+                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
+            };
+            let sha256 = hex::encode(evidence.sha256);
+            if let Some(expected_sha256) = expected_sha256 {
+                anyhow::ensure!(
+                    sha256.eq_ignore_ascii_case(expected_sha256),
+                    "R2 object SHA-256 does not match the plan"
+                );
+            }
+            let size = u64::try_from(evidence.size).context("R2 object size is negative")?;
+            let etag = evidence
+                .strong_etag
+                .context("R2 verification returned no strong ETag")?;
+            (
+                StorageWorkOutcome::Sha256Evidence {
+                    object: StorageObjectIdentity { key, size, etag },
+                    sha256,
+                },
+                size,
+            )
+        }
+    };
+    Ok(storage_work_result(plan, outcome, source_bytes))
+}
+
+fn storage_object_identity(key: String, head: R2HeadObject) -> StorageObjectIdentity {
+    StorageObjectIdentity {
+        key,
+        size: head.size,
+        etag: head.etag,
+    }
+}
+
+fn storage_work_result(
+    plan: &StorageWorkPlan,
+    outcome: StorageWorkOutcome,
+    source_bytes: u64,
+) -> StorageWorkResult {
+    StorageWorkResult {
+        plan_id: plan.plan_id.clone(),
+        placement_id: plan.placement_id,
+        placement_resource_version: plan.placement_resource_version,
+        binding_id: plan.binding_id,
+        binding_resource_version: plan.binding_resource_version,
+        source_bytes,
+        outcome,
+    }
 }
 
 #[async_trait(?Send)]

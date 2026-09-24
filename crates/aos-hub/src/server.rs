@@ -165,6 +165,140 @@ pub async fn router(state: Arc<AppState>) -> Router {
     router_with_transport(state, None).await
 }
 
+/// Builds a Native origin that accepts only signed requests from its hybrid Worker.
+///
+/// The signed public authority and client address replace transport headers
+/// before the shared route dispatcher and authentication middleware run.
+pub async fn router_with_hybrid_ingress(
+    state: Arc<AppState>,
+    key: Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>,
+    deployment_id: String,
+    work: Arc<crate::storage_work::RemoteStorageWorkClient>,
+) -> Router {
+    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
+        crate::storage_work::HybridSurfaceProvider::new(Arc::clone(&state.db), work),
+    );
+    let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+        Arc::new(crate::storage_work::UnavailableHybridSurfaceWrites);
+    let app = router_with_ports(state, None, Some(surface), Some(writes)).await;
+    Router::new()
+        .fallback_service(app)
+        .layer(axum::middleware::from_fn(move |request, next| {
+            let key = Arc::clone(&key);
+            let deployment_id = deployment_id.clone();
+            async move { verify_hybrid_ingress(key, deployment_id, request, next).await }
+        }))
+}
+
+async fn verify_hybrid_ingress(
+    key: Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>,
+    deployment_id: String,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use aos_hub_core::hybrid_ingress::HYBRID_INGRESS_HEADER;
+
+    let values = request
+        .headers()
+        .get_all(HYBRID_INGRESS_HEADER)
+        .iter()
+        .collect::<Vec<_>>();
+    if values.len() != 1 {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(compact) = values[0].to_str() else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let compact = compact.to_owned();
+    let method = request.method().as_str().to_owned();
+    let path_and_query = request
+        .uri()
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or(request.uri().path())
+        .to_owned();
+    let (mut parts, body) = request.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, RPC_MAX_BODY_BYTES).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    let assertion = match key.verify(
+        &compact,
+        &deployment_id,
+        &method,
+        &path_and_query,
+        &body,
+        aos_hub_core::clock::now_unix_secs(),
+    ) {
+        Ok(assertion) => assertion,
+        Err(error) => {
+            tracing::warn!(error = %error, "rejecting hybrid ingress assertion");
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+
+    // Browser-supplied forwarding and transport evidence are never proof.
+    // Application headers such as x-aos-csrf must reach the shared router.
+    let untrusted_headers = parts
+        .headers
+        .keys()
+        .filter(|name| {
+            let name = name.as_str();
+            name == "forwarded"
+                || name.starts_with("x-forwarded-")
+                || matches!(
+                    name,
+                    "x-aos-hybrid-ingress"
+                        | "x-aos-delivery-attestation"
+                        | "x-aos-client-ip"
+                        | "x-aos-console-route"
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in untrusted_headers {
+        parts.headers.remove(name);
+    }
+    let Ok(authority) = HeaderValue::from_str(&assertion.authority) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Ok(client_ip) = HeaderValue::from_str(&assertion.client_ip) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    parts.headers.insert(header::HOST, authority);
+    parts.headers.insert("x-forwarded-for", client_ip);
+    parts
+        .headers
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+    let Ok(client_ip) = assertion.client_ip.parse() else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    parts
+        .extensions
+        .insert(ConnectInfo(SocketAddr::new(client_ip, 0)));
+    parts
+        .extensions
+        .insert(aos_hub_core::hybrid_ingress::HybridOriginRequest);
+    let Ok(public_host) = aos_hub_core::connect::attested_authority_host(&assertion.authority)
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    parts
+        .extensions
+        .insert(aos_hub_core::connect::DeliveryTransportEvidence {
+            scheme: assertion.scheme,
+            ingress_kind: "hub".into(),
+            tls_identity: Some(public_host),
+        });
+
+    let mut response = next
+        .run(axum::http::Request::from_parts(parts, body.into()))
+        .await;
+    response
+        .headers_mut()
+        .insert("x-aos-hybrid-origin", HeaderValue::from_static("1"));
+    response
+}
+
 /// Builds the native router with optional listener-authenticated transport evidence.
 ///
 /// # Examples
@@ -181,6 +315,49 @@ pub async fn router_with_transport(
     state: Arc<AppState>,
     transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
 ) -> Router {
+    router_with_ports(state, transport, None, None).await
+}
+
+async fn router_with_ports(
+    state: Arc<AppState>,
+    transport: Option<aos_hub_core::connect::DeliveryTransportEvidence>,
+    surface_override: Option<Arc<dyn aos_hub_core::fetch::SurfaceProvider>>,
+    write_override: Option<Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>>,
+) -> Router {
+    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+        surface_override.clone().unwrap_or_else(|| {
+            Arc::new(
+                crate::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                    state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions)),
+            )
+        });
+    let image_index_surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = surface_override
+        .unwrap_or_else(|| {
+            Arc::new(
+                crate::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                    state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions))
+                .for_image_indexing(),
+            )
+        });
+    let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = write_override
+        .unwrap_or_else(|| {
+            Arc::new(
+                crate::coreports::HubSurfaceWriteProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions)),
+            )
+        });
+
     // The shared Connect-JSON RPC service, built over the hub's database, signing
     // keys, and base URL (the same fields the old per-hub service held), with the
     // in-process limiter adapted to the core `RateLimiter` port and the native
@@ -191,21 +368,8 @@ pub async fn router_with_transport(
         state.auth.jwt_keys.clone(),
         state.external_url.clone(),
         Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-        Arc::new(
-            crate::coreports::HubSurfaceProvider::new(
-                Arc::clone(&state.db),
-                state.http.clone(),
-                state.image_snapshots.clone(),
-            )
-            .with_credentials(Arc::clone(&state.secret_versions)),
-        ),
-        Arc::new(
-            crate::coreports::HubSurfaceWriteProvider::new(
-                Arc::clone(&state.db),
-                state.http.clone(),
-            )
-            .with_credentials(Arc::clone(&state.secret_versions)),
-        ),
+        surface,
+        writes,
         // Publication pointer flips share the configured lease domain.
         Arc::clone(&state.leases),
         Arc::new(
@@ -213,15 +377,7 @@ pub async fn router_with_transport(
                 Arc::clone(&state.db),
                 state.image_snapshots.clone(),
             )
-            .with_surface_provider(Arc::new(
-                crate::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&state.db),
-                    state.http.clone(),
-                    state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&state.secret_versions))
-                .for_image_indexing(),
-            )),
+            .with_surface_provider(image_index_surface),
         ),
         Arc::new(
             aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
@@ -843,4 +999,70 @@ pub fn console_deps_for_worker_test(
     state: &Arc<AppState>,
 ) -> aos_hub_core::web::console::ConsoleDeps {
     console_deps(state, None)
+}
+
+#[cfg(test)]
+mod hybrid_ingress_tests {
+    use super::*;
+    use aos_hub_core::hybrid_ingress::{
+        HybridIngressAssertion, HybridIngressKey, HYBRID_INGRESS_HEADER,
+    };
+    use sha2::{Digest as _, Sha256};
+    use tower::ServiceExt as _;
+
+    #[tokio::test]
+    async fn hybrid_origin_rejects_direct_and_mismatched_requests() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let state = Arc::new(AppState::new(db, "https://hub.example.test".into()).await);
+        let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
+        let work = Arc::new(
+            crate::storage_work::RemoteStorageWorkClient::new(
+                "https://worker.example.test",
+                "deployment-1".into(),
+                &[8; 32],
+            )
+            .unwrap(),
+        );
+        let app =
+            router_with_hybrid_ingress(state, Arc::clone(&key), "deployment-1".into(), work).await;
+
+        let direct = axum::http::Request::builder()
+            .uri("/healthz")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(direct).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let assertion = HybridIngressAssertion {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            issued_at: now,
+            expires_at: now + 30,
+            request_id: "request-1".into(),
+            scheme: "https".into(),
+            authority: "hub.example.test".into(),
+            method: "GET".into(),
+            path_and_query: "/healthz".into(),
+            body_sha256: hex::encode(Sha256::digest([])),
+            client_ip: "192.0.2.7".into(),
+        };
+        let signed = key.sign(&assertion).unwrap();
+        let authenticated = axum::http::Request::builder()
+            .uri("/healthz")
+            .header(HYBRID_INGRESS_HEADER, &signed)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(authenticated).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-aos-hybrid-origin"], "1");
+
+        let mismatched = axum::http::Request::builder()
+            .uri("/metrics")
+            .header(HYBRID_INGRESS_HEADER, signed)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(mismatched).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }

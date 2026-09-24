@@ -290,6 +290,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     // they run the shared service by issuing short transactions to HubDb. An
     // operator may temporarily change this to `read` or `off` for a staged
     // rollback without migrating or reconciling any database rows.
+    vars.push_str("HUB_TOPOLOGY = \"worker_only\"\n");
     vars.push_str("HUB_REQUEST_SHARDING = \"on\"\n");
     vars.push_str(&format!(
         "HUB_OCI_PULL_ENABLED = \"{}\"\nHUB_OCI_PUSH_ENABLED = \"{}\"\nHUB_OCI_VERIFIED_PUBLICATION_ENABLED = \"{}\"\nHUB_OCI_ADMINISTRATION_ENABLED = \"{}\"\nHUB_OCI_GC_ENABLED = \"{}\"\n",
@@ -1846,6 +1847,7 @@ mod tests {
         assert_eq!(parsed["name"].as_str(), Some("aos-hub"));
         assert_eq!(parsed["main"].as_str(), Some("shim.mjs"));
         assert_eq!(parsed["vars"]["HUB_REQUEST_SHARDING"].as_str(), Some("on"));
+        assert_eq!(parsed["vars"]["HUB_TOPOLOGY"].as_str(), Some("worker_only"));
         assert_eq!(
             parsed["vars"]["HUB_OCI_PULL_ENABLED"].as_str(),
             Some("true")

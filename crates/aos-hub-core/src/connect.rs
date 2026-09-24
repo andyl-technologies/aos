@@ -754,7 +754,11 @@ fn canonical_endpoint_host(host: &str) -> Result<crate::db::InboundEndpointHost,
 }
 
 /// Extracts and canonicalizes the host from an already authenticated authority.
-pub(crate) fn attested_authority_host(
+///
+/// # Errors
+///
+/// Returns an error for malformed, noncanonical, or userinfo-bearing authorities.
+pub fn attested_authority_host(
     authority: &str,
 ) -> Result<crate::db::InboundEndpointHost, ()> {
     let authority = authority
@@ -1543,7 +1547,11 @@ async fn serve_control_image(
     headers: HeaderMap,
     registry_id: i64,
     path: String,
+    hybrid_origin: bool,
 ) -> Response {
+    if hybrid_origin {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     if !path.starts_with("images/") {
         return private_control_response(StatusCode::NOT_FOUND.into_response());
     }
@@ -1689,6 +1697,22 @@ async fn dispatch_route(
         request.extensions_mut().insert(default_transport);
     }
     match rewrite_for_route(&svc, request).await {
+        Ok(request)
+            if request
+                .extensions()
+                .get::<crate::hybrid_ingress::HybridOriginRequest>()
+                .is_some()
+                && (request.extensions().get::<ResolvedRoute>().is_some()
+                    || request
+                        .extensions()
+                        .get::<crate::oci::ResolvedOciRoute>()
+                        .is_some()) =>
+        {
+            // Hybrid byte delivery belongs to the Worker data plane. Until a
+            // route has a Worker executor, fail closed instead of streaming
+            // storage objects through the GCP control origin.
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         Ok(request) => next.run(request).await,
         Err(response) => response,
     }
@@ -3829,6 +3853,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             |State(state): State<SharedState>,
              method: Method,
              headers: HeaderMap,
+             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
              Path((registry_id, path)): Path<(i64, String)>| {
                 let service = from_state(state);
                 send_bridge(serve_control_image(
@@ -3837,6 +3862,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     headers,
                     registry_id,
                     path,
+                    hybrid_origin.is_some(),
                 ))
             },
         )
@@ -3844,6 +3870,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             |State(state): State<SharedState>,
              method: Method,
              headers: HeaderMap,
+             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
              Path((registry_id, path)): Path<(i64, String)>| {
                 let service = from_state(state);
                 send_bridge(serve_control_image(
@@ -3852,6 +3879,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     headers,
                     registry_id,
                     path,
+                    hybrid_origin.is_some(),
                 ))
             },
         ),
