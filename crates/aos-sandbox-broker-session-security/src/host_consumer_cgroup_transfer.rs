@@ -109,9 +109,9 @@ struct HostConsumerCgroupPhysicalReadbackV1 {
 /// Holds the independent signed Storage claim and live Host pins under one journal borrow.
 ///
 /// The type has no public constructor or FD accessor. It is only a necessary
-/// comparison; it does not revalidate Storage's signer/catalog pins, and no
-/// Controller attachment-currentness, Storage lease, kernel grant, or LocalLive
-/// effect can be obtained from it.
+/// comparison; it revalidates retained Storage signer/catalog pins but not
+/// current Controller attachment state. No Storage lease, kernel grant, or
+/// LocalLive effect can be obtained from it.
 #[must_use = "retain the protected journal borrow through any future join"]
 pub struct ProtectedHostStorageConsumerJoinV1<'session> {
     current: ProtectedBrokerOutcomeCurrentV1<'session>,
@@ -131,6 +131,9 @@ pub enum ProtectedHostStorageConsumerJoinErrorV1 {
     /// Storage's signed View/Attachment claim differs or expired.
     #[error("Storage named consumer claim differs from Host assignment")]
     NamedConsumer,
+    /// Storage's independently pinned signer or catalog became stale.
+    #[error("Storage signer or export publication is no longer current")]
+    StorageCurrentness,
 }
 
 impl ProtectedHostConsumerCgroupTransferV1 {
@@ -272,7 +275,7 @@ impl ProtectedHostStorageConsumerJoinV1<'_> {
     /// # Errors
     ///
     /// Rejects changed protected journal custody, a stale Host observation,
-    /// or a mismatched/expired Storage named-consumer claim.
+    /// changed Storage signer/catalog custody, or a mismatched/expired name.
     pub fn recheck(&mut self) -> Result<(), ProtectedHostStorageConsumerJoinErrorV1> {
         let identity = self.host.identity;
         let current = &mut self.current;
@@ -281,6 +284,11 @@ impl ProtectedHostStorageConsumerJoinV1<'_> {
         check_join_sandwich(
             || current.revalidate(),
             || host.recheck().map_err(|_| ()),
+            || {
+                storage
+                    .revalidate_signer_catalog_currentness()
+                    .map_err(|_| ())
+            },
             || storage.matches_unexpired_host_assignment(identity.assignment, identity.boot_id),
         )
     }
@@ -289,15 +297,19 @@ impl ProtectedHostStorageConsumerJoinV1<'_> {
 fn check_join_sandwich(
     mut recheck_current: impl FnMut() -> Result<(), BrokerSessionSecurityError>,
     mut recheck_host: impl FnMut() -> Result<(), ()>,
+    mut recheck_storage: impl FnMut() -> Result<(), ()>,
     matches_storage: impl FnOnce() -> bool,
 ) -> Result<(), ProtectedHostStorageConsumerJoinErrorV1> {
-    // The unique journal borrow stays held across the independent signed-name
-    // comparison. No Storage ledger lock or external effect occurs here.
+    // Storage acquired its signer/catalog pins before this unique broker
+    // journal borrow. The checks read those retained pins without opening a
+    // second ledger or performing an external effect under the session cut.
     recheck_current()?;
     recheck_host().map_err(|_| ProtectedHostStorageConsumerJoinErrorV1::Host)?;
+    recheck_storage().map_err(|_| ProtectedHostStorageConsumerJoinErrorV1::StorageCurrentness)?;
     if !matches_storage() {
         return Err(ProtectedHostStorageConsumerJoinErrorV1::NamedConsumer);
     }
+    recheck_storage().map_err(|_| ProtectedHostStorageConsumerJoinErrorV1::StorageCurrentness)?;
     recheck_current()?;
     recheck_host().map_err(|_| ProtectedHostStorageConsumerJoinErrorV1::Host)
 }
@@ -395,6 +407,10 @@ mod tests {
                 Ok(())
             },
             || {
+                order.borrow_mut().push("storage");
+                Ok(())
+            },
+            || {
                 order.borrow_mut().push("named");
                 true
             },
@@ -402,7 +418,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             order.borrow().as_slice(),
-            &["current", "host", "named", "current", "host"]
+            &[
+                "current", "host", "storage", "named", "storage", "current", "host"
+            ]
         );
     }
 
@@ -419,6 +437,7 @@ mod tests {
                 }
             },
             || Ok(()),
+            || Ok(()),
             || true,
         );
         assert!(matches!(
@@ -429,10 +448,29 @@ mod tests {
         ));
         assert_eq!(current_checks, 2);
 
-        let result = check_join_sandwich(|| Ok(()), || Ok(()), || false);
+        let result = check_join_sandwich(|| Ok(()), || Ok(()), || Ok(()), || false);
         assert!(matches!(
             result,
             Err(ProtectedHostStorageConsumerJoinErrorV1::NamedConsumer)
         ));
+    }
+
+    #[test]
+    fn storage_pin_change_after_name_comparison_fails_closed() {
+        let mut storage_checks = 0;
+        let result = check_join_sandwich(
+            || Ok(()),
+            || Ok(()),
+            || {
+                storage_checks += 1;
+                if storage_checks == 2 { Err(()) } else { Ok(()) }
+            },
+            || true,
+        );
+        assert!(matches!(
+            result,
+            Err(ProtectedHostStorageConsumerJoinErrorV1::StorageCurrentness)
+        ));
+        assert_eq!(storage_checks, 2);
     }
 }

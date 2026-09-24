@@ -9,6 +9,7 @@
 //! issuer still needs that separate proof and the enforcing kernel grant.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::ObjectDigest;
@@ -59,6 +60,25 @@ pub(crate) enum StorageLiveExportReadbackErrorV1 {
     Clone(#[from] StorageLiveExportCloneErrorV1),
 }
 
+/// Reports a stale protected signer or export publication after inspection.
+#[derive(Debug, thiserror::Error)]
+pub enum StorageLiveExportCurrentnessErrorV1 {
+    /// One of the independently pinned signing authorities changed.
+    #[error("Storage live-export signer custody changed")]
+    Signer,
+    /// The protected export catalog changed or retired the selected row.
+    #[error("Storage live-export catalog custody or selected row changed")]
+    Catalog,
+    /// A signed deadline is no longer current.
+    #[error("Storage live-export signed deadline expired")]
+    Expired,
+}
+
+struct StorageLiveExportReadbackPinsV1 {
+    trust: StorageLiveExportRequestTrustV1,
+    catalog: StorageLiveExportCatalogV1,
+}
+
 /// Holds one verified but non-authorizing Storage request readback.
 ///
 /// The private root FD keeps the checked physical object live only while this
@@ -77,10 +97,68 @@ pub struct StorageLiveExportReadbackV1 {
     named_consumer: AuthenticatedNamedConsumerClaimV1,
     claimed_resource: SourceResourceV1,
     source: StorageLiveExportSourceV1,
-    _origin: StorageLiveExportOriginV1,
+    origin: StorageLiveExportOriginV1,
+    pins: Arc<StorageLiveExportReadbackPinsV1>,
 }
 
 impl StorageLiveExportReadbackV1 {
+    /// Rechecks the retained signer pins and exact selected catalog row.
+    ///
+    /// The held physical origin is used only to compare the publication row;
+    /// this does not reobserve Storage's runtime inventory, prove a current
+    /// Controller Attachment, or authorize an export.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected signer/catalog custody, a retired or changed
+    /// selected row, or an expired signed plan or named consumer.
+    pub fn revalidate_signer_catalog_currentness(
+        &self,
+    ) -> Result<(), StorageLiveExportCurrentnessErrorV1> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| StorageLiveExportCurrentnessErrorV1::Expired)?;
+        let now_seconds = i64::try_from(now.as_secs())
+            .map_err(|_| StorageLiveExportCurrentnessErrorV1::Expired)?;
+        if now_seconds >= self.expires_seconds
+            || now_seconds >= self.named_consumer.expires_seconds()
+        {
+            return Err(StorageLiveExportCurrentnessErrorV1::Expired);
+        }
+
+        self.pins
+            .trust
+            .validate_current()
+            .map_err(|_| StorageLiveExportCurrentnessErrorV1::Signer)?;
+        let source = self
+            .pins
+            .catalog
+            .select_current(self.source.export_id(), &self.origin)
+            .map_err(|_| StorageLiveExportCurrentnessErrorV1::Catalog)?;
+        if source != self.source {
+            return Err(StorageLiveExportCurrentnessErrorV1::Catalog);
+        }
+        self.pins
+            .trust
+            .validate_current()
+            .map_err(|_| StorageLiveExportCurrentnessErrorV1::Signer)?;
+        self.pins
+            .catalog
+            .validate_current()
+            .map_err(|_| StorageLiveExportCurrentnessErrorV1::Catalog)?;
+        if SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|time| i64::try_from(time.as_secs()).ok())
+            .is_none_or(|time| {
+                time >= self.expires_seconds || time >= self.named_consumer.expires_seconds()
+            })
+        {
+            return Err(StorageLiveExportCurrentnessErrorV1::Expired);
+        }
+        Ok(())
+    }
+
     /// Compares a fresh Host observation to Storage's signed named consumer.
     ///
     /// This necessary comparison is nonauthorizing: the caller must hold the
@@ -205,8 +283,7 @@ impl StorageLiveExportReadbackV1 {
 
 /// Owns protected signer pins and the current Storage export catalog.
 pub(crate) struct StorageLiveExportRequestReadbackOwnerV1 {
-    trust: StorageLiveExportRequestTrustV1,
-    catalog: StorageLiveExportCatalogV1,
+    pins: Arc<StorageLiveExportReadbackPinsV1>,
 }
 
 impl StorageLiveExportRequestReadbackOwnerV1 {
@@ -223,7 +300,9 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
         let trust = StorageLiveExportRequestTrustV1::open_root_owned(authority_directory)?;
         let catalog =
             StorageLiveExportCatalogV1::open_root_owned(authority_directory, state_directory)?;
-        Ok(Self { trust, catalog })
+        Ok(Self {
+            pins: Arc::new(StorageLiveExportReadbackPinsV1 { trust, catalog }),
+        })
     }
 
     /// Inspects a signed plan against current Storage publication and origin.
@@ -243,12 +322,12 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
         signed_request_bytes: &[u8],
         deadline_boottime_nanoseconds: u64,
     ) -> Result<StorageLiveExportReadbackV1, StorageLiveExportReadbackErrorV1> {
-        self.trust.validate_current()?;
-        self.catalog.validate_current()?;
+        self.pins.trust.validate_current()?;
+        self.pins.catalog.validate_current()?;
         let signed_request =
             SignedStorageLiveExportRequestV1::from_canonical_bytes(signed_request_bytes)
                 .map_err(|_| StorageLiveExportReadbackErrorV1::Request)?;
-        self.trust.verify(&signed_request)?;
+        self.pins.trust.verify(&signed_request)?;
         validate_plan_identity(
             signed_request.request().plan_id(),
             signed_request.request().effect_id(),
@@ -262,18 +341,24 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
         let selector = signed_request.request().selector();
         let before = runtime
             .observe_live_export_origin(selector.workspace_id(), deadline_boottime_nanoseconds)?;
-        let source = self.catalog.select_current(selector.export_id(), &before)?;
+        let source = self
+            .pins
+            .catalog
+            .select_current(selector.export_id(), &before)?;
         compare_selector(selector, source)?;
 
         // Reobserve after catalog selection so a changed pin or inventory
         // cannot be masked by a still-open descriptor from the first sample.
         let after = runtime
             .observe_live_export_origin(selector.workspace_id(), deadline_boottime_nanoseconds)?;
-        let final_source = self.catalog.select_current(selector.export_id(), &after)?;
+        let final_source = self
+            .pins
+            .catalog
+            .select_current(selector.export_id(), &after)?;
         if final_source != source {
             return Err(StorageLiveExportReadbackErrorV1::Selector);
         }
-        self.trust.validate_current()?;
+        self.pins.trust.validate_current()?;
         validate_time(&signed_request)?;
         let named_consumer = AuthenticatedNamedConsumerClaimV1::from_verified_plan(
             &signed_request,
@@ -296,7 +381,8 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
             named_consumer,
             claimed_resource: signed_request.request().resource().clone(),
             source: final_source,
-            _origin: after,
+            origin: after,
+            pins: Arc::clone(&self.pins),
         })
     }
 
