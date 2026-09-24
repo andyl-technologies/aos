@@ -37,6 +37,28 @@ pub(crate) struct SignedStorageCaptureCandidateQueryV1 {
     body: Vec<u8>,
     authorization: BrokerAuthorizationArtifactsV1,
     settlement_digest: aos_sandbox_core::ObjectDigest,
+    capture_limits: AcceptedCaptureLimitsV1,
+}
+
+/// Retains the exact detached ceilings derived from current accepted Create.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AcceptedCaptureLimitsV1 {
+    admitted_bytes: u64,
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
+}
+
+impl AcceptedCaptureLimitsV1 {
+    pub(crate) const fn matches(
+        self,
+        admitted_bytes: u64,
+        maximum_stdout_bytes: u64,
+        maximum_stderr_bytes: u64,
+    ) -> bool {
+        self.admitted_bytes == admitted_bytes
+            && self.maximum_stdout_bytes == maximum_stdout_bytes
+            && self.maximum_stderr_bytes == maximum_stderr_bytes
+    }
 }
 
 impl SignedStorageCaptureCandidateQueryV1 {
@@ -54,6 +76,10 @@ impl SignedStorageCaptureCandidateQueryV1 {
 
     pub(crate) const fn settlement_digest(&self) -> aos_sandbox_core::ObjectDigest {
         self.settlement_digest
+    }
+
+    pub(crate) const fn capture_limits(&self) -> AcceptedCaptureLimitsV1 {
+        self.capture_limits
     }
 }
 
@@ -113,7 +139,7 @@ where
     )
     .map_err(|_| retryable("authenticated Host output settlement changed"))?
     .ok_or_else(|| retryable("authenticated Host output settlement is absent"))?;
-    validate_settlement(&settlement, &attempt)?;
+    let capture_limits = validate_settlement(&settlement, &attempt)?;
 
     let target = parent.assignment().manifest();
     let current = AuthorityPublicationStore::new(controller)
@@ -266,19 +292,21 @@ where
             ..Default::default()
         },
         settlement_digest: settlement.record_digest(),
+        capture_limits,
     })
 }
 
 fn validate_settlement(
     settlement: &ProtectedControllerOutputSettlementV1,
     attempt: &aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttemptV1,
-) -> Result<(), EffectFailure> {
+) -> Result<AcceptedCaptureLimitsV1, EffectFailure> {
     let preissue = attempt.source().preissue();
-    let aggregate = preissue
-        .maximum_stdout_bytes()
-        .checked_add(preissue.maximum_stderr_bytes())
+    let maximum_stdout_bytes = preissue.maximum_stdout_bytes();
+    let maximum_stderr_bytes = preissue.maximum_stderr_bytes();
+    let admitted_bytes = maximum_stdout_bytes
+        .checked_add(maximum_stderr_bytes)
         .ok_or_else(|| retryable("Storage candidate output split overflowed"))?;
-    if aggregate == 0
+    if admitted_bytes == 0
         || settlement.execution() != preissue.execution()
         || settlement.create_operation() != preissue.create_operation()
         || settlement.claim_digest() != attempt.source().output_claim_digest()
@@ -288,9 +316,31 @@ fn validate_settlement(
             "Storage candidate has no detached Host output claim",
         ));
     }
-    Ok(())
+    Ok(AcceptedCaptureLimitsV1 {
+        admitted_bytes,
+        maximum_stdout_bytes,
+        maximum_stderr_bytes,
+    })
 }
 
 fn retryable(message: &'static str) -> EffectFailure {
     EffectFailure::Retryable(message.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AcceptedCaptureLimitsV1;
+
+    #[test]
+    fn candidate_split_must_equal_protected_accepted_create() {
+        let expected = AcceptedCaptureLimitsV1 {
+            admitted_bytes: 100,
+            maximum_stdout_bytes: 60,
+            maximum_stderr_bytes: 40,
+        };
+        assert!(expected.matches(100, 60, 40));
+        assert!(!expected.matches(100, 59, 41));
+        assert!(!expected.matches(99, 60, 40));
+        assert!(!expected.matches(101, 60, 40));
+    }
 }

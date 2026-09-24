@@ -24,7 +24,9 @@ use aos_sandbox_protocol::storage_capture_candidate::{
 use buffa::Message as _;
 
 use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
-use crate::controller_service::execution_capture_candidate::SignedStorageCaptureCandidateQueryV1;
+use crate::controller_service::execution_capture_candidate::{
+    AcceptedCaptureLimitsV1, SignedStorageCaptureCandidateQueryV1,
+};
 use crate::dormant_handshake::ProtectedStorageSessionBindingV1;
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
@@ -42,6 +44,7 @@ struct CandidateExchangeContextV1 {
     query: StorageCaptureCandidateQueryV1,
     exact_body: Vec<u8>,
     settlement_digest: ObjectDigest,
+    capture_limits: AcceptedCaptureLimitsV1,
     maximum_response_bytes: u32,
     session_binding: [u8; 32],
 }
@@ -157,6 +160,7 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
                 query: *signed.query(),
                 exact_body: body,
                 settlement_digest: signed.settlement_digest(),
+                capture_limits: signed.capture_limits(),
                 maximum_response_bytes,
                 session_binding: binding.digest(),
             },
@@ -240,6 +244,15 @@ where
         sample.boottime_nanoseconds(),
     )
     .map_err(|_| EffectFailure::Permanent("signed Storage candidate is invalid".to_owned()))?;
+    if !context.capture_limits.matches(
+        candidate.admitted_bytes(),
+        candidate.maximum_stdout_bytes(),
+        candidate.maximum_stderr_bytes(),
+    ) {
+        return Err(EffectFailure::Permanent(
+            "signed Storage candidate differs from protected accepted Create ceilings".to_owned(),
+        ));
+    }
     Ok(ControllerStorageCaptureCandidateObservationV1 {
         candidate,
         query: context.query,
