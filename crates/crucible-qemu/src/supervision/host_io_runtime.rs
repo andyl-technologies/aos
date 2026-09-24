@@ -350,11 +350,13 @@ impl QemuLiveHostIoRuntime {
         }
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         for attempt in 0..attempts {
-            if self
-                .advance_wait_deadline
-                .remaining()
-                .is_some_and(|remaining| remaining.is_zero())
-            {
+            let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new(
+                    "repoll advance completion",
+                    "initial await did not establish a deadline",
+                )
+            })?;
+            if remaining.is_zero() {
                 return Ok(QemuAsyncWaitOutcome::TimedOut);
             }
 
