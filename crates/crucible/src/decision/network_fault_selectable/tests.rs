@@ -84,10 +84,14 @@ fn selected_fault(
     Ok((branch.selected().clone(), vec![branch]))
 }
 
-fn opportunity(segment: &str, direction: FaultDirection, at: u64) -> FaultOpportunity {
-    FaultOpportunity::new(
+fn opportunity(
+    segment: &str,
+    direction: FaultDirection,
+    at: u64,
+) -> Result<FaultOpportunity, Box<dyn Error>> {
+    Ok(FaultOpportunity::new(
         ResolvedFaultTarget::NetworkSegment {
-            segment: FaultObjectId::parse(segment).expect("test segment"),
+            segment: FaultObjectId::parse(segment)?,
             direction,
         },
         FaultOperation::NetworkTraverse,
@@ -99,8 +103,8 @@ fn opportunity(segment: &str, direction: FaultDirection, at: u64) -> FaultOpport
         1,
         Some(direction),
         OpportunityPayload::NetworkFrame {
-            producer: FaultObjectId::parse("router-a").expect("test producer"),
-            destination: FaultObjectId::parse("router-b").expect("test destination"),
+            producer: FaultObjectId::parse("router-a")?,
+            destination: FaultObjectId::parse("router-b")?,
             producer_sequence: 1,
             protocol_expansion_path: Vec::new(),
             generated_response_depth: 0,
@@ -109,28 +113,30 @@ fn opportunity(segment: &str, direction: FaultDirection, at: u64) -> FaultOpport
             length_bytes: 64,
             payload_digest: ContentHash::from_bytes(b"packet"),
         },
-    )
-    .expect("test frame opportunity")
+    )?)
 }
 
-fn topology() -> WorldFaultTopology {
-    let domain = |name: &str, segment: &str| WorldFaultDomain {
-        id: SignalId::parse(name).expect("test domain"),
-        targets: [FaultDirection::AToB, FaultDirection::BToA]
-            .into_iter()
-            .map(|direction| WorldFaultTargetRef::NetworkSegment {
-                segment: SignalId::parse(segment).expect("test segment"),
-                direction,
-            })
-            .collect(),
+fn topology() -> Result<WorldFaultTopology, Box<dyn Error>> {
+    let domain = |name: &str, segment: &str| -> Result<WorldFaultDomain, Box<dyn Error>> {
+        let segment = SignalId::parse(segment)?;
+        Ok(WorldFaultDomain {
+            id: SignalId::parse(name)?,
+            targets: [FaultDirection::AToB, FaultDirection::BToA]
+                .into_iter()
+                .map(|direction| WorldFaultTargetRef::NetworkSegment {
+                    segment: segment.clone(),
+                    direction,
+                })
+                .collect(),
+        })
     };
-    WorldFaultTopology {
+    Ok(WorldFaultTopology {
         fault_domains: vec![
-            domain("primary", "segment-primary"),
-            domain("backup", "segment-backup"),
+            domain("primary", "segment-primary")?,
+            domain("backup", "segment-backup")?,
         ],
         ..WorldFaultTopology::default()
-    }
+    })
 }
 
 #[test]
@@ -273,8 +279,8 @@ fn selected_link_fault_projects_exact_typed_path_and_duration() -> Result<(), Bo
         None,
     )?;
     let replay = NetworkFaultCampaignReplayPlan::new(selected, branches)?;
-    let topology = topology();
-    let primary = opportunity("segment-primary", FaultDirection::AToB, 11_000);
+    let topology = topology()?;
+    let primary = opportunity("segment-primary", FaultDirection::AToB, 11_000)?;
     let actions = replay.actions_for_opportunity(&topology, &primary)?;
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].opportunity, Some(primary.id()));
@@ -290,7 +296,7 @@ fn selected_link_fault_projects_exact_typed_path_and_duration() -> Result<(), Bo
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-backup", FaultDirection::AToB, 11_000)
+                &opportunity("segment-backup", FaultDirection::AToB, 11_000)?
             )?
             .is_empty()
     );
@@ -298,7 +304,7 @@ fn selected_link_fault_projects_exact_typed_path_and_duration() -> Result<(), Bo
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 1_010_000)
+                &opportunity("segment-primary", FaultDirection::AToB, 1_010_000)?
             )?
             .is_empty()
     );
@@ -309,14 +315,14 @@ fn selected_link_fault_projects_exact_typed_path_and_duration() -> Result<(), Bo
 fn atomic_fault_activates_at_authenticated_time() -> Result<(), Box<dyn Error>> {
     let scenario = scenario()?;
     let at = VirtualTime { ticks: 10_000 };
-    let topology = topology();
+    let topology = topology()?;
     let parent = Configuration::genesis(scenario.scenario_def());
     let inactive = NetworkFaultCampaignReplayPlan::new(parent.clone(), Vec::new())?;
     assert!(
         inactive
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 11_000),
+                &opportunity("segment-primary", FaultDirection::AToB, 11_000)?,
             )?
             .is_empty()
     );
@@ -327,7 +333,7 @@ fn atomic_fault_activates_at_authenticated_time() -> Result<(), Box<dyn Error>> 
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 9_999),
+                &opportunity("segment-primary", FaultDirection::AToB, 9_999)?,
             )?
             .is_empty()
     );
@@ -335,7 +341,7 @@ fn atomic_fault_activates_at_authenticated_time() -> Result<(), Box<dyn Error>> 
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 10_000),
+                &opportunity("segment-primary", FaultDirection::AToB, 10_000)?,
             )?
             .len(),
         1
@@ -347,7 +353,7 @@ fn atomic_fault_activates_at_authenticated_time() -> Result<(), Box<dyn Error>> 
 fn latency_and_asymmetric_kinds_project_distinct_network_effects() -> Result<(), Box<dyn Error>> {
     let scenario = scenario()?;
     let at = VirtualTime { ticks: 10_000 };
-    let topology = topology();
+    let topology = topology()?;
     let (latency_target, latency_branches) = selected_fault(
         &scenario,
         NetworkFaultPhase::First,
@@ -357,7 +363,7 @@ fn latency_and_asymmetric_kinds_project_distinct_network_effects() -> Result<(),
         Some(1_500),
     )?;
     let latency = NetworkFaultCampaignReplayPlan::new(latency_target, latency_branches)?;
-    let backup = opportunity("segment-backup", FaultDirection::AToB, 11_000);
+    let backup = opportunity("segment-backup", FaultDirection::AToB, 11_000)?;
     let actions = latency.actions_for_opportunity(&topology, &backup)?;
     assert_eq!(actions.len(), 1);
     assert!(matches!(
@@ -371,7 +377,7 @@ fn latency_and_asymmetric_kinds_project_distinct_network_effects() -> Result<(),
         latency
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 11_000),
+                &opportunity("segment-primary", FaultDirection::AToB, 11_000)?,
             )?
             .is_empty()
     );
@@ -389,7 +395,7 @@ fn latency_and_asymmetric_kinds_project_distinct_network_effects() -> Result<(),
         partition
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 11_000),
+                &opportunity("segment-primary", FaultDirection::AToB, 11_000)?,
             )?
             .len(),
         1
@@ -398,7 +404,7 @@ fn latency_and_asymmetric_kinds_project_distinct_network_effects() -> Result<(),
         partition
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::BToA, 11_000),
+                &opportunity("segment-primary", FaultDirection::BToA, 11_000)?,
             )?
             .is_empty()
     );
@@ -422,18 +428,18 @@ fn followup_fault_activates_only_after_its_own_boundary() -> Result<(), Box<dyn 
         first.selected(),
         NetworkFaultPhase::Followup,
         VirtualTime { ticks: 20_000 },
-        &[first.clone()],
+        std::slice::from_ref(&first),
         NetworkFaultSelectable::selected_value("link_down", "backup", 1_000, 0, 0)?,
     )?;
     let replay =
         NetworkFaultCampaignReplayPlan::new(followup.selected().clone(), vec![first, followup])?;
-    let topology = topology();
+    let topology = topology()?;
 
     assert!(
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-backup", FaultDirection::AToB, 19_999),
+                &opportunity("segment-backup", FaultDirection::AToB, 19_999)?,
             )?
             .is_empty()
     );
@@ -441,7 +447,7 @@ fn followup_fault_activates_only_after_its_own_boundary() -> Result<(), Box<dyn 
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-backup", FaultDirection::AToB, 20_000),
+                &opportunity("segment-backup", FaultDirection::AToB, 20_000)?,
             )?
             .len(),
         1
@@ -450,7 +456,7 @@ fn followup_fault_activates_only_after_its_own_boundary() -> Result<(), Box<dyn 
         replay
             .actions_for_opportunity(
                 &topology,
-                &opportunity("segment-primary", FaultDirection::AToB, 20_000),
+                &opportunity("segment-primary", FaultDirection::AToB, 20_000)?,
             )?
             .is_empty()
     );
