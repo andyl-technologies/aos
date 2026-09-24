@@ -11,6 +11,13 @@
 use super::*;
 use crate::CampaignBudgetLedger;
 
+type RequestAttemptPageScan = (
+    Vec<(Proposal, AttemptAdmission)>,
+    Option<ProposalId>,
+    MerkleMapLookupProof,
+    MerkleMapPageProof,
+);
+
 impl CampaignRepository {
     /// Indexes each newly admitted proposal, including convergent causes.
     pub(super) fn request_admissions_root_after(
@@ -218,15 +225,7 @@ impl CampaignRepository {
         request: BranchRequestId,
         after: Option<ProposalId>,
         limit: usize,
-    ) -> Result<
-        (
-            Vec<(Proposal, AttemptAdmission)>,
-            Option<ProposalId>,
-            MerkleMapLookupProof,
-            MerkleMapPageProof,
-        ),
-        CampaignRepositoryError,
-    > {
+    ) -> Result<RequestAttemptPageScan, CampaignRepositoryError> {
         let (index, index_proof) = self
             .merkle
             .get_with_proof(ledger.request_admissions(), request_admissions_key(request))?;
