@@ -8811,12 +8811,18 @@ connection and record subjects correlated to one live pidfd snapshot, zero
 transferred FDs, canonical map bytes, and a current kernel clock sample. A
 privileged delegated writer can nominate that subject, so MAC/socket custody
 must independently exclude it. The accepted channel closes on every result
-and cannot mutate a map. No privileged
-C reporter service, separately protected socket/MAC sender custody, or
-deployment wiring exists yet, so the capability-empty daemon does not accept
-reports and the API does not authenticate arbitrary caller-supplied bytes.
-Even a future authenticated report is only a point observation; its timestamp
-does not hold the map or Storage authority current.
+and cannot mutate a map. The C owner now has an undeployed `send-prepared`
+command that performs the same two current PREPARED map/FD readbacks and sends
+one exact packet, without descriptors or an authority reply, to the fixed
+report route. It requires root-owned nonwritable route ancestors, a private
+mode-0700 report directory, an unchanged root-owned mode-0600 socket, and root
+Unix peer credentials. Socket activation may identify PID 1 as the connection
+peer; those checks do not prove that the Rust service owns acceptance. No
+privileged C reporter service, separately protected socket/MAC sender custody,
+or deployment wiring exists yet, so the capability-empty daemon does not
+accept reports and the API does not authenticate arbitrary caller-supplied
+bytes. Even a future authenticated report is only a point observation; its
+timestamp does not hold the map or Storage authority current.
 
 The C owner's existing 576-byte `AOSKGA01` path still uses one test verifier
 for both the lease and stage signature, and its fixed `AOSKLR01` record and
@@ -8828,10 +8834,11 @@ without recording a lease or changing a map. It does not physically observe
 the mutable origin, provision either production signer, or connect the C
 report to the Rust peer. The new C owner and probe packages build, the owner
 object validates, and all 23 Rust peer tests pass; the modified VM probe's
-runtime assertions have not run because that VM closure requires 103 uncached
-derivations. Production Stage, ACTIVE, descriptor release, Apply, and LocalLive
-remain closed pending deployment of a protected privileged report sender,
-exact service cgroup and MAC custody, held cross-owner currentness and
+runtime assertions have not run because this host lacks `/dev/kvm` and its VM
+closure still requires 100 uncached derivations. Production Stage, ACTIVE,
+descriptor release, Apply, and LocalLive remain closed pending deployment of
+the privileged report sender and listener, exact service cgroup and MAC
+custody, held cross-owner currentness and
 recovery, and complete origin and holder evidence.
 
 ### Protected Cache journal-only root view

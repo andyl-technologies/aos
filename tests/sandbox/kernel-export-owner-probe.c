@@ -28,6 +28,7 @@
 #endif
 
 #define PREPARED_REPORT_BYTES 152U
+#define REPORT_SOCKET_PATH "/run/aos/kernel-export-owner/prepared-report.sock"
 
 static const char handoff[] = "/var/lib/aos/kernel-export-owner/handoff";
 static const unsigned char signature_domain[] =
@@ -155,6 +156,123 @@ static int prepared_report(int clone, int cgroup,
       result = -1;
   }
   close(pipe_fd[0]);
+  return result;
+}
+
+static int make_report_listener(void)
+{
+  struct sockaddr_un address = {.sun_family = AF_UNIX};
+  int listener = -1;
+
+  if ((mkdir("/run/aos", 0700) != 0 && errno != EEXIST) ||
+      mkdir("/run/aos/kernel-export-owner", 0700) != 0 ||
+      sizeof(REPORT_SOCKET_PATH) > sizeof(address.sun_path))
+    return -1;
+  listener = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (listener < 0)
+    return -1;
+  memcpy(address.sun_path, REPORT_SOCKET_PATH, sizeof(REPORT_SOCKET_PATH));
+  if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+      chmod(REPORT_SOCKET_PATH, 0600) != 0 || listen(listener, 4) != 0) {
+    close(listener);
+    return -1;
+  }
+  return listener;
+}
+
+static int received_prepared_report(int listener,
+                                    const unsigned char expected[PREPARED_REPORT_BYTES])
+{
+  unsigned char report[PREPARED_REPORT_BYTES];
+  unsigned char control[CMSG_SPACE(sizeof(int))];
+  struct iovec data = {.iov_base = report, .iov_len = sizeof(report)};
+  struct msghdr message = {
+      .msg_iov = &data,
+      .msg_iovlen = 1,
+      .msg_control = control,
+      .msg_controllen = sizeof(control),
+  };
+  struct timespec now;
+  int accepted = accept4(listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+  int result = -1;
+
+  if (accepted >= 0 &&
+      recvmsg(accepted, &message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC) ==
+          PREPARED_REPORT_BYTES &&
+      message.msg_controllen == 0 &&
+      (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) == 0 &&
+      memcmp(report, expected, PREPARED_REPORT_BYTES - 8) == 0 &&
+      clock_gettime(CLOCK_BOOTTIME, &now) == 0) {
+    uint64_t observed = read_be64(report + PREPARED_REPORT_BYTES - 8);
+    uint64_t current = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+    if (observed > 0 && observed <= current &&
+        current - observed <= 1000000000ULL)
+      result = 0;
+  }
+  if (accepted >= 0)
+    close(accepted);
+  return result;
+}
+
+static int no_report_packet(int listener)
+{
+  int accepted = accept4(listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+  unsigned char byte;
+  int result = -1;
+
+  if (accepted >= 0 && recv(accepted, &byte, 1, MSG_DONTWAIT) == 0)
+    result = 0;
+  if (accepted >= 0)
+    close(accepted);
+  return result;
+}
+
+static int probe_prepared_report_sender(
+    int clone, int wrong_clone, int cgroup, int wrong_cgroup,
+    const unsigned char expected[PREPARED_REPORT_BYTES])
+{
+  int listener = -1;
+  int result = -1;
+
+  if (owner("send-prepared", clone, cgroup, NULL, NULL, NULL) == 0)
+    goto out;
+  listener = make_report_listener();
+  if (listener < 0)
+    goto out;
+
+  if (chmod(REPORT_SOCKET_PATH, 0666) != 0 ||
+      owner("send-prepared", clone, cgroup, NULL, NULL, NULL) == 0)
+    goto out;
+  if (chmod(REPORT_SOCKET_PATH, 0600) != 0 ||
+      chown(REPORT_SOCKET_PATH, 65534, 65534) != 0 ||
+      owner("send-prepared", clone, cgroup, NULL, NULL, NULL) == 0)
+    goto out;
+  if (chown(REPORT_SOCKET_PATH, 0, 0) != 0 ||
+      chmod("/run/aos/kernel-export-owner", 0777) != 0 ||
+      owner("send-prepared", clone, cgroup, NULL, NULL, NULL) == 0)
+    goto out;
+  if (chmod("/run/aos/kernel-export-owner", 0700) != 0 ||
+      owner("send-prepared", clone, cgroup, NULL, NULL, NULL) != 0 ||
+      received_prepared_report(listener, expected) != 0)
+    goto out;
+
+  if (owner("send-prepared", wrong_clone, cgroup, NULL, NULL, NULL) == 0 ||
+      no_report_packet(listener) != 0 ||
+      owner("send-prepared", clone, wrong_cgroup, NULL, NULL, NULL) == 0 ||
+      no_report_packet(listener) != 0)
+    goto out;
+
+  if (unlink(REPORT_SOCKET_PATH) != 0 ||
+      symlink("/var/lib/aos/kernel-export-owner/handoff",
+              REPORT_SOCKET_PATH) != 0 ||
+      owner("send-prepared", clone, cgroup, NULL, NULL, NULL) == 0 ||
+      unlink(REPORT_SOCKET_PATH) != 0)
+    goto out;
+  result = 0;
+
+out:
+  if (listener >= 0)
+    close(listener);
   return result;
 }
 
@@ -1182,6 +1300,11 @@ int main(int argc, char **argv)
       read_be64(prepared + 40) != 1 ||
       prepared[139] != 3 || prepared[143] != 1) {
     fprintf(stderr, "kernel-export-owner-probe: prepared map report failed\n");
+    return 1;
+  }
+  if (probe_prepared_report_sender(clone_fd, wrong_clone, allowed_fd,
+                                   outside_fd, prepared) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: protected report sender failed\n");
     return 1;
   }
   if (fcntl(clone_fd, F_GETFD) < 0 || fcntl(clone_fd, F_GETFL) < 0 ||

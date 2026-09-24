@@ -7,7 +7,9 @@
 
 #include <dirent.h>
 #include <sys/file.h>
+#include <sys/socket.h>
 #include <sys/statvfs.h>
+#include <sys/un.h>
 
 #include <openssl/evp.h>
 
@@ -26,6 +28,8 @@
 #define ACK_V2_BYTES 600U
 #define RECORD_BYTES 1208U
 #define PREPARED_REPORT_BYTES 152U
+#define REPORT_SOCKET_DIR "/run/aos/kernel-export-owner"
+#define REPORT_SOCKET_PATH REPORT_SOCKET_DIR "/prepared-report.sock"
 #define OWNER_PREPARED 1U
 #define OWNER_ACTIVATING 2U
 #define OWNER_ACTIVE 3U
@@ -45,6 +49,9 @@ static const unsigned char ack_v2_domain[] =
     "aos.sandbox.storage.kernel-export-stage-ack.signature.v2";
 static const unsigned char record_domain[] =
     "aos.sandbox.kernel-export-owner.lease-record.v1";
+
+_Static_assert(sizeof(REPORT_SOCKET_PATH) <= sizeof(((struct sockaddr_un *)0)->sun_path),
+               "kernel export report socket path is too long");
 
 enum record_offset {
   RECORD_BOOT = 16,
@@ -793,14 +800,15 @@ static int prepared_current(const struct owner_state *state, int clone_fd,
 }
 
 /* A root-only point observation, not a signed or held grant statement. */
-static int report_prepared(const struct owner_state *state, int clone_fd,
-                           int cgroup_fd, const char *handoff_path)
+static int prepared_report_bytes(const struct owner_state *state, int clone_fd,
+                                 int cgroup_fd, const char *handoff_path,
+                                 unsigned char report[PREPARED_REPORT_BYTES])
 {
   struct aos_kernel_export_owner_mount_v1 before, after;
   unsigned char first_frame[HANDOFF_BYTES], second_frame[HANDOFF_BYTES];
-  unsigned char report[PREPARED_REPORT_BYTES] = {0};
   __u64 now;
 
+  memset(report, 0, PREPARED_REPORT_BYTES);
   if (prepared_current(state, clone_fd, cgroup_fd, handoff_path,
                        first_frame, &before) != 0 ||
       canonical_prepared_policy(state->mount_id, &before,
@@ -815,7 +823,113 @@ static int report_prepared(const struct owner_state *state, int clone_fd,
   memcpy(report, "AOSKPR01", 8);
   report[9] = 1;
   put_be64(report + 144, now);
-  return exact_write(STDOUT_FILENO, report, sizeof(report));
+  return 0;
+}
+
+static int report_prepared(const struct owner_state *state, int clone_fd,
+                           int cgroup_fd, const char *handoff_path)
+{
+  unsigned char report[PREPARED_REPORT_BYTES];
+
+  return prepared_report_bytes(state, clone_fd, cgroup_fd, handoff_path,
+                               report) == 0 &&
+         exact_write(STDOUT_FILENO, report, sizeof(report)) == 0 ? 0 : -1;
+}
+
+static int protected_route_directory(int fd, bool private)
+{
+  struct stat observed;
+  bool permissions;
+
+  if (fstat(fd, &observed) != 0)
+    return -1;
+  permissions = private ? (observed.st_mode & 07777) == 0700 :
+                          (observed.st_mode & 0022) == 0;
+  if (!S_ISDIR(observed.st_mode) || observed.st_uid != 0 ||
+      observed.st_gid != 0 || !permissions)
+    return -1;
+  return 0;
+}
+
+static int protected_report_socket(int directory, struct stat *identity)
+{
+  return fstatat(directory, "prepared-report.sock", identity,
+                 AT_SYMLINK_NOFOLLOW) == 0 &&
+         S_ISSOCK(identity->st_mode) && identity->st_uid == 0 &&
+         identity->st_gid == 0 &&
+         (identity->st_mode & 07777) == 0600 && identity->st_ino != 0 ? 0 : -1;
+}
+
+static int connect_report_socket(void)
+{
+  struct sockaddr_un address = {.sun_family = AF_UNIX};
+  struct ucred peer;
+  struct stat before, after;
+  socklen_t peer_size = sizeof(peer);
+  int run = -1, aos = -1, directory = -1, socket_fd = -1;
+
+  /* The pathname is only a route. Root-owned, nonwritable ancestors and an
+   * unchanged private socket exclude unprivileged pathname substitution;
+   * deployment still needs MAC custody against privileged delegated writers. */
+  run = open("/run", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (run < 0 || protected_route_directory(run, false) != 0)
+    goto fail;
+  aos = openat(run, "aos", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (aos < 0 || protected_route_directory(aos, false) != 0)
+    goto fail;
+  directory = openat(aos, "kernel-export-owner",
+                     O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (directory < 0 || protected_route_directory(directory, true) != 0 ||
+      protected_report_socket(directory, &before) != 0)
+    goto fail;
+
+  socket_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (socket_fd < 0)
+    goto fail;
+  memcpy(address.sun_path, REPORT_SOCKET_PATH, sizeof(REPORT_SOCKET_PATH));
+  if (connect(socket_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+      getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) != 0 ||
+      peer_size != sizeof(peer) || peer.pid <= 0 ||
+      peer.uid != 0 || peer.gid != 0 ||
+      protected_report_socket(directory, &after) != 0 ||
+      before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+      protected_route_directory(directory, true) != 0)
+    goto fail;
+
+  close(directory);
+  close(aos);
+  close(run);
+  return socket_fd;
+
+fail:
+  if (socket_fd >= 0)
+    close(socket_fd);
+  if (directory >= 0)
+    close(directory);
+  if (aos >= 0)
+    close(aos);
+  if (run >= 0)
+    close(run);
+  return -1;
+}
+
+/* This point report sends no descriptor and waits for no authority reply. */
+static int send_prepared_report(const struct owner_state *state, int clone_fd,
+                                int cgroup_fd, const char *handoff_path)
+{
+  unsigned char report[PREPARED_REPORT_BYTES];
+  int socket_fd = connect_report_socket();
+  int result = -1;
+
+  if (socket_fd >= 0 &&
+      prepared_report_bytes(state, clone_fd, cgroup_fd, handoff_path,
+                            report) == 0 &&
+      send(socket_fd, report, sizeof(report),
+           MSG_DONTWAIT | MSG_NOSIGNAL) == (ssize_t)sizeof(report))
+    result = 0;
+  if (socket_fd >= 0)
+    close(socket_fd);
+  return result;
 }
 
 static int record_digest(const unsigned char record[RECORD_BYTES],
@@ -1132,6 +1246,11 @@ int main(int argc, char **argv)
   if (argc == 5 && strcmp(argv[1], "report-prepared") == 0 &&
       read_state(&state) == 0) {
     result = report_prepared(&state, clone_fd, cgroup_fd, argv[4]);
+    goto out;
+  }
+  if (argc == 5 && strcmp(argv[1], "send-prepared") == 0 &&
+      read_state(&state) == 0) {
+    result = send_prepared_report(&state, clone_fd, cgroup_fd, argv[4]);
     goto out;
   }
   if (argc == 7 && strcmp(argv[1], "inspect-stage-v2") == 0 &&
