@@ -322,6 +322,13 @@ impl CampaignService for FixedHeadService {
         unreachable!("unused campaign-service operation")
     }
 
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        unreachable!("unused campaign-service operation")
+    }
+
     fn get_campaign_planner_rankings(
         &self,
         _request: &GetCampaignPlannerRankingsRequest,
@@ -472,6 +479,7 @@ impl CampaignService for StatusSequenceService {
         fn query_campaign_findings(QueryCampaignFindingsRequest) -> QueryCampaignFindingsResponse;
         fn get_campaign_finding_object(GetCampaignFindingObjectRequest) -> GetCampaignFindingObjectResponse;
         fn explain_campaign_attempt(ExplainCampaignAttemptRequest) -> ExplainCampaignAttemptResponse;
+        fn get_campaign_trace_chunk(GetCampaignTraceChunkRequest) -> GetCampaignTraceChunkResponse;
         fn get_campaign_planner_rankings(GetCampaignPlannerRankingsRequest) -> GetCampaignPlannerRankingsResponse;
         fn get_campaign_frontier_object(GetCampaignFrontierObjectRequest) -> GetCampaignFrontierObjectResponse;
         fn get_campaign_choice_object(GetCampaignChoiceObjectRequest) -> GetCampaignChoiceObjectResponse;
@@ -707,6 +715,13 @@ impl CampaignService for GraphPageService {
             observation_proof,
         )
         .expect("bound attempt explanation response"))
+    }
+
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        unreachable!("graph-page fixture does not retain trace leaves")
     }
 
     fn get_campaign_planner_rankings(
