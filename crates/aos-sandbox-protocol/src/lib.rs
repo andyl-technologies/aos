@@ -13,10 +13,13 @@
 //! storage codec and whole-snapshot validator shared by Mount and its security
 //! boundary. [`mount_source_consumption_state`] owns the pure persisted
 //! companion schemas and structural four-record consumption projection.
+//! [`host_argument_source`] validates the nonauthorizing, versioned source
+//! carrier reserved for a future Controller-to-Host argument observation grant.
 
 pub mod authenticated_session;
 pub mod fencing;
 pub mod host_attach_gate;
+pub mod host_argument_source;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
 pub mod host_execution;
