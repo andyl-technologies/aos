@@ -24,6 +24,9 @@
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   minimumIdentityRange = 65536;
+  operatorRecoveryConfigured =
+    cfg.operatorRecoveryControllerPublicKey != null
+    && cfg.operatorRecoveryStorageOwnerKey != null;
 in {
   options.aos.sandbox.storageBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox Storage repair broker";
@@ -70,6 +73,18 @@ in {
 
     credentials = brokerSession.mkOptions brokerSessionEndpoints;
 
+    operatorRecoveryControllerPublicKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Protected AOSORCP1 controller public-key record for signed operator Repair. Null keeps the operator socket closed.";
+    };
+
+    operatorRecoveryStorageOwnerKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Protected AOSORSK2 Storage owner signing-key record for operator receipts. Both role keys must be provisioned together.";
+    };
+
     identityPoolStart = lib.mkOption {
       type = lib.types.addCheck lib.types.int (value: value >= minimumIdentityRange);
       default = 65536;
@@ -97,6 +112,16 @@ in {
         {
           assertion = lib.hasPrefix "/" cfg.authorityDirectory;
           message = "aos.sandbox.storageBroker.authorityDirectory must be absolute";
+        }
+        {
+          assertion = (cfg.operatorRecoveryControllerPublicKey == null) == (cfg.operatorRecoveryStorageOwnerKey == null);
+          message = "aos.sandbox.storageBroker operator Recovery role keys must be provisioned together";
+        }
+        {
+          assertion =
+            (cfg.operatorRecoveryControllerPublicKey == null || lib.hasPrefix "/" cfg.operatorRecoveryControllerPublicKey)
+            && (cfg.operatorRecoveryStorageOwnerKey == null || lib.hasPrefix "/" cfg.operatorRecoveryStorageOwnerKey);
+          message = "aos.sandbox.storageBroker operator Recovery key paths must be absolute";
         }
         {
           assertion = lib.hasPrefix "/" cfg.bootstrapDirectory;
@@ -184,6 +209,28 @@ in {
       };
     };
 
+    systemd.sockets.aos-storaged-operator-repair = {
+      description = "AOS controller-signed operator Storage Repair socket";
+      wantedBy = lib.optional operatorRecoveryConfigured "sockets.target";
+      requires = ["systemd-tmpfiles-setup.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-storage/operator-repair.sock";
+        FileDescriptorName = "aos-storaged-operator-repair";
+        Service = "aos-storaged.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "aos-sandboxd";
+        SocketGroup = "aos-sandboxd";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        ReceiveBuffer = "4M";
+        SendBuffer = "4M";
+        RemoveOnStop = true;
+      };
+    };
+
     systemd.services.aos-storaged = {
       description = "AOS authenticated Storage Prepare, repair, and inventory broker";
       requires = [
@@ -193,14 +240,18 @@ in {
         "aos-sandbox-workspace-pin-worker.socket"
         "aos-sandbox-workspace-pin-observer.socket"
         "aos-sandbox-guest-root-publisher.socket"
-      ] ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket";
+      ]
+      ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
+      ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
       after = [
         "aos-storaged.socket"
         "aos-storaged-root-export.socket"
         "aos-sandbox-guest-root-publisher.socket"
         "aos-sandbox-zfs-ready.service"
         "local-fs.target"
-      ] ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket";
+      ]
+      ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
+      ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
       unitConfig = {
         RequiresMountsFor =
           [
@@ -232,7 +283,12 @@ in {
           )} \
             ${cfg.guestRootTemplate}
         '';
-        LoadCredential = brokerSessionConfiguration.loadCredentials;
+        LoadCredential =
+          brokerSessionConfiguration.loadCredentials
+          ++ lib.optionals operatorRecoveryConfigured [
+            "operator-recovery-controller-public-key-v1:${cfg.operatorRecoveryControllerPublicKey}"
+            "operator-recovery-storage-owner-key-v1:${cfg.operatorRecoveryStorageOwnerKey}"
+          ];
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-storage";

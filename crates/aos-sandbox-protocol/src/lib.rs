@@ -31,6 +31,8 @@ mod mount_source_acquisition;
 pub mod mount_source_acquisition_state;
 pub mod mount_source_consumption_state;
 pub mod network_inventory;
+/// Versioned signed-intent Storage repair carrier used only by the operator path.
+pub mod operator_storage_repair_transport;
 pub mod payload_scope;
 pub mod semantics;
 pub mod session;

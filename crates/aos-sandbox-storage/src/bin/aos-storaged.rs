@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_storage::activation::take_systemd_listeners;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
+use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1;
 use aos_sandbox_storage::peer::{
     ControllerPeerVerifier, HostRootExportPeerVerifier, ProviderLiveExportPeerVerifier,
 };
@@ -48,7 +49,8 @@ fn run() -> Result<(), StorageServiceError> {
 
     // All activation descriptors must be duplicated before another operation
     // can reuse any inherited numeric slot.
-    let (mut listener, mut export_listener, mut live_export_listener) = take_systemd_listeners()?;
+    let (mut listener, mut export_listener, mut live_export_listener, mut operator_listener) =
+        take_systemd_listeners()?;
     let controller_cgroup = open_controller_cgroup()?;
     let verifier = ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
     let identity_pool =
@@ -72,6 +74,13 @@ fn run() -> Result<(), StorageServiceError> {
         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
     let mut service =
         StorageService::new(runtime, verifier).with_guest_root_template(guest_root_template);
+    let (operator_credentials, mut operator_owner) = if operator_listener.is_some() {
+        let credentials = StorageOperatorRecoveryCredentialsV1::load()?;
+        let owner = credentials.open_owner(Path::new(STATE_ROOT))?;
+        (Some(credentials), Some(owner))
+    } else {
+        (None, None)
+    };
 
     loop {
         let mut ready = vec![
@@ -81,12 +90,26 @@ fn run() -> Result<(), StorageServiceError> {
                 rustix::event::PollFlags::IN,
             ),
         ];
-        if let Some(provider_listener) = live_export_listener.as_ref() {
+        let live_export_index = if let Some(provider_listener) = live_export_listener.as_ref() {
+            let index = ready.len();
             ready.push(rustix::event::PollFd::from_borrowed_fd(
                 provider_listener.as_fd(),
                 rustix::event::PollFlags::IN,
             ));
-        }
+            Some(index)
+        } else {
+            None
+        };
+        let operator_index = if let Some(repair_listener) = operator_listener.as_ref() {
+            let index = ready.len();
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                repair_listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+            Some(index)
+        } else {
+            None
+        };
         match rustix::event::poll(&mut ready, None) {
             Ok(_) => {}
             Err(rustix::io::Errno::INTR) => continue,
@@ -94,11 +117,14 @@ fn run() -> Result<(), StorageServiceError> {
         }
         let controller_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
         let export_ready = ready[1].revents().contains(rustix::event::PollFlags::IN);
-        let live_export_ready = ready
-            .get(2)
+        let live_export_ready = live_export_index
+            .and_then(|index| ready.get(index))
+            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+        let operator_ready = operator_index
+            .and_then(|index| ready.get(index))
             .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
         drop(ready);
-        if !controller_ready && !export_ready && !live_export_ready {
+        if !controller_ready && !export_ready && !live_export_ready && !operator_ready {
             return Err(StorageServiceError::Activation(
                 "activated listener reported invalid readiness".to_owned(),
             ));
@@ -135,6 +161,22 @@ fn run() -> Result<(), StorageServiceError> {
                 provider_listener.validate_current()?;
                 let _ = provider_listener.accept();
             }
+        }
+        if operator_ready {
+            let repair_listener = operator_listener.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("operator Repair listener disappeared".to_owned())
+            })?;
+            let credentials = operator_credentials.as_ref().ok_or_else(|| {
+                StorageServiceError::Activation(
+                    "operator Repair credentials disappeared".to_owned(),
+                )
+            })?;
+            let owner = operator_owner.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("operator Repair owner disappeared".to_owned())
+            })?;
+            credentials.recheck()?;
+            service.serve_operator_repair_once(repair_listener, owner)?;
+            credentials.recheck()?;
         }
     }
 }

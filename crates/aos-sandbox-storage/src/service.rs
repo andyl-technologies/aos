@@ -838,6 +838,28 @@ impl<R: StorageRpcRuntime> StorageService<R> {
 }
 
 impl StorageService<StorageBrokerRuntime> {
+    /// Serves one controller-signed operator Repair or receipt-recovery packet.
+    ///
+    /// The independent socket never routes through ordinary Storage Repair;
+    /// the sidecar must reserve the signed intent before any physical effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for retired activation or protected state requiring
+    /// process reopen. Invalid peer packets are contained to their child.
+    pub fn serve_operator_repair_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+    ) -> Result<StorageConnectionOutcome, StorageServiceError> {
+        crate::operator_repair_transport::serve_operator_repair_once(
+            listener,
+            &mut self.runtime,
+            &self.verifier,
+            owner,
+        )
+    }
+
     /// Serves one authenticated Provider request with unavailable-only output.
     ///
     /// # Errors

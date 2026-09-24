@@ -88,10 +88,34 @@ impl ProtectedStorageRepairReceiptVerifierV2 {
         })
     }
 
-    fn recheck(&self) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    pub(super) fn recheck(&self) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
         self.credential
             .recheck()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)
+    }
+
+    /// Authenticates a wire receipt without treating it as terminal currentness.
+    pub(super) fn verify_wire_receipt(
+        &self,
+        intent: &OperatorRecoveryEffectIntentV1,
+        packet: &[u8],
+    ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+        self.recheck()?;
+        let terminal_digest: [u8; 32] = packet
+            .get(152..184)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let receipt = verify_operator_recovery_effect_receipt_v1(
+            packet,
+            &self.pin.verifier,
+            intent,
+            terminal_digest,
+        )
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        if receipt.owner_id != self.pin.owner_id {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        self.recheck()
     }
 }
 

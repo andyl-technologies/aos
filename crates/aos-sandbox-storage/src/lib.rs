@@ -74,9 +74,11 @@ mod observation;
 mod observation_protocol;
 #[allow(
     dead_code,
-    reason = "operator repair awaits protected controller issuance and public mapping"
+    reason = "public operator Repair completion remains closed pending independent evidence"
 )]
-pub(crate) mod operator_recovery;
+pub mod operator_recovery;
+pub mod operator_recovery_credentials;
+pub mod operator_repair_transport;
 pub mod peer;
 mod pin_observer;
 mod pin_worker;

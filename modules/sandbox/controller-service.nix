@@ -108,6 +108,10 @@
     "public-api-entitlements:/run/credentials/@system/${cfg.credentials.publicApiEntitlements}"
     "public-api-entitlement-public-key:/run/credentials/@system/${cfg.credentials.publicApiEntitlementPublicKey}"
   ];
+  operatorRecoveryCredentials = lib.optionals (cfg.credentials.operatorRecoveryControllerKey != null) [
+    "operator-recovery-controller-key-v1:/run/credentials/@system/${cfg.credentials.operatorRecoveryControllerKey}"
+    "operator-recovery-storage-owner-key-v1:/run/credentials/@system/${cfg.credentials.operatorRecoveryStorageOwnerPublicKey}"
+  ];
   publisherScopeCredential = lib.optional cfg.publisherIngress.enable
     "publisher-service-scope-v1:/run/credentials/@system/${cfg.credentials.publisherServiceScope}";
   publisherPolicySourceCredentials = lib.optionals cfg.publisherIngress.enable [
@@ -199,6 +203,16 @@ in {
           default = null;
           description = "Dedicated externally provisioned Ed25519 verifier for first-capability entitlements.";
         };
+        operatorRecoveryControllerKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Dedicated AOSORCK1 Ed25519 controller Repair signing record; null keeps public Repair closed.";
+        };
+        operatorRecoveryStorageOwnerPublicKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Independently provisioned AOSORSK1 Storage owner public-key record for Repair receipts.";
+        };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
       // lib.mapAttrs (_: name:
@@ -216,6 +230,10 @@ in {
         {
           assertion = cfg.credentials.nodeId != null;
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
+        }
+        {
+          assertion = (cfg.credentials.operatorRecoveryControllerKey == null) == (cfg.credentials.operatorRecoveryStorageOwnerPublicKey == null);
+          message = "controller operator Recovery signing and Storage owner trust credentials must be provisioned together";
         }
         {
           assertion = !cfg.publisherIngress.enable || cfg.credentials.publisherServiceScope != null;
@@ -397,6 +415,7 @@ in {
           ++ brokerSessionConfiguration.loadCredentials
           ++ publicCredentials
           ++ bootstrapCredentials
+          ++ operatorRecoveryCredentials
           ++ publisherScopeCredential
           ++ publisherPolicySourceCredentials;
         Restart = "on-failure";

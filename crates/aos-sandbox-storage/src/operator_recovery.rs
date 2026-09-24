@@ -54,7 +54,7 @@ const TX_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-transaction.v1\0"
 
 /// Reports an unavailable or mismatched protected repair owner.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum StorageOperatorRecoveryErrorV1 {
+pub enum StorageOperatorRecoveryErrorV1 {
     #[error("operator recovery sidecar journal failed closed: {0}")]
     Journal(#[from] JournalError),
     #[error("operator recovery evidence or binding is invalid")]
@@ -64,7 +64,7 @@ pub(crate) enum StorageOperatorRecoveryErrorV1 {
 }
 
 /// Retains dedicated signing custody and the protected before-effect record.
-pub(crate) struct StorageOperatorRecoveryOwnerV1 {
+pub struct StorageOperatorRecoveryOwnerV1 {
     journal: Journal,
     controller_key: VerifyingKey,
     controller_key_generation: u64,
@@ -104,6 +104,62 @@ enum StoredReservationDecisionV1 {
 }
 
 impl StorageOperatorRecoveryOwnerV1 {
+    /// Selects only the effect named by an authenticated controller intent.
+    ///
+    /// A receipt-recovery query grants no new Storage effect authority and
+    /// cannot substitute a caller-selected effect identity for the signature.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid signature or a non-Repair sandbox intent.
+    pub(crate) fn effect_id_for_intent(
+        &self,
+        signed_intent: &[u8],
+    ) -> Result<[u8; 32], StorageOperatorRecoveryErrorV1> {
+        let intent = verify_operator_recovery_effect_intent_v1(signed_intent, &self.controller_key)
+            .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+        if intent.action != OperatorRecoveryEffectActionV1::Repair
+            || intent.target_kind != OperatorRecoveryEffectTargetV1::Sandbox
+            || intent.attempt != 1
+        {
+            return Err(StorageOperatorRecoveryErrorV1::Binding);
+        }
+        Ok(intent.effect_id)
+    }
+
+    /// Requires an exact retained reservation before any receipt readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent, changed, or incompatible protected state.
+    pub(crate) fn require_reserved_intent(
+        &mut self,
+        signed_intent: &[u8],
+    ) -> Result<[u8; 32], StorageOperatorRecoveryErrorV1> {
+        let effect_id = self.effect_id_for_intent(signed_intent)?;
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
+        let stored = StoredRepairV1::decode(
+            authority
+                .get(&effect_id)?
+                .ok_or(StorageOperatorRecoveryErrorV1::Pending)?,
+        )?;
+        validate_stored(
+            &stored,
+            &effect_id,
+            &self.controller_key,
+            &self.owner_key.verifying_key(),
+            self.owner_id,
+            self.controller_key_generation,
+            self.owner_key_generation,
+        )?;
+        if stored.signed_intent.as_slice() != signed_intent {
+            return Err(StorageOperatorRecoveryErrorV1::Binding);
+        }
+        Ok(effect_id)
+    }
+
     /// Binds a signed operator effect to the exact Storage request body.
     ///
     /// # Errors
@@ -128,7 +184,7 @@ impl StorageOperatorRecoveryOwnerV1 {
     ///
     /// Returns an error for unsafe journal custody, a rotated key generation,
     /// malformed retained state, or an invalid role-key configuration.
-    pub(crate) fn open(
+    pub fn open(
         directory: impl AsRef<Path>,
         name: &str,
         controller_key: VerifyingKey,
