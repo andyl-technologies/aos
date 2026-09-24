@@ -189,9 +189,60 @@ pub(crate) fn authorize_current_reservation(
     Ok(authorization)
 }
 
+// A failed currentness check must keep custody installed so later recovery can
+// still find the exact session, even when the session itself has been poisoned.
+fn take_checked_completion_session<S>(
+    sessions: &mut BTreeMap<[u8; 16], S>,
+    holder_id: [u8; 16],
+    check: impl FnOnce(&mut S) -> Result<bool, ProviderLedgerError>,
+) -> Result<S, ProviderLedgerError> {
+    let mut installed =
+        sessions
+            .remove(&holder_id)
+            .ok_or(ProviderLedgerError::InvalidTransition(
+                "missing current completion session",
+            ))?;
+    match check(&mut installed) {
+        Ok(true) => Ok(installed),
+        Ok(false) => {
+            sessions.insert(holder_id, installed);
+            Err(ProviderLedgerError::Equivocation)
+        }
+        Err(error) => {
+            sessions.insert(holder_id, installed);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod completion_session_tests {
+    use super::*;
+
+    #[test]
+    fn projection_failure_keeps_the_exact_installed_session() {
+        let holder_id = [7; 16];
+        let mut sessions = BTreeMap::from([(holder_id, 41_u64)]);
+
+        let error = take_checked_completion_session(&mut sessions, holder_id, |installed| {
+            *installed += 1;
+            Err(ProviderLedgerError::Security(
+                aos_sandbox_source_provider_security::SourceProviderSecurityError::Currentness,
+            ))
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProviderLedgerError::Security(
+                aos_sandbox_source_provider_security::SourceProviderSecurityError::Currentness
+            )
+        ));
+        assert_eq!(sessions.get(&holder_id), Some(&42));
+    }
+}
+
 impl ProviderLedgerV1<'_> {
-    // A failed projection check leaves the removed session unavailable, as the
-    // existing completion paths do. Binding failure restores it before return.
     pub(crate) fn with_current_completion_session<R>(
         &mut self,
         holder_id: [u8; 16],
@@ -201,14 +252,11 @@ impl ProviderLedgerV1<'_> {
             &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
-        let mut installed = self.current_sessions.remove(&holder_id).ok_or(
-            ProviderLedgerError::InvalidTransition("missing current completion session"),
-        )?;
-        let current = installed.session.current_projection()?;
-        if current.session_binding() != expected_session_binding {
-            self.current_sessions.insert(holder_id, installed);
-            return Err(ProviderLedgerError::Equivocation);
-        }
+        let mut installed =
+            take_checked_completion_session(&mut self.current_sessions, holder_id, |installed| {
+                let current = installed.session.current_projection()?;
+                Ok(current.session_binding() == expected_session_binding)
+            })?;
         let result = complete(self, &mut installed.session);
         self.current_sessions.insert(holder_id, installed);
         result
