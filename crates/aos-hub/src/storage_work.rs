@@ -17,9 +17,9 @@ use aos_hub_core::fetch::{
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_RESULT_BYTES,
-    MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES,
+    MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE,
+    STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
 use aos_registry_surface::{object, object_bundle};
@@ -215,7 +215,8 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "list_page",
                 "inspect_sha256",
                 "inspect_git_object",
-                "inspect_metadata"
+                "inspect_metadata",
+                "inspect_oci_range"
             ]
             .iter()
             .all(|required| capabilities
@@ -240,7 +241,8 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
         (
             StorageWorkOperation::Head { .. }
             | StorageWorkOperation::InspectSha256 { .. }
-            | StorageWorkOperation::InspectMetadata { .. },
+            | StorageWorkOperation::InspectMetadata { .. }
+            | StorageWorkOperation::InspectOciRange { .. },
             StorageWorkOutcome::NotFound,
         ) => {
             anyhow::ensure!(
@@ -367,6 +369,34 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 bytes.len() as u64 == source.size,
                 "storage Worker metadata body does not match its source size"
+            );
+        }
+        (
+            StorageWorkOperation::InspectOciRange { path, start, end },
+            StorageWorkOutcome::OciRange {
+                source,
+                start: returned_start,
+                end: returned_end,
+                content_base64,
+            },
+        ) => {
+            aos_hub_core::surface_write::strong_if_match_etag(&source.etag)?;
+            let expected = end - start + 1;
+            anyhow::ensure!(
+                source.key == plan.object_key(path)?
+                    && returned_start == start
+                    && returned_end == end
+                    && *end < source.size
+                    && result.source_bytes == expected
+                    && result.source_bytes <= MAX_OCI_RANGE_BYTES as u64,
+                "storage Worker OCI result names another object or range"
+            );
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(content_base64)
+                .context("decoding Worker OCI range")?;
+            anyhow::ensure!(
+                bytes.len() as u64 == expected,
+                "storage Worker OCI range body has the wrong length"
             );
         }
         _ => bail!("storage Worker returned the wrong result kind"),
@@ -535,6 +565,47 @@ impl SurfaceFetch for HybridSurfaceFetch {
         }
     }
 
+    async fn inspect_oci_range(
+        &self,
+        path: &str,
+        (start, end): (u64, u64),
+    ) -> Result<Option<StreamedRead>> {
+        anyhow::ensure!(
+            aos_hub_core::storage_work::admitted_oci_blob_path(path),
+            "hybrid range reads require a canonical OCI blob"
+        );
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::InspectOciRange {
+                path: path.into(),
+                start,
+                end,
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.execute(&plan).await?;
+        match result.outcome {
+            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::OciRange {
+                source,
+                content_base64,
+                ..
+            } => Ok(Some(StreamedRead {
+                body: axum::body::Body::from(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(content_base64)
+                        .context("decoding OCI range from storage Worker")?,
+                ),
+                total: source.size,
+                range: Some((start, end)),
+                strong_etag: Some(source.etag),
+                snapshot_lease_id: None,
+            })),
+            _ => bail!("storage Worker returned an unexpected OCI range result"),
+        }
+    }
+
     async fn fetch_stream(
         &self,
         _path: &str,
@@ -691,6 +762,7 @@ mod tests {
                 "inspect_sha256".into(),
                 "inspect_git_object".into(),
                 "inspect_metadata".into(),
+                "inspect_oci_range".into(),
             ],
             max_result_bytes: MAX_RESULT_BYTES,
             max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
@@ -832,6 +904,52 @@ mod tests {
         if let StorageWorkOutcome::Metadata { source, .. } = &mut result.outcome {
             source.key = "registry/HEAD".into();
             source.size = 4;
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
+    fn oci_projection_requires_the_exact_range_and_source() {
+        let path = format!("oci/blobs/sha256/{}", "a".repeat(64));
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry/".into(),
+            operation: StorageWorkOperation::InspectOciRange {
+                path: path.clone(),
+                start: 10,
+                end: 12,
+            },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 3,
+            outcome: StorageWorkOutcome::OciRange {
+                source: StorageObjectIdentity {
+                    key: format!("registry/{path}"),
+                    size: 100,
+                    etag: "\"strong-etag\"".into(),
+                },
+                start: 10,
+                end: 12,
+                content_base64: base64::engine::general_purpose::STANDARD.encode(b"abc"),
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+        if let StorageWorkOutcome::OciRange { end, .. } = &mut result.outcome {
+            *end = 13;
         }
         assert!(validate_result(&plan, &result).is_err());
     }

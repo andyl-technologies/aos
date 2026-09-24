@@ -27,6 +27,8 @@ pub const MAX_VERIFY_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_GIT_INSPECTION_CONTENT_BYTES: usize = 128 * 1024;
 /// Maximum signed registry metadata returned across the cloud boundary.
 pub const MAX_METADATA_BYTES: usize = 128 * 1024;
+/// Maximum OCI blob range returned for legacy layer metadata inspection.
+pub const MAX_OCI_RANGE_BYTES: usize = 128 * 1024;
 
 /// Exact storage executor features required by the first hybrid protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +86,15 @@ pub enum StorageWorkOperation {
     InspectMetadata {
         /// Surface-relative metadata path from the closed admitted set.
         path: String,
+    },
+    /// Reads one bounded range from a canonical OCI content-addressed blob.
+    InspectOciRange {
+        /// Canonical OCI blob key.
+        path: String,
+        /// Inclusive first byte.
+        start: u64,
+        /// Inclusive last byte.
+        end: u64,
     },
 }
 
@@ -167,6 +178,16 @@ pub enum StorageWorkOutcome {
         /// Source object identity.
         source: StorageObjectIdentity,
         /// Standard-base64 exact document bytes.
+        content_base64: String,
+    },
+    /// One exact bounded OCI range from a versioned object snapshot.
+    OciRange {
+        /// Source OCI blob identity and its total size.
+        source: StorageObjectIdentity,
+        /// Inclusive first and last bytes returned.
+        start: u64,
+        end: u64,
+        /// Standard-base64 exact range bytes.
         content_base64: String,
     },
 }
@@ -377,6 +398,14 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::InspectOciRange { path, start, end } => {
+                if !admitted_oci_blob_path(path)
+                    || start > end
+                    || end.saturating_sub(*start).saturating_add(1) > MAX_OCI_RANGE_BYTES as u64
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
         }
         Ok(())
     }
@@ -400,6 +429,18 @@ pub fn admitted_metadata_path(path: &str) -> bool {
     matches!(path, "HEAD" | "info/refs" | "objects/info/packs")
         || path.starts_with("channels/")
         || path.starts_with("releases/")
+}
+
+/// Reports whether a path is one canonical SHA-256 OCI blob key.
+#[must_use]
+pub fn admitted_oci_blob_path(path: &str) -> bool {
+    path.strip_prefix("oci/blobs/sha256/")
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
@@ -515,5 +556,36 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn oci_range_inspection_is_canonical_and_bounded() {
+        let mut work = plan(100);
+        let path = format!("oci/blobs/sha256/{}", "a".repeat(64));
+        work.operation = StorageWorkOperation::InspectOciRange {
+            path: path.clone(),
+            start: 3,
+            end: 6,
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+
+        work.operation = StorageWorkOperation::InspectOciRange {
+            path: path.replace('a', "A"),
+            start: 3,
+            end: 6,
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+        work.operation = StorageWorkOperation::InspectOciRange {
+            path,
+            start: 3,
+            end: 3 + MAX_OCI_RANGE_BYTES as u64,
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
     }
 }

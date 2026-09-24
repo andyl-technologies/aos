@@ -315,6 +315,22 @@ pub trait SurfaceFetch: BackendBounds {
         bail!("this surface does not support storage-local Git inspection")
     }
 
+    /// Reads a bounded OCI range needed to inspect legacy layer metadata.
+    ///
+    /// This separate port keeps public blob delivery on the storage Worker in
+    /// hybrid deployments. Local readers use their ordinary ranged stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported or invalid range or backend failure.
+    async fn inspect_oci_range(
+        &self,
+        path: &str,
+        range: (u64, u64),
+    ) -> Result<Option<StreamedRead>> {
+        self.fetch_stream(path, Some(range)).await
+    }
+
     /// Stream one surface path, optionally just the inclusive byte `range`.
     ///
     /// The streaming counterpart of [`fetch`](Self::fetch) and the single read

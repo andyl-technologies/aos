@@ -36,7 +36,7 @@ use aos_hub_core::storage_credential::{
 };
 use aos_hub_core::storage_work::{
     StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
+    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
@@ -232,6 +232,51 @@ pub(crate) async fn execute_r2_storage_work(
                     content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                 },
                 source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectOciRange { path, start, end } => {
+            use futures_util::TryStreamExt as _;
+
+            let Some(read) = fetcher.fetch_stream(path, Some((*start, *end))).await? else {
+                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
+            };
+            anyhow::ensure!(
+                read.range == Some((*start, *end)) && *end < read.total,
+                "R2 returned a different OCI range"
+            );
+            let etag = read
+                .strong_etag
+                .context("R2 OCI range has no strong ETag")?;
+            let expected = end - start + 1;
+            let mut bytes = Vec::new();
+            let mut stream = read.body.into_data_stream();
+            while let Some(chunk) = stream.try_next().await? {
+                let next = bytes
+                    .len()
+                    .checked_add(chunk.len())
+                    .context("OCI range size overflow")?;
+                anyhow::ensure!(
+                    next <= MAX_OCI_RANGE_BYTES && next as u64 <= expected,
+                    "OCI range exceeded its signed length"
+                );
+                bytes.extend_from_slice(&chunk);
+            }
+            anyhow::ensure!(
+                bytes.len() as u64 == expected,
+                "OCI range ended before its signed length"
+            );
+            (
+                StorageWorkOutcome::OciRange {
+                    source: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size: read.total,
+                        etag,
+                    },
+                    start: *start,
+                    end: *end,
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                expected,
             )
         }
     };

@@ -147,6 +147,45 @@ impl SurfaceFetch for TopologySurfaceFetch {
         Ok(None)
     }
 
+    async fn inspect_oci_range(
+        &self,
+        path: &str,
+        range: (u64, u64),
+    ) -> Result<Option<StreamedRead>> {
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(path))
+            .await?;
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let fetch = match self.provider.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match fetch.inspect_oci_range(path, range).await {
+                Ok(Some(read)) => return Ok(Some(read)),
+                Ok(None) => continue,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(error) = last_retryable {
+            return Err(error).context("all readable OCI placements failed inspection");
+        }
+        if plan.miss_is_inconsistent {
+            return Err(terminal_read_error(format!(
+                "authoritative OCI object '{path}' is missing from every readable placement"
+            )));
+        }
+        Ok(None)
+    }
+
     async fn inventory_evidence_bounded(
         &self,
         path: &str,

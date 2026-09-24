@@ -1106,10 +1106,7 @@ async fn fetch_exact_oci_range(
     limit: usize,
 ) -> Result<Vec<u8>> {
     let read = fetch
-        .fetch_stream(
-            &crate::db::oci_blob_object_key(descriptor.digest),
-            Some(range),
-        )
+        .inspect_oci_range(&crate::db::oci_blob_object_key(descriptor.digest), range)
         .await?
         .context("legacy OCI layer range is absent")?;
     anyhow::ensure!(
