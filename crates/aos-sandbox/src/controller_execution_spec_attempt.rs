@@ -847,4 +847,15 @@ mod tests {
         changed.record_digest = digest_record(&changed.encode_without_digest());
         assert!(ControllerExecutionSpecAttemptV1::decode(&changed.encode()).is_err());
     }
+
+    #[test]
+    fn full_host_content_limit_fits_one_protected_record() {
+        assert!(valid_spec_size(MAXIMUM_HOST_EXECUTION_SPEC_BYTES));
+        assert!(!valid_spec_size(MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 1));
+        assert_eq!(
+            MAXIMUM_RECORD_BYTES,
+            PREFIX_BYTES + MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 32
+        );
+        assert!(MAXIMUM_RECORD_BYTES + 7 + 16 < JournalLimits::default().maximum_record_bytes);
+    }
 }
