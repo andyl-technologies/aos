@@ -251,6 +251,9 @@
   dbusService = import ./dbus-service.nix {
     inherit lib;
   };
+  dbusRegistrationTransition = import ./dbus-registration-transition.nix {
+    inherit lib;
+  };
   bindService = import ./bind-service.nix {
     inherit lib;
   };
@@ -717,6 +720,7 @@ in {
   assert krb5KdcService;
   assert serviceManagement;
   assert dbusService;
+  assert dbusRegistrationTransition;
   assert bindService;
   assert smartmontoolsService;
   assert managedIdentityAllocation;
