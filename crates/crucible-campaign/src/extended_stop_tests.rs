@@ -327,7 +327,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         BTreeSet::new(),
     )
     .expect("execution-quanta observation");
-    assert_eq!(observation.schema_version(), 13);
+    assert_eq!(observation.schema_version(), 14);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -355,7 +355,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 13);
+    assert_eq!(selection_observation.schema_version(), 14);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("selection observation round trip"),

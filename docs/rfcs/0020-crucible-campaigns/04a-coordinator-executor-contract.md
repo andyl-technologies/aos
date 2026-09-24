@@ -290,8 +290,8 @@ GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
 GetCampaignFindingObjectResponseV1 = version | request_digest |
                                      CampaignSnapshotV3 | FindingV4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV13 |
-                  1 latest ObservationV13 |
+FindingObjectV1 = 0 ObservationV14 |
+                  1 latest ObservationV14 |
                   2 ReproductionArtifactV2 |
                   3 minimized ReproductionArtifactV2
 
@@ -302,7 +302,7 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
                                    AttemptAdmissionV3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV2 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV13 |
+                                   optional ObservationV14 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -723,7 +723,7 @@ exact attempt in the current authenticated snapshot. Two minimal accounting
 lookup proofs bind the complete `AttemptV9` body and its unique execution-basis
 `AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV2` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV13` or authenticated absence. The response
+either the canonical `ObservationV14` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -855,7 +855,7 @@ variant uses schema v10; noncurrent branch-request bodies and envelopes are reje
 
 Stop-condition tags 5 and 6 encode a nonzero absolute scheduler-quantum
 coordinate and a flat nonzero virtual-time-or-scheduler-quantum pair. They use
-`AttemptV9`, `BranchRequestV10`, `ObservationV13`, version-15
+`AttemptV9`, `BranchRequestV10`, `ObservationV14`, version-15
 `DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV4`. Every enclosing
 decoder requires that exact current schema. The scheduler coordinate
 comes from `SingleSchedulerCheckpointV2.quanta`; discovery-only calls that make

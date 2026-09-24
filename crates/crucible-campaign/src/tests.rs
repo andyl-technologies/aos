@@ -169,7 +169,7 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(BranchRequestId, ObjectKind::CampaignFact, 10);
     assert_current_version!(ProposalId, ObjectKind::CampaignFact, 3);
     assert_current_version!(AttemptId, ObjectKind::CampaignFact, 9);
-    assert_current_version!(ObservationId, ObjectKind::Observation, 13);
+    assert_current_version!(ObservationId, ObjectKind::Observation, 14);
     assert_current_version!(ObjectiveEvaluationId, ObjectKind::Observation, 2);
     assert_current_version!(RankingExplanationId, ObjectKind::Projection, 2);
     assert_current_version!(FindingId, ObjectKind::Finding, 4);
@@ -661,7 +661,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     let credited = CampaignFact::ObservationCredited(stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        13,
+        14,
         "credited-observation"
     ));
     assert_eq!(
@@ -1517,13 +1517,13 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        13,
+        14,
         "continuation-input-source-observation"
     );
     let another_source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        13,
+        14,
         "continuation-input-another-source-observation"
     );
     let start = AttemptStart::AfterAttempt { origin, reached };
@@ -2519,7 +2519,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 13);
+    assert_eq!(selection_observation.schema_version(), 14);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("canonical selection observation"),
@@ -2576,7 +2576,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         .clone()
         .with_produced_selections(BTreeSet::from([produced_selection]))
         .expect("scenario failure selection observation");
-    assert_eq!(failure_selection_observation.schema_version(), 13);
+    assert_eq!(failure_selection_observation.schema_version(), 14);
     assert_eq!(
         Observation::from_canonical_bytes(&failure_selection_observation.canonical_bytes())
             .expect("canonical scenario failure selection observation"),
@@ -2813,7 +2813,7 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     .expect("signature");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        13,
+        14,
         b"finding-observation",
     ))
     .expect("observation id");
@@ -3030,7 +3030,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     .expect("role-tagged pins");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        13,
+        14,
         b"finding-current-observation",
     ))
     .expect("observation id");
