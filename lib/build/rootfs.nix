@@ -90,6 +90,10 @@
   kernel = system.config.system.build.kernel;
   immutableSelinuxPolicy = system.config.system.build.immutableSelinuxPolicy;
   labelImmutableRoot = fsType == "erofs" && immutableSelinuxPolicy != null;
+  erofsSource =
+    if labelImmutableRoot
+    then "rootfs-labeled.tar"
+    else "rootfs";
   immutableStage0 = lib.attrByPath ["aos" "boot" "initrd" "stage0"] null system.config;
   rootHandoff = labelImmutableRoot && immutableStage0 != null;
   policySupport = ../../pkgs/security/_aos-selinux-production-policy;
@@ -518,7 +522,7 @@ in
                   -z zstd,level=${toString erofsCompressionLevel} \
                   -C262144 \
                   -Eztailpacking \
-                  -L ${label} root.img ${if labelImmutableRoot then "rootfs-labeled.tar" else "rootfs"}
+                  -L ${label} root.img ${erofsSource}
                 fsck.erofs root.img >/dev/null
                 ${lib.optionalString labelImmutableRoot ''
                   ${nativePython}/bin/python3 -B \
