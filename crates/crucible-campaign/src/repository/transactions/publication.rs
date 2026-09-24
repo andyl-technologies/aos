@@ -321,6 +321,9 @@ impl CampaignRepository {
         &self,
         group: &ChoiceGroup,
     ) -> Result<ChoiceGroupId, CampaignRepositoryError> {
+        for declaration in group.declarations().values() {
+            self.publish_selectable(declaration)?;
+        }
         let content = self.put_envelope(ObjectEnvelope::for_record(
             crate::CampaignRecordKind::ChoiceGroup,
             crate::object::content_children(group.content_children())?,

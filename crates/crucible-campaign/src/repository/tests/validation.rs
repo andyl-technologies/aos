@@ -777,6 +777,51 @@ fn authenticated_closure_inventory_includes_campaign_records_and_merkle_nodes() 
     }
 }
 
+#[test]
+fn published_choice_group_retains_and_authenticates_member_declarations() {
+    let (repository, _lineage, _policy) = fixture();
+    let member_domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let member = SelectableDeclaration::new(
+        "fault.enabled",
+        ChoiceSource::Workload {
+            producer: "network-fault".to_owned(),
+        },
+        member_domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("member declaration");
+    let member_id = member.id().expect("member id");
+    let group = crate::ChoiceGroup::new(
+        &BTreeMap::from([(member_id, member.clone())]),
+        crate::ChoiceGroupDomain::Finite {
+            members: BTreeMap::from([(member_id, member_domain)]),
+            tuples: BTreeSet::from([crate::ChoiceTuple::new(BTreeMap::from([(
+                member_id,
+                ChoiceValue::Boolean(false),
+            )]))]),
+        },
+        crate::ChoiceGroupApplication::new("network.fault", 1).expect("application"),
+    )
+    .expect("choice group");
+
+    let group_id = repository
+        .publish_choice_group(&group)
+        .expect("publish group and member closure");
+    assert_eq!(
+        repository
+            .load_choice_group(group_id)
+            .expect("load exact group"),
+        group
+    );
+    let closure = repository
+        .authenticated_closure_ids([group_id.content_id()])
+        .expect("authenticate group closure");
+    assert!(closure.contains(&member_id.content_id()));
+}
+
 fn generated_integer_request(
     repository: &CampaignRepository,
     lineage: &CampaignLineage,

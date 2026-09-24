@@ -167,7 +167,7 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(CampaignPolicyId, ObjectKind::Policy, 5);
     assert_current_version!(CampaignFactId, ObjectKind::CampaignFact, 15);
     assert_current_version!(BranchRequestId, ObjectKind::CampaignFact, 10);
-    assert_current_version!(ProposalId, ObjectKind::CampaignFact, 2);
+    assert_current_version!(ProposalId, ObjectKind::CampaignFact, 3);
     assert_current_version!(AttemptId, ObjectKind::CampaignFact, 9);
     assert_current_version!(ObservationId, ObjectKind::Observation, 13);
     assert_current_version!(ObjectiveEvaluationId, ObjectKind::Observation, 2);
@@ -428,7 +428,12 @@ fn planner_candidate_guidance_retains_objective_reward() {
     );
     let branch_point = BranchPointId::from_hash(hash("guidance-branch-point"));
     let position = PlanningScanPosition::new(branch_point, request);
-    let domain = stored_id!(ChoiceDomainId, ObjectKind::CampaignFact, "guidance-domain");
+    let domain = stored_id!(
+        ChoiceDomainId,
+        ObjectKind::CampaignFact,
+        2,
+        "guidance-domain"
+    );
     let domain_semantics = ChoiceDomainSemanticId::from_hash(hash("guidance-domain-semantics"));
     let value = ChoiceValue::Boolean(true);
     let edge = Selection::campaign_edge_id(branch_point, domain_semantics, &value);
@@ -1039,7 +1044,7 @@ fn presentation_and_landmark_changes_preserve_semantic_branch_identity() {
 #[test]
 fn type_specific_collection_limits_reject_counts_before_elements() {
     let mut domain = Encoder::new();
-    domain.u32(1);
+    domain.u32(2);
     domain.u8(1);
     domain.u32(1);
     domain.u64(4097);
@@ -1723,6 +1728,7 @@ fn branch_request_variants_use_one_current_schema() {
     let domain = stored_id!(
         ChoiceDomainId,
         ObjectKind::CampaignFact,
+        2,
         "scenario-default-domain"
     );
     let policy = stored_id!(
@@ -1798,7 +1804,7 @@ fn branch_request_variants_use_one_current_schema() {
     let proposal = stored_id!(
         ProposalId,
         ObjectKind::CampaignFact,
-        2,
+        3,
         "policy-bound-admission-proposal"
     );
     let causes = [
@@ -2098,6 +2104,210 @@ fn choice_group_domains_are_bound_to_exact_declarations() {
         ),
         Err(CampaignCodecError::InvalidValue { .. })
     ));
+}
+
+#[test]
+fn atomic_group_flows_through_one_branch_request_proposal_and_selection() {
+    let member_domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let first_declaration = selectable_fixture(
+        "network.first",
+        member_domain.clone(),
+        ChoiceValue::Boolean(false),
+    );
+    let second_declaration = selectable_fixture(
+        "network.second",
+        member_domain.clone(),
+        ChoiceValue::Boolean(true),
+    );
+    let first = first_declaration.id().expect("first member");
+    let second = second_declaration.id().expect("second member");
+    let tuple = ChoiceTuple::new(BTreeMap::from([
+        (first, ChoiceValue::Boolean(false)),
+        (second, ChoiceValue::Boolean(true)),
+    ]));
+    let group = ChoiceGroup::new(
+        &BTreeMap::from([(first, first_declaration), (second, second_declaration)]),
+        ChoiceGroupDomain::Finite {
+            members: BTreeMap::from([(first, member_domain.clone()), (second, member_domain)]),
+            tuples: BTreeSet::from([tuple.clone()]),
+        },
+        ChoiceGroupApplication::new("network.fault", 1).expect("application"),
+    )
+    .expect("group");
+    let group_value = ChoiceValue::Group(group.select(tuple).expect("admitted tuple"));
+    let group_domain = ChoiceDomain::Group(Box::new(group));
+    let declaration =
+        selectable_fixture("fault.network", group_domain.clone(), group_value.clone());
+
+    let scenario = ScenarioDefId::from_hash(hash("atomic scenario"));
+    let scenario_artifact = ScenarioArtifact::new(scenario, 1, b"atomic".to_vec())
+        .expect("scenario artifact")
+        .id()
+        .expect("scenario artifact id");
+    let parent_configuration = ConfigurationId::from_hash(hash("atomic parent"));
+    let parent = ConfigurationArtifact::new(
+        scenario,
+        scenario_artifact,
+        parent_configuration,
+        1,
+        b"atomic parent".to_vec(),
+    )
+    .expect("parent artifact");
+    let opportunity = ChoiceOpportunity::new(
+        scenario,
+        &declaration,
+        &group_domain,
+        ChoiceCoordinate {
+            scheduler: hash("atomic scheduler"),
+            producer: hash("atomic producer"),
+        },
+        "phase-1",
+        None,
+    )
+    .expect("one group opportunity");
+    let branch_point = opportunity.branch_point_id(parent_configuration);
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            branch_point,
+            parent.id().expect("parent id"),
+            opportunity.id().expect("opportunity id"),
+            group_domain.id().expect("group domain id"),
+        ),
+        CandidateSource::finite(BTreeSet::from([group_value.clone()])).expect("one tuple source"),
+        BranchRequestCause::Operator(CampaignCommandId::from_hash(hash("atomic command"))),
+        BranchBudget::new(1, 1).expect("branch budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("one branch request");
+    request
+        .validate_resolved(&parent, &opportunity, &group_domain)
+        .expect("resolved group request");
+
+    let proposal = Proposal::new(
+        branch_point,
+        request.id().expect("request id"),
+        group_domain.id().expect("domain id"),
+        group_value.clone(),
+        stored_id!(CampaignPolicyId, ObjectKind::Policy, 5, "atomic policy"),
+        None,
+        1,
+        stored_id!(CampaignViewId, ObjectKind::CampaignFact, "atomic view"),
+    )
+    .expect("one proposal");
+    proposal
+        .validate_resolved(&request, &group_domain)
+        .expect("proposal recomputes group constraints");
+    let evidence = proposal.constraint_evidence().expect("group evidence");
+    assert_eq!(evidence.group_schema_version(), 2);
+    assert_eq!(evidence.constraint_schema_version(), 1);
+    assert_eq!(evidence.result(), ChoiceGroupConstraintResult::Admitted);
+    assert_eq!(
+        Proposal::from_canonical_bytes(&proposal.canonical_bytes()).expect("proposal round trip"),
+        proposal
+    );
+    let mut invalid_evidence = proposal.canonical_bytes();
+    *invalid_evidence.last_mut().expect("constraint result byte") = 2;
+    assert!(Proposal::from_canonical_bytes(&invalid_evidence).is_err());
+
+    let selection =
+        Selection::new_campaign_branch(&opportunity, &group_domain, group_value, branch_point)
+            .expect("one atomic selection");
+    selection
+        .validate_branch_replay(&opportunity, &group_domain, branch_point)
+        .expect("exact tuple replay");
+}
+
+#[test]
+fn progressive_group_candidates_include_anchors_and_reject_conflicting_constraints() {
+    let integer_domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(1_000_000),
+            1,
+            None,
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(500_000)],
+        )
+        .expect("integer domain"),
+    );
+    let duration_declaration = selectable_fixture(
+        "duration",
+        integer_domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(100)),
+    );
+    let constrained_declaration = selectable_fixture(
+        "constrained",
+        integer_domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+    );
+    let duration = duration_declaration.id().expect("duration id");
+    let constrained = constrained_declaration.id().expect("constrained id");
+    let declarations = BTreeMap::from([
+        (duration, duration_declaration),
+        (constrained, constrained_declaration),
+    ]);
+    let members = BTreeMap::from([
+        (duration, integer_domain.clone()),
+        (constrained, integer_domain),
+    ]);
+    let application = ChoiceGroupApplication::new("network.progressive", 1).expect("application");
+    let group = ChoiceGroup::new(
+        &declarations,
+        ChoiceGroupDomain::Cartesian {
+            members: members.clone(),
+            constraints: BTreeSet::from([ChoiceRelationalConstraint::Member(
+                constrained,
+                BTreeSet::from([ChoiceValue::Integer(IntegerValue::Unsigned(0))]),
+            )]),
+        },
+        application.clone(),
+    )
+    .expect("progressive group");
+    assert!(group.supports_progressive_generation(4));
+    let values = (1..=4)
+        .map(|ordinal| {
+            group
+                .progressive_candidate(ordinal, 4)
+                .expect("admitted candidate")
+                .tuple()
+                .values()
+                .get(&duration)
+                .cloned()
+                .expect("duration member")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        vec![
+            ChoiceValue::Integer(IntegerValue::Unsigned(100)),
+            ChoiceValue::Integer(IntegerValue::Unsigned(0)),
+            ChoiceValue::Integer(IntegerValue::Unsigned(1_000_000)),
+            ChoiceValue::Integer(IntegerValue::Unsigned(500_000)),
+        ]
+    );
+
+    let conflicting = ChoiceGroup::new(
+        &declarations,
+        ChoiceGroupDomain::Cartesian {
+            members,
+            constraints: BTreeSet::from([
+                ChoiceRelationalConstraint::Member(
+                    constrained,
+                    BTreeSet::from([ChoiceValue::Integer(IntegerValue::Unsigned(0))]),
+                ),
+                ChoiceRelationalConstraint::Member(
+                    constrained,
+                    BTreeSet::from([ChoiceValue::Integer(IntegerValue::Unsigned(1))]),
+                ),
+            ]),
+        },
+        application,
+    )
+    .expect("structurally valid but unsatisfiable group");
+    assert!(!conflicting.supports_progressive_generation(4));
+    assert!(conflicting.progressive_candidate(1, 4).is_err());
 }
 
 #[test]

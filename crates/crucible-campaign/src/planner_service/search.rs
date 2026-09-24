@@ -582,7 +582,7 @@ mod tests {
             ),
             domain: crate::ChoiceDomainId::from_content_id(ContentId::for_bytes(
                 crucible_cas::content_store::ObjectKind::CampaignFact,
-                1,
+                2,
                 label,
             ))
             .expect("domain id"),

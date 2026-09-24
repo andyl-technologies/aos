@@ -832,7 +832,7 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["beta", "delta", "gamma", "alpha"]
+        vec!["beta", "alpha", "delta", "gamma"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
@@ -1164,7 +1164,7 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
             .iter()
             .map(|alternative| labels[alternative])
             .collect::<Vec<_>>(),
-        vec!["alpha", "beta", "gamma", "delta"]
+        vec!["alpha", "beta", "delta", "gamma"]
     );
     assert_eq!(candidates.iter().copied().collect::<BTreeSet<_>>().len(), 4);
     assert_eq!(
