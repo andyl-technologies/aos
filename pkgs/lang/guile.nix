@@ -70,6 +70,10 @@ in
           sed -i '/^(define-module (test-suite test-r4rs)$/a\  #:declarative? #f' \
             test-suite/tests/r4rs.test
 
+          # The concurrent SRFI-42 suite also writes tmp1 in this directory.
+          # Keep the R4RS load fixture distinct from that suite's data.
+          sed -i 's/"tmp1"/"r4rs-tmp1"/g' test-suite/tests/r4rs.test
+
           # The Nix build filesystem may allocate the nominally sparse extent,
           # in which case SEEK_DATA correctly returns the current offset.
           sed -i '/"SEEK_DATA while in hole"/{n;s/4096/10/;}' \
