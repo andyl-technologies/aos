@@ -945,7 +945,13 @@ fn library_selector_nix_failures(
             "{gate}: library Nix flight lacks --ignored --exact execution"
         ));
     }
-    if ignored && !nix.contains("test result: ok. 1 passed; 0 failed; 0 ignored;") {
+    let exact_one_passed_summary =
+        nix.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            || (nix.contains(
+                r"^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$",
+            ) && nix.contains("summary_count=$(${pkgs.grep}/bin/grep -Ec")
+                && nix.contains("[ \"$summary_count\" -eq 1 ]"));
+    if ignored && !exact_one_passed_summary {
         failures.push(format!(
             "{gate}: library Nix flight lacks the exact one-passed assertion"
         ));
