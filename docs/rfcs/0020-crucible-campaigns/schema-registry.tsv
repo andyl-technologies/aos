@@ -275,6 +275,7 @@ crucible.cli.packed-repack	1	crucible-cli::cli::campaign::transform	cli-output	g
 crucible.cli.store-credential-refresh	1	crucible-cli::cli::campaign::maintenance	cli-output	gate:campaign-store-composition
 crucible.cli.store-ensure	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
 crucible.cli.store-incomplete-pack-cleanup	1	crucible-cli::cli::campaign::maintenance	cli-output	gate:campaign-store-composition
+crucible.cli.store-repair	1	crucible-cli::cli::store_repair	cli-output	gate:campaign-store-composition
 crucible.cli.store-status	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
 crucible.cli.store-verify	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
 
