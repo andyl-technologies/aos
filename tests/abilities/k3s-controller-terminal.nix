@@ -173,6 +173,10 @@
     abilities = result.abilities;
     desired = builtins.head (builtins.attrValues abilities.desiredResources);
     controller = abilities.implementations."k3s-combined:${controllerAlias}";
+    controllerDeclaration = abilities.interfaces."k3s-combined:${controllerAlias}";
+    controllerInterface = lib.abilities.interfaceIdentity (
+      lib.abilities.interfaceDocumentFromDeclaration controllerDeclaration
+    );
     terminalDeclaration = abilities.interfaces."k3s-combined:${terminalAlias}";
     terminalInterface = lib.abilities.interfaceIdentity (
       lib.abilities.interfaceDocumentFromDeclaration terminalDeclaration
@@ -213,7 +217,13 @@
   in
     controller.transition {
       provider = desired.resource.provider;
+      interface = controllerInterface;
       operation_scope = [controllerAlias];
+      before =
+        if kind == "remove"
+        then {resources = [desired];}
+        else null;
+      after.resources = lib.optional (kind != "remove") desired;
       changes = [
         {
           inherit kind;

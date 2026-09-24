@@ -220,9 +220,9 @@ in
   assert lib.abilities.types.schemaOf "network remove parameters" networkInterface.declaration.methods.remove.parameters
   == lib.abilities.types.schemaOf "network empty input" emptyInput;
   assert lib.abilities.types.schemaOf "network effects observe parameters" effectsInterface.declaration.methods.observe.parameters
-  == lib.abilities.types.schemaOf "network empty input" emptyInput;
+  == lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput;
   assert lib.abilities.types.schemaOf "network effects remove parameters" effectsInterface.declaration.methods.remove.parameters
-  == lib.abilities.types.schemaOf "network empty input" emptyInput;
+  == lib.abilities.types.schemaOf "network apply input" networkInterface.types.applyInput;
   assert applyOperation.interface == effectsInterface.identity;
   assert applyOperation.method == "apply";
   assert applyOperation.target.interface == networkInterface.identity;

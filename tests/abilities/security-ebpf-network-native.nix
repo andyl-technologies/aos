@@ -98,6 +98,9 @@
   controller = abilities.implementations."${packageName}:${controllerAlias}";
   terminal = abilities.implementations."${packageName}:${terminalAlias}";
   output = abilities.compositionOutputs.${requestKey}.resource;
+  controllerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."${packageName}:${controllerAlias}"
+  );
   effectsIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."${packageName}:${terminalAlias}"
   );
@@ -123,7 +126,13 @@
     };
     fragment = controller.transition {
       provider = desired.resource.provider;
+      interface = controllerIdentity;
       operation_scope = [controllerAlias];
+      before =
+        if kind == "remove"
+        then {resources = [desired];}
+        else null;
+      after.resources = lib.optional (kind != "remove") desired;
       changes = [
         {
           inherit kind;

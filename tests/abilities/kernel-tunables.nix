@@ -101,6 +101,7 @@
   desired = builtins.head (builtins.attrValues abilities.desiredResources);
   output = abilities.compositionOutputs."consumer:network-forwarding".resource;
   transition = abilities.implementations."aos-kernel-tunable-provider:kernel-tunables".transition;
+  controllerInterface = lib.abilities.interfaces.kernelTunables.interface.identity;
   effectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-kernel-tunable-provider:kernel-tunable-effects"
   );
@@ -126,7 +127,13 @@
     };
     fragment = transition {
       provider = desired.resource.provider;
+      interface = controllerInterface;
       operation_scope = ["kernel-tunables"];
+      before =
+        if kind == "remove"
+        then {resources = [desired];}
+        else null;
+      after.resources = lib.optional (kind != "remove") desired;
       changes = [
         {
           inherit kind;

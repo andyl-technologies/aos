@@ -38,9 +38,9 @@
         resources;
       inherit realizations;
     };
-  transitionFor = alias: action: resourceLifetime: context:
+  transitionFor = alias: action: context:
     lib.abilities.resourceControllerTransition {
-      inherit context resourceLifetime;
+      inherit context;
       terminalInterface = effectsInterface alias;
       actions = {
         create = {
@@ -222,22 +222,22 @@ in {
     storage-allocation = {
       provide = provide interfaces.storageAllocation "instance" (storagePath false);
       compose = storageCompose "storage-allocation" false;
-      transition = transitionFor "storage-allocation" "allocate" "instance";
+      transition = transitionFor "storage-allocation" "allocate";
     };
     persistent-storage-allocation = {
       provide = provide interfaces.persistentStorageAllocation "persistent" (storagePath true);
       compose = storageCompose "persistent-storage-allocation" true;
-      transition = transitionFor "persistent-storage-allocation" "allocate" "persistent";
+      transition = transitionFor "persistent-storage-allocation" "allocate";
     };
     storage-view = {
       provide = storageViewProvide;
       compose = storageViewCompose;
-      transition = transitionFor "storage-view" "materialize" "instance";
+      transition = transitionFor "storage-view" "materialize";
     };
     filesystem-entry = {
       provide = provide interfaces.filesystemEntry "instance" (_: request: request.destination);
       compose = entryCompose;
-      transition = transitionFor "filesystem-entry" "materialize" "instance";
+      transition = transitionFor "filesystem-entry" "materialize";
     };
   };
 }

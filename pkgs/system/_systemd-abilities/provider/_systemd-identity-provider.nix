@@ -113,6 +113,7 @@
     };
     transition = import ./_systemd-identity-transition.nix {
       inherit effectsInterface;
+      resourceInterface = specification.selected.identity;
       inherit (specification) resourceKind;
       inherit (lib.abilities) transitionFragment;
     };

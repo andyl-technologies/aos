@@ -1,6 +1,7 @@
 ##! Pure transition construction for the systemd manager watchdog controller.
 {
   effectsInterface,
+  resourceInterface,
   resourceKind,
   transitionFragment,
 }: context: let
@@ -82,7 +83,7 @@
     phase = "converging";
     input_phase = "planning";
     target = {
-      interface = binding.interface;
+      interface = resourceInterface;
       resource = change.resource;
       operations = [method];
       inherit (desired) lifetime;

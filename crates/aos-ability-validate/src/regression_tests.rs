@@ -3,19 +3,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::{Contribution, DesiredInstance, PackageSubject, ProviderState};
+use aos_ability_model::identity::compare_instance_ids;
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, AggregateOutput, AggregateOutputReference,
     AggregationContract, AggregationScope, ArtifactReference, BindingId, BranchMembership,
     ContributionPermission, ControllerAssignment, DecisionAlternative, DecisionNode,
     DecisionPredicate, DecisionSelector, DeclarationAuthority, DependencyEdge, DependencyKind,
-    DiagnosticCode, ExportDeclaration, HandlerDescriptor, IncarnationId, LocalKey, MergeNode,
-    MergedOutput, MethodReference, MethodSemantics, ModuleLocator, OperationResultReference,
-    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
-    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath,
-    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId,
-    ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey,
-    RevisionId, StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility,
-    VersionedDocument, compare_edges, compare_operation_keys, compare_resource_ids,
+    DiagnosticCode, ExportDeclaration, HandlerDescriptor, IncarnationId, InstanceId, LocalKey,
+    MergeNode, MergedOutput, MethodReference, MethodSemantics, ModuleLocator,
+    OperationResultReference, OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument,
+    PackageImplementation, PlanNodeKey, ProviderAssignment, ProviderImplementation,
+    ProviderStateFormat, RelativePath, RequiredFeature, RequirementDeclaration,
+    RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime, ResourcePermission,
+    ResourceReference, ResourceRevision, ResultProducerKey, RevisionId, StringConstraint,
+    ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
+    compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 

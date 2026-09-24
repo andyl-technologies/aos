@@ -8,7 +8,6 @@
   context,
   terminalInterface,
   actions,
-  resourceLifetime ? "instance",
   attemptTimeoutMillis ? 120000,
   totalRecoveryMillis ? 480000,
 }: let
@@ -38,7 +37,31 @@
     else if builtins.hasAttr change.kind checkedActions
     then checkedActions.${change.kind}
     else throw "resource controller transition received an unsupported change kind";
-  activeChanges = builtins.filter (change: actionFor change != null) context.changes;
+  stateFor = change: let
+    snapshot =
+      if change.kind == "remove"
+      then context.before
+      else context.after;
+    resources =
+      if snapshot == null
+      then []
+      else snapshot.resources;
+    matches = builtins.filter (state: state.resource == change.resource) resources;
+  in
+    if builtins.length matches > 1
+    then throw "resource controller transition found duplicate exact resource state"
+    else if matches == []
+    then null
+    else builtins.head matches;
+  activeChanges = builtins.filter (change: let
+    state = stateFor change;
+  in
+    change.resource.provider
+    == context.provider
+    && state != null
+    && state.kind == context.interface.name
+    && actionFor change != null)
+  context.changes;
 
   authorityRoleFor = change:
     if change.kind == "remove"
@@ -96,6 +119,7 @@
   operationFor = change: let
     action = actionFor change;
     terminal = terminalFor change action;
+    state = stateFor change;
   in {
     key = scopedKey "${action.method}-${change.resource.key}";
     branch_context = [];
@@ -105,14 +129,14 @@
     inherit (action) method phase;
     input_phase = "planning";
     target = {
-      interface = terminal.interface;
+      interface = context.interface;
       resource = change.resource;
       operations = [action.method];
-      lifetime = resourceLifetime;
+      lifetime = state.lifetime;
     };
     inputs = {
       source = "literal";
-      value = true;
+      value = state.value;
     };
     preconditions = [];
     accesses = [

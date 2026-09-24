@@ -117,7 +117,13 @@
     };
     fragment = transition {
       provider = desired.resource.provider;
+      interface = kernelModules.identity;
       operation_scope = ["kernel-modules"];
+      before =
+        if kind == "remove"
+        then {resources = [desired];}
+        else null;
+      after.resources = lib.optional (kind != "remove") desired;
       changes = [
         {
           inherit kind;
