@@ -111,6 +111,10 @@ where
     let batches = if pause_before_live_network_choice {
         network_outputs
             .into_iter()
+            .map(|output| loop_impl.backend_network_routes(output))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
             .map(|output| vec![output])
             .collect()
     } else {
@@ -138,14 +142,26 @@ where
         if network_outputs.is_empty() {
             continue;
         }
-        // An interceptor may split one physical frame across routes. It may
-        // already have mutated later routes, so only a single routed output
-        // can establish a preselection stop at this physical parent.
-        let can_pause = pause_before_live_network_choice
-            && network_outputs.len() == 1
-            && pending_network_outputs.is_empty()
-            && pending_observations.is_empty()
-            && loop_impl.backend_network_route_count(&network_outputs[0])? == 1;
+        // The current physical route was intercepted before any later route.
+        // A pure interceptor may produce a further ordered suffix; the
+        // scheduler reserves that suffix without selecting it by default.
+        let routes_are_exact = if pause_before_live_network_choice {
+            network_outputs.iter().try_fold(true, |exact, output| {
+                loop_impl
+                    .backend_network_route_count(output)
+                    .map(|count| exact && count == 1)
+            })?
+        } else {
+            false
+        };
+        if pause_before_live_network_choice && !routes_are_exact {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live network choice pause requires an exact directed World route",
+                ),
+            });
+        }
+        let can_pause = pause_before_live_network_choice;
         let admission = if can_pause {
             loop_impl.append_backend_network_outputs_until_choice(network_outputs)?
         } else {
@@ -193,6 +209,8 @@ where
                 choice,
                 remaining_outputs,
                 remaining_unintercepted_outputs: batches.flatten().collect(),
+                pending_network_outputs: std::mem::take(pending_network_outputs),
+                pending_observations: std::mem::take(pending_observations),
                 rng_evidence: evidence.rng_evidence,
                 observations: evidence.observations,
                 outcome: outcome.clone(),

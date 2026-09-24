@@ -2,15 +2,16 @@
 
 use crucible::{
     BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
-    BackendNetworkOutputInterceptor, BackendNetworkRoute, BackendQuantumLoop, BackendSnapshot,
-    Configuration, ContentHash, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample,
-    Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection,
-    NetworkLookahead, NodeCounter, NodeId, NodeTemplate, Plan, Properties, QuantumLoop,
-    QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed, SelectionDecision, Shift,
-    SimDuration, SimInstant, SimulationBackend, SingleScheduler, StepObservation, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode,
+    BackendNetworkOutputInterceptor, BackendNetworkRoute, BackendQuantumLoop, BackendRngEvidence,
+    BackendSnapshot, Configuration, ContentHash, Decision, EventLogOffset, ExactLocalEvent,
+    FingerprintSample, Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY,
+    NetworkLinkDirection, NetworkLookahead, NodeCounter, NodeId, NodeTemplate, ObservableEvent,
+    Plan, Properties, QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, RngStreamId,
+    ScenarioDef, ScenarioDefForm, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerScenarioNode, Seed, SelectionDecision, Shift, SimDuration, SimInstant,
+    SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -62,6 +63,8 @@ struct NodeRecordingBackend {
     ceilings: Vec<VirtualTime>,
     applied: Vec<(NodeId, BackendEffect, VirtualTime)>,
     network_outputs: Vec<BackendNetworkOutput>,
+    observable_events: Vec<ObservableEvent>,
+    rng_evidence: Vec<BackendRngEvidence>,
     shutdown_count: usize,
 }
 
@@ -101,6 +104,14 @@ impl SimulationBackend for NodeRecordingBackend {
 
     fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {
         Ok(std::mem::take(&mut self.network_outputs))
+    }
+
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
+        Ok(std::mem::take(&mut self.observable_events))
+    }
+
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
+        Ok(std::mem::take(&mut self.rng_evidence))
     }
 
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
@@ -180,6 +191,33 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, NodeRecordingBackend>
         let mut later = outputs[0].clone();
         later.sequence = 1;
         outputs.push(later);
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct FailingSecondRouteInterceptor {
+    calls: usize,
+}
+
+impl BackendNetworkOutputInterceptor<SingleScheduler, NodeRecordingBackend>
+    for FailingSecondRouteInterceptor
+{
+    fn intercept_network_outputs(
+        &mut self,
+        _loop_impl: &mut SingleScheduler,
+        _backend: &mut NodeRecordingBackend,
+        _frontier: VirtualTime,
+        _pending_outputs: &mut Vec<BackendNetworkOutput>,
+        outputs: &mut Vec<BackendNetworkOutput>,
+    ) -> Result<Vec<crucible::SchedulerEventLogAppend>, SchedulerError> {
+        self.calls += 1;
+        if self.calls == 2 {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("second route failed after the first was intercepted"),
+            });
+        }
+        outputs.clear();
         Ok(Vec::new())
     }
 }
@@ -776,7 +814,7 @@ fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
 }
 
 #[test]
-fn live_network_preselection_declines_a_split_frame_after_interception() {
+fn live_network_preselection_reserves_the_first_split_route() {
     let (configuration, scheduler, backend) = network_branch_fixture_components(None, 0);
     let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
         scheduler,
@@ -791,28 +829,46 @@ fn live_network_preselection_declines_a_split_frame_after_interception() {
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("first scheduler quantum: {error}"));
-    let settled = adapter
+    let paused = adapter
         .drive_quantum(QuantumRequest {
             configuration: first.configuration,
             control: Vec::new(),
         })
-        .unwrap_or_else(|error| {
-            panic!("split frame must settle through its ordinary defaults: {error}")
-        });
+        .unwrap_or_else(|error| panic!("split frame must reserve its first route: {error}"));
 
-    assert!(adapter.live_network_preselection().is_none());
+    let choice = adapter
+        .live_network_preselection()
+        .unwrap_or_else(|| panic!("split route choice"));
+    assert_eq!(paused.configuration, choice.parent);
+    assert_eq!(paused.discovered_choices, vec![choice.discovery.clone()]);
     assert!(
-        settled
+        !paused
             .decisions
             .iter()
             .any(|decision| matches!(decision, Decision::Selection(_)))
     );
+    let settled = adapter
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| panic!("split suffix settles after reservation: {error}"));
+    assert_eq!(settled.discovered_choices.len(), 2);
+    assert_eq!(
+        settled
+            .decisions
+            .iter()
+            .filter(|decision| matches!(decision, Decision::Selection(_)))
+            .count(),
+        2
+    );
 }
 
 #[test]
-fn live_network_preselection_declines_an_unrouted_broadcast() {
+fn live_network_preselection_reserves_the_first_broadcast_route() {
     let (configuration, scheduler, backend) =
         network_branch_fixture_components_with_broadcast(None, 0, true);
+    let physical = backend.network_outputs[0].clone();
+    let routes = scheduler
+        .backend_network_routes(physical.clone())
+        .unwrap_or_else(|error| panic!("broadcast routes are canonical: {error}"));
     assert_eq!(
         scheduler
             .backend_network_route_count(&backend.network_outputs[0])
@@ -823,27 +879,311 @@ fn live_network_preselection_declines_an_unrouted_broadcast() {
     adapter.set_live_network_choice_pause(true);
 
     let mut configuration = configuration;
-    let mut selected = false;
     for _ in 0..4 {
         let outcome = adapter
             .drive_quantum(QuantumRequest {
                 configuration,
                 control: Vec::new(),
             })
-            .unwrap_or_else(|error| {
-                panic!("broadcast routes must settle without a false pause: {error}")
-            });
-        assert!(adapter.live_network_preselection().is_none());
-        selected |= outcome
-            .decisions
-            .iter()
-            .any(|decision| matches!(decision, Decision::Selection(_)));
+            .unwrap_or_else(|error| panic!("broadcast route must reach an exact pause: {error}"));
+        if let Some(choice) = adapter.live_network_preselection() {
+            assert_eq!(outcome.configuration, choice.parent);
+            assert_eq!(outcome.discovered_choices, vec![choice.discovery.clone()]);
+            assert_eq!(choice.output.route, routes[0].route);
+            assert_eq!(choice.output.source, physical.source);
+            assert_eq!(choice.output.sequence, physical.sequence);
+            assert_eq!(choice.output.emit_icount, physical.emit_icount);
+            assert_eq!(choice.output.payload, physical.payload);
+            assert!(
+                !outcome
+                    .decisions
+                    .iter()
+                    .any(|decision| matches!(decision, Decision::Selection(_)))
+            );
+            let settled = adapter
+                .settle_live_network_preselection()
+                .unwrap_or_else(|error| {
+                    panic!("broadcast suffix settles after reservation: {error}")
+                });
+            assert_eq!(settled.discovered_choices.len(), 2);
+            return;
+        }
         configuration = outcome.configuration;
     }
-    assert!(
-        selected,
-        "broadcast choices must eventually settle by default"
+    panic!("broadcast choice was never reserved");
+}
+
+fn broadcast_preselection_quantum() -> usize {
+    let (mut configuration, scheduler, backend) =
+        network_branch_fixture_components_with_broadcast(None, 0, true);
+    let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+    adapter.set_live_network_choice_pause(true);
+
+    for quantum in 0..4 {
+        let outcome = adapter
+            .drive_quantum(QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("probe broadcast quantum: {error}"));
+        if adapter.live_network_preselection().is_some() {
+            return quantum;
+        }
+        configuration = outcome.configuration;
+    }
+    panic!("broadcast route did not offer a choice");
+}
+
+fn broadcast_evidence_run(
+    pause: bool,
+    choice_quantum: usize,
+    queued: &ObservableEvent,
+    current: &ObservableEvent,
+    rng: &BackendRngEvidence,
+) -> (
+    QuantumOutcome,
+    BackendQuantumLoop<SingleScheduler, NodeRecordingBackend>,
+) {
+    let (mut configuration, scheduler, mut backend) =
+        network_branch_fixture_components_with_broadcast(None, 0, true);
+    backend.observable_events.push(queued.clone());
+    let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+    adapter.set_live_network_choice_pause(pause);
+
+    let mut last = None;
+    for quantum in 0..=choice_quantum {
+        if quantum == choice_quantum {
+            adapter.backend_mut().rng_evidence.push(rng.clone());
+            adapter
+                .backend_mut()
+                .observable_events
+                .push(current.clone());
+        }
+        let outcome = adapter
+            .drive_quantum(QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("broadcast evidence quantum: {error}"));
+        configuration = outcome.configuration.clone();
+        last = Some(outcome);
+    }
+    (
+        last.unwrap_or_else(|| panic!("broadcast quantum was executed")),
+        adapter,
+    )
+}
+
+#[test]
+fn broadcast_reservation_defers_queued_observations_and_rng_evidence() {
+    let choice_quantum = broadcast_preselection_quantum();
+    assert!(choice_quantum > 0);
+    let source = NodeId {
+        name: String::from("vm-a"),
+    };
+    let queued = ObservableEvent::console_output(
+        VirtualTime { ticks: 1_000 },
+        source.clone(),
+        b"queued".to_vec(),
     );
+    let stream = RngStreamId::from_name("app-random/node:4:vm-a/stream:5:route");
+    let value = Seed::from_u64(19).fork_stream(&stream).next_u64();
+    let rng = BackendRngEvidence {
+        node: source.clone(),
+        stream,
+        request_id: 0,
+        width: 64,
+        value,
+    };
+    let current =
+        ObservableEvent::console_output(VirtualTime { ticks: 0 }, source, b"current".to_vec());
+    let (reservation, mut paused) =
+        broadcast_evidence_run(true, choice_quantum, &queued, &current, &rng);
+    let choice = paused
+        .live_network_preselection()
+        .unwrap_or_else(|| panic!("reserved route"));
+    assert_eq!(reservation.configuration, choice.parent);
+    assert_eq!(
+        reservation.discovered_choices,
+        vec![choice.discovery.clone()]
+    );
+    assert!(
+        !reservation
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::RngDraw(_)))
+    );
+    assert!(!reservation.event_log_entries.iter().any(|entry| {
+        matches!(
+            entry.payload(),
+            crucible::SchedulerEventLogPayload::Observable(_)
+        )
+    }));
+
+    let settled = paused
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| {
+            panic!("route suffix, RNG, and observations settle in causal order: {error}")
+        });
+    assert_eq!(settled.discovered_choices.len(), 3);
+    let rng_position = settled
+        .decisions
+        .iter()
+        .position(
+            |decision| matches!(decision, Decision::RngDraw(draw) if draw.stream == rng.stream),
+        )
+        .unwrap_or_else(|| panic!("RNG evidence is committed after both routes"));
+    assert_eq!(rng_position, settled.decisions.len() - 2);
+    assert!(settled.event_log_entries.iter().any(|entry| {
+        matches!(
+            entry.payload(),
+            crucible::SchedulerEventLogPayload::Observable(event)
+                if event == current.payload()
+        )
+    }));
+    assert!(!settled.event_log_entries.iter().any(|entry| {
+        matches!(
+            entry.payload(),
+            crucible::SchedulerEventLogPayload::Observable(event)
+                if event == queued.payload()
+        )
+    }));
+
+    let (baseline, _uninterrupted) =
+        broadcast_evidence_run(false, choice_quantum, &queued, &current, &rng);
+    assert_eq!(settled.configuration, baseline.configuration);
+    assert_eq!(settled.decisions, baseline.decisions);
+    assert_eq!(settled.discovered_choices, baseline.discovered_choices);
+}
+
+#[test]
+fn broadcast_handoff_accepts_previously_queued_observation() {
+    let choice_quantum = broadcast_preselection_quantum();
+    let (configuration, scheduler, mut backend) =
+        network_branch_fixture_components_with_broadcast(None, 0, true);
+    backend
+        .observable_events
+        .push(ObservableEvent::console_output(
+            VirtualTime { ticks: 1_000 },
+            NodeId {
+                name: String::from("vm-a"),
+            },
+            b"queued".to_vec(),
+        ));
+    let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+    adapter.set_live_network_choice_pause(true);
+
+    let mut configuration = configuration;
+    for _ in 0..=choice_quantum {
+        let outcome = adapter
+            .drive_quantum(QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("broadcast reserves with queued observation: {error}"));
+        configuration = outcome.configuration;
+    }
+    let choice = adapter
+        .live_network_preselection()
+        .cloned()
+        .unwrap_or_else(|| panic!("route choice"));
+    adapter
+        .handoff_live_network_preselection(&choice)
+        .unwrap_or_else(|error| panic!("queued suffix transfers to thin replay: {error}"));
+    assert!(
+        adapter
+            .shutdown()
+            .unwrap_or_else(|error| panic!("clean handed-off teardown: {error}"))
+            .is_empty()
+    );
+}
+
+#[test]
+fn due_queued_broadcast_reserves_before_default_release() {
+    let (configuration, scheduler, mut backend) =
+        network_branch_fixture_components_with_broadcast(None, 0, true);
+    let mut queued = backend.network_outputs.remove(0);
+    queued.emit_icount = Icount { retired: 0 };
+    let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+    adapter.set_live_network_choice_pause(true);
+    adapter.network_transaction_parts_mut().3.push(queued);
+
+    let settlement = adapter
+        .settle_pending_network_outputs_at_current_frontier()
+        .unwrap_or_else(|error| {
+            panic!("due queued broadcast admits the first route only: {error}")
+        });
+    let reserved = settlement
+        .reservation()
+        .unwrap_or_else(|| panic!("queued route is reserved"));
+    let (prefix_decisions, settled_configuration, _appends) = settlement.clone().into_parts();
+    let choice = adapter
+        .live_network_preselection()
+        .unwrap_or_else(|| panic!("queued choice"));
+    assert_eq!(reserved.decisions, prefix_decisions);
+    assert_eq!(settled_configuration, Some(reserved.configuration.clone()));
+    assert_eq!(reserved.configuration, choice.parent);
+    assert_eq!(reserved.configuration, configuration);
+    assert_eq!(reserved.discovered_choices, vec![choice.discovery.clone()]);
+    assert!(
+        !reserved
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::Selection(_)))
+    );
+
+    let settled = adapter
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| panic!("default settlement releases both queued routes: {error}"));
+    assert_eq!(settled.discovered_choices.len(), 2);
+    assert_eq!(
+        settled
+            .decisions
+            .iter()
+            .filter(|decision| matches!(decision, Decision::Selection(_)))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn later_route_failure_poisons_the_serial_backend_continuation() {
+    let choice_quantum = broadcast_preselection_quantum();
+    let (configuration, scheduler, backend) =
+        network_branch_fixture_components_with_broadcast(None, 0, true);
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        scheduler,
+        backend,
+        FailingSecondRouteInterceptor::default(),
+    );
+    adapter.set_live_network_choice_pause(true);
+
+    let mut configuration = configuration;
+    for _ in 0..choice_quantum {
+        let outcome = adapter
+            .drive_quantum(QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("quantum before broadcast admission: {error}"));
+        configuration = outcome.configuration;
+    }
+    let request = QuantumRequest {
+        configuration,
+        control: Vec::new(),
+    };
+    let error = adapter
+        .drive_quantum(request.clone())
+        .err()
+        .unwrap_or_else(|| panic!("second route failure must abort the boundary"));
+    assert!(error.to_string().contains("second route failed"));
+    assert_eq!(adapter.network_output_interceptor().calls, 2);
+    assert!(adapter.live_network_preselection().is_none());
+    let retry = adapter
+        .drive_quantum(request)
+        .err()
+        .unwrap_or_else(|| panic!("partially intercepted boundary cannot retry"));
+    assert!(retry.to_string().contains("poisoned"));
 }
 
 #[test]

@@ -169,6 +169,22 @@ impl QuantumLoop for SingleScheduler {
             .map(|routes| routes.len())
     }
 
+    fn backend_network_routes(
+        &self,
+        output: BackendNetworkOutput,
+    ) -> Result<Vec<BackendNetworkOutput>, SchedulerError> {
+        let routes = self
+            .resolve_backend_network_routes(&output)?
+            .into_iter()
+            .map(|route| {
+                let mut routed = output.clone();
+                routed.route = Some(route);
+                routed
+            })
+            .collect();
+        Ok(routes)
+    }
+
     fn backend_observation_time(
         &self,
         node: &NodeId,
