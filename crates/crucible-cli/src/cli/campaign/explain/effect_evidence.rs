@@ -5,16 +5,14 @@ use crucible_campaign::{
     CampaignTraceKind, GetCampaignTraceChunkRequest, MAX_CAMPAIGN_TRACE_BYTES,
     MAX_CAMPAIGN_TRACE_CHUNK_BYTES,
 };
-use crucible_cas::content_store::{ContentId, ObjectKind};
-use crucible_core::model::{
-    EffectSpecification, FaultResourceLimits, NetworkEffectSpecification, ResolvedEffectTrace,
-    ResolvedFaultTarget,
-};
-use crucible_core::{
-    GuestMeasurementEvent, GuestMeasurementValue, GuestSemanticMarkerDetail,
-    ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload,
-};
 use crucible_daemon::CrucibleMeasurementReplayEvidence;
+use crucible_daemon::campaign_store_composition::{ContentId, ObjectKind};
+use crucible_session::engine::{
+    EffectSpecification, FaultCoordinate, FaultDirection, FaultOperation, FaultResourceLimits,
+    GuestMeasurementEvent, GuestMeasurementValue, GuestSemanticMarkerDetail,
+    NetworkEffectSpecification, ObservableEventPayload, ResolvedEffectTrace, ResolvedFaultTarget,
+    SchedulerEventLogEntry, SchedulerEventLogPayload,
+};
 use serde::Serialize;
 
 const MAX_PROJECTED_ITEMS: usize = 4096;
@@ -128,9 +126,9 @@ pub(super) struct CampaignNetworkEffect {
     effect: String,
     kind: &'static str,
     target: ResolvedFaultTarget,
-    operation: Option<crucible_core::model::FaultOperation>,
-    direction: Option<crucible_core::model::FaultDirection>,
-    coordinate: crucible_core::model::FaultCoordinate,
+    operation: Option<FaultOperation>,
+    direction: Option<FaultDirection>,
+    coordinate: FaultCoordinate,
     evidence_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     parameters: Option<serde_json::Value>,
