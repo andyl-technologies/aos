@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn renamed_secret_name_is_detected_against_retained_descriptor() {
+    fn same_byte_secret_replacement_changes_reopened_identity() {
         let temporary = tempfile::tempdir().unwrap();
         let secret_path = temporary.path().join("secret");
         fs::write(&secret_path, [0x41_u8; SECRET_BYTES]).unwrap();
@@ -614,10 +614,10 @@ mod tests {
         fs::write(&secret_path, [0x41_u8; SECRET_BYTES]).unwrap();
         fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o400)).unwrap();
 
-        let retained_changed = validate_retained_secret(&retained, owner).is_err();
         let reopened = load_secret(&directory, owner, "secret", "secret").unwrap();
         assert_eq!(retained.exact[..], reopened.exact[..]);
-        assert!(retained_changed || retained.metadata != reopened.metadata);
+        assert_ne!(retained.metadata.inode, reopened.metadata.inode);
+        assert!(retained.metadata != reopened.metadata);
     }
 
     #[test]
