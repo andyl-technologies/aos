@@ -144,10 +144,14 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         .map_err(|error| MountError::State(error.to_string()))?;
     let mut broker =
         MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
-    if !source_provider_enabled
-        && broker
-            .with_fixed_source_acquisition_owner(|source| Ok(source.has_cold_provider_recovery()))?
-    {
+    // Recover and validate the fixed source journal before opening the
+    // separate provider connection. Legacy FD-store adoption is not the
+    // protected AOSMMCAP1 startup claim: this borrows no SourceRoot descriptor
+    // and grants no source effect. Only Reserved Inventory can be read back.
+    let cold_inventory_count = broker.with_fixed_source_acquisition_owner(|source| {
+        source.qualify_inventory_only_cold_recovery()
+    })?;
+    if !source_provider_enabled && cold_inventory_count != 0 {
         return Err(MountError::State(
             "cold SourceProvider recovery requires the fixed provider connector".to_owned(),
         )

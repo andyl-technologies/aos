@@ -108,6 +108,14 @@ pub struct SourceAcquisitionTableV2 {
 /// authority and cannot outlive the journal borrow.
 pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
     protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+    runtime: SourceAcquisitionRuntimeV2,
+}
+
+/// Retains source and manager capabilities between borrows of Mount's journal.
+///
+/// Only [`crate::broker::MountBroker`] owns this value in production. It cannot
+/// operate without a fresh borrow of the same fixed protected journal.
+pub(crate) struct SourceAcquisitionRuntimeV2 {
     table: SourceAcquisitionTableV2,
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
@@ -255,49 +263,50 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[must_use]
     #[doc(hidden)]
     pub fn has_cold_provider_recovery(&self) -> bool {
-        !self.cold_pending_attempts.is_empty()
+        !self.runtime.cold_pending_attempts.is_empty()
     }
 
     /// Reports whether a pre-send carrier boundary retains exact reservation custody.
     #[must_use]
     #[doc(hidden)]
     pub fn has_pending_provider_send(&self) -> bool {
-        self.pending_provider_send.is_some()
+        self.runtime.pending_provider_send.is_some()
     }
 
     /// Reports whether a live sent verifier awaits its exact provider response.
     #[must_use]
     #[doc(hidden)]
     pub fn has_pending_provider_response(&self) -> bool {
-        self.pending_provider.is_some()
+        self.runtime.pending_provider.is_some()
     }
 
     /// Reports whether exact SourceRoot custody awaits a Release reservation.
     #[must_use]
     #[doc(hidden)]
     pub fn has_pending_release_preparation(&self) -> bool {
-        self.pending_release_preparation.is_some()
+        self.runtime.pending_release_preparation.is_some()
     }
 
     /// Reports whether a committed SourceRoot transition awaits protected resealing.
     #[must_use]
     #[doc(hidden)]
     pub fn has_postcommit_recovery(&self) -> bool {
-        !self.retained_postcommit_recovery.is_empty()
+        !self.runtime.retained_postcommit_recovery.is_empty()
     }
 
     /// Reports whether a manager handoff/removal must advance before response signing.
     #[must_use]
     #[doc(hidden)]
     pub fn has_pending_manager_operation(&self) -> bool {
-        !self.manager_handoffs.is_empty()
-            || !self.pending_manager_custody.is_empty()
-            || !self.pending_manager_removals.is_empty()
-            || !self.retained_terminal_release_outcomes.is_empty()
-            || !self.startup_manager_sources.is_empty()
-            || !self.startup_manager_losses.is_empty()
-            || !self.startup_manager_absences.is_empty()
+        !self.runtime.manager_handoffs.is_empty()
+            || !self.runtime.pending_manager_custody.is_empty()
+            || !self.runtime.pending_manager_removals.is_empty()
+            || !self.runtime.retained_terminal_release_outcomes.is_empty()
+            || !self.runtime.startup_manager_sources.is_empty()
+            || !self.runtime.startup_manager_losses.is_empty()
+            || !self.runtime.startup_manager_absences.is_empty()
             || self
+                .runtime
                 .retained_source_roots
                 .values()
                 .any(|source_root| retained_source_root_phase(source_root).is_none())
@@ -307,26 +316,29 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[must_use]
     #[doc(hidden)]
     pub fn has_startup_manager_recovery(&self) -> bool {
-        !self.startup_manager_sources.is_empty()
-            || !self.startup_manager_losses.is_empty()
-            || !self.startup_manager_absences.is_empty()
+        !self.runtime.startup_manager_sources.is_empty()
+            || !self.runtime.startup_manager_losses.is_empty()
+            || !self.runtime.startup_manager_absences.is_empty()
     }
 
     /// Reports whether manager-negative custody awaits exact protected resealing.
     #[must_use]
     #[doc(hidden)]
     pub fn has_negative_custody_recovery(&self) -> bool {
-        !self.retained_negative_custody_recovery.is_empty() || !self.cold_released_rows.is_empty()
+        !self.runtime.retained_negative_custody_recovery.is_empty()
+            || !self.runtime.cold_released_rows.is_empty()
     }
 
     /// Reports whether cold recovery starts after durable outcome consumption.
     #[must_use]
     #[doc(hidden)]
     pub fn cold_provider_recovery_has_consumed_disposition(&self) -> bool {
-        self.cold_pending_attempts
+        self.runtime
+            .cold_pending_attempts
             .first()
             .is_some_and(|attempt_id| {
-                self.table
+                self.runtime
+                    .table
                     .provider_attempts
                     .get(attempt_id)
                     .is_some_and(|attempt| {
@@ -342,9 +354,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[must_use]
     #[doc(hidden)]
     pub fn cold_provider_recovery_has_reserved_request(&self) -> bool {
-        self.cold_pending_attempts
+        self.runtime
+            .cold_pending_attempts
             .first()
-            .and_then(|attempt_id| self.table.provider_attempts.get(attempt_id))
+            .and_then(|attempt_id| self.runtime.table.provider_attempts.get(attempt_id))
             .is_some_and(|attempt| matches!(attempt.state, ProviderAttemptStateV2::Reserved))
     }
 
@@ -360,8 +373,9 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// barrier, or signed request bytes that differ from their durable digest.
     #[doc(hidden)]
     pub fn qualify_inventory_only_cold_recovery(&self) -> Result<usize> {
-        for attempt_id in &self.cold_pending_attempts {
+        for attempt_id in &self.runtime.cold_pending_attempts {
             let attempt = self
+                .runtime
                 .table
                 .provider_attempts
                 .get(attempt_id)
@@ -374,7 +388,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             )?;
         }
 
-        Ok(self.cold_pending_attempts.len())
+        Ok(self.runtime.cold_pending_attempts.len())
     }
 
     /// Returns the exact signed cold Reserved request for protected Provider readback.
@@ -388,10 +402,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &self,
     ) -> Result<aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1> {
         let attempt_id = self
+            .runtime
             .cold_pending_attempts
             .first()
             .ok_or_else(|| state_error("cold provider recovery is absent"))?;
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(attempt_id)
@@ -419,10 +435,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &self,
     ) -> Result<aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1> {
         let attempt_id = self
+            .runtime
             .cold_pending_attempts
             .first()
             .ok_or_else(|| state_error("cold provider recovery is absent"))?;
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(attempt_id)
@@ -452,16 +470,19 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &self,
     ) -> Result<aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1> {
         let attempt_id = self
+            .runtime
             .pending_provider
             .as_ref()
             .map(SentProviderQueryV2::attempt_id)
             .or_else(|| {
-                self.pending_provider_send
+                self.runtime
+                    .pending_provider_send
                     .as_ref()
                     .map(ProviderQuerySendRecoveryV2::attempt_id)
             })
             .ok_or_else(|| state_error("live provider request custody is absent"))?;
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(&attempt_id)
@@ -484,7 +505,9 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[must_use]
     #[doc(hidden)]
     pub fn has_inventory_recovery_replacement(&self) -> bool {
-        self.pending_inventory_recovery_replacement.is_some()
+        self.runtime
+            .pending_inventory_recovery_replacement
+            .is_some()
     }
 
     /// Returns the exact predecessor request for a committed Inventory replacement.
@@ -498,16 +521,22 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &self,
     ) -> Result<aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1> {
         let (_, _, _, signed_request_digest) = self
+            .runtime
             .pending_inventory_recovery_replacement
             .ok_or_else(|| state_error("Inventory recovery replacement is absent"))?;
-        let mut attempts = self.table.provider_attempts.values().filter(|attempt| {
-            attempt.method == ProviderMethodV2::Inventory
-                && matches!(
-                    attempt.state,
-                    ProviderAttemptStateV2::SupersededIndeterminate { .. }
-                )
-                && attempt.signed_request_digest == signed_request_digest
-        });
+        let mut attempts = self
+            .runtime
+            .table
+            .provider_attempts
+            .values()
+            .filter(|attempt| {
+                attempt.method == ProviderMethodV2::Inventory
+                    && matches!(
+                        attempt.state,
+                        ProviderAttemptStateV2::SupersededIndeterminate { .. }
+                    )
+                    && attempt.signed_request_digest == signed_request_digest
+            });
         let attempt = attempts
             .next()
             .ok_or_else(|| state_error("Inventory recovery predecessor is absent"))?;
@@ -545,16 +574,18 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         protected_boot_id: [u8; 16],
     ) -> Result<bool> {
         let attempt_id = self
+            .runtime
             .pending_provider
             .as_ref()
             .map(SentProviderQueryV2::attempt_id)
             .or_else(|| {
-                self.pending_provider_send
+                self.runtime
+                    .pending_provider_send
                     .as_ref()
                     .map(ProviderQuerySendRecoveryV2::attempt_id)
             })
-            .or_else(|| self.cold_pending_attempts.first().copied());
-        if let Some(pending) = &self.pending_release_preparation {
+            .or_else(|| self.runtime.cold_pending_attempts.first().copied());
+        if let Some(pending) = &self.runtime.pending_release_preparation {
             if method != BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
                 || pending.mount_request != request_body
             {
@@ -569,6 +600,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Ok(false);
         };
         let (attempt_owner, attempt_method) = self
+            .runtime
             .table
             .provider_attempts
             .get(&attempt_id)
@@ -608,6 +640,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Ok(false);
         }
         let row = self
+            .runtime
             .table
             .acquisitions
             .get(&acquisition_id)
@@ -652,6 +685,27 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let protected = aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
             .map_err(|error| crate::MountError::State(error.to_string()))?;
         Self::recover_with_journal(protected)
+    }
+
+    /// Reattaches retained move-only custody to the same protected Mount journal.
+    ///
+    /// On failure, the runtime is returned unchanged so its descriptors are
+    /// never dropped by a failed journal borrow. The broker's sole journal
+    /// lock excludes another namespace-40 writer, and the broker refuses to
+    /// reattach after any source-operation error rather than using stale state.
+    pub(crate) fn attach_runtime(
+        journal: &'journal mut Journal,
+        runtime: SourceAcquisitionRuntimeV2,
+    ) -> std::result::Result<Self, (crate::MountError, SourceAcquisitionRuntimeV2)> {
+        match aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal) {
+            Ok(protected) => Ok(Self { protected, runtime }),
+            Err(error) => Err((crate::MountError::State(error.to_string()), runtime)),
+        }
+    }
+
+    /// Returns every retained capability after the protected journal borrow ends.
+    pub(crate) fn into_runtime(self) -> SourceAcquisitionRuntimeV2 {
+        self.runtime
     }
 
     fn recover_with_journal(
@@ -806,34 +860,36 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let pending_inventory_recovery_replacement = inventory_replacements.pop();
         Ok(Self {
             protected,
-            table,
-            broker_instance_id,
-            last_boottime_nanoseconds: None,
-            pending_provider: None,
-            pending_remote_inventory_outcome: None,
-            pending_provider_send: None,
-            pending_backend_recovery_replacement,
-            pending_inventory_recovery_replacement,
-            pending_release_preparation: None,
-            pending_manager_custody: Vec::new(),
-            manager_control: None,
-            startup_activation_descriptors: None,
-            startup_manager_sources: Vec::new(),
-            startup_manager_losses: Vec::new(),
-            startup_lost_release_preparations: BTreeMap::new(),
-            startup_manager_absences: Vec::new(),
-            manager_handoffs: Vec::new(),
-            cold_pending_attempts,
-            retained_source_roots: BTreeMap::new(),
-            retained_postcommit_recovery: Vec::new(),
-            retained_release_authorities: Vec::new(),
-            retained_terminal_release_outcomes: BTreeMap::new(),
-            retained_terminal_release_response_evidence: BTreeMap::new(),
-            retained_noncomplete_dispositions: BTreeMap::new(),
-            pending_manager_removals: Vec::new(),
-            retained_negative_custody_recovery: Vec::new(),
-            cold_released_rows,
-            retained_released_roots: BTreeMap::new(),
+            runtime: SourceAcquisitionRuntimeV2 {
+                table,
+                broker_instance_id,
+                last_boottime_nanoseconds: None,
+                pending_provider: None,
+                pending_remote_inventory_outcome: None,
+                pending_provider_send: None,
+                pending_backend_recovery_replacement,
+                pending_inventory_recovery_replacement,
+                pending_release_preparation: None,
+                pending_manager_custody: Vec::new(),
+                manager_control: None,
+                startup_activation_descriptors: None,
+                startup_manager_sources: Vec::new(),
+                startup_manager_losses: Vec::new(),
+                startup_lost_release_preparations: BTreeMap::new(),
+                startup_manager_absences: Vec::new(),
+                manager_handoffs: Vec::new(),
+                cold_pending_attempts,
+                retained_source_roots: BTreeMap::new(),
+                retained_postcommit_recovery: Vec::new(),
+                retained_release_authorities: Vec::new(),
+                retained_terminal_release_outcomes: BTreeMap::new(),
+                retained_terminal_release_response_evidence: BTreeMap::new(),
+                retained_noncomplete_dispositions: BTreeMap::new(),
+                pending_manager_removals: Vec::new(),
+                retained_negative_custody_recovery: Vec::new(),
+                cold_released_rows,
+                retained_released_roots: BTreeMap::new(),
+            },
         })
     }
 
@@ -859,7 +915,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .protected
             .source_consumption_authority()
             .map_err(|error| crate::MountError::State(error.to_string()))?;
-        operation(&mut self.table, &mut authority)
+        operation(&mut self.runtime.table, &mut authority)
     }
 
     /// Runs one operation under the exact fixed namespace-40 owner claim.
@@ -885,7 +941,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .protected
             .source_acquisition_authority()
             .map_err(|error| crate::MountError::State(error.to_string()))?;
-        operation(&mut self.table, &mut authority)
+        operation(&mut self.runtime.table, &mut authority)
     }
 
     /// Installs the move-only manager control authority produced by startup capture.
@@ -898,12 +954,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         control: aos_sandbox::mount_manager_startup::ManagerSourceControlAuthorityV1,
     ) -> Result<()> {
-        if self.manager_control.is_some() {
+        if self.runtime.manager_control.is_some() {
             return Err(state_error(
                 "manager control authority is already installed",
             ));
         }
-        self.manager_control = Some(control);
+        self.runtime.manager_control = Some(control);
         Ok(())
     }
 
@@ -927,11 +983,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             aos_sandbox::mount_manager_startup::MountManagerStartupAuthorityV1,
         ),
     > {
-        if self.manager_control.is_some()
-            || self.startup_activation_descriptors.is_some()
-            || !self.startup_manager_sources.is_empty()
-            || !self.startup_manager_losses.is_empty()
-            || !self.startup_manager_absences.is_empty()
+        if self.runtime.manager_control.is_some()
+            || self.runtime.startup_activation_descriptors.is_some()
+            || !self.runtime.startup_manager_sources.is_empty()
+            || !self.runtime.startup_manager_losses.is_empty()
+            || !self.runtime.startup_manager_absences.is_empty()
         {
             return Err((
                 state_error("manager startup authority is already installed"),
@@ -939,11 +995,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             ));
         }
         let (descriptors, sources, losses, absences, control) = authority.into_parts();
-        self.startup_activation_descriptors = Some(descriptors);
-        self.startup_manager_sources = sources;
-        self.startup_manager_losses = losses;
-        self.startup_manager_absences = absences.into_absences();
-        self.manager_control = Some(control);
+        self.runtime.startup_activation_descriptors = Some(descriptors);
+        self.runtime.startup_manager_sources = sources;
+        self.runtime.startup_manager_losses = losses;
+        self.runtime.startup_manager_absences = absences.into_absences();
+        self.runtime.manager_control = Some(control);
         Ok(())
     }
 
@@ -953,6 +1009,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         method: ProviderMethodV2,
     ) -> Result<Option<RecordRefV2>> {
         let row = self
+            .runtime
             .table
             .acquisitions
             .get(&acquisition_id)
@@ -987,6 +1044,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
         };
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(&terminal.id)
@@ -1005,8 +1063,9 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     )
             })
             .ok_or_else(|| state_error("startup source terminal attempt lineage differs"))?;
-        if self.cold_pending_attempts.iter().any(|attempt_id| {
-            self.table
+        if self.runtime.cold_pending_attempts.iter().any(|attempt_id| {
+            self.runtime
+                .table
                 .provider_attempts
                 .get(attempt_id)
                 .is_some_and(|queued| {
@@ -1030,7 +1089,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     }
 
     fn resolve_superseded_cold_attempt(&mut self, terminal: RecordRefV2) {
-        self.cold_pending_attempts
+        self.runtime
+            .cold_pending_attempts
             .retain(|attempt_id| *attempt_id != terminal.id);
     }
 
@@ -1046,6 +1106,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
         if let Some(acquisition_id) = self
+            .runtime
             .startup_manager_sources
             .last()
             .map(|presence| presence.custody_evidence().acquisition_id)
@@ -1054,10 +1115,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .exact_complete_terminal_attempt(acquisition_id, ProviderMethodV2::Acquire)?
                 .ok_or_else(|| state_error("startup source has no terminal Acquire"))?;
             let presence = self
+                .runtime
                 .startup_manager_sources
                 .pop()
                 .ok_or_else(|| state_error("startup manager source custody disappeared"))?;
             let phase = self
+                .runtime
                 .table
                 .acquisitions
                 .get(&acquisition_id)
@@ -1090,7 +1153,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     if let Some(presence) = retained_presence {
-                        self.startup_manager_sources.push(presence);
+                        self.runtime.startup_manager_sources.push(presence);
                     }
                     return Err(error);
                 }
@@ -1100,26 +1163,28 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     match source_root {
                         aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2::StartupAdopted(
                             aos_sandbox_source_provider_security::RecoveredRetainedMountSourceRootV2::Releasing(authority),
-                        ) => self.retained_release_authorities.push(authority),
+                        ) => self.runtime.retained_release_authorities.push(authority),
                         source_root => {
-                            self.retained_source_roots.insert(acquisition_id, source_root);
+                            self.runtime.retained_source_roots.insert(acquisition_id, source_root);
                         }
                     }
                     self.resolve_superseded_cold_attempt(terminal);
                     Ok(())
                 }
                 lifecycle::SourceAcquisitionPostcommitOutcomeV2::RecoveryRequired(recovery) => {
-                    self.retained_postcommit_recovery
-                        .push(RetainedSourcePostcommitRecoveryV2 {
+                    self.runtime.retained_postcommit_recovery.push(
+                        RetainedSourcePostcommitRecoveryV2 {
                             acquisition_id,
                             recovery,
                             startup_acquire_terminal: Some(terminal),
-                        });
+                        },
+                    );
                     Err(state_error("startup manager custody recovery is required"))
                 }
             };
         }
         if let Some(acquisition_id) = self
+            .runtime
             .startup_manager_losses
             .last()
             .map(|loss| loss.projection().subject.acquisition_id)
@@ -1128,6 +1193,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .exact_complete_terminal_attempt(acquisition_id, ProviderMethodV2::Acquire)?
                 .ok_or_else(|| state_error("lost startup source has no terminal Acquire"))?;
             let loss = self
+                .runtime
                 .startup_manager_losses
                 .pop()
                 .ok_or_else(|| state_error("startup manager loss custody disappeared"))?;
@@ -1150,20 +1216,22 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .and_then(core::convert::identity);
             match prepared {
                 Ok(prepared) => {
-                    self.startup_lost_release_preparations
+                    self.runtime
+                        .startup_lost_release_preparations
                         .insert(acquisition_id, prepared);
                     self.resolve_superseded_cold_attempt(terminal);
                     return Ok(());
                 }
                 Err(error) => {
                     if let Some(loss) = retained_loss {
-                        self.startup_manager_losses.push(loss);
+                        self.runtime.startup_manager_losses.push(loss);
                     }
                     return Err(error);
                 }
             }
         }
         if let Some(acquisition_id) = self
+            .runtime
             .startup_manager_absences
             .last()
             .map(|absence| absence.projection().subject.acquisition_id)
@@ -1173,9 +1241,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .ok_or_else(|| state_error("terminal startup absence has no terminal Acquire"))?;
             let terminal =
                 self.exact_complete_terminal_attempt(acquisition_id, ProviderMethodV2::Release)?;
-            if let Some(outcome) = self.retained_terminal_release_outcomes.get(&acquisition_id)
+            if let Some(outcome) = self
+                .runtime
+                .retained_terminal_release_outcomes
+                .get(&acquisition_id)
                 && (terminal.is_none()
-                    || !self.table.retained_disposition_matches_v2(
+                    || !self.runtime.table.retained_disposition_matches_v2(
                         acquisition_id,
                         ProviderMethodV2::Release,
                         outcome,
@@ -1186,6 +1257,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 ));
             }
             let absence = self
+                .runtime
                 .startup_manager_absences
                 .pop()
                 .ok_or_else(|| state_error("startup manager absence custody disappeared"))?;
@@ -1210,21 +1282,24 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     if let Some(absence) = retained_absence {
-                        self.startup_manager_absences.push(absence);
+                        self.runtime.startup_manager_absences.push(absence);
                     }
                     return Err(error);
                 }
             };
             return match outcome {
                 lifecycle::SourceAcquisitionNegativeCustodyOutcomeV2::Success(released) => {
-                    self.retained_released_roots
+                    self.runtime
+                        .retained_released_roots
                         .insert(acquisition_id, released);
                     self.resolve_superseded_cold_attempt(acquire_terminal);
                     if let Some(terminal) = terminal {
                         self.resolve_superseded_cold_attempt(terminal);
-                        self.retained_terminal_release_outcomes
+                        self.runtime
+                            .retained_terminal_release_outcomes
                             .remove(&acquisition_id);
-                        self.retained_terminal_release_response_evidence
+                        self.runtime
+                            .retained_terminal_release_response_evidence
                             .insert(acquisition_id, terminal);
                     }
                     Ok(())
@@ -1232,7 +1307,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 lifecycle::SourceAcquisitionNegativeCustodyOutcomeV2::RecoveryRequired(
                     recovery,
                 ) => {
-                    self.retained_negative_custody_recovery.push(
+                    self.runtime.retained_negative_custody_recovery.push(
                         RetainedNegativeCustodyRecoveryV2 {
                             acquisition_id,
                             recovery,
@@ -1260,6 +1335,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn begin_manager_source_handoff(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
         if self
+            .runtime
             .manager_handoffs
             .iter()
             .any(|pending| pending.acquisition_id == acquisition_id)
@@ -1267,7 +1343,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Err(state_error("manager handoff is already pending"));
         }
         if !matches!(
-            self.retained_source_roots.get(&acquisition_id),
+            self.runtime.retained_source_roots.get(&acquisition_id),
             Some(
                 aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2::Received(_)
                     | aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2::Reopened(
@@ -1280,12 +1356,14 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             ));
         }
         let row = self
+            .runtime
             .table
             .acquisitions
             .get(&acquisition_id)
             .cloned()
             .ok_or_else(|| state_error("manager handoff acquisition is absent"))?;
         let mut control = self
+            .runtime
             .manager_control
             .take()
             .ok_or_else(|| state_error("manager control authority is absent"))?;
@@ -1298,10 +1376,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     .begin_handoff(&mut control, &row)
                     .map_err(|error| state_error(error.to_string()))
             });
-        self.manager_control = Some(control);
+        self.runtime.manager_control = Some(control);
         let pending = pending?;
         let request = pending.request().clone();
-        self.manager_handoffs.push(ManagerHandoffStateV1 {
+        self.runtime.manager_handoffs.push(ManagerHandoffStateV1 {
             acquisition_id,
             request: request.clone(),
             accepted: None,
@@ -1328,15 +1406,16 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         accepted: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<Vec<u8>> {
         let index = self
+            .runtime
             .manager_handoffs
             .iter()
             .position(|pending| pending.acquisition_id == acquisition_id)
             .ok_or_else(|| state_error("manager handoff is absent"))?;
-        if self.manager_handoffs[index].accepted.is_none() {
-            self.manager_handoffs[index].accepted = Some(accepted);
+        if self.runtime.manager_handoffs[index].accepted.is_none() {
+            self.runtime.manager_handoffs[index].accepted = Some(accepted);
         }
-        let request = self.manager_handoffs[index].request.clone();
-        let accepted = self.manager_handoffs[index]
+        let request = self.runtime.manager_handoffs[index].request.clone();
+        let accepted = self.runtime.manager_handoffs[index]
             .accepted
             .clone()
             .ok_or_else(|| state_error("manager handoff acceptance is absent"))?;
@@ -1375,19 +1454,20 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         present: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<()> {
         let index = self
+            .runtime
             .manager_handoffs
             .iter()
             .position(|pending| pending.acquisition_id == acquisition_id)
             .ok_or_else(|| state_error("manager handoff is absent"))?;
-        let request = self.manager_handoffs[index].request.clone();
-        let accepted = self.manager_handoffs[index]
+        let request = self.runtime.manager_handoffs[index].request.clone();
+        let accepted = self.runtime.manager_handoffs[index]
             .accepted
             .clone()
             .ok_or_else(|| state_error("manager handoff acceptance is absent"))?;
-        if self.manager_handoffs[index].present.is_none() {
-            self.manager_handoffs[index].present = Some(present);
+        if self.runtime.manager_handoffs[index].present.is_none() {
+            self.runtime.manager_handoffs[index].present = Some(present);
         }
-        let present = self.manager_handoffs[index]
+        let present = self.runtime.manager_handoffs[index]
             .present
             .clone()
             .ok_or_else(|| state_error("manager presence outcome is absent"))?;
@@ -1409,7 +1489,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .confirm_present(awaiting, present)
                 .map_err(|error| state_error(error.to_string()))?
         };
-        self.manager_handoffs.remove(index);
+        self.runtime.manager_handoffs.remove(index);
         self.record_manager_source_presence(root, acquisition_id, presence)
     }
 
@@ -1422,6 +1502,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn begin_manager_source_removal(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
         if self
+            .runtime
             .pending_manager_removals
             .iter()
             .any(|pending| pending.acquisition_id == acquisition_id)
@@ -1429,6 +1510,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Err(state_error("manager source removal is already pending"));
         }
         let row = self
+            .runtime
             .table
             .acquisitions
             .get(&acquisition_id)
@@ -1436,21 +1518,27 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let expected_revision = row.revision;
         let expected_digest = row.record_digest;
         let terminal_outcome = self
+            .runtime
             .retained_terminal_release_outcomes
             .remove(&acquisition_id)
             .ok_or_else(|| state_error("terminal provider Release outcome is absent"))?;
-        let authority_index = self
-            .retained_release_authorities
-            .iter()
-            .position(|authority| {
-                authority.projection().mount_acquisition_id() == Some(acquisition_id)
-            });
+        let authority_index =
+            self.runtime
+                .retained_release_authorities
+                .iter()
+                .position(|authority| {
+                    authority.projection().mount_acquisition_id() == Some(acquisition_id)
+                });
         let Some(authority_index) = authority_index else {
-            self.retained_terminal_release_outcomes
+            self.runtime
+                .retained_terminal_release_outcomes
                 .insert(acquisition_id, terminal_outcome);
             return Err(state_error("SourceRoot Release authority is absent"));
         };
-        let authority = self.retained_release_authorities.remove(authority_index);
+        let authority = self
+            .runtime
+            .retained_release_authorities
+            .remove(authority_index);
         match authority.prepare_manager_removal() {
             aos_sandbox_source_provider_security::MountSourceRemovalPreparationV2::Fresh {
                 retained,
@@ -1458,7 +1546,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             } => {
                 let presence_projection = presence.projection().clone();
                 drop(presence);
-                self.pending_manager_removals.push(PendingManagerReleaseV2 {
+                self.runtime.pending_manager_removals.push(PendingManagerReleaseV2 {
                     acquisition_id,
                     expected_revision,
                     expected_digest,
@@ -1474,8 +1562,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             | aos_sandbox_source_provider_security::MountSourceRemovalPreparationV2::StartupLost(
                 authority,
             ) => {
-                self.retained_release_authorities.push(authority);
-                self.retained_terminal_release_outcomes
+                self.runtime.retained_release_authorities.push(authority);
+                self.runtime.retained_terminal_release_outcomes
                     .insert(acquisition_id, terminal_outcome);
                 Err(state_error(
                     "manager source removal requires startup recovery",
@@ -1493,26 +1581,27 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn resume_manager_source_removal(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
         let index = self
+            .runtime
             .pending_manager_removals
             .iter()
             .position(|pending| pending.acquisition_id == acquisition_id)
             .ok_or_else(|| state_error("manager source removal is absent"))?;
-        let mut pending = self.pending_manager_removals.remove(index);
+        let mut pending = self.runtime.pending_manager_removals.remove(index);
         let stage = match pending.stage.take() {
             Some(stage) => stage,
             None => {
-                self.pending_manager_removals.push(pending);
+                self.runtime.pending_manager_removals.push(pending);
                 return Err(state_error("manager removal stage is unavailable"));
             }
         };
         match stage {
             ManagerReleaseStageV2::BeforeRemoval(presence_projection) => {
-                let mut control = match self.manager_control.take() {
+                let mut control = match self.runtime.manager_control.take() {
                     Some(control) => control,
                     None => {
                         pending.stage =
                             Some(ManagerReleaseStageV2::BeforeRemoval(presence_projection));
-                        self.pending_manager_removals.push(pending);
+                        self.runtime.pending_manager_removals.push(pending);
                         return Err(state_error("manager control authority is absent"));
                     }
                 };
@@ -1528,7 +1617,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                             .begin_removal(&mut control, presence)
                             .map_err(|error| state_error(error.to_string()))
                     });
-                self.manager_control = Some(control);
+                self.runtime.manager_control = Some(control);
                 match result {
                     Ok(removal) => {
                         let request = removal.request().clone();
@@ -1538,14 +1627,14 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                             removed: None,
                             absent: None,
                         });
-                        self.pending_manager_removals.push(pending);
+                        self.runtime.pending_manager_removals.push(pending);
                         aos_sandbox_protocol::mount_manager_startup::encode_manager_source_control_request_v1(&request)
                             .map_err(|error| state_error(error.to_string()))
                     }
                     Err(error) => {
                         pending.stage =
                             Some(ManagerReleaseStageV2::BeforeRemoval(presence_projection));
-                        self.pending_manager_removals.push(pending);
+                        self.runtime.pending_manager_removals.push(pending);
                         Err(error)
                     }
                 }
@@ -1564,12 +1653,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     removed,
                     absent,
                 });
-                self.pending_manager_removals.push(pending);
+                self.runtime.pending_manager_removals.push(pending);
                 bytes
             }
             stage => {
                 pending.stage = Some(stage);
-                self.pending_manager_removals.push(pending);
+                self.runtime.pending_manager_removals.push(pending);
                 Err(state_error("manager removal no longer awaits request I/O"))
             }
         }
@@ -1588,11 +1677,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         removed: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<()> {
         let index = self
+            .runtime
             .pending_manager_removals
             .iter()
             .position(|pending| pending.acquisition_id == acquisition_id)
             .ok_or_else(|| state_error("manager source removal is absent"))?;
-        let pending = &mut self.pending_manager_removals[index];
+        let pending = &mut self.runtime.pending_manager_removals[index];
         let Some(ManagerReleaseStageV2::AwaitingRemoval {
             prior_presence,
             request,
@@ -1642,12 +1732,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         absent: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<()> {
         let index = self
+            .runtime
             .pending_manager_removals
             .iter()
             .position(|pending| pending.acquisition_id == acquisition_id)
             .ok_or_else(|| state_error("manager source removal is absent"))?;
         let receipt_projection = {
-            let pending = &mut self.pending_manager_removals[index];
+            let pending = &mut self.runtime.pending_manager_removals[index];
             let Some(ManagerReleaseStageV2::AwaitingRemoval {
                 prior_presence,
                 request,
@@ -1684,7 +1775,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .map_err(|error| state_error(error.to_string()))?
                 .into_projection()
         };
-        self.pending_manager_removals[index].stage =
+        self.runtime.pending_manager_removals[index].stage =
             Some(ManagerReleaseStageV2::Ready(receipt_projection));
         self.finish_pending_manager_release(root, acquisition_id)
     }
@@ -1702,17 +1793,18 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         acquisition_id: [u8; 32],
     ) -> Result<()> {
         let index = self
+            .runtime
             .pending_manager_removals
             .iter()
             .position(|pending| pending.acquisition_id == acquisition_id)
             .ok_or_else(|| state_error("manager source removal is absent"))?;
-        let mut pending = self.pending_manager_removals.remove(index);
+        let mut pending = self.runtime.pending_manager_removals.remove(index);
         let expected_revision = pending.expected_revision;
         let expected_digest = pending.expected_digest;
         let stage = match pending.stage.take() {
             Some(stage) => stage,
             None => {
-                self.pending_manager_removals.push(pending);
+                self.runtime.pending_manager_removals.push(pending);
                 return Err(state_error("manager release stage is absent"));
             }
         };
@@ -1730,7 +1822,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     Ok(receipt) => receipt,
                     Err(error) => {
                         pending.stage = Some(ManagerReleaseStageV2::Ready(projection));
-                        self.pending_manager_removals.push(pending);
+                        self.runtime.pending_manager_removals.push(pending);
                         return Err(error);
                     }
                 };
@@ -1738,7 +1830,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     Some(retained) => retained,
                     None => {
                         pending.stage = Some(ManagerReleaseStageV2::Ready(projection));
-                        self.pending_manager_removals.push(pending);
+                        self.runtime.pending_manager_removals.push(pending);
                         return Err(state_error("retained SourceRoot Release is absent"));
                     }
                 };
@@ -1747,7 +1839,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     None => {
                         pending.retained = Some(retained);
                         pending.stage = Some(ManagerReleaseStageV2::Ready(projection));
-                        self.pending_manager_removals.push(pending);
+                        self.runtime.pending_manager_removals.push(pending);
                         return Err(state_error("terminal provider Release outcome is absent"));
                     }
                 };
@@ -1758,7 +1850,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             ManagerReleaseStageV2::Prepared(prepared) => prepared,
             stage => {
                 pending.stage = Some(stage);
-                self.pending_manager_removals.push(pending);
+                self.runtime.pending_manager_removals.push(pending);
                 return Err(state_error("manager release is not ready to finish"));
             }
         };
@@ -1798,24 +1890,26 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             Err(error) => {
                 if let Some(preparation) = retained_preparation {
                     pending.stage = Some(ManagerReleaseStageV2::Prepared(preparation));
-                    self.pending_manager_removals.push(pending);
+                    self.runtime.pending_manager_removals.push(pending);
                 }
                 return Err(error);
             }
         };
         match outcome {
             lifecycle::SourceAcquisitionNegativeCustodyOutcomeV2::Success(released) => {
-                self.retained_released_roots
+                self.runtime
+                    .retained_released_roots
                     .insert(acquisition_id, released);
                 Ok(())
             }
             lifecycle::SourceAcquisitionNegativeCustodyOutcomeV2::RecoveryRequired(recovery) => {
-                self.retained_negative_custody_recovery
-                    .push(RetainedNegativeCustodyRecoveryV2 {
+                self.runtime.retained_negative_custody_recovery.push(
+                    RetainedNegativeCustodyRecoveryV2 {
                         acquisition_id,
                         recovery,
                         startup_terminals: None,
-                    });
+                    },
+                );
                 Err(state_error("Released postcommit recovery is required"))
             }
         }
@@ -1832,10 +1926,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
-        if self.retained_negative_custody_recovery.is_empty() {
+        if self.runtime.retained_negative_custody_recovery.is_empty() {
             return self.recover_next_cold_released_row(root);
         }
-        if let Some(retained) = self.retained_negative_custody_recovery.last()
+        if let Some(retained) = self.runtime.retained_negative_custody_recovery.last()
             && let Some(terminals) = retained.startup_terminals
         {
             if self.exact_complete_terminal_attempt(
@@ -1853,6 +1947,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
         }
         let retained_recovery = self
+            .runtime
             .retained_negative_custody_recovery
             .pop()
             .ok_or_else(|| state_error("no Released postcommit recovery is retained"))?;
@@ -1880,7 +1975,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             Ok(outcome) => outcome,
             Err(error) => {
                 if let Some(recovery) = retained {
-                    self.retained_negative_custody_recovery.push(
+                    self.runtime.retained_negative_custody_recovery.push(
                         RetainedNegativeCustodyRecoveryV2 {
                             acquisition_id,
                             recovery,
@@ -1893,27 +1988,31 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         };
         match outcome {
             lifecycle::SourceAcquisitionNegativeCustodyOutcomeV2::Success(released) => {
-                self.retained_released_roots
+                self.runtime
+                    .retained_released_roots
                     .insert(acquisition_id, released);
                 if let Some(terminals) = startup_terminals {
                     self.resolve_superseded_cold_attempt(terminals.acquire);
                     if let Some(release) = terminals.release {
                         self.resolve_superseded_cold_attempt(release);
-                        self.retained_terminal_release_outcomes
+                        self.runtime
+                            .retained_terminal_release_outcomes
                             .remove(&acquisition_id);
-                        self.retained_terminal_release_response_evidence
+                        self.runtime
+                            .retained_terminal_release_response_evidence
                             .insert(acquisition_id, release);
                     }
                 }
                 Ok(())
             }
             lifecycle::SourceAcquisitionNegativeCustodyOutcomeV2::RecoveryRequired(recovery) => {
-                self.retained_negative_custody_recovery
-                    .push(RetainedNegativeCustodyRecoveryV2 {
+                self.runtime.retained_negative_custody_recovery.push(
+                    RetainedNegativeCustodyRecoveryV2 {
                         acquisition_id,
                         recovery,
                         startup_terminals,
-                    });
+                    },
+                );
                 Err(state_error("Released postcommit recovery remains required"))
             }
         }
@@ -1924,13 +2023,20 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
         let acquisition_id = self
+            .runtime
             .cold_released_rows
             .pop()
             .ok_or_else(|| state_error("no Released recovery is retained"))?;
-        let row = match self.table.acquisitions.get(&acquisition_id).cloned() {
+        let row = match self
+            .runtime
+            .table
+            .acquisitions
+            .get(&acquisition_id)
+            .cloned()
+        {
             Some(row) => row,
             None => {
-                self.cold_released_rows.push(acquisition_id);
+                self.runtime.cold_released_rows.push(acquisition_id);
                 return Err(state_error("cold Released row is absent"));
             }
         };
@@ -1943,12 +2049,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             Ok(record) => match record.value().map(ToOwned::to_owned) {
                 Some(value) => value,
                 None => {
-                    self.cold_released_rows.push(acquisition_id);
+                    self.runtime.cold_released_rows.push(acquisition_id);
                     return Err(state_error("cold Released row materialized as a delete"));
                 }
             },
             Err(error) => {
-                self.cold_released_rows.push(acquisition_id);
+                self.runtime.cold_released_rows.push(acquisition_id);
                 return Err(error);
             }
         };
@@ -1978,12 +2084,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .and_then(core::convert::identity);
         match released {
             Ok(released) => {
-                self.retained_released_roots
+                self.runtime
+                    .retained_released_roots
                     .insert(acquisition_id, released);
                 Ok(())
             }
             Err(error) => {
-                self.cold_released_rows.push(acquisition_id);
+                self.runtime.cold_released_rows.push(acquisition_id);
                 Err(error)
             }
         }
@@ -1997,7 +2104,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// complete recovered table forms one canonical bounded response.
     #[doc(hidden)]
     pub fn encode_current_inventory(&mut self) -> Result<Vec<u8>> {
-        let broker_instance_id = self.broker_instance_id;
+        let broker_instance_id = self.runtime.broker_instance_id;
         let kernel_boot_id = aos_sandbox_linux::boot::KernelBootId::current()
             .map_err(|error| crate::MountError::State(error.to_string()))?
             .into_bytes();
@@ -2039,6 +2146,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         if current_boot_id != protected_boot_id
             || sample.host_boot_id() != protected_boot_id
             || self
+                .runtime
                 .last_boottime_nanoseconds
                 .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
         {
@@ -2046,7 +2154,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 "source operation readback crossed the protected kernel clock".to_owned(),
             ));
         }
-        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        self.runtime.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
 
         let (acquisition_id, request_digest) = match method {
             BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => {
@@ -2080,10 +2188,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
         };
         let retained_acquire_phase = self
+            .runtime
             .retained_source_roots
             .get(&acquisition_id)
             .and_then(retained_source_root_phase);
         let row_request_matches = self
+            .runtime
             .table
             .acquisitions
             .get(&acquisition_id)
@@ -2111,11 +2221,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
         };
         let retained_noncomplete = match self
+            .runtime
             .retained_noncomplete_dispositions
             .get(&(acquisition_id, provider_method.tag()))
         {
             Some(outcome) => {
-                if !self.table.retained_disposition_matches_v2(
+                if !self.runtime.table.retained_disposition_matches_v2(
                     acquisition_id,
                     provider_method,
                     outcome,
@@ -2129,17 +2240,21 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             None => false,
         };
         if method == BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE && !retained_noncomplete {
-            let cold_recovery_is_pending = self.cold_pending_attempts.iter().any(|attempt_id| {
-                self.table
-                    .provider_attempts
-                    .get(attempt_id)
-                    .is_some_and(|attempt| attempt.owner.owner_id() == acquisition_id)
-            });
+            let cold_recovery_is_pending =
+                self.runtime.cold_pending_attempts.iter().any(|attempt_id| {
+                    self.runtime
+                        .table
+                        .provider_attempts
+                        .get(attempt_id)
+                        .is_some_and(|attempt| attempt.owner.owner_id() == acquisition_id)
+                });
             let postcommit_recovery_is_pending = self
+                .runtime
                 .retained_postcommit_recovery
                 .iter()
                 .any(|retained| retained.acquisition_id == acquisition_id);
             let manager_custody_is_pending = self
+                .runtime
                 .pending_manager_custody
                 .iter()
                 .any(|pending| pending.acquisition_id() == acquisition_id);
@@ -2157,6 +2272,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             && !retained_noncomplete
         {
             if let Some(terminal) = self
+                .runtime
                 .retained_terminal_release_response_evidence
                 .get(&acquisition_id)
                 .copied()
@@ -2169,27 +2285,38 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 ));
             }
             let release_recovery_is_pending = self
+                .runtime
                 .retained_negative_custody_recovery
                 .iter()
                 .any(|retained| retained.acquisition_id == acquisition_id);
             let manager_removal_is_pending = self
+                .runtime
                 .pending_manager_removals
                 .iter()
                 .any(|pending| pending.acquisition_id == acquisition_id);
             let provider_recovery_is_pending =
-                self.cold_pending_attempts.iter().any(|attempt_id| {
-                    self.table
+                self.runtime.cold_pending_attempts.iter().any(|attempt_id| {
+                    self.runtime
+                        .table
                         .provider_attempts
                         .get(attempt_id)
                         .is_some_and(|attempt| attempt.owner.owner_id() == acquisition_id)
                 });
             let terminal_provider_custody_is_pending = self
+                .runtime
                 .retained_terminal_release_outcomes
                 .contains_key(&acquisition_id)
-                || self.retained_release_authorities.iter().any(|authority| {
-                    authority.projection().mount_acquisition_id() == Some(acquisition_id)
-                });
-            if !self.retained_released_roots.contains_key(&acquisition_id)
+                || self
+                    .runtime
+                    .retained_release_authorities
+                    .iter()
+                    .any(|authority| {
+                        authority.projection().mount_acquisition_id() == Some(acquisition_id)
+                    });
+            if !self
+                .runtime
+                .retained_released_roots
+                .contains_key(&acquisition_id)
                 || release_recovery_is_pending
                 || manager_removal_is_pending
                 || provider_recovery_is_pending
@@ -2253,10 +2380,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         mount_plan_digest: [u8; 32],
         ownership_lease_digest: [u8; 32],
     ) -> Result<()> {
-        if self.pending_provider.is_some()
-            || self.pending_provider_send.is_some()
-            || self.pending_release_preparation.is_some()
-            || !self.cold_pending_attempts.is_empty()
+        if self.runtime.pending_provider.is_some()
+            || self.runtime.pending_provider_send.is_some()
+            || self.runtime.pending_release_preparation.is_some()
+            || !self.runtime.cold_pending_attempts.is_empty()
         {
             return Err(state_error("another SourceProvider request is outstanding"));
         }
@@ -2299,11 +2426,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))??;
         match result {
             Ok(sent) => {
-                self.pending_provider = Some(sent);
+                self.runtime.pending_provider = Some(sent);
                 Ok(())
             }
             Err(recovery) => {
-                self.pending_provider_send = Some(recovery);
+                self.runtime.pending_provider_send = Some(recovery);
                 Err(state_error(
                     "SourceProvider request send requires exact retry",
                 ))
@@ -2328,7 +2455,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
         >,
     ) -> Result<()> {
-        if self.pending_provider_send.is_some() {
+        if self.runtime.pending_provider_send.is_some() {
             return self.retry_pending_provider_send(root);
         }
 
@@ -2349,17 +2476,20 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 ));
             }
         };
-        if self.pending_backend_recovery_replacement.is_none() {
+        if self.runtime.pending_backend_recovery_replacement.is_none() {
             let live_attempt_id = self
+                .runtime
                 .pending_provider
                 .as_ref()
                 .map(SentProviderQueryV2::attempt_id);
             let cold_attempt_id =
-                self.cold_pending_attempts
+                self.runtime
+                    .cold_pending_attempts
                     .first()
                     .copied()
                     .filter(|attempt_id| {
-                        self.table
+                        self.runtime
+                            .table
                             .provider_attempts
                             .get(attempt_id)
                             .is_some_and(|attempt| {
@@ -2371,7 +2501,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                             })
                     });
             if live_attempt_id.is_none()
-                && !self.cold_pending_attempts.is_empty()
+                && !self.runtime.cold_pending_attempts.is_empty()
                 && cold_attempt_id.is_none()
             {
                 return Err(state_error(
@@ -2380,6 +2510,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
             let replacement = if let Some(attempt_id) = live_attempt_id.or(cold_attempt_id) {
                 let attempt = self
+                    .runtime
                     .table
                     .provider_attempts
                     .get(&attempt_id)
@@ -2411,19 +2542,20 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     .map_err(|_| state_error("Root-Mount successor session is not current"))?
                     .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))??;
                 if live_attempt_id == Some(attempt_id) {
-                    self.pending_provider = None;
+                    self.runtime.pending_provider = None;
                 }
                 if cold_attempt_id == Some(attempt_id) {
-                    if self.cold_pending_attempts.first() != Some(&attempt_id) {
+                    if self.runtime.cold_pending_attempts.first() != Some(&attempt_id) {
                         return Err(state_error(
                             "Mount cold recovery order changed during replacement",
                         ));
                     }
-                    self.cold_pending_attempts.remove(0);
+                    self.runtime.cold_pending_attempts.remove(0);
                 }
                 replacement
             } else {
                 let matching_rows = self
+                    .runtime
                     .table
                     .acquisitions
                     .values()
@@ -2438,7 +2570,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                             }
                             ProviderMethodV2::Inventory => None,
                         }?;
-                        let attempt = self.table.provider_attempts.get(&tail.id)?;
+                        let attempt = self.runtime.table.provider_attempts.get(&tail.id)?;
                         if attempt.signed_request_digest != signed_request_digest {
                             return None;
                         }
@@ -2466,6 +2598,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     ));
                 };
                 let scope = self
+                    .runtime
                     .table
                     .acquisitions
                     .get(acquisition_id)
@@ -2505,20 +2638,23 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     expected_method,
                 )
             };
-            self.pending_backend_recovery_replacement = Some(BackendRecoveryReplacementV2 {
-                acquisition_id: replacement.0,
-                expected_revision: replacement.1,
-                expected_digest: replacement.2,
-                method: replacement.3,
-                predecessor_signed_request_digest: signed_request_digest,
-            });
+            self.runtime.pending_backend_recovery_replacement =
+                Some(BackendRecoveryReplacementV2 {
+                    acquisition_id: replacement.0,
+                    expected_revision: replacement.1,
+                    expected_digest: replacement.2,
+                    method: replacement.3,
+                    predecessor_signed_request_digest: signed_request_digest,
+                });
         }
 
         let replacement = self
+            .runtime
             .pending_backend_recovery_replacement
             .take()
             .ok_or_else(|| state_error("backend recovery replacement stage is absent"))?;
         let replacement_matches = self
+            .runtime
             .table
             .acquisitions
             .get(&replacement.acquisition_id)
@@ -2528,7 +2664,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     && replacement.predecessor_signed_request_digest == signed_request_digest
             });
         if !replacement_matches {
-            self.pending_backend_recovery_replacement = Some(replacement);
+            self.runtime.pending_backend_recovery_replacement = Some(replacement);
             return Err(state_error(
                 "backend recovery differs from the retained replacement stage",
             ));
@@ -2595,16 +2731,16 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))?;
         match result {
             Ok(Ok(sent)) => {
-                self.pending_provider = Some(sent);
+                self.runtime.pending_provider = Some(sent);
                 Ok(())
             }
             Ok(Err(recovery)) => {
-                self.pending_provider_send = Some(recovery);
+                self.runtime.pending_provider_send = Some(recovery);
                 Err(state_error("backend recovery retry send remains pending"))
             }
             Err(error) => {
                 if let Some(replacement) = retained_replacement {
-                    self.pending_backend_recovery_replacement = Some(replacement);
+                    self.runtime.pending_backend_recovery_replacement = Some(replacement);
                 }
                 Err(error)
             }
@@ -2624,7 +2760,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         retry_authority: aos_sandbox_source_provider::ProtectedProviderMountRetryAuthorityV1,
     ) -> Result<()> {
-        if self.pending_provider_send.is_some() {
+        if self.runtime.pending_provider_send.is_some() {
             return self.retry_pending_provider_send(root);
         }
         let (method, acquisition_id, signed_request_digest) = retry_authority.into_identity();
@@ -2636,6 +2772,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             ));
         }
         if self
+            .runtime
             .pending_inventory_recovery_replacement
             .is_some_and(|replacement| replacement.3 != signed_request_digest)
         {
@@ -2644,17 +2781,24 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             ));
         }
 
-        if self.pending_inventory_recovery_replacement.is_none() {
+        if self
+            .runtime
+            .pending_inventory_recovery_replacement
+            .is_none()
+        {
             let live_attempt_id = self
+                .runtime
                 .pending_provider
                 .as_ref()
                 .map(SentProviderQueryV2::attempt_id);
             let cold_attempt_id =
-                self.cold_pending_attempts
+                self.runtime
+                    .cold_pending_attempts
                     .first()
                     .copied()
                     .filter(|attempt_id| {
-                        self.table
+                        self.runtime
+                            .table
                             .provider_attempts
                             .get(attempt_id)
                             .is_some_and(|attempt| {
@@ -2664,7 +2808,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                             })
                     });
             if live_attempt_id.is_none()
-                && !self.cold_pending_attempts.is_empty()
+                && !self.runtime.cold_pending_attempts.is_empty()
                 && cold_attempt_id.is_none()
             {
                 return Err(state_error(
@@ -2675,6 +2819,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .or(cold_attempt_id)
                 .ok_or_else(|| state_error("Inventory recovery request is absent"))?;
             let attempt = self
+                .runtime
                 .table
                 .provider_attempts
                 .get(&attempt_id)
@@ -2697,19 +2842,20 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 })
                 .map_err(|_| state_error("Root-Mount successor session is not current"))?
                 .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))??;
-            self.pending_provider = None;
+            self.runtime.pending_provider = None;
             if cold_attempt_id == Some(attempt_id) {
-                if self.cold_pending_attempts.first() != Some(&attempt_id) {
+                if self.runtime.cold_pending_attempts.first() != Some(&attempt_id) {
                     return Err(state_error(
                         "Inventory recovery differs from the oldest Mount cold attempt",
                     ));
                 }
-                self.cold_pending_attempts.remove(0);
+                self.runtime.cold_pending_attempts.remove(0);
             }
-            self.pending_inventory_recovery_replacement = Some(replacement);
+            self.runtime.pending_inventory_recovery_replacement = Some(replacement);
         }
 
         let replacement = self
+            .runtime
             .pending_inventory_recovery_replacement
             .ok_or_else(|| state_error("Inventory recovery replacement stage is absent"))?;
         let result = root
@@ -2737,13 +2883,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))??;
         match result {
             Ok(sent) => {
-                self.pending_inventory_recovery_replacement = None;
-                self.pending_provider = Some(sent);
+                self.runtime.pending_inventory_recovery_replacement = None;
+                self.runtime.pending_provider = Some(sent);
                 Ok(())
             }
             Err(recovery) => {
-                self.pending_inventory_recovery_replacement = None;
-                self.pending_provider_send = Some(recovery);
+                self.runtime.pending_inventory_recovery_replacement = None;
+                self.runtime.pending_provider_send = Some(recovery);
                 Err(state_error("Inventory recovery send requires exact retry"))
             }
         }
@@ -2768,9 +2914,9 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<()> {
-        if self.pending_provider.is_some()
-            || self.pending_provider_send.is_some()
-            || !self.cold_pending_attempts.is_empty()
+        if self.runtime.pending_provider.is_some()
+            || self.runtime.pending_provider_send.is_some()
+            || !self.runtime.cold_pending_attempts.is_empty()
         {
             return Err(state_error("another SourceProvider request is outstanding"));
         }
@@ -2778,15 +2924,18 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let live_request =
             decode_release_mount_source_acquisition_request(mount_request, peer, policy, now)?;
         let acquisition_id = *live_request.request().acquisition_id().as_bytes();
-        let retained_preparation = if let Some(pending) = self.pending_release_preparation.take() {
+        let retained_preparation = if let Some(pending) =
+            self.runtime.pending_release_preparation.take()
+        {
             if pending.acquisition_id != acquisition_id || pending.mount_request != mount_request {
-                self.pending_release_preparation = Some(pending);
+                self.runtime.pending_release_preparation = Some(pending);
                 return Err(state_error(
                     "another SourceProvider Release preparation is outstanding",
                 ));
             }
             pending
         } else if let Some(prepared_release) = self
+            .runtime
             .startup_lost_release_preparations
             .remove(&acquisition_id)
         {
@@ -2797,6 +2946,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
         } else {
             let retained = self
+                .runtime
                 .retained_source_roots
                 .remove(&acquisition_id)
                 .ok_or_else(|| state_error("fresh Release lacks retained SourceRoot custody"))?;
@@ -2811,7 +2961,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     custody,
                 ) => custody.prepare_release(),
                 retained => {
-                    self.retained_source_roots.insert(acquisition_id, retained);
+                    self.runtime.retained_source_roots.insert(acquisition_id, retained);
                     return Err(state_error("retained SourceRoot is not releasable"));
                 }
             };
@@ -2887,39 +3037,43 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.pending_release_preparation = retained_preparation;
+                self.runtime.pending_release_preparation = retained_preparation;
                 return Err(error);
             }
         };
         let (send, release_authority) = match prepared {
             Ok(prepared) => prepared,
             Err(SourceAcquisitionPostcommitOutcomeV2::Success(source_root)) => {
-                self.retained_source_roots
+                self.runtime
+                    .retained_source_roots
                     .insert(acquisition_id, source_root);
                 return Err(state_error(
                     "provider Release produced the wrong custody phase",
                 ));
             }
             Err(SourceAcquisitionPostcommitOutcomeV2::RecoveryRequired(recovery)) => {
-                self.retained_postcommit_recovery
-                    .push(RetainedSourcePostcommitRecoveryV2 {
+                self.runtime.retained_postcommit_recovery.push(
+                    RetainedSourcePostcommitRecoveryV2 {
                         acquisition_id,
                         recovery,
                         startup_acquire_terminal: None,
-                    });
+                    },
+                );
                 return Err(state_error(
                     "provider Release postcommit recovery is required",
                 ));
             }
         };
-        self.retained_release_authorities.push(release_authority);
+        self.runtime
+            .retained_release_authorities
+            .push(release_authority);
         match send {
             Ok(sent) => {
-                self.pending_provider = Some(sent);
+                self.runtime.pending_provider = Some(sent);
                 Ok(())
             }
             Err(recovery) => {
-                self.pending_provider_send = Some(recovery);
+                self.runtime.pending_provider_send = Some(recovery);
                 Err(state_error("provider Release send requires exact retry"))
             }
         }
@@ -2947,7 +3101,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let manager_acquisition_id = manager_evidence.acquisition_id;
         let expected_revision = manager_evidence.acquisition_revision;
         let expected_digest = manager_evidence.acquisition_record_digest;
-        self.pending_manager_custody
+        self.runtime
+            .pending_manager_custody
             .push(RetainedManagerSourceCustodyV2::Unpaired {
                 acquisition_id: manager_acquisition_id,
                 expected_revision,
@@ -2974,7 +3129,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
-        let mut retained = self.pending_manager_custody.pop();
+        let mut retained = self.runtime.pending_manager_custody.pop();
         let acquisition_id = retained
             .as_ref()
             .map(RetainedManagerSourceCustodyV2::acquisition_id)
@@ -2995,14 +3150,16 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             else {
                 return Err(state_error("manager SourceRoot preparation phase changed"));
             };
-            let Some(source_root) = self.retained_source_roots.remove(&acquisition_id) else {
-                self.pending_manager_custody
-                    .push(RetainedManagerSourceCustodyV2::Unpaired {
+            let Some(source_root) = self.runtime.retained_source_roots.remove(&acquisition_id)
+            else {
+                self.runtime.pending_manager_custody.push(
+                    RetainedManagerSourceCustodyV2::Unpaired {
                         acquisition_id,
                         expected_revision,
                         expected_digest,
                         manager_presence,
-                    });
+                    },
+                );
                 return Err(state_error("manager presence lacks retained SourceRoot"));
             };
             let pending = match source_root {
@@ -3013,15 +3170,17 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     committed,
                 ) => committed.retain_manager_presence(manager_presence),
                 source_root => {
-                    self.retained_source_roots
+                    self.runtime
+                        .retained_source_roots
                         .insert(acquisition_id, source_root);
-                    self.pending_manager_custody
-                        .push(RetainedManagerSourceCustodyV2::Unpaired {
+                    self.runtime.pending_manager_custody.push(
+                        RetainedManagerSourceCustodyV2::Unpaired {
                             acquisition_id,
                             expected_revision,
                             expected_digest,
                             manager_presence,
-                        });
+                        },
+                    );
                     return Err(state_error("SourceRoot is not awaiting manager custody"));
                 }
             };
@@ -3082,24 +3241,26 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             Ok(postcommit) => postcommit,
             Err(error) => {
                 if let Some(retained) = retained {
-                    self.pending_manager_custody.push(retained);
+                    self.runtime.pending_manager_custody.push(retained);
                 }
                 return Err(error);
             }
         };
         match postcommit {
             SourceAcquisitionPostcommitOutcomeV2::Success(source_root) => {
-                self.retained_source_roots
+                self.runtime
+                    .retained_source_roots
                     .insert(acquisition_id, source_root);
                 Ok(())
             }
             SourceAcquisitionPostcommitOutcomeV2::RecoveryRequired(recovery) => {
-                self.retained_postcommit_recovery
-                    .push(RetainedSourcePostcommitRecoveryV2 {
+                self.runtime.retained_postcommit_recovery.push(
+                    RetainedSourcePostcommitRecoveryV2 {
                         acquisition_id,
                         recovery,
                         startup_acquire_terminal: None,
-                    });
+                    },
+                );
                 Err(state_error(
                     "manager SourceRoot custody recovery is required",
                 ))
@@ -3115,6 +3276,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         if current_boot_id != protected_boot_id
             || sample.host_boot_id() != protected_boot_id
             || self
+                .runtime
                 .last_boottime_nanoseconds
                 .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
         {
@@ -3122,7 +3284,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 "source operation crossed the protected kernel clock",
             ));
         }
-        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        self.runtime.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
         Ok(sample.boottime_nanoseconds())
     }
 
@@ -3143,10 +3305,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
         if self.has_cold_provider_recovery()
-            || self.pending_provider.is_some()
-            || self.pending_provider_send.is_some()
-            || self.pending_remote_inventory_outcome.is_some()
-            || self.pending_inventory_recovery_replacement.is_some()
+            || self.runtime.pending_provider.is_some()
+            || self.runtime.pending_provider_send.is_some()
+            || self.runtime.pending_remote_inventory_outcome.is_some()
+            || self
+                .runtime
+                .pending_inventory_recovery_replacement
+                .is_some()
         {
             return Err(state_error(
                 "remote Inventory requires an idle provider head",
@@ -3172,11 +3337,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))??;
         match sent {
             Ok(sent) => {
-                self.pending_provider = Some(sent);
+                self.runtime.pending_provider = Some(sent);
                 Ok(())
             }
             Err(recovery) => {
-                self.pending_provider_send = Some(recovery);
+                self.runtime.pending_provider_send = Some(recovery);
                 Err(state_error("remote Inventory send requires exact retry"))
             }
         }
@@ -3199,11 +3364,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<bool> {
         let sent = self
+            .runtime
             .pending_provider
             .take()
             .ok_or_else(|| state_error("no remote Inventory request is outstanding"))?;
         let attempt_id = sent.attempt_id();
-        let verified = match self.pending_remote_inventory_outcome.take() {
+        let verified = match self.runtime.pending_remote_inventory_outcome.take() {
             Some(verified) => verified,
             None => {
                 let (_, authorization) = sent.security_parts();
@@ -3221,11 +3387,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 match received {
                     Ok(Some(verified)) => verified,
                     Ok(None) => {
-                        self.pending_provider = Some(sent);
+                        self.runtime.pending_provider = Some(sent);
                         return Ok(false);
                     }
                     Err(error) => {
-                        self.pending_provider = Some(sent);
+                        self.runtime.pending_provider = Some(sent);
                         return Err(error);
                     }
                 }
@@ -3249,8 +3415,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             })
             .and_then(core::convert::identity);
         if let Err(error) = committed {
-            self.pending_provider = Some(sent);
-            self.pending_remote_inventory_outcome = Some(verified);
+            self.runtime.pending_provider = Some(sent);
+            self.runtime.pending_remote_inventory_outcome = Some(verified);
             return Err(error);
         }
         Ok(true)
@@ -3274,7 +3440,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<bool> {
-        if self.pending_provider.is_some() || self.pending_provider_send.is_some() {
+        if self.runtime.pending_provider.is_some() || self.runtime.pending_provider_send.is_some() {
             return Err(state_error("live provider custody must be resolved first"));
         }
         let signed = self.cold_reserved_provider_request()?;
@@ -3283,10 +3449,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Err(state_error("oldest cold attempt is not Inventory"));
         }
         let attempt_id = *self
+            .runtime
             .cold_pending_attempts
             .first()
             .ok_or_else(|| state_error("cold Inventory barrier is absent"))?;
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(&attempt_id)
@@ -3353,6 +3521,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
         let recovery = self
+            .runtime
             .pending_provider_send
             .take()
             .ok_or_else(|| state_error("no SourceProvider send recovery is retained"))?;
@@ -3375,16 +3544,16 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .and_then(core::convert::identity);
         match sent {
             Ok(Ok(sent)) => {
-                self.pending_provider = Some(sent);
+                self.runtime.pending_provider = Some(sent);
                 Ok(())
             }
             Ok(Err(recovery)) => {
-                self.pending_provider_send = Some(recovery);
+                self.runtime.pending_provider_send = Some(recovery);
                 Err(state_error("SourceProvider request send remains pending"))
             }
             Err(error) => {
                 if let Some(recovery) = retained {
-                    self.pending_provider_send = Some(recovery);
+                    self.runtime.pending_provider_send = Some(recovery);
                 }
                 Err(error)
             }
@@ -3407,10 +3576,12 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     ) -> Result<()> {
         let sent = self
+            .runtime
             .pending_provider
             .take()
             .ok_or_else(|| state_error("no SourceProvider request is outstanding"))?;
         let (acquisition_id, provider_method) = self
+            .runtime
             .table
             .provider_attempts
             .get(&sent.attempt_id())
@@ -3432,7 +3603,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let consumed = match consumed {
             Ok(consumed) => consumed,
             Err(error) => {
-                self.pending_provider = Some(sent);
+                self.runtime.pending_provider = Some(sent);
                 return Err(error);
             }
         };
@@ -3442,27 +3613,31 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     && outcome.status()
                         == aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
                 {
-                    self.retained_terminal_release_outcomes
+                    self.runtime
+                        .retained_terminal_release_outcomes
                         .insert(acquisition_id, outcome);
                 } else if outcome.status()
                     != aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
                 {
-                    self.retained_noncomplete_dispositions
+                    self.runtime
+                        .retained_noncomplete_dispositions
                         .insert((acquisition_id, provider_method.tag()), outcome);
                 }
             }
             ConsumedProviderOutcomeV2::CompleteAcquire { postcommit } => match postcommit {
                 SourceAcquisitionPostcommitOutcomeV2::Success(source_root) => {
-                    self.retained_source_roots
+                    self.runtime
+                        .retained_source_roots
                         .insert(acquisition_id, source_root);
                 }
                 SourceAcquisitionPostcommitOutcomeV2::RecoveryRequired(recovery) => {
-                    self.retained_postcommit_recovery
-                        .push(RetainedSourcePostcommitRecoveryV2 {
+                    self.runtime.retained_postcommit_recovery.push(
+                        RetainedSourcePostcommitRecoveryV2 {
                             acquisition_id,
                             recovery,
                             startup_acquire_terminal: None,
-                        });
+                        },
+                    );
                     return Err(state_error("SourceRoot postcommit recovery is required"));
                 }
             },
@@ -3488,17 +3663,19 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     ) -> Result<()> {
-        if self.pending_provider.is_some() {
+        if self.runtime.pending_provider.is_some() {
             return Err(state_error(
                 "live SourceProvider response custody must be resumed directly",
             ));
         }
         let attempt_id = self
+            .runtime
             .cold_pending_attempts
             .first()
             .copied()
             .ok_or_else(|| state_error("no durable SourceProvider attempt awaits recovery"))?;
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(&attempt_id)
@@ -3525,6 +3702,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 }
             )
             && self
+                .runtime
                 .table
                 .acquisitions
                 .get(&acquisition_id)
@@ -3590,17 +3768,19 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         historical: aos_sandbox_source_provider::FixedProviderHistoricalOutcomeV1,
     ) -> Result<()> {
-        if self.pending_provider.is_some() {
+        if self.runtime.pending_provider.is_some() {
             return Err(state_error(
                 "live SourceProvider response custody must be resumed directly",
             ));
         }
         let attempt_id = self
+            .runtime
             .cold_pending_attempts
             .first()
             .copied()
             .ok_or_else(|| state_error("no durable SourceProvider attempt awaits recovery"))?;
         let attempt = self
+            .runtime
             .table
             .provider_attempts
             .get(&attempt_id)
@@ -3669,30 +3849,30 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         recovered: RecoveredProviderOutcomeConsumptionV2,
         postcommit_error: &'static str,
     ) -> Result<()> {
-        self.cold_pending_attempts.remove(0);
+        self.runtime.cold_pending_attempts.remove(0);
         match recovered {
             RecoveredProviderOutcomeConsumptionV2::WithoutSourceRoot { outcome } => {
                 if provider_method == ProviderMethodV2::Release
                     && outcome.status()
                         == aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
                 {
-                    self.retained_terminal_release_outcomes
+                    self.runtime.retained_terminal_release_outcomes
                         .insert(acquisition_id, outcome);
                 } else if outcome.status()
                     != aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
                 {
-                    self.retained_noncomplete_dispositions
+                    self.runtime.retained_noncomplete_dispositions
                         .insert((acquisition_id, provider_method.tag()), outcome);
                 }
             }
             RecoveredProviderOutcomeConsumptionV2::CompleteAcquire { postcommit } => {
                 match postcommit {
                     SourceAcquisitionPostcommitOutcomeV2::Success(source_root) => {
-                        self.retained_source_roots
+                        self.runtime.retained_source_roots
                             .insert(acquisition_id, source_root);
                     }
                     SourceAcquisitionPostcommitOutcomeV2::RecoveryRequired(recovery) => {
-                        self.retained_postcommit_recovery
+                        self.runtime.retained_postcommit_recovery
                             .push(RetainedSourcePostcommitRecoveryV2 {
                                 acquisition_id,
                                 recovery,
@@ -3706,9 +3886,9 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 match source_root {
                     aos_sandbox_source_provider_security::RecoveredRetainedMountSourceRootV2::Releasing(
                         authority,
-                    ) => self.retained_release_authorities.push(authority),
+                    ) => self.runtime.retained_release_authorities.push(authority),
                     source_root => {
-                        self.retained_source_roots.insert(
+                        self.runtime.retained_source_roots.insert(
                             acquisition_id,
                             aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2::StartupAdopted(
                                 source_root,
@@ -3738,7 +3918,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
-        if let Some(retained) = self.retained_postcommit_recovery.last()
+        if let Some(retained) = self.runtime.retained_postcommit_recovery.last()
             && let Some(terminal) = retained.startup_acquire_terminal
             && self.exact_complete_terminal_attempt(
                 retained.acquisition_id,
@@ -3750,6 +3930,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             ));
         }
         let retained_recovery = self
+            .runtime
             .retained_postcommit_recovery
             .pop()
             .ok_or_else(|| state_error("no SourceRoot postcommit recovery is retained"))?;
@@ -3814,12 +3995,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             Ok(resolved) => resolved,
             Err(error) => {
                 if let Some(recovery) = unentered_recovery {
-                    self.retained_postcommit_recovery
-                        .push(RetainedSourcePostcommitRecoveryV2 {
+                    self.runtime.retained_postcommit_recovery.push(
+                        RetainedSourcePostcommitRecoveryV2 {
                             acquisition_id,
                             recovery,
                             startup_acquire_terminal,
-                        });
+                        },
+                    );
                 }
                 return Err(error);
             }
@@ -3827,28 +4009,32 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         match resolved {
             Ok((source_root, sent_release)) => {
                 if let Some(source_root) = source_root {
-                    self.retained_source_roots
+                    self.runtime
+                        .retained_source_roots
                         .insert(acquisition_id, source_root);
                     if let Some(terminal) = startup_acquire_terminal {
                         self.resolve_superseded_cold_attempt(terminal);
                     }
                 }
                 if let Some((send, release_authority)) = sent_release {
-                    self.retained_release_authorities.push(release_authority);
+                    self.runtime
+                        .retained_release_authorities
+                        .push(release_authority);
                     match send {
-                        Ok(sent) => self.pending_provider = Some(sent),
-                        Err(recovery) => self.pending_provider_send = Some(recovery),
+                        Ok(sent) => self.runtime.pending_provider = Some(sent),
+                        Err(recovery) => self.runtime.pending_provider_send = Some(recovery),
                     }
                 }
                 Ok(())
             }
             Err(recovery) => {
-                self.retained_postcommit_recovery
-                    .push(RetainedSourcePostcommitRecoveryV2 {
+                self.runtime.retained_postcommit_recovery.push(
+                    RetainedSourcePostcommitRecoveryV2 {
                         acquisition_id,
                         recovery,
                         startup_acquire_terminal,
-                    });
+                    },
+                );
                 Err(state_error(
                     "SourceRoot postcommit recovery remains ambiguous",
                 ))

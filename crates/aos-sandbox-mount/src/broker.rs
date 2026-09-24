@@ -70,6 +70,8 @@ pub struct MountBroker<W> {
     broker_instance_id: [u8; 16],
     authority: MountAuthorityV1,
     destination_slots: Option<DestinationSlotStoreV1>,
+    source_runtime: Option<crate::source_acquisition::SourceAcquisitionRuntimeV2>,
+    source_runtime_failed: bool,
 }
 
 impl<W: MountWorker> MountBroker<W> {
@@ -156,6 +158,8 @@ impl<W: MountWorker> MountBroker<W> {
             broker_instance_id,
             authority,
             destination_slots,
+            source_runtime: None,
+            source_runtime_failed: false,
         })
     }
 
@@ -179,15 +183,17 @@ impl<W: MountWorker> MountBroker<W> {
 
     /// Lends the sole protected Mount journal to the source-acquisition owner.
     ///
-    /// The source owner replays the complete source graph under purpose-limited
-    /// authority. Its lifetime is confined to this operation, so neither the
-    /// journal nor its exclusive lock can be duplicated or retained by a
-    /// separate source service.
+    /// The first borrow replays the complete source graph. Later borrows
+    /// revalidate the fixed journal and reuse the broker-retained runtime, so
+    /// move-only descriptor custody survives between operations without a
+    /// second journal lock or a separate source service. An operation error
+    /// requires process restart before another source borrow.
     ///
     /// # Errors
     ///
     /// Rejects an unhealthy broker, nonfixed or replaced journal, invalid
-    /// startup policy, or noncanonical source-acquisition recovery graph.
+    /// startup policy, noncanonical source-acquisition recovery graph, or a
+    /// failed earlier source operation.
     #[doc(hidden)]
     pub fn with_fixed_source_acquisition_owner<R>(
         &mut self,
@@ -196,11 +202,31 @@ impl<W: MountWorker> MountBroker<W> {
         ) -> Result<R>,
     ) -> Result<R> {
         self.ensure_authority_healthy()?;
-        let mut owner =
-            crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(
+        if self.source_runtime_failed {
+            return Err(MountError::State(
+                "source runtime failed; protected restart is required".to_owned(),
+            ));
+        }
+        let mut owner = match self.source_runtime.take() {
+            Some(runtime) => match crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::attach_runtime(
                 &mut self.journal,
-            )?;
-        operation(&mut owner)
+                runtime,
+            ) {
+                Ok(owner) => owner,
+                Err((error, runtime)) => {
+                    self.source_runtime = Some(runtime);
+                    self.source_runtime_failed = true;
+                    return Err(error);
+                }
+            },
+            None => crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(
+                &mut self.journal,
+            )?,
+        };
+        let result = operation(&mut owner);
+        self.source_runtime = Some(owner.into_runtime());
+        self.source_runtime_failed = result.is_err();
+        result
     }
 
     /// Reports whether this broker owns a configured destination-slot store.
@@ -3878,6 +3904,27 @@ mod tests {
         assert!(result.is_err());
         assert!(!called.get());
         assert!(broker.inventory_resources().is_ok());
+    }
+
+    #[test]
+    fn failed_source_runtime_requires_restart_before_another_borrow() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker(open(&path), ScriptedWorker::default());
+        broker.source_runtime_failed = true;
+        let called = Cell::new(false);
+
+        let result = broker.with_fixed_source_acquisition_owner(|_| {
+            called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(MountError::State(message))
+                if message == "source runtime failed; protected restart is required"
+        ));
+        assert!(!called.get());
     }
 
     #[test]
