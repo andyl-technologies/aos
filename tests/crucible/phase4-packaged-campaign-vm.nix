@@ -3,6 +3,7 @@
   pkgs,
   lib,
   guestChoice ? false,
+  hotForkFlight ? false,
   campaignMidpoint ? false,
   findingExactBundle ? false,
   findingSignalBundle ? false,
@@ -85,16 +86,16 @@
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
-    project_id_count = ${if findingForkWrite then "2" else "1"}
+    project_id_count = ${if findingForkWrite || hotForkFlight then "2" else "1"}
     child_user_id = 65534
     child_group_id = 65534
     maximum_tasks = 64
     maximum_inodes = 4096
     finish_timeout_ms = 15000
-    maximum_slots = ${if findingForkWrite then "2" else "1"}
+    maximum_slots = ${if findingForkWrite || hotForkFlight then "2" else "1"}
     maximum_vcpus = 2
     maximum_resident_bytes = ${toString (
-      if guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
+      if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
       then 1073741824
       else 536870912
     )}
@@ -119,7 +120,7 @@
     executor_scan_limit = 1024
     worker_slots_per_campaign = 1
 
-    ${lib.optionalString guestChoice ''
+    ${lib.optionalString (guestChoice || hotForkFlight) ''
       [guest_selectable_boundary_diagnostics]
       maximum_events = 256
     ''}
@@ -137,6 +138,8 @@
       then "crucible-packaged-campaign-policy-timeout"
       else if maintenanceTransfer
       then "crucible-campaign-exact-maintenance-transfer"
+      else if hotForkFlight
+      then "crucible-campaign-public-materialization-tiers"
       else if guestChoice
       then "crucible-packaged-campaign-choice"
       else if findingForkWrite
@@ -148,12 +151,12 @@
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
-    memory = if findingForkWrite then 3072 else 2048;
+    memory = if findingForkWrite || hotForkFlight then 3072 else 2048;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
       ++ (
-        if guestChoice
+        if guestChoice || hotForkFlight
         then [networkChoiceInitramfs]
         else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
         then [choiceInitramfs]
@@ -210,7 +213,7 @@
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
       export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
-      ${lib.optionalString (guestChoice || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
@@ -283,6 +286,29 @@
             'gate=gate:campaign-exact-maintenance-transfer' \
             'tasks=T-CAM-5.8' \
             'tier=real-packaged-qemu'
+        ''
+        else if hotForkFlight
+        then ''
+          export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
+          tier_selector=packaged::guest_choice::public_packaged_campaign_exercises_all_materialization_tiers
+          tier_log=/tmp/campaign-materialization-tiers.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-materialization-tiers-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx \
+            "$tier_selector: test" /tmp/campaign-materialization-tiers-list.log
+
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 1800 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$tier_selector" --nocapture > "$tier_log" 2>&1; then
+            cat "$tier_log"
+            exit 1
+          fi
+          cat "$tier_log"
+          ${pkgs.grep}/bin/grep -Fxq \
+            'public_packaged_materialization_tiers=hot-fork,thin-replay,exact-restore' "$tier_log"
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$tier_log"
+          printf '%s\n' 'gate=gate:campaign-public-materialization-tiers'
         ''
         else if guestChoice
         then ''

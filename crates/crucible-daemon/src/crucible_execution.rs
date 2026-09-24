@@ -15,6 +15,9 @@ use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignLineage, ChoiceSource,
     ConfigurationArtifactId, ExecutorRejection, ResolvedSelection, StopOutcome,
 };
+use std::io::Write as _;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::executor_worker::ResolvedAttemptOrigins;
 use crate::{
@@ -205,6 +208,40 @@ pub enum CrucibleMaterializationTier {
     ExactRestore,
     /// Deterministic replay reconstructed the requested configuration.
     ThinReplay,
+}
+
+const MAX_MATERIALIZATION_DIAGNOSTIC_EVENTS: usize = 256;
+// This process-local limit is opt-in and never enters campaign facts or artifacts.
+static MATERIALIZATION_DIAGNOSTIC_LIMIT: OnceLock<usize> = OnceLock::new();
+static MATERIALIZATION_DIAGNOSTIC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn record_materialization_diagnostic(
+    input: &AttemptExecutionInput,
+    materialization: CrucibleMaterializationTier,
+) {
+    let limit = *MATERIALIZATION_DIAGNOSTIC_LIMIT.get_or_init(|| {
+        std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_MATERIALIZATION_DIAGNOSTIC_EVENTS).contains(value))
+            .unwrap_or(0)
+    });
+    if limit == 0
+        || MATERIALIZATION_DIAGNOSTIC_COUNT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count < limit).then_some(count + 1)
+            })
+            .is_err()
+    {
+        return;
+    }
+
+    if let Ok(attempt) = input.attempt().id() {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-MATERIALIZATION-V1 attempt={attempt} tier={materialization:?}"
+        );
+    }
 }
 
 /// Complete runner result with non-canonical materialization telemetry.
@@ -789,6 +826,7 @@ where
             .map_err(map_runner_failure)?;
         let (product, materialization) = outcome.into_parts();
         self.last_materialization = Some(materialization);
+        record_materialization_diagnostic(input, materialization);
         Ok(product)
     }
 
