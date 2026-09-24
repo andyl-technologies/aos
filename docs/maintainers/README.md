@@ -108,6 +108,14 @@ required OpenSSL runtime path. Build and invoke the independent `aos`, `apm`,
 or `apr` program for the surface under test. On-host service commands belong to
 the private `aos-package-runtime` binary.
 
+For direct incremental Cargo builds, use the lean shell so evaluating the
+development environment does not first evaluate the packaged CLI:
+
+```sh
+nix develop --impure --expr 'import ./cargo-shell.nix' -c cargo build --manifest-path crates/Cargo.toml --bin aos
+crates/target/debug/aos --help
+```
+
 ## Run checks
 
 Start with the core evaluation and formatting checks:

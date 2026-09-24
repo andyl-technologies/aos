@@ -190,9 +190,10 @@
   applicationTestFlags = builtins.concatStringsSep " " (
     map (package: "-p ${package}") applicationTestPackages
   );
+  # Build both command surfaces in one feature-unified Cargo invocation so
+  # their shared dependencies are compiled only once.
   releaseBuildCommands = [
-    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos --features release-fleet-fixture"
-    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-package --bins"
+    "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos -p aos-package --bins --features aos/release-fleet-fixture"
   ];
   cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
