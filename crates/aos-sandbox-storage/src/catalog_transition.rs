@@ -29,6 +29,7 @@ use crate::{
     },
 };
 
+pub(crate) mod execution_capture;
 mod format;
 mod provider;
 mod validation;
@@ -310,6 +311,7 @@ pub(crate) struct VerifiedPhysicalCatalogSnapshotV1 {
     datasets: Vec<VerifiedPhysicalDatasetV1>,
     snapshots: Vec<VerifiedPhysicalSnapshotV1>,
     holds: Vec<(u64, [u8; 16])>,
+    tombstones: Vec<(String, u64, [u8; 16])>,
     occupied_names: Vec<String>,
 }
 
@@ -412,6 +414,13 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
             .iter()
             .map(|hold| (hold.snapshot_guid, hold.hold_id))
             .collect();
+        let tombstones = state
+            .wire
+            .tombstones
+            .iter()
+            .filter(|row| row.kind == ObjectKindWire::Dataset)
+            .map(|row| (row.name.clone(), row.guid, row.retired_by))
+            .collect();
         let occupied_names = state
             .wire
             .datasets
@@ -426,6 +435,7 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
             datasets,
             snapshots,
             holds,
+            tombstones,
             occupied_names,
         })
     }
@@ -452,6 +462,10 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
 
     pub(crate) fn occupied_names(&self) -> &[String] {
         &self.occupied_names
+    }
+
+    pub(crate) fn dataset_tombstones(&self) -> &[(String, u64, [u8; 16])] {
+        &self.tombstones
     }
 }
 

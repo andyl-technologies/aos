@@ -1177,6 +1177,23 @@ ledger charge. This ledger does not attest physical capture backing or authorize
 Host Apply: the capture dataset, ZFS quota/reservation observation, and
 cross-owner currentness barrier remain required before production use.
 
+For nonzero capture, the Storage backing contract selects one dedicated direct
+child named `aos-output-<execution-id-hex>` beneath a configured managed root.
+The physical catalog must retain the exact creating Storage operation, dataset
+GUID, domains, and `refquota` plus `reservation` both equal to an allocation at
+least as large as the admitted capture ceiling. The allocation includes a
+protected, measured metadata allowance. The dataset has no clone origin,
+descendants, or snapshots, and the capture writer has exclusive access to its
+mounted content. The Storage ledger binds this verified dataset before capture.
+Logical release requires an authenticated later catalog tombstone for that
+same name, GUID, and deleting Storage operation; it retains the original
+dataset binding, name, GUID, and creation generation so a restart between ZFS
+destroy and logical settlement can recheck the later tombstone. It also retains
+the deletion catalog head on replay. ZFS reservations are not
+sufficient while a pool checkpoint can consume them, so admission must also
+prove that condition absent at the effect barrier. These are requirements for
+future service wiring, not authority supplied by the current dormant producer.
+
 ### Linux connection-bound record origins (source-only)
 
 The sequence-packet carrier now privately retains each connected endpoint's
