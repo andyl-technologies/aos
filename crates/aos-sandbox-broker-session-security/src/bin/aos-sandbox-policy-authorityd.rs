@@ -28,9 +28,9 @@ use aos_sandbox::policy_compiler::{
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
-    POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
-    POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
-    POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+    POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
+    POLICY_HEAD_LEASE_ACK_MAGIC_V3, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+    POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
@@ -41,7 +41,6 @@ const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.se
 const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
-const EXPLICIT_RECEIPT_MAGIC: &[u8; 8] = b"AOSPHR04";
 const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSED_BINDING_SUBMISSION_BYTES: usize = 8 + 16 + 4 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_ACK_BYTES: usize = 8 + 16 + 32 + 8;
@@ -266,7 +265,7 @@ fn serve_current_head(
             (
                 project_packet,
                 project_input,
-                EXPLICIT_RECEIPT_MAGIC,
+                POLICY_BINDING_RECEIPT_MAGIC_V4,
                 verified.head().expires_at(),
             )
         } else {

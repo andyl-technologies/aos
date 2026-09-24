@@ -13,7 +13,8 @@ use crate::policy_compiler::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreateProjectPolicySourceV1, PolicyCompilerInputV1,
     PolicyCompilerJournalErrorV1, PolicyCompilerV1, PolicyDeploymentHeadV1,
     PolicyDeploymentSourcesV1, PolicyPublicationPrerequisitesV1, SignedProjectPolicySourceV1,
-    checked_parentless_create_policy_draft_v1, normalized_policy_input_digest_v1,
+    VerifiedSignedProjectPolicySourceV2, checked_parentless_create_policy_draft_v1,
+    checked_parentless_create_verified_policy_draft_v2, normalized_policy_input_digest_v1,
 };
 
 const BARRIER_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.held-cut.v2\0";
@@ -62,12 +63,92 @@ pub fn propose_closed_current_create_policy_binding_v2(
     )
     .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
 
+    encode_closed_proposal(
+        source,
+        heads,
+        signed_project.head().packet_digest(),
+        signed_project.head().input_digest(),
+        deployment_head,
+        input,
+        root_base,
+        checked_draft,
+    )
+}
+
+/// Builds one inert AOSPCB02 proposal from a verified explicit V2 source.
+///
+/// The source is not independently admitted by this function. The caller
+/// must hold the controller, source-domain, and Cache writers, then root must
+/// compare the exact V2 packet/input and signer pins under its own writer.
+/// This proposal still grants no publication or effect authority.
+///
+/// # Errors
+///
+/// Rejects mismatched V2 signer generations, stale signed/current heads,
+/// substituted compiler input, or failed deterministic compilation.
+#[allow(clippy::too_many_arguments)]
+pub fn propose_closed_current_create_explicit_policy_binding_v2(
+    source: &CurrentCreateProjectPolicySourceV1,
+    heads: CurrentCreatePolicyBarrierHeadsV2,
+    signed_project: &VerifiedSignedProjectPolicySourceV2,
+    deployment_head: PolicyDeploymentHeadV1,
+    deployment: &PolicyDeploymentSourcesV1,
+    input: &PolicyCompilerInputV1,
+    root_base: ClosedPolicyRootCasBaseV2,
+    now_unix_seconds: i64,
+) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
+    let project_head = signed_project.head();
+    if now_unix_seconds >= deployment_head.expires_at()
+        || project_head.deployment_signer_generation() != root_base.deployment_signer_generation()
+        || project_head.project_signer_generation() != root_base.project_signer_generation()
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let prerequisites = PolicyPublicationPrerequisitesV1::new(
+        heads.ancestry(),
+        deployment_head.packet_digest(),
+        source.cache_domain_head(),
+        source.revocation_head(),
+        root_base.next_generation(),
+    )?;
+    let checked_draft = checked_parentless_create_verified_policy_draft_v2(
+        source,
+        signed_project,
+        deployment,
+        input,
+        &prerequisites,
+        now_unix_seconds,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+
+    encode_closed_proposal(
+        source,
+        heads,
+        project_head.packet_digest(),
+        project_head.input_digest(),
+        deployment_head,
+        input,
+        root_base,
+        checked_draft,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_closed_proposal(
+    source: &CurrentCreateProjectPolicySourceV1,
+    heads: CurrentCreatePolicyBarrierHeadsV2,
+    project_packet: ObjectDigest,
+    project_input: ObjectDigest,
+    deployment_head: PolicyDeploymentHeadV1,
+    input: &PolicyCompilerInputV1,
+    root_base: ClosedPolicyRootCasBaseV2,
+    checked_draft: ObjectDigest,
+) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
     let normalized_input = normalized_policy_input_digest_v1(input)?;
     let candidate = PolicyCompilerV1::compile(input.clone())
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
         .commitment()
         .digest();
-    let project_head = signed_project.head();
     let barrier_head = ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(BARRIER_DOMAIN)
@@ -76,7 +157,7 @@ pub fn propose_closed_current_create_policy_binding_v2(
             .chain_update(heads.ancestry().as_bytes())
             .chain_update(heads.physical_partition().as_bytes())
             .chain_update(heads.physical_cache().as_bytes())
-            .chain_update(project_head.packet_digest().as_bytes())
+            .chain_update(project_packet.as_bytes())
             .chain_update(deployment_head.packet_digest().as_bytes())
             .chain_update(normalized_input.as_bytes())
             .chain_update(candidate.as_bytes())
@@ -108,8 +189,8 @@ pub fn propose_closed_current_create_policy_binding_v2(
         projection_revision: source.projection_revision(),
         publisher_generation: source.policy_generation(),
         publisher_head: source.policy_digest(),
-        project_policy_head: project_head.packet_digest(),
-        project_policy_input: project_head.input_digest(),
+        project_policy_head: project_packet,
+        project_policy_input: project_input,
         ancestry_head: heads.ancestry(),
         compiler_head: deployment_head.packet_digest(),
         cache_domain_head: source.cache_domain_head(),

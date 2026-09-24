@@ -16,7 +16,8 @@ use aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1;
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ClosedPolicyRootCasBaseV2, PolicyCompilerInputV1, current_parentless_create_project_source_v1,
-    propose_closed_current_create_policy_binding_v2, with_current_create_policy_source_barrier_v2,
+    propose_closed_current_create_explicit_policy_binding_v2,
+    with_current_create_policy_source_barrier_v2,
 };
 use aos_sandbox_core::{OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
@@ -92,7 +93,7 @@ fn commit_under_held_owners(
                 deployment_verifying_key,
                 project_verifying_key,
                 |receipt, remote_base| {
-                    if !receipt.matches_current_create(source) {
+                    if !receipt.matches_compiler_input(source, input) {
                         return Err(invalid_cut());
                     }
                     let root_base = ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields(
@@ -107,7 +108,7 @@ fn commit_under_held_owners(
                         .duration_since(UNIX_EPOCH)
                         .map_err(io::Error::other)?;
                     let now = i64::try_from(now.as_secs()).map_err(io::Error::other)?;
-                    propose_closed_current_create_policy_binding_v2(
+                    propose_closed_current_create_explicit_policy_binding_v2(
                         source,
                         heads,
                         receipt.project(),

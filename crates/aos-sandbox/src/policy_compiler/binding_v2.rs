@@ -40,7 +40,10 @@ use super::{
 
 mod producer;
 
-pub use producer::propose_closed_current_create_policy_binding_v2;
+pub use producer::{
+    propose_closed_current_create_explicit_policy_binding_v2,
+    propose_closed_current_create_policy_binding_v2,
+};
 
 pub(super) const BINDING_V2_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v2\0";
 const MAGIC: &[u8; 8] = b"AOSPCB02";

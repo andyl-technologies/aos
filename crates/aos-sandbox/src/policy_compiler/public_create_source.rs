@@ -36,7 +36,8 @@ use crate::{Journal, JournalError};
 use super::{
     AdmittedSignedProjectPolicySourceV2, CacheDomainInputV1, HardLimitValueV1,
     PolicyCompilerInputV1, PolicyDeploymentSourcesV1, PolicyPublicationPrerequisitesV1,
-    RevocationInputV1, SignedProjectPolicySourceV1, normalized_policy_input_digest_v1,
+    RevocationInputV1, SignedProjectPolicySourceV1, VerifiedSignedProjectPolicySourceV2,
+    normalized_policy_input_digest_v1,
 };
 
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
@@ -349,6 +350,67 @@ pub fn checked_parentless_create_policy_draft_v2(
     ))
 }
 
+/// Checks an inert V2 draft from a signed but not independently admitted source.
+///
+/// This permits the controller to hand a root receipt into a closed proposal
+/// while holding its local writers. The receipt is not protected project
+/// admission, and neither this digest nor a closed root CAS grants publication.
+///
+/// # Errors
+///
+/// Rejects changed Create, signed prerequisite, or compiler-input choices.
+pub fn checked_parentless_create_verified_policy_draft_v2(
+    source: &CurrentCreateProjectPolicySourceV1,
+    signed_project: &VerifiedSignedProjectPolicySourceV2,
+    deployment: &PolicyDeploymentSourcesV1,
+    input: &PolicyCompilerInputV1,
+    prerequisites: &PolicyPublicationPrerequisitesV1,
+    now_unix_seconds: i64,
+) -> Result<ObjectDigest, CurrentCreatePolicySourceErrorV1> {
+    let project_head = signed_project.head();
+    if project_head.project() != source.project
+        || project_head.publisher_generation() != source.policy_generation
+        || project_head.publisher_digest() != source.policy_digest
+        || now_unix_seconds >= project_head.expires_at()
+        || signed_project.cache_domain() != source.cache_domain
+        || project_head.prerequisite_claims()
+            != [
+                prerequisites.ancestry_head(),
+                prerequisites.compiler_authority_head(),
+                prerequisites.cache_domain_head(),
+                prerequisites.revocation_head(),
+            ]
+        || prerequisites.cache_domain_head() != source.cache_domain_head
+        || prerequisites.revocation_head() != source.revocation_head
+        || input.sandbox() != source.sandbox
+        || input.project().project() != source.project
+        || !signed_project.matches_candidate_layer(input.project().layer())
+        || input.node() != deployment.node()
+        || input.site() != deployment.site()
+        || input.backend() != deployment.backend()
+        || !input.ancestors().is_empty()
+        || !input.endpoints().entries().is_empty()
+        || !input.destinations().entries().is_empty()
+        || !request_is_inherited(input)
+    {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+
+    let normalized_input = normalized_policy_input_digest_v1(input)
+        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    Ok(ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(EXPLICIT_DRAFT_DOMAIN)
+            .chain_update(source.commitment.as_bytes())
+            .chain_update(project_head.packet_digest().as_bytes())
+            .chain_update(project_head.input_digest().as_bytes())
+            .chain_update(prerequisites.digest().as_bytes())
+            .chain_update(normalized_input.as_bytes())
+            .finalize()
+            .into(),
+    ))
+}
+
 fn request_is_inherited(input: &PolicyCompilerInputV1) -> bool {
     let layer = input.request().layer();
     layer.grants().is_empty()
@@ -620,20 +682,25 @@ pub fn with_current_create_policy_source_barrier_v2<R>(
 
 #[cfg(test)]
 mod tests {
-    use aos_sandbox_core::model::{CacheDomainKind, LimitDimension};
+    use aos_sandbox_core::model::{
+        CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy,
+    };
     use aos_sandbox_core::{CacheDomainId, ObjectDescriptor, ResourceDimension};
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
     use crate::policy_compiler::{
-        AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
-        AuthenticatedSandboxProjectRelationV1, ClosedPolicyRootCasBaseV2,
+        AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1,
+        AuthenticatedNamespaceCatalogV1, AuthenticatedSandboxProjectRelationV1,
+        CacheDomainBindingV1, CacheDomainVerifierV1, ClosedPolicyRootCasBaseV2,
         EndpointCatalogVerifierV1, HardLimitRequestV1, HardResourceKeyV1, HardResourceProfileV1,
         NamespaceCatalogVerifierV1, PORTABLE_LIMIT_DIMENSIONS, PolicyCompilationError,
         PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyDeploymentInputsV1, PolicyLayerV1,
         ProjectPolicyInputV1, RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
-        decode_policy_deployment_sources_v1, propose_closed_current_create_policy_binding_v2,
-        verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+        decode_policy_deployment_sources_v1,
+        propose_closed_current_create_explicit_policy_binding_v2,
+        propose_closed_current_create_policy_binding_v2, verify_policy_deployment_head_v1,
+        verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
     };
 
     struct FixtureVerifier;
@@ -651,6 +718,12 @@ mod tests {
     }
 
     impl NamespaceCatalogVerifierV1 for FixtureVerifier {
+        fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
+            true
+        }
+    }
+
+    impl CacheDomainVerifierV1 for FixtureVerifier {
         fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
             true
         }
@@ -946,6 +1019,108 @@ mod tests {
                 &source,
                 heads,
                 &signed_project,
+                deployment_head,
+                &deployment,
+                &input,
+                root_base,
+                20,
+            )
+            .is_err()
+        );
+
+        let explicit_project_input = serde_json::to_vec(&serde_json::json!({
+            "generation": 1,
+            "input": {
+                "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+                "advisory_actions": [],
+                "cache_domain": "project",
+                "grants": [],
+                "namespace_rules": [],
+                "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+                "revocation": {"grace_nanos": 0, "mode": "deny-new"},
+            },
+            "magic": "AOSPPL02",
+            "project_id": project.to_string(),
+        }))
+        .expect("explicit project bytes");
+        let mut explicit_project_packet = b"AOSPPH02".to_vec();
+        explicit_project_packet.extend_from_slice(project.as_bytes());
+        explicit_project_packet.extend_from_slice(&1_u64.to_be_bytes());
+        explicit_project_packet.extend_from_slice(&10_i64.to_be_bytes());
+        explicit_project_packet.extend_from_slice(&30_i64.to_be_bytes());
+        explicit_project_packet.extend_from_slice(&source.policy_generation.to_be_bytes());
+        explicit_project_packet.extend_from_slice(source.policy_digest.as_bytes());
+        explicit_project_packet.extend_from_slice(&Sha256::digest(&explicit_project_input));
+        for head in [
+            prerequisites.ancestry_head(),
+            prerequisites.compiler_authority_head(),
+            prerequisites.cache_domain_head(),
+            prerequisites.revocation_head(),
+        ] {
+            explicit_project_packet.extend_from_slice(head.as_bytes());
+        }
+        explicit_project_packet.extend_from_slice(&1_u64.to_be_bytes());
+        explicit_project_packet.extend_from_slice(&1_u64.to_be_bytes());
+        sign_packet(
+            &mut explicit_project_packet,
+            &project_key,
+            b"aos.sandbox.policy-project-head.v2\0",
+        );
+        let explicit_project = verify_signed_project_policy_source_v2(
+            &explicit_project_packet,
+            &explicit_project_input,
+            &project_key.verifying_key(),
+            20,
+        )
+        .expect("explicit signed source");
+        let binding = AuthenticatedCacheDomainV1::authenticate(
+            source.cache_domain,
+            CacheDomainBindingV1::Project(project),
+            &verifier,
+        )
+        .expect("candidate project domain");
+        let explicit_layer = PolicyLayerV1::new(
+            Vec::new(),
+            inherited_layer().resources().clone(),
+            Vec::new(),
+            Vec::new(),
+            CacheDomainInputV1::Exact(binding),
+            RevocationInputV1::Exact(RevocationPolicy::new(RevocationMode::DenyNew, 0)),
+        )
+        .expect("candidate project layer");
+        let explicit_input = PolicyCompilerInputV1::new(
+            AuthenticatedSandboxProjectRelationV1::authenticate(sandbox, project, &verifier)
+                .expect("relation"),
+            deployment.node().clone(),
+            deployment.site().clone(),
+            ProjectPolicyInputV1::new(project, explicit_layer).expect("project layer"),
+            Vec::new(),
+            RequestPolicyInputV1::new(inherited_layer()).expect("request layer"),
+            AuthenticatedEndpointCatalogV1::authenticate(Vec::new(), &verifier)
+                .expect("endpoint catalog"),
+            AuthenticatedNamespaceCatalogV1::authenticate(Vec::new(), &verifier)
+                .expect("namespace catalog"),
+            deployment.backend().clone(),
+            PolicyCompilerLimitsV1::DEFAULT,
+        )
+        .expect("explicit compiler input");
+        let explicit_binding = propose_closed_current_create_explicit_policy_binding_v2(
+            &source,
+            heads,
+            &explicit_project,
+            deployment_head,
+            &deployment,
+            &explicit_input,
+            root_base,
+            20,
+        )
+        .expect("inert V2 proposal");
+        assert!(!explicit_binding.is_empty());
+        assert!(
+            propose_closed_current_create_explicit_policy_binding_v2(
+                &source,
+                heads,
+                &explicit_project,
                 deployment_head,
                 &deployment,
                 &input,

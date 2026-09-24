@@ -31,12 +31,13 @@ The root-only `AOSPHQ04` socket exchange requires the paired
 `AOSPHR04` receipt containing the exact signed V2 packet and canonical input,
 then checks those bytes and both pinned signer generations against the protected
 root records under its writer before a closed `AOSPCB02` compare-and-swap.
-Missing, partial, stale, or mixed V1/V2 source records fail closed. The current
-controller client only accepts the older `AOSPHR02` receipt, so it cannot
-complete this exchange. This is not a live Create path: the policy compiler
-rejects every V2 binding as publication authority until the controller holds
-all independent writers through production commit, recovery, and effect
-handoff.
+Missing, partial, stale, or mixed V1/V2 source records fail closed. The
+controller's closed-CAS client accepts only `AOSPHR04`, independently verifies
+both signatures and the V2 source fields, and rejects an `AOSPHR02` downgrade.
+It passes the typed source to a closed compiler-input check, not to protected
+project admission. This is not a live Create path: the policy compiler rejects
+every V2 binding as publication authority until the controller holds all
+independent writers through production commit, recovery, and effect handoff.
 
 Provision exactly one project-source credential pair. A V2-only service rejects
 legacy `AOSPHQ02`/`AOSPHQ03` queries; a V1-only service rejects `AOSPHQ04`.

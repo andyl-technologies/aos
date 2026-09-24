@@ -154,6 +154,27 @@ impl VerifiedSignedProjectPolicySourceV2 {
     pub const fn revocation(&self) -> RevocationPolicy {
         self.revocation
     }
+
+    /// Checks a proposed compiler layer against the signed explicit choices.
+    ///
+    /// This does not authenticate the candidate's cache-domain verifier or
+    /// prove that the publisher and root owners currently retain this source.
+    #[must_use]
+    pub fn matches_candidate_layer(&self, candidate: &PolicyLayerV1) -> bool {
+        let domain_matches = match candidate.cache_domain() {
+            CacheDomainInputV1::Exact(binding) => {
+                binding.domain() == self.cache_domain
+                    && binding.binding() == CacheDomainBindingV1::Project(self.head.project())
+            }
+            CacheDomainInputV1::Inherit => false,
+        };
+        domain_matches
+            && candidate.revocation() == RevocationInputV1::Exact(self.revocation)
+            && candidate.resources() == self.inherited_layer.resources()
+            && candidate.grants().is_empty()
+            && candidate.namespace_rules().is_empty()
+            && candidate.advisory_actions().is_empty()
+    }
 }
 
 /// Retains the explicit layer only after protected root/current-head admission.
@@ -651,6 +672,39 @@ mod tests {
         assert_eq!(verified.head().deployment_signer_generation(), 2);
         assert_eq!(verified.head().project_signer_generation(), 3);
         assert_eq!(verified.cache_domain().kind(), CacheDomainKind::Project);
+
+        struct FixtureVerifier;
+        impl CacheDomainVerifierV1 for FixtureVerifier {
+            fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
+                true
+            }
+        }
+        let binding = AuthenticatedCacheDomainV1::authenticate(
+            verified.cache_domain(),
+            CacheDomainBindingV1::Project(project),
+            &FixtureVerifier,
+        )
+        .expect("candidate project domain");
+        let candidate = PolicyLayerV1::new(
+            Vec::new(),
+            verified.inherited_layer.resources().clone(),
+            Vec::new(),
+            Vec::new(),
+            CacheDomainInputV1::Exact(binding),
+            RevocationInputV1::Exact(verified.revocation()),
+        )
+        .expect("matching candidate layer");
+        assert!(verified.matches_candidate_layer(&candidate));
+        let downgraded = PolicyLayerV1::new(
+            Vec::new(),
+            verified.inherited_layer.resources().clone(),
+            Vec::new(),
+            Vec::new(),
+            candidate.cache_domain().clone(),
+            RevocationInputV1::Inherit,
+        )
+        .expect("inherited revocation layer");
+        assert!(!verified.matches_candidate_layer(&downgraded));
 
         let inherited = input(project, "inherit");
         let inherited_packet = packet(project, &inherited, &key);

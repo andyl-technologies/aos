@@ -8,7 +8,9 @@
 //! `AOSPHQ03` frames the same receipt while root retains its writer lock
 //! through a nonce-bound action ACK and post-action snapshot validation.
 //! `AOSPHQ04` additionally accepts one canonical AOSPCB02 proposal and
-//! commits a closed root CAS. Its response never authorizes publication.
+//! commits a closed root CAS. It requires an `AOSPHR04` receipt with an
+//! `AOSPPH02` project source; the V1 receipt cannot downgrade this exchange.
+//! Its response never authorizes publication.
 
 use std::{
     io::{self, Read as _, Write as _},
@@ -18,10 +20,12 @@ use std::{
 };
 
 use aos_sandbox::policy_compiler::{
-    CLOSED_POLICY_BINDING_BYTES_V2, CurrentCreateProjectPolicySourceV1, PolicyDeploymentHeadV1,
-    PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1, SignedProjectPolicySourceV1,
+    CLOSED_POLICY_BINDING_BYTES_V2, CurrentCreateProjectPolicySourceV1, PolicyCompilerInputV1,
+    PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
+    SignedProjectPolicySourceV1, VerifiedSignedProjectPolicySourceV2,
     closed_policy_binding_digest_v2, decode_policy_deployment_sources_v1,
     verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+    verify_signed_project_policy_source_v2,
 };
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::VerifyingKey;
@@ -41,6 +45,8 @@ pub const POLICY_HEAD_LEASE_ACK_MAGIC_V3: &[u8; 8] = b"AOSPHA03";
 pub const POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3: &[u8; 8] = b"AOSPHC03";
 /// Begins a root-held closed AOSPCB02 compare-and-swap exchange.
 pub const POLICY_BINDING_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ04";
+/// Identifies the nonce-linked V2 project-source receipt for closed CAS.
+pub const POLICY_BINDING_RECEIPT_MAGIC_V4: &[u8; 8] = b"AOSPHR04";
 /// Identifies root-derived CAS and signer-generation base fields.
 pub const POLICY_BINDING_BASE_MAGIC_V4: &[u8; 8] = b"AOSPHB04";
 /// Frames one exact AOSPCB02 proposal under the root-held nonce.
@@ -53,6 +59,7 @@ pub const POLICY_BINDING_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHA04";
 pub const POLICY_BINDING_COMPLETE_MAGIC_V4: &[u8; 8] = b"AOSPHC04";
 const PACKET_BYTES: usize = 224;
 const PROJECT_PACKET_BYTES: usize = 312;
+const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
 const MAXIMUM_INPUT_BYTES: usize = 64 * 1024;
 const MAXIMUM_PROJECT_INPUT_BYTES: usize = 3 * 1024;
 const MAXIMUM_RECEIPT_BYTES: usize = 24
@@ -61,6 +68,8 @@ const MAXIMUM_RECEIPT_BYTES: usize = 24
     + PROJECT_PACKET_BYTES
     + 4
     + MAXIMUM_PROJECT_INPUT_BYTES;
+const MAXIMUM_EXPLICIT_RECEIPT_BYTES: usize =
+    MAXIMUM_RECEIPT_BYTES - PROJECT_PACKET_BYTES + EXPLICIT_PROJECT_PACKET_BYTES;
 const CLOSED_BINDING_FRAME_BYTES: usize = 8 + 16 + 32 + 8;
 const CLOSED_BINDING_BASE_BYTES: usize = 8 + 16 + 32 + 8 + 8 + 8;
 
@@ -178,6 +187,76 @@ impl PolicyAuthorityHeadReceiptV2 {
             && head.project() == create.project()
             && head.publisher_generation() == create.policy_generation()
             && head.publisher_digest() == create.policy_digest()
+    }
+}
+
+/// Retains a signed explicit project source from the root-held Q04 exchange.
+///
+/// Signature and deployment provenance are verified, but independent
+/// controller, ancestry, and Cache heads remain unproven by this receipt.
+/// Compiler input checks below are read-only and never grant publication.
+pub struct PolicyAuthorityExplicitHeadReceiptV4 {
+    head: PolicyDeploymentHeadV1,
+    sources: PolicyDeploymentSourcesV1,
+    project: VerifiedSignedProjectPolicySourceV2,
+}
+
+impl PolicyAuthorityExplicitHeadReceiptV4 {
+    /// Returns the signed deployment head.
+    #[must_use]
+    pub const fn head(&self) -> PolicyDeploymentHeadV1 {
+        self.head
+    }
+
+    /// Returns the typed, signed deployment sources.
+    #[must_use]
+    pub const fn sources(&self) -> &PolicyDeploymentSourcesV1 {
+        &self.sources
+    }
+
+    /// Returns the V2 signed project source without protected admission.
+    #[must_use]
+    pub const fn project(&self) -> &VerifiedSignedProjectPolicySourceV2 {
+        &self.project
+    }
+
+    /// Checks a candidate input against the signed sources and current Create.
+    ///
+    /// The caller must still construct the exact project cache-domain binding
+    /// from protected publisher custody and prove the all-owner cut. This
+    /// check only rejects substitutions before a closed proposal.
+    #[must_use]
+    pub fn matches_compiler_input(
+        &self,
+        create: &CurrentCreateProjectPolicySourceV1,
+        input: &PolicyCompilerInputV1,
+    ) -> bool {
+        let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            return false;
+        };
+        let Ok(now) = i64::try_from(now.as_secs()) else {
+            return false;
+        };
+        let project_head = self.project.head();
+        now < self.head.expires_at()
+            && now < project_head.expires_at()
+            && project_head.project() == create.project()
+            && project_head.publisher_generation() == create.policy_generation()
+            && project_head.publisher_digest() == create.policy_digest()
+            && self.project.cache_domain() == create.cache_domain()
+            && project_head.prerequisite_claims()[2] == create.cache_domain_head()
+            && project_head.prerequisite_claims()[3] == create.revocation_head()
+            && input.sandbox() == create.sandbox()
+            && input.project().project() == create.project()
+            && self
+                .project
+                .matches_candidate_layer(input.project().layer())
+            && input.node() == self.sources.node()
+            && input.site() == self.sources.site()
+            && input.backend() == self.sources.backend()
+            && input.ancestors().is_empty()
+            && input.endpoints().entries().is_empty()
+            && input.destinations().entries().is_empty()
     }
 }
 
@@ -308,7 +387,7 @@ pub fn commit_closed_policy_binding_v4(
     deployment_verifying_key: &VerifyingKey,
     project_verifying_key: &VerifyingKey,
     propose: impl FnOnce(
-        &PolicyAuthorityHeadReceiptV2,
+        &PolicyAuthorityExplicitHeadReceiptV4,
         ClosedPolicyBindingBaseV4,
     ) -> io::Result<Vec<u8>>,
 ) -> io::Result<ClosedPolicyBindingClientObservationV4> {
@@ -331,7 +410,7 @@ pub fn commit_closed_policy_binding_v4(
     let mut length = [0_u8; 4];
     stream.read_exact(&mut length)?;
     let length = usize::try_from(u32::from_be_bytes(length)).map_err(io::Error::other)?;
-    if length == 0 || length > MAXIMUM_RECEIPT_BYTES {
+    if length == 0 || length > MAXIMUM_EXPLICIT_RECEIPT_BYTES {
         return Err(invalid_receipt());
     }
     let mut receipt = vec![0_u8; length];
@@ -340,7 +419,7 @@ pub fn commit_closed_policy_binding_v4(
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?;
     let now_unix_seconds = i64::try_from(now.as_secs()).map_err(io::Error::other)?;
-    let receipt = decode_receipt(
+    let receipt = decode_explicit_receipt_v4(
         &receipt,
         nonce,
         deployment_verifying_key,
@@ -351,6 +430,7 @@ pub fn commit_closed_policy_binding_v4(
     let mut base = [0_u8; CLOSED_BINDING_BASE_BYTES];
     stream.read_exact(&mut base)?;
     let base = decode_closed_binding_base(&base)?;
+    validate_receipt_signer_generations(&receipt, base)?;
 
     let proposed = propose(&receipt, base)?;
     if proposed.len() != CLOSED_POLICY_BINDING_BYTES_V2 {
@@ -426,6 +506,19 @@ fn decode_closed_binding_base(
         deployment_signer_generation,
         project_signer_generation,
     })
+}
+
+fn validate_receipt_signer_generations(
+    receipt: &PolicyAuthorityExplicitHeadReceiptV4,
+    base: ClosedPolicyBindingBaseV4,
+) -> io::Result<()> {
+    let signed = receipt.project().head();
+    if signed.deployment_signer_generation() != base.deployment_signer_generation()
+        || signed.project_signer_generation() != base.project_signer_generation()
+    {
+        return Err(invalid_receipt());
+    }
+    Ok(())
 }
 
 fn validate_closed_binding_frame(
@@ -540,6 +633,96 @@ fn decode_receipt(
     })
 }
 
+fn decode_explicit_receipt_v4(
+    receipt: &[u8],
+    nonce: [u8; 16],
+    deployment_verifying_key: &VerifyingKey,
+    project_verifying_key: &VerifyingKey,
+    now_unix_seconds: i64,
+) -> io::Result<PolicyAuthorityExplicitHeadReceiptV4> {
+    if receipt.len() > MAXIMUM_EXPLICIT_RECEIPT_BYTES
+        || receipt.get(..8) != Some(POLICY_BINDING_RECEIPT_MAGIC_V4)
+        || receipt.get(8..24) != Some(nonce.as_slice())
+    {
+        return Err(invalid_receipt());
+    }
+    let packet = receipt
+        .get(24..24 + PACKET_BYTES)
+        .ok_or_else(invalid_receipt)?;
+    let mut position = 24 + PACKET_BYTES;
+    let mut inputs = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let length = receipt
+            .get(position..position + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_be_bytes)
+            .ok_or_else(invalid_receipt)?;
+        position += 4;
+        let length = usize::try_from(length).map_err(|_| invalid_receipt())?;
+        if length == 0 || length > MAXIMUM_INPUT_BYTES {
+            return Err(invalid_receipt());
+        }
+        inputs.push(
+            receipt
+                .get(position..position + length)
+                .ok_or_else(invalid_receipt)?,
+        );
+        position += length;
+    }
+    let project_packet = receipt
+        .get(position..position + EXPLICIT_PROJECT_PACKET_BYTES)
+        .ok_or_else(invalid_receipt)?;
+    position += EXPLICIT_PROJECT_PACKET_BYTES;
+    let project_length = receipt
+        .get(position..position + 4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_be_bytes)
+        .ok_or_else(invalid_receipt)?;
+    position += 4;
+    let project_length = usize::try_from(project_length).map_err(|_| invalid_receipt())?;
+    if project_length == 0 || project_length > MAXIMUM_PROJECT_INPUT_BYTES {
+        return Err(invalid_receipt());
+    }
+    let project_input = receipt
+        .get(position..position + project_length)
+        .ok_or_else(invalid_receipt)?;
+    position += project_length;
+    if position != receipt.len() {
+        return Err(invalid_receipt());
+    }
+
+    let exact = PolicyDeploymentInputsV1 {
+        node: inputs[0],
+        site: inputs[1],
+        backend: inputs[2],
+        catalogs: inputs[3],
+    };
+    let head = verify_policy_deployment_head_v1(
+        packet,
+        &exact,
+        deployment_verifying_key,
+        now_unix_seconds,
+    )
+    .map_err(|_| invalid_receipt())?;
+    let sources =
+        decode_policy_deployment_sources_v1(&exact, head).map_err(|_| invalid_receipt())?;
+    let project = verify_signed_project_policy_source_v2(
+        project_packet,
+        project_input,
+        project_verifying_key,
+        now_unix_seconds,
+    )
+    .map_err(|_| invalid_receipt())?;
+    if project.head().prerequisite_claims()[1] != head.packet_digest() {
+        return Err(invalid_receipt());
+    }
+    Ok(PolicyAuthorityExplicitHeadReceiptV4 {
+        head,
+        sources,
+        project,
+    })
+}
+
 fn invalid_receipt() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -549,15 +732,109 @@ fn invalid_receipt() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use ed25519_dalek::SigningKey;
+    use aos_sandbox_core::ProjectId;
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use sha2::{Digest as _, Sha256};
 
     use super::{
         CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, MAXIMUM_RECEIPT_BYTES, ObjectDigest,
         POLICY_BINDING_BASE_MAGIC_V4, POLICY_BINDING_COMMITTED_MAGIC_V4,
-        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_RECEIPT_MAGIC_V2,
-        decode_closed_binding_base, decode_receipt, validate_closed_binding_frame,
-        validate_lease_completion,
+        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+        POLICY_HEAD_RECEIPT_MAGIC_V2, decode_closed_binding_base, decode_explicit_receipt_v4,
+        decode_receipt, validate_closed_binding_frame, validate_lease_completion,
+        validate_receipt_signer_generations,
     };
+
+    fn signed_explicit_receipt() -> (Vec<u8>, SigningKey, SigningKey, [u8; 16]) {
+        let deployment_key = SigningKey::from_bytes(&[21; 32]);
+        let project_key = SigningKey::from_bytes(&[22; 32]);
+        let project = ProjectId::from_bytes([1; 16]);
+        let nonce = [7; 16];
+        let inherited = serde_json::json!({"kind": "inherit"});
+        let limits = serde_json::json!({
+            "accounting": vec![inherited.clone(); 22],
+            "portable": vec![inherited; 16],
+        });
+        let inputs = [
+            serde_json::to_vec(&serde_json::json!({
+                "generation": 1, "input": limits.clone(), "magic": "AOSPNI01"
+            }))
+            .expect("node input"),
+            serde_json::to_vec(&serde_json::json!({
+                "generation": 1, "input": limits, "magic": "AOSPSI01"
+            }))
+            .expect("site input"),
+            serde_json::to_vec(&serde_json::json!({
+                "generation": 1, "input": {"enforcement": []}, "magic": "AOSPBI01"
+            }))
+            .expect("backend input"),
+            serde_json::to_vec(&serde_json::json!({
+                "generation": 1,
+                "input": {"destinations": [], "endpoints": []},
+                "magic": "AOSPCI01"
+            }))
+            .expect("catalog input"),
+        ];
+        let mut deployment = b"AOSPDH01".to_vec();
+        deployment.extend_from_slice(&1_u64.to_be_bytes());
+        deployment.extend_from_slice(&10_i64.to_be_bytes());
+        deployment.extend_from_slice(&30_i64.to_be_bytes());
+        for input in &inputs {
+            deployment.extend_from_slice(&Sha256::digest(input));
+        }
+        let mut signed_deployment = b"aos.sandbox.policy-deployment-head.v1\0".to_vec();
+        signed_deployment.extend_from_slice(&deployment);
+        deployment.extend_from_slice(&deployment_key.sign(&signed_deployment).to_bytes());
+
+        let project_input = serde_json::to_vec(&serde_json::json!({
+            "generation": 1,
+            "input": {
+                "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+                "advisory_actions": [],
+                "cache_domain": "project",
+                "grants": [],
+                "namespace_rules": [],
+                "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+                "revocation": {"grace_nanos": 0, "mode": "deny-new"},
+            },
+            "magic": "AOSPPL02",
+            "project_id": project.to_string(),
+        }))
+        .expect("explicit project input");
+        let mut project_packet = b"AOSPPH02".to_vec();
+        project_packet.extend_from_slice(project.as_bytes());
+        project_packet.extend_from_slice(&1_u64.to_be_bytes());
+        project_packet.extend_from_slice(&10_i64.to_be_bytes());
+        project_packet.extend_from_slice(&30_i64.to_be_bytes());
+        project_packet.extend_from_slice(&1_u64.to_be_bytes());
+        project_packet.extend_from_slice(&[4; 32]);
+        project_packet.extend_from_slice(&Sha256::digest(&project_input));
+        for head in [
+            [5; 32],
+            Sha256::digest(&deployment).into(),
+            [7; 32],
+            [8; 32],
+        ] {
+            project_packet.extend_from_slice(&head);
+        }
+        project_packet.extend_from_slice(&2_u64.to_be_bytes());
+        project_packet.extend_from_slice(&3_u64.to_be_bytes());
+        let mut signed_project = b"aos.sandbox.policy-project-head.v2\0".to_vec();
+        signed_project.extend_from_slice(&project_packet);
+        project_packet.extend_from_slice(&project_key.sign(&signed_project).to_bytes());
+
+        let mut receipt = POLICY_BINDING_RECEIPT_MAGIC_V4.to_vec();
+        receipt.extend_from_slice(&nonce);
+        receipt.extend_from_slice(&deployment);
+        for input in &inputs {
+            receipt.extend_from_slice(&u32::try_from(input.len()).unwrap().to_be_bytes());
+            receipt.extend_from_slice(input);
+        }
+        receipt.extend_from_slice(&project_packet);
+        receipt.extend_from_slice(&u32::try_from(project_input.len()).unwrap().to_be_bytes());
+        receipt.extend_from_slice(&project_input);
+        (receipt, deployment_key, project_key, nonce)
+    }
 
     #[test]
     fn rejects_nonce_substitution_and_excessive_receipts() {
@@ -573,6 +850,66 @@ mod tests {
         receipt[8..24].copy_from_slice(&nonce);
         receipt.resize(MAXIMUM_RECEIPT_BYTES + 1, 0);
         assert!(decode_receipt(&receipt, nonce, &verifying_key, &verifying_key, 20).is_err());
+    }
+
+    #[test]
+    fn explicit_receipt_requires_v2_signatures_nonce_and_pinned_generations() {
+        let (mut bytes, deployment_key, project_key, nonce) = signed_explicit_receipt();
+        let deployment_verifier = deployment_key.verifying_key();
+        let project_verifier = project_key.verifying_key();
+        let decoded =
+            decode_explicit_receipt_v4(&bytes, nonce, &deployment_verifier, &project_verifier, 20)
+                .expect("signed V2 receipt");
+        assert_eq!(decoded.project().head().deployment_signer_generation(), 2);
+        assert_eq!(decoded.project().head().project_signer_generation(), 3);
+
+        let mut base = [0_u8; CLOSED_BINDING_BASE_BYTES];
+        base[..8].copy_from_slice(POLICY_BINDING_BASE_MAGIC_V4);
+        base[8..24].fill(1);
+        base[56..64].copy_from_slice(&1_u64.to_be_bytes());
+        base[64..72].copy_from_slice(&2_u64.to_be_bytes());
+        base[72..80].copy_from_slice(&3_u64.to_be_bytes());
+        let current = decode_closed_binding_base(&base).expect("current signer base");
+        assert!(validate_receipt_signer_generations(&decoded, current).is_ok());
+        base[72..80].copy_from_slice(&4_u64.to_be_bytes());
+        let rotated = decode_closed_binding_base(&base).expect("rotated signer base");
+        assert!(validate_receipt_signer_generations(&decoded, rotated).is_err());
+
+        assert!(
+            decode_explicit_receipt_v4(
+                &bytes,
+                [8; 16],
+                &deployment_verifier,
+                &project_verifier,
+                20,
+            )
+            .is_err()
+        );
+        assert!(
+            decode_explicit_receipt_v4(&bytes, nonce, &deployment_verifier, &project_verifier, 30,)
+                .is_err()
+        );
+        bytes[..8].copy_from_slice(POLICY_HEAD_RECEIPT_MAGIC_V2);
+        assert!(
+            decode_explicit_receipt_v4(&bytes, nonce, &deployment_verifier, &project_verifier, 20,)
+                .is_err()
+        );
+        bytes[..8].copy_from_slice(POLICY_BINDING_RECEIPT_MAGIC_V4);
+        bytes.push(0);
+        assert!(
+            decode_explicit_receipt_v4(&bytes, nonce, &deployment_verifier, &project_verifier, 20,)
+                .is_err()
+        );
+        bytes.pop();
+        let project_offset = bytes
+            .windows(8)
+            .position(|window| window == b"AOSPPH02")
+            .expect("V2 project packet");
+        bytes[project_offset..project_offset + 8].copy_from_slice(b"AOSPPH01");
+        assert!(
+            decode_explicit_receipt_v4(&bytes, nonce, &deployment_verifier, &project_verifier, 20,)
+                .is_err()
+        );
     }
 
     #[test]
