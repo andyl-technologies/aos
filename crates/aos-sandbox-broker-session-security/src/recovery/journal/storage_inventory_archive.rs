@@ -10,7 +10,7 @@
 //! outstanding request nor grants a new session permission to roll over it.
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurablePhaseV1, BrokerSessionProtocolV1, decode_canonical_request_v1,
     decode_canonical_response_v1,
@@ -29,16 +29,15 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    BrokerSessionSecurityError, ProtectedBrokerSessionJournalV1, StoredProtocolHistoryV1,
-    authenticated_semantic_bindings_from_envelope_v1, authority_envelope_digest,
-    historical_terminal_outcome, protocol_key, read_array, read_u16, read_u32, reconstruct_traffic,
-    reconstruct_traffic_records, request_matches_head, successful_terminal,
+    BrokerSessionSecurityError, ProtectedBrokerSessionJournalV1, StorageArchiveKind,
+    StoredProtocolHistoryV1, authenticated_semantic_bindings_from_envelope_v1,
+    authority_envelope_digest, historical_terminal_outcome, protocol_key, read_array, read_u16,
+    read_u32, reconstruct_traffic, reconstruct_traffic_records, request_matches_head,
+    successful_terminal,
 };
 
 const MAGIC: &[u8; 8] = b"AOSBSIA1";
 const DOMAIN: &[u8] = b"aos.sandbox.broker-session.storage-inventory-archive.v1\0";
-const TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.broker-session.storage-inventory-archive-transaction.v1\0";
 const HEADER_BYTES: usize = 8 + 2 + 16 + 16 + 32 + 32 + 4;
 const DIGEST_BYTES: usize = 32;
 
@@ -882,47 +881,11 @@ impl ProtectedBrokerSessionJournalV1 {
         };
         let head = self.classify_storage_inventory_archive(&archive)?;
         let value = archive.encode()?;
-        let digest: [u8; 32] = Sha256::new()
-            .chain_update(TRANSACTION_DOMAIN)
-            .chain_update(inventory_request_id)
-            .chain_update(Sha256::digest(&value))
-            .finalize()
-            .into();
-        let transaction_id: [u8; 16] = digest[..16]
-            .try_into()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if transaction_id == [0; 16] {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::BrokerSessionStorageInventoryArchive,
-                inventory_request_id.to_vec(),
-                value,
-            )],
-        )
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let mut authority = self
-            .journal_mut()?
-            .claim_protected_authority(RecordNamespace::BrokerSessionStorageInventoryArchive)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if authority
-            .get(&inventory_request_id)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            .is_some()
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let preflight = authority
-            .preflight_transactions(core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .commit(&transaction)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        self.commit_absent_storage_archive(
+            StorageArchiveKind::Inventory,
+            inventory_request_id,
+            value,
+        )?;
         let retained = self
             .read_storage_inventory_archive(inventory_request_id)?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
@@ -968,7 +931,7 @@ impl StorageInventoryArchiveV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_sandbox::{Journal, JournalLimits};
+    use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction};
 
     #[test]
     fn fresh_status_requires_the_immediate_archived_group_generation() {

@@ -77,6 +77,8 @@ const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.journal-transaction.v2\0";
 const STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.storage-group-archive.v1\0";
+const STORAGE_INVENTORY_ARCHIVE_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.storage-inventory-archive-transaction.v1\0";
 const STORAGE_GROUP_ARCHIVE_RETIRE_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.storage-group-archive-retire.v1\0";
 const STORAGE_INVENTORY_RETIRE_DOMAIN: &[u8] =
@@ -91,6 +93,11 @@ const MAXIMUM_STORAGE_GROUP_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
+
+enum StorageArchiveKind {
+    Group,
+    Inventory,
+}
 
 fn exact_storage_inventory_abandonment_marker(
     marker: Option<&storage_inventory_abandonment::StorageInventoryAbandonmentV1>,
@@ -1744,8 +1751,34 @@ impl ProtectedBrokerSessionJournalV1 {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         let value = encode_atomic_storage_archive_frame(request_id, &current.encode()?)?;
+        self.commit_absent_storage_archive(StorageArchiveKind::Group, request_id, value)?;
+        let retained = self
+            .read_atomic_storage_archive(request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if retained != *current {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(())
+    }
+
+    fn commit_absent_storage_archive(
+        &mut self,
+        kind: StorageArchiveKind,
+        request_id: [u8; 16],
+        value: Vec<u8>,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let (namespace, transaction_domain) = match kind {
+            StorageArchiveKind::Group => (
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN,
+            ),
+            StorageArchiveKind::Inventory => (
+                RecordNamespace::BrokerSessionStorageInventoryArchive,
+                STORAGE_INVENTORY_ARCHIVE_TRANSACTION_DOMAIN,
+            ),
+        };
         let digest: [u8; 32] = Sha256::new()
-            .chain_update(STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN)
+            .chain_update(transaction_domain)
             .chain_update(request_id)
             .chain_update(Sha256::digest(&value))
             .finalize()
@@ -1758,16 +1791,12 @@ impl ProtectedBrokerSessionJournalV1 {
         }
         let transaction = JournalTransaction::new(
             transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::BrokerSessionStorageGroupArchive,
-                request_id.to_vec(),
-                value,
-            )],
+            vec![JournalRecord::put(namespace, request_id.to_vec(), value)],
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
             .journal_mut()?
-            .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+            .claim_protected_authority(namespace)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
             .get(&request_id)
@@ -1785,12 +1814,6 @@ impl ProtectedBrokerSessionJournalV1 {
         authority
             .commit(&transaction)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let retained = self
-            .read_atomic_storage_archive(request_id)?
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        if retained != *current {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
         Ok(())
     }
 
