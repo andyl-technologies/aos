@@ -126,8 +126,9 @@ in
       # Production daemon ownership: the exact lifecycle factory performs the
       # source freeze, child fork/adoption, measurement, shutdown, reconciliation,
       # and source recovery while cgroup and quota owners remain live.
+      # Each lane owns three 256-MiB QEMU guests plus resident device state.
       for lane in source target; do
-        setup_lane "$lane" 1073741824
+        setup_lane "$lane" 2147483648
       done
       setup_lane child-ready-source 1073741824
       setup_lane child-ready-target 1073741824
