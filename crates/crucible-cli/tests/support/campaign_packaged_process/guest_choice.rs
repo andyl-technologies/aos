@@ -885,10 +885,9 @@ pub(crate) fn wait_for_choice(
     }
 
     Err(format!(
-        "campaign did not expose selectable `{selectable}` for parent artifact {parent_artifact} at configuration {parent_configuration}; status={:?}; choices={:?}; attempts={:?}",
+        "campaign did not expose selectable `{selectable}` for parent artifact {parent_artifact} at configuration {parent_configuration}; status={:?}; choices={:?}",
         last_head,
         last_choices,
-        attempt_states(fixture)?
     )
     .into())
 }
