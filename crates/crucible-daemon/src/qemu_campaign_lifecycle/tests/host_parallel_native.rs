@@ -311,18 +311,13 @@ fn run_failure_and_exact_recovery(
         ),
         &recovery_context,
     ) {
-        Ok(_) => panic!("spent replay promotion authority must reject reuse"),
+        Ok(_) => panic!("spent selected-root authority must reject reuse"),
         Err(error) => error,
     };
     assert!(matches!(
         spent,
-        QemuAttemptProductionVmLifecycleError::CheckpointRestore(source)
-            if matches!(
-                source.downcast_ref::<ProductionAttemptCheckpointRestoreError>(),
-                Some(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
-                    checkpoint: rejected,
-                }) if *rejected == checkpoint
-            )
+        QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(rejected)
+            if rejected == checkpoint
     ));
 
     FailureEvidence {

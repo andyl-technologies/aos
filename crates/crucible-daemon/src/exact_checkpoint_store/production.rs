@@ -1806,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn live_replay_promotion_supports_inspection_then_exactly_one_launch() {
+    fn live_replay_promotion_claim_supports_inspection_then_one_reconcile() {
         let backend = Arc::new(DurableMemoryBackend::new());
         let store = ExactCheckpointStore::new(backend.clone(), 1024 * 1024)
             .expect("admit production store");
@@ -1837,11 +1837,11 @@ mod tests {
         );
         drop(inspection);
 
-        let launch = store
+        let reconcile = store
             .acquire_live_replay_promotion(root, evidence)
-            .expect("acquire launch claim after boundary validation")
-            .expect("released boundary claim is available to launch");
-        launch.commit().expect("commit launch claim");
+            .expect("acquire reconcile claim after boundary inspection")
+            .expect("released boundary claim is available to reconcile");
+        reconcile.commit().expect("commit reconcile claim");
         assert!(
             store
                 .acquire_live_replay_promotion(root, evidence)
