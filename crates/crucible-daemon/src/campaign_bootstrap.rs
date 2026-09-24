@@ -245,6 +245,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::GetCampaignFindingObject
                 | CampaignServiceOperation::GetCampaignFindingTriageReplaySegment
                 | CampaignServiceOperation::ExplainCampaignAttempt
+                | CampaignServiceOperation::GetCampaignTraceChunk
                 | CampaignServiceOperation::GetCampaignPlannerRankings
                 | CampaignServiceOperation::GetCampaignGraphObject
                 | CampaignServiceOperation::QueryCampaignChoices

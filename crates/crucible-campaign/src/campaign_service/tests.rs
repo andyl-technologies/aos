@@ -20,6 +20,41 @@ use crate::{
 
 mod checked_client;
 
+#[test]
+fn trace_chunk_request_round_trips_and_rejects_unbounded_ranges() {
+    let principal = CampaignPrincipal::new("operator:trace-reader").expect("principal");
+    let campaign = CampaignName::new("trace-bounds").expect("campaign");
+    let snapshot = snapshot("trace-bounds");
+    let attempt = AttemptId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        9,
+        b"trace-attempt",
+    ))
+    .expect("attempt");
+    let request = |offset, limit| {
+        GetCampaignTraceChunkRequest::new(
+            principal.clone(),
+            campaign.clone(),
+            snapshot,
+            attempt,
+            CampaignTraceKind::ResolvedEffect,
+            offset,
+            limit,
+        )
+    };
+
+    let valid = request(MAX_CAMPAIGN_TRACE_BYTES, MAX_CAMPAIGN_TRACE_CHUNK_BYTES)
+        .expect("maximum bounded request");
+    assert_eq!(
+        GetCampaignTraceChunkRequest::from_canonical_bytes(&valid.canonical_bytes())
+            .expect("strict round trip"),
+        valid
+    );
+    assert!(request(0, 0).is_err());
+    assert!(request(0, MAX_CAMPAIGN_TRACE_CHUNK_BYTES + 1).is_err());
+    assert!(request(MAX_CAMPAIGN_TRACE_BYTES + 1, 1).is_err());
+}
+
 fn hash(label: &str) -> CampaignHash {
     CampaignHash::derive("campaign-service-test", label.as_bytes())
 }

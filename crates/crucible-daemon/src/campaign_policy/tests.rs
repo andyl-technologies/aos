@@ -393,6 +393,10 @@ fn policy_operation_labels_cover_the_closed_service_vocabulary() {
             CampaignServiceOperation::ExplainCampaignAttempt,
         ),
         (
+            "get-campaign-trace-chunk",
+            CampaignServiceOperation::GetCampaignTraceChunk,
+        ),
+        (
             "get-campaign-planner-rankings",
             CampaignServiceOperation::GetCampaignPlannerRankings,
         ),

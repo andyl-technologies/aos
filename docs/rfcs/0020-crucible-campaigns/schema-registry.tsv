@@ -114,6 +114,8 @@ crucible.campaign.get-campaign-finding-object-request	1	crucible-campaign::campa
 crucible.campaign.get-campaign-finding-object-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.explain-campaign-attempt-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.explain-campaign-attempt-response	2	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
+crucible.campaign.get-campaign-trace-chunk-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
+crucible.campaign.get-campaign-trace-chunk-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-planner-rankings-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-planner-rankings-response	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
 crucible.campaign.get-campaign-graph-object-request	1	crucible-campaign::campaign_service	component-message	gate:campaign-component-contract
