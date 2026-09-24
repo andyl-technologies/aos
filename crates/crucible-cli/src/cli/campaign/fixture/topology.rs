@@ -2,11 +2,17 @@
 
 use super::*;
 
-// Keep the modeled three-hop route within guest request and health timeouts
-// while giving each network-safe scheduler RUN useful instruction progress.
-const BASELINE_LINK_LATENCY_NANOS: u64 = 10_000_000;
+const OFFLINE_LINK_LATENCY_NANOS: u64 = 1_000_000;
+// Real guests need longer network-safe RUNs to reach their first public choice.
+// A three-hop route still stays within guest request and health timeouts.
+const ENVOY_LINK_LATENCY_NANOS: u64 = 10_000_000;
 
 pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<World, CliError> {
+    let link_latency_nanos = if boot.is_some() {
+        ENVOY_LINK_LATENCY_NANOS
+    } else {
+        OFFLINE_LINK_LATENCY_NANOS
+    };
     let nodes = [
         ("router-a", "router"),
         ("router-b", "router"),
@@ -40,7 +46,7 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
                 node(left),
                 node(right),
                 SimDuration {
-                    nanos: BASELINE_LINK_LATENCY_NANOS,
+                    nanos: link_latency_nanos,
                 },
                 SimDuration { nanos: 100_000 },
                 LinkLossProbability::ZERO,
@@ -51,11 +57,11 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
         .collect::<Result<Vec<_>, _>>()?;
     World::from_nodes_and_links(nodes, links)
         .map_err(|error| fixture_error(format!("build worked-network world: {error}")))?
-        .with_fault_topology(worked_network_fault_topology()?)
+        .with_fault_topology(worked_network_fault_topology(link_latency_nanos)?)
         .map_err(|error| fixture_error(format!("build worked-network fault topology: {error}")))
 }
 
-fn worked_network_fault_topology() -> Result<WorldFaultTopology, CliError> {
+fn worked_network_fault_topology(link_latency_nanos: u64) -> Result<WorldFaultTopology, CliError> {
     let mut topology = WorldFaultTopology::default();
     let mut domain_targets = BTreeMap::<&str, Vec<WorldFaultTargetRef>>::new();
     for (left, right, domain) in WORKED_NETWORK_LINKS {
@@ -82,7 +88,7 @@ fn worked_network_fault_topology() -> Result<WorldFaultTopology, CliError> {
             kind: WorldNetworkSegmentKind::Ethernet,
             interface_a,
             interface_b,
-            minimum_latency_nanos: BASELINE_LINK_LATENCY_NANOS,
+            minimum_latency_nanos: link_latency_nanos,
             mtu_bytes: 1500,
             medium: None,
             forwarders: Vec::new(),
