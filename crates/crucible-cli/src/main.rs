@@ -911,6 +911,12 @@ struct CampaignWorkedNetworkFixtureArgs {
     /// New directory that will receive the complete fixture.
     #[arg(long, value_name = "DIR", required = true)]
     output: PathBuf,
+    /// AOS-built Linux kernel for the executable Envoy network fixture.
+    #[arg(long, value_name = "FILE", requires = "root_image")]
+    kernel: Option<PathBuf>,
+    /// Immutable root.ext4 from the AOS Envoy network guest package.
+    #[arg(long, value_name = "FILE", requires = "kernel")]
+    root_image: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

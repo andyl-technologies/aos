@@ -21,11 +21,30 @@ set and revalidates that set before reporting success. An automated regression
 imports the result into a blank repository and creates its named campaign
 through the checked service API.
 
-The generated scenario intentionally omits product kernel and root-image
-references. It is the deterministic import/create/control-plane fixture, not a
-claim that a synthetic guest satisfies final product acceptance. The §14
-release flight separately authors the same declared topology against the actual
-supported product build and guest integration.
+The command above omits kernel and root-image references for an offline,
+deterministic import/create/control-plane fixture. To bind the same campaign
+topology to the AOS-built Envoy network guest, provide the actual AOS Linux
+kernel and the immutable `root.ext4` from `.#crucible-envoy-network-guest`:
+
+```sh
+crucible campaign fixture worked-network \
+  --output ./envoy-network-fixture \
+  --kernel /path/to/aos-vmlinuz \
+  --root-image /path/to/crucible-envoy-network-guest/root.ext4
+crucible campaign validate-import ./envoy-network-fixture/import.toml
+```
+
+This form hashes both files into portable scenario references and gives each
+node its Envoy role and `root=/dev/vda init=/init` boot arguments. It derives
+new scenario, configuration, policy, and lineage identities from that exact
+material. Production execution reads `CRUCIBLE_KERNEL` and
+`CRUCIBLE_ROOT_IMAGE` when assembling the QEMU lifecycle. Set those to the
+same immutable files in the executor environment (or use a build whose
+compiled AOS defaults resolve to those exact files). The lifecycle hashes
+the files and checks them against each node's scenario references before
+QEMU launch. Campaign import stores the scenario and schedule, while boot
+artifacts remain deployment files; generating and importing the fixture
+alone does not start the guest or establish acceptance.
 
 The implementation promotes this example into the realistic reference fixture
 for the independent operator, destructive recovery, finding handoff, and
