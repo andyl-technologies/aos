@@ -8,11 +8,11 @@
 //! ```
 //!
 //! The deployed AOSKGH01 carrier has exactly two FDs and cannot deliver an
-//! origin FD. This check is therefore not called by ownerd. A future versioned
-//! three-FD carrier must authenticate Storage's live subject and retain a held
-//! Storage currentness barrier before passing its third FD here. The origin
-//! mount may remain mutable after this observation; neither this result nor
-//! the existing signed stage-ack authorizes Stage, ACTIVE, or FD release.
+//! origin FD. The separate version 3 closed receiver can call this check, but
+//! ownerd does not call that receiver and Storage has no version 3 sender or
+//! held currentness barrier. The origin mount may remain mutable after this
+//! observation; neither this result nor the existing signed stage-ack
+//! authorizes Stage, ACTIVE, or FD release.
 
 use std::os::fd::{AsFd as _, OwnedFd};
 
@@ -124,8 +124,8 @@ impl PhysicalOrigin {
 
 /// Consumes one separately authenticated origin descriptor and returns no FD.
 ///
-/// The caller must obtain `origin_fd` from a future authenticated Storage
-/// subject in the same versioned transfer as a physically checked clone FD;
+/// The caller must obtain `origin_fd` from an authenticated Storage subject
+/// in the same versioned transfer as a physically checked clone FD;
 /// this function cannot authenticate descriptor provenance by itself. The
 /// pinned lease verifier must come from protected deployment custody. The
 /// present two-FD owner daemon has no route to call this function.
@@ -138,6 +138,15 @@ impl PhysicalOrigin {
 /// success and failure, and no kernel map transition occurs.
 pub fn verify_closed_mutable_origin(
     origin_fd: OwnedFd,
+    lease_bytes: &[u8],
+    lease_verifier: &[u8; VERIFIER_BYTES],
+    handoff: &DenyStageHandoff,
+) -> Result<ClosedOriginReadback, OwnerPeerError> {
+    verify_closed_mutable_origin_ref(&origin_fd, lease_bytes, lease_verifier, handoff)
+}
+
+pub(crate) fn verify_closed_mutable_origin_ref(
+    origin_fd: &OwnedFd,
     lease_bytes: &[u8],
     lease_verifier: &[u8; VERIFIER_BYTES],
     handoff: &DenyStageHandoff,
@@ -174,7 +183,7 @@ pub fn verify_closed_mutable_origin(
         return Err(OwnerPeerError::Noncanonical);
     }
 
-    let observed = PhysicalOrigin::from_fd(&origin_fd)?;
+    let observed = PhysicalOrigin::from_fd(origin_fd)?;
     if !observed.matches_signed_roles(signed_lease.lease().source(), handoff) {
         return Err(OwnerPeerError::Physical);
     }
@@ -189,7 +198,7 @@ pub fn verify_closed_mutable_origin(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -201,15 +210,15 @@ mod tests {
     const HANDOFF_DOMAIN: &[u8] = b"aos.sandbox.storage.kernel-export-deny-handoff.v1\0";
     const LEASE_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-lease.signature.v1\0";
 
-    struct Fixture {
-        handoff: [u8; 344],
-        lease: [u8; LEASE_BYTES],
-        verifier: [u8; VERIFIER_BYTES],
-        key: SigningKey,
+    pub(crate) struct Fixture {
+        pub(crate) handoff: [u8; 344],
+        pub(crate) lease: [u8; LEASE_BYTES],
+        pub(crate) verifier: [u8; VERIFIER_BYTES],
+        pub(crate) key: SigningKey,
         physical: PhysicalOrigin,
     }
 
-    fn open_origin() -> OwnedFd {
+    pub(crate) fn open_origin() -> OwnedFd {
         open(
             Path::new("."),
             OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -218,7 +227,7 @@ mod tests {
         .unwrap()
     }
 
-    fn handoff_id(frame: &mut [u8; 344]) {
+    pub(crate) fn handoff_id(frame: &mut [u8; 344]) {
         let digest: [u8; 32] = Sha256::new()
             .chain_update(HANDOFF_DOMAIN)
             .chain_update(&frame[48..])
@@ -227,13 +236,13 @@ mod tests {
         frame[16..48].copy_from_slice(&digest);
     }
 
-    fn sign_lease(lease: &mut [u8; LEASE_BYTES], key: &SigningKey) {
+    pub(crate) fn sign_lease(lease: &mut [u8; LEASE_BYTES], key: &SigningKey) {
         let mut message = LEASE_DOMAIN.to_vec();
         message.extend_from_slice(&lease[..432]);
         lease[432..].copy_from_slice(&key.sign(&message).to_bytes());
     }
 
-    fn fixture() -> Fixture {
+    pub(crate) fn fixture() -> Fixture {
         let physical = PhysicalOrigin::from_fd(&open_origin()).unwrap();
         let now = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
         let key = SigningKey::from_bytes(&[77; 32]);

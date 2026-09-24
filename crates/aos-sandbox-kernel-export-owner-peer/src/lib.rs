@@ -4,15 +4,16 @@
 //! kernel-export owner remains the sole map custodian. An opt-in root-only
 //! listener pins two external public verifiers and drops each received handoff;
 //! no Storage sender, private signer key, map stage, or descriptor release is
-//! wired. The origin module can check a separately authenticated mutable-origin
-//! FD, but the deployed two-FD carrier cannot supply one. A successful decode
-//! or readback is a nonauthorizing observation, never a grant.
+//! wired. A separate version 3 closed receiver can check the mutable-origin
+//! FD, but the deployed two-FD daemon does not call it. A successful decode or
+//! readback is a nonauthorizing observation, never a grant.
 
 pub mod deployment;
 pub mod handoff;
 pub mod origin;
 pub mod peer;
 pub mod stage_ack;
+pub mod three_fd;
 
 /// Reports a malformed, stale, or unauthenticated private owner input.
 #[derive(Debug, thiserror::Error)]

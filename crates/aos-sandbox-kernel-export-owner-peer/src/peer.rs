@@ -85,7 +85,7 @@ pub fn receive_closed_handoff(
     })
 }
 
-fn verify_storage_peer(
+pub(crate) fn verify_storage_peer(
     storage_cgroup: &RetainedCgroupAnchor,
     peer: &ConnectionPeerIdentity,
 ) -> Result<PidFdInfo, OwnerPeerError> {
@@ -106,7 +106,7 @@ fn verify_storage_peer(
     Ok(info)
 }
 
-fn verify_record(
+pub(crate) fn verify_record(
     storage_cgroup: &RetainedCgroupAnchor,
     expected: PidFdInfo,
     peer: &ConnectionPeerIdentity,
@@ -138,7 +138,7 @@ fn verify_record(
     })
 }
 
-fn readback_clone(
+pub(crate) fn readback_clone(
     frame: &DenyStageHandoff,
     clone: &std::os::fd::OwnedFd,
 ) -> Result<(), OwnerPeerError> {
@@ -170,7 +170,7 @@ fn readback_clone(
     Ok(())
 }
 
-fn readback_consumer(
+pub(crate) fn readback_consumer(
     frame: &DenyStageHandoff,
     cgroup: &std::os::fd::OwnedFd,
 ) -> Result<(), OwnerPeerError> {

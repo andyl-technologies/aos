@@ -8475,3 +8475,20 @@ submounts, and a complete no-migration rule remain unproved. A terminal
 release still requires deny-first revocation, an exact holder cgroup kill/empty
 observation, and independent proof that no escaped holder remains. The
 unconditional LocalLive gate remains closed.
+
+An owner-only version 3 closed handoff codec is prepared separately from the
+deployed two-FD endpoint. `AOSKGQ03` carries the unchanged 344-byte `AOSKGH01`
+frame and exact signed 496-byte `AOSSLE01` lease, with an explicit three-role
+header and `SCM_RIGHTS` order: detached read-only clone `O_PATH`, independent
+mutable-origin directory `O_PATH`, then the exact consumer cgroup-v2 `O_PATH`.
+The receiver pins the existing protected Storage lease public verifier,
+authenticates the same live Storage process around the packet, checks the
+clone, uses the signed-origin physical verifier, checks the cgroup, and closes
+all three FDs. Its 168-byte `AOSKGC03` closed acknowledgment binds the exact
+request digest, signed lease digest, handoff ID, current boot, and observed
+origin/clone/root/cgroup tuple. It is unsigned and does not claim PREPARED
+state or replace the distinct signed `AOSKGA02` PREPARED acknowledgment.
+Neither the deployed owner daemon nor Storage sends or accepts version 3 yet;
+no Stage, ACTIVE, FD release, or LocalLive authority follows. Storage must
+qualify a sender and hold assignment/clone currentness through the exchange
+before any effect path can be opened.
