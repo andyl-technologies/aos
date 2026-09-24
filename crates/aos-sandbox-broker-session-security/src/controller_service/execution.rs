@@ -8,9 +8,10 @@
 //! Controls can supersede the projection while an earlier effect is pending.
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyHostExecutionRequestV1, BrokerAuthorizationArtifactsV1, BrokerMethod,
-    BrokerRequestEnvelope, HostExecutionActionV1, HostExecutionCompletionStatusV1,
-    HostExecutionPhaseV1, QueryHostExecutionRequestV1, RequestHeader,
+    ApplyHostExecutionRequestV1, BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry,
+    BrokerDescriptorRole, BrokerMethod, BrokerRequestEnvelope, HostExecutionActionV1,
+    HostExecutionCompletionStatusV1, HostExecutionPhaseV1, QueryHostExecutionRequestV1,
+    RequestHeader,
 };
 use aos_proto::aos::sandbox::v1::{ExecutionIoMode, ExecutionPhase};
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
@@ -36,12 +37,17 @@ use aos_sandbox_core::{
     ObjectDigest, OperationId, ProjectId, ProtocolId, ProtocolVersion, SandboxId,
     encode_execution_spec_v1, execution_spec_digest_v1,
 };
+use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
 use aos_sandbox_protocol::host_execution::decode_host_execution_outcome_v1;
+use aos_sandbox_protocol::host_execution::{
+    HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
+    MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+};
 use aos_sandbox_protocol::semantics::{
-    host_execution_apply_grant_v1, host_execution_query_grant_v1,
+    host_execution_apply_grant_v1, host_execution_query_content_grant_v1,
 };
 use buffa::Message as _;
 use ed25519_dalek::VerifyingKey;
@@ -58,9 +64,6 @@ const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-requ
 const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-receipt.v1\0";
 const CONTROL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.controller.execution-control-projection.v1\0";
-// The current Host method accepts a 64-KiB body. A larger versioned handoff
-// is required before all valid ExecutionSpecV1 values can be transported.
-const MAX_CURRENT_HOST_SPECIFICATION_BYTES: usize = 60 * 1024;
 const RETAINED_RECOVERY: &str = "execution effect retains protected Host session recovery custody";
 const SESSION_UNUSABLE: &str = "execution effect Host session is unusable";
 const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
@@ -183,6 +186,20 @@ impl ExecutionAuthorizationKindV1 {
 }
 
 impl ControllerExecutionIntentV1 {
+    fn descriptor_content(&self) -> Result<Vec<u8>, EffectFailure> {
+        let bytes = self
+            .specification
+            .as_ref()
+            .map(encode_execution_spec_v1)
+            .unwrap_or_else(|| HOST_EXECUTION_CONTROL_CONTENT_V1.to_vec());
+        if bytes.is_empty() || bytes.len() > MAXIMUM_HOST_EXECUTION_SPEC_BYTES {
+            return Err(EffectFailure::Permanent(
+                "execution specification exceeds sealed content ceiling".to_owned(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     /// Publishes the observed control phase only after verified Host success.
     ///
     /// A retry reads the protected record first, making the projection write
@@ -627,11 +644,9 @@ impl ControllerExecutionIntentV1 {
             ));
         }
         if let Some(specification) = &self.specification {
-            if encode_execution_spec_v1(specification).len() > MAX_CURRENT_HOST_SPECIFICATION_BYTES
-            {
+            if encode_execution_spec_v1(specification).len() > MAXIMUM_HOST_EXECUTION_SPEC_BYTES {
                 return Err(EffectFailure::Retryable(
-                    "execution specification requires a larger authenticated Host handoff"
-                        .to_owned(),
+                    "execution specification exceeds the sealed Host content ceiling".to_owned(),
                 ));
             }
             let target = specification.target();
@@ -661,12 +676,16 @@ impl ControllerExecutionIntentV1 {
                 self.action.effect_operation(),
                 self.specification.as_ref(),
             ),
-            ExecutionAuthorizationKindV1::Query => host_execution_query_grant_v1(
-                assignment,
-                *self.operation_id.as_bytes(),
-                ExecutionId::from_bytes(self.execution_id),
-                ObjectDigest::from_bytes(self.source_operation_commitment),
-            ),
+            ExecutionAuthorizationKindV1::Query => {
+                let content = self.descriptor_content()?;
+                host_execution_query_content_grant_v1(
+                    assignment,
+                    *self.operation_id.as_bytes(),
+                    ExecutionId::from_bytes(self.execution_id),
+                    ObjectDigest::from_bytes(self.source_operation_commitment),
+                    HostExecutionSpecContentFieldsV1::for_grant(&content),
+                )
+            }
         }
         .map_err(retryable)?;
         let template = current
@@ -736,6 +755,7 @@ impl ControllerExecutionIntentV1 {
         kind: ExecutionAuthorizationKindV1,
         coordinates: DormantBrokerRequestCoordinatesV1,
         authorization: &BrokerAuthorizationArtifactsV1,
+        stable_content: HostExecutionSpecContentFieldsV1,
     ) -> BrokerRequestEnvelope {
         let header = RequestHeader {
             protocol_major: u32::from(coordinates.protocol_version().major()),
@@ -750,6 +770,13 @@ impl ControllerExecutionIntentV1 {
             ExecutionAuthorizationKindV1::Apply => {
                 let (action, terminal_rows, terminal_columns, signal_number) =
                     self.action.wire_fields();
+                let content = stable_content.bind_attempt(
+                    coordinates.request_id(),
+                    *self.operation_id.as_bytes(),
+                    ExecutionId::from_bytes(self.execution_id),
+                    ObjectDigest::from_bytes(self.source_operation_commitment),
+                    self.action.effect_operation(),
+                );
                 let request = ApplyHostExecutionRequestV1 {
                     header: Some(header).into(),
                     operation_id: self.operation_id.as_bytes().to_vec(),
@@ -759,11 +786,10 @@ impl ControllerExecutionIntentV1 {
                     terminal_rows,
                     terminal_columns,
                     signal_number,
-                    canonical_execution_spec: self
-                        .specification
-                        .as_ref()
-                        .map(encode_execution_spec_v1)
-                        .unwrap_or_default(),
+                    spec_transfer_version: 1,
+                    spec_content_bytes: content.bytes(),
+                    spec_content_digest: content.digest().to_vec(),
+                    spec_attempt_commitment: content.attempt_commitment().to_vec(),
                     ..Default::default()
                 };
                 request.encode_to_vec()
@@ -774,6 +800,8 @@ impl ControllerExecutionIntentV1 {
                     operation_id: self.operation_id.as_bytes().to_vec(),
                     execution_id: self.execution_id.to_vec(),
                     source_operation_commitment: self.source_operation_commitment.to_vec(),
+                    spec_content_bytes: stable_content.bytes(),
+                    spec_content_digest: stable_content.digest().to_vec(),
                     ..Default::default()
                 };
                 request.encode_to_vec()
@@ -782,6 +810,15 @@ impl ControllerExecutionIntentV1 {
         BrokerRequestEnvelope {
             method: kind.broker_method().into(),
             body,
+            descriptors: if kind == ExecutionAuthorizationKindV1::Apply {
+                vec![BrokerDescriptorEntry {
+                    index: 0,
+                    role: BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC.into(),
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            },
             authorization: Some(authorization.clone()).into(),
             ..Default::default()
         }
@@ -884,24 +921,50 @@ impl ControllerExecutionExchangeV1 {
                     "current Host execution authorization is unavailable".to_owned(),
                 )
             })?;
-            let preparation = session
-                .prepare_authenticated_request(kind.broker_method(), |coordinates| {
-                    intent.envelope(kind, coordinates, authorization)
-                })
-                .map_err(|_| {
-                    self.exchange.mark_failed();
-                    EffectFailure::Retryable(
-                        "execution request could not enter protected Host session custody"
-                            .to_owned(),
+            let context = ExecutionExchangeContextV1 {
+                intent: intent.clone(),
+                kind,
+            };
+            let content = intent.descriptor_content()?;
+            let stable_content = HostExecutionSpecContentFieldsV1::for_grant(&content);
+            if kind == ExecutionAuthorizationKindV1::Apply {
+                let credential = SealedReadOnlyCredential::create(
+                    "aos-host-execution-spec",
+                    &content,
+                    MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+                )
+                .map_err(retryable)?;
+                let descriptor = rustix::io::dup(credential.as_fd()).map_err(retryable)?;
+                let preparation = session
+                    .prepare_authenticated_descriptor_request(
+                        kind.broker_method(),
+                        vec![descriptor],
+                        |coordinates| {
+                            intent.envelope(kind, coordinates, authorization, stable_content)
+                        },
                     )
-                })?;
-            self.exchange.start(
-                ExecutionExchangeContextV1 {
-                    intent: intent.clone(),
-                    kind,
-                },
-                preparation,
-            );
+                    .map_err(|_| {
+                        self.exchange.mark_failed();
+                        EffectFailure::Retryable(
+                            "execution descriptor could not enter protected Host session custody"
+                                .to_owned(),
+                        )
+                    })?;
+                self.exchange.start_descriptor(context, preparation);
+            } else {
+                let preparation = session
+                    .prepare_authenticated_request(kind.broker_method(), |coordinates| {
+                        intent.envelope(kind, coordinates, authorization, stable_content)
+                    })
+                    .map_err(|_| {
+                        self.exchange.mark_failed();
+                        EffectFailure::Retryable(
+                            "execution request could not enter protected Host session custody"
+                                .to_owned(),
+                        )
+                    })?;
+                self.exchange.start(context, preparation);
+            }
         }
         self.exchange
             .drive(session, &ERRORS)
@@ -1090,17 +1153,33 @@ fn request_matches_intent(
             let Ok(request) = ApplyHostExecutionRequestV1::decode_from_slice(exact_body) else {
                 return false;
             };
+            let Some(request_id) = request
+                .header
+                .as_option()
+                .and_then(|header| header.request_id.as_slice().try_into().ok())
+            else {
+                return false;
+            };
+            let Ok(content) = intent.descriptor_content() else {
+                return false;
+            };
+            let fields = HostExecutionSpecContentFieldsV1::for_grant(&content).bind_attempt(
+                request_id,
+                *intent.operation_id.as_bytes(),
+                ExecutionId::from_bytes(intent.execution_id),
+                ObjectDigest::from_bytes(intent.source_operation_commitment),
+                intent.action.effect_operation(),
+            );
             let (action, rows, columns, signal_number) = intent.action.wire_fields();
             request.encode_to_vec() == exact_body
                 && request.operation_id == intent.operation_id.as_bytes()
                 && request.execution_id == intent.execution_id
                 && request.source_operation_commitment == intent.source_operation_commitment
-                && request.canonical_execution_spec
-                    == intent
-                        .specification
-                        .as_ref()
-                        .map(encode_execution_spec_v1)
-                        .unwrap_or_default()
+                && request.canonical_execution_spec.is_empty()
+                && request.spec_transfer_version == 1
+                && request.spec_content_bytes == fields.bytes()
+                && request.spec_content_digest == fields.digest().to_vec()
+                && request.spec_attempt_commitment == fields.attempt_commitment().to_vec()
                 && request.action.as_known() == Some(action)
                 && request.terminal_rows == rows
                 && request.terminal_columns == columns
@@ -1110,10 +1189,16 @@ fn request_matches_intent(
             let Ok(request) = QueryHostExecutionRequestV1::decode_from_slice(exact_body) else {
                 return false;
             };
+            let Ok(content) = intent.descriptor_content() else {
+                return false;
+            };
+            let fields = HostExecutionSpecContentFieldsV1::for_grant(&content);
             request.encode_to_vec() == exact_body
                 && request.operation_id == intent.operation_id.as_bytes()
                 && request.execution_id == intent.execution_id
                 && request.source_operation_commitment == intent.source_operation_commitment
+                && request.spec_content_bytes == fields.bytes()
+                && request.spec_content_digest == fields.digest().to_vec()
         }
     }
 }

@@ -167,8 +167,12 @@ message ApplyHostExecutionRequestV1 {
   uint32 terminal_rows = 6;
   uint32 terminal_columns = 7;
   uint32 signal_number = 8;
-  bytes canonical_execution_spec = 9; // Required only for AUTHORIZE.
+  bytes canonical_execution_spec = 9; // Legacy inline form; forbidden by descriptor transport v1.
   reserved 10; // Host derives effect sequence from its protected journal.
+  uint32 spec_transfer_version = 11; // Exactly 1 for sealed descriptor transport.
+  uint64 spec_content_bytes = 12; // Exact sealed descriptor size.
+  bytes spec_content_digest = 13; // SHA-256 of exact sealed bytes.
+  bytes spec_attempt_commitment = 14; // Binds content to this request header and locator.
 }
 
 message QueryHostExecutionRequestV1 {
@@ -176,6 +180,8 @@ message QueryHostExecutionRequestV1 {
   bytes operation_id = 2;
   bytes execution_id = 3;
   bytes source_operation_commitment = 4;
+  uint64 spec_content_bytes = 5; // Exact Apply content size for this operation.
+  bytes spec_content_digest = 6; // Exact Apply content digest for this operation.
 }
 
 enum HostExecutionPhaseV1 {
@@ -219,6 +225,7 @@ enum BrokerDescriptorRole {
   BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD = 8;
   BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP = 9;
   BROKER_DESCRIPTOR_ROLE_HOST_CATALOG = 10;
+  BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC = 11;
 }
 
 // Declares response-side ownership of a descriptor received with the request.

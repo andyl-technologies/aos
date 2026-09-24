@@ -29,6 +29,13 @@ rpc QueryRuntimeEffect(QueryRuntimeEffectRequest) returns (QueryRuntimeEffectRes
 BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT = 25;
 BROKER_METHOD_HOST_APPLY_EXECUTION = 26;
 BROKER_METHOD_HOST_QUERY_EXECUTION = 27;
+BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC = 11;
+uint32 spec_transfer_version = 11;
+uint64 spec_content_bytes = 12;
+bytes spec_content_digest = 13;
+bytes spec_attempt_commitment = 14;
+uint64 spec_content_bytes = 5;
+bytes spec_content_digest = 6;
 BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;

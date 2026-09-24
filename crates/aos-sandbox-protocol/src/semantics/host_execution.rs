@@ -16,7 +16,11 @@ use aos_sandbox_core::{
     ExecutionSpecV1, ObjectDigest, encode_execution_spec_v1,
 };
 
-use crate::host_execution::{ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1};
+use crate::host_execution::{
+    HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
+    MAXIMUM_HOST_EXECUTION_SPEC_BYTES, ValidatedHostExecutionApplyV1,
+    ValidatedHostExecutionQueryV1,
+};
 
 const DOMAIN: &[u8] = b"aos.sandbox.host.execution.v1\0";
 
@@ -72,6 +76,16 @@ pub fn canonical_host_execution_apply_semantics_v1(
     request: &ValidatedHostExecutionApplyV1,
     assignment: BrokerAssignment,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    if let Some(content) = request.content_fields() {
+        return host_execution_apply_content_grant_v1(
+            assignment,
+            request.operation_id(),
+            request.execution_id(),
+            request.source_commitment(),
+            request.action(),
+            content,
+        );
+    }
     host_execution_apply_grant_v1(
         assignment,
         request.operation_id(),
@@ -100,6 +114,44 @@ pub fn host_execution_apply_grant_v1(
     action: EffectOperationV1,
     specification: Option<&ExecutionSpecV1>,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    let bytes = match (action, specification) {
+        (EffectOperationV1::AuthorizeExecution, Some(specification))
+            if specification.execution() == execution_id =>
+        {
+            encode_execution_spec_v1(specification)
+        }
+        (EffectOperationV1::AuthorizeExecution, _) => {
+            return Err(HostExecutionSemanticErrorV1::InvalidAction);
+        }
+        (_, None) => HOST_EXECUTION_CONTROL_CONTENT_V1.to_vec(),
+        _ => return Err(HostExecutionSemanticErrorV1::InvalidAction),
+    };
+    let content = HostExecutionSpecContentFieldsV1::for_grant(&bytes);
+    host_execution_apply_content_grant_v1(
+        assignment,
+        operation_id,
+        execution_id,
+        source_commitment,
+        action,
+        content,
+    )
+}
+
+/// Compiles a signed Apply grant from the exact sealed-content reference.
+///
+/// # Errors
+///
+/// Rejects unspecified identities, invalid control arguments, or an invalid
+/// content size. The authenticated attempt commitment is checked by the body
+/// decoder; it is deliberately absent from this stable authorization grant.
+pub fn host_execution_apply_content_grant_v1(
+    assignment: BrokerAssignment,
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    action: EffectOperationV1,
+    content: HostExecutionSpecContentFieldsV1,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
     validate_locator(operation_id, execution_id, source_commitment)?;
     let mut bytes = common_bytes(
         1,
@@ -112,24 +164,19 @@ pub fn host_execution_apply_grant_v1(
     bytes.push(action.code());
     bytes.extend_from_slice(&action.arguments());
     match action {
-        EffectOperationV1::AuthorizeExecution => {
-            let specification = specification.ok_or(HostExecutionSemanticErrorV1::InvalidAction)?;
-            if specification.execution() != execution_id {
-                return Err(HostExecutionSemanticErrorV1::InvalidAction);
-            }
-            let encoded = encode_execution_spec_v1(specification);
-            let length = u32::try_from(encoded.len())
-                .map_err(|_| HostExecutionSemanticErrorV1::InvalidAction)?;
-            bytes.extend_from_slice(&length.to_be_bytes());
-            bytes.extend_from_slice(&encoded);
-        }
+        EffectOperationV1::AuthorizeExecution
+            if content.bytes() > 1
+                && content.bytes() <= MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 => {}
         EffectOperationV1::ResizeTerminal { rows, columns }
-            if rows != 0 && columns != 0 && specification.is_none() => {}
+            if rows != 0 && columns != 0 && content.is_control_marker() => {}
         EffectOperationV1::Signal { signal_code }
-            if (1..=64).contains(&signal_code) && specification.is_none() => {}
-        EffectOperationV1::Cancel | EffectOperationV1::Observe if specification.is_none() => {}
+            if (1..=64).contains(&signal_code) && content.is_control_marker() => {}
+        EffectOperationV1::Cancel | EffectOperationV1::Observe if content.is_control_marker() => {}
         _ => return Err(HostExecutionSemanticErrorV1::InvalidAction),
     }
+    bytes.push(1);
+    bytes.extend_from_slice(&content.bytes().to_be_bytes());
+    bytes.extend_from_slice(&content.digest());
 
     Ok(CanonicalHostExecutionSemanticsV1 {
         verb: BrokerVerb::HostApplyExecution,
@@ -147,12 +194,46 @@ pub fn canonical_host_execution_query_semantics_v1(
     request: &ValidatedHostExecutionQueryV1,
     assignment: BrokerAssignment,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
-    host_execution_query_grant_v1(
+    host_execution_query_content_grant_v1(
         assignment,
         request.operation_id(),
         request.execution_id(),
         request.source_commitment(),
+        request.content_fields(),
     )
+}
+
+/// Compiles a Query grant bound to the exact Apply content for this operation.
+///
+/// # Errors
+///
+/// Rejects an unspecified locator or invalid content size.
+pub fn host_execution_query_content_grant_v1(
+    assignment: BrokerAssignment,
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    content: HostExecutionSpecContentFieldsV1,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    validate_locator(operation_id, execution_id, source_commitment)?;
+    if content.bytes() == 0 || content.bytes() > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 {
+        return Err(HostExecutionSemanticErrorV1::InvalidAction);
+    }
+    let mut bytes = common_bytes(
+        2,
+        assignment,
+        operation_id,
+        execution_id.as_bytes(),
+        source_commitment,
+    );
+    bytes.push(1);
+    bytes.extend_from_slice(&content.bytes().to_be_bytes());
+    bytes.extend_from_slice(&content.digest());
+    Ok(CanonicalHostExecutionSemanticsV1 {
+        verb: BrokerVerb::HostQueryExecution,
+        target: BrokerGrantTarget::Assignment,
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
 }
 
 /// Compiles a Query grant before a broker header or request ID exists.

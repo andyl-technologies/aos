@@ -21,6 +21,144 @@ use crate::{
 };
 
 const MAXIMUM_HANDOFF_BODY_BYTES: usize = 64 * 1024;
+/// Largest canonical execution specification admitted by the runtime backend.
+pub const MAXIMUM_HOST_EXECUTION_SPEC_BYTES: usize = 15 * 1_048_576;
+
+/// Exact sealed content for an Apply control action without a specification.
+pub const HOST_EXECUTION_CONTROL_CONTENT_V1: &[u8] = &[0];
+
+const SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-spec-attempt.v1\0";
+
+/// Binds one sealed content descriptor to an authenticated Apply attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostExecutionSpecContentFieldsV1 {
+    bytes: u64,
+    digest: [u8; 32],
+    attempt_commitment: [u8; 32],
+}
+
+impl HostExecutionSpecContentFieldsV1 {
+    /// Derives the stable content portion of a signed grant.
+    #[must_use]
+    pub fn for_grant(content: &[u8]) -> Self {
+        Self {
+            bytes: content.len() as u64,
+            digest: Sha256::digest(content).into(),
+            attempt_commitment: [0; 32],
+        }
+    }
+
+    /// Binds stable content fields to one authenticated request attempt.
+    #[must_use]
+    pub fn bind_attempt(
+        self,
+        request_id: [u8; 16],
+        operation_id: [u8; 16],
+        execution_id: ExecutionId,
+        source_commitment: ObjectDigest,
+        action: EffectOperationV1,
+    ) -> Self {
+        Self {
+            attempt_commitment: spec_attempt_commitment_v1(
+                request_id,
+                operation_id,
+                execution_id,
+                source_commitment,
+                action,
+                self.bytes,
+                self.digest,
+            ),
+            ..self
+        }
+    }
+
+    /// Returns the exact expected sealed descriptor size.
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+
+    /// Returns SHA-256 of the exact sealed descriptor contents.
+    pub const fn digest(self) -> [u8; 32] {
+        self.digest
+    }
+
+    /// Returns the commitment to content and the authenticated request attempt.
+    pub const fn attempt_commitment(self) -> [u8; 32] {
+        self.attempt_commitment
+    }
+
+    /// Reports whether this reference is the exact control marker.
+    #[must_use]
+    pub fn is_control_marker(self) -> bool {
+        self.bytes == HOST_EXECUTION_CONTROL_CONTENT_V1.len() as u64
+            && self.digest
+                == <[u8; 32]>::from(Sha256::digest(HOST_EXECUTION_CONTROL_CONTENT_V1))
+    }
+}
+
+/// Derives the signed fields for a sealed Host execution-spec descriptor.
+///
+/// # Errors
+///
+/// Rejects empty or oversized content and a control marker that differs from
+/// the fixed one-byte value. The caller supplies canonical specification bytes
+/// for Authorize; Host independently decodes and reproduces them before effect.
+#[allow(clippy::too_many_arguments)]
+pub fn host_execution_spec_content_fields_v1(
+    request_id: [u8; 16],
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    action: EffectOperationV1,
+    content: &[u8],
+) -> Result<HostExecutionSpecContentFieldsV1, ProtocolValidationError> {
+    if content.is_empty() || content.len() > MAXIMUM_HOST_EXECUTION_SPEC_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    if !matches!(action, EffectOperationV1::AuthorizeExecution)
+        && content != HOST_EXECUTION_CONTROL_CONTENT_V1
+    {
+        return Err(ProtocolValidationError::InvalidField("spec content"));
+    }
+    let digest: [u8; 32] = Sha256::digest(content).into();
+    let bytes = content.len() as u64;
+    let attempt_commitment = spec_attempt_commitment_v1(
+        request_id,
+        operation_id,
+        execution_id,
+        source_commitment,
+        action,
+        bytes,
+        digest,
+    );
+    Ok(HostExecutionSpecContentFieldsV1 {
+        bytes,
+        digest,
+        attempt_commitment,
+    })
+}
+
+fn spec_attempt_commitment_v1(
+    request_id: [u8; 16],
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    action: EffectOperationV1,
+    bytes: u64,
+    digest: [u8; 32],
+) -> [u8; 32] {
+    let mut attempt = Sha256::new();
+    attempt.update(SPEC_ATTEMPT_DOMAIN);
+    attempt.update(request_id);
+    attempt.update(operation_id);
+    attempt.update(execution_id.as_bytes());
+    attempt.update(source_commitment.as_bytes());
+    attempt.update([action.code()]);
+    attempt.update(action.arguments());
+    attempt.update(bytes.to_be_bytes());
+    attempt.update(digest);
+    attempt.finalize().into()
+}
 
 /// Carries a validated intent without granting execution authority.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +169,7 @@ pub struct ValidatedHostExecutionApplyV1 {
     source_commitment: ObjectDigest,
     action: EffectOperationV1,
     specification: Option<aos_sandbox_core::ExecutionSpecV1>,
+    content: Option<HostExecutionSpecContentFieldsV1>,
 }
 
 impl ValidatedHostExecutionApplyV1 {
@@ -63,6 +202,55 @@ impl ValidatedHostExecutionApplyV1 {
     pub const fn specification(&self) -> Option<&aos_sandbox_core::ExecutionSpecV1> {
         self.specification.as_ref()
     }
+
+    /// Returns the exact sealed descriptor size for descriptor transport v1.
+    pub const fn content_bytes(&self) -> Option<u64> {
+        match self.content {
+            Some(content) => Some(content.bytes()),
+            None => None,
+        }
+    }
+
+    /// Returns the signed content reference for grant matching.
+    pub const fn content_fields(&self) -> Option<HostExecutionSpecContentFieldsV1> {
+        self.content
+    }
+
+    /// Validates one pinned sealed descriptor against this exact Apply attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects legacy inline transport, changed bytes, a noncanonical or
+    /// mismatched specification, and a changed control marker.
+    pub fn verify_content(&mut self, bytes: &[u8]) -> Result<(), ProtocolValidationError> {
+        let expected = self.content.ok_or(ProtocolValidationError::InvalidField(
+            "spec transfer version",
+        ))?;
+        let actual = host_execution_spec_content_fields_v1(
+            *self.header.request_id(),
+            self.operation_id,
+            self.execution_id,
+            self.source_commitment,
+            self.action,
+            bytes,
+        )?;
+        if actual != expected {
+            return Err(ProtocolValidationError::InvalidField("spec content"));
+        }
+        if matches!(self.action, EffectOperationV1::AuthorizeExecution) {
+            let limits = DecodeLimits {
+                maximum_bytes: MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+                ..DecodeLimits::default()
+            };
+            let specification = decode_execution_spec_v1(bytes, limits)
+                .map_err(|_| ProtocolValidationError::InvalidField("spec content"))?;
+            if specification.execution() != self.execution_id {
+                return Err(ProtocolValidationError::InvalidField("execution_id"));
+            }
+            self.specification = Some(specification);
+        }
+        Ok(())
+    }
 }
 
 /// Carries a validated readback locator without granting an effect.
@@ -72,6 +260,7 @@ pub struct ValidatedHostExecutionQueryV1 {
     operation_id: [u8; 16],
     execution_id: ExecutionId,
     source_commitment: ObjectDigest,
+    content: HostExecutionSpecContentFieldsV1,
 }
 
 impl ValidatedHostExecutionQueryV1 {
@@ -93,6 +282,11 @@ impl ValidatedHostExecutionQueryV1 {
     /// Returns the controller's stable canonical operation commitment.
     pub const fn source_commitment(&self) -> ObjectDigest {
         self.source_commitment
+    }
+
+    /// Returns the exact Apply content reference bound to this readback.
+    pub const fn content_fields(&self) -> HostExecutionSpecContentFieldsV1 {
+        self.content
     }
 }
 
@@ -139,7 +333,8 @@ pub fn decode_host_execution_apply_v1(
         Some(HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE)
             if no_geometry
                 && request.signal_number == 0
-                && !request.canonical_execution_spec.is_empty() =>
+                && (!request.canonical_execution_spec.is_empty()
+                    || request.spec_transfer_version == 1) =>
         {
             EffectOperationV1::AuthorizeExecution
         }
@@ -185,20 +380,67 @@ pub fn decode_host_execution_apply_v1(
             ));
         }
     };
-    let specification = if matches!(action, EffectOperationV1::AuthorizeExecution) {
-        let limits = DecodeLimits {
-            maximum_bytes: MAXIMUM_HANDOFF_BODY_BYTES,
-            ..DecodeLimits::default()
-        };
-        let specification = decode_execution_spec_v1(&request.canonical_execution_spec, limits)
-            .map_err(|_| ProtocolValidationError::InvalidField("canonical_execution_spec"))?;
-        if specification.execution() != execution_id {
-            return Err(ProtocolValidationError::InvalidField("execution_id"));
+    let content = if request.spec_transfer_version == 1 {
+        if !request.canonical_execution_spec.is_empty()
+            || request.spec_content_bytes == 0
+            || request.spec_content_bytes > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64
+        {
+            return Err(ProtocolValidationError::InvalidField("spec content"));
         }
-        Some(specification)
-    } else {
+        let digest = exact_nonzero::<32>(&request.spec_content_digest, "spec_content_digest")?;
+        let attempt_commitment =
+            exact_nonzero::<32>(&request.spec_attempt_commitment, "spec_attempt_commitment")?;
+        if !matches!(action, EffectOperationV1::AuthorizeExecution)
+            && (request.spec_content_bytes != HOST_EXECUTION_CONTROL_CONTENT_V1.len() as u64
+                || digest != <[u8; 32]>::from(Sha256::digest(HOST_EXECUTION_CONTROL_CONTENT_V1)))
+        {
+            return Err(ProtocolValidationError::InvalidField("spec content"));
+        }
+        if spec_attempt_commitment_v1(
+            *header.request_id(),
+            operation_id,
+            execution_id,
+            source_commitment,
+            action,
+            request.spec_content_bytes,
+            digest,
+        ) != attempt_commitment
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "spec attempt commitment",
+            ));
+        }
+        Some(HostExecutionSpecContentFieldsV1 {
+            bytes: request.spec_content_bytes,
+            digest,
+            attempt_commitment,
+        })
+    } else if request.spec_transfer_version == 0
+        && request.spec_content_bytes == 0
+        && request.spec_content_digest.is_empty()
+        && request.spec_attempt_commitment.is_empty()
+    {
         None
+    } else {
+        return Err(ProtocolValidationError::InvalidField(
+            "spec transfer version",
+        ));
     };
+    let specification =
+        if matches!(action, EffectOperationV1::AuthorizeExecution) && content.is_none() {
+            let limits = DecodeLimits {
+                maximum_bytes: MAXIMUM_HANDOFF_BODY_BYTES,
+                ..DecodeLimits::default()
+            };
+            let specification = decode_execution_spec_v1(&request.canonical_execution_spec, limits)
+                .map_err(|_| ProtocolValidationError::InvalidField("canonical_execution_spec"))?;
+            if specification.execution() != execution_id {
+                return Err(ProtocolValidationError::InvalidField("execution_id"));
+            }
+            Some(specification)
+        } else {
+            None
+        };
 
     Ok(ValidatedHostExecutionApplyV1 {
         header,
@@ -207,6 +449,7 @@ pub fn decode_host_execution_apply_v1(
         source_commitment,
         action,
         specification,
+        content,
     })
 }
 
@@ -239,6 +482,11 @@ pub fn decode_host_execution_query_v1(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
+    let content_bytes = request.spec_content_bytes;
+    if content_bytes == 0 || content_bytes > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 {
+        return Err(ProtocolValidationError::InvalidField("spec_content_bytes"));
+    }
+    let content_digest = exact_nonzero::<32>(&request.spec_content_digest, "spec_content_digest")?;
     Ok(ValidatedHostExecutionQueryV1 {
         header,
         operation_id: exact_nonzero::<16>(&request.operation_id, "operation_id")?,
@@ -250,6 +498,11 @@ pub fn decode_host_execution_query_v1(
             &request.source_operation_commitment,
             "source_operation_commitment",
         )?),
+        content: HostExecutionSpecContentFieldsV1 {
+            bytes: content_bytes,
+            digest: content_digest,
+            attempt_commitment: [0; 32],
+        },
     })
 }
 
@@ -314,4 +567,74 @@ fn execution_result_digest(bytes: &[u8]) -> [u8; 32] {
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
     digest.finalize().into()
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::*;
+
+    fn fields(request_id: [u8; 16], content: &[u8]) -> HostExecutionSpecContentFieldsV1 {
+        host_execution_spec_content_fields_v1(
+            request_id,
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            EffectOperationV1::AuthorizeExecution,
+            content,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sealed_content_reference_binds_the_exact_attempt_and_bytes() {
+        let original = fields([1; 16], b"specification");
+
+        assert_eq!(original.bytes(), 13);
+        assert_ne!(original.digest(), fields([1; 16], b"specification!").digest());
+        assert_ne!(
+            original.attempt_commitment(),
+            fields([5; 16], b"specification").attempt_commitment()
+        );
+    }
+
+    #[test]
+    fn full_runtime_content_ceiling_is_admitted_without_inline_framing() {
+        let largest = vec![7; MAXIMUM_HOST_EXECUTION_SPEC_BYTES];
+
+        assert_eq!(fields([1; 16], &largest).bytes(), largest.len() as u64);
+        let oversized = vec![7; MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 1];
+        assert!(host_execution_spec_content_fields_v1(
+            [1; 16],
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            EffectOperationV1::AuthorizeExecution,
+            &oversized,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn control_content_has_one_canonical_marker() {
+        let accepted = host_execution_spec_content_fields_v1(
+            [1; 16],
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            EffectOperationV1::Cancel,
+            HOST_EXECUTION_CONTROL_CONTENT_V1,
+        )
+        .unwrap();
+
+        assert!(accepted.is_control_marker());
+        assert!(host_execution_spec_content_fields_v1(
+            [1; 16],
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            EffectOperationV1::Cancel,
+            b"other",
+        )
+        .is_err());
+    }
 }
