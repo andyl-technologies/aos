@@ -70,7 +70,7 @@ def run_west():
     wait_for_convergence()
     guest("semantic-marker", "network.converged", "instance-1")
     announce("converged")
-    guest("semantic-marker", "fault.transport.ready", "instance-1")
+    guest("event", "fault.transport.ready")
 
     successful = 0
     lost = 0
@@ -163,7 +163,7 @@ def run_west():
                         "path:enum=a-c-east", f"sequence:u64={failover_sequence}",
                     )
                 announce("followup-ready")
-                guest("semantic-marker", "fault.followup.ready", "instance-1")
+                guest("event", "fault.followup.ready")
             if window_requests == 240:
                 guest("semantic-marker", "campaign.complete", "instance-1")
 
