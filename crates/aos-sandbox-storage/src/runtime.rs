@@ -28,7 +28,8 @@ use aos_sandbox_protocol::semantics::storage::{CanonicalStorageSemanticsV1, Stor
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
-    MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, decode_storage_resource_inventory_response,
+    MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
+    decode_storage_resource_inventory_response,
 };
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
@@ -47,7 +48,8 @@ use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
 use crate::observation_protocol::{
-    WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationRequestV1, encode_request,
+    WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationExpectationV1,
+    WorkspaceCatalogObservationRequestV1, encode_request,
 };
 use crate::pin_observer::WorkspacePinHostCustody;
 use crate::pin_worker::boottime_now_nanoseconds;
@@ -86,7 +88,10 @@ const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
-fn guest_root_inventory_cutoff(now: u64, deadline: u64) -> Result<u64, StorageRuntimeError> {
+pub(crate) fn guest_root_inventory_cutoff(
+    now: u64,
+    deadline: u64,
+) -> Result<u64, StorageRuntimeError> {
     let latest = deadline
         .checked_sub(1)
         .ok_or(StorageRuntimeError::Recovery)?;
@@ -1017,6 +1022,33 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
         Ok(mount)
+    }
+
+    pub(crate) fn live_export_origin_mount_id(
+        &self,
+        workspace: &ValidatedStorageWorkspace,
+    ) -> Result<u64, StorageRuntimeError> {
+        let (_, physical) = self.coordinator.workspace_catalog_activation_plan()?;
+        let physical = physical.ok_or(StorageRuntimeError::Recovery)?;
+        physical
+            .targets()
+            .iter()
+            .find(|target| target.workspace_handle() == *workspace.workspace_handle())
+            .and_then(|target| match target.expectation() {
+                WorkspaceCatalogObservationExpectationV1::Present {
+                    mount_id,
+                    root_device,
+                    root_inode,
+                } if root_device == workspace.root_device()
+                    && root_inode == workspace.root_inode()
+                    && target.dataset_guid() == workspace.dataset_guid()
+                    && target.creation_operation_id() == *workspace.creation_operation_id() =>
+                {
+                    Some(mount_id)
+                }
+                _ => None,
+            })
+            .ok_or(StorageRuntimeError::Recovery)
     }
 
     /// Publishes one populated guest root under a distinct durable signed effect.

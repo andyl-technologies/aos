@@ -41,6 +41,7 @@ pub mod guest_root_worker;
 mod helper;
 mod lifecycle_atomic_snapshot;
 mod lifecycle_inventory;
+pub mod live_export_origin;
 mod observation;
 #[allow(
     dead_code,
@@ -101,6 +102,7 @@ pub use dormant_broker_session::{
     DormantStorageBrokerCallsiteV1, DormantStorageBrokerObservationV1,
 };
 pub use lifecycle_atomic_snapshot::DormantAtomicDatasetSnapshotV1;
+pub use live_export_origin::StorageLiveExportOriginV1;
 pub use pin_worker_runtime::{
     run_inherited_workspace_pin_observer, run_inherited_workspace_pin_worker,
 };
