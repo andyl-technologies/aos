@@ -37,6 +37,31 @@ fn diskless_launch_material_retains_firmware() {
 }
 
 #[test]
+fn campaign_marker_parking_survives_child_launch_profile_clone() {
+    let base = QemuLiveNodeStepGateConfig::new(
+        "/aos/bin/qemu-system-aarch64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/firmware",
+        "/run/crucible/source",
+    )
+    .with_guest_architecture(LivePluginGuestArchitecture::Aarch64)
+    .with_whitebox(QemuLaunchPluginSwitch::On);
+    let child = base
+        .with_campaign_marker_parking()
+        .with_run_directory("/run/crucible/child");
+    let profile = launch_profile_candidate(child.architecture)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("launch profile should validate: {error}"));
+    let vm = vm_launch_config(&child, "vm-a");
+    let plugin = live_node_plugin_config(&child, &profile, &vm, "vm-a", None)
+        .unwrap_or_else(|error| panic!("plugin profile should construct: {error}"));
+
+    assert!(plugin.plugin_args_raw().contains("campaign_marker_parking=on"));
+    assert_eq!(plugin.validate(), Ok(()));
+}
+
+#[test]
 fn pre_directory_resource_admission_matches_the_concrete_launch_command() {
     let config = QemuLiveNodeStepGateConfig::new_with_root_image(
         "/nix/store/11111111111111111111111111111111-qemu/bin/qemu-system-x86_64",

@@ -146,6 +146,7 @@ pub struct QemuLiveNodeStepGateConfig {
     storage_completed_history_epochs: u64,
     storage_completed_history_gaps: u64,
     whitebox: QemuLaunchPluginSwitch,
+    campaign_marker_parking: bool,
     app_random: Option<QemuLaunchAppRandomConfig>,
     selectable_catalog_plan:
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
@@ -306,6 +307,7 @@ impl QemuLiveNodeStepGateConfig {
             storage_completed_history_gaps: FaultResourceLimits::compiled_maximum()
                 .storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
+            campaign_marker_parking: false,
             app_random: None,
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -365,6 +367,7 @@ impl QemuLiveNodeStepGateConfig {
             storage_completed_history_gaps: FaultResourceLimits::compiled_maximum()
                 .storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
+            campaign_marker_parking: false,
             app_random: None,
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -465,6 +468,13 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_whitebox(mut self, whitebox: QemuLaunchPluginSwitch) -> Self {
         self.whitebox = whitebox;
+        self
+    }
+
+    /// Enables exact parking at the declared network-campaign guest markers.
+    #[must_use]
+    pub const fn with_campaign_marker_parking(mut self) -> Self {
+        self.campaign_marker_parking = true;
         self
     }
 
