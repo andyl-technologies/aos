@@ -58,7 +58,12 @@ use crate::{
 };
 
 mod selection_projection;
+#[path = "qemu_campaign_driver/observation_candidate.rs"]
+mod observation_candidate;
 
+use observation_candidate::{
+    build_observation_candidate, build_observation_candidate_with_supplemental,
+};
 use selection_projection::produced_selections_after_start;
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
@@ -82,6 +87,9 @@ pub enum QemuFreshModeledDriverError {
     /// Scheduler progress or final event validation failed.
     #[error("fresh campaign scheduler failed: {0}")]
     Scheduler(#[source] SchedulerError),
+    /// The live fault runtime supplied a noncanonical or out-of-contract trace.
+    #[error("fresh campaign resolved-effect trace is invalid: {0}")]
+    ResolvedEffectTrace(#[source] crucible::model::FaultRuntimeError),
     /// Strict Crucible artifact reconstruction failed.
     #[error("fresh campaign artifact projection failed: {0}")]
     Artifact(#[source] Box<CrucibleArtifactError>),
@@ -982,8 +990,17 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
 
     fn seal(
         &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        self.seal_with_trace(pending, final_events, None)
+    }
+
+    fn seal_with_trace(
+        &mut self,
         mut pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
+        resolved_effect_trace: Option<Vec<u8>>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         append_event_entries(
             &mut pending.event_log,
@@ -991,7 +1008,8 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
             final_events,
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
-        build_observation_candidate(pending).map_err(AttemptWorkerFailure::Terminal)
+        build_observation_candidate(pending, resolved_effect_trace)
+            .map_err(AttemptWorkerFailure::Terminal)
     }
 }
 
@@ -1033,8 +1051,17 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
 
     fn seal(
         &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        self.seal_with_trace(pending, final_events, None)
+    }
+
+    fn seal_with_trace(
+        &mut self,
         mut pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
+        resolved_effect_trace: Option<Vec<u8>>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
         append_event_entries(
             &mut pending.event_log,
@@ -1043,10 +1070,13 @@ impl QemuFreshAttemptDriver for QemuFreshSupplementalModeledDriver {
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
         match (self.oracle.as_deref(), self.source) {
-            (Some(oracle), Some(source)) => {
-                build_observation_candidate_with_supplemental(pending, oracle, source)
-            }
-            (None, None) => build_observation_candidate(pending),
+            (Some(oracle), Some(source)) => build_observation_candidate_with_supplemental(
+                pending,
+                oracle,
+                source,
+                resolved_effect_trace,
+            ),
+            (None, None) => build_observation_candidate(pending, resolved_effect_trace),
             (Some(_), None) | (None, Some(_)) => Err(QemuFreshModeledDriverError::ScenarioMismatch),
         }
         .map_err(AttemptWorkerFailure::Terminal)
@@ -2358,54 +2388,6 @@ fn primary_stop_at(
     } else {
         ModeledStop::Reached(requested.clone())
     }
-}
-
-fn build_observation_candidate(
-    pending: QemuFreshPendingObservation,
-) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
-    build_observation_candidate_inner(pending, None)
-}
-
-fn build_observation_candidate_with_supplemental(
-    pending: QemuFreshPendingObservation,
-    oracle: &dyn GuardedCampaignFindingOracle,
-    source: ContentId,
-) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
-    build_observation_candidate_inner(pending, Some((oracle, source)))
-}
-
-fn build_observation_candidate_inner(
-    pending: QemuFreshPendingObservation,
-    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
-) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
-    let projection = project_boundary(pending, true, supplemental_oracle)?;
-    let observation = Observation::new(
-        projection.input.attempt().id()?,
-        Observation::outcome(
-            projection.child.configuration(),
-            projection.child.id()?,
-            projection.input.path().id()?,
-            projection
-                .stop
-                .ok_or(QemuFreshModeledDriverError::SelectedResumeBoundaryMismatch)?,
-            projection.measurements.id()?,
-            projection.properties.id()?,
-            projection.coverage.id()?,
-        ),
-        projection.discovered_ids,
-    )?;
-    let candidate = ObservationCandidate::new(
-        projection.child,
-        projection.measurements,
-        projection.properties,
-        projection.coverage,
-        projection.discovered_choices,
-        observation,
-    )
-    .and_then(|candidate| candidate.with_produced_selections(projection.produced_selections))?;
-    let result =
-        PreparedSemanticAttemptResult::new(candidate, vec![projection.measurement_evidence], None)?;
-    Ok(AttemptExecutionProduct::prepared_semantic(result))
 }
 
 struct QemuBoundaryProjection {

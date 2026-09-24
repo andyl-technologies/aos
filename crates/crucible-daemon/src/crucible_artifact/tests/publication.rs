@@ -358,6 +358,54 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         observation_result
     );
 
+    let trace_bytes = crucible::model::ResolvedEffectTrace {
+        mode: crucible::model::FaultReplayMode::LockedEffect,
+        work_items: Vec::new(),
+        cursor: 0,
+    }
+    .canonical_bytes()
+    .expect("canonical resolved effect trace");
+    let trace_id = crucible_cas::content_store::ContentId::for_bytes(
+        crucible_cas::content_store::ObjectKind::Trace,
+        1,
+        &trace_bytes,
+    );
+    let trace_observation = observation_candidate_with_measurements
+        .observation()
+        .clone()
+        .with_resolved_effect_trace(trace_id)
+        .expect("trace child");
+    let trace_candidate = ObservationCandidate::new(
+        observation_candidate_with_measurements.child().clone(),
+        observation_candidate_with_measurements
+            .measurements()
+            .clone(),
+        observation_candidate_with_measurements.properties().clone(),
+        observation_candidate_with_measurements.coverage().clone(),
+        observation_candidate_with_measurements
+            .discovered_choices()
+            .to_vec(),
+        trace_observation,
+    )
+    .expect("trace observation candidate")
+    .with_resolved_effect_trace(trace_bytes.clone())
+    .expect("trace bytes");
+    let trace_result = PreparedSemanticAttemptResult::new(
+        trace_candidate,
+        observation_result.measurement_replay_evidence().to_vec(),
+        None,
+    )
+    .expect("trace result");
+    assert_eq!(
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &trace_result
+                .canonical_bytes()
+                .expect("trace result encoding")
+        )
+        .expect("trace result decoding"),
+        trace_result
+    );
+
     let mut terminal_fingerprints = scenario
         .world()
         .vm_nodes()

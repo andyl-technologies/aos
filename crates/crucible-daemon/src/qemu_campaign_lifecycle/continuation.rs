@@ -393,6 +393,11 @@ where
                 context,
             );
         }
+        let captured_trace = if matches!(&driven, Ok(QemuFreshRunnerResult::Observation(_))) {
+            lifecycle.resolved_effect_trace()
+        } else {
+            Ok(None)
+        };
         let cleanup = lifecycle.shutdown();
 
         let (pending, final_events) = match (driven, cleanup) {
@@ -409,10 +414,15 @@ where
                 ));
             }
         };
+        let resolved_effect_trace = captured_trace.map_err(|error| {
+            AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ResolvedEffectTraceCapture(error),
+            )
+        })?;
         let product = match pending {
             QemuFreshRunnerResult::Observation(pending) => self
                 .driver
-                .seal(pending, final_events)
+                .seal_with_trace(pending, final_events, resolved_effect_trace)
                 .map_err(map_fresh_driver_failure)?,
             QemuFreshRunnerResult::Checkpoint(checkpoint) => {
                 AttemptExecutionProduct::exact_checkpoint(checkpoint)
