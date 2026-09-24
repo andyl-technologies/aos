@@ -8262,3 +8262,66 @@ sign acquire/release/reopen only after complete physical readback. The present
 Mount lifecycle and BPF-LSM package provide no such enforcement or readback.
 SourceProvider production ingress remains inert and LocalLive advertisement
 and readiness remain closed.
+
+### LocalLive enforcement design and unresolved kernel boundary
+
+The pinned Linux source is 7.2.3 (`pkgs/kernel/_source.nix`). Its per-mount
+read-only flag protects a detached clone against writes through that clone,
+but it is not a revocation primitive. The present payload seccomp profile
+(`pkgs/system/patches/0007-nspawn-aos-payload-seccomp-profile.patch`) does not
+deny `io_uring_setup`. In this pinned kernel, `io_uring/msg_ring.c` installs a
+source `struct file` in a target ring through `__io_fixed_fd_install`, without
+the `security_file_receive` call used by `fs/file.c`'s `receive_fd` path. A
+grant policy based only on BPF-LSM `file_receive` therefore cannot prove that
+a descriptor stayed with its declared consumer. Its `file_permission` hook can
+mediate ordinary reads and directory iteration, but it cannot undo an existing
+mapping, connected socket, or inode lock merely by changing a grant map.
+
+The narrowest candidate that preserves native live semantics has two distinct
+parts, both required before a KernelExportGrant signer can be provisioned:
+
+1. A protected Mount/kernel owner accepts an independently verified, current
+   signed Storage live-export lease and its physical source FD under one
+   cross-owner fence. It makes the native detached clone, applies the exact
+   recursive topology and read-only, nodev, nosuid, idmap, and execution
+   attributes before handoff, and independently observes its origin and clone
+   by FD. Its
+   durable grant identity binds the exact signed Storage lease digest, source
+   assignment/export/revocation generation, consumer authority and cgroup,
+   boot ID, origin and clone device/inode/unique mount IDs, clone descriptor
+   commitment, policy generation, and grant epoch. The clone FD alone never
+   conveys permission to sign.
+2. A protected, versioned enforcement policy must cover every path by which a
+   consumer can retain or transfer grant-backed access, including opened files,
+   directory handles, inherited and duplicated FDs, mappings, sockets,
+   FIFOs, and locks. A BPF-LSM design needs more than `file_receive`: it needs
+   current grant checks on the applicable open, use, mmap, lock, and socket
+   hooks, plus a qualified prohibition or mediation of `io_uring` fixed-file
+   transfer. The payload must start with no inherited ring FD, and an exact
+   installed seccomp/MAC readback must prevent it from creating a bypass ring
+   or escaping the protected cgroup. If this cannot be proven, a reviewed
+   kernel hook or different physical isolation primitive is required; adding
+   a signature or a map entry does not close the gap.
+
+For hard revocation, the owner first denies new access under a monotonically
+advanced policy epoch, then stops the entire consumer cgroup and observes it
+empty before terminal release. Ordinary mount detach while the consumer runs
+is not a terminal LocalLive release: mappings and open references may survive.
+The owner must retain clone and grant custody through ambiguous failure; it
+must not remove a map entry or sign release on a timeout. Reopen rechecks the
+same pinned program/link/map identities, policy epoch, grant state, exact
+Storage lease currentness, and the clone FD's physical identity. An independent
+StorageExport signer subsequently validates the clone against its protected
+workspace origin and signs the final acquisition statement. SourceProvider
+accepts only the Storage and kernel signatures over the same statement and
+descriptor; it never infers either owner's authority from scalar proof fields.
+
+This is a proposed enforcement profile, not a deployed implementation. Its
+production gate requires installed BPF link/program/map and signing-key custody
+readback, cross-owner ordering and crash recovery, and adversarial VM tests for
+`SCM_RIGHTS`, `pidfd_getfd`, `io_uring` MSG_RING and fixed files, fork/inherited
+FDs, mmap across revoke, AF_UNIX/FIFO access, locks, recursive submounts,
+policy replacement, and power-loss ambiguity. A test must demonstrate that a
+revoked or wrong-cgroup holder cannot continue live access and that release is
+withheld until all relevant holders are stopped. Until then the unconditional
+LocalLive gate above stays in place.
