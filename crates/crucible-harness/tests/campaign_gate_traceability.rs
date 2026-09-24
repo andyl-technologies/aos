@@ -258,6 +258,7 @@ fn registered_library_exact_targets_match_sources_and_nix() {
                     producer_nix_attr,
                     producer_gate,
                     aggregate_nix_source,
+                    evidence_input,
                     evidence,
                     ignored,
                 } => failures.extend(library_exact_aggregate_target_failures(
@@ -270,6 +271,7 @@ fn registered_library_exact_targets_match_sources_and_nix() {
                         producer_nix_attr,
                         producer_gate,
                         aggregate_nix_source,
+                        evidence_input,
                         aggregate_nix_attr: nix_attr,
                         evidence,
                         ignored,
@@ -332,6 +334,7 @@ fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Er
         producer_nix_attr,
         producer_gate,
         aggregate_nix_source,
+        evidence_input,
         evidence,
         ignored,
     } = targets[0].kind
@@ -352,6 +355,7 @@ fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Er
         aggregate_nix_source,
         "tests/crucible/phase7-crucible-hot-fork-isolation.nix"
     );
+    assert_eq!(evidence_input, "nativeIsolation");
     assert!(ignored);
     assert_eq!(evidence.len(), 4);
     assert!(evidence[0].contains("native_isolation_scopes="));
@@ -675,6 +679,7 @@ fn automated_contract_failures(
                 producer_nix_attr,
                 producer_gate,
                 aggregate_nix_source,
+                evidence_input,
                 evidence,
                 ignored,
             } => failures.extend(library_exact_aggregate_target_failures(
@@ -687,6 +692,7 @@ fn automated_contract_failures(
                     producer_nix_attr,
                     producer_gate,
                     aggregate_nix_source,
+                    evidence_input,
                     aggregate_nix_attr: nix_attr,
                     evidence,
                     ignored,
@@ -800,6 +806,7 @@ struct LibraryExactAggregateContract<'a> {
     producer_nix_attr: &'a str,
     producer_gate: &'a str,
     aggregate_nix_source: &'a str,
+    evidence_input: &'a str,
     aggregate_nix_attr: &'a str,
     evidence: &'a [&'a str],
     ignored: bool,
@@ -833,7 +840,7 @@ fn library_exact_aggregate_target_failures(
                     contract.gate
                 ));
             }
-            if !aggregate.contains("nativeIsolation") {
+            if !aggregate.contains(contract.evidence_input) {
                 failures.push(format!(
                     "{}: aggregate Nix flight omits its native evidence input",
                     contract.gate
