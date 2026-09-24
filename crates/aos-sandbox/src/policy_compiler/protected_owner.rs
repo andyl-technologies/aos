@@ -712,8 +712,8 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Cache pin, spent challenge, and one root binding hold are fixed records.
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 8,
+        // Both owner pins, spent challenge, and one root binding hold are fixed records.
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 9,
     }
 }
 
@@ -731,7 +731,7 @@ mod tests {
         let limits = policy_authority_journal_limits();
         assert_eq!(
             limits.maximum_materialized_records,
-            MAXIMUM_POLICY_BINDINGS + 8
+            MAXIMUM_POLICY_BINDINGS + 9
         );
         assert!(
             limits.maximum_record_bytes >= super::super::binding_v2::CLOSED_POLICY_BINDING_BYTES_V2

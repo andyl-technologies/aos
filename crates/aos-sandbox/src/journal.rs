@@ -1195,8 +1195,9 @@ impl Journal {
     /// Checks that this live lock still belongs to one fixed protected path.
     ///
     /// The directory is resolved afresh and compared by device and inode with
-    /// the retained protected directory descriptor. A replaced pathname cannot
-    /// lend authority over the old journal, and no second journal lock opens.
+    /// the retained protected directory descriptor. Call
+    /// [`Self::require_protected_named_location`] when the journal and lock
+    /// basenames must also remain current.
     pub(crate) fn require_protected_location(
         &self,
         directory: &Path,
@@ -1222,6 +1223,50 @@ impl Journal {
         }
 
         self.ensure_healthy()
+    }
+
+    /// Rechecks the fixed directory and both names against this retained writer.
+    ///
+    /// A same-UID rename can replace a journal pathname without releasing the
+    /// old inode's flock. A signed owner witness must not describe that orphan.
+    pub(crate) fn require_protected_named_location(
+        &self,
+        directory: &Path,
+        name: &str,
+        expected_uid: u32,
+        limits: JournalLimits,
+    ) -> Result<(), JournalError> {
+        self.require_protected_location(directory, name, expected_uid, limits)?;
+        self.require_protected_names_current()
+    }
+
+    fn require_protected_names_current(&self) -> Result<(), JournalError> {
+        let retained = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        let named_lock = open_read_only_protected_file(
+            &retained.directory,
+            &format!("{}.lock", retained.name),
+            retained.expected_uid,
+        )?;
+        let named_file = open_read_only_protected_file(
+            &retained.directory,
+            &retained.name,
+            retained.expected_uid,
+        )?;
+        let held_lock = fstat(&self._lock).map_err(rustix_io)?;
+        let held_file = fstat(&self.file).map_err(rustix_io)?;
+        let current_lock = fstat(&named_lock).map_err(rustix_io)?;
+        let current_file = fstat(&named_file).map_err(rustix_io)?;
+        if held_lock.st_dev != current_lock.st_dev
+            || held_lock.st_ino != current_lock.st_ino
+            || held_file.st_dev != current_file.st_dev
+            || held_file.st_ino != current_file.st_ino
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
     }
 
     /// Opens a final private directory for dependent crate journal fixtures.
@@ -4594,6 +4639,36 @@ mod tests {
                 ),
                 Err(JournalError::ProtectedBoundary)
             ));
+        }
+    }
+
+    #[test]
+    fn protected_writer_rejects_replaced_journal_and_lock_names() {
+        let directory = TestDirectory::new("named-writer-currentness");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let (journal, _) = Journal::open_protected_at_uid(
+            &directory.0,
+            "controller.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        assert!(journal.require_protected_names_current().is_ok());
+
+        for name in ["controller.journal", "controller.journal.lock"] {
+            let current = directory.0.join(name);
+            let retained = directory.0.join(format!("{name}.retained"));
+            fs::rename(&current, &retained).unwrap();
+            fs::write(&current, []).unwrap();
+            fs::set_permissions(&current, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(matches!(
+                journal.require_protected_names_current(),
+                Err(JournalError::StaleAuthoritySnapshot)
+            ));
+            fs::remove_file(&current).unwrap();
+            fs::rename(&retained, &current).unwrap();
+            assert!(journal.require_protected_names_current().is_ok());
         }
     }
 

@@ -59,6 +59,10 @@
     "cache-owner-readback-signing-key:/run/credentials/@system/${cfg.credentials.cacheOwnerReadbackSigningKey}"
     "cache-owner-readback-public-key:/run/credentials/@system/${cfg.credentials.cacheOwnerReadbackPublicKey}"
   ];
+  controllerHoldCredentials = lib.optionals (cfg.credentials.controllerHoldSigningKey != null && cfg.credentials.controllerHoldPublicKey != null) [
+    "controller-hold-signing-key:/run/credentials/@system/${cfg.credentials.controllerHoldSigningKey}"
+    "controller-hold-public-key:/run/credentials/@system/${cfg.credentials.controllerHoldPublicKey}"
+  ];
   guestRootTemplateCredentials = [
     "guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"
     "guest-root-tree-digest-v1:${pkgs.aos-sandbox-guest-root-template}/root-tree-digest"
@@ -189,6 +193,16 @@ in {
           default = null;
           description = "Optional matching 80-byte AOSCPK01 Cache readback pin for local seed verification.";
         };
+        controllerHoldSigningKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional separate-purpose 32-byte Controller hold readback signing seed; no Q04 exchange consumes it.";
+        };
+        controllerHoldPublicKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional matching 80-byte AOSCTK01 Controller hold signer pin for local seed verification.";
+        };
         publisherServiceScope = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
@@ -261,6 +275,21 @@ in {
               && config.aos.sandbox.policyAuthority.credentials.cacheOwnerReadbackPublicKey
               == cfg.credentials.cacheOwnerReadbackPublicKey);
           message = "Cache owner readback requires the policy authority to load the same fixed public pin credential";
+        }
+        {
+          assertion =
+            (cfg.credentials.controllerHoldSigningKey == null)
+            == (cfg.credentials.controllerHoldPublicKey == null);
+          message = "Controller hold readback signing seed and role-specific public pin must be provisioned together";
+        }
+        {
+          assertion =
+            cfg.credentials.controllerHoldSigningKey
+            == null
+            || (config.aos.sandbox.policyAuthority.enable
+              && config.aos.sandbox.policyAuthority.credentials.controllerHoldPublicKey
+              == cfg.credentials.controllerHoldPublicKey);
+          message = "Controller hold readback requires the policy authority to load the same fixed public pin credential";
         }
         {
           assertion = (cfg.credentials.operatorRecoveryControllerKey == null) == (cfg.credentials.operatorRecoveryStorageOwnerPublicKey == null);
@@ -445,6 +474,7 @@ in {
           nodeCredentials
           ++ cacheReplayCredentials
           ++ cacheReadbackCredentials
+          ++ controllerHoldCredentials
           ++ guestRootTemplateCredentials
           ++ brokerPlanCredentials
           ++ mountPlanCredentials

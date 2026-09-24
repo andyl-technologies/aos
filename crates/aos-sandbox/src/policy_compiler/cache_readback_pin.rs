@@ -13,6 +13,8 @@ use sha2::{Digest as _, Sha256};
 use crate::cache_residency::PinnedCacheOwnerReadbackSignerV1;
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+use super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
+use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 use super::deployment_head::{SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
@@ -99,6 +101,13 @@ pub(super) fn admit_cache_readback_pin_in_journal_v1(
         .map_err(|_| CacheReadbackPinErrorV1::InvalidPin)?;
     if cache.verifying_key() == deployment_key || cache.verifying_key() == project_key {
         return Err(CacheReadbackPinErrorV1::InvalidPin);
+    }
+    if let Some(controller_pin) = authority.get(CONTROLLER_HOLD_PIN_KEY)? {
+        let controller = PinnedControllerHoldSignerV1::decode(controller_pin)
+            .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
+        if controller.verifying_key() == cache.verifying_key() {
+            return Err(CacheReadbackPinErrorV1::InvalidPin);
+        }
     }
     match authority.get(CACHE_PIN_KEY)? {
         Some(current) if current == credential => return Ok(()),

@@ -13,6 +13,8 @@ mod cache_readback_pin;
 mod cache_readback_session;
 mod compiler;
 mod controller_adapter;
+mod controller_hold_pin;
+mod controller_hold_readback;
 mod deployment_head;
 mod model;
 mod namespace;
@@ -53,6 +55,13 @@ pub use cache_readback_session::{
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{
     PolicyCompilerControllerCommitV1, policy_compiler_controller_commit_v1,
+};
+pub use controller_hold_pin::{ControllerHoldPinErrorV1, admit_fixed_controller_hold_pin_v1};
+pub use controller_hold_readback::{
+    CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, ControllerHoldReadbackChallengeV1,
+    ControllerHoldReadbackErrorV1, PinnedControllerHoldSignerV1, VerifiedControllerHoldReadbackV1,
+    encode_controller_hold_signer_credential_v1, sign_fixed_controller_hold_readback_v1,
+    verify_controller_hold_readback_v1,
 };
 pub use deployment_head::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,

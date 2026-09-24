@@ -30,9 +30,9 @@ use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournal
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedCacheReadbackRootChallengeV1, ClosedPolicyRootCasBaseV2,
     PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
-    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
-    decode_policy_deployment_sources_v1, read_fixed_inert_closed_policy_binding_hold_v1,
-    release_fixed_closed_policy_controller_hold_v1,
+    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
+    admit_fixed_policy_signer_pins_v1, decode_policy_deployment_sources_v1,
+    read_fixed_inert_closed_policy_binding_hold_v1, release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, verify_policy_deployment_head_v1,
@@ -341,6 +341,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let cache_pin = read_optional_cache_pin(root)?;
     admit_fixed_cache_readback_pin_v1(
         cache_pin.as_deref(),
+        deployment_signer.generation(),
+        deployment_signer.verifying_key(),
+        project_signer.generation(),
+        project_signer.verifying_key(),
+    )?;
+    let controller_hold_pin = read_optional_pin(root, "controller-hold-public-key")?;
+    admit_fixed_controller_hold_pin_v1(
+        controller_hold_pin.as_deref(),
         deployment_signer.generation(),
         deployment_signer.verifying_key(),
         project_signer.generation(),
@@ -1201,7 +1209,11 @@ fn read_bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
 }
 
 fn read_optional_cache_pin(root: &Path) -> io::Result<Option<Vec<u8>>> {
-    match read_bounded(&root.join("cache-owner-readback-public-key"), 80) {
+    read_optional_pin(root, "cache-owner-readback-public-key")
+}
+
+fn read_optional_pin(root: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
+    match read_bounded(&root.join(name), 80) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),

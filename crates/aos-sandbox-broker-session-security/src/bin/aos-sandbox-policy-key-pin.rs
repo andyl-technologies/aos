@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use aos_sandbox::cache_residency::encode_cache_owner_readback_signer_credential_v1;
+use aos_sandbox::policy_compiler::encode_controller_hold_signer_credential_v1;
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PolicySignerRoleV1, encode_policy_signer_credential_v1,
 };
@@ -93,6 +94,9 @@ fn encode_pin(
         PinRole::Cache => {
             encode_cache_owner_readback_signer_credential_v1(generation, verifying_key)?
         }
+        PinRole::ControllerHold => {
+            encode_controller_hold_signer_credential_v1(generation, verifying_key)?
+        }
     })
 }
 
@@ -100,6 +104,7 @@ fn encode_pin(
 enum PinRole {
     Policy(PolicySignerRoleV1),
     Cache,
+    ControllerHold,
 }
 
 fn parse_role(value: &str) -> Option<PinRole> {
@@ -107,6 +112,7 @@ fn parse_role(value: &str) -> Option<PinRole> {
         "deployment" => Some(PinRole::Policy(PolicySignerRoleV1::Deployment)),
         "project" => Some(PinRole::Policy(PolicySignerRoleV1::Project)),
         "cache" => Some(PinRole::Cache),
+        "controller-hold" => Some(PinRole::ControllerHold),
         _ => None,
     }
 }
@@ -114,13 +120,14 @@ fn parse_role(value: &str) -> Option<PinRole> {
 fn usage() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "usage: aos-sandbox-policy-key-pin deployment|project|cache GENERATION PUBLIC_KEY_32B CREDENTIAL_OUT",
+        "usage: aos-sandbox-policy-key-pin deployment|project|cache|controller-hold GENERATION PUBLIC_KEY_32B CREDENTIAL_OUT",
     )
 }
 
 #[cfg(test)]
 mod tests {
     use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
+    use aos_sandbox::policy_compiler::PinnedControllerHoldSignerV1;
     use aos_sandbox_broker_session_security::policy_signer_credential::PinnedPolicySignerV1;
     use ed25519_dalek::SigningKey;
 
@@ -137,6 +144,7 @@ mod tests {
             Some(PinRole::Policy(PolicySignerRoleV1::Project))
         );
         assert_eq!(parse_role("cache"), Some(PinRole::Cache));
+        assert_eq!(parse_role("controller-hold"), Some(PinRole::ControllerHold));
         assert_eq!(parse_role("root"), None);
     }
 
@@ -146,6 +154,18 @@ mod tests {
         let credential = encode_pin(PinRole::Cache, 7, &key).expect("Cache pin");
         let cache = PinnedCacheOwnerReadbackSignerV1::decode(&credential).expect("Cache role");
         assert_eq!(cache.generation(), 7);
+        assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &credential).is_err());
+        assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Deployment, &credential).is_err());
+    }
+
+    #[test]
+    fn controller_hold_pin_cli_encoder_is_role_distinct() {
+        let key = SigningKey::from_bytes(&[14; 32]).verifying_key();
+        let credential = encode_pin(PinRole::ControllerHold, 8, &key).expect("Controller pin");
+        let controller =
+            PinnedControllerHoldSignerV1::decode(&credential).expect("Controller role");
+        assert_eq!(controller.generation(), 8);
+        assert!(PinnedCacheOwnerReadbackSignerV1::decode(&credential).is_err());
         assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &credential).is_err());
         assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Deployment, &credential).is_err());
     }
