@@ -102,6 +102,11 @@ fn blocked_acquisition_retains_the_validated_barrier_report()
     };
     assert_eq!(*generation, 4);
     assert_eq!(*outcome, state.outcome());
+    assert_eq!(
+        state.failure_stage(),
+        super::QmpHotForkTemplateFailureStage::SourceFreeze
+    );
+    assert_eq!(state.failure_detail(), "source freeze failed");
     assert_eq!(state.missing_proofs(), 120);
     assert!(state.rollback_complete());
     assert!(!state.block_barrier().snapshot_complete());
@@ -221,6 +226,10 @@ fn abort_pending_report() -> Value {
 fn completed_report(outcome: &str) -> Value {
     let mut report = abort_pending_report();
     report["outcome"] = json!(outcome);
+    if outcome == "blocked" {
+        report["failure-stage"] = json!("source-freeze");
+        report["failure-detail"] = json!("source freeze failed");
+    }
     report["transaction-active"] = json!(false);
     report["rollback-complete"] = json!(true);
     report["acknowledged-proofs"] = json!(7);

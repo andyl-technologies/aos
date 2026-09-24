@@ -97,7 +97,8 @@ pub use hot_fork::{
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
+    QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
 pub(crate) use ram_delta::{
     QMP_CHECKPOINT_ABORT_COMMAND, QMP_CHECKPOINT_CAPTURE_COMMAND, QMP_CHECKPOINT_COMMIT_COMMAND,

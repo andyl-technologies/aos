@@ -1,10 +1,31 @@
 //! Checks retained child-resource proof relationships and stale generations.
 
+use super::super::native_worker_tests::prepared_report;
 use super::{
     QMP_HOT_FORK_PLUGIN_RING_PROOF, QmpHotForkPluginBarrierState,
-    QmpHotForkTemplateResourceStageState, plugin_ring_proof_shape_valid,
-    resource_stage_shape_valid,
+    QmpHotForkTemplateResourceStageState, parse_hot_fork_template_state,
+    plugin_ring_proof_shape_valid, resource_stage_shape_valid,
 };
+use serde_json::json;
+
+#[test]
+fn failure_diagnostic_rejects_unknown_or_unbounded_values() {
+    let mut report = prepared_report();
+    report["failure-stage"] = json!("source-freeze");
+    report["failure-detail"] = json!("native source denied permission change");
+    assert!(parse_hot_fork_template_state(&report).is_ok());
+
+    report["failure-stage"] = json!("unknown-stage");
+    assert!(parse_hot_fork_template_state(&report).is_err());
+
+    report["failure-stage"] = json!("source-freeze");
+    report["failure-detail"] = json!("x".repeat(256));
+    assert!(parse_hot_fork_template_state(&report).is_err());
+
+    report["failure-stage"] = json!("none");
+    report["failure-detail"] = json!("nonempty");
+    assert!(parse_hot_fork_template_state(&report).is_err());
+}
 
 #[test]
 fn resource_stage_requires_exact_template_and_private_ring_generations() {

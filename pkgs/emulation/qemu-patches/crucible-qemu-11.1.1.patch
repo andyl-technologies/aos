@@ -1,4 +1,4 @@
-From e3bec8e0aaefa6188c0cdf52fe823e9560b870ea Mon Sep 17 00:00:00 2001
+From 13a2ceae74314d2a125623da88f252ec3ba6f2a9 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -32347,10 +32347,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819e5ffd2f4 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..1f7dd96d4becb3d757bbc5589b5df6f6b18b7c6e 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,5948 @@
+@@ -14,53 +14,6006 @@
   */
  
  #include "qemu/osdep.h"
@@ -32844,6 +32844,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +static bool crucible_hot_fork_template_abort_requested;
 +static CrucibleHotForkTemplatePhase crucible_hot_fork_template_phase;
 +static CrucibleHotForkTemplateOutcome crucible_hot_fork_template_completion;
++static CrucibleHotForkTemplateFailureStage crucible_hot_fork_template_failure_stage;
++static char *crucible_hot_fork_template_failure_detail;
 +static size_t crucible_hot_fork_template_snapshot_binding_count;
 +static QemuBlockBackendHotForkSnapshotBinding
 +    *crucible_hot_fork_template_snapshot_bindings;
@@ -35507,6 +35509,21 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +    crucible_hot_fork_template_completion = outcome;
 +}
 +
++static void crucible_hot_fork_template_record_failure(
++    CrucibleHotForkTemplateFailureStage stage, const Error *error)
++{
++    const char *detail = error ? error_get_pretty(error) : "no QEMU error detail";
++
++    crucible_hot_fork_template_failure_stage = stage;
++    g_free(crucible_hot_fork_template_failure_detail);
++    crucible_hot_fork_template_failure_detail = g_strndup(detail, 255);
++    if (!g_utf8_validate(crucible_hot_fork_template_failure_detail, -1, NULL)) {
++        g_free(crucible_hot_fork_template_failure_detail);
++        crucible_hot_fork_template_failure_detail =
++            g_strdup("failure detail was not valid UTF-8");
++    }
++}
++
 +static bool crucible_hot_fork_template_copy_snapshot_bindings(
 +    CrucibleHotForkBlockSnapshotBindingList *bindings,
 +    Error **errp)
@@ -35644,11 +35661,17 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +        qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
 +    }
 +    if (!success) {
++        crucible_hot_fork_template_record_failure(
++            CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_SNAPSHOT,
++            errp ? *errp : NULL);
 +        return false;
 +    }
 +    crucible_hot_fork_template_sources =
 +        crucible_hot_fork_template_capture_sources(errp);
 +    if (!crucible_hot_fork_template_sources) {
++        crucible_hot_fork_template_record_failure(
++            CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_CAPTURE,
++            errp ? *errp : NULL);
 +        return false;
 +    }
 +    success = qemu_block_backend_hot_fork_barrier(
@@ -35659,6 +35682,10 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +    }
 +    if (!success || !qemu_block_hot_fork_source_set_freeze(
 +            crucible_hot_fork_template_sources, errp)) {
++        crucible_hot_fork_template_record_failure(
++            success ? CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_FREEZE :
++                      CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_RELEASE,
++            errp ? *errp : NULL);
 +        return false;
 +    }
 +    success = qemu_block_backend_hot_fork_barrier(
@@ -35666,6 +35693,11 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +    if (success) {
 +        success = block.held;
 +        qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
++    }
++    if (!success) {
++        crucible_hot_fork_template_record_failure(
++            CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_BLOCK_REHOLD,
++            errp ? *errp : NULL);
 +    }
 +    return success;
 +}
@@ -35689,6 +35721,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +        success = qemu_block_backend_hot_fork_barrier(
 +            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &inventory);
 +        if (!success || !inventory.held) {
++            crucible_hot_fork_template_record_failure(
++                CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_BLOCK_HOLD, NULL);
 +            if (success) {
 +                qemu_block_backend_hot_fork_barrier_inventory_destroy(
 +                    &inventory);
@@ -35698,6 +35732,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +            break;
 +        }
 +        if (inventory.owner_thread_id <= 0) {
++            crucible_hot_fork_template_record_failure(
++                CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_BLOCK_OWNER, NULL);
 +            qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
 +            success = qemu_block_backend_hot_fork_barrier(
 +                QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &inventory);
@@ -35753,12 +35789,25 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +                          inventory.snapshot_sources.frozen;
 +                qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
 +            }
++            if (!success) {
++                crucible_hot_fork_template_record_failure(
++                    CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_FROZEN_SNAPSHOT,
++                    local_err);
++            }
 +        } else {
 +            success = false;
++            crucible_hot_fork_template_record_failure(
++                CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_FROZEN_SNAPSHOT,
++                NULL);
 +        }
 +        if (success) {
 +            /* Allocation queries above can create native block-I/O workers. */
 +            success = qemu_aio_hot_fork_prepare_thread_pools(&local_err);
++            if (!success) {
++                crucible_hot_fork_template_record_failure(
++                    CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_NATIVE_POOLS,
++                    local_err);
++            }
 +        }
 +        if (!success) {
 +            error_free(local_err);
@@ -36223,9 +36272,12 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +    uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
 +        plugin_barrier, rcu_barrier, async_worker_barrier, block_barrier);
 +
-+    report->schema_version = 27;
++    report->schema_version = 28;
 +    report->generation = crucible_hot_fork_template_generation;
 +    report->outcome = outcome;
++    report->failure_stage = crucible_hot_fork_template_failure_stage;
++    report->failure_detail = g_strdup(
++        crucible_hot_fork_template_failure_detail ?: "");
 +    report->transaction_active = crucible_hot_fork_template_active;
 +    report->required_proofs = CRUCIBLE_HOT_FORK_TEMPLATE_REQUIRED_PROOFS;
 +    report->acknowledged_proofs = acknowledged;
@@ -36552,6 +36604,9 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +                           "requires an exact paused/device-flush boundary");
 +                goto out;
 +            }
++            crucible_hot_fork_template_failure_stage =
++                CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_NONE;
++            g_clear_pointer(&crucible_hot_fork_template_failure_detail, g_free);
 +            crucible_hot_fork_template_active = true;
 +            crucible_hot_fork_template_abort_requested = false;
 +            crucible_hot_fork_template_phase =
@@ -36637,6 +36692,9 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
 +            plugin_barrier = crucible_hot_fork_plugin_barrier(
 +                QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, errp);
 +            if (!plugin_barrier) {
++                crucible_hot_fork_template_record_failure(
++                    CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_PLUGIN_HOLD,
++                    errp ? *errp : NULL);
 +                g_clear_pointer(&async_worker_barrier, g_free);
 +                async_worker_barrier = crucible_hot_fork_async_worker_barrier(
 +                    QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_RELEASE);
@@ -38315,7 +38373,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +5963,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6021,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -38339,7 +38397,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..5f56fcef7d75817f04a171f7b9e8c819
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6027,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6085,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -78186,10 +78244,10 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..6a654ac3ba0c5cefb59fe8cc7fcfb5fb1a52fd3b 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..df48f3d96bb8091bf8639329642b0fdde7a76a07 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -132,6 +132,2680 @@
+@@ -132,6 +132,2724 @@
  { 'command': 'query-status', 'returns': 'StatusInfo',
    'allow-preconfig': true }
  
@@ -79093,6 +79151,42 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..6a654ac3ba0c5cefb59fe8cc7fcfb5fb
 +            'aborted' ] }
 +
 +##
++# @CrucibleHotForkTemplateFailureStage:
++#
++# First native acquisition step that failed in this transaction.
++# The value survives rollback until a new preparation begins.
++#
++# @none: no acquisition step failed
++#
++# @block-hold: native block barrier hold failed
++#
++# @block-owner: held block barrier had no valid owner
++#
++# @source-snapshot: original writable snapshot bind failed
++#
++# @source-capture: complete native source capture failed
++#
++# @source-release: first block barrier release failed
++#
++# @source-freeze: captured source freeze failed
++#
++# @block-rehold: block barrier re-hold failed after source freeze
++#
++# @frozen-snapshot: frozen snapshot rebind failed
++#
++# @native-pools: native thread-pool preparation failed
++#
++# @plugin-hold: plugin barrier hold failed
++#
++# Since: 11.1.1 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkTemplateFailureStage',
++  'data': [ 'none', 'block-hold', 'block-owner', 'source-snapshot',
++            'source-capture', 'source-release', 'source-freeze',
++            'block-rehold', 'frozen-snapshot', 'native-pools',
++            'plugin-hold' ] }
++
++##
 +# @CrucibleHotForkTemplateResourceStageState:
 +#
 +# Atomic generation binding for branch-private resources retained
@@ -79300,12 +79394,18 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..6a654ac3ba0c5cefb59fe8cc7fcfb5fb
 +# basis.  The caller must explicitly abort to roll the retained
 +# barriers back.
 +#
-+# @schema-version: transaction contract version, currently 27
++# @schema-version: transaction contract version, currently 28
 +#
 +# @generation: positive process-local transaction generation after the
 +#     first successful prepare, or zero before any transaction
 +#
 +# @outcome: exact result of the requested coordinator operation
++#
++# @failure-stage: first native acquisition step that failed, retained
++#     across rollback until a new preparation begins
++#
++# @failure-detail: QEMU error detail bounded to 255 bytes, or empty
++#     when no acquisition failure occurred
 +#
 +# @transaction-active: whether QEMU still owns acquired barrier state
 +#
@@ -79342,6 +79442,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..6a654ac3ba0c5cefb59fe8cc7fcfb5fb
 +  'data': { 'schema-version': 'uint32',
 +            'generation': 'uint64',
 +            'outcome': 'CrucibleHotForkTemplateOutcome',
++            'failure-stage': 'CrucibleHotForkTemplateFailureStage',
++            'failure-detail': 'str',
 +            'transaction-active': 'bool',
 +            'required-proofs': 'uint64',
 +            'acknowledged-proofs': 'uint64',

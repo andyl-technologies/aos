@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "f6c7111ad5353c83b67a53378a46e948056e08e51d7e3a12eb1c442d174d5a4d";
+  sha256 = "5b19ad73764ac1c5c10c61ee17150185f7c4da32aaa25faee1e22f69bd48835e";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -31,8 +31,8 @@
     "retiring verified startup fdset bookkeeping without closing the"
     "block-owned descriptors."
   ];
-  commit = "e3bec8e0aaefa6188c0cdf52fe823e9560b870ea";
-  tree = "ba1fc715983ba88526e1c51542084b4b04b58230";
+  commit = "13a2ceae74314d2a125623da88f252ec3ba6f2a9";
+  tree = "29aff12f6680ad32adcb1acd0ff01e08139663e0";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -41,7 +41,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "619bdabe486eb37a14a606b5a9bc9c79cef4d3f5df42d6c3c316dc6cfcf152cd";
+  bundleSha256 = "fa1946bca9c4f6c29983395c7e2e85bb4024ea8ae26c1b275d625217cd3437e6";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

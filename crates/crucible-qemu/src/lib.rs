@@ -289,8 +289,9 @@ pub use qmp::{
     QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
     QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
     QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkRequestError, QmpHotForkState,
-    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpTimeoutStream,
+    QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunState, QmpRunStateKind, QmpTimeoutStream,
 };
 pub(crate) use qmp::{QmpCheckpointCapture, QmpCheckpointCaptureRequest};
 pub(crate) use qmp::{QmpCheckpointRestoreLayer, QmpCheckpointRestoreRequest};
