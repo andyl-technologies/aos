@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only
 
 #include <linux/bpf.h>
 #include <linux/errno.h>
@@ -145,4 +145,4 @@ int BPF_PROG(aos_deny_iocmp, struct file *file,
   return deny_file(file, ret);
 }
 
-char LICENSE[] SEC("license") = "Apache-2.0";
+char LICENSE[] SEC("license") = "Dual BSD/GPL";

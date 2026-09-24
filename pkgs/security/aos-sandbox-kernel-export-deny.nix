@@ -94,6 +94,6 @@ in
 
     meta = {
       description = "Deny-only BPF-LSM current-use gate for a retained local export mount";
-      license = "Apache-2.0";
+      license = "Apache-2.0 AND (BSD-2-Clause OR GPL-2.0-only)";
     };
   }

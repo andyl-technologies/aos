@@ -90,6 +90,7 @@ int main(int argc, char **argv)
 {
   int source_fd;
   int unrelated_fd;
+  void *preexisting_mapping;
   void *mapping;
   char byte;
 
@@ -97,6 +98,8 @@ int main(int argc, char **argv)
     return 2;
   source_fd = open(argv[1], O_RDONLY);
   if (source_fd < 0 || pread(source_fd, &byte, 1, 0) != 1 ||
+      (preexisting_mapping = mmap(NULL, 4096, PROT_NONE,
+                                  MAP_PRIVATE, source_fd, 0)) == MAP_FAILED ||
       invoke_loader("install", source_fd) != 0 ||
       invoke_loader("inspect", source_fd) != 0) {
     fprintf(stderr, "kernel-export-deny-probe: setup or readback failed\n");
@@ -107,16 +110,25 @@ int main(int argc, char **argv)
   if (pread(source_fd, &byte, 1, 0) != -1 || errno != EACCES)
     return 1;
   errno = 0;
+  if (open(argv[1], O_RDONLY) != -1 || errno != EACCES)
+    return 1;
+  errno = 0;
   mapping = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, source_fd, 0);
   if (mapping != MAP_FAILED || errno != EACCES)
+    return 1;
+  errno = 0;
+  if (mprotect(preexisting_mapping, 4096, PROT_READ) != -1 || errno != EACCES)
     return 1;
   if (deny_existing_fd_in_child(source_fd) != 0 ||
       deny_scm_rights(source_fd) != 0)
     return 1;
 
   unrelated_fd = open("/etc/os-release", O_RDONLY);
-  if (unrelated_fd < 0 || read(unrelated_fd, &byte, 1) != 1)
+  if (unrelated_fd < 0 || read(unrelated_fd, &byte, 1) != 1 ||
+      invoke_loader("inspect", unrelated_fd) == 0 ||
+      invoke_loader("install", source_fd) == 0)
     return 1;
+  munmap(preexisting_mapping, 4096);
   close(unrelated_fd);
   close(source_fd);
   return 0;

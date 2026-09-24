@@ -163,7 +163,7 @@ static int validate_object(void)
   struct bpf_map *map;
   int result = -1;
 
-  if (libbpf_get_error(object) != 0)
+  if (object == NULL || libbpf_get_error(object) != 0)
     return -1;
   map = bpf_object__find_map_by_name(object, "denied_mounts");
   if (map == NULL || bpf_map__type(map) != BPF_MAP_TYPE_HASH ||
@@ -216,7 +216,8 @@ static int install(__u64 mount_id)
   }
 
   object = bpf_object__open_file(AOS_KERNEL_EXPORT_DENY_OBJECT, NULL);
-  if (libbpf_get_error(object) != 0 || bpf_object__load(object) != 0)
+  if (object == NULL || libbpf_get_error(object) != 0 ||
+      bpf_object__load(object) != 0)
     goto out;
   map = bpf_object__find_map_by_name(object, "denied_mounts");
   if (map == NULL ||
@@ -229,7 +230,7 @@ static int install(__u64 mount_id)
     if (program == NULL)
       goto out;
     links[i] = bpf_program__attach_lsm(program);
-    if (libbpf_get_error(links[i]) != 0) {
+    if (links[i] == NULL || libbpf_get_error(links[i]) != 0) {
       links[i] = NULL;
       goto out;
     }

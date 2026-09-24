@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
 #ifndef AOS_SANDBOX_KERNEL_EXPORT_DENY_H
 #define AOS_SANDBOX_KERNEL_EXPORT_DENY_H
 
@@ -7,7 +7,7 @@
 #define AOS_KERNEL_EXPORT_DENY_VERSION 1U
 #define AOS_KERNEL_EXPORT_DENY_MAX_MOUNTS 1024U
 
-/* The entry is deny-only. Its epoch records ordering but cannot grant access. */
+/* Presence alone denies; the version and initial epoch support readback. */
 struct aos_kernel_export_deny_v1 {
   __u64 epoch;
   __u32 version;
