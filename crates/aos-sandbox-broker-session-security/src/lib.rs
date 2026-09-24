@@ -98,6 +98,7 @@ mod recovery;
 )]
 mod self_execution;
 mod storage_create_preparation;
+mod storage_host_consumer_client;
 
 pub use cache_directory_source::{
     DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
@@ -230,3 +231,6 @@ pub use recovery::{
     ProtectedBrokerSessionInitializationResultV1,
 };
 pub use storage_create_preparation::AuthenticatedStorageCreatePreparationV1;
+pub use storage_host_consumer_client::{
+    StorageHostConsumerClientErrorV1, StorageHostConsumerClientV1,
+};

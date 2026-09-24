@@ -91,6 +91,9 @@ pub enum StorageServiceError {
     /// Process startup did not provide the exact fixed activation contract.
     #[error("Storage service activation is invalid: {0}")]
     Activation(String),
+    /// The signed LocalLive request or its current physical publication failed.
+    #[error("Storage live-export signed readback is unavailable")]
+    LiveExportReadback,
 }
 
 impl From<BoundedRecordError> for StorageServiceError {
@@ -862,6 +865,52 @@ impl<R: StorageRpcRuntime> StorageService<R> {
 }
 
 impl StorageService<StorageBrokerRuntime> {
+    /// Inspects a signed LocalLive plan against Storage's current catalog and origin.
+    ///
+    /// The returned readback is a comparison input for a future authenticated
+    /// Host cgroup query. It contains no source FD, lease, or kernel grant and
+    /// does not prove a current Controller Attachment or Provider attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale runtime custody, either invalid signer, changed catalog
+    /// publication, expired plan, or a changed physical workspace origin.
+    pub fn inspect_live_export_host_consumer(
+        &mut self,
+        signed_plan: &[u8],
+        authority_directory: &std::path::Path,
+        state_directory: &std::path::Path,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<crate::StorageLiveExportReadbackV1, StorageServiceError> {
+        use crate::live_export_request_readback::{
+            StorageLiveExportReadbackErrorV1, StorageLiveExportRequestReadbackOwnerV1,
+        };
+
+        if self.runtime.requires_reopen() {
+            return Err(StorageRuntimeError::ReopenRequired.into());
+        }
+        let owner = StorageLiveExportRequestReadbackOwnerV1::open_root_owned(
+            authority_directory,
+            state_directory,
+        )
+        .map_err(|_| StorageServiceError::LiveExportReadback)?;
+        let readback = match owner.inspect(
+            &mut self.runtime,
+            signed_plan,
+            deadline_boottime_nanoseconds,
+        ) {
+            Ok(readback) => readback,
+            Err(StorageLiveExportReadbackErrorV1::Origin(StorageRuntimeError::ReopenRequired)) => {
+                return Err(StorageRuntimeError::ReopenRequired.into());
+            }
+            Err(_) => return Err(StorageServiceError::LiveExportReadback),
+        };
+        readback
+            .revalidate_signer_catalog_currentness()
+            .map_err(|_| StorageServiceError::LiveExportReadback)?;
+        Ok(readback)
+    }
+
     /// Serves one controller-signed operator Repair or receipt-recovery packet.
     ///
     /// The independent socket never routes through ordinary Storage Repair;
