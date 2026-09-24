@@ -349,23 +349,31 @@ the outstanding work concrete:
   after signed success. An EXITED observation still needs authenticated
   terminal-result fields before it can satisfy the public Execution schema.
   No production CreateExecution effect establishes the required Host admission
-  or RUNNING public projection, and the packaged guest-agent entry point still
-  needs a protected inherited transport. Attach requires its
-  separately authorized OpenSSH data route; it is not an agent control effect.
+  or RUNNING public projection. The packaged `aos-sandbox-guest-agent` already
+  claims a fixed inherited protected channel and runs concrete guest-local
+  process effects with a durable ledger. Host has a retained authenticated
+  agent-session type, but production activation does not install one or connect
+  it to a launch, so this does not complete the execution path. Attach requires
+  its separately authorized OpenSSH data route; it is not an agent control effect.
   `ExecutionControlRequest` now carries attach-only holder key and possession
   proof fields under a required semantic feature, and `ExecutionControlResult`
   can carry a checked holder-bound endpoint. The service rejects attach before
   admission until it can verify that proof and issue the route.
-- Grouped Storage snapshots are not production-dispatchable yet. Method 25 is
-  deliberately absent from the authenticated broker profile even though the
-  Storage owner, session adapter, lifecycle plan codec, and predecessor/successor
-  inventory verifier exist. A pure compiler now constructs an exact
-  `ApplyAtomicStorageSnapshotRequest` template for an inventory-derived plan
-  and signed assignment, but no production publication producer calls it. The
-  controller also does not retain a durable group attempt spanning the signed
-  request and adjacent inventory observations. Implement those source-domain
-  obligations before advertising the method or advancing a Snapshot/Hibernate
-  lifecycle effect through it.
+- Grouped Storage snapshots now have authenticated Method 25 in the broker
+  profile and production Storage dispatch. The controller advances Snapshot
+  and Hibernate Storage effects from a signed predecessor inventory, reserves
+  the exact group request and session checkpoint durably before dispatch, and
+  verifies the group and successor inventory before committing progress. Cold
+  recovery consults protected session history and inventory or status evidence;
+  unresolved outcomes remain pending. This source path still needs deployed
+  end-to-end qualification before Snapshot or Hibernate can be called complete.
+- LocalLive attachment planning now selects the source owner from the protected
+  View revision and observes that sandbox under its own current Host assignment.
+  Production reconciliation checks fresh source and Mount inventories and
+  recovers retained source-consume and mount attempts. The external physical
+  SourceProvider graph remains optional in Mount production composition;
+  activation and deployed recovery qualification are still required before
+  claiming the full live-view path.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
