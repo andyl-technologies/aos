@@ -49,6 +49,7 @@ members = [
     "aos-sandbox",
     "aos-sandbox/tests/fixtures/service-journal",
     "aos-sandbox-linux",
+    "aos-sandbox-kernel-export-owner-peer",
     "aos-sandbox-linux/tests/fixtures/verity-backing",
     "aos-sandbox-broker",
     "aos-sandbox-host",

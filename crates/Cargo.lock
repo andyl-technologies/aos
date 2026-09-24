@@ -1017,6 +1017,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-kernel-export-owner-peer"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-linux",
+ "aos-sandbox-source-provider-protocol",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "aos-sandbox-linux"
 version = "0.1.0"
 dependencies = [

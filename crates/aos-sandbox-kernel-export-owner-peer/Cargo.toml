@@ -1,0 +1,16 @@
+[package]
+name = "aos-sandbox-kernel-export-owner-peer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-linux.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+ed25519-dalek.workspace = true
+rustix = { workspace = true, features = ["fs", "time"] }
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
