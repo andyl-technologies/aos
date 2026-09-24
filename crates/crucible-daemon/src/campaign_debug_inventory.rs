@@ -80,11 +80,14 @@ impl CampaignDebugSessionInventory {
     }
 
     /// Durably retains one request and its exact authenticated finding proof.
+    ///
+    /// Returns whether this call inserted a new record. Recovery can reuse an
+    /// existing record, which must survive a failed lifecycle readmission.
     pub(crate) fn retain(
         &self,
         request: &OpenCampaignDebugSessionRequest,
         finding: &GetCampaignFindingObjectResponse,
-    ) -> Result<(), CampaignDebugSessionInventoryError> {
+    ) -> Result<bool, CampaignDebugSessionInventoryError> {
         let proof_request = request
             .finding_object_request()
             .map_err(|_| CampaignDebugSessionInventoryError::InvalidRecord)?;
@@ -102,7 +105,7 @@ impl CampaignDebugSessionInventory {
             if existing.request.canonical_bytes() == request.canonical_bytes()
                 && existing.finding.canonical_bytes() == finding.canonical_bytes()
             {
-                return Ok(());
+                return Ok(false);
             }
             return Err(CampaignDebugSessionInventoryError::Conflict);
         }
@@ -123,7 +126,7 @@ impl CampaignDebugSessionInventory {
         });
         persist_inventory(&self.path, &next)?;
         *records = next;
-        Ok(())
+        Ok(true)
     }
 
     /// Durably removes the logical session selected by an exact open request.
