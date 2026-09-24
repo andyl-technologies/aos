@@ -428,7 +428,8 @@ in rec {
         script =
           ''
             export GOPATH="$TMPDIR/go"
-            export GOCACHE="$TMPDIR/go-cache"
+            export GOCACHE="''${AOS_SHARED_BUILD_CACHE:+/aos-build-cache/go}"
+            : "''${GOCACHE:=$TMPDIR/go-cache}"
             export GOFLAGS="-trimpath"
             export CGO_ENABLED=${
               if cgoEnabled
@@ -1044,6 +1045,11 @@ in rec {
         }
                   export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
                   export CMAKE_POLICY_VERSION_MINIMUM=3.5
+                  if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then
+                    echo "build --disk_cache=/aos-build-cache/bazel" >> .bazelrc
+                    echo "build --experimental_disk_cache_gc_max_size=50G" >> .bazelrc
+                    echo "build --experimental_disk_cache_gc_max_age=14d" >> .bazelrc
+                  fi
 
                   # Unset C_INCLUDE_PATH to prevent #include_next breakage
                   unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH

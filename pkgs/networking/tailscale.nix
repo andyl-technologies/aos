@@ -42,7 +42,7 @@ in
         name = "configure";
         script = ''
           export GOPATH="${goModules}"
-          export GOCACHE="$TMPDIR/go-cache"
+          if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then export GOCACHE=/aos-build-cache/go; else export GOCACHE="$TMPDIR/go-cache"; fi
           export GOFLAGS="-trimpath -mod=readonly"
           export GOPROXY=off
           export CGO_ENABLED=0
