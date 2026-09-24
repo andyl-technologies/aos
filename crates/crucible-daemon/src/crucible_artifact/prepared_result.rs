@@ -619,17 +619,16 @@ fn validate_pair(
     {
         return Err(inconsistent("observation resolved-effect trace ownership"));
     }
-    if let Some(bytes) = observation.resolved_effect_trace() {
-        if bytes.len() > MAX_RECORD_BYTES
+    if let Some(bytes) = observation.resolved_effect_trace()
+        && (bytes.len() > MAX_RECORD_BYTES
             || observation.observation().resolved_effect_trace()
                 != Some(crucible_cas::content_store::ContentId::for_bytes(
                     crucible_cas::content_store::ObjectKind::Trace,
                     1,
                     bytes,
-                ))
-        {
-            return Err(inconsistent("observation resolved-effect trace identity"));
-        }
+                )))
+    {
+        return Err(inconsistent("observation resolved-effect trace identity"));
     }
     let Some(finding) = finding else {
         return Ok(());
