@@ -12,6 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use aos_sandbox_core::model::CacheDomainKind;
 use aos_sandbox_core::{
     AttachmentId, ObjectDescriptor, ObjectDigest, OperationId, ProjectId, ViewId,
 };
@@ -91,6 +92,65 @@ pub struct CacheResidencyProtectedOwnerV1 {
     state_journal: Option<Journal>,
     authority: Arc<ProtectedCacheResidencyReplayAuthorityV1>,
     owner_uid: u32,
+}
+
+/// Identifies one unambiguous project partition from complete protected Cache replay.
+///
+/// This is a source observation, not effect or policy-publication authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CurrentProjectPhysicalCacheHeadV1 {
+    project: ProjectId,
+    partition: PhysicalPartitionId,
+    head: ObjectDigest,
+}
+
+impl CurrentProjectPhysicalCacheHeadV1 {
+    /// Returns the project whose physical disclosure and quota were checked.
+    #[must_use]
+    pub(crate) const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the uniquely selected physical partition.
+    #[must_use]
+    pub(crate) const fn partition(self) -> PhysicalPartitionId {
+        self.partition
+    }
+
+    /// Returns the exact protected Cache inventory and replay-authority commitment.
+    #[must_use]
+    pub(crate) const fn head(self) -> ObjectDigest {
+        self.head
+    }
+}
+
+fn unique_project_physical_cache_head(
+    candidates: impl IntoIterator<Item = CurrentProjectPhysicalCacheHeadV1>,
+) -> Result<CurrentProjectPhysicalCacheHeadV1, CacheResidencyProtectedJournalErrorV1> {
+    let mut candidates = candidates.into_iter();
+    let head = candidates
+        .next()
+        .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    if candidates.next().is_some() {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    Ok(head)
+}
+
+fn project_physical_cache_head_digest(
+    project: ProjectId,
+    partition: PhysicalPartitionId,
+    replay_binding: ObjectDigest,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.cache.project-physical-head.v1\0")
+            .chain_update(project.as_bytes())
+            .chain_update(partition.digest().as_bytes())
+            .chain_update(replay_binding.as_bytes())
+            .finalize()
+            .into(),
+    )
 }
 
 /// Carries one complete protected Cache currentness root and its actionable resources.
@@ -935,6 +995,67 @@ impl CacheResidencyProtectedOwnerV1 {
         &mut self,
     ) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
         self.with_reconstructed_partitions(Ok)
+    }
+
+    /// Runs one action while a unique, healthy project partition stays custodied.
+    ///
+    /// The complete protected Cache state, replay authority, and clock floor
+    /// remain held through the callback and are refreshed afterward. A policy
+    /// issuer must also hold the controller, source-domain, and root owners
+    /// through its binding CAS and effect handoff; this callback alone does not
+    /// authorize AOSPCB01 publication.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for absent or ambiguous project partitions, missing
+    /// project quota, poison, unresolved recovery work, or invalid replay.
+    pub(crate) fn while_current_project_physical_cache<R>(
+        &mut self,
+        project: ProjectId,
+        action: impl FnOnce(CurrentProjectPhysicalCacheHeadV1) -> R,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        if project.as_bytes() == &[0; 16] {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+
+        self.with_reconstructed_partitions(|inventories| {
+            let mut candidates = Vec::new();
+            for inventory in inventories {
+                let partition = inventory.global.node_quota.partition;
+                let disclosure = partition.disclosure();
+                if disclosure.kind() != CacheDomainKind::Project
+                    || disclosure.domain_id().as_bytes() != project.as_bytes()
+                {
+                    continue;
+                }
+                if inventory.authority_poisoned
+                    || inventory.global.poison.is_some()
+                    || !inventory.work.is_empty()
+                    || inventory
+                        .global
+                        .project_quotas
+                        .iter()
+                        .filter(|quota| quota.project == project && quota.partition == partition)
+                        .count()
+                        != 1
+                {
+                    return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+                }
+
+                let head = project_physical_cache_head_digest(
+                    project,
+                    partition,
+                    inventory.protected_replay_binding(),
+                );
+                candidates.push(CurrentProjectPhysicalCacheHeadV1 {
+                    project,
+                    partition,
+                    head,
+                });
+            }
+            let selected = unique_project_physical_cache_head(candidates)?;
+            Ok(action(selected))
+        })
     }
 
     // Keep selection inside the protected claim so its errors retain priority
@@ -2288,4 +2409,57 @@ fn read_array<const N: usize>(
         .get(offset..offset + N)
         .and_then(|slice| slice.try_into().ok())
         .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::CacheDomainId;
+    use aos_sandbox_core::model::CacheDomain;
+
+    use super::*;
+    use crate::cache_residency::{CacheNodeIdV1, ProtectedBackingIdentityV1};
+
+    #[test]
+    fn project_physical_cache_selection_requires_exactly_one_owner_head() {
+        let project = ProjectId::from_bytes([1; 16]);
+        let node = CacheNodeIdV1::from_bytes([2; 16]).expect("node");
+        let backing = ProtectedBackingIdentityV1::new(
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .expect("backing");
+        let domain = CacheDomain::new(
+            CacheDomainKind::Project,
+            CacheDomainId::from_bytes(*project.as_bytes()),
+        );
+        let partition =
+            PhysicalPartitionId::derive(node, backing, domain, ObjectDigest::from_bytes([7; 32]))
+                .expect("partition");
+        let current = CurrentProjectPhysicalCacheHeadV1 {
+            project,
+            partition,
+            head: project_physical_cache_head_digest(
+                project,
+                partition,
+                ObjectDigest::from_bytes([8; 32]),
+            ),
+        };
+
+        assert_ne!(
+            current.head(),
+            project_physical_cache_head_digest(
+                project,
+                partition,
+                ObjectDigest::from_bytes([9; 32]),
+            )
+        );
+        assert!(unique_project_physical_cache_head(Vec::new()).is_err());
+        assert_eq!(
+            unique_project_physical_cache_head([current]).expect("unique"),
+            current
+        );
+        assert!(unique_project_physical_cache_head([current, current]).is_err());
+    }
 }

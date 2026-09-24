@@ -1002,6 +1002,12 @@ pub struct CacheRecoveryInventoryV1 {
 }
 
 impl CacheRecoveryInventoryV1 {
+    /// Returns the complete replay-validated inventory and authority binding.
+    #[must_use]
+    pub(crate) const fn protected_replay_binding(&self) -> ObjectDigest {
+        self.replay_binding
+    }
+
     /// Derives the exact Replay authority scope for a typed checkpoint anchor.
     ///
     /// This computes a record target; it does not issue authority or authorize

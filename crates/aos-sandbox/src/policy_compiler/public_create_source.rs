@@ -8,9 +8,15 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aos_proto::aos::sandbox::v1::{Operation, OperationPhase};
+use aos_sandbox_core::model::CacheDomain;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
+use crate::cache_residency::{
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
+    CurrentProjectPhysicalCacheHeadV1,
+};
 use crate::controller_query::PublicOperationMethodV1;
 use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
@@ -29,7 +35,7 @@ use super::{
     normalized_policy_input_digest_v1,
 };
 
-const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v1\0";
+const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
 const DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v1\0";
 
 /// Reports a failed protected public-Create source join.
@@ -50,20 +56,27 @@ pub enum CurrentCreatePolicySourceErrorV1 {
     /// The publisher policy namespace could not be validated.
     #[error(transparent)]
     Publisher(#[from] PublisherPolicyError),
+    /// The independent physical Cache owner could not establish currentness.
+    #[error(transparent)]
+    Cache(#[from] CacheResidencyProtectedJournalErrorV1),
 }
 
 /// Retains exact canonical publisher bytes under a current Create selector.
 ///
-/// This read-only value expires with the publisher or revocation head. Before
-/// any compiler binding or effect, the caller must rejoin current operation,
-/// projection, policy, and revocation heads under protected custody.
+/// This read-only value expires with the accepted operation, projection,
+/// publisher, cache-domain, or revocation head. Before any compiler binding
+/// or effect, the caller must rejoin those heads under protected custody.
 pub struct CurrentCreateProjectPolicySourceV1 {
     operation: OperationId,
+    operation_revision: ObjectDigest,
+    accepted_generation: u64,
     sandbox: SandboxId,
     project: ProjectId,
     projection_revision: ObjectDigest,
     policy_generation: u64,
     policy_digest: ObjectDigest,
+    cache_domain: CacheDomain,
+    cache_domain_head: ObjectDigest,
     revocation_scope: RevocationScopeId,
     revocation_generation: u64,
     revocation_head: ObjectDigest,
@@ -76,6 +89,18 @@ impl CurrentCreateProjectPolicySourceV1 {
     #[must_use]
     pub const fn operation(&self) -> OperationId {
         self.operation
+    }
+
+    /// Returns the exact accepted operation and effect-record revision.
+    #[must_use]
+    pub const fn operation_revision(&self) -> ObjectDigest {
+        self.operation_revision
+    }
+
+    /// Returns the protected admission generation of the selected Create.
+    #[must_use]
+    pub const fn accepted_generation(&self) -> u64 {
+        self.accepted_generation
     }
 
     /// Returns the exact selected sandbox identity.
@@ -106,6 +131,18 @@ impl CurrentCreateProjectPolicySourceV1 {
     #[must_use]
     pub const fn policy_digest(&self) -> ObjectDigest {
         self.policy_digest
+    }
+
+    /// Returns the publisher-selected project disclosure domain.
+    #[must_use]
+    pub const fn cache_domain(&self) -> CacheDomain {
+        self.cache_domain
+    }
+
+    /// Returns the publisher-owned current project cache-domain head.
+    #[must_use]
+    pub const fn cache_domain_head(&self) -> ObjectDigest {
+        self.cache_domain_head
     }
 
     /// Returns the protected scope selected for this project.
@@ -174,6 +211,7 @@ pub fn checked_parentless_create_policy_draft_v1(
                 prerequisites.revocation_head(),
             ]
         || prerequisites.revocation_head() != source.revocation_head
+        || prerequisites.cache_domain_head() != source.cache_domain_head
         || input.sandbox() != source.sandbox
         || input.project().project() != source.project
         || input.project().layer() != signed_project.layer()
@@ -243,11 +281,8 @@ pub fn current_parentless_create_project_source_v1(
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let public_operation = public_operation_resource_from_journal_v1(journal, operation)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    if public_operation.operation_id.as_slice() != operation.as_bytes()
-        || public_operation.method != PublicOperationMethodV1::CreateSandbox.as_str()
-    {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
+    let (operation_revision, accepted_generation) =
+        accepted_create_operation_revision(&public_operation, operation)?;
 
     let projection = PublicProjectionStoreV1::new(journal)
         .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?
@@ -291,6 +326,9 @@ pub fn current_parentless_create_project_source_v1(
     let revocation = publisher
         .project_revocation_head(project)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let cache_domain = publisher
+        .project_cache_domain_head(project)?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let descriptor = revision.descriptor();
     if requested_policy.media_type != descriptor.media_type().as_str()
         || requested_policy.sha256.as_slice() != descriptor.digest().as_bytes()
@@ -309,6 +347,8 @@ pub fn current_parentless_create_project_source_v1(
 
     let policy_generation = revision.generation();
     let policy_digest = descriptor.digest();
+    let cache_domain_head = cache_domain.digest();
+    let cache_domain = cache_domain.domain();
     let revocation_scope = revocation.scope();
     let revocation_generation = revocation.generation();
     let revocation_head = revocation.digest();
@@ -317,11 +357,14 @@ pub fn current_parentless_create_project_source_v1(
         Sha256::new()
             .chain_update(SOURCE_DOMAIN)
             .chain_update(operation.as_bytes())
+            .chain_update(operation_revision.as_bytes())
+            .chain_update(accepted_generation.to_be_bytes())
             .chain_update(sandbox.as_bytes())
             .chain_update(project.as_bytes())
             .chain_update(projection_revision.as_bytes())
             .chain_update(policy_generation.to_be_bytes())
             .chain_update(policy_digest.as_bytes())
+            .chain_update(cache_domain_head.as_bytes())
             .chain_update(revocation_scope.as_bytes())
             .chain_update(revocation_generation.to_be_bytes())
             .chain_update(revocation_head.as_bytes())
@@ -330,11 +373,15 @@ pub fn current_parentless_create_project_source_v1(
     );
     Ok(CurrentCreateProjectPolicySourceV1 {
         operation,
+        operation_revision,
+        accepted_generation,
         sandbox,
         project,
         projection_revision,
         policy_generation,
         policy_digest,
+        cache_domain,
+        cache_domain_head,
         revocation_scope,
         revocation_generation,
         revocation_head,
@@ -343,9 +390,74 @@ pub fn current_parentless_create_project_source_v1(
     })
 }
 
+fn accepted_create_operation_revision(
+    public_operation: &Operation,
+    operation: OperationId,
+) -> Result<(ObjectDigest, u64), CurrentCreatePolicySourceErrorV1> {
+    if public_operation.operation_id.as_slice() != operation.as_bytes()
+        || public_operation.method != PublicOperationMethodV1::CreateSandbox.as_str()
+        || public_operation.phase.as_known() != Some(OperationPhase::OPERATION_PHASE_ACCEPTED)
+        || public_operation.accepted_generation == 0
+    {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+    let revision: [u8; 32] = public_operation
+        .resource_version
+        .as_slice()
+        .try_into()
+        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    if revision == [0; 32] {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+
+    Ok((
+        ObjectDigest::from_bytes(revision),
+        public_operation.accepted_generation,
+    ))
+}
+
+/// Holds the accepted Create and matching physical Cache partition for one action.
+///
+/// The controller writer must be acquired before the Cache owner. Both remain
+/// held through the callback, and both are rechecked afterward. This still
+/// cannot publish AOSPCB01: source-domain ancestry, root binding CAS, and
+/// effect-handoff custody must join this same cut under a versioned record.
+///
+/// # Errors
+///
+/// Rejects a changed or non-accepted Create, changed publisher head, absent
+/// physical partition, or mismatched project disclosure domain.
+pub(crate) fn with_current_parentless_create_physical_cache_v1<R>(
+    controller: &mut Journal,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    action: impl FnOnce(&CurrentCreateProjectPolicySourceV1, CurrentProjectPhysicalCacheHeadV1) -> R,
+) -> Result<R, CurrentCreatePolicySourceErrorV1> {
+    let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
+    let joined = cache.while_current_project_physical_cache(source.project(), |physical| {
+        if physical.project() != source.project()
+            || physical.partition().disclosure() != source.cache_domain()
+            || physical.head().as_bytes() == &[0; 32]
+        {
+            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+        }
+
+        let result = action(&source, physical);
+        let current = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
+        if current.commitment() != source.commitment() {
+            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+        }
+
+        Ok(result)
+    })?;
+    joined
+}
+
 #[cfg(test)]
 mod tests {
-    use aos_sandbox_core::{ObjectDescriptor, ResourceDimension};
+    use aos_sandbox_core::model::CacheDomainKind;
+    use aos_sandbox_core::{CacheDomainId, ObjectDescriptor, ResourceDimension};
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
@@ -417,6 +529,45 @@ mod tests {
         let mut signed = domain.to_vec();
         signed.extend_from_slice(payload);
         payload.extend_from_slice(&key.sign(&signed).to_bytes());
+    }
+
+    #[test]
+    fn accepted_create_selector_binds_exact_protected_operation_revision() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let mut resource = Operation {
+            operation_id: operation.as_bytes().to_vec(),
+            resource_version: vec![2; 32],
+            method: PublicOperationMethodV1::CreateSandbox.as_str().to_owned(),
+            phase: OperationPhase::OPERATION_PHASE_ACCEPTED.into(),
+            accepted_generation: 7,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            accepted_create_operation_revision(&resource, operation).expect("accepted Create"),
+            (ObjectDigest::from_bytes([2; 32]), 7)
+        );
+
+        resource.phase = OperationPhase::OPERATION_PHASE_PREPARING.into();
+        assert!(accepted_create_operation_revision(&resource, operation).is_err());
+        resource.phase = OperationPhase::OPERATION_PHASE_ACCEPTED.into();
+
+        resource.operation_id = vec![3; 16];
+        assert!(accepted_create_operation_revision(&resource, operation).is_err());
+        resource.operation_id = operation.as_bytes().to_vec();
+
+        resource.resource_version = vec![0; 32];
+        assert!(accepted_create_operation_revision(&resource, operation).is_err());
+        resource.resource_version = vec![2; 31];
+        assert!(accepted_create_operation_revision(&resource, operation).is_err());
+        resource.resource_version = vec![2; 32];
+
+        resource.accepted_generation = 0;
+        assert!(accepted_create_operation_revision(&resource, operation).is_err());
+        resource.accepted_generation = 7;
+
+        resource.method = PublicOperationMethodV1::DeleteSandbox.as_str().to_owned();
+        assert!(accepted_create_operation_revision(&resource, operation).is_err());
     }
 
     #[test]
@@ -543,11 +694,18 @@ mod tests {
         .expect("compiler input");
         let mut source = CurrentCreateProjectPolicySourceV1 {
             operation: OperationId::from_bytes([1; 16]),
+            operation_revision: ObjectDigest::from_bytes([10; 32]),
+            accepted_generation: 1,
             sandbox,
             project,
             projection_revision: ObjectDigest::from_bytes([2; 32]),
             policy_generation: 2,
             policy_digest: ObjectDigest::from_bytes([6; 32]),
+            cache_domain: CacheDomain::new(
+                CacheDomainKind::Project,
+                CacheDomainId::from_bytes(*project.as_bytes()),
+            ),
+            cache_domain_head: prerequisites.cache_domain_head(),
             revocation_scope: RevocationScopeId::from_bytes([12; 16]),
             revocation_generation: 1,
             revocation_head: prerequisites.revocation_head(),
@@ -593,6 +751,20 @@ mod tests {
             .is_err()
         );
         source.revocation_head = prerequisites.revocation_head();
+
+        source.cache_domain_head = ObjectDigest::from_bytes([11; 32]);
+        assert!(
+            checked_parentless_create_policy_draft_v1(
+                &source,
+                &signed_project,
+                &deployment,
+                &input,
+                &prerequisites,
+                20,
+            )
+            .is_err()
+        );
+        source.cache_domain_head = prerequisites.cache_domain_head();
 
         let stale_revocation_head = ObjectDigest::from_bytes([11; 32]);
         let stale_revocation = PolicyPublicationPrerequisitesV1::new(

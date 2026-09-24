@@ -111,9 +111,11 @@ pub use protected_journal::{
 pub(crate) use protected_journal::{
     CacheResidencyReplayPartitionEvidenceV1, cache_residency_reducer_envelope_v1,
 };
-pub(crate) use protected_owner::CacheLifecycleBootInventoryV1;
 #[cfg(target_os = "linux")]
 pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
+pub(crate) use protected_owner::{
+    CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
+};
 pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
