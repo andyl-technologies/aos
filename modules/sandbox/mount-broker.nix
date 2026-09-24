@@ -7,6 +7,7 @@
 }: let
   cfg = config.aos.sandbox.mountBroker;
   hostBroker = config.aos.sandbox.hostBroker;
+  sourceProvider = config.aos.sandbox.sourceProvider;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -119,8 +120,8 @@ in {
 
     systemd.services.aos-sandbox-mountd = {
       description = "AOS descriptor-only sandbox mount broker";
-      requires = ["aos-sandbox-mountd.socket"];
-      after = ["aos-sandbox-mountd.socket" "local-fs.target"];
+      requires = ["aos-sandbox-mountd.socket"] ++ lib.optional sourceProvider.enable "aos-source-providerd.socket";
+      after = ["aos-sandbox-mountd.socket" "local-fs.target"] ++ lib.optional sourceProvider.enable "aos-source-providerd.socket";
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
@@ -129,7 +130,9 @@ in {
         Type = "simple";
         NotifyAccess = "main";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper";
+        # A socket dependency only proves the configured carrier exists. The
+        # daemon still authenticates protected custody, peer and signed hello.
+        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString sourceProvider.enable " --source-provider"}";
         LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";

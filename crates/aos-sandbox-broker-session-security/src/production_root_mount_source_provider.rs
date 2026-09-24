@@ -12,6 +12,9 @@ use aos_sandbox::MountSourceConsumptionJournalAuthorityV1;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+use aos_sandbox_mount::MountError;
+use aos_sandbox_mount::broker::MountBroker;
+use aos_sandbox_mount::worker::MountWorker;
 use aos_sandbox_source_provider_security::{
     AuthenticatedRootMountRecoveryUnavailableV1, RootMountSourceProviderHandshakeStatusV1,
     RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
@@ -34,6 +37,9 @@ pub enum ProductionRootMountSourceProviderErrorV1 {
     /// The configured handshake deadline elapsed or the kernel clock was invalid.
     #[error("RootMount SourceProvider handshake deadline failed: {0}")]
     Deadline(#[from] ProductionBrokerSessionActivationErrorV1),
+    /// The sole protected Mount journal could not be lent or verified.
+    #[error("RootMount SourceProvider recovery failed: {0}")]
+    Mount(#[from] MountError),
 }
 
 /// Connects RootMount to the fixed SourceProvider socket and authenticates it.
@@ -87,4 +93,46 @@ pub fn advance_authenticated_pending_acquire_recovery(
         Some(progress) => progress,
         None => Ok(None),
     }
+}
+
+/// Observes every original pending Acquire after a Mount broker restart.
+///
+/// The broker lends its sole protected journal for the entire scan and each
+/// AOSSPR01 exchange. No response changes the graph: even authenticated
+/// Unavailable leaves the original attempt pending for later explicit recovery.
+/// The authenticated session remains owned by `owner` after this function.
+///
+/// # Errors
+///
+/// Fails closed for a changed protected graph, retired peer, invalid signed
+/// answer, or expired boot-time deadline. The caller should restart rather
+/// than create a successor attempt or serve a source through this state.
+pub fn observe_original_pending_acquires<W: MountWorker>(
+    owner: &mut RootMountSourceProviderOwnerV1,
+    broker: &mut MountBroker<W>,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<usize, ProductionRootMountSourceProviderErrorV1> {
+    let observed = broker.with_fixed_source_acquisition_owner(|source| {
+        source.with_consumption_authority(|table, journal| {
+            let pending = table.original_pending_acquire_ids();
+            for acquisition_id in &pending {
+                loop {
+                    let remaining = remaining_duration(deadline_boottime_nanoseconds)
+                        .map_err(|error| MountError::State(error.to_string()))?;
+                    match advance_authenticated_pending_acquire_recovery(
+                        owner,
+                        journal,
+                        ObjectDigest::from_bytes(*acquisition_id),
+                    )
+                    .map_err(|error| MountError::State(error.to_string()))?
+                    {
+                        Some(_) => break,
+                        None => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
+                    }
+                }
+            }
+            Ok(pending.len())
+        })
+    })?;
+    Ok(observed)
 }

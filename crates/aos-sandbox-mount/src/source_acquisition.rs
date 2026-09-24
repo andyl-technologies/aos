@@ -3759,6 +3759,45 @@ impl SourceAcquisitionTableV2 {
             .map(|row| SourceAcquisitionViewV2 { row })
     }
 
+    /// Returns original pending Acquire IDs eligible for nonterminal recovery.
+    ///
+    /// These IDs are observations of the protected graph, not authority to
+    /// create a successor attempt. The RootMount session independently checks
+    /// the complete original row and attempt again under the same journal lock.
+    #[must_use]
+    pub fn original_pending_acquire_ids(&self) -> Vec<[u8; 32]> {
+        self.acquisitions
+            .values()
+            .filter(|row| {
+                row.phase == SourceAcquisitionPhaseV2::PendingQuery
+                    && row.provider_acquisition.acquisition_id == row.acquisition_id
+                    && row.acquire_terminal_attempt.is_none()
+                    && row.evidence.is_none()
+                    && row.acquire_lineage.root == row.acquire_lineage.tail
+                    && self
+                        .provider_attempts
+                        .get(&row.acquire_lineage.root.id)
+                        .is_some_and(|attempt| {
+                            attempt.record_digest == row.acquire_lineage.root.record_digest
+                                && attempt.revision == row.acquire_lineage.root.revision
+                                && attempt.scope == row.scope
+                                && attempt.provider_acquisition == Some(row.provider_acquisition)
+                                && attempt.method == ProviderMethodV2::Acquire
+                                && attempt.previous_attempt_id.is_none()
+                                && matches!(
+                                    &attempt.state,
+                                    ProviderAttemptStateV2::Reserved
+                                        | ProviderAttemptStateV2::AbandonedIndeterminate {
+                                            resolution: None,
+                                            ..
+                                        }
+                                )
+                        })
+            })
+            .map(|row| row.acquisition_id)
+            .collect()
+    }
+
     /// Returns one recovered acquisition view.
     #[must_use]
     pub fn acquisition(&self, acquisition_id: &[u8; 32]) -> Option<SourceAcquisitionViewV2<'_>> {

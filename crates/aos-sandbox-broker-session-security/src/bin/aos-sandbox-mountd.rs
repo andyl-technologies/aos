@@ -15,7 +15,9 @@ use aos_sandbox::journal::{Journal, JournalError, JournalLimits};
 use aos_sandbox_broker_session_security::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1,
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
-    ProductionMountBrokerOwnersV1, production_deadline_after,
+    ProductionMountBrokerOwnersV1, ProductionRootMountSourceProviderErrorV1,
+    connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
+    production_deadline_after,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_mount::authorization::MountAuthorityV1;
@@ -26,6 +28,9 @@ use aos_sandbox_mount::keeper::SystemdFdStore;
 use aos_sandbox_mount::source_pin::recover_source_custody;
 use aos_sandbox_mount::worker::{DescriptorMountWorker, RetainedMountObservation};
 use aos_sandbox_mount::{DormantMountBrokerCompositionV1, MountError};
+use aos_sandbox_source_provider_security::{
+    RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
+};
 
 const EXPECTED_FD_NAME: &str = "aos-sandbox-mount";
 const MAXIMUM_RETAINED_MOUNTS: usize = 1_024;
@@ -33,6 +38,7 @@ const CATALOG_ROOT: &str = "/run/aos/sandbox-mount-catalog";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-mount";
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, thiserror::Error)]
 enum MountDaemonErrorV1 {
@@ -40,8 +46,10 @@ enum MountDaemonErrorV1 {
     Identity,
     #[error("systemd authority credential directory is absent")]
     CredentialDirectory,
-    #[error("usage: aos-sandbox-mountd HELPER_PATH")]
+    #[error("usage: aos-sandbox-mountd HELPER_PATH [--source-provider]")]
     Arguments,
+    #[error("RootMount SourceProvider connector failed: {0}")]
+    SourceProvider(#[from] ProductionRootMountSourceProviderErrorV1),
     #[error("Mount domain failed: {0}")]
     Mount(#[from] MountError),
     #[error("Mount journal failed: {0}")]
@@ -88,7 +96,7 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         MAXIMUM_RETAINED_MOUNTS,
     )?);
 
-    let helper_executable = helper_argument()?;
+    let (helper_executable, source_provider_enabled) = parse_arguments(env::args())?;
     let (mut journal, _) = Journal::open_protected_at(
         Path::new(STATE_ROOT),
         "mount.journal",
@@ -120,9 +128,21 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         .map_err(|error| MountError::State(error.to_string()))?;
     let mut broker =
         MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
+    // The opt-in owner retains the authenticated carrier for this daemon
+    // lifetime. A failed or ambiguous recovery restarts the process while
+    // the original attempt remains in the sole protected Mount journal.
+    let mut source_provider_owner = if source_provider_enabled {
+        let deadline = production_deadline_after(PROVIDER_STARTUP_TIMEOUT)?;
+        let mut owner = connect_authenticated_fixed_source_provider(deadline)?;
+        observe_original_pending_acquires(&mut owner, &mut broker, deadline)?;
+        Some(owner)
+    } else {
+        None
+    };
     let mut mount = DormantMountBrokerCompositionV1::new(&mut broker);
 
     loop {
+        ensure_provider_current(&mut source_provider_owner)?;
         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
         let mut session = match activation.accept_authenticated(accept_deadline) {
             Ok(session) => session,
@@ -130,6 +150,7 @@ fn run() -> Result<(), MountDaemonErrorV1> {
             Err(error) => return Err(error.into()),
         };
         loop {
+            ensure_provider_current(&mut source_provider_owner)?;
             let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
             let owners = ProductionMountBrokerOwnersV1 {
                 mount: &mut mount,
@@ -148,13 +169,60 @@ fn run() -> Result<(), MountDaemonErrorV1> {
     }
 }
 
-fn helper_argument() -> Result<String, MountDaemonErrorV1> {
-    let mut arguments = env::args();
+fn ensure_provider_current(
+    owner: &mut Option<RootMountSourceProviderOwnerV1>,
+) -> Result<(), MountDaemonErrorV1> {
+    if let Some(owner) = owner {
+        owner
+            .with_current_session(|_| ())
+            .map_err(ProductionRootMountSourceProviderErrorV1::from)?
+            .ok_or(ProductionRootMountSourceProviderErrorV1::Security(
+                SourceProviderSecurityError::SessionContinuity,
+            ))?;
+    }
+    Ok(())
+}
+
+fn parse_arguments(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<(String, bool), MountDaemonErrorV1> {
+    let mut arguments = arguments.into_iter();
     let _program = arguments.next();
     let helper = arguments.next().ok_or(MountDaemonErrorV1::Arguments)?;
-    if arguments.next().is_some() {
+    let source_provider_enabled = match arguments.next().as_deref() {
+        None => false,
+        Some("--source-provider") => true,
+        Some(_) => return Err(MountDaemonErrorV1::Arguments),
+    };
+    if arguments.next().is_some() || helper.starts_with('-') {
         return Err(MountDaemonErrorV1::Arguments);
     }
 
-    Ok(helper)
+    Ok((helper, source_provider_enabled))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_connector_requires_exact_opt_in_argument() {
+        let base = ["mountd", "/fixed/helper"];
+        assert_eq!(
+            parse_arguments(base.map(str::to_owned)).unwrap(),
+            ("/fixed/helper".to_owned(), false)
+        );
+        assert_eq!(
+            parse_arguments(["mountd", "/fixed/helper", "--source-provider"].map(str::to_owned))
+                .unwrap(),
+            ("/fixed/helper".to_owned(), true)
+        );
+        for invalid in [
+            vec!["mountd", "/fixed/helper", "--other"],
+            vec!["mountd", "/fixed/helper", "--source-provider", "extra"],
+            vec!["mountd", "--source-provider"],
+        ] {
+            assert!(parse_arguments(invalid.into_iter().map(str::to_owned)).is_err());
+        }
+    }
 }
