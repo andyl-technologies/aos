@@ -1690,7 +1690,7 @@ fn parse_campaign_choice_value(value: &str) -> Result<ChoiceValue, CliError> {
 fn parse_campaign_group_value(body: &str) -> Result<ChoiceValue, CliError> {
     if body.is_empty()
         || body.len() > MAX_CAMPAIGN_GROUP_VALUE_BYTES * 2
-        || body.len() % 2 != 0
+        || !body.len().is_multiple_of(2)
         || !body
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
