@@ -822,6 +822,148 @@ fn published_choice_group_retains_and_authenticates_member_declarations() {
     assert!(closure.contains(&member_id.content_id()));
 }
 
+#[test]
+fn generated_group_request_replays_identical_ordinals_after_repository_reopen() {
+    let (repository, lineage, _policy, blobs) = counted_fixture();
+    let duration_domain = ChoiceDomain::Integer(
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(1_000),
+            IntegerValue::Unsigned(30_000_000),
+            1,
+            Some("us".to_owned()),
+            ExactRational::new(1, 1).expect("scale"),
+            vec![IntegerValue::Unsigned(10_000_000)],
+        )
+        .expect("duration domain"),
+    );
+    let duration = SelectableDeclaration::new(
+        "fault.duration_us",
+        ChoiceSource::Workload {
+            producer: "network-fault".to_owned(),
+        },
+        duration_domain.clone(),
+        ChoiceValue::Integer(IntegerValue::Unsigned(1_000_000)),
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("duration declaration");
+    let duration_id = duration.id().expect("duration id");
+    let group = crate::ChoiceGroup::new(
+        &BTreeMap::from([(duration_id, duration)]),
+        crate::ChoiceGroupDomain::Cartesian {
+            members: BTreeMap::from([(duration_id, duration_domain)]),
+            constraints: BTreeSet::new(),
+        },
+        crate::ChoiceGroupApplication::new("network.fault", 1).expect("application"),
+    )
+    .expect("group");
+    let default = ChoiceValue::Group(
+        group
+            .select(crate::ChoiceTuple::new(BTreeMap::from([(
+                duration_id,
+                ChoiceValue::Integer(IntegerValue::Unsigned(1_000_000)),
+            )])))
+            .expect("group default"),
+    );
+    let domain = ChoiceDomain::Group(Box::new(group));
+    let declaration = SelectableDeclaration::new(
+        "fault.network",
+        ChoiceSource::Workload {
+            producer: "network-fault".to_owned(),
+        },
+        domain.clone(),
+        default,
+        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("group declaration");
+    repository
+        .publish_choice_domain(&domain)
+        .expect("publish group domain");
+    repository
+        .publish_selectable(&declaration)
+        .expect("publish group declaration");
+    let opportunity = ChoiceOpportunity::new(
+        lineage.scenario(),
+        &declaration,
+        &domain,
+        ChoiceCoordinate {
+            scheduler: CampaignHash::derive("test", b"group scheduler"),
+            producer: CampaignHash::derive("test", b"group producer"),
+        },
+        "phase-1",
+        None,
+    )
+    .expect("one group opportunity");
+    repository
+        .publish_choice_opportunity(&opportunity)
+        .expect("publish opportunity");
+    let generator = CandidateGeneratorSpec::new(
+        crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::GroupProgressive {
+            maximum_proposals: 4,
+        },
+    )
+    .expect("group generator");
+    let generator_id = repository
+        .publish_generator(&generator)
+        .expect("publish generator");
+    let request = BranchRequest::new(
+        BranchRequest::identity(
+            opportunity.branch_point_id(lineage.genesis()),
+            lineage.genesis_content(),
+            opportunity.id().expect("opportunity id"),
+            domain.id().expect("domain id"),
+        ),
+        CandidateSource::generated(generator_id),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test",
+            b"group request",
+        ))),
+        BranchBudget::new(4, 4).expect("budget"),
+        StopCondition::NextChoice,
+    )
+    .expect("group request");
+    request
+        .validate_resolved(
+            &repository
+                .load_configuration_artifact(lineage.genesis_content())
+                .expect("parent"),
+            &opportunity,
+            &domain,
+        )
+        .expect("resolved request");
+
+    let reopened = CampaignRepository::new(blobs, Arc::new(MemoryRefBackend::new()));
+    let restored_domain = reopened
+        .load_choice_domain(domain.id().expect("domain id"))
+        .expect("load persisted group domain");
+    let restored_request = BranchRequest::from_canonical_bytes(&request.canonical_bytes())
+        .expect("decode exact request");
+    let original = (1..=4)
+        .map(|ordinal| {
+            repository
+                .static_candidate_at(&request, &domain, ordinal)
+                .expect("original candidate")
+                .expect("candidate value")
+        })
+        .collect::<Vec<_>>();
+    let replayed = (1..=4)
+        .map(|ordinal| {
+            reopened
+                .static_candidate_at(&restored_request, &restored_domain, ordinal)
+                .expect("replayed candidate")
+                .expect("candidate value")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(replayed, original);
+    assert_eq!(original.iter().collect::<BTreeSet<_>>().len(), 4);
+}
+
 fn generated_integer_request(
     repository: &CampaignRepository,
     lineage: &CampaignLineage,
