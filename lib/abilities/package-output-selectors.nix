@@ -40,9 +40,38 @@
     deduplicated = builtins.foldl' (reversed: selector:
       if reversed != [] && sameSelector (builtins.head reversed) selector
       then reversed
-      else [selector] ++ reversed) [] sorted;
+      else [selector] ++ reversed) []
+    sorted;
   in
     reverseList deduplicated;
+
+  collect = depth: value:
+    if depth > maxStructuralDepth
+    then fail "package output selector collection exceeds ${toString maxStructuralDepth} structural levels"
+    else if builtins.isList value
+    then builtins.concatLists (builtins.map (collect (depth + 1)) value)
+    else if builtins.isAttrs value && (value._type or null) == marker
+    then
+      if builtins.attrNames value != ["_type" "output" "package"]
+      then fail "package output selector must contain only _type, package, and output"
+      else if value.package == "self"
+      then fail "source-stage package output selector still refers to self"
+      else [
+        {
+          package = requireLocalKey "package output package" value.package;
+          output = requireLocalKey "package output output" value.output;
+        }
+      ]
+    else if builtins.isAttrs value
+    then builtins.concatLists (builtins.map (name: collect (depth + 1) value.${name}) (builtins.attrNames value))
+    else [];
+
+  collectPackageOutputSelectors = value: let
+    selectors = collect 1 value;
+  in
+    if builtins.length selectors > maxCollectionItems
+    then fail "package output selector collection exceeds ${toString maxCollectionItems} selectors"
+    else canonicalizePackageOutputSelectors selectors;
 
   normalize = owner: depth: count: value:
     if depth > maxStructuralDepth
@@ -53,12 +82,15 @@
         count = checkedCount (count + builtins.length value);
         values = [];
       };
-      normalized = builtins.foldl' (state: item: let
-        result = normalize owner (depth + 1) state.count item;
-      in {
-        count = result.count;
-        values = [result.value] ++ state.values;
-      }) initial value;
+      normalized =
+        builtins.foldl' (state: item: let
+          result = normalize owner (depth + 1) state.count item;
+        in {
+          count = result.count;
+          values = [result.value] ++ state.values;
+        })
+        initial
+        value;
     in {
       inherit (normalized) count;
       value = reverseList normalized.values;
@@ -92,8 +124,17 @@
           result = normalize owner (depth + 1) state.count value.${name};
         in {
           count = result.count;
-          values = [{inherit name; value = result.value;}] ++ state.values;
-        }) initial names;
+          values =
+            [
+              {
+                inherit name;
+                value = result.value;
+              }
+            ]
+            ++ state.values;
+        })
+      initial
+      names;
     in {
       inherit (normalized) count;
       value = builtins.listToAttrs normalized.values;
@@ -102,7 +143,7 @@
     then fail "package output selector value contains an oversized string"
     else {inherit count value;};
 in {
-  inherit canonicalizePackageOutputSelectors;
+  inherit canonicalizePackageOutputSelectors collectPackageOutputSelectors;
 
   normalizePackageOutputSelectors = {
     owner,

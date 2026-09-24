@@ -586,7 +586,30 @@ pub fn write_exported_artifact_reference(
 ) -> Result<()> {
     let exported_graph: Value = serde_json::from_slice(&fs::read(exported_graph_path)?)
         .context("decoding exported Nix graph")?;
-    let selected = SelectedArtifact {
+    let selected = exported_graph_root(root, graph_name)?;
+    let resolved = resolve_selected_artifact(&selected, &exported_graph)?;
+
+    fs::write(output_path, aos_contract::canonical::to_vec(&resolved)?)
+        .with_context(|| format!("writing artifact reference {}", output_path.display()))
+}
+
+/// Resolves one retained store root from an already parsed exported Nix graph.
+///
+/// # Errors
+///
+/// Returns an error when the selected path is not an exact store root or its
+/// exported closure graph is malformed or incomplete.
+pub fn artifact_reference_from_exported_graph(
+    root: &Path,
+    graph_name: &str,
+    exported_graph: &Value,
+) -> Result<ArtifactReference> {
+    let selected = exported_graph_root(root, graph_name)?;
+    Ok(resolve_selected_artifact(&selected, exported_graph)?.artifact)
+}
+
+fn exported_graph_root(root: &Path, graph_name: &str) -> Result<SelectedArtifact> {
+    Ok(SelectedArtifact {
         package: None,
         output: None,
         path: root
@@ -594,11 +617,7 @@ pub fn write_exported_artifact_reference(
             .context("selected exported-graph root is not UTF-8")?
             .to_string(),
         graph: graph_name.to_string(),
-    };
-    let resolved = resolve_selected_artifact(&selected, &exported_graph)?;
-
-    fs::write(output_path, aos_contract::canonical::to_vec(&resolved)?)
-        .with_context(|| format!("writing artifact reference {}", output_path.display()))
+    })
 }
 
 fn resolve_selected_artifact(

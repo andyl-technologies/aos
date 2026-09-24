@@ -748,6 +748,9 @@ pub enum PackageCommand {
         /// Canonical materialization specification carrying the checked inputs.
         #[arg(long)]
         spec: PathBuf,
+        /// Exported Nix graph authenticating the selected package outputs.
+        #[arg(long = "exported-graph")]
+        exported_graph: PathBuf,
         /// Canonical source-stage bundle to write.
         #[arg(long)]
         out: PathBuf,
@@ -3549,8 +3552,13 @@ pub async fn run(
         );
     }
 
-    if let PackageCommand::AbilityMaterializeSourceStage { spec, out } = command {
-        return config_eval::source_stage::materialize_source_stage(spec, out);
+    if let PackageCommand::AbilityMaterializeSourceStage {
+        spec,
+        exported_graph,
+        out,
+    } = command
+    {
+        return config_eval::source_stage::materialize_source_stage(spec, exported_graph, out);
     }
     if let PackageCommand::AbilityStageRun {
         stage,

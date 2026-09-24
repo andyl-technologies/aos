@@ -676,6 +676,27 @@ in {
   assert fails (normalizeBounded [true false null true false]);
   assert fails (normalizeBounded {oversized-member-name = true;});
   assert fails (normalizeBounded "0123456789abcdefg");
+  assert lib.abilities.collectPackageOutputSelectors {
+    nested = [
+      (lib.abilities.packageOutput {package = "systemd";})
+      (lib.abilities.packageOutput {
+        package = "aos";
+        output = "packageRuntime";
+      })
+      (lib.abilities.packageOutput {package = "systemd";})
+    ];
+  }
+  == [
+    {
+      package = "aos";
+      output = "packageRuntime";
+    }
+    {
+      package = "systemd";
+      output = "out";
+    }
+  ];
+  assert fails (lib.abilities.collectPackageOutputSelectors (lib.abilities.packageOutput {}));
     mkCheck {
       pname = "aos-ability-authoring-checks";
       buildDeps = [authoringConformance];

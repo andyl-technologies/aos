@@ -542,6 +542,8 @@ mod tests {
             "__ability-materialize-source-stage",
             "--spec",
             "/tmp/specification.json",
+            "--exported-graph",
+            "/tmp/exported-graph.json",
             "--out",
             "/tmp/source-stage.json",
         ])

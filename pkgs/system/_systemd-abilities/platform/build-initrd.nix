@@ -89,6 +89,22 @@
     then throw "systemd initrd requires the completed initrd ability fixed point"
     else initrdAbilityEvaluation.config.aos.abilities;
   sourceGraph = lib.abilities.sourceStageFixedPoint abilityGraph;
+  sourceSelectors = lib.abilities.collectPackageOutputSelectors sourceGraph;
+  sourceArtifactFor = selector: let
+    package = buildContext.packageSet.${selector.package}
+      or (throw "source-stage selector names unavailable package '${selector.package}'");
+  in
+    if selector.output == (package.outputName or "out")
+    then package
+    else package.${selector.output}
+      or (throw "source-stage selector names unavailable output '${selector.package}.${selector.output}'");
+  sourceArtifactOutputs =
+    builtins.map (selector: {
+      inherit selector;
+      path = builtins.toString (sourceArtifactFor selector);
+    })
+    sourceSelectors;
+  sourceArtifactRoots = lib.uniqueBy builtins.toString (builtins.map sourceArtifactFor sourceSelectors);
   sourceFixedPoint = buildContext.writeTextFile {
     name = "aos-initrd-source-fixed-point";
     destination = "/fixed-point.json";
@@ -117,14 +133,21 @@
       };
       staticContract = checkedStaticContract;
       fixedPoint = "${sourceFixedPoint}/fixed-point.json";
+      artifactOutputs = sourceArtifactOutputs;
     };
   };
-  sourceStageBundle = buildContext.runCommand "aos-initrd-source-stage-bundle.json" {} ''
-    ${buildContext.buildTools.packageRuntime}/bin/.aos-package-runtime-unwrapped \
-      __ability-materialize-source-stage \
-      --spec ${specification}/specification.json \
-      --out "$out"
-  '';
+  sourceStageBundle =
+    buildContext.runCommand "aos-initrd-source-stage-bundle.json" {
+      outputChecks = {};
+      exportReferencesGraph.sourceStageArtifacts = sourceArtifactRoots;
+      dontNukeRefs = true;
+    } ''
+      ${buildContext.buildTools.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+        __ability-materialize-source-stage \
+        --spec ${specification}/specification.json \
+        --exported-graph "$NIX_ATTRS_JSON_FILE" \
+        --out "$out"
+    '';
   handoff =
     if config.aos.boot.preparationHandoff == null
     then throw "systemd initrd requires the exact selected boot preparation handoff"

@@ -87,6 +87,7 @@
   inherit
     (packageOutputSelectors)
     canonicalizePackageOutputSelectors
+    collectPackageOutputSelectors
     normalizePackageOutputSelectors
     ;
 
@@ -792,6 +793,7 @@ in rec {
     interfaceDeclarationFromDocument
     interfaceSelectorMatches
     canonicalizePackageOutputSelectors
+    collectPackageOutputSelectors
     normalizePackageOutputSelectors
     packageOutputSelectorsFor
     packageProjectionFor
