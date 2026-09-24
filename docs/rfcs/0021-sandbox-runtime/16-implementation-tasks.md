@@ -8342,22 +8342,32 @@ enforcing LocalLive grant policy. The closed provider gate is unchanged.
 
 The pinned kernel enables BPF-LSM and BTF and exposes `file_open`,
 `file_permission`, `mmap_file`, `file_mprotect`, `file_lock`, and `file_receive`
-hooks. A separate deny-only, mount-ID/cgroup/epoch current-use policy can be
+hooks. A separate default-deny, mount-ID/cgroup/epoch current-use policy can be
 built and VM-tested incrementally, without a signer. It cannot use the optional
 fleet audit program as its enforcing owner. Complete access coverage, protected
 map/link custody, clone identity readback, socket and mapping lifetimes, and
 crash-safe revocation remain unproved; a current-use prototype must not remove
 the LocalLive gate.
 
-The separate `aos-sandbox-kernel-export-deny` package now builds a deny-only
-BPF-LSM program over the pinned kernel's unique mount ID. The loader derives
-that ID from a retained source FD with `statx`, inserts a deny-only map
-entry before attaching nine file-use hooks, pins the map and links in a
-root-private bpffs directory, and reopens their map, link, and program metadata
-before reporting success. Its `inspect` path repeats this physical readback.
-The fleet test exercises an already-open FD, inherited FD, mmap attempt,
-`SCM_RIGHTS` receive, and an unrelated mount. This is a revocation experiment,
-not a KernelExportGrant producer: it cannot authorize acquisition or release,
-cannot terminate existing mappings or socket/FIFO/lock state, and has no
-Storage lease, consumer-cgroup, epoch, signer-key, or crash-recovery owner.
-The unconditional SourceProvider LocalLive gate remains in place.
+The separate `aos-sandbox-kernel-export-deny` package now builds a bounded
+default-deny BPF-LSM experiment over one pinned-kernel unique mount ID. A
+root-only owner CLI derives that ID from a retained source FD with `statx`,
+installs a protected-mount entry before attaching nine file-use hooks, and pins
+both policy maps and all links in root-private bpffs. A grant row binds the
+exact mount ID and cgroup-v2 kernfs ID to the current boot UUID, mount policy
+epoch, boottime expiry, and active state. Every covered use checks that tuple;
+absence, mismatch, expiry, or revocation denies access. Read-side use alone is
+allowed; protected-mount writes, writable mappings, locks, fcntl, and ioctls
+are denied. The owner can read back installation metadata, add a time-bounded
+grant, and revoke by advancing the mount epoch (invalidating every earlier
+row) before marking the selected row revoked. The fleet probe exercises
+no-grant denial, allowed current reads,
+wrong-cgroup inherited and `SCM_RIGHTS` FD denial, expiry, and revocation.
+
+This is not a KernelExportGrant producer or terminal release proof. It binds
+neither a signed Storage lease nor a detached RO clone's origin/device/inode,
+does not enumerate child mounts, cannot remove readable mappings or existing
+socket/FIFO/lock state, and has no protected signing-key or crash-recovery
+owner. The loader's privileged map mutation is a test owner interface, not a
+production handoff from Storage. The unconditional SourceProvider LocalLive
+gate remains in place.

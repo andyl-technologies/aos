@@ -1,11 +1,11 @@
-# Exercises the separate deny-only BPF-LSM artifact on a live unique mount ID.
+# Exercises per-cgroup use grants and default denial on a live unique mount ID.
 {
   mkSystem,
   pkgs,
   ...
 }: let
   gate = pkgs.aos-sandbox-kernel-export-deny;
-  probeSource = ../sandbox/kernel-export-deny-probe.c;
+  probeSource = ../sandbox/kernel-export-grant-probe.c;
   probe = pkgs.mkDerivation {
     pname = "aos-sandbox-kernel-export-deny-probe";
     version = "1";
@@ -21,7 +21,7 @@
           mkdir -p $out/bin
           $CC -std=c17 -O2 -Wall -Wextra -Werror \
             -DAOS_KERNEL_EXPORT_DENY_LOADER='"${gate}/bin/aos-sandbox-kernel-export-deny"' \
-            ${probeSource} -o $out/bin/kernel-export-deny-probe
+            ${probeSource} -o $out/bin/kernel-export-grant-probe
         '';
       }
     ];
@@ -47,6 +47,6 @@ in {
     vm.succeed("${pkgs.coreutils}/bin/mkdir -p /run/kernel-export-deny-test")
     vm.succeed("${pkgs.util-linux}/bin/mount -t tmpfs -o size=1m tmpfs /run/kernel-export-deny-test")
     vm.succeed("${pkgs.coreutils}/bin/printf 'protected bytes\\n' > /run/kernel-export-deny-test/data")
-    vm.succeed("${probe}/bin/kernel-export-deny-probe /run/kernel-export-deny-test/data")
+    vm.succeed("${probe}/bin/kernel-export-grant-probe /run/kernel-export-deny-test/data")
   '';
 }

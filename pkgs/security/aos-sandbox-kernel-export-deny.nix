@@ -1,4 +1,4 @@
-##! aos-sandbox-kernel-export-deny — deny-only unique-mount-ID BPF-LSM artifact
+##! aos-sandbox-kernel-export-deny — scoped unique-mount-ID BPF-LSM experiment
 {
   mkDerivation,
   stdenv,
@@ -21,7 +21,7 @@
 in
   mkDerivation {
     pname = "aos-sandbox-kernel-export-deny";
-    version = "1";
+    version = "2";
     src = null;
 
     buildDeps = [
@@ -93,7 +93,7 @@ in
     };
 
     meta = {
-      description = "Deny-only BPF-LSM current-use gate for a retained local export mount";
+      description = "Default-deny BPF-LSM current-use gate for one export mount and cgroup";
       license = "Apache-2.0 AND (BSD-2-Clause OR GPL-2.0-only)";
     };
   }
