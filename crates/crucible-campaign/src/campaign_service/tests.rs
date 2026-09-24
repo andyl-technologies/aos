@@ -14,8 +14,8 @@ use crate::{
     BranchPointId, BranchRequestCause, CampaignCommandId, CampaignControlAction,
     CampaignDiscoveryResult, CampaignMode, CampaignRoots, CampaignSeed, CandidateSource,
     ChoiceDomainId, ChoiceOpportunityId, ChoiceValue, ConfigurationArtifactId, ConfigurationId,
-    DaemonEpoch, DiscoveryRequest, ExplorerPolicy, FairnessPolicy, PinChange, PinRequest,
-    PinRetention, RetentionPolicy, ScenarioDefId, StopCondition,
+    DaemonEpoch, DiscoveryRequest, ExplorerPolicy, FairnessPolicy, ObservationId, PinChange,
+    PinRequest, PinRetention, RetentionPolicy, ScenarioDefId, StopCondition,
 };
 
 mod checked_client;
@@ -79,6 +79,92 @@ fn savepoint_messages_bind_action_and_reject_unknown_versions() {
     let mut unsupported = request.canonical_bytes();
     unsupported[..4].fill(0);
     assert!(CampaignSavepointRequest::from_canonical_bytes(&unsupported).is_err());
+}
+
+#[test]
+fn ready_capture_status_remains_bound_after_a_later_selection_snapshot() {
+    let principal = CampaignPrincipal::new("operator:capture").expect("principal");
+    let campaign = CampaignName::new("capture").expect("campaign");
+    let source_snapshot = snapshot("before-selection");
+    let selected_snapshot = snapshot("after-selection");
+    let attempt = AttemptId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        9,
+        b"capture-source",
+    ))
+    .expect("source attempt");
+    let command = CampaignCommandId::from_hash(hash("capture-command"));
+    let capture = crate::SavepointCaptureRequest::new(
+        command,
+        source_snapshot,
+        attempt,
+        ConfigurationArtifactId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Configuration,
+            1,
+            b"capture-configuration",
+        ))
+        .expect("artifact"),
+        ConfigurationId::from_hash(hash("capture-configuration")),
+        StopCondition::NextChoice,
+        PUBLIC_EXACT_CAPTURE_REASON,
+    )
+    .expect("capture");
+    let capture_id = crate::CampaignFact::SavepointCaptureRequested(capture.clone())
+        .id()
+        .expect("capture fact");
+    let request = CampaignSavepointRequest::new(
+        principal,
+        campaign,
+        selected_snapshot,
+        CampaignSavepointAction::Status {
+            request: capture_id,
+        },
+    )
+    .expect("later status request");
+    let resolution = crate::SavepointCaptureResolution {
+        command,
+        expected_snapshot: snapshot("ready-resolution"),
+        request: capture_id,
+        outcome: crate::SavepointCaptureOutcome::Ready,
+    };
+    let checkpoint = crate::ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        5,
+        b"retained-exact-root",
+    ))
+    .expect("checkpoint");
+    let paused = CampaignAttemptRuntime::new(
+        CampaignAttemptPhase::Paused,
+        CampaignAttemptOrigin::Initial,
+        crate::ExecutionId::from_bytes([0xc3; 16]).expect("capture execution"),
+        Some(checkpoint),
+        None,
+        None,
+    )
+    .expect("paused capture");
+    let observation = ObservationId::from_content_id(ContentId::for_bytes(
+        ObjectKind::Observation,
+        14,
+        b"pending-choice",
+    ))
+    .expect("observation");
+    let status = |runtime| CampaignSavepointResult::Status {
+        capture: capture.clone(),
+        resolution: Some(resolution.clone()),
+        runtime,
+        source_observation: observation,
+        reached_configuration: ConfigurationId::from_hash(hash("pending-child")),
+    };
+
+    let response = CampaignSavepointResponse::new(&request, status(Some(paused)))
+        .expect("Ready certificate survives selection snapshot");
+    assert_eq!(
+        CampaignSavepointResponse::from_canonical_bytes(&response.canonical_bytes())
+            .expect("strict response")
+            .result(),
+        response.result()
+    );
+    assert!(CampaignSavepointResponse::new(&request, status(None)).is_err());
 }
 
 #[test]
