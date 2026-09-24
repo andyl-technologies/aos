@@ -92,6 +92,19 @@ impl OwnerPublicVerifiers {
         Ok(Self { lease, stage })
     }
 
+    /// Constructs role-checked fixture verifiers only in the test build.
+    ///
+    /// # Errors
+    ///
+    /// Rejects noncanonical or reused fixture roles.
+    #[cfg(test)]
+    pub(crate) fn from_fixture_bytes(
+        lease: [u8; VERIFIER_BYTES],
+        stage: [u8; VERIFIER_BYTES],
+    ) -> Result<Self, DeploymentCredentialError> {
+        Self::from_bytes(lease, stage)
+    }
+
     /// Borrows the earlier Storage lease public verifier bytes.
     #[must_use]
     pub const fn lease(&self) -> &[u8; VERIFIER_BYTES] {

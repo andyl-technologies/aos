@@ -4,6 +4,9 @@
 //! kernel-export owner remains the sole map custodian. An opt-in root-only
 //! listener pins two external public verifiers and returns only an unsigned
 //! acknowledgment after checking and closing each version 3 three-FD handoff.
+//! A closed acknowledgment can be joined to a separately signed PREPARED
+//! claim under the same measured tuple and current clock. The caller must
+//! still supply independent current C-owner map readback.
 //! No Storage sender, private signer key, map stage, or descriptor release is
 //! wired. A successful decode or readback is a nonauthorizing observation,
 //! never a grant.

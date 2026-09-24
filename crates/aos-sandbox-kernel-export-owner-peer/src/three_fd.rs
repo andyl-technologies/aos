@@ -21,9 +21,12 @@
 //! disconnected three-FD precursor; held selected-row/attempt and recovery
 //! barriers still prevent production use or any grant transition.
 
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+use aos_sandbox_source_provider_protocol::storage_live_export_lease::SignedStorageLiveExportLeaseV1;
+use rustix::time::ClockId;
 use sha2::{Digest as _, Sha256};
 
 use crate::OwnerPeerError;
@@ -31,7 +34,9 @@ use crate::deployment::OwnerPublicVerifiers;
 use crate::handoff::{DenyStageHandoff, HANDOFF_BYTES};
 use crate::origin::{ClosedOriginReadback, verify_closed_mutable_origin_ref};
 use crate::peer::{readback_clone, readback_consumer, verify_record, verify_storage_peer};
-use crate::stage_ack::LEASE_BYTES;
+use crate::stage_ack::{
+    ClosedPreparedAckCheck, LEASE_BYTES, StorageRoleVerifiers, verify_closed_prepared_ack,
+};
 
 /// Exact version 3 request size.
 pub const REQUEST_BYTES: usize = 16 + HANDOFF_BYTES + LEASE_BYTES;
@@ -124,6 +129,69 @@ impl ClosedThreeFdAck {
         bytes[152..160].copy_from_slice(&inode.to_be_bytes());
         bytes[160..168].copy_from_slice(&request.handoff.cgroup_id().to_be_bytes());
         Self { bytes }
+    }
+
+    /// Joins a signed PREPARED claim to this receiver's exact three-FD observation.
+    ///
+    /// The supplied map digest and epoch require an independent, current C-owner
+    /// readback. This check does not supply one or retain the Storage process or
+    /// any transferred FD. It cannot authorize Stage, ACTIVE, or FD release.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different request, lease, boot, physical origin, clone, root,
+    /// or consumer; a stale lease or handoff; or an invalid Storage signature.
+    pub fn verify_signed_prepared_claim(
+        &self,
+        request: &ClosedThreeFdRequest,
+        signed_ack: &[u8],
+        verifiers: &OwnerPublicVerifiers,
+        prepared_map_digest: &[u8; 32],
+        prepared_epoch: u64,
+    ) -> Result<ClosedPreparedAckCheck, OwnerPeerError> {
+        let now_seconds = rustix::time::clock_gettime(ClockId::Realtime).tv_sec;
+        let current_boot = KernelBootId::current()
+            .map_err(|_| OwnerPeerError::Physical)?
+            .into_bytes();
+        if now_seconds <= 0 || current_boot != request.handoff().boot_id() {
+            return Err(OwnerPeerError::NotCurrent);
+        }
+
+        let checked = verify_closed_prepared_ack(
+            signed_ack,
+            request.lease(),
+            request.handoff(),
+            StorageRoleVerifiers {
+                lease: verifiers.lease(),
+                stage: verifiers.stage(),
+            },
+            prepared_map_digest,
+            prepared_epoch,
+            now_seconds,
+        )?;
+        let signed_lease = SignedStorageLiveExportLeaseV1::decode(request.lease())
+            .map_err(|_| OwnerPeerError::Noncanonical)?;
+        let closed = self.as_bytes();
+        let (root_device, root_inode) = request.handoff().clone_root();
+
+        if &closed[..8] != b"AOSKGC03"
+            || closed[8..10] != 3_u16.to_be_bytes()
+            || closed[10] != 1
+            || closed[11..16] != [0; 5]
+            || closed[16..48] != request.digest()
+            || closed[48..80] != checked.handoff_id()
+            || closed[80..112] != *signed_lease.digest().as_bytes()
+            || closed[112..128] != current_boot
+            || closed[128..136] != checked.origin_mount_id().to_be_bytes()
+            || closed[136..144] != checked.clone_mount_id().to_be_bytes()
+            || closed[144..152] != root_device.to_be_bytes()
+            || closed[152..160] != root_inode.to_be_bytes()
+            || closed[160..168] != checked.cgroup_id().to_be_bytes()
+        {
+            return Err(OwnerPeerError::Physical);
+        }
+
+        Ok(checked)
     }
 }
 
@@ -224,11 +292,14 @@ mod tests {
     use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
     use std::path::Path;
 
+    use ed25519_dalek::{Signer as _, SigningKey};
     use rustix::fs::{Mode, OFlags, open};
 
     use super::*;
     use crate::origin::tests::{fixture, handoff_id, open_origin, sign_lease};
-    use crate::stage_ack::{StorageRoleVerifiers, verify_closed_prepared_ack};
+    use crate::stage_ack::{ACK_BYTES, StorageRoleVerifiers, verify_closed_prepared_ack};
+
+    const ACK_DOMAIN: &[u8] = b"aos.sandbox.storage.kernel-export-stage-ack.signature.v2\0";
 
     fn request_bytes() -> ([u8; REQUEST_BYTES], [u8; 112], ed25519_dalek::SigningKey) {
         let source = fixture();
@@ -289,6 +360,42 @@ mod tests {
         )
     }
 
+    fn signed_prepared_claim(
+        request: &ClosedThreeFdRequest,
+        lease_verifier: [u8; 112],
+    ) -> ([u8; ACK_BYTES], OwnerPublicVerifiers, [u8; 32]) {
+        let stage_key = SigningKey::from_bytes(&[78; 32]);
+        let mut stage_verifier = [0_u8; 112];
+        stage_verifier[..16].fill(21);
+        stage_verifier[16..24].copy_from_slice(&1_u64.to_be_bytes());
+        stage_verifier[24..56].fill(22);
+        stage_verifier[56..72].fill(23);
+        stage_verifier[72..80].copy_from_slice(&1_u64.to_be_bytes());
+        stage_verifier[80..].copy_from_slice(&stage_key.verifying_key().to_bytes());
+
+        let lease = SignedStorageLiveExportLeaseV1::decode(request.lease()).unwrap();
+        let mut ack = [0_u8; ACK_BYTES];
+        ack[..8].copy_from_slice(b"AOSKGA02");
+        ack[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        ack[16..360].copy_from_slice(request.handoff().as_bytes());
+        ack[360..392].copy_from_slice(lease.digest().as_bytes());
+        ack[392..400].copy_from_slice(&request.lease()[232..240]);
+        let (device, inode) = request.handoff().clone_root();
+        ack[400..408].copy_from_slice(&device.to_be_bytes());
+        ack[408..416].copy_from_slice(&inode.to_be_bytes());
+        ack[416..424].copy_from_slice(&1_u64.to_be_bytes());
+        let map_digest = [15; 32];
+        ack[424..456].copy_from_slice(&map_digest);
+        ack[456..536].copy_from_slice(&stage_verifier[..80]);
+        let mut message = ACK_DOMAIN.to_vec();
+        message.extend_from_slice(&ack[..536]);
+        ack[536..].copy_from_slice(&stage_key.sign(&message).to_bytes());
+
+        let verifiers =
+            OwnerPublicVerifiers::from_fixture_bytes(lease_verifier, stage_verifier).unwrap();
+        (ack, verifiers, map_digest)
+    }
+
     #[test]
     fn version_and_exact_role_table_are_distinct_from_two_fd_wire() {
         let (bytes, _, _) = request_bytes();
@@ -341,6 +448,76 @@ mod tests {
             ),
             Err(OwnerPeerError::Noncanonical)
         ));
+    }
+
+    #[test]
+    fn signed_prepared_claim_matches_closed_physical_observation() {
+        let (bytes, lease_verifier, _) = request_bytes();
+        let request = ClosedThreeFdRequest::parse(&bytes).unwrap();
+        let fds = descriptors();
+        let closed = check_with_role_probes(
+            &request,
+            &fds,
+            &lease_verifier,
+            fds[0].as_raw_fd(),
+            fds[2].as_raw_fd(),
+        )
+        .unwrap();
+        let (ack, verifiers, map_digest) = signed_prepared_claim(&request, lease_verifier);
+
+        let checked = closed
+            .verify_signed_prepared_claim(&request, &ack, &verifiers, &map_digest, 1)
+            .unwrap();
+        assert_eq!(checked.handoff_id(), request.handoff().handoff_id());
+        assert_eq!(
+            checked.origin_mount_id().to_be_bytes(),
+            closed.as_bytes()[128..136]
+        );
+        assert_eq!(checked.clone_mount_id(), request.handoff().clone_mount_id());
+        assert_eq!(checked.cgroup_id(), request.handoff().cgroup_id());
+    }
+
+    #[test]
+    fn signed_prepared_claim_rejects_changed_observation_and_signature() {
+        let (bytes, lease_verifier, _) = request_bytes();
+        let request = ClosedThreeFdRequest::parse(&bytes).unwrap();
+        let fds = descriptors();
+        let closed = check_with_role_probes(
+            &request,
+            &fds,
+            &lease_verifier,
+            fds[0].as_raw_fd(),
+            fds[2].as_raw_fd(),
+        )
+        .unwrap();
+        let (ack, verifiers, map_digest) = signed_prepared_claim(&request, lease_verifier);
+
+        for offset in [16, 80, 112, 128, 136, 144, 152, 160] {
+            let mut different = closed;
+            different.bytes[offset] ^= 1;
+            assert!(matches!(
+                different.verify_signed_prepared_claim(&request, &ack, &verifiers, &map_digest, 1,),
+                Err(OwnerPeerError::Physical)
+            ));
+        }
+
+        let mut wrong_signature = ack;
+        wrong_signature[599] ^= 1;
+        assert!(matches!(
+            closed.verify_signed_prepared_claim(
+                &request,
+                &wrong_signature,
+                &verifiers,
+                &map_digest,
+                1,
+            ),
+            Err(OwnerPeerError::Signature)
+        ));
+        assert!(
+            closed
+                .verify_signed_prepared_claim(&request, &ack, &verifiers, &map_digest, 2)
+                .is_err()
+        );
     }
 
     #[test]
