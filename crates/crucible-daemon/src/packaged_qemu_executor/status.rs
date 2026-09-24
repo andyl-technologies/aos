@@ -706,10 +706,12 @@ impl PackagedQemuOperationalStatusProvider {
             &self.ledger_root,
             MAX_PACKAGED_STATUS_ATTEMPT_RECORDS,
             &mut |key, state| {
-                if key.attempt() == attempt && key.scope() == scope && key.lineage() == lineage {
-                    if matched.replace(state).is_some() {
-                        duplicate = true;
-                    }
+                if key.attempt() == attempt
+                    && key.scope() == scope
+                    && key.lineage() == lineage
+                    && matched.replace(state).is_some()
+                {
+                    duplicate = true;
                 }
             },
         )
