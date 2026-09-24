@@ -605,6 +605,12 @@ pub enum SourceStageBundleError {
     /// Common binding or effect-plan validation failed.
     #[error("source stage semantic validation failed: {0}")]
     Validation(#[source] aos_ability_validate::ValidationErrors),
+    /// Runtime inventory changed a sealed source-stage input.
+    #[error("source stage runtime inventory differs from its sealed template")]
+    RootInventoryMismatch,
+    /// The instantiated graph still has unresolved deployment obligations.
+    #[error("source stage runtime plan is not executable")]
+    PlanNotExecutable,
     /// A claimed authority, binding plan, or effect plan identity differs.
     #[error("source stage bundle identity linkage is inconsistent")]
     IdentityMismatch,
@@ -876,13 +882,81 @@ impl SourceStageBundle {
         })
     }
 
+    /// Instantiates a complete plan from a trusted stage-entry environment.
+    ///
+    /// The caller must authenticate and freshness-check the root observation.
+    /// This pure step permits only provider state, incarnation, and freshness
+    /// to differ from the sealed source template. It recomputes every affected
+    /// document identity and runs the ordinary executable-plan validator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed template, altered sealed input,
+    /// unresolved provider readiness, or any invalid runtime effect plan.
+    pub fn instantiate_from_trusted_environment(
+        &self,
+        observed: EnvironmentDocument,
+    ) -> Result<CheckedEffectPlan, SourceStageBundleError> {
+        self.clone().check_template(None)?;
+        if observed.providers.len() != self.environment.providers.len()
+            || observed
+                .providers
+                .iter()
+                .zip(&self.environment.providers)
+                .any(|(actual, sealed)| {
+                    actual.provider != sealed.provider
+                        || actual.interface != sealed.interface
+                        || actual.implementation != sealed.implementation
+                        || actual.guarantees != sealed.guarantees
+                })
+        {
+            return Err(SourceStageBundleError::RootInventoryMismatch);
+        }
+        let mut normalized = observed.clone();
+        normalized.providers = self.environment.providers.clone();
+        normalized.freshness = self.environment.freshness.clone();
+        if normalized != self.environment {
+            return Err(SourceStageBundleError::RootInventoryMismatch);
+        }
+
+        let mut desired_state = self.desired_state.clone();
+        desired_state.environment = observed
+            .content_digest()
+            .map_err(|error| SourceStageBundleError::Encode(anyhow::Error::new(error)))?;
+        let mut binding_document = self.binding_document.clone();
+        binding_document.environment = desired_state.environment;
+        binding_document.desired_state = desired_state
+            .content_digest()
+            .map_err(|error| SourceStageBundleError::Encode(anyhow::Error::new(error)))?;
+
+        let context = self.validation_context()?;
+        let binding = context
+            .validate_binding_plan(
+                binding_document,
+                BindingValidationInputs {
+                    environment: observed,
+                    desired_state,
+                    packages: self.packages.clone(),
+                },
+            )
+            .map_err(SourceStageBundleError::Validation)?;
+        self.validate_fixed_point(&binding)?;
+
+        let mut effect_document = self.effect_document.clone();
+        effect_document.binding_plan = binding.id().0;
+        let plan = context
+            .validate_effect_plan(effect_document, binding)
+            .map_err(SourceStageBundleError::Validation)?;
+        if !plan.is_executable() {
+            return Err(SourceStageBundleError::PlanNotExecutable);
+        }
+        Ok(plan)
+    }
+
     fn validate_binding(
         &self,
     ) -> Result<(ValidationContext, CheckedBindingPlan), SourceStageBundleError> {
-        let supported_features = package_source_supported_features()
-            .map_err(|error| SourceStageBundleError::Encode(error.into()))?;
-        let context = ValidationContext::new(supported_features, self.interfaces.clone())
-            .map_err(SourceStageBundleError::Validation)?;
+        let context = self.validation_context()?;
         let binding = context
             .validate_binding_plan(
                 self.binding_document.clone(),
@@ -898,6 +972,13 @@ impl SourceStageBundle {
         }
         self.validate_fixed_point(&binding)?;
         Ok((context, binding))
+    }
+
+    fn validation_context(&self) -> Result<ValidationContext, SourceStageBundleError> {
+        let supported_features = package_source_supported_features()
+            .map_err(|error| SourceStageBundleError::Encode(error.into()))?;
+        ValidationContext::new(supported_features, self.interfaces.clone())
+            .map_err(SourceStageBundleError::Validation)
     }
 
     fn validate_linkage(&self) -> Result<(), SourceStageBundleError> {
@@ -1568,6 +1649,31 @@ mod tests {
         assert_eq!(validated.bundle(), &original);
         assert_eq!(validated.digest(), original.digest().unwrap());
         assert_eq!(reconstructed, original);
+    }
+
+    #[test]
+    fn source_stage_instantiation_rebinds_only_runtime_inventory() {
+        let bundle = bundle();
+        let mut observed = bundle.environment.clone();
+        observed.freshness.generation = RevisionId(Sha256Digest::separated(
+            "aos.test.root-observation/v1",
+            b"fresh",
+        ));
+
+        let admitted = bundle
+            .instantiate_from_trusted_environment(observed.clone())
+            .expect("fresh inventory admits the same source graph");
+        assert!(admitted.is_executable());
+        assert_ne!(admitted.id(), bundle.effect_plan());
+        assert_eq!(admitted.binding_plan().environment(), &observed);
+
+        let mut changed_provider = observed;
+        changed_provider.providers[0].implementation.descriptor =
+            Sha256Digest::separated("aos.test.foreign-implementation/v1", b"foreign");
+        assert!(matches!(
+            bundle.instantiate_from_trusted_environment(changed_provider),
+            Err(SourceStageBundleError::RootInventoryMismatch)
+        ));
     }
 
     #[test]
