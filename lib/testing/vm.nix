@@ -516,10 +516,11 @@
     testScript,
     rootfsDeps ? [],
     memory ? 256,
+    extraWritableMiB ? 0,
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
-      inherit testScript rootfsDeps;
+      inherit testScript rootfsDeps extraWritableMiB;
     };
     # Firecracker boots the uncompressed vmlinux ELF, which lives in the
     # kernel's separate `vmlinux` output (pkgs/kernel/linux.nix) — not in
@@ -667,6 +668,7 @@
     # through does not have to restate the number.
     timeout ? null,
     memory ? null,
+    extraWritableMiB ? 0,
     seedSELinuxDisabledConfig ? true,
   }:
     if rootfsDeps != null
@@ -676,6 +678,7 @@
           name
           testScript
           rootfsDeps
+          extraWritableMiB
           ;
         memory =
           if memory != null

@@ -35,6 +35,7 @@
     pname,
     testScript,
     rootfsDeps,
+    extraWritableMiB ? 0,
   }: let
     # Callers describe their runtime needs without having to know which
     # packages the harness itself supplies.  Deduplicate at that boundary so
@@ -381,8 +382,9 @@
                           fi
                         done < all-paths
                         STORE_MB=$(( STORE_KB / 1024 ))
-                        # 3x for ext4 overhead (journal, inodes, superblocks) + 512MB headroom
-                        IMAGE_MB=$(( STORE_MB * 3 + 512 ))
+                        # 3x for ext4 overhead (journal, inodes, superblocks) + 512MB headroom.
+                        # Some tests also keep full guest checkpoints on this writable root.
+                        IMAGE_MB=$(( STORE_MB * 3 + 512 + ${toString extraWritableMiB} ))
                         # Minimum 512MB to avoid tiny filesystem issues
                         if [ "$IMAGE_MB" -lt 512 ]; then IMAGE_MB=512; fi
 
