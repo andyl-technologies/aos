@@ -62,6 +62,7 @@ pub(super) fn validate_namespace(
     let mut controller_head = None;
     let mut revocations: BTreeMap<RevocationScopeId, Chain> = BTreeMap::new();
     let mut revocation_heads: BTreeMap<RevocationScopeId, u64> = BTreeMap::new();
+    let mut project_revocations: BTreeMap<ProjectId, RevocationScopeId> = BTreeMap::new();
     for (key, value) in journal.records(RecordNamespace::PublisherPolicy) {
         records = records
             .checked_add(1)
@@ -140,6 +141,15 @@ pub(super) fn validate_namespace(
             {
                 return Err(PublisherPolicyError::CorruptState);
             }
+        } else if key.starts_with(PROJECT_REVOCATION_PREFIX)
+            && key.len() == PROJECT_REVOCATION_PREFIX.len() + 16
+        {
+            let (project, scope) = decode_project_revocation_binding(value)?;
+            if key != project_revocation_key(project)
+                || project_revocations.insert(project, scope).is_some()
+            {
+                return Err(PublisherPolicyError::CorruptState);
+            }
         } else {
             return Err(PublisherPolicyError::CorruptState);
         }
@@ -178,6 +188,11 @@ pub(super) fn validate_namespace(
         }
     }
     if revocation_heads.len() != revocations.len() {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    if project_revocations.iter().any(|(project, scope)| {
+        !heads.contains_key(project) || !revocation_heads.contains_key(scope)
+    }) {
         return Err(PublisherPolicyError::CorruptState);
     }
     Ok((records, total))

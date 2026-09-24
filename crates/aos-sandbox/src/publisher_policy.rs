@@ -1,9 +1,9 @@
 //! Protected current policy and generation state for publisher admission.
 //!
 //! This store retains immutable canonical policy revisions, atomic current
-//! pointers, immutable logical cache-resource bindings, and independent
-//! controller-authority and revocation generation chains. It validates the
-//! complete namespace before allowing reads. It does not model publisher
+//! pointers, immutable logical cache-resource and project-revocation bindings,
+//! and independent controller-authority and revocation generation chains. It
+//! validates the complete namespace before allowing reads. It does not model publisher
 //! instances, publication roots, source evidence, reservations, or permits.
 //!
 //! This is a trusted controller-administration facade: its caller authorizes
@@ -18,6 +18,7 @@ use aos_sandbox_core::{
     DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest, Operation, PrincipalId, ProjectId,
     ResourceId, ResourceKind, RevocationScopeId, descriptor_for_bytes, validate_required_features,
 };
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
@@ -30,6 +31,7 @@ const CONTROLLER_REVISION_PREFIX: &[u8] = b"controller/revision/";
 const CONTROLLER_CURRENT_KEY: &[u8] = b"controller/current";
 const REVOCATION_REVISION_PREFIX: &[u8] = b"revocation/revision/";
 const REVOCATION_CURRENT_PREFIX: &[u8] = b"revocation/current/";
+const PROJECT_REVOCATION_PREFIX: &[u8] = b"revocation/project/";
 
 const POLICY_REVISION_MAGIC: &[u8; 8] = b"AOSPOLR1";
 const POLICY_CURRENT_MAGIC: &[u8; 8] = b"AOSPOLH1";
@@ -38,6 +40,10 @@ const CONTROLLER_REVISION_MAGIC: &[u8; 8] = b"AOSCTLR1";
 const CONTROLLER_CURRENT_MAGIC: &[u8; 8] = b"AOSCTLH1";
 const REVOCATION_REVISION_MAGIC: &[u8; 8] = b"AOSREVR1";
 const REVOCATION_CURRENT_MAGIC: &[u8; 8] = b"AOSREVH1";
+const PROJECT_REVOCATION_MAGIC: &[u8; 8] = b"AOSREVP1";
+// The AOSPPH01 claim commits the protected mapping and exact scope generation:
+// SHA-256(domain || project:16 || scope:16 || generation:u64-be).
+const PROJECT_REVOCATION_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-revocation-head.v1\0";
 
 const MAXIMUM_POLICY_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_RECORDS: usize = 65_536;
@@ -51,7 +57,8 @@ const MAXIMUM_DEPTH: usize = 64;
 mod model;
 pub use model::{
     PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyError,
-    PublisherPolicyLimits, PublisherResourceBindingV1, PublisherRevocationHeadV1,
+    PublisherPolicyLimits, PublisherProjectRevocationHeadV1, PublisherResourceBindingV1,
+    PublisherRevocationHeadV1,
 };
 
 /// Provides exclusive access to validated current publisher policy state.
@@ -69,7 +76,8 @@ impl<'journal> PublisherPolicyStore<'journal> {
     ///
     /// Returns [`PublisherPolicyError`] if storage is unprotected or poisoned,
     /// bounds are exceeded, or any family, record, revision chain, current head,
-    /// policy-resource cross-link, or canonical encoding is invalid.
+    /// policy-resource or project-revocation cross-link, or canonical encoding
+    /// is invalid.
     pub fn load(
         journal: &'journal mut Journal,
         limits: PublisherPolicyLimits,
@@ -183,6 +191,51 @@ impl<'journal> PublisherPolicyStore<'journal> {
             return Err(PublisherPolicyError::CorruptState);
         }
         Ok(head)
+    }
+
+    /// Resolves the independent current revocation head bound to one project.
+    ///
+    /// The mapping and scope generation come from the same protected journal
+    /// claim as the current publisher revision. This observation does not hold
+    /// other writers across a later policy binding or effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns a journal or corrupt-state error for a malformed or dangling
+    /// mapping. `Ok(None)` means the trusted publisher has not bound a scope.
+    pub fn project_revocation_head(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<PublisherProjectRevocationHeadV1>, PublisherPolicyError> {
+        self.journal.ensure_protected_authority()?;
+        let Some(bytes) = self.journal.get(
+            RecordNamespace::PublisherPolicy,
+            &project_revocation_key(project),
+        ) else {
+            return Ok(None);
+        };
+        let (bound_project, scope) = decode_project_revocation_binding(bytes)?;
+        if bound_project != project {
+            return Err(PublisherPolicyError::CorruptState);
+        }
+        let head = self
+            .revocation_head(scope)?
+            .ok_or(PublisherPolicyError::CorruptState)?;
+        let digest = ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(PROJECT_REVOCATION_DOMAIN)
+                .chain_update(project.as_bytes())
+                .chain_update(scope.as_bytes())
+                .chain_update(head.generation.to_be_bytes())
+                .finalize()
+                .into(),
+        );
+        Ok(Some(PublisherProjectRevocationHeadV1 {
+            project,
+            scope,
+            generation: head.generation,
+            digest,
+        }))
     }
 
     /// Atomically appends a policy revision and advances its exact current head.
@@ -363,6 +416,47 @@ impl<'journal> PublisherPolicyStore<'journal> {
                     encode_revocation(next, REVOCATION_CURRENT_MAGIC),
                 ),
             ],
+        )
+    }
+
+    /// Installs one immutable project-to-revocation-scope binding.
+    ///
+    /// Only the trusted controller/publisher owner may call this method after
+    /// installing both the current project policy and independent scope head.
+    /// Public Create requests cannot select or replace this mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a sentinel, absent current policy or scope head,
+    /// an existing mapping, or a failed protected commit.
+    pub fn bind_project_revocation_scope_from_trusted_controller(
+        &mut self,
+        transaction_id: [u8; 16],
+        project: ProjectId,
+        scope: RevocationScopeId,
+    ) -> Result<CommitResult, PublisherPolicyError> {
+        self.journal.ensure_protected_authority()?;
+        if project.as_bytes() == &[0; 16] || scope.as_bytes() == &[0; 16] {
+            return Err(PublisherPolicyError::InvalidProjectRevocationBinding);
+        }
+        let key = project_revocation_key(project);
+        if self
+            .journal
+            .get(RecordNamespace::PublisherPolicy, &key)
+            .is_some()
+        {
+            return Err(PublisherPolicyError::ProjectRevocationBindingAlreadyExists);
+        }
+        if self.current_policy(project)?.is_none() || self.revocation_head(scope)?.is_none() {
+            return Err(PublisherPolicyError::InvalidProjectRevocationBinding);
+        }
+        self.commit_bounded(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::PublisherPolicy,
+                key,
+                encode_project_revocation_binding(project, scope),
+            )],
         )
     }
 

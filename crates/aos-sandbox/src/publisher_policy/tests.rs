@@ -63,7 +63,7 @@ fn all_record_families_match_fixed_goldens_and_reject_magic_or_length_changes() 
         generation: 1,
     };
     type Golden = (&'static str, Vec<u8>, String, fn(&[u8]) -> bool);
-    let families: [Golden; 7] = [
+    let families: [Golden; 8] = [
         (
             "policy revision",
             encode_policy_revision(&revision).unwrap(),
@@ -117,6 +117,12 @@ fn all_record_families_match_fixed_goldens_and_reject_magic_or_length_changes() 
             encode_revocation(revocation, REVOCATION_CURRENT_MAGIC),
             format!("414f535245564831{}0000000000000001", "07".repeat(16)),
             |bytes| decode_revocation(bytes, REVOCATION_CURRENT_MAGIC).is_ok(),
+        ),
+        (
+            "project revocation binding",
+            encode_project_revocation_binding(project, revocation.scope),
+            format!("414f535245565031{}{}", "01".repeat(16), "07".repeat(16)),
+            |bytes| decode_project_revocation_binding(bytes).is_ok(),
         ),
     ];
     for (family, encoded, golden, accepts) in families {
@@ -288,6 +294,9 @@ fn current_policy_resource_and_generation_heads_survive_restart() {
                 },
             )
             .unwrap();
+        store
+            .bind_project_revocation_scope_from_trusted_controller([8; 16], fixture.project, scope)
+            .unwrap();
         assert!(matches!(
             store.advance_controller_from_trusted_controller(
                 [7; 16],
@@ -325,6 +334,155 @@ fn current_policy_resource_and_generation_heads_survive_restart() {
             generation: 1,
         })
     );
+    let project_revocation = store
+        .project_revocation_head(fixture.project)
+        .unwrap()
+        .unwrap();
+    assert_eq!(project_revocation.project(), fixture.project);
+    assert_eq!(project_revocation.scope(), scope);
+    assert_eq!(project_revocation.generation(), 1);
+    assert_eq!(
+        project_revocation.digest().to_string(),
+        "sha256:828a8d94557add664f133de894f7e07826a8fbc4d9774dd9cfc1101d4f5c7346"
+    );
+}
+
+#[test]
+fn project_revocation_binding_requires_trusted_current_heads_and_tracks_advancement() {
+    let directory = TestDirectory::new("project-revocation");
+    let fixture = fixture(3);
+    let scope = RevocationScopeId::from_bytes([7; 16]);
+    let resource = PublisherResourceBindingV1::new(
+        fixture.resource,
+        fixture.project,
+        fixture.domain,
+        ObjectDigest::from_bytes([5; 32]),
+    )
+    .unwrap();
+    let mut journal = directory.open();
+    let mut store =
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+    assert!(
+        store
+            .project_revocation_head(fixture.project)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        store.bind_project_revocation_scope_from_trusted_controller(
+            [1; 16],
+            fixture.project,
+            scope,
+        ),
+        Err(PublisherPolicyError::InvalidProjectRevocationBinding)
+    ));
+
+    store
+        .install_resource_from_trusted_controller([2; 16], &resource)
+        .unwrap();
+    store
+        .publish_policy_from_trusted_controller([3; 16], None, &prepared(&fixture, 1))
+        .unwrap();
+    assert!(matches!(
+        store.bind_project_revocation_scope_from_trusted_controller(
+            [4; 16],
+            fixture.project,
+            scope,
+        ),
+        Err(PublisherPolicyError::InvalidProjectRevocationBinding)
+    ));
+    store
+        .advance_revocation_from_trusted_controller(
+            [5; 16],
+            None,
+            PublisherRevocationHeadV1 {
+                scope,
+                generation: 1,
+            },
+        )
+        .unwrap();
+    store
+        .bind_project_revocation_scope_from_trusted_controller([6; 16], fixture.project, scope)
+        .unwrap();
+    let first = store
+        .project_revocation_head(fixture.project)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.generation(), 1);
+    assert!(matches!(
+        store.bind_project_revocation_scope_from_trusted_controller(
+            [7; 16],
+            fixture.project,
+            RevocationScopeId::from_bytes([8; 16]),
+        ),
+        Err(PublisherPolicyError::ProjectRevocationBindingAlreadyExists)
+    ));
+    assert!(matches!(
+        store.bind_project_revocation_scope_from_trusted_controller(
+            [7; 16],
+            fixture.project,
+            scope,
+        ),
+        Err(PublisherPolicyError::ProjectRevocationBindingAlreadyExists)
+    ));
+
+    store
+        .advance_revocation_from_trusted_controller(
+            [8; 16],
+            Some(1),
+            PublisherRevocationHeadV1 {
+                scope,
+                generation: 2,
+            },
+        )
+        .unwrap();
+    let second = store
+        .project_revocation_head(fixture.project)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.generation(), 2);
+    assert_ne!(second.digest(), first.digest());
+    drop(store);
+    drop(journal);
+
+    let mut reopened = directory.open();
+    let current = PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default())
+        .unwrap()
+        .project_revocation_head(fixture.project)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current, second);
+
+    // An alias key cannot override the unique project mapping on replay.
+    raw(
+        &mut reopened,
+        9,
+        project_revocation_key(ProjectId::from_bytes([9; 16])),
+        encode_project_revocation_binding(fixture.project, scope),
+    );
+    assert!(matches!(
+        PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()),
+        Err(PublisherPolicyError::CorruptState)
+    ));
+}
+
+#[test]
+fn dangling_project_revocation_mapping_poison_replay() {
+    let directory = TestDirectory::new("dangling-project-revocation");
+    let project = ProjectId::from_bytes([1; 16]);
+    let scope = RevocationScopeId::from_bytes([7; 16]);
+    let mut journal = directory.open();
+    raw(
+        &mut journal,
+        1,
+        project_revocation_key(project),
+        encode_project_revocation_binding(project, scope),
+    );
+
+    assert!(matches!(
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()),
+        Err(PublisherPolicyError::CorruptState)
+    ));
 }
 
 #[test]

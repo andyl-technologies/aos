@@ -243,6 +243,41 @@ pub struct PublisherRevocationHeadV1 {
     pub generation: u64,
 }
 
+/// Identifies the current protected revocation scope for one project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublisherProjectRevocationHeadV1 {
+    pub(super) project: ProjectId,
+    pub(super) scope: RevocationScopeId,
+    pub(super) generation: u64,
+    pub(super) digest: ObjectDigest,
+}
+
+impl PublisherProjectRevocationHeadV1 {
+    /// Returns the publisher project bound by the protected mapping.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the independently managed revocation scope.
+    #[must_use]
+    pub const fn scope(self) -> RevocationScopeId {
+        self.scope
+    }
+
+    /// Returns its exact current generation.
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the project-bound currentness commitment.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        self.digest
+    }
+}
+
 /// Reports invalid or unavailable current publisher policy state.
 #[derive(Debug, thiserror::Error)]
 pub enum PublisherPolicyError {
@@ -261,6 +296,13 @@ pub enum PublisherPolicyError {
     /// A current generation head is malformed.
     #[error("publisher generation head is invalid")]
     InvalidGenerationHead,
+    /// A proposed project-to-revocation-scope mapping has a sentinel or lacks
+    /// a current policy or scope head.
+    #[error("publisher project revocation binding is invalid")]
+    InvalidProjectRevocationBinding,
+    /// The immutable project-to-revocation-scope mapping already exists.
+    #[error("publisher project revocation binding already exists")]
+    ProjectRevocationBindingAlreadyExists,
     /// A requested update lost its exact current-generation comparison.
     #[error("publisher policy compare-and-swap failed")]
     CompareAndSwapFailed,

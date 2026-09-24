@@ -8,7 +8,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
+use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_query::PublicOperationMethodV1;
@@ -54,9 +54,9 @@ pub enum CurrentCreatePolicySourceErrorV1 {
 
 /// Retains exact canonical publisher bytes under a current Create selector.
 ///
-/// This read-only value expires with the publisher head. Before any compiler
-/// binding or effect, the caller must rejoin current operation, projection,
-/// and policy heads under protected custody.
+/// This read-only value expires with the publisher or revocation head. Before
+/// any compiler binding or effect, the caller must rejoin current operation,
+/// projection, policy, and revocation heads under protected custody.
 pub struct CurrentCreateProjectPolicySourceV1 {
     operation: OperationId,
     sandbox: SandboxId,
@@ -64,6 +64,9 @@ pub struct CurrentCreateProjectPolicySourceV1 {
     projection_revision: ObjectDigest,
     policy_generation: u64,
     policy_digest: ObjectDigest,
+    revocation_scope: RevocationScopeId,
+    revocation_generation: u64,
+    revocation_head: ObjectDigest,
     canonical_policy: Vec<u8>,
     commitment: ObjectDigest,
 }
@@ -103,6 +106,25 @@ impl CurrentCreateProjectPolicySourceV1 {
     #[must_use]
     pub const fn policy_digest(&self) -> ObjectDigest {
         self.policy_digest
+    }
+
+    /// Returns the protected scope selected for this project.
+    #[must_use]
+    pub const fn revocation_scope(&self) -> RevocationScopeId {
+        self.revocation_scope
+    }
+
+    /// Returns the exact current generation of the selected revocation scope.
+    #[must_use]
+    pub const fn revocation_generation(&self) -> u64 {
+        self.revocation_generation
+    }
+
+    /// Returns the independent protected project revocation head observed
+    /// with the publisher revision.
+    #[must_use]
+    pub const fn revocation_head(&self) -> ObjectDigest {
+        self.revocation_head
     }
 
     /// Returns exact canonical publisher policy bytes validated by its store.
@@ -151,6 +173,7 @@ pub fn checked_parentless_create_policy_draft_v1(
                 prerequisites.cache_domain_head(),
                 prerequisites.revocation_head(),
             ]
+        || prerequisites.revocation_head() != source.revocation_head
         || input.sandbox() != source.sandbox
         || input.project().project() != source.project
         || input.project().layer() != signed_project.layer()
@@ -204,8 +227,8 @@ fn request_is_inherited(input: &PolicyCompilerInputV1) -> bool {
 /// # Errors
 ///
 /// Returns an error for unsafe journal authority, missing or mismatched
-/// operation/projection/policy, parented Create, expired current policy, or
-/// noncanonical protected state.
+/// operation/projection/policy, missing project revocation binding, parented
+/// Create, expired current policy, or noncanonical protected state.
 pub fn current_parentless_create_project_source_v1(
     journal: &mut Journal,
     operation: OperationId,
@@ -261,8 +284,12 @@ pub fn current_parentless_create_project_source_v1(
     }
     let projection_revision = projection.revision();
 
-    let revision = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())?
+    let publisher = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())?;
+    let revision = publisher
         .current_policy(project)?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let revocation = publisher
+        .project_revocation_head(project)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let descriptor = revision.descriptor();
     if requested_policy.media_type != descriptor.media_type().as_str()
@@ -282,6 +309,9 @@ pub fn current_parentless_create_project_source_v1(
 
     let policy_generation = revision.generation();
     let policy_digest = descriptor.digest();
+    let revocation_scope = revocation.scope();
+    let revocation_generation = revocation.generation();
+    let revocation_head = revocation.digest();
     let canonical_policy = revision.canonical_policy().to_vec();
     let commitment = ObjectDigest::from_bytes(
         Sha256::new()
@@ -292,6 +322,9 @@ pub fn current_parentless_create_project_source_v1(
             .chain_update(projection_revision.as_bytes())
             .chain_update(policy_generation.to_be_bytes())
             .chain_update(policy_digest.as_bytes())
+            .chain_update(revocation_scope.as_bytes())
+            .chain_update(revocation_generation.to_be_bytes())
+            .chain_update(revocation_head.as_bytes())
             .finalize()
             .into(),
     );
@@ -302,6 +335,9 @@ pub fn current_parentless_create_project_source_v1(
         projection_revision,
         policy_generation,
         policy_digest,
+        revocation_scope,
+        revocation_generation,
+        revocation_head,
         canonical_policy,
         commitment,
     })
@@ -512,6 +548,9 @@ mod tests {
             projection_revision: ObjectDigest::from_bytes([2; 32]),
             policy_generation: 2,
             policy_digest: ObjectDigest::from_bytes([6; 32]),
+            revocation_scope: RevocationScopeId::from_bytes([12; 16]),
+            revocation_generation: 1,
+            revocation_head: prerequisites.revocation_head(),
             canonical_policy: Vec::new(),
             commitment: ObjectDigest::from_bytes([9; 32]),
         };
@@ -540,6 +579,55 @@ mod tests {
             .is_err()
         );
         source.policy_generation -= 1;
+
+        source.revocation_head = ObjectDigest::from_bytes([11; 32]);
+        assert!(
+            checked_parentless_create_policy_draft_v1(
+                &source,
+                &signed_project,
+                &deployment,
+                &input,
+                &prerequisites,
+                20,
+            )
+            .is_err()
+        );
+        source.revocation_head = prerequisites.revocation_head();
+
+        let stale_revocation_head = ObjectDigest::from_bytes([11; 32]);
+        let stale_revocation = PolicyPublicationPrerequisitesV1::new(
+            prerequisites.ancestry_head(),
+            prerequisites.compiler_authority_head(),
+            prerequisites.cache_domain_head(),
+            stale_revocation_head,
+            1,
+        )
+        .expect("changed revocation head");
+        let mut stale_project_packet = project_packet[..248].to_vec();
+        stale_project_packet[216..248].copy_from_slice(stale_revocation_head.as_bytes());
+        sign_packet(
+            &mut stale_project_packet,
+            &project_key,
+            b"aos.sandbox.policy-project-head.v1\0",
+        );
+        let stale_signed_project = verify_signed_project_policy_source_v1(
+            &stale_project_packet,
+            &project_input,
+            &project_key.verifying_key(),
+            20,
+        )
+        .expect("signed project with changed revocation claim");
+        assert!(
+            checked_parentless_create_policy_draft_v1(
+                &source,
+                &stale_signed_project,
+                &deployment,
+                &input,
+                &stale_revocation,
+                20,
+            )
+            .is_err()
+        );
 
         let stale_cache = PolicyPublicationPrerequisitesV1::new(
             prerequisites.ancestry_head(),

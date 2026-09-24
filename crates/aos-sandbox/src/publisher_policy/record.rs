@@ -19,6 +19,7 @@
 //! revocation/revision/<scope:16><generation:u64> =
 //!   "AOSREVR1" scope:16 generation:u64
 //! revocation/current/<scope:16> = "AOSREVH1" scope:16 generation:u64
+//! revocation/project/<project:16> = "AOSREVP1" project:16 scope:16
 //! ```
 
 use super::*;
@@ -106,6 +107,34 @@ pub(super) fn revocation_revision_key(scope: RevocationScopeId, generation: u64)
 }
 pub(super) fn revocation_current_key(scope: RevocationScopeId) -> Vec<u8> {
     key(REVOCATION_CURRENT_PREFIX, scope.as_bytes(), None)
+}
+pub(super) fn project_revocation_key(project: ProjectId) -> Vec<u8> {
+    key(PROJECT_REVOCATION_PREFIX, project.as_bytes(), None)
+}
+
+pub(super) fn encode_project_revocation_binding(
+    project: ProjectId,
+    scope: RevocationScopeId,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(40);
+    bytes.extend_from_slice(PROJECT_REVOCATION_MAGIC);
+    bytes.extend_from_slice(project.as_bytes());
+    bytes.extend_from_slice(scope.as_bytes());
+    bytes
+}
+
+pub(super) fn decode_project_revocation_binding(
+    bytes: &[u8],
+) -> Result<(ProjectId, RevocationScopeId), PublisherPolicyError> {
+    if bytes.len() != 40 || &bytes[..8] != PROJECT_REVOCATION_MAGIC {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    let project = ProjectId::from_bytes(array(bytes, 8)?);
+    let scope = RevocationScopeId::from_bytes(array(bytes, 24)?);
+    if project.as_bytes() == &[0; 16] || scope.as_bytes() == &[0; 16] {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    Ok((project, scope))
 }
 
 pub(super) fn encode_policy_revision(
