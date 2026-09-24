@@ -6,12 +6,14 @@
 //! backend_generation:u64be | backend_digest[32] |
 //! observation_generation:u64be | observation_digest[32] | reserved[4] | payload
 //!
-//! Every class payload begins with its eight-byte class magic, version `1`,
+//! Every class payload begins with its eight-byte class magic, class version,
 //! two reserved zero bytes, predecessor observation generation, and
 //! predecessor observation digest. This makes the opaque suffix a closed,
 //! independently versioned canonical union rather than substitutable bytes.
-//! LocalLive adds proof-digest[32], export-lease-digest[32],
-//! kernel-grant-digest[32], and descriptor-commitment[32].
+//! LocalLive v2 (`AOSPLOC2`, version `2`) adds proof-digest[32],
+//! export-lease-digest[32], kernel-grant-digest[32], and
+//! descriptor-commitment[32]. The former empty-suffix LocalLive v1 is rejected
+//! rather than interpreted as evidence for a physical export.
 //! ```
 
 use aos_sandbox_core::ObjectDigest;
@@ -197,9 +199,9 @@ pub struct BackendEvidenceV1 {
 impl BackendEvidenceV1 {
     /// Constructs one acquired observation from class-specific canonical bytes.
     ///
-    /// LocalLive requires an exact [`LocalLiveEvidenceBindingV1`] suffix. Other
-    /// classes remain dormant with a closed empty suffix. The helper supplies
-    /// the class tag and zero predecessor.
+    /// LocalLive v2 requires an exact [`LocalLiveEvidenceBindingV1`] suffix.
+    /// Other classes remain dormant with a closed empty v1 suffix. The helper
+    /// supplies the class tag and zero predecessor.
     ///
     /// # Errors
     ///
@@ -479,7 +481,8 @@ impl BackendEvidenceV1 {
         };
         if self.payload.len() != CLASS_PAYLOAD_PREFIX_BYTES + expected_suffix_len
             || self.payload.get(..8) != Some(self.class.payload_magic().as_slice())
-            || self.payload.get(8..10) != Some(VERSION.to_be_bytes().as_slice())
+            || self.payload.get(8..10)
+                != Some(self.class.payload_version().to_be_bytes().as_slice())
             || self.payload.get(10..12) != Some([0_u8; 2].as_slice())
             || (self.class == BackendEvidenceClassV1::LocalLiveExport
                 && LocalLiveEvidenceBindingV1::decode(&self.payload[CLASS_PAYLOAD_PREFIX_BYTES..])
@@ -503,9 +506,16 @@ impl BackendEvidenceClassV1 {
     const fn payload_magic(self) -> [u8; 8] {
         match self {
             Self::ZfsHeldSnapshot => *b"AOSPZFS1",
-            Self::LocalLiveExport => *b"AOSPLOC1",
+            Self::LocalLiveExport => *b"AOSPLOC2",
             Self::ImmutablePublisherTree => *b"AOSPIMM1",
             Self::BestEffortReplica => *b"AOSPREP1",
+        }
+    }
+
+    const fn payload_version(self) -> u16 {
+        match self {
+            Self::LocalLiveExport => 2,
+            _ => 1,
         }
     }
 }
@@ -537,7 +547,7 @@ fn class_payload(
     }
     let mut payload = Vec::with_capacity(capacity);
     payload.extend_from_slice(&class.payload_magic());
-    payload.extend_from_slice(&VERSION.to_be_bytes());
+    payload.extend_from_slice(&class.payload_version().to_be_bytes());
     payload.extend_from_slice(&[0; 2]);
     payload.extend_from_slice(&predecessor_generation.to_be_bytes());
     payload.extend_from_slice(predecessor_digest.as_bytes());
@@ -623,8 +633,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(acquired.local_live_binding(), Ok(binding));
+        let acquired_bytes = acquired.encode();
+        assert_eq!(&acquired_bytes[120..128], b"AOSPLOC2");
+        assert_eq!(&acquired_bytes[128..130], &2_u16.to_be_bytes());
         assert_eq!(
-            BackendEvidenceV1::decode(&acquired.encode()),
+            BackendEvidenceV1::decode(&acquired_bytes),
             Ok(acquired.clone())
         );
 
@@ -691,5 +704,48 @@ mod tests {
         .encode();
         evidence[120 + 52 + 96..120 + 52 + 128].fill(0);
         assert!(BackendEvidenceV1::decode(&evidence).is_err());
+    }
+
+    #[test]
+    fn historical_empty_local_live_v1_is_rejected() {
+        let proof = local_live_proof(15);
+        let binding = LocalLiveEvidenceBindingV1::from_proof(&proof, digest(16)).unwrap();
+        let mut historical = BackendEvidenceV1::new_acquired(
+            BackendEvidenceClassV1::LocalLiveExport,
+            [19; 16],
+            20,
+            digest(21),
+            22,
+            digest(23),
+            binding.encode().to_vec(),
+        )
+        .unwrap()
+        .encode();
+
+        historical[120..128].copy_from_slice(b"AOSPLOC1");
+        historical[128..130].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(BackendEvidenceV1::decode(&historical).is_err());
+
+        historical[16..20].copy_from_slice(&52_u32.to_be_bytes());
+        historical.truncate(120 + 52);
+        assert!(BackendEvidenceV1::decode(&historical).is_err());
+    }
+
+    #[test]
+    fn other_class_v1_payload_remains_canonical() {
+        let evidence = BackendEvidenceV1::new_acquired(
+            BackendEvidenceClassV1::ZfsHeldSnapshot,
+            [19; 16],
+            20,
+            digest(21),
+            22,
+            digest(23),
+            Vec::new(),
+        )
+        .unwrap();
+        let bytes = evidence.encode();
+        assert_eq!(&bytes[120..128], b"AOSPZFS1");
+        assert_eq!(&bytes[128..130], &1_u16.to_be_bytes());
+        assert_eq!(BackendEvidenceV1::decode(&bytes), Ok(evidence));
     }
 }
