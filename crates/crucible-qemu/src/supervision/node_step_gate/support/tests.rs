@@ -39,14 +39,12 @@ fn diskless_launch_material_retains_firmware() {
 #[test]
 fn campaign_marker_parking_survives_child_launch_profile_clone() {
     let base = QemuLiveNodeStepGateConfig::new(
-        "/aos/bin/qemu-system-aarch64",
+        "/aos/bin/qemu-system-x86_64",
         "/aos/lib/crucible-plugin.so",
         "/aos/kernel",
         "/aos/firmware",
         "/run/crucible/source",
-    )
-    .with_guest_architecture(LivePluginGuestArchitecture::Aarch64)
-    .with_whitebox(QemuLaunchPluginSwitch::On);
+    );
     let child = base
         .with_campaign_marker_parking()
         .with_run_directory("/run/crucible/child");
