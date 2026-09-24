@@ -138,26 +138,15 @@ pub(crate) fn observe_capture_zfs_for(
     zfs: &ZfsHelperContract,
     plan: &CaptureZfsReadbackPlanV1,
 ) -> Result<CaptureZfsReadbackV1, ZfsWorkerError> {
-    if zfs
-        .executable()
-        .file_name()
-        .is_none_or(|name| name != "zfs")
-    {
-        return Err(ZfsWorkerError::Executable(
-            "capture readback requires the fixed AOS zfs executable".to_owned(),
-        ));
-    }
-    let zpool = ZfsHelperContract::new(zfs.executable().with_file_name("zpool"))?;
-    let zfs_pin = PinnedExecutable::open(zfs)?;
-    let zpool_pin = PinnedExecutable::open(&zpool)?;
+    let tools = PinnedCaptureZfsTools::new(
+        zfs,
+        "capture readback requires the fixed AOS zfs executable",
+    )?;
     let deadline = Deadline::after(PROCESS_TIMEOUT);
     let mut outputs = Vec::with_capacity(plan.commands().len());
 
     for command in plan.commands() {
-        let (contract, pin) = match command.tool {
-            CaptureZfsToolV1::Zpool => (&zpool, &zpool_pin),
-            CaptureZfsToolV1::Zfs => (zfs, &zfs_pin),
-        };
+        let (contract, pin) = tools.for_tool(command.tool);
         pin.validate_current(contract)?;
         let timeout = deadline.remaining().ok_or(ZfsWorkerError::Protocol(
             "capture readback deadline elapsed",
@@ -182,8 +171,7 @@ pub(crate) fn observe_capture_zfs_for(
         }
     }
 
-    zfs_pin.validate_current(zfs)?;
-    zpool_pin.validate_current(&zpool)?;
+    tools.validate_current()?;
     plan.evaluate([&outputs[0], &outputs[1], &outputs[2]])
         .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback mismatch"))
 }
@@ -958,6 +946,56 @@ pub(crate) struct PinnedExecutable {
     inode: u64,
 }
 
+/// Retains both fixed capture tools across observation and effect boundaries.
+///
+/// The caller still selects its own deadline and output policy. Neither tool
+/// may be replaced between the first probe and the final identity check.
+pub(crate) struct PinnedCaptureZfsTools<'a> {
+    zfs: &'a ZfsHelperContract,
+    zpool: ZfsHelperContract,
+    zfs_pin: PinnedExecutable,
+    zpool_pin: PinnedExecutable,
+}
+
+impl<'a> PinnedCaptureZfsTools<'a> {
+    pub(crate) fn new(
+        zfs: &'a ZfsHelperContract,
+        invalid_executable: &'static str,
+    ) -> Result<Self, ZfsWorkerError> {
+        if zfs
+            .executable()
+            .file_name()
+            .is_none_or(|name| name != "zfs")
+        {
+            return Err(ZfsWorkerError::Executable(invalid_executable.to_owned()));
+        }
+        let zpool = ZfsHelperContract::new(zfs.executable().with_file_name("zpool"))?;
+        let zfs_pin = PinnedExecutable::open(zfs)?;
+        let zpool_pin = PinnedExecutable::open(&zpool)?;
+        Ok(Self {
+            zfs,
+            zpool,
+            zfs_pin,
+            zpool_pin,
+        })
+    }
+
+    pub(crate) fn for_tool(
+        &self,
+        tool: CaptureZfsToolV1,
+    ) -> (&ZfsHelperContract, &PinnedExecutable) {
+        match tool {
+            CaptureZfsToolV1::Zpool => (&self.zpool, &self.zpool_pin),
+            CaptureZfsToolV1::Zfs => (self.zfs, &self.zfs_pin),
+        }
+    }
+
+    pub(crate) fn validate_current(&self) -> Result<(), ZfsWorkerError> {
+        self.zfs_pin.validate_current(self.zfs)?;
+        self.zpool_pin.validate_current(&self.zpool)
+    }
+}
+
 impl PinnedExecutable {
     pub(crate) fn open(contract: &ZfsHelperContract) -> Result<Self, ZfsWorkerError> {
         let metadata = std::fs::symlink_metadata(contract.executable())?;
@@ -1386,6 +1424,7 @@ mod tests {
     use aos_sandbox_core::ObjectDigest;
 
     use super::*;
+
     use crate::observation::ZfsObservationState;
     use crate::observation_protocol::{
         WorkspaceCatalogCustodyBindingV1, WorkspaceCatalogObservationBindingsV1,
@@ -1396,6 +1435,23 @@ mod tests {
         PlannedSnapshot, ProjectAncestorPolicyV1, ReservationPolicy, ResolvedDataset,
         ResolvedSnapshot, StorageDomainsV1, WorkspaceSpacePolicyV1,
     };
+
+    #[test]
+    fn capture_tools_reject_wrong_leaf_before_opening_store_files() {
+        let invalid = ZfsHelperContract::new("/nix/store/hash-zfs/sbin/zpool".into()).unwrap();
+        let error = PinnedCaptureZfsTools::new(&invalid, "wrong capture tool")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error, ZfsWorkerError::Executable(message) if message == "wrong capture tool")
+        );
+
+        let missing = ZfsHelperContract::new("/nix/store/hash-zfs/sbin/zfs".into()).unwrap();
+        assert!(matches!(
+            PinnedCaptureZfsTools::new(&missing, "wrong capture tool"),
+            Err(ZfsWorkerError::Io(_))
+        ));
+    }
 
     fn socket_pair() -> (SeqpacketSocket, SeqpacketSocket) {
         let (left, right) = SeqpacketSocket::pair_with_record_subjects().unwrap();
