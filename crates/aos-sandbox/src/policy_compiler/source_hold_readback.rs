@@ -180,21 +180,7 @@ pub fn sign_current_source_hold_readback_v1(
         .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
     let hold = require_current_hold_and_head(owner, project)?;
 
-    let mut packet = [0; SOURCE_HOLD_READBACK_BYTES_V1];
-    packet[..8].copy_from_slice(MAGIC);
-    packet[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    packet[16..24].copy_from_slice(&signer_generation.to_be_bytes());
-    packet[24..40].copy_from_slice(&challenge.nonce);
-    packet[40..72].copy_from_slice(challenge.cut.as_bytes());
-    packet[72..88].copy_from_slice(project.as_bytes());
-    packet[88..104].copy_from_slice(hold.operation().as_bytes());
-    packet[104..120].copy_from_slice(hold.sandbox().as_bytes());
-    packet[120..152].copy_from_slice(hold.controller_source().as_bytes());
-    packet[152..184].copy_from_slice(hold.ancestry().as_bytes());
-    packet[184..216].copy_from_slice(hold.binding().as_bytes());
-    packet[216..224].copy_from_slice(&hold.epoch().to_be_bytes());
-    let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
-    packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    let packet = sign_fields(challenge, project, hold, signer_generation, signing_key);
 
     owner
         .require_fixed_named_writer_v1()
@@ -271,8 +257,7 @@ pub fn verify_current_source_hold_readback_v1(
         .map_err(|_| SourceHoldReadbackErrorV1::Signature)
 }
 
-#[cfg(test)]
-pub(super) fn sign_test_source_hold_readback_v1(
+fn sign_fields(
     challenge: SourceHoldReadbackChallengeV1,
     project: ProjectId,
     hold: SourceDomainPolicyHoldV1,
@@ -295,6 +280,17 @@ pub(super) fn sign_test_source_hold_readback_v1(
     let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
     packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     packet
+}
+
+#[cfg(test)]
+pub(super) fn sign_test_source_hold_readback_v1(
+    challenge: SourceHoldReadbackChallengeV1,
+    project: ProjectId,
+    hold: SourceDomainPolicyHoldV1,
+    generation: u64,
+    signing_key: &SigningKey,
+) -> [u8; SOURCE_HOLD_READBACK_BYTES_V1] {
+    sign_fields(challenge, project, hold, generation, signing_key)
 }
 
 fn signature_preimage(body: &[u8]) -> Vec<u8> {
@@ -354,6 +350,7 @@ mod tests {
         packet[216..224].copy_from_slice(&hold.epoch().to_be_bytes());
         let signature = key.sign(&signature_preimage(&packet[..BODY_BYTES]));
         packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+        assert_eq!(sign_fields(challenge, project, hold, 3, &key), packet);
         verify_current_source_hold_readback_v1(&packet, &signer, challenge, project, hold)
             .expect("exact witness");
 
