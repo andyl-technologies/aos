@@ -990,16 +990,33 @@ pub(crate) fn publish_staged_paused_checkpoint_promotion(
             },
         });
     };
-    let publication = checkpoints
-        .publish_production_closure(staged.prepared.promotion.replacement())
-        .and_then(|_| {
-            staged
-                .prepared
-                .promotion
-                .replacement()
-                .retire_native_source()
+    if let Err(source) =
+        checkpoints.publish_production_closure(staged.prepared.promotion.replacement())
+    {
+        return Err(PausedCheckpointPromotionPublicationError {
+            staged: Box::new(staged),
+            source,
         });
-    if let Err(source) = publication {
+    }
+    // The authority belongs to this staged execution, even when a later
+    // pause produces identical immutable bytes and reuses the same root.
+    if let Err(source) = checkpoints.retain_live_replay_promotion(
+        staged.prepared.key,
+        staged.prepared.execution,
+        staged.prepared.promoted(),
+        evidence,
+    ) {
+        return Err(PausedCheckpointPromotionPublicationError {
+            staged: Box::new(staged),
+            source,
+        });
+    }
+    if let Err(source) = staged
+        .prepared
+        .promotion
+        .replacement()
+        .retire_native_source()
+    {
         return Err(PausedCheckpointPromotionPublicationError {
             staged: Box::new(staged),
             source,
@@ -1055,7 +1072,12 @@ pub(crate) fn recover_published_production_paused_checkpoint_promotion(
     // Only the staged ledger pair may restore the ephemeral reconcile claim.
     // Its complete published relationship was authenticated above.
     checkpoints
-        .retain_live_replay_promotion(recovery.promoted(), evidence)
+        .retain_live_replay_promotion(
+            recovery.key(),
+            recovery.execution(),
+            recovery.promoted(),
+            evidence,
+        )
         .map_err(map_staged_checkpoint_store_error)?;
     Ok(PublishedPausedCheckpointPromotion {
         key: recovery.key(),
@@ -1093,18 +1115,22 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    let claim =
-        match checkpoints.acquire_live_replay_promotion(published.promoted, published.evidence) {
-            Ok(Some(claim)) => claim,
-            Ok(None) | Err(_) => {
-                return Err(PausedCheckpointPromotionReconcileError {
-                    published: Box::new(published),
-                    source: LocalExecutorError::LedgerInvariant {
-                        reason: "replay promotion live authority is unavailable",
-                    },
-                });
-            }
-        };
+    let claim = match checkpoints.acquire_live_replay_promotion(
+        published.key,
+        published.execution,
+        published.promoted,
+        published.evidence,
+    ) {
+        Ok(Some(claim)) => claim,
+        Ok(None) | Err(_) => {
+            return Err(PausedCheckpointPromotionReconcileError {
+                published: Box::new(published),
+                source: LocalExecutorError::LedgerInvariant {
+                    reason: "replay promotion live authority is unavailable",
+                },
+            });
+        }
+    };
     let outcome = supervisor.complete_checkpoint_promotion(
         published.key,
         published.execution,
