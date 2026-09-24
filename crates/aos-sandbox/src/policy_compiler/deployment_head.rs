@@ -103,6 +103,7 @@ pub struct PolicyDeploymentInputsV1<'a> {
 pub struct PolicyDeploymentHeadV1 {
     generation: u64,
     expires_at: i64,
+    packet_digest: ObjectDigest,
     input_digests: [[u8; 32]; 4],
 }
 
@@ -126,6 +127,7 @@ pub struct PolicyDeploymentSourcesV1 {
 pub struct SignedProjectPolicyHeadV1 {
     project: ProjectId,
     generation: u64,
+    packet_digest: ObjectDigest,
     publisher_generation: u64,
     publisher_digest: ObjectDigest,
     prerequisites: [ObjectDigest; 4],
@@ -143,6 +145,12 @@ impl SignedProjectPolicyHeadV1 {
     #[must_use]
     pub const fn generation(self) -> u64 {
         self.generation
+    }
+
+    /// Returns the exact signed packet commitment for protected currentness.
+    #[must_use]
+    pub const fn packet_digest(self) -> ObjectDigest {
+        self.packet_digest
     }
 
     /// Returns the publisher generation that a later Create join must match.
@@ -283,6 +291,12 @@ impl PolicyDeploymentHeadV1 {
         self.expires_at
     }
 
+    /// Returns the exact signed packet commitment for protected currentness.
+    #[must_use]
+    pub const fn packet_digest(self) -> ObjectDigest {
+        self.packet_digest
+    }
+
     /// Returns the node, site, backend, and catalog input commitments in order.
     #[must_use]
     pub const fn input_digests(self) -> [[u8; 32]; 4] {
@@ -341,6 +355,7 @@ pub fn verify_policy_deployment_head_v1(
     Ok(PolicyDeploymentHeadV1 {
         generation,
         expires_at,
+        packet_digest: ObjectDigest::from_bytes(Sha256::digest(packet).into()),
         input_digests,
     })
 }
@@ -537,6 +552,7 @@ pub fn verify_signed_project_policy_source_v1(
         head: SignedProjectPolicyHeadV1 {
             project,
             generation,
+            packet_digest: ObjectDigest::from_bytes(Sha256::digest(packet).into()),
             publisher_generation,
             publisher_digest,
             prerequisites,

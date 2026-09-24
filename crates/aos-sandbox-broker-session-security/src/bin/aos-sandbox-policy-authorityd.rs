@@ -20,13 +20,13 @@ use aos_sandbox::policy_compiler::{
     admit_fixed_signed_project_policy_source_v1,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
-    POLICY_AUTHORITY_SOCKET_PATH_V1, POLICY_HEAD_QUERY_MAGIC_V1, POLICY_HEAD_RECEIPT_MAGIC_V1,
+    POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use ed25519_dalek::VerifyingKey;
 
 const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.service";
 const REQUEST_BYTES: usize = 32;
-const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 24;
+const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
 
 fn main() -> ExitCode {
     match run() {
@@ -95,7 +95,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         now_unix_seconds,
     )?;
 
-    let socket_path = Path::new(POLICY_AUTHORITY_SOCKET_PATH_V1);
+    let socket_path = Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2);
     if let Ok(metadata) = socket_path.symlink_metadata() {
         if !metadata.file_type().is_socket() {
             return Err(io::Error::new(
@@ -120,6 +120,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             &packet,
             &inputs,
             &verifying_key,
+            &project_packet,
+            &project_input,
+            &project_key,
         ) {
             eprintln!("aos-sandbox-policy-authorityd: rejected head query: {error}");
         }
@@ -134,6 +137,9 @@ fn serve_current_head(
     packet: &[u8],
     inputs: &PolicyDeploymentInputsV1<'_>,
     verifying_key: &VerifyingKey,
+    project_packet: &[u8],
+    project_input: &[u8],
+    project_key: &VerifyingKey,
 ) -> Result<(), Box<dyn Error>> {
     let peer = rustix::net::sockopt::socket_peercred(&*stream)?;
     if peer.uid.as_raw() != controller_uid || peer.gid.as_raw() != controller_gid {
@@ -148,15 +154,22 @@ fn serve_current_head(
 
     let mut request = [0_u8; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
-    if &request[..8] != POLICY_HEAD_QUERY_MAGIC_V1 || request[24..] != [0; 8] {
+    if &request[..8] != POLICY_HEAD_QUERY_MAGIC_V2 || request[24..] != [0; 8] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let now_unix_seconds = i64::try_from(now.as_secs())?;
     admit_fixed_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
+    admit_fixed_signed_project_policy_source_v1(
+        project_packet,
+        project_input,
+        project_key,
+        packet,
+        now_unix_seconds,
+    )?;
 
     let mut receipt = Vec::with_capacity(MAXIMUM_RECEIPT_BYTES);
-    receipt.extend_from_slice(POLICY_HEAD_RECEIPT_MAGIC_V1);
+    receipt.extend_from_slice(POLICY_HEAD_RECEIPT_MAGIC_V2);
     receipt.extend_from_slice(&request[8..24]);
     receipt.extend_from_slice(packet);
     for input in [inputs.node, inputs.site, inputs.backend, inputs.catalogs] {
@@ -164,6 +177,9 @@ fn serve_current_head(
         receipt.extend_from_slice(&length.to_be_bytes());
         receipt.extend_from_slice(input);
     }
+    receipt.extend_from_slice(project_packet);
+    receipt.extend_from_slice(&u32::try_from(project_input.len())?.to_be_bytes());
+    receipt.extend_from_slice(project_input);
     stream.write_all(&receipt)?;
     Ok(())
 }
