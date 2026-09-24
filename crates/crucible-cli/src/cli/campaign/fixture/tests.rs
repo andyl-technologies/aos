@@ -193,7 +193,7 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
         response.source(),
         &ChoiceSource::Guest {
             node: String::from("router-a"),
-            protocol_version: u32::from(crucible_guest::SELECTABLE_PROTOCOL_VERSION),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
         }
     );
     assert!(response.required());
@@ -232,7 +232,7 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
     assert_eq!(&guest_group, group.as_ref());
     assert_eq!(&guest_default, response.default());
 
-    let registration = crucible_guest::SelectableRegister::new(
+    let registration = crucible_protocol::SelectableRegister::new(
         1,
         response.name(),
         response.domain().canonical_bytes(),
@@ -241,8 +241,8 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
     )
     .expect("one bounded group registration");
     let encoded = registration.encode().expect("group registration bytes");
-    assert!(encoded.len() <= crucible_guest::SELECTABLE_MESSAGE_MAX_BYTES);
-    let decoded = crucible_guest::SelectableRegister::decode(&encoded)
+    assert!(encoded.len() <= crucible_protocol::SELECTABLE_MESSAGE_MAX_BYTES);
+    let decoded = crucible_protocol::SelectableRegister::decode(&encoded)
         .expect("group registration round trip");
     assert_eq!(decoded.domain(), response.domain().canonical_bytes());
     assert_eq!(
