@@ -2,7 +2,7 @@
 
 `nix build .#crucible-envoy-network-guest` builds one immutable `root.ext4` for
 all five Crucible VMs. Each VM boots the AOS Linux kernel with
-`root=/dev/vda init=/init console=ttyS0 network.role=NAME`, where `NAME` is one
+`root=/dev/vda rw init=/init console=ttyS0 network.role=NAME`, where `NAME` is one
 of `router-a`, `router-b`, `router-c`, `traffic-west`, or `traffic-east`. The
 QEMU world must give each VM a branch-private writable overlay of the immutable
 image. This is the same root-image arrangement as the packaged Crucible flights.
