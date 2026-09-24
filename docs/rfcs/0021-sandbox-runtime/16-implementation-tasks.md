@@ -357,8 +357,15 @@ the outstanding work concrete:
   its separately authorized OpenSSH data route; it is not an agent control effect.
   `ExecutionControlRequest` now carries attach-only holder key and possession
   proof fields under a required semantic feature, and `ExecutionControlResult`
-  can carry a checked holder-bound endpoint. The service rejects attach before
-  admission until it can verify that proof and issue the route.
+  can carry a checked holder-bound endpoint. The public Controller service
+  verifies the holder proof, reserves an exact pending operation only after an
+  authenticated Host readiness query, and issues the endpoint through its
+  dedicated OpenSSH CA only after a signed-session Host install and physical
+  gate readback match the current execution and assignment. Accepted replay
+  requires a fresh Host route query. This route is fail-closed without the
+  separately provisioned attach credentials, a retained authenticated guest
+  agent session, and a RUNNING execution projection; production activation
+  currently supplies neither the guest session nor that projection.
 - Grouped Storage snapshots now have authenticated Method 25 in the broker
   profile and production Storage dispatch. The controller advances Snapshot
   and Hibernate Storage effects from a signed predecessor inventory, reserves
@@ -432,8 +439,10 @@ the outstanding work concrete:
   routes through generated clients; without it, those routes fail closed.
   `attach-exec` now consumes an issued, checked OpenSSH route, verifies its
   execution incarnation and audit identity, pins the host key, loads a separate
-  protected holder key, and preserves the OpenSSH exit status. The controller
-  still does not issue an attach route, so `SBX-CLI-01` remains open.
+  protected holder key, and preserves the OpenSSH exit status. The Controller
+  has a guarded public attach-route issuer, but no deployed end-to-end path yet
+  produces its required Host gate readback and RUNNING execution projection;
+  `SBX-CLI-01` remains open for that qualification.
   Qualify the packaged CLI against the deployed endpoint for each route,
   including operation waits, structured output, watch, and the separately
   authorized execution data plane.
