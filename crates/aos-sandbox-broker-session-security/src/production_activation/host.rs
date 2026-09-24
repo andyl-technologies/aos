@@ -4,10 +4,7 @@
 //! sequence custody without blocking the other listener. Ready roles alternate
 //! after each bounded handshake/request cycle; effects still execute serially.
 
-use std::time::Instant;
-
 use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerV1;
-use aos_sandbox_host::live_agent::HostAgentPendingSessionV1;
 
 use super::*;
 use crate::ProductionBrokerServiceErrorV1;
@@ -80,47 +77,13 @@ impl ProductionBrokerSessionActivationV1 {
 }
 
 impl ProductionHostBrokerServiceV1 {
-    /// Completes a launch-owned guest handshake and retains its private channel.
-    ///
-    /// The pending session must originate from the same launch transaction that
-    /// transferred its sealed FD 3-5 credentials to the guest. The handshake
-    /// proves the protected runtime peer under a fresh journal claim before
-    /// this service may use the channel for execution or OpenSSH gate readback.
-    /// A service restart cannot reconnect this private socket: it starts with
-    /// no agent and requires a newly launched guest and a new handshake.
-    ///
-    /// # Errors
-    ///
-    /// Rejects an invalid handshake or replacement of a still-current guest.
-    /// An older generation may be replaced only after the new guest proves the
-    /// current protected identity.
-    pub fn complete_agent_launch(
-        &mut self,
-        pending: HostAgentPendingSessionV1,
-        deadline: Instant,
-    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
-        let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
-        let claim = owner.claim()?;
-        if let Some(retained) = self.agent.as_ref() {
-            if retained_agent_state(retained.validate_claim(&claim))?
-                == RetainedAgentStateV1::Current
-            {
-                return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-                    "current guest agent session already retained",
-                ));
-            }
-        }
-
-        let session = pending.authenticate(&claim, deadline)?;
-        session.validate_claim(&claim)?;
-        self.agent = Some(session);
-        Ok(())
-    }
-
     fn retain_authenticated_agent_launch(
         &mut self,
         session: aos_sandbox_host::live_agent::HostAgentLiveSessionV1,
     ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        // The sealed Host callsite releases this channel only after the
+        // Guardian-first transaction durably reaches Complete. There is no
+        // standalone pending-session installer that can skip that transition.
         let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
         let claim = owner.claim()?;
         session.validate_claim(&claim)?;
