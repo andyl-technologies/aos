@@ -20,6 +20,10 @@
   refpolicy = pkgs.refpolicy;
   productionPolicy = pkgs.aos-selinux-production-policy;
   canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
+  # selinuxfs serializes the loaded policydb; its bytes are not the input file.
+  # Bind the exact expected image to the selected deployment kernel.
+  canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
+  canonicalReadbackPath = "${canonicalReadback}/policy.33";
   productionAdmissionUnit = "aos-selinux-stage0-hold.target";
   selectedStage0 = config.aos.boot.initrd.stage0;
   runtimeRootsProvisioner = pkgs.aos-selinux-runtime-roots;
@@ -523,8 +527,12 @@ in {
           message = "immutable SELinux stage 0 must load the canonical production policy.";
         }
         {
-          assertion = selectedStage0 != null && (selectedStage0.passthru.expectedPolicy or null) == canonicalPolicyPath;
-          message = "immutable SELinux stage 0 must authenticate the canonical production policy.";
+          assertion = selectedStage0 != null && (selectedStage0.passthru.expectedPolicy or null) == canonicalReadbackPath;
+          message = "immutable SELinux stage 0 must authenticate the selected kernel's canonical policy readback.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.expectedPolicyKernel or null) == config.system.build.kernel;
+          message = "immutable SELinux stage 0 policy readback must bind the selected deployment kernel.";
         }
         {
           assertion = selectedStage0 != null && (selectedStage0.passthru.immutablePolicy or null) == productionPolicy;
@@ -568,7 +576,10 @@ in {
         "aos.selinux.root_handoff=1"
         "rootflags=nodev"
       ];
-      aos.boot.initrd.stage0 = pkgs.aos-selinux-stage0;
+      aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With {
+        expectedPolicy = canonicalReadbackPath;
+        expectedPolicyKernel = config.system.build.kernel;
+      };
       aos.kernel._extraConfigFragments = [strictKernelConfig];
 
       # Keep production admission closed until the signed-boot VM matrix has

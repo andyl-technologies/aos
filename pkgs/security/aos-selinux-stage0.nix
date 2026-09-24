@@ -2,12 +2,15 @@
 {
   mkDerivation,
   aos-selinux-production-policy,
+  aos-selinux-kernel-policy-readback,
   aos-selinux-runtime-roots,
+  linux,
   systemd,
   buildPackages,
   stdenv,
   loadedPolicy ? "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33",
-  expectedPolicy ? "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33",
+  expectedPolicy ? "${aos-selinux-kernel-policy-readback}/policy.33",
+  expectedPolicyKernel ? linux,
   admissionUnit ? "aos-selinux-stage0-hold.target",
   qualificationPostPinGate ? "",
 }: let
@@ -177,7 +180,7 @@ in
     ];
 
     passthru = {
-      inherit admissionUnit loadedPolicy expectedPolicy qualificationPostPinGate;
+      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate;
       immutablePolicy = aos-selinux-production-policy;
       runtimeRootsProvisioner = aos-selinux-runtime-roots;
     };

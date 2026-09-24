@@ -12,6 +12,9 @@
   enrolledFirmwareVarsPath = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
   stage0Fixture = import ./_selinux-stage0-fixture.nix {inherit lib pkgs;};
   canonicalPolicy = "${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+  canonicalKernel = productionSystem.config.system.build.kernel;
+  canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackForKernel canonicalKernel;
+  canonicalReadbackPath = "${canonicalReadback}/policy.33";
   invalidPolicy = pkgs.writeTextFile {
     name = "invalid-selinux-policy";
     destination = "/policy.33";
@@ -31,25 +34,38 @@
 
   runtimeValidStage0 = pkgs.aosSelinuxStage0With {
     admissionUnit = admissionTarget;
+    expectedPolicy = canonicalReadbackPath;
+    expectedPolicyKernel = canonicalKernel;
   };
   runtimeInvalidStage0 = pkgs.aosSelinuxStage0With {
     admissionUnit = admissionTarget;
     loadedPolicy = "${invalidPolicy}/policy.33";
+    expectedPolicy = canonicalReadbackPath;
+    expectedPolicyKernel = canonicalKernel;
   };
   runtimeMismatchStage0 = pkgs.aosSelinuxStage0With {
     admissionUnit = admissionTarget;
     expectedPolicy = mismatchedPolicy;
   };
 
-  canonicalStage0 = pkgs.aos-selinux-stage0;
+  canonicalStage0 = productionSystem.config.aos.boot.initrd.stage0;
   loadedPolicyOverride = pkgs.aosSelinuxStage0With {
     loadedPolicy = "${invalidPolicy}/policy.33";
+    expectedPolicy = canonicalReadbackPath;
+    expectedPolicyKernel = canonicalKernel;
   };
   expectedPolicyOverride = pkgs.aosSelinuxStage0With {
     expectedPolicy = mismatchedPolicy;
   };
+  kernelBindingOverride =
+    canonicalStage0
+    // {
+      passthru = canonicalStage0.passthru // {expectedPolicyKernel = null;};
+    };
   admissionOverride = pkgs.aosSelinuxStage0With {
     admissionUnit = admissionTarget;
+    expectedPolicy = canonicalReadbackPath;
+    expectedPolicyKernel = canonicalKernel;
   };
   immutablePolicyOverride =
     canonicalStage0
@@ -139,6 +155,7 @@
   productionSystem = productionSystemFor null;
   loadedOverrideSystem = productionSystemFor loadedPolicyOverride;
   expectedOverrideSystem = productionSystemFor expectedPolicyOverride;
+  kernelBindingOverrideSystem = productionSystemFor kernelBindingOverride;
   immutableOverrideSystem = productionSystemFor immutablePolicyOverride;
   admissionOverrideSystem = productionSystemFor admissionOverride;
   runtimeRootsOverrideSystem = productionSystemFor runtimeRootsOverride;
@@ -155,12 +172,14 @@
 in
   assert productionSystem.config.aos.boot.initrd.stage0 == canonicalStage0;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.loadedPolicy == canonicalPolicy;
-  assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicy == canonicalPolicy;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicy == canonicalReadbackPath;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicyKernel == canonicalKernel;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.immutablePolicy == pkgs.aos-selinux-production-policy;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == pkgs.aos-selinux-runtime-roots;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.admissionUnit == "aos-selinux-stage0-hold.target";
   assert rejects "immutable SELinux stage 0 must load the canonical production policy." loadedOverrideSystem;
-  assert rejects "immutable SELinux stage 0 must authenticate the canonical production policy." expectedOverrideSystem;
+  assert rejects "immutable SELinux stage 0 must authenticate the selected kernel's canonical policy readback." expectedOverrideSystem;
+  assert rejects "immutable SELinux stage 0 policy readback must bind the selected deployment kernel." kernelBindingOverrideSystem;
   assert rejects "immutable SELinux stage 0 must identify the canonical immutable policy derivation." immutableOverrideSystem;
   assert rejects "immutable SELinux stage 0 must retain the production admission hold target." admissionOverrideSystem;
   assert rejects "immutable SELinux stage 0 must authenticate the canonical runtime-root provisioner." runtimeRootsOverrideSystem;

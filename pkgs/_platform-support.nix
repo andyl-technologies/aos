@@ -538,6 +538,7 @@ let
     "aos-sandboxd"
     "aos-service-root"
     "aos-selinux-production-policy"
+    "aos-selinux-kernel-policy-readback"
     "aos-storaged"
     "aos-selinux-run"
     "aos-selinux-stage0"
@@ -764,6 +765,7 @@ let
   };
 
   architectureOverrides = {
+    "aos-selinux-kernel-policy-readback" = ["x86_64"];
     darling = ["x86_64"];
     "go-1_4" = ["x86_64"];
     "openjdk-7" = ["x86_64"];
