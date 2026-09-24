@@ -23,6 +23,8 @@
 //! Every record carries kernel-generated credentials and a pidfd. The ACK
 //! keeps a fast-success worker alive while the broker verifies that READY and
 //! RESPONSE came from the same still-live service execution.
+//! A separate AOSZHS01 request observes a catalogued held snapshot and pool
+//! GUID without admitting a mutation or producing a signed SourceRoot receipt.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -56,7 +58,10 @@ use crate::{
     ZfsTransactionError,
 };
 
+mod held_snapshot;
 mod wire;
+
+pub(crate) use held_snapshot::{HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1};
 
 use wire::{
     AtomicSnapshotRequestVerbV1, AtomicSnapshotWorkerRequestV1, MAXIMUM_OBSERVATION_RESPONSE_BYTES,
@@ -286,6 +291,29 @@ pub struct SystemdZfsExecutor {
 }
 
 impl SystemdZfsExecutor {
+    /// Reobserves one protected held snapshot through the fixed read-only worker.
+    ///
+    /// The caller must keep its protected catalog lock across this exchange and
+    /// compare the same catalog and authority heads after whole-unit quiescence.
+    /// The nonce prevents a reply to an earlier request from being accepted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects worker activation, peer or cgroup provenance, malformed or
+    /// replayed framing, failed physical readback, and uncertain quiescence.
+    pub(crate) fn observe_held_snapshot(
+        &mut self,
+        contract: &ZfsHelperContract,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, ZfsWorkerError> {
+        let request = held_snapshot::encode_request(contract, snapshot, hold_id, binding)?;
+        let digest = held_snapshot::request_digest(&request);
+        let response = self.exchange(request, held_snapshot::RESPONSE_BYTES)?;
+        held_snapshot::decode_response(&response, digest)
+    }
+
     /// Opens the fixed worker-service cgroup and validates the socket path.
     ///
     /// # Errors
@@ -556,6 +584,24 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
         let output = execute_atomic_snapshot(&contract, &request, deadline)?;
         _executable_pin.validate_current(&contract)?;
         send_before(&mut socket, &encode_mutation_response(&output)?, deadline)?;
+        let acknowledgement = receive_before(&mut socket, MAXIMUM_ACK_BYTES, deadline)?;
+        verify_same_subject(socket.peer(), acknowledgement.subject())?;
+        storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;
+        decode_ack(acknowledgement.payload())?;
+        return Ok(());
+    }
+    if held_snapshot::is_request(request.payload()) {
+        let request = held_snapshot::decode_request(request.payload())?;
+        if request.executable != contract {
+            return Err(ZfsWorkerError::Executable(
+                "broker and worker executable contracts differ".to_owned(),
+            ));
+        }
+        _executable_pin.validate_current(&contract)?;
+        let observation = held_snapshot::execute_request(&request, deadline)?;
+        _executable_pin.validate_current(&contract)?;
+        let response = held_snapshot::encode_response(request.digest, observation);
+        send_before(&mut socket, &response, deadline)?;
         let acknowledgement = receive_before(&mut socket, MAXIMUM_ACK_BYTES, deadline)?;
         verify_same_subject(socket.peer(), acknowledgement.subject())?;
         storaged_cgroup.verify_exact_membership(acknowledgement.subject().pidfd())?;

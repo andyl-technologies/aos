@@ -8,6 +8,12 @@
 
 use std::collections::BTreeMap;
 
+mod held_snapshot_readback;
+
+pub(crate) use held_snapshot_readback::{
+    StorageHeldSnapshotCatalogCutV1, StorageHeldSnapshotSelectorV1,
+};
+
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::journal::RecordNamespace;
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;

@@ -51,7 +51,8 @@ use sha2::{Digest as _, Sha256};
 use crate::authorization::StorageProtectedConfigurationV1;
 use crate::broker::{
     AuthenticatedWorkspaceCatalogPhysicalPlanV1, AuthorizedWorkspacePinRepairAttemptV1,
-    WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1,
+    StorageHeldSnapshotCatalogCutV1, StorageHeldSnapshotSelectorV1, WorkspacePinExecutionOutcomeV1,
+    WorkspaceRemovePinRequirementV1,
 };
 use crate::execution_capture_policy::ProtectedCaptureAllocationPolicyV1;
 use crate::execution_output::ExecutionOutputLedgerV1;
@@ -73,7 +74,9 @@ use crate::pin_worker_runtime::{
     SystemdWorkspacePinExecutor, SystemdWorkspacePinObserver, SystemdWorkspacePinRuntimeIo,
     WorkspacePinRuntimeIo,
 };
-use crate::process::open_cgroup_root;
+use crate::process::{
+    HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1, open_cgroup_root,
+};
 use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
 use crate::root_policy::PortableRootAttributesV1;
 use crate::workspace_catalog::{
@@ -253,6 +256,17 @@ pub enum StoragePrepareReadiness {
     Ready,
 }
 
+/// Retains one nonauthorizing physical sample joined to an unchanged protected cut.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StorageHeldSnapshotReadbackV1 {
+    /// The unchanged independently recovered protected catalog cut.
+    pub(crate) cut: StorageHeldSnapshotCatalogCutV1,
+    /// The pool GUID observed on both sides of the snapshot hold readback.
+    pub(crate) pool_guid: u64,
+    /// The digest of exact worker request, ZFS output, and both pool rows.
+    pub(crate) physical_observation_digest: ObjectDigest,
+}
+
 /// Reports one synchronous authorized mutation result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageRuntimeMutationOutcome {
@@ -336,6 +350,69 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
+    /// Reobserves one catalogued hold through the authenticated one-shot worker.
+    ///
+    /// A failed or lost reply is never replayed. The worker has no signing
+    /// authority; this result must not be interpreted as a SourceRoot receipt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale catalog custody, changed protected heads,
+    /// physical mismatch, worker faults, and unproven worker quiescence.
+    pub(crate) fn observe_held_snapshot_readback(
+        &mut self,
+        selector: StorageHeldSnapshotSelectorV1,
+    ) -> Result<StorageHeldSnapshotReadbackV1, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !self.readiness.permits_catalog_methods() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let initial = self
+            .coordinator
+            .held_snapshot_catalog_cut(selector)
+            .map_err(StorageRuntimeError::Admission)?;
+        let binding = HeldSnapshotWorkerBindingV1 {
+            pool_guid: selector.pool_guid,
+            catalog: initial.catalog,
+            authority_sequence: initial.authority_sequence,
+            nonce: random_challenge()?,
+        };
+        let physical =
+            match self
+                .helper
+                .observe_held_snapshot(&initial.snapshot, selector.hold_id, binding)
+            {
+                Ok(physical) => physical,
+                Err(crate::helper::ZfsHelperError::Backend(ZfsWorkerError::Quiescence(_))) => {
+                    self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                    return Err(StorageRuntimeError::ReopenRequired);
+                }
+                Err(_) => return Err(StorageRuntimeError::Recovery),
+            };
+        let HeldSnapshotPhysicalObservationV1::Matched { pool_guid, digest } = physical else {
+            return Err(StorageRuntimeError::Recovery);
+        };
+        if pool_guid != selector.pool_guid {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let final_cut = self
+            .coordinator
+            .held_snapshot_catalog_cut(selector)
+            .map_err(StorageRuntimeError::Admission)?;
+        if final_cut != initial {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(StorageHeldSnapshotReadbackV1 {
+            cut: final_cut,
+            pool_guid,
+            physical_observation_digest: digest,
+        })
+    }
+
     /// Observes one authenticated, read-only method-41 candidate.
     ///
     /// This dormant callsite never reserves output or creates a dataset. The

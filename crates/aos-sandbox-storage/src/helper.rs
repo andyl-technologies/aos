@@ -15,7 +15,10 @@ use aos_sandbox_core::ObjectDigest;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 
 use crate::broker::FreshStorageEffectAuthority;
-use crate::process::{SystemdZfsExecutor, WorkerObservationOutcome, ZfsWorkerError};
+use crate::process::{
+    HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1, SystemdZfsExecutor,
+    WorkerObservationOutcome, ZfsWorkerError,
+};
 use crate::{
     AncestorPolicyTransaction, DurableStoragePhase, PostconditionPolicyV1, ProjectAncestorPolicyV1,
     ResolvedCatalogCommitmentV1, StorageOperation, StorageRecoveryEntry, StorageStateError,
@@ -103,6 +106,16 @@ pub(crate) struct SealedZfsProgram<'a> {
 }
 
 pub(crate) trait ZfsProcessBackend {
+    fn observe_held_snapshot(
+        &mut self,
+        _contract: &ZfsHelperContract,
+        _snapshot: &crate::ResolvedSnapshot,
+        _hold_id: crate::HoldId,
+        _binding: HeldSnapshotWorkerBindingV1,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, ZfsHelperError> {
+        Err(ZfsHelperError::ProcessContract)
+    }
+
     fn observe_preconditions(
         &mut self,
         program: &SealedZfsProgram<'_>,
@@ -141,6 +154,16 @@ pub(crate) trait ZfsProcessBackend {
 }
 
 impl<T: ZfsProcessBackend + ?Sized> ZfsProcessBackend for Box<T> {
+    fn observe_held_snapshot(
+        &mut self,
+        contract: &ZfsHelperContract,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, ZfsHelperError> {
+        (**self).observe_held_snapshot(contract, snapshot, hold_id, binding)
+    }
+
     fn observe_preconditions(
         &mut self,
         program: &SealedZfsProgram<'_>,
@@ -208,6 +231,18 @@ impl SystemdZfsProcessBackend {
 }
 
 impl ZfsProcessBackend for SystemdZfsProcessBackend {
+    fn observe_held_snapshot(
+        &mut self,
+        contract: &ZfsHelperContract,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, ZfsHelperError> {
+        self.executor
+            .observe_held_snapshot(contract, snapshot, hold_id, binding)
+            .map_err(Into::into)
+    }
+
     fn observe_preconditions(
         &mut self,
         program: &SealedZfsProgram<'_>,
@@ -422,6 +457,17 @@ impl PreobservedZfsMutation {
 }
 
 impl<B: ZfsProcessBackend> StorageMutationHelper<B> {
+    /// Dispatches only a nonmutating held-snapshot probe through the same worker custody.
+    pub(crate) fn observe_held_snapshot(
+        &mut self,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+    ) -> Result<HeldSnapshotPhysicalObservationV1, ZfsHelperError> {
+        self.backend
+            .observe_held_snapshot(&self.contract, snapshot, hold_id, binding)
+    }
+
     pub(crate) fn new(contract: ZfsHelperContract, backend: B) -> Self {
         Self { contract, backend }
     }
