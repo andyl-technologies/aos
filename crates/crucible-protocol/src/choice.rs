@@ -11,7 +11,10 @@ use std::str;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
-const CHOICE_DOMAIN_SCHEMA_VERSION: u32 = 1;
+// The group-capable campaign codec uses v2 even for scalar domains. The L1
+// scalar helper must emit the same envelope; group tuples use the campaign
+// codec at the guest application boundary.
+const CHOICE_DOMAIN_SCHEMA_VERSION: u32 = 2;
 const MAX_CHOICE_DOMAIN_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DISCRETE_ALTERNATIVES: usize = 4096;
 const MAX_INTEGER_LANDMARKS: usize = 4096;
@@ -828,5 +831,35 @@ fn hex_digit(value: u8) -> Result<u8, ChoiceCodecError> {
         b'0'..=b'9' => Ok(value - b'0'),
         b'a'..=b'f' => Ok(value - b'a' + 10),
         _ => Err(ChoiceCodecError::InvalidHex),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BooleanDomain, ChoiceCodecError, ChoiceDomain};
+
+    #[test]
+    fn scalar_domain_uses_v2_and_rejects_v1_and_group_tags() {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+        let bytes = domain.canonical_bytes();
+        assert_eq!(&bytes[..4], &2_u32.to_be_bytes());
+        assert_eq!(ChoiceDomain::from_canonical_bytes(&bytes), Ok(domain));
+
+        let mut old_version = bytes.clone();
+        old_version[..4].copy_from_slice(&1_u32.to_be_bytes());
+        assert!(matches!(
+            ChoiceDomain::from_canonical_bytes(&old_version),
+            Err(ChoiceCodecError::InvalidValue { .. })
+        ));
+
+        let mut group_tag = bytes;
+        group_tag[4] = 3;
+        assert!(matches!(
+            ChoiceDomain::from_canonical_bytes(&group_tag),
+            Err(ChoiceCodecError::UnknownTag {
+                kind: "choice-domain",
+                tag: 3
+            })
+        ));
     }
 }
