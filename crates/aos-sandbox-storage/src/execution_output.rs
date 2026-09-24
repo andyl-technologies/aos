@@ -20,6 +20,9 @@
 //!                 || storage-destroy-operation[16] || hmac[32]
 //! deletion-grant = AOSEOD01 || execution[16] || create[16]
 //!                 || v2-claim-digest[32] || delete-operation[16] || hmac[32]
+//! observation   = AOSPOV01 || AOSEOR03/AOSCOA01/catalog/ZFS digest tuple
+//!                 || measured available/headroom || observation boot/time
+//!                 || hmac[32]
 //! ```
 
 use std::path::Path;
@@ -38,6 +41,7 @@ use crate::catalog_transition::execution_capture::{
 };
 
 mod capture_attempt;
+mod physical_observation;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -368,6 +372,11 @@ impl ExecutionOutputLedgerV1 {
                 }
                 Some(b'a') => {
                     capture_attempt::verify_replayed_capture_attempt(
+                        &journal, location, value, &key,
+                    )?;
+                }
+                Some(b'o') => {
+                    physical_observation::verify_replayed_capture_observation(
                         &journal, location, value, &key,
                     )?;
                 }
@@ -992,6 +1001,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::capture_attempt::VerifiedCaptureAttemptSourcesV1;
     use super::*;
     use crate::catalog_transition::execution_capture::readback::{
         CaptureZfsCreateCommandV1, CaptureZfsPreflightPlanV1, CaptureZfsReadbackErrorV1,
@@ -1774,6 +1784,123 @@ mod tests {
             .unwrap();
         drop(ledger);
 
+        assert!(matches!(
+            open(&path, 200),
+            Err(ExecutionOutputLedgerErrorV1::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn capture_physical_observation_is_exact_and_cold_replayable() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 200).unwrap();
+        let (requirement, catalog) = capture_fixture();
+        let mut retained = record(1, 100);
+        retained.claim_digest = [3; 32];
+        retained.maximum_stdout_bytes = 60;
+        retained.maximum_stderr_bytes = 40;
+        let output_digest = ledger.reserve_record(retained).unwrap();
+        let protected = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], output_digest)
+            .unwrap();
+        let sources = VerifiedCaptureAttemptSourcesV1::for_test(&protected, &requirement, 20, 100);
+        let attempt = ledger
+            .issue_capture_create_attempt(&sources, &protected, &requirement, 20, 100)
+            .unwrap();
+
+        let verified = requirement.verify_present(&catalog).unwrap();
+        let plan = CaptureZfsReadbackPlanV1::new(&verified, &protected, 20, 100).unwrap();
+        let dataset = format!(
+            "{}\tfilesystem\t17\t-\t200\t200\tnone\toff\tno\t130\n",
+            verified.dataset_name()
+        );
+        let observed = plan
+            .evaluate([
+                b"pool\t-\t1000\tONLINE\n",
+                b"pool/aos\tfilesystem\t11\t900\n",
+                dataset.as_bytes(),
+            ])
+            .unwrap();
+        assert!(matches!(
+            ledger.record_capture_observation_for_test(
+                &sources,
+                &requirement,
+                &catalog,
+                20,
+                100,
+                &observed,
+            ),
+            Err(ExecutionOutputLedgerErrorV1::MissingPhysicalBacking)
+        ));
+
+        ledger
+            .bind_verified_capture_dataset(&verified, [1; 16])
+            .unwrap();
+        let receipt = ledger
+            .record_capture_observation_for_test(
+                &sources,
+                &requirement,
+                &catalog,
+                20,
+                100,
+                &observed,
+            )
+            .unwrap();
+        assert_eq!(receipt.output_record_digest, output_digest);
+        assert_eq!(
+            receipt.durable_attempt_digest,
+            attempt.durable_attempt_digest
+        );
+        assert_eq!(receipt.dataset_binding, verified.binding());
+        assert_eq!(receipt.catalog_guid, 17);
+        assert_eq!(receipt.zfs_observation_digest, observed.observation_digest);
+        assert_eq!(receipt.dataset_available_bytes, 130);
+        assert_eq!(receipt.observed_headroom_bytes, 30);
+        assert_ne!(receipt.durable_observation_digest.as_bytes(), &[0; 32]);
+        drop(ledger);
+
+        let mut reopened = open(&path, 200).unwrap();
+        assert_eq!(
+            reopened
+                .query_capture_physical_observation(&sources)
+                .unwrap(),
+            Some(receipt)
+        );
+        assert!(matches!(
+            reopened.record_capture_observation_for_test(
+                &sources,
+                &requirement,
+                &catalog,
+                20,
+                100,
+                &observed,
+            ),
+            Err(ExecutionOutputLedgerErrorV1::Conflict)
+        ));
+        let changed_policy =
+            VerifiedCaptureAttemptSourcesV1::for_test(&protected, &requirement, 21, 100);
+        assert!(matches!(
+            reopened.query_capture_physical_observation(&changed_policy),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+
+        let mut location = [0; 17];
+        location[0] = b'o';
+        location[1..].fill(1);
+        let mut tampered = reopened.journal.get(NAMESPACE, &location).unwrap().to_vec();
+        tampered[208] ^= 1;
+        reopened
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [54; 16],
+                    vec![JournalRecord::put(NAMESPACE, location.to_vec(), tampered)],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(reopened);
         assert!(matches!(
             open(&path, 200),
             Err(ExecutionOutputLedgerErrorV1::Corrupt)

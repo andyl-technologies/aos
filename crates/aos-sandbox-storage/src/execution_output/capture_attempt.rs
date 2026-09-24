@@ -57,7 +57,7 @@ pub(super) struct VerifiedCaptureAttemptSourcesV1 {
 
 impl VerifiedCaptureAttemptSourcesV1 {
     #[cfg(test)]
-    fn for_test(
+    pub(super) fn for_test(
         retained: &ProtectedRetainedCaptureV1,
         requirement: &CaptureDatasetRequirementV1,
         metadata_headroom_bytes: u64,
@@ -315,6 +315,34 @@ pub(super) fn verify_replayed_capture_attempt(
         || (logical.state == STATE_RETAINED
             && ObjectDigest::from_bytes(Sha256::digest(logical_bytes).into())
                 != record.record_digest)
+    {
+        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+    }
+    Ok(())
+}
+
+pub(super) fn verify_capture_observation_anchor(
+    journal: &aos_sandbox::Journal,
+    execution: [u8; 16],
+    create: [u8; 16],
+    output_record_digest: ObjectDigest,
+    durable_attempt_digest: ObjectDigest,
+    controller_grant_digest: ObjectDigest,
+    host_receipt_digest: ObjectDigest,
+    dataset_policy_digest: ObjectDigest,
+    key: &ExecutionOutputLedgerKeyV1,
+) -> Result<(), ExecutionOutputLedgerErrorV1> {
+    let location = capture_attempt_key(execution);
+    let bytes = journal
+        .get(NAMESPACE, &location)
+        .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+    let record = decode_attempt(&location, bytes, key)?;
+    if record.create != create
+        || record.record_digest != output_record_digest
+        || record.controller_grant_digest != controller_grant_digest
+        || record.host_receipt_digest != host_receipt_digest
+        || record.dataset_policy_digest != dataset_policy_digest
+        || ObjectDigest::from_bytes(Sha256::digest(bytes).into()) != durable_attempt_digest
     {
         return Err(ExecutionOutputLedgerErrorV1::Corrupt);
     }
