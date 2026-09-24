@@ -195,6 +195,25 @@ in {
       };
     };
 
+    systemd.sockets.aos-sandbox-workspace-root-initializer = {
+      description = "AOS authenticated workspace root initializer socket";
+      wantedBy = ["sockets.target"];
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-workspace-root-initializer/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
+      };
+    };
+
     systemd.services.aos-sandbox-zfs-ready = {
       description = "Load the fixed OpenZFS module and admit its control device";
       # A socket gets an implicit Before=sockets.target ordering, while a
@@ -411,6 +430,115 @@ in {
           "move_mount"
           "mount_setattr"
           "umount2"
+          "socket"
+          "connect"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          # The worker connects only to the root-only initializer socket;
+          # RestrictAddressFamilies limits the new client surface to AF_UNIX.
+          "~socketpair"
+        ] ++ workspacePinWorkerRootMutationDeny ++ ioUringDeny;
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 16;
+      };
+    };
+
+    systemd.services."aos-sandbox-workspace-root-initializer@" = {
+      description = "AOS detached workspace root initializer";
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      unitConfig.RequiresMountsFor = [
+        "/sys/fs/cgroup"
+        cfg.authorityDirectory
+        "/var/lib/aos-sandbox-workspace-pin-worker"
+      ];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = ''
+          ${cfg.package}/bin/aos-sandbox-workspace-root-initializer \
+            ${cfg.zfsPackage}/sbin/zfs \
+            ${cfg.authorityDirectory} \
+            /var/lib/aos-sandbox-workspace-pin-worker
+        '';
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "32s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+
+        # Only this one-shot process can normalize a Create root. Pathname
+        # ownership/mode mutation is excluded; the code uses exact root FDs.
+        CapabilityBoundingSet = [
+          "CAP_SYS_ADMIN"
+          "CAP_SYS_CHROOT"
+          "CAP_CHOWN"
+          "CAP_FOWNER"
+        ];
+        AmbientCapabilities = [
+          "CAP_SYS_ADMIN"
+          "CAP_SYS_CHROOT"
+          "CAP_CHOWN"
+          "CAP_FOWNER"
+        ];
+        DevicePolicy = "closed";
+        DeviceAllow = ["/dev/zfs rw"];
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "128M";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = false;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        ReadOnlyPaths = [
+          cfg.authorityDirectory
+          "/var/lib/aos-sandbox-workspace-pin-worker"
+        ];
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = ["mnt"];
+        RestrictRealtime = true;
+        RestrictSUIDSGID = workerRestrictSuidSgid;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "setns"
+          "fsopen"
+          "fsconfig"
+          "fsmount"
+          "mount_setattr"
+          "fchown"
+          "fchmod"
+          "~chmod"
+          "~chown"
+          "~lchown"
+          "~fchownat"
+          "~fchmodat"
+          "~fchmodat2"
+          "~mount"
+          "~move_mount"
+          "~umount2"
+          "~pivot_root"
           "~@reboot"
           "~@swap"
           "~@module"
@@ -418,7 +546,7 @@ in {
           "~socket"
           "~socketpair"
           "~connect"
-        ] ++ workspacePinWorkerRootMutationDeny ++ ioUringDeny;
+        ] ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };

@@ -18,7 +18,7 @@ use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
 use aos_sandbox_linux::inventory::MountId;
-use aos_sandbox_linux::mount::{FileSystemContext, MountAttributes, unmount_child};
+use aos_sandbox_linux::mount::{DetachedMount, FileSystemContext, MountAttributes, unmount_child};
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
@@ -57,6 +57,7 @@ use crate::process::{
     PinnedExecutable, execute_transaction_for, observe_transaction_for,
     observe_workspace_catalog_zfs_for, open_cgroup_root,
 };
+use crate::root_initializer::{InitializerResultV1, RESULT_BYTES};
 use crate::root_policy::{
     PortableRootAttributesV1, WorkspaceRootDispositionV1, WorkspaceRootPolicyV1,
 };
@@ -97,21 +98,25 @@ const MAXIMUM_RECOVERED_WORKER_CGROUPS: usize = 128;
 const EFFECT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const OBSERVATION_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(35);
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
-const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
+pub(crate) const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
 const STORAGED_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const WORKER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-workspace-pin-worker@";
 const OBSERVER_CGROUP_PREFIX: &str =
     "aos.slice/aos-control.slice/aos-sandbox-workspace-pin-observer@";
+const INITIALIZER_CGROUP_PREFIX: &str =
+    "aos.slice/aos-control.slice/aos-sandbox-workspace-root-initializer@";
 const WORKER_CGROUP_SUFFIX: &str = ".service";
 const WORKER_CGROUP_BASENAME_PREFIX: &str = "aos-sandbox-workspace-pin-worker@";
 const OBSERVER_CGROUP_BASENAME_PREFIX: &str = "aos-sandbox-workspace-pin-observer@";
+const INITIALIZER_CGROUP_BASENAME_PREFIX: &str = "aos-sandbox-workspace-root-initializer@";
 const GENERIC_WORKER_CGROUP_BASENAME_PREFIX: &str = "aos-sandbox-zfs-worker@";
 const SERIALIZATION_LOCK: &str = "serialization.lock";
 
 #[derive(Clone, Copy)]
-enum WorkspacePinServiceRole {
+pub(crate) enum WorkspacePinServiceRole {
     Effect,
     Observer,
+    Initializer,
 }
 
 impl WorkspacePinServiceRole {
@@ -119,6 +124,7 @@ impl WorkspacePinServiceRole {
         match self {
             Self::Effect => WORKER_CGROUP_PREFIX,
             Self::Observer => OBSERVER_CGROUP_PREFIX,
+            Self::Initializer => INITIALIZER_CGROUP_PREFIX,
         }
     }
 }
@@ -1159,6 +1165,7 @@ fn enumerate_worker_cgroups(
             .map_err(|_| ZfsWorkerError::PeerMismatch)?;
         if (name.starts_with(WORKER_CGROUP_BASENAME_PREFIX)
             || name.starts_with(OBSERVER_CGROUP_BASENAME_PREFIX)
+            || name.starts_with(INITIALIZER_CGROUP_BASENAME_PREFIX)
             || name.starts_with(GENERIC_WORKER_CGROUP_BASENAME_PREFIX))
             && name.ends_with(WORKER_CGROUP_SUFFIX)
         {
@@ -1189,6 +1196,9 @@ fn validate_recovered_worker_cgroup(path: &str) -> Result<(), ZfsWorkerError> {
     }
     if path.starts_with(OBSERVER_CGROUP_PREFIX) {
         return validate_worker_cgroup(path, WorkspacePinServiceRole::Observer);
+    }
+    if path.starts_with(INITIALIZER_CGROUP_PREFIX) {
+        return validate_worker_cgroup(path, WorkspacePinServiceRole::Initializer);
     }
     let instance = path
         .strip_prefix("aos.slice/aos-control.slice/aos-sandbox-zfs-worker@")
@@ -1267,6 +1277,7 @@ pub fn run_inherited_workspace_pin_worker(
             &contract,
             &replay,
             authenticated,
+            &received.bytes,
             &mount_namespace,
             &pin_root,
         )?
@@ -1283,6 +1294,7 @@ pub fn run_inherited_workspace_pin_worker(
             &executable_pin,
             &replay,
             authenticated,
+            &received.bytes,
             &mount_namespace,
             &pin_root,
             &single_threaded,
@@ -1610,6 +1622,7 @@ fn execute_authenticated(
     executable_pin: &PinnedExecutable,
     replay: &ReplayLedger,
     request: AuthenticatedWorkspacePinWorkerRequestV1,
+    request_bytes: &[u8],
     mount_namespace: &NamespaceFd,
     pin_root: &ResolvedPath,
     single_threaded: &SingleThreadedProcess,
@@ -1655,7 +1668,16 @@ fn execute_authenticated(
             let _claim = replay.claim(attempt.attempt_id())?;
             check_immediately_before_effect(protected, &request)?;
             ensure_before_deadline(attempt.effect_deadline_boottime_nanoseconds())?;
-            materialize_pin(attempt, pin_root)?;
+            if attempt.root_policy().is_create_initialize() {
+                materialize_pin_with_initializer(
+                    attempt,
+                    request_bytes,
+                    mount_namespace,
+                    pin_root,
+                )?;
+            } else {
+                materialize_clone_pin(attempt, pin_root)?;
+            }
         }
         WorkspacePinActionV1::RemoveAndDestroy => {
             if !matches!(dataset_before, WorkspaceDatasetObservationV1::Exact { .. })
@@ -1709,6 +1731,7 @@ fn execute_authenticated_repair(
     contract: &ZfsHelperContract,
     replay: &ReplayLedger,
     request: AuthenticatedWorkspacePinRepairWorkerRequestV1,
+    request_bytes: &[u8],
     mount_namespace: &NamespaceFd,
     pin_root: &ResolvedPath,
 ) -> Result<WorkspacePinWorkerResultV1, ZfsWorkerError> {
@@ -1734,7 +1757,11 @@ fn execute_authenticated_repair(
     let _claim = replay.claim(attempt.attempt_id())?;
     check_immediately_before_repair_effect(protected, &request)?;
     ensure_before_deadline(attempt.effect_deadline_boottime_nanoseconds())?;
-    materialize_pin(attempt, pin_root)?;
+    if attempt.root_policy().is_create_initialize() {
+        materialize_pin_with_initializer(attempt, request_bytes, mount_namespace, pin_root)?;
+    } else {
+        materialize_clone_pin(attempt, pin_root)?;
+    }
 
     let (dataset_after, observation_after) = observe_exact_repair_dataset_until(
         contract,
@@ -1764,14 +1791,14 @@ fn required_observation_digest(
         ))
 }
 
-fn check_immediately_before_effect(
+pub(crate) fn check_immediately_before_effect(
     protected: &StorageProtectedConfigurationV1,
     request: &AuthenticatedWorkspacePinWorkerRequestV1,
 ) -> Result<(), ZfsWorkerError> {
     protected.check_workspace_pin_worker_before_effect(request, &mut protected_clock)
 }
 
-fn check_immediately_before_repair_effect(
+pub(crate) fn check_immediately_before_repair_effect(
     protected: &StorageProtectedConfigurationV1,
     request: &AuthenticatedWorkspacePinRepairWorkerRequestV1,
 ) -> Result<(), ZfsWorkerError> {
@@ -1794,10 +1821,108 @@ fn protected_clock() -> Result<RawPairedClockSample, StorageAdmissionError> {
     .map_err(|_| StorageAdmissionError::FenceRejected)
 }
 
-fn materialize_pin(
+fn materialize_pin_with_initializer(
+    attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    request_bytes: &[u8],
+    mount_namespace: &NamespaceFd,
+    pin_root: &ResolvedPath,
+) -> Result<(), ZfsWorkerError> {
+    let slot = prepare_workspace_slot(attempt, pin_root)?;
+    let detached = initialize_create_root(attempt, request_bytes, mount_namespace, pin_root)?;
+    detached.attach(&slot)?;
+    Ok(())
+}
+
+fn initialize_create_root(
+    attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    request_bytes: &[u8],
+    mount_namespace: &NamespaceFd,
+    pin_root: &ResolvedPath,
+) -> Result<DetachedMount, ZfsWorkerError> {
+    const SOCKET: &str = "/run/aos/sandbox-workspace-root-initializer/control.sock";
+
+    let mut executor = SystemdWorkspacePinExecutor::new_for_role(
+        PathBuf::from(SOCKET),
+        open_cgroup_root()?,
+        WorkspacePinServiceRole::Initializer,
+    )?;
+    let (mut socket, ready, initializer_cgroup, population) =
+        executor.open_verified_worker(transfer_deadline)?;
+    let exchange = (|| {
+        let deadline = transfer_deadline()?;
+        send_packet_before(
+            &mut socket,
+            &encode_ready(&current_cgroup()?, WorkspacePinServiceRole::Effect)?,
+            deadline,
+        )?;
+        send_request_before(
+            &mut socket,
+            request_bytes,
+            [mount_namespace.as_fd(), pin_root.as_fd()],
+            deadline,
+        )?;
+        let response = receive_packet_with_descriptor_before(
+            &mut socket,
+            RESULT_BYTES,
+            attempt.effect_deadline_boottime_nanoseconds(),
+        )?;
+        verify_same_live_subject(ready.subject(), response.subject())?;
+        verify_exact_worker_subject(response.subject(), &initializer_cgroup)?;
+        let [descriptor]: [OwnedFd; 1] = response
+            .descriptors()
+            .iter()
+            .map(|fd| rustix::io::dup(fd.as_fd()))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| ZfsWorkerError::Protocol("root initializer descriptor role is invalid"))?;
+        let detached = DetachedMount::from_inherited(descriptor)?;
+        let result = InitializerResultV1::decode(response.payload())?;
+        result.verify(
+            attempt.attempt_id(),
+            request_bytes,
+            attempt.root_policy(),
+            &detached,
+        )?;
+        send_packet_before(&mut socket, ACK, transfer_deadline()?)?;
+        Ok((detached, result))
+    })();
+    let (detached, result) =
+        executor.finish_exchange(exchange, ready.subject(), &initializer_cgroup, &population)?;
+    // A helper still alive could mutate or replace its mount after response.
+    // Attaching occurs only after whole-unit quiescence and a second identity check.
+    result.verify(
+        attempt.attempt_id(),
+        request_bytes,
+        attempt.root_policy(),
+        &detached,
+    )?;
+    Ok(detached)
+}
+
+fn materialize_clone_pin(
     attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
     pin_root: &ResolvedPath,
 ) -> Result<(), ZfsWorkerError> {
+    if attempt.root_policy().is_create_initialize() {
+        return Err(ZfsWorkerError::Authority);
+    }
+    let slot = prepare_workspace_slot(attempt, pin_root)?;
+    let mut filesystem = FileSystemContext::open("zfs")?;
+    filesystem.set_string("source", attempt.dataset_name())?;
+    let detached = filesystem.create()?.mount()?;
+    detached.set_attributes(false, MountAttributes::secure_writable(), None)?;
+    // Clone is verification-only. fstat on the detached O_PATH mount
+    // descriptor does not require search/read permission on a source
+    // root whose authenticated mode is intentionally restrictive.
+    enforce_workspace_root_policy(detached.as_fd(), attempt.root_policy())?;
+    detached.attach(&slot)?;
+    Ok(())
+}
+
+fn prepare_workspace_slot(
+    attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
+    pin_root: &ResolvedPath,
+) -> Result<ResolvedPath, ZfsWorkerError> {
     let component = workspace_component(&attempt.workspace_handle())?;
     match rustix::fs::mkdirat(
         pin_root.as_fd(),
@@ -1813,33 +1938,10 @@ fn materialize_pin(
             "workspace pin slot is absent after creation",
         ))?;
     validate_controlled_slot(&slot)?;
-    let mut filesystem = FileSystemContext::open("zfs")?;
-    filesystem.set_string("source", attempt.dataset_name())?;
-    let detached = filesystem.create()?.mount()?;
-    detached.set_attributes(false, MountAttributes::secure_writable(), None)?;
-    let root_policy = attempt.root_policy();
-    if root_policy.is_create_initialize() {
-        // An fsmount descriptor is path-only. Fresh Create roots have the
-        // fixed accessible dataset shape; open the root itself so mutation
-        // never targets a caller path or an already-attached mount.
-        let detached_root = rustix::fs::openat(
-            detached.as_fd(),
-            ".",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        enforce_workspace_root_policy(&detached_root, root_policy)?;
-    } else {
-        // Clone is verification-only. fstat on the detached O_PATH mount
-        // descriptor does not require search/read permission on a source
-        // root whose authenticated mode is intentionally restrictive.
-        enforce_workspace_root_policy(detached.as_fd(), root_policy)?;
-    }
-    detached.attach(&slot)?;
-    Ok(())
+    Ok(slot)
 }
 
-fn enforce_workspace_root_policy(
+pub(crate) fn enforce_workspace_root_policy(
     root: impl std::os::fd::AsFd,
     root_policy: WorkspaceRootPolicyV1,
 ) -> Result<(), ZfsWorkerError> {
@@ -1876,7 +1978,7 @@ fn enforce_workspace_root_policy(
     Ok(())
 }
 
-fn portable_root_attributes(
+pub(crate) fn portable_root_attributes(
     metadata: &rustix::fs::Stat,
 ) -> Result<PortableRootAttributesV1, ZfsWorkerError> {
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
@@ -1931,7 +2033,7 @@ fn remove_pin_and_dataset(
     Ok(())
 }
 
-fn observe_dataset_until(
+pub(crate) fn observe_dataset_until(
     contract: &ZfsHelperContract,
     transaction: &ZfsTransaction,
     attempt: &crate::workspace_pin::WorkspacePinAttemptV1,
@@ -2020,7 +2122,7 @@ fn observe_repair_dataset_until(
     )
 }
 
-fn observe_exact_repair_dataset_until(
+pub(crate) fn observe_exact_repair_dataset_until(
     contract: &ZfsHelperContract,
     transaction: &ZfsTransaction,
     dataset_name: &str,
@@ -2061,7 +2163,7 @@ fn observe_exact_repair_dataset_until(
     }
 }
 
-fn remaining_effect_time(deadline: u64) -> Result<Duration, ZfsWorkerError> {
+pub(crate) fn remaining_effect_time(deadline: u64) -> Result<Duration, ZfsWorkerError> {
     let remaining = deadline
         .checked_sub(boottime_now_nanoseconds()?)
         .filter(|remaining| *remaining != 0)
@@ -2159,6 +2261,25 @@ impl ReplayLedger {
     pub(crate) fn claim(&self, attempt_id: [u8; 16]) -> Result<File, ZfsWorkerError> {
         claim_replay_attempt(&self.directory, attempt_id, 0)
     }
+
+    pub(crate) fn require_claimed(&self, attempt_id: [u8; 16]) -> Result<(), ZfsWorkerError> {
+        require_replay_claim(&self.directory, attempt_id, 0)
+    }
+}
+
+fn require_replay_claim(
+    directory: &OwnedFd,
+    attempt_id: [u8; 16],
+    owner_uid: u32,
+) -> Result<(), ZfsWorkerError> {
+    let name = replay_attempt_name(attempt_id)?;
+    let descriptor = rustix::fs::openat(
+        directory.as_fd(),
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    validate_owned_file(descriptor.as_fd(), owner_uid)
 }
 
 fn reopen_replay_directory(
@@ -2186,12 +2307,7 @@ fn claim_replay_attempt(
     attempt_id: [u8; 16],
     owner_uid: u32,
 ) -> Result<File, ZfsWorkerError> {
-    let mut name = String::with_capacity(38);
-    name.push_str("attempt-");
-    for byte in attempt_id {
-        write!(name, "{byte:02x}")
-            .map_err(|_| ZfsWorkerError::Protocol("workspace pin claim is invalid"))?;
-    }
+    let name = replay_attempt_name(attempt_id)?;
     let descriptor = rustix::fs::openat(
         directory.as_fd(),
         name,
@@ -2209,6 +2325,16 @@ fn claim_replay_attempt(
     rustix::fs::fsync(&descriptor)?;
     rustix::fs::fsync(directory)?;
     Ok(File::from(descriptor))
+}
+
+fn replay_attempt_name(attempt_id: [u8; 16]) -> Result<String, ZfsWorkerError> {
+    let mut name = String::with_capacity(38);
+    name.push_str("attempt-");
+    for byte in attempt_id {
+        write!(name, "{byte:02x}")
+            .map_err(|_| ZfsWorkerError::Protocol("workspace pin claim is invalid"))?;
+    }
+    Ok(name)
 }
 
 fn validate_root_owned_directory(
@@ -2287,7 +2413,7 @@ pub(crate) fn verify_storaged_subject(
     Ok(())
 }
 
-fn verify_worker_subject(
+pub(crate) fn verify_worker_subject(
     subject: &KernelAuthorizedRecordSubject,
     parent: &RetainedCgroupAnchor,
     path: &Path,
@@ -2327,7 +2453,10 @@ pub(crate) fn verify_exact_worker_subject(
     Ok(())
 }
 
-fn encode_ready(cgroup: &str, role: WorkspacePinServiceRole) -> Result<Vec<u8>, ZfsWorkerError> {
+pub(crate) fn encode_ready(
+    cgroup: &str,
+    role: WorkspacePinServiceRole,
+) -> Result<Vec<u8>, ZfsWorkerError> {
     validate_worker_cgroup(cgroup, role)?;
     let length = u16::try_from(cgroup.len())
         .map_err(|_| ZfsWorkerError::Protocol("workspace pin cgroup is too long"))?;
@@ -2339,7 +2468,10 @@ fn encode_ready(cgroup: &str, role: WorkspacePinServiceRole) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
-fn decode_ready(bytes: &[u8], role: WorkspacePinServiceRole) -> Result<&str, ZfsWorkerError> {
+pub(crate) fn decode_ready(
+    bytes: &[u8],
+    role: WorkspacePinServiceRole,
+) -> Result<&str, ZfsWorkerError> {
     if bytes.len() < 12 || &bytes[..8] != READY_MAGIC || bytes[8..10] != 1_u16.to_be_bytes() {
         return Err(ZfsWorkerError::Protocol(
             "workspace pin ready header is invalid",
@@ -2407,7 +2539,7 @@ pub(crate) fn send_packet_before(
     }
 }
 
-fn send_packet_with_descriptor_before(
+pub(crate) fn send_packet_with_descriptor_before(
     socket: &mut DescriptorSubjectSocket,
     payload: &[u8],
     descriptor: BorrowedFd<'_>,
@@ -2450,7 +2582,7 @@ pub(crate) fn receive_packet_before(
     }
 }
 
-fn receive_packet_with_descriptor_before(
+pub(crate) fn receive_packet_with_descriptor_before(
     socket: &mut DescriptorSubjectSocket,
     maximum: usize,
     deadline: u64,
@@ -2493,7 +2625,7 @@ fn normalized_absolute_path(path: &Path) -> bool {
         })
 }
 
-fn map_observer_error(error: WorkspacePinObserverError) -> ZfsWorkerError {
+pub(crate) fn map_observer_error(error: WorkspacePinObserverError) -> ZfsWorkerError {
     match error {
         WorkspacePinObserverError::Linux(error) => error.into(),
         WorkspacePinObserverError::Kernel(error) => error.into(),
@@ -2529,7 +2661,10 @@ mod tests {
         let directory = reopen_replay_directory(&anchor, owner_uid).unwrap();
         let attempt_id = [7; 16];
 
+        assert!(require_replay_claim(&directory, attempt_id, owner_uid).is_err());
+
         drop(claim_replay_attempt(&directory, attempt_id, owner_uid).unwrap());
+        require_replay_claim(&directory, attempt_id, owner_uid).unwrap();
 
         assert!(
             temporary
@@ -2554,9 +2689,21 @@ mod tests {
                 WorkspacePinServiceRole::Observer,
                 "aos-sandbox-workspace-pin-observer@trusted.service",
             ),
+            (
+                WorkspacePinServiceRole::Initializer,
+                "aos-sandbox-workspace-root-initializer@trusted.service",
+            ),
         ] {
             let expected = format!("{CONTROL_SLICE_CGROUP}/{basename}");
             validate_worker_cgroup(&expected, role).unwrap();
+
+            let wrong_role = match role {
+                WorkspacePinServiceRole::Effect => WorkspacePinServiceRole::Initializer,
+                WorkspacePinServiceRole::Observer | WorkspacePinServiceRole::Initializer => {
+                    WorkspacePinServiceRole::Effect
+                }
+            };
+            assert!(validate_worker_cgroup(&expected, wrong_role).is_err());
 
             for substituted in [
                 format!("aos-control.slice/{basename}"),
@@ -2573,6 +2720,10 @@ mod tests {
 
     #[test]
     fn recovered_generic_workers_require_the_exact_control_slice() {
+        validate_recovered_worker_cgroup(
+            "aos.slice/aos-control.slice/aos-sandbox-workspace-root-initializer@trusted.service",
+        )
+        .unwrap();
         validate_recovered_worker_cgroup(
             "aos.slice/aos-control.slice/aos-sandbox-zfs-worker@trusted.service",
         )

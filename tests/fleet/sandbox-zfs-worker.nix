@@ -422,6 +422,7 @@ in {
             "aos-sandbox-zfs-worker.socket",
             "aos-sandbox-workspace-pin-worker.socket",
             "aos-sandbox-workspace-pin-observer.socket",
+            "aos-sandbox-workspace-root-initializer.socket",
         ):
             installed_socket = machine.succeed(f"systemctl cat '{socket_unit}'")
             accept = machine.succeed(
@@ -522,6 +523,26 @@ in {
             "systemctl cat 'aos-sandbox-workspace-pin-worker@.service'"
         )
         assert "aos-landlock" not in effect_unit, effect_unit
+        initializer_unit = machine.succeed(
+            "systemctl cat 'aos-sandbox-workspace-root-initializer@.service'"
+        )
+        assert (
+            "${(makeSystem false).config.aos.sandbox.storageWorker.package}/bin/"
+            "aos-sandbox-workspace-root-initializer"
+        ) in initializer_unit, initializer_unit
+        for expected in (
+            "CAP_CHOWN",
+            "CAP_FOWNER",
+            "fchown",
+            "fchmod",
+            "~chown",
+            "~chmod",
+            "ReadOnlyPaths=",
+            "/var/lib/aos-sandbox-workspace-pin-worker",
+        ):
+            assert expected in initializer_unit, (expected, initializer_unit)
+        assert "CAP_CHOWN" not in effect_unit, effect_unit
+        assert "CAP_FOWNER" not in effect_unit, effect_unit
         generic_unit = machine.succeed(
             "systemctl cat 'aos-sandbox-zfs-worker@.service'"
         )
@@ -736,6 +757,7 @@ in {
     for pattern in (
         "aos-sandbox-workspace-pin-worker@*.service",
         "aos-sandbox-workspace-pin-observer@*.service",
+        "aos-sandbox-workspace-root-initializer@*.service",
     ):
         real.wait_until_succeeds(
             "for unit in $(systemctl list-units --all "
@@ -761,7 +783,9 @@ in {
         "/sys/fs/cgroup/aos.slice/aos-control.slice/"
         "aos-sandbox-workspace-pin-worker@*.service "
         "/sys/fs/cgroup/aos.slice/aos-control.slice/"
-        "aos-sandbox-workspace-pin-observer@*.service; do "
+        "aos-sandbox-workspace-pin-observer@*.service "
+        "/sys/fs/cgroup/aos.slice/aos-control.slice/"
+        "aos-sandbox-workspace-root-initializer@*.service; do "
         "test ! -e \"$cgroup/cgroup.events\" || "
         "grep -qx 'populated 0' \"$cgroup/cgroup.events\" || exit 1; "
         "done"

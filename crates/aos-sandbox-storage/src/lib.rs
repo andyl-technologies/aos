@@ -123,6 +123,7 @@ mod pin_worker_runtime;
 pub mod process;
 pub mod request;
 pub mod root_export;
+mod root_initializer;
 #[allow(
     dead_code,
     reason = "protected catalog resolution is not wired until Storage Apply readiness exists"
@@ -175,6 +176,7 @@ pub use live_export_transport::StorageLiveExportTransportOutcomeV1;
 pub use pin_worker_runtime::{
     run_inherited_workspace_pin_observer, run_inherited_workspace_pin_worker,
 };
+pub use root_initializer::run_inherited_workspace_root_initializer;
 pub use process::{
     SystemdZfsExecutor, WorkerProcessOutput, ZfsWorkerError, process_timeout, run_inherited_worker,
 };

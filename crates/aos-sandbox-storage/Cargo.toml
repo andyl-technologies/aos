@@ -17,6 +17,10 @@ name = "aos-sandbox-workspace-pin-observer"
 path = "src/bin/aos-sandbox-workspace-pin-observer.rs"
 
 [[bin]]
+name = "aos-sandbox-workspace-root-initializer"
+path = "src/bin/aos-sandbox-workspace-root-initializer.rs"
+
+[[bin]]
 name = "aos-storaged"
 path = "src/bin/aos-storaged.rs"
 

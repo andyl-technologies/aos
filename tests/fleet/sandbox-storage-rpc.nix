@@ -273,6 +273,7 @@ in {
         "aos-sandbox-zfs-worker.socket",
         "aos-sandbox-workspace-pin-worker.socket",
         "aos-sandbox-workspace-pin-observer.socket",
+        "aos-sandbox-workspace-root-initializer.socket",
         "aos-storaged.socket",
     ):
         machine.wait_for_unit(unit, timeout=30)
@@ -282,6 +283,7 @@ in {
         "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-zfs-worker",
         "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-workspace-pin-worker",
         "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-workspace-pin-observer",
+        "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-workspace-root-initializer",
         "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-guest-root-publisher",
     ):
         status, _, stderr = machine.execute(executable)
