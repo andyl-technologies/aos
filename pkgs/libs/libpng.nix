@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   zlib,
+  stdenv,
 }: let
   version = "1.6.58";
 in
@@ -44,9 +45,13 @@ in
       }
       {
         name = "check";
-        script = ''
-          make check
-        '';
+        # Cross-target test programs run during target qualification.
+        script =
+          if stdenv.isCross
+          then ":"
+          else ''
+            make check
+          '';
       }
       {
         name = "install";

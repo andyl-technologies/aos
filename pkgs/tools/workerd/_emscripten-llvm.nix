@@ -9,7 +9,7 @@
   mkLlvm = callPackage ../../toolchain/llvm/_llvm.nix {};
   compiler = mkLlvm {
     version = "23.0.0";
-    srcHash = "0ribd251cdsvkzm1ykqjd7csiwsiyswn333609s1877mba2pm8gl";
+    srcHash = "sha256-KgZxjdv6wRj+Fxwyvm3Lj+U/+CprwkH5JMclPr1HcaM=";
     projects = ["clang" "lld"];
     # Emscripten builds its target C/C++ runtimes separately for WebAssembly.
     runtimes = [];
@@ -22,7 +22,7 @@ in
       pname = "emscripten-llvm";
       src = fetchurl {
         urls = ["https://github.com/llvm/llvm-project/archive/${revision}.tar.gz"];
-        hash = "0ribd251cdsvkzm1ykqjd7csiwsiyswn333609s1877mba2pm8gl";
+        hash = "sha256-KgZxjdv6wRj+Fxwyvm3Lj+U/+CprwkH5JMclPr1HcaM=";
       };
       buildDeps = old.buildDeps ++ [buildPackages.nodejs];
       phases =
