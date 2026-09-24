@@ -21,8 +21,10 @@
 //! operator path uses [`crate::operator_recovery_effect_v2`] instead; V1
 //! packets are never upgraded or accepted as V2 evidence.
 
-use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
+
+use crate::operator_recovery_packet::{array, sign_packet, verify_packet};
 
 const INTENT_MAGIC: &[u8; 8] = b"AOSOREI1";
 const RECEIPT_MAGIC: &[u8; 8] = b"AOSORR01";
@@ -465,47 +467,6 @@ pub fn verify_operator_recovery_effect_completion_v1(
     Ok(receipt)
 }
 
-fn sign_packet<const PAYLOAD: usize, const PACKET: usize>(
-    payload: [u8; PAYLOAD],
-    domain: &[u8],
-    key: &SigningKey,
-) -> [u8; PACKET] {
-    let mut message = Vec::with_capacity(domain.len() + PAYLOAD);
-    message.extend_from_slice(domain);
-    message.extend_from_slice(&payload);
-    let signature = key.sign(&message).to_bytes();
-    let mut packet = [0; PACKET];
-    packet[..PAYLOAD].copy_from_slice(&payload);
-    packet[PAYLOAD..].copy_from_slice(&signature);
-    packet
-}
-
-fn verify_packet<const PACKET: usize>(
-    packet: &[u8],
-    payload_bytes: usize,
-    domain: &[u8],
-    key: &VerifyingKey,
-) -> Result<[u8; PACKET], OperatorRecoveryEffectErrorV1> {
-    let bytes: [u8; PACKET] = packet
-        .try_into()
-        .map_err(|_| OperatorRecoveryEffectErrorV1::InvalidEncoding)?;
-    let signature_bytes: [u8; 64] = bytes[payload_bytes..]
-        .try_into()
-        .map_err(|_| OperatorRecoveryEffectErrorV1::InvalidEncoding)?;
-    let mut message = Vec::with_capacity(domain.len() + payload_bytes);
-    message.extend_from_slice(domain);
-    message.extend_from_slice(&bytes[..payload_bytes]);
-    key.verify_strict(&message, &Signature::from_bytes(&signature_bytes))
-        .map_err(|_| OperatorRecoveryEffectErrorV1::InvalidSignature)?;
-    Ok(bytes)
-}
-
-fn array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], OperatorRecoveryEffectErrorV1> {
-    bytes
-        .try_into()
-        .map_err(|_| OperatorRecoveryEffectErrorV1::InvalidEncoding)
-}
-
 /// Reports a malformed or unauthenticated recovery effect artifact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum OperatorRecoveryEffectErrorV1 {
@@ -525,6 +486,8 @@ pub enum OperatorRecoveryEffectErrorV1 {
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::Signer as _;
+
     use super::*;
 
     fn intent() -> OperatorRecoveryEffectIntentV1 {
@@ -558,6 +521,31 @@ mod tests {
             effect_commit_digest: [17; 32],
             owner_generation: 2,
         }
+    }
+
+    #[test]
+    fn intent_packet_keeps_exact_v1_domain_and_signature_bytes() {
+        let key = SigningKey::from_bytes(&[21; 32]);
+        let intent = intent();
+        let payload = intent.payload();
+        let packet = sign_operator_recovery_effect_intent_v1(&intent, &key).unwrap();
+        let mut message = Vec::from(INTENT_DOMAIN.as_ref());
+        message.extend_from_slice(&payload);
+
+        assert_eq!(&packet[..INTENT_PAYLOAD_BYTES], &payload);
+        assert_eq!(
+            &packet[INTENT_PAYLOAD_BYTES..],
+            key.sign(&message).to_bytes()
+        );
+        assert_eq!(
+            verify_packet::<OPERATOR_RECOVERY_EFFECT_INTENT_BYTES>(
+                &packet,
+                INTENT_PAYLOAD_BYTES,
+                RECEIPT_DOMAIN,
+                &key.verifying_key(),
+            ),
+            Err(OperatorRecoveryEffectErrorV1::InvalidSignature)
+        );
     }
 
     #[test]
