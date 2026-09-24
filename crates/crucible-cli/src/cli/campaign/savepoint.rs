@@ -138,6 +138,7 @@ where
                 Some(SavepointCaptureOutcome::Failed) => "failed",
             }),
             checkpoint: runtime
+                .as_ref()
                 .and_then(|state| state.checkpoint())
                 .map(|value| value.to_string()),
             source_observation: Some(source_observation.to_string()),
