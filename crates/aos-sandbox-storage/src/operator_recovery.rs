@@ -18,6 +18,8 @@
 //! workspace-handle:32 | repair-operation-id:16
 //! before-catalog-generation:u64be | signed-evidence:308
 //! signed-receipt:328
+//! attestation-key = sha256(attestation-key-domain | effect-id)
+//! attestation-value = exact owner-signed AOSOPA01 packet
 //! ```
 
 use std::path::Path;
@@ -61,6 +63,9 @@ const AFTER_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-after.v1\0";
 pub(crate) const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-commit.v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-terminal.v1\0";
 const TX_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-transaction.v2\0";
+const ATTESTATION_KEY_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-attestation-key.v1\0";
+const ATTESTATION_TX_DOMAIN: &[u8] =
+    b"aos.sandbox.operator-storage-repair-attestation-transaction.v1\0";
 
 /// Reports an unavailable or mismatched protected repair owner.
 #[derive(Debug, thiserror::Error)]
@@ -122,18 +127,17 @@ enum StoredReservationDecisionV2 {
 }
 
 impl StorageOperatorRecoveryOwnerV1 {
-    /// Signs the complete currently reserved, pre-effect admission probe.
+    /// Signs and durably retains the complete pre-effect admission probe.
     ///
     /// The packet exposes the exact historical probe hash preimage, including
     /// its generated challenge and selected dataset identity. It is only an
-    /// attestation producer: transport must deliver it before dispatch and a
+    /// attestation producer: transport delivers it before dispatch and a
     /// separate authenticated broker read must establish currentness.
     ///
     /// # Errors
     ///
     /// Rejects absent or completed reservation, changed intent/probe, a
     /// rotated owner key, or uncertain protected sidecar custody.
-    #[allow(dead_code, reason = "two-phase operator transport is not installed")]
     pub(crate) fn sign_reserved_probe_attestation_v1(
         &mut self,
         signed_intent: &[u8],
@@ -183,10 +187,58 @@ impl StorageOperatorRecoveryOwnerV1 {
         {
             return Err(StorageOperatorRecoveryErrorV1::Binding);
         }
-        let _authority = self
+        let key = attestation_key(effect_id);
+        let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
+        if let Some(existing) = authority.get(&key)? {
+            return if existing == packet {
+                Ok(packet)
+            } else {
+                Err(StorageOperatorRecoveryErrorV1::Binding)
+            };
+        }
+        let tx_digest = hash(ATTESTATION_TX_DOMAIN, &[&effect_id, &packet]);
+        let transaction_id = tx_digest[..16]
+            .try_into()
+            .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                key.to_vec(),
+                packet.clone(),
+            )],
+        )?;
+        self.journal
+            .claim_protected_authority(RecordNamespace::OperatorRecovery)?
+            .commit(&transaction)?;
         Ok(packet)
+    }
+
+    /// Reads only the exact cold-retained owner attestation for a pending intent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, changed, or untrusted protected probe custody.
+    pub(crate) fn recover_reserved_probe_attestation_v1(
+        &mut self,
+        signed_intent: &[u8],
+    ) -> Result<Vec<u8>, StorageOperatorRecoveryErrorV1> {
+        let effect_id = self.require_reserved_intent(signed_intent)?;
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
+        let stored = StoredRepairV2::decode(
+            authority
+                .get(&effect_id)?
+                .ok_or(StorageOperatorRecoveryErrorV1::Pending)?,
+        )?;
+        let packet = authority
+            .get(&attestation_key(effect_id))?
+            .ok_or(StorageOperatorRecoveryErrorV1::Pending)?;
+        validate_attestation(packet, &stored, effect_id, &self.owner_key.verifying_key())?;
+        Ok(packet.to_vec())
     }
 
     /// Selects only the effect named by an authenticated controller intent.
@@ -297,17 +349,35 @@ impl StorageOperatorRecoveryOwnerV1 {
         };
         let (mut journal, _) = Journal::open_protected_at(directory, name, limits)?;
         let authority = journal.claim_protected_authority(RecordNamespace::OperatorRecovery)?;
-        for (key, value) in authority.records()? {
-            let record = StoredRepairV2::decode(value)?;
-            validate_stored(
-                &record,
-                key,
-                &controller_key,
-                &owner_key.verifying_key(),
-                owner_id,
-                controller_key_generation,
-                owner_key_generation,
-            )?;
+        let records: Vec<_> = authority.records()?.collect();
+        for (key, value) in &records {
+            if value.starts_with(b"AOSOPA01") {
+                let effect_id: [u8; 32] = value
+                    .get(32..64)
+                    .ok_or(StorageOperatorRecoveryErrorV1::Binding)?
+                    .try_into()
+                    .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+                if *key != attestation_key(effect_id).as_slice() {
+                    return Err(StorageOperatorRecoveryErrorV1::Binding);
+                }
+                let stored = records
+                    .iter()
+                    .find(|(candidate, _)| *candidate == effect_id.as_slice())
+                    .ok_or(StorageOperatorRecoveryErrorV1::Binding)?;
+                let stored = StoredRepairV2::decode(stored.1)?;
+                validate_attestation(value, &stored, effect_id, &owner_key.verifying_key())?;
+            } else {
+                let record = StoredRepairV2::decode(value)?;
+                validate_stored(
+                    &record,
+                    key,
+                    &controller_key,
+                    &owner_key.verifying_key(),
+                    owner_id,
+                    controller_key_generation,
+                    owner_key_generation,
+                )?;
+            }
         }
         Ok(Self {
             journal,
@@ -543,13 +613,19 @@ impl StorageOperatorRecoveryOwnerV1 {
                 self.controller_key_generation,
                 self.owner_key_generation,
             )?;
+            // Once Controller can recover a signed probe, no later prepare
+            // may silently replace that probe under the same effect identity.
+            let attested = authority.get(&attestation_key(intent.effect_id))?.is_some();
             return match classify_reservation(&existing, record)? {
                 StoredReservationDecisionV2::Pending => {
                     Ok(StorageOperatorRecoveryReservationV2::Pending)
                 }
-                StoredReservationDecisionV2::Replace(replacement) => {
+                StoredReservationDecisionV2::Replace(replacement) if !attested => {
                     commit_record(&mut self.journal, &replacement)?;
                     Ok(StorageOperatorRecoveryReservationV2::Pending)
+                }
+                StoredReservationDecisionV2::Replace(_) => {
+                    Err(StorageOperatorRecoveryErrorV1::Binding)
                 }
                 StoredReservationDecisionV2::Complete(receipt) => {
                     Ok(StorageOperatorRecoveryReservationV2::Complete(receipt))
@@ -838,6 +914,36 @@ fn request_digest(body: &[u8]) -> [u8; 32] {
     hash(REQUEST_DOMAIN, &[body])
 }
 
+fn attestation_key(effect_id: [u8; 32]) -> [u8; 32] {
+    hash(ATTESTATION_KEY_DOMAIN, &[&effect_id])
+}
+
+fn validate_attestation(
+    packet: &[u8],
+    stored: &StoredRepairV2,
+    effect_id: [u8; 32],
+    owner_key: &VerifyingKey,
+) -> Result<(), StorageOperatorRecoveryErrorV1> {
+    let verified = verify_operator_recovery_probe_attestation_v1(
+        packet,
+        owner_key,
+        stored.owner_id,
+        stored.owner_key_generation,
+        effect_id,
+        stored.probe_epoch,
+    )
+    .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+    if verified.probe_digest() != stored.absence_probe_digest
+        || verified.storage_request_digest() != stored.storage_transport_digest
+        || verified.repair_operation_id() != stored.repair_operation_id
+        || verified.workspace_handle() != stored.workspace_handle
+        || verified.catalog_generation() != stored.before_catalog_generation
+    {
+        return Err(StorageOperatorRecoveryErrorV1::Binding);
+    }
+    Ok(())
+}
+
 fn fence_digest(semantics: &CanonicalStorageRepairSemanticsV1) -> [u8; 32] {
     let fence = semantics.fence();
     hash(
@@ -1103,5 +1209,86 @@ mod tests {
         next.absence_probe_digest = [26; 32];
         next.probe_epoch = 1;
         assert!(classify_reservation(&exhausted, &next).is_err());
+    }
+
+    #[test]
+    fn retained_attestation_requires_exact_stored_probe_and_owner_generation() {
+        let (mut record, _, owner_key) = sample();
+        let mut preimage = vec![0; 438];
+        preimage[..16].fill(1);
+        preimage[16..32].fill(2);
+        preimage[32..48].copy_from_slice(&record.repair_operation_id);
+        preimage[48..80].copy_from_slice(&record.storage_transport_digest);
+        preimage[112..144].fill(3);
+        preimage[144..176].copy_from_slice(&record.workspace_handle);
+        preimage[209..217].copy_from_slice(&record.before_catalog_generation.to_be_bytes());
+        preimage[217..249].fill(4);
+        preimage[395..397].copy_from_slice(&1_u16.to_be_bytes());
+        preimage[397] = b'x';
+        preimage[398..406].copy_from_slice(&9_u64.to_be_bytes());
+        preimage[406..438].fill(10);
+        record.absence_probe_digest = Sha256::new()
+            .chain_update(b"aos.sandbox.storage.workspace-pin-repair-admission-probe.v2\0")
+            .chain_update(&preimage)
+            .finalize()
+            .into();
+        let packet = sign_operator_recovery_probe_attestation_v1(
+            record.owner_id,
+            record.owner_key_generation,
+            record.storage_request_digest,
+            record.probe_epoch,
+            &preimage,
+            &owner_key,
+        )
+        .expect("valid signed probe");
+
+        let cold = StoredRepairV2::decode(&record.encode()).expect("cold sidecar record");
+        assert!(
+            validate_attestation(
+                &packet,
+                &cold,
+                record.storage_request_digest,
+                &owner_key.verifying_key(),
+            )
+            .is_ok()
+        );
+        assert_ne!(
+            attestation_key(record.storage_request_digest),
+            record.storage_request_digest
+        );
+
+        let mut changed = record.clone();
+        changed.before_catalog_generation += 1;
+        assert!(
+            validate_attestation(
+                &packet,
+                &changed,
+                record.storage_request_digest,
+                &owner_key.verifying_key(),
+            )
+            .is_err()
+        );
+        changed = record.clone();
+        changed.owner_key_generation += 1;
+        assert!(
+            validate_attestation(
+                &packet,
+                &changed,
+                record.storage_request_digest,
+                &owner_key.verifying_key(),
+            )
+            .is_err()
+        );
+        let mut corrupted = packet;
+        corrupted[72] ^= 1;
+        assert!(
+            validate_attestation(
+                &corrupted,
+                &record,
+                record.storage_request_digest,
+                &owner_key.verifying_key(),
+            )
+            .is_err()
+        );
     }
 }

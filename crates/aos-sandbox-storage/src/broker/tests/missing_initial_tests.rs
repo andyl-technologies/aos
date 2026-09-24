@@ -7,6 +7,44 @@ use super::*;
 use std::rc::Rc;
 
 #[test]
+fn repair_probe_replans_exactly_with_retained_challenge() {
+    let directory = TempDir::new().unwrap();
+    let fixture = Fixture::new();
+    let (broker, creation) = committed_workspace_without_pin(&directory, &fixture);
+    let workspace_handle = creation.storage_handle().unwrap();
+    let manifest = assignment_manifest_at(&sandbox_spec(72), 6);
+    let request = repair_request(80, 81, workspace_handle, 6, manifest.digest());
+    let artifacts = fixture.repair_artifacts(&request);
+    let contract = ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+    let host_scope = WorkspacePinHostScopeV1::new([50; 16], 51, 52).unwrap();
+    let plan = |challenge| {
+        broker
+            .plan_workspace_pin_repair_admission_observation_with_challenge(
+                &request,
+                &artifacts,
+                ProtocolVersion::new(1, 0),
+                peer(),
+                peer_policy(),
+                &clock(),
+                &contract,
+                host_scope,
+                challenge,
+            )
+            .unwrap()
+    };
+
+    let first = plan([9; 16]);
+    let replay = plan([9; 16]);
+    let other = plan([10; 16]);
+    assert_eq!(
+        first.probe().hash_preimage(),
+        replay.probe().hash_preimage()
+    );
+    assert_eq!(first.probe().digest(), replay.probe().digest());
+    assert_ne!(first.probe().digest(), other.probe().digest());
+}
+
+#[test]
 fn missing_initial_repair_admits_ordinal_one_then_existing_attempt_ordinal_two_and_reopens() {
     let directory = TempDir::new().unwrap();
     let fixture = Fixture::new();

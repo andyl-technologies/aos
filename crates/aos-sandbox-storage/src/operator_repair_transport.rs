@@ -1,23 +1,24 @@
 //! Controller-signed operator Repair ingress on a separate fixed Storage socket.
 //!
 //! The ordinary Storage plan/lease verifier still authorizes every effect.
-//! This boundary additionally verifies the live controller execution and
-//! reserves its signed intent in the root-owned sidecar before worker dispatch.
-//! A separate read-only query recovers the identical signed receipt after a
-//! lost or expired effect response; it cannot authorize a new attempt.
+//! This boundary additionally verifies the live controller execution. Prepare
+//! retains and returns the owner-signed physical probe without dispatch; a
+//! separate Execute reobserves that exact challenged probe before admission.
+//! Read-only queries recover either the identical probe or a signed receipt
+//! after a lost response, without authorizing another attempt.
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, BrokerRequestEnvelope};
 use aos_sandbox_core::{ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
-use aos_sandbox_protocol::operator_storage_repair_transport_v2::{
-    MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V2, OperatorStorageRepairModeV2,
-    OperatorStorageRepairRequestV2, OperatorStorageRepairResponseV2,
+use aos_sandbox_protocol::operator_storage_repair_transport_v3::{
+    MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V3, OperatorStorageRepairModeV3,
+    OperatorStorageRepairRequestV3, OperatorStorageRepairResponseV3, OperatorStorageRepairResultV3,
 };
 use aos_sandbox_protocol::{decode_request_envelope, validate_request_descriptor_roles};
 use buffa::Message as _;
 
 use crate::StorageAdmissionError;
-use crate::operator_recovery::StorageOperatorRecoveryOwnerV1;
+use crate::operator_recovery::{StorageOperatorRecoveryErrorV1, StorageOperatorRecoveryOwnerV1};
 use crate::peer::ControllerPeerVerifier;
 use crate::runtime::{StorageBrokerRuntime, StorageRuntimeError, trusted_paired_clock_sample};
 use crate::service::{StorageConnectionOutcome, StorageServiceError};
@@ -27,7 +28,7 @@ const RECEIVE_NANOSECONDS: u64 = 10_000_000_000;
 const MAXIMUM_REQUEST_LIFETIME_NANOSECONDS: u64 = 60_000_000_000;
 const STORAGE_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
-/// Serves one operator Repair or receipt-recovery packet on its fixed socket.
+/// Serves one two-phase operator Repair or read-only recovery packet.
 ///
 /// # Errors
 ///
@@ -56,7 +57,7 @@ pub fn serve_operator_repair_once(
         .ok_or(StorageServiceError::Clock)?;
     let record = match receive(
         &mut connection,
-        MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V2,
+        MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V3,
         receive_deadline,
     ) {
         Ok(record) => record,
@@ -68,7 +69,7 @@ pub fn serve_operator_repair_once(
     {
         return Ok(StorageConnectionOutcome::PeerRejected);
     }
-    let request = match OperatorStorageRepairRequestV2::decode(record.payload()) {
+    let request = match OperatorStorageRepairRequestV3::decode(record.payload()) {
         Ok(request) => request,
         Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
     };
@@ -78,8 +79,8 @@ pub fn serve_operator_repair_once(
     let latest = now
         .checked_add(MAXIMUM_REQUEST_LIFETIME_NANOSECONDS)
         .ok_or(StorageServiceError::Clock)?;
-    if request.deadline_boottime_nanoseconds() <= now
-        || request.deadline_boottime_nanoseconds() > latest
+    if request.deadline() <= now
+        || request.deadline() > latest
         || verifier
             .recheck_connection(execution, connection.peer())
             .is_err()
@@ -91,9 +92,9 @@ pub fn serve_operator_repair_once(
         Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
     };
 
-    let signed_receipt = match request.mode() {
-        OperatorStorageRepairModeV2::Effect => {
-            let envelope = match decode_effect_envelope(request.authorized_envelope()) {
+    let result = match request.mode() {
+        OperatorStorageRepairModeV3::Prepare | OperatorStorageRepairModeV3::Execute => {
+            let envelope = match decode_effect_envelope(request.envelope()) {
                 Ok(envelope) => envelope,
                 Err(()) => return Ok(StorageConnectionOutcome::RequestRejected),
             };
@@ -116,35 +117,67 @@ pub fn serve_operator_repair_once(
             let mut clock = || {
                 trusted_paired_clock_sample().map_err(|_| StorageAdmissionError::VerificationFailed)
             };
-            match runtime.repair_workspace_pin_for_operator(
-                envelope.body(),
-                artifacts,
-                STORAGE_VERSION,
-                execution.credentials(),
-                verifier.policy(),
-                request.signed_intent(),
-                owner,
-                &mut clock,
-            ) {
-                Ok(receipt) => receipt,
+            let result = match request.mode() {
+                OperatorStorageRepairModeV3::Prepare => runtime
+                    .prepare_workspace_pin_repair_for_operator(
+                        envelope.body(),
+                        artifacts,
+                        STORAGE_VERSION,
+                        execution.credentials(),
+                        verifier.policy(),
+                        request.signed_intent(),
+                        owner,
+                        &mut clock,
+                    )
+                    .map(OperatorStorageRepairResultV3::Prepared),
+                OperatorStorageRepairModeV3::Execute => runtime
+                    .execute_prepared_workspace_pin_repair_for_operator(
+                        envelope.body(),
+                        artifacts,
+                        STORAGE_VERSION,
+                        execution.credentials(),
+                        verifier.policy(),
+                        request.signed_intent(),
+                        request.expected_attestation_digest(),
+                        owner,
+                        &mut clock,
+                    )
+                    .map(completion_result),
+                _ => return Ok(StorageConnectionOutcome::RequestRejected),
+            };
+            match result {
+                Ok(result) => result,
                 Err(StorageRuntimeError::ReopenRequired) => {
                     return Err(StorageRuntimeError::ReopenRequired.into());
                 }
                 Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
             }
         }
-        OperatorStorageRepairModeV2::RecoverReceipt => {
+        OperatorStorageRepairModeV3::RecoverProbe => {
             if !runtime.is_inventory_ready() {
                 return Ok(StorageConnectionOutcome::RequestRejected);
             }
-            if owner
-                .require_reserved_intent(request.signed_intent())
-                .is_err()
-            {
+            match owner.recover_reserved_probe_attestation_v1(request.signed_intent()) {
+                Ok(packet) => OperatorStorageRepairResultV3::Prepared(packet),
+                Err(StorageOperatorRecoveryErrorV1::Journal(_)) => {
+                    return Err(StorageRuntimeError::ReopenRequired.into());
+                }
+                Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
+            }
+        }
+        OperatorStorageRepairModeV3::RecoverReceipt => {
+            if !runtime.is_inventory_ready() {
                 return Ok(StorageConnectionOutcome::RequestRejected);
             }
+            match owner.require_reserved_intent(request.signed_intent()) {
+                Ok(_) => {}
+                Err(StorageOperatorRecoveryErrorV1::Journal(_)) => {
+                    return Err(StorageRuntimeError::ReopenRequired.into());
+                }
+                Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
+            }
             match runtime.recover_operator_workspace_pin_receipt(owner, effect_id) {
-                Ok(receipt) => receipt,
+                Ok(receipt) => completion_result(receipt),
                 Err(StorageRuntimeError::ReopenRequired) => {
                     return Err(StorageRuntimeError::ReopenRequired.into());
                 }
@@ -152,27 +185,30 @@ pub fn serve_operator_repair_once(
             }
         }
     };
-    let response = OperatorStorageRepairResponseV2::new(
-        request.request_id(),
-        effect_id,
-        signed_receipt.map(|completion| (completion.signed_evidence, completion.signed_receipt)),
-    )
-    .map_err(|_| {
-        StorageServiceError::Activation("operator Repair response was invalid".to_owned())
-    })?;
+    let response = OperatorStorageRepairResponseV3::new(request.request_id(), effect_id, result)
+        .map_err(|_| {
+            StorageServiceError::Activation("operator Repair response was invalid".to_owned())
+        })?;
     if verifier
         .recheck_connection(execution, connection.peer())
         .is_err()
-        || send(
-            &mut connection,
-            &response.encode(),
-            request.deadline_boottime_nanoseconds(),
-        )
-        .is_err()
+        || send(&mut connection, &response.encode(), request.deadline()).is_err()
     {
         return Ok(StorageConnectionOutcome::TransportRejected);
     }
     Ok(StorageConnectionOutcome::Served)
+}
+
+fn completion_result(
+    completion: Option<crate::operator_recovery::StorageOperatorRecoveryCompletionV2>,
+) -> OperatorStorageRepairResultV3 {
+    match completion {
+        Some(completion) => OperatorStorageRepairResultV3::Complete(
+            completion.signed_evidence,
+            completion.signed_receipt,
+        ),
+        None => OperatorStorageRepairResultV3::Pending,
+    }
 }
 
 fn decode_effect_envelope(

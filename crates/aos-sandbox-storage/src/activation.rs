@@ -2,7 +2,7 @@
 
 use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
-use aos_sandbox_protocol::operator_storage_repair_transport_v2::OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V2;
+use aos_sandbox_protocol::operator_storage_repair_transport_v3::OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3;
 
 use crate::service::StorageServiceError;
 
@@ -95,7 +95,7 @@ pub fn take_systemd_listeners() -> Result<
     }
     if let Some(listener) = &operator_repair {
         listener.require_local_filesystem_path(std::path::Path::new(
-            OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V2,
+            OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3,
         ))?;
     }
     Ok((controller, export, live_export, operator_repair))

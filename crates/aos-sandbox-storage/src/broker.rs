@@ -1438,6 +1438,35 @@ impl StorageAdmissionCoordinator {
         contract: &ZfsHelperContract,
         current_host_scope: WorkspacePinHostScopeV1,
     ) -> Result<WorkspacePinRepairAdmissionDispatchV1, ZfsHelperError> {
+        self.plan_workspace_pin_repair_admission_observation_with_challenge(
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            current_clock,
+            contract,
+            current_host_scope,
+            random_repair_challenge()?,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_workspace_pin_repair_admission_observation_with_challenge(
+        &self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        contract: &ZfsHelperContract,
+        current_host_scope: WorkspacePinHostScopeV1,
+        generated_challenge: [u8; 16],
+    ) -> Result<WorkspacePinRepairAdmissionDispatchV1, ZfsHelperError> {
+        if generated_challenge == [0; 16] {
+            return Err(ZfsHelperError::Authority);
+        }
         let semantics = CanonicalStorageRepairSemanticsV1::decode(
             request_body,
             peer,
@@ -1562,7 +1591,7 @@ impl StorageAdmissionCoordinator {
         };
         let request = WorkspacePinRepairAdmissionRequestV1::new(
             contract.executable().to_path_buf(),
-            random_repair_challenge()?,
+            generated_challenge,
             *semantics.header().request_id(),
             semantics.operation_id(),
             admission.effect.transport_request_digest(),

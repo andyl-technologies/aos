@@ -37,6 +37,7 @@ pub mod network_inventory;
 /// Versioned signed-intent Storage repair carrier used only by the operator path.
 pub mod operator_storage_repair_transport;
 pub mod operator_storage_repair_transport_v2;
+pub mod operator_storage_repair_transport_v3;
 pub mod payload_scope;
 pub mod semantics;
 pub mod session;

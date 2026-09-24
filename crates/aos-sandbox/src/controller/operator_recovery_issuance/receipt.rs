@@ -107,6 +107,60 @@ impl ProtectedStorageRepairReceiptVerifierV2 {
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)
     }
 
+    /// Authenticates the exact pre-effect probe returned before execution.
+    pub(super) fn verify_wire_probe(
+        &self,
+        intent: &OperatorRecoveryEffectIntentV1,
+        storage_request_body: &[u8],
+        before_catalog_generation: u64,
+        packet: &[u8],
+    ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+        self.recheck()?;
+        let epoch = u32::from_be_bytes(
+            packet
+                .get(64..68)
+                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
+                .try_into()
+                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
+        );
+        let verified = verify_operator_recovery_probe_attestation_v1(
+            packet,
+            &self.pin.verifier,
+            self.pin.owner_id,
+            self.pin.key_generation,
+            intent.effect_id,
+            epoch,
+        )
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let request = RepairStorageWorkspacePinRequest::decode_from_slice(storage_request_body)
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let fence = request
+            .fence
+            .as_option()
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let request_id = request
+            .header
+            .as_option()
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
+            .request_id
+            .as_slice();
+        let digest: [u8; 32] = Sha256::digest(storage_request_body).into();
+        if request.encode_to_vec() != storage_request_body
+            || verified.repair_request_id().as_slice() != request_id
+            || verified.repair_operation_id() != intent.recovery_operation_id
+            || request.operation_id != intent.recovery_operation_id
+            || verified.storage_request_digest() != digest
+            || verified.workspace_handle().as_slice() != request.storage_handle
+            || verified.assignment_digest().as_slice() != fence.assignment_digest
+            || fence.sandbox_id != intent.target_id
+            || fence.desired_generation != intent.current_generation
+            || verified.catalog_generation() != before_catalog_generation
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        self.recheck()
+    }
+
     /// Authenticates a wire receipt without treating it as terminal currentness.
     pub(super) fn verify_wire_receipt(
         &self,

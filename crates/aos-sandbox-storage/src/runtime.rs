@@ -274,6 +274,20 @@ pub enum WorkspacePinRepairExecutionOutcomeV1 {
     ObservationRequired,
 }
 
+fn operator_sidecar_failure(
+    error: crate::operator_recovery::StorageOperatorRecoveryErrorV1,
+) -> StorageRuntimeError {
+    match error {
+        crate::operator_recovery::StorageOperatorRecoveryErrorV1::Journal(_) => {
+            StorageRuntimeError::ReopenRequired
+        }
+        crate::operator_recovery::StorageOperatorRecoveryErrorV1::Binding
+        | crate::operator_recovery::StorageOperatorRecoveryErrorV1::Pending => {
+            StorageRuntimeError::Recovery
+        }
+    }
+}
+
 /// Owns the sole Storage coordinator and fixed worker helper.
 pub struct StorageBrokerRuntime {
     coordinator: StorageAdmissionCoordinator,
@@ -1513,24 +1527,18 @@ impl StorageBrokerRuntime {
             policy,
             trusted_clock,
             None,
+            None,
         )
     }
 
-    /// Reserves a signed operator probe before the existing Storage repair.
-    ///
-    /// The ordinary Storage authorization remains mandatory. A completed
-    /// repair is reported only when the sidecar has committed its owner receipt.
+    /// Reserves and retains a signed exact admission probe without dispatching repair.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageRuntimeError`] for invalid signed intent, unavailable
-    /// protected state, failed Storage repair, or uncertain receipt custody.
-    #[allow(
-        dead_code,
-        reason = "operator repair controller mapping is not installed"
-    )]
+    /// Rejects a replayed effect, failed fresh observation, changed signed
+    /// authority, or uncertain protected sidecar custody.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn repair_workspace_pin_for_operator<F>(
+    pub(crate) fn prepare_workspace_pin_repair_for_operator<F>(
         &mut self,
         request_body: &[u8],
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
@@ -1538,6 +1546,93 @@ impl StorageBrokerRuntime {
         peer: PeerCredentials,
         policy: PeerPolicy,
         signed_intent: &[u8],
+        owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+        trusted_clock: &mut F,
+    ) -> Result<Vec<u8>, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        if !self.is_repair_ready() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let clock = trusted_clock().map_err(|_| StorageRuntimeError::Recovery)?;
+        if self
+            .coordinator
+            .workspace_pin_repair_replay(
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &clock,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let host_scope = self
+            .pin_io
+            .host_scope()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let dispatch = self
+            .coordinator
+            .plan_workspace_pin_repair_admission_observation(
+                request_body,
+                artifacts,
+                protocol_version,
+                peer,
+                policy,
+                &clock,
+                &self.pin_contract,
+                host_scope,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let observation_request = dispatch
+            .request_bytes()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let fresh = self
+            .pin_io
+            .observe_repair_admission(&observation_request, dispatch.probe())
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let semantics = aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1::decode(
+            request_body, peer, policy, clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !matches!(
+            owner
+                .reserve(
+                    signed_intent,
+                    request_body,
+                    &semantics,
+                    dispatch.probe(),
+                    &fresh
+                )
+                .map_err(operator_sidecar_failure)?,
+            crate::operator_recovery::StorageOperatorRecoveryReservationV2::Pending
+        ) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        owner
+            .sign_reserved_probe_attestation_v1(signed_intent, dispatch.probe())
+            .map_err(operator_sidecar_failure)
+    }
+
+    /// Executes only the previously attested probe after a separate controller call.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed physical state or authority before durable attempt
+    /// admission; uncertain post-admission state requires recovery.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_prepared_workspace_pin_repair_for_operator<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        signed_intent: &[u8],
+        expected_attestation_digest: [u8; 32],
         owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
         trusted_clock: &mut F,
     ) -> Result<
@@ -1555,6 +1650,7 @@ impl StorageBrokerRuntime {
             policy,
             trusted_clock,
             Some((&mut *owner, signed_intent)),
+            Some(expected_attestation_digest),
         )?;
         let effect_id = owner
             .effect_id_for_request(signed_intent, request_body)
@@ -1594,7 +1690,7 @@ impl StorageBrokerRuntime {
         match owner.complete(effect_id, &self.coordinator, &inventory) {
             Ok(receipt) => Ok(Some(receipt)),
             Err(crate::operator_recovery::StorageOperatorRecoveryErrorV1::Pending) => Ok(None),
-            Err(_) => Err(StorageRuntimeError::Recovery),
+            Err(error) => Err(operator_sidecar_failure(error)),
         }
     }
 
@@ -1607,16 +1703,28 @@ impl StorageBrokerRuntime {
         peer: PeerCredentials,
         policy: PeerPolicy,
         trusted_clock: &mut F,
-        operator_owner: Option<(
+        mut operator_owner: Option<(
             &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
             &[u8],
         )>,
+        expected_attestation_digest: Option<[u8; 32]>,
     ) -> Result<WorkspacePinRepairExecutionOutcomeV1, StorageRuntimeError>
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
         if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
+        }
+        if let Some(expected) = expected_attestation_digest {
+            let Some((owner, signed_intent)) = operator_owner.as_mut() else {
+                return Err(StorageRuntimeError::Recovery);
+            };
+            let packet = owner
+                .recover_reserved_probe_attestation_v1(signed_intent)
+                .map_err(operator_sidecar_failure)?;
+            if Sha256::digest(&packet).as_slice() != expected {
+                return Err(StorageRuntimeError::Recovery);
+            }
         }
         let preliminary_clock = trusted_clock().map_err(|_| StorageRuntimeError::Recovery)?;
         if self
@@ -1638,19 +1746,52 @@ impl StorageBrokerRuntime {
             .pin_io
             .host_scope()
             .map_err(|_| StorageRuntimeError::Recovery)?;
-        let observation_dispatch = self
-            .coordinator
-            .plan_workspace_pin_repair_admission_observation(
-                request_body,
-                artifacts,
-                protocol_version,
-                peer,
-                policy,
-                &preliminary_clock,
-                &self.pin_contract,
-                current_host_scope,
-            )
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let retained = match (operator_owner.as_mut(), expected_attestation_digest) {
+            (Some((owner, intent)), Some(expected)) => {
+                let packet = owner
+                    .recover_reserved_probe_attestation_v1(intent)
+                    .map_err(operator_sidecar_failure)?;
+                if Sha256::digest(&packet).as_slice() != expected {
+                    return Err(StorageRuntimeError::Recovery);
+                }
+                let challenge: [u8; 16] = packet
+                    .get(72..88)
+                    .ok_or(StorageRuntimeError::Recovery)?
+                    .try_into()
+                    .map_err(|_| StorageRuntimeError::Recovery)?;
+                Some(challenge)
+            }
+            (None, None) | (Some(_), None) => None,
+            (None, Some(_)) => return Err(StorageRuntimeError::Recovery),
+        };
+        let observation_dispatch = match retained {
+            Some(challenge) => self
+                .coordinator
+                .plan_workspace_pin_repair_admission_observation_with_challenge(
+                    request_body,
+                    artifacts,
+                    protocol_version,
+                    peer,
+                    policy,
+                    &preliminary_clock,
+                    &self.pin_contract,
+                    current_host_scope,
+                    challenge,
+                ),
+            None => self
+                .coordinator
+                .plan_workspace_pin_repair_admission_observation(
+                    request_body,
+                    artifacts,
+                    protocol_version,
+                    peer,
+                    policy,
+                    &preliminary_clock,
+                    &self.pin_contract,
+                    current_host_scope,
+                ),
+        }
+        .map_err(|_| StorageRuntimeError::Recovery)?;
         let observation_request = observation_dispatch
             .request_bytes()
             .map_err(|_| StorageRuntimeError::Recovery)?;
@@ -1659,28 +1800,12 @@ impl StorageBrokerRuntime {
             .observe_repair_admission(&observation_request, observation_dispatch.probe())
             .map_err(|_| StorageRuntimeError::Recovery)?;
         if let Some((owner, signed_intent)) = operator_owner {
-            let semantics = aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1::decode(
-                request_body,
-                peer,
-                policy,
-                preliminary_clock.boottime_nanoseconds(),
-            )
-            .map_err(|_| StorageRuntimeError::Recovery)?;
-            match owner
-                .reserve(
-                    signed_intent,
-                    request_body,
-                    &semantics,
-                    observation_dispatch.probe(),
-                    &fresh_observation,
-                )
-                .map_err(|_| StorageRuntimeError::Recovery)?
-            {
-                crate::operator_recovery::StorageOperatorRecoveryReservationV2::Pending => {}
-                crate::operator_recovery::StorageOperatorRecoveryReservationV2::Complete(_) => {
-                    return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
-                }
+            if expected_attestation_digest.is_none() {
+                return Err(StorageRuntimeError::Recovery);
             }
+            owner
+                .sign_reserved_probe_attestation_v1(signed_intent, observation_dispatch.probe())
+                .map_err(operator_sidecar_failure)?;
         }
         let result = self.coordinator.begin_workspace_pin_repair(
             observation_dispatch,
