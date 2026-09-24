@@ -4,6 +4,25 @@
   mkSystem,
   serverModule,
 }: let
+  mkCheck = name: valid:
+    if !valid
+    then throw "config-provenance ${name} failed"
+    else
+      pkgs.mkDerivation {
+        pname = "config-provenance-${name}-check";
+        version = "0";
+        src = null;
+        phases = [
+          {
+            name = "check";
+            script = ''
+              mkdir -p $out
+              echo PASS > $out/result
+            '';
+          }
+        ];
+      };
+
   packageModuleRoot = builtins.path {
     path = ../../tests/fixtures/config-provenance;
     name = "aos-config-provenance-package-modules";
@@ -149,36 +168,60 @@
     .configManifest
     .ownership
     .users));
-in
-  assert manifest.ownership.etc."systemd/network/20-host.network" == "@host";
-  assert manifest.ownership.etc.profile == "@base";
-  assert manifest.ownership.etc."pam/environment" == "@base";
-  assert hostComposedManifest.ownership.etc.profile == "@host";
-  assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
-  assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
-  assert selectedNginxAbilities.instances ? "nginx:nginx";
-  assert selectedNginxAbilities.requests ? "nginx:main-lifecycle";
-  assert selectedNginxAbilities.requests ? "nginx:server-configuration";
-  assert hostSessionManifest.ownership.etc.profile == "@base";
-  assert hostSessionManifest.ownership.etc."pam/environment" == "@host";
-  assert directHostLoginManifest.ownership.etc.profile == "@host";
-  assert directHostLoginManifest.ownership.etc."pam/environment" == "@host";
-  assert !packagePathContribution.success;
-  assert !packageSessionContribution.success;
-  assert manifest.ownership.etc."provenance-demo.conf" == "provenance-demo";
-  assert !ancestorEtcCollision.success;
-  assert !mixedUserGroupOwner.success;
-    pkgs.mkDerivation {
-      pname = "config-provenance-check";
-      version = "0";
-      src = null;
-      phases = [
-        {
-          name = "check";
-          script = ''
-            mkdir -p $out
-            echo PASS > $out/result
-          '';
-        }
-      ];
-    }
+
+  suites = {
+    config-provenance-base = mkCheck "base" (
+      manifest.ownership.etc."systemd/network/20-host.network"
+      == "@host"
+      && manifest.ownership.etc.profile == "@base"
+      && manifest.ownership.etc."pam/environment" == "@base"
+      && manifest.ownership.etc."provenance-demo.conf" == "provenance-demo"
+      && selectedNginxAbilities.instances ? "nginx:nginx"
+      && selectedNginxAbilities.requests ? "nginx:main-lifecycle"
+      && selectedNginxAbilities.requests ? "nginx:server-configuration"
+    );
+
+    config-provenance-host-package = mkCheck "host-package" (
+      hostComposedManifest.ownership.etc.profile
+      == "@host"
+      && hostComposedManifest.ownership.etc."pam/environment" == "@host"
+      && hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host"
+    );
+
+    config-provenance-host-etc = mkCheck "host-etc" (
+      hostSessionManifest.ownership.etc.profile
+      == "@base"
+      && hostSessionManifest.ownership.etc."pam/environment" == "@host"
+      && directHostLoginManifest.ownership.etc.profile == "@host"
+      && directHostLoginManifest.ownership.etc."pam/environment" == "@host"
+    );
+
+    config-provenance-package-rejections = mkCheck "package-rejections" (
+      !packagePathContribution.success
+      && !packageSessionContribution.success
+    );
+
+    config-provenance-collision-rejections = mkCheck "collision-rejections" (
+      !ancestorEtcCollision.success
+      && !mixedUserGroupOwner.success
+    );
+  };
+in {
+  inherit suites;
+
+  all = pkgs.mkDerivation {
+    pname = "config-provenance-check";
+    version = "0";
+    src = null;
+    buildDeps = builtins.attrValues suites;
+    phases = [
+      {
+        name = "check";
+        script = ''
+          mkdir -p $out
+          echo PASS > $out/result
+        '';
+      }
+    ];
+  };
+}
