@@ -13,8 +13,8 @@ use aos_hub_core::db::{
     BindingRecord, BindingWriteRevisionRecord, Database, SurfacePlacementRecord,
 };
 use aos_hub_core::fetch::{
-    StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
-    SurfaceProvider,
+    StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
+    SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageGitObjectProjection, StorageWorkKey, StorageWorkOperation,
@@ -618,6 +618,13 @@ impl HybridSurfaceFetch {
 impl SurfaceFetch for HybridSurfaceFetch {
     fn describe(&self) -> String {
         format!("hybrid Worker placement {}", self.placement.id)
+    }
+
+    async fn delivery_head(&self, path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        Ok(self.head(path).await?.map(|object| SurfaceDeliveryHead {
+            size: object.size,
+            strong_etag: object.etag,
+        }))
     }
 
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {

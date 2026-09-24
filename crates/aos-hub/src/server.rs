@@ -14,6 +14,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use base64::Engine as _;
 use tower_http::catch_panic::CatchPanicLayer;
 
 /// Maximum inbound request-body size for the shared RPC surface (8 MiB).
@@ -248,6 +249,7 @@ async fn verify_hybrid_ingress(
                 || matches!(
                     name,
                     "x-aos-hybrid-ingress"
+                        | "x-aos-hybrid-delivery"
                         | "x-aos-delivery-attestation"
                         | "x-aos-client-ip"
                         | "x-aos-console-route"
@@ -285,7 +287,7 @@ async fn verify_hybrid_ingress(
     parts
         .extensions
         .insert(aos_hub_core::connect::DeliveryTransportEvidence {
-            scheme: assertion.scheme,
+            scheme: assertion.scheme.clone(),
             ingress_kind: "hub".into(),
             tls_identity: Some(public_host),
         });
@@ -293,6 +295,31 @@ async fn verify_hybrid_ingress(
     let mut response = next
         .run(axum::http::Request::from_parts(parts, body.into()))
         .await;
+    if let Some(target) = response
+        .headers_mut()
+        .remove(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER)
+    {
+        if response.status() != StatusCode::OK || !matches!(method.as_str(), "GET" | "HEAD") {
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+        let signed = target
+            .to_str()
+            .ok()
+            .and_then(|value| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(value)
+                    .ok()
+            })
+            .filter(|value| value.len() <= 4096)
+            .and_then(|value| serde_json::from_slice(&value).ok())
+            .and_then(|target| key.sign_delivery(&assertion, target).ok());
+        let Some(signed) = signed.and_then(|value| HeaderValue::from_str(&value).ok()) else {
+            return StatusCode::BAD_GATEWAY.into_response();
+        };
+        response
+            .headers_mut()
+            .insert(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER, signed);
+    }
     response
         .headers_mut()
         .insert("x-aos-hybrid-origin", HeaderValue::from_static("1"));
@@ -324,6 +351,7 @@ async fn router_with_ports(
     surface_override: Option<Arc<dyn aos_hub_core::fetch::SurfaceProvider>>,
     write_override: Option<Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>>,
 ) -> Router {
+    let hybrid_delivery = surface_override.is_some();
     let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
         surface_override.clone().unwrap_or_else(|| {
             Arc::new(
@@ -391,6 +419,9 @@ async fn router_with_ports(
     .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
         state.http.clone(),
     )));
+    if hybrid_delivery {
+        rpc_service = rpc_service.with_hybrid_delivery();
+    }
     if let Some(provider) = &state.domain_probe_terminator {
         rpc_service = rpc_service.with_domain_probe_terminator(Arc::clone(provider));
     }
@@ -1005,7 +1036,8 @@ pub fn console_deps_for_worker_test(
 mod hybrid_ingress_tests {
     use super::*;
     use aos_hub_core::hybrid_ingress::{
-        HybridIngressAssertion, HybridIngressKey, HYBRID_INGRESS_HEADER,
+        HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey, HYBRID_DELIVERY_HEADER,
+        HYBRID_INGRESS_HEADER,
     };
     use sha2::{Digest as _, Sha256};
     use tower::ServiceExt as _;
@@ -1064,5 +1096,60 @@ mod hybrid_ingress_tests {
             .unwrap();
         let response = app.oneshot(mismatched).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn hybrid_origin_signs_only_its_authorized_delivery_response() {
+        let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
+        let target = HybridDeliveryTarget {
+            object_key: "tenant/cache/nar/example.nar.zst".into(),
+            object_size: 64,
+            object_etag: "\"object-version\"".into(),
+            content_type: "application/octet-stream".into(),
+            cache_control: "public, max-age=31536000, immutable".into(),
+            producer_document: false,
+        };
+        let target_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&target).unwrap());
+        let app = Router::new()
+            .route(
+                "/cache-object",
+                get(move || {
+                    let target_header = target_header.clone();
+                    async move { ([(HYBRID_DELIVERY_HEADER, target_header)], "").into_response() }
+                }),
+            )
+            .layer(axum::middleware::from_fn({
+                let key = Arc::clone(&key);
+                move |request, next| {
+                    let key = Arc::clone(&key);
+                    async move {
+                        verify_hybrid_ingress(key, "deployment-1".into(), request, next).await
+                    }
+                }
+            }));
+        let now = aos_hub_core::clock::now_unix_secs();
+        let assertion = HybridIngressAssertion {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            issued_at: now,
+            expires_at: now + 30,
+            request_id: "delivery-request-1".into(),
+            scheme: "https".into(),
+            authority: "hub.example.test".into(),
+            method: "GET".into(),
+            path_and_query: "/cache-object".into(),
+            body_sha256: hex::encode(Sha256::digest([])),
+            client_ip: "192.0.2.7".into(),
+        };
+        let request = axum::http::Request::builder()
+            .uri("/cache-object")
+            .header(HYBRID_INGRESS_HEADER, key.sign(&assertion).unwrap())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let compact = response.headers()[HYBRID_DELIVERY_HEADER].to_str().unwrap();
+        assert_eq!(key.verify_delivery(compact, &assertion, now), Ok(target));
     }
 }

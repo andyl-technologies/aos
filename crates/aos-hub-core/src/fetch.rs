@@ -236,6 +236,15 @@ pub struct StreamedRead {
     pub snapshot_lease_id: Option<String>,
 }
 
+/// Size and strong version observed together for one delivery object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDeliveryHead {
+    /// Full object size in bytes.
+    pub size: u64,
+    /// Provider-issued strong entity tag for the same metadata snapshot.
+    pub strong_etag: String,
+}
+
 /// Placement-scoped identity evidence collected from one physical object.
 ///
 /// The SHA-256 digest and size are derived from the bytes returned by that
@@ -281,6 +290,18 @@ pub trait SurfaceFetch: BackendBounds {
     ///
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Observes one exact object version for a hybrid delivery grant.
+    ///
+    /// The provider must obtain size and strong ETag from the same HEAD. Only
+    /// storage adapters that can do so implement this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this adapter cannot issue grants or HEAD fails.
+    async fn delivery_head(&self, _path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        bail!("this surface does not support hybrid delivery grants")
+    }
 
     /// Whether Git objects are decoded beside storage through a typed query.
     ///

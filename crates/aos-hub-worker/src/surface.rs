@@ -29,6 +29,7 @@ use aos_hub_core::fetch::{
     OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
     SurfaceObjectEvidence, SurfaceProvider,
 };
+use aos_hub_core::hybrid_ingress::HybridDeliveryTarget;
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::secret_version::SecretVersionResolver;
 use aos_hub_core::storage_credential::{
@@ -1109,6 +1110,58 @@ struct R2SurfaceFetch {
     bucket: Bucket,
     contract: R2Contract<WorkerR2BucketAdapter>,
     prefix: String,
+}
+
+/// Opens the exact R2 snapshot admitted by the Native hybrid origin.
+///
+/// # Errors
+///
+/// Returns an error if the object disappeared, changed version, or R2 failed.
+pub(crate) async fn hybrid_delivery_read(
+    bucket: Bucket,
+    target: &HybridDeliveryTarget,
+    range: Option<(u64, u64)>,
+) -> Result<StreamedRead> {
+    let fetcher = R2SurfaceFetch {
+        contract: R2Contract::new(WorkerR2BucketAdapter {
+            bucket: bucket.as_ref().clone(),
+        }),
+        bucket,
+        prefix: String::new(),
+    };
+    let read = fetcher
+        .fetch_stream(&target.object_key, range)
+        .await?
+        .context("authorized R2 delivery object disappeared")?;
+    anyhow::ensure!(
+        read.total == target.object_size
+            && read.strong_etag.as_deref() == Some(target.object_etag.as_str()),
+        "authorized R2 delivery object changed after Native admission"
+    );
+    Ok(read)
+}
+
+/// Confirms a bodyless HEAD against the exact Native-authorized R2 snapshot.
+///
+/// # Errors
+///
+/// Returns an error if the object disappeared, changed version, or R2 failed.
+pub(crate) async fn hybrid_delivery_head(
+    bucket: Bucket,
+    target: &HybridDeliveryTarget,
+) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    let head = contract
+        .head(&target.object_key)
+        .await?
+        .context("authorized R2 delivery object disappeared")?;
+    anyhow::ensure!(
+        head.size == target.object_size && head.etag == target.object_etag,
+        "authorized R2 delivery object changed after Native admission"
+    );
+    Ok(())
 }
 
 #[async_trait(?Send)]

@@ -15,6 +15,8 @@ use sha2::{Digest as _, Sha256};
 
 /// Header carrying the compact signed Worker ingress assertion.
 pub const HYBRID_INGRESS_HEADER: &str = "x-aos-hybrid-ingress";
+/// Internal response header carrying an exact Worker-side R2 delivery grant.
+pub const HYBRID_DELIVERY_HEADER: &str = "x-aos-hybrid-delivery";
 
 /// Marks a verified Worker-to-Native request for data-plane route fencing.
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +53,44 @@ pub struct HybridIngressAssertion {
     pub body_sha256: String,
     /// Client IP verified by the Cloudflare ingress.
     pub client_ip: String,
+}
+
+/// Exact object snapshot that Native authorizes the Worker to deliver.
+///
+/// Native emits this only after the shared delivery route and surface read
+/// authorization succeed. The origin middleware binds it to the signed
+/// request before the Worker reads from R2.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridDeliveryTarget {
+    /// Full key in the deployment R2 bucket.
+    pub object_key: String,
+    /// Size observed from the selected placement.
+    pub object_size: u64,
+    /// Strong provider version observed with the size.
+    pub object_etag: String,
+    /// Shared surface MIME classification.
+    pub content_type: String,
+    /// Shared surface cache policy.
+    pub cache_control: String,
+    /// Whether delivery must sandbox and download the producer document.
+    pub producer_document: bool,
+}
+
+/// Short-lived delivery authority signed by the Native origin.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridDeliveryGrant {
+    /// Grant wire version.
+    pub version: u8,
+    /// Deployment shared by the Worker and Native origin.
+    pub deployment_id: String,
+    /// The exact Worker-signed ingress request that caused authorization.
+    pub request_id: String,
+    /// Expiry inherited from the ingress request.
+    pub expires_at: i64,
+    /// Exact physical object and response classification.
+    pub target: HybridDeliveryTarget,
 }
 
 /// Verification failures for a hybrid ingress assertion.
@@ -180,6 +220,122 @@ impl HybridIngressKey {
         }
         Ok(assertion)
     }
+
+    /// Signs one Native-authorized R2 delivery for the verified ingress request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target is malformed or cannot be encoded.
+    pub fn sign_delivery(
+        &self,
+        assertion: &HybridIngressAssertion,
+        target: HybridDeliveryTarget,
+    ) -> Result<String, HybridIngressError> {
+        validate_assertion(assertion)?;
+        if !matches!(assertion.method.as_str(), "GET" | "HEAD") {
+            return Err(HybridIngressError::RequestMismatch);
+        }
+        validate_delivery_target(&target)?;
+        let grant = HybridDeliveryGrant {
+            version: 1,
+            deployment_id: assertion.deployment_id.clone(),
+            request_id: assertion.request_id.clone(),
+            expires_at: assertion.expires_at,
+            target,
+        };
+        let payload = serde_json::to_vec(&grant).map_err(|_| HybridIngressError::Malformed)?;
+        let payload_text = URL_SAFE_NO_PAD.encode(payload);
+        let mut mac =
+            HmacSha256::new_from_slice(&self.bytes).map_err(|_| HybridIngressError::WeakKey)?;
+        mac.update(b"aos-hybrid-delivery-v1\0");
+        mac.update(payload_text.as_bytes());
+        let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        Ok(format!("{payload_text}.{signature}"))
+    }
+
+    /// Verifies a Native delivery grant against this exact Worker request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, forged, expired, or mismatched grants.
+    pub fn verify_delivery(
+        &self,
+        compact: &str,
+        assertion: &HybridIngressAssertion,
+        now: i64,
+    ) -> Result<HybridDeliveryTarget, HybridIngressError> {
+        if !matches!(assertion.method.as_str(), "GET" | "HEAD") {
+            return Err(HybridIngressError::RequestMismatch);
+        }
+        let (payload_text, signature_text) = compact
+            .split_once('.')
+            .filter(|(_, signature)| !signature.contains('.'))
+            .ok_or(HybridIngressError::Malformed)?;
+        let payload = URL_SAFE_NO_PAD
+            .decode(payload_text)
+            .map_err(|_| HybridIngressError::Malformed)?;
+        let signature = URL_SAFE_NO_PAD
+            .decode(signature_text)
+            .map_err(|_| HybridIngressError::Malformed)?;
+        if URL_SAFE_NO_PAD.encode(&payload) != payload_text
+            || URL_SAFE_NO_PAD.encode(&signature) != signature_text
+            || signature.len() != 32
+            || payload.len() > 4096
+        {
+            return Err(HybridIngressError::Malformed);
+        }
+        let mut mac =
+            HmacSha256::new_from_slice(&self.bytes).map_err(|_| HybridIngressError::WeakKey)?;
+        mac.update(b"aos-hybrid-delivery-v1\0");
+        mac.update(payload_text.as_bytes());
+        mac.verify_slice(&signature)
+            .map_err(|_| HybridIngressError::InvalidSignature)?;
+
+        let grant: HybridDeliveryGrant =
+            serde_json::from_slice(&payload).map_err(|_| HybridIngressError::Malformed)?;
+        validate_delivery_target(&grant.target)?;
+        if grant.version != 1
+            || grant.deployment_id != assertion.deployment_id
+            || grant.request_id != assertion.request_id
+        {
+            return Err(HybridIngressError::RequestMismatch);
+        }
+        if grant.expires_at != assertion.expires_at || grant.expires_at < now {
+            return Err(HybridIngressError::InvalidTime);
+        }
+        Ok(grant.target)
+    }
+}
+
+fn validate_delivery_target(target: &HybridDeliveryTarget) -> Result<(), HybridIngressError> {
+    if target.object_key.is_empty()
+        || target.object_key.len() > 2048
+        || target.object_key.starts_with('/')
+        || target
+            .object_key
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || target
+            .object_key
+            .bytes()
+            .any(|byte| byte.is_ascii_control())
+        || crate::surface_write::strong_if_match_etag(&target.object_etag).is_err()
+        || target.content_type.is_empty()
+        || target.content_type.len() > 256
+        || target.cache_control.is_empty()
+        || target.cache_control.len() > 256
+        || target
+            .content_type
+            .bytes()
+            .any(|byte| byte.is_ascii_control())
+        || target
+            .cache_control
+            .bytes()
+            .any(|byte| byte.is_ascii_control())
+    {
+        return Err(HybridIngressError::Malformed);
+    }
+    Ok(())
 }
 
 fn validate_assertion(assertion: &HybridIngressAssertion) -> Result<(), HybridIngressError> {
@@ -286,6 +442,69 @@ mod tests {
                 131,
             ),
             Err(HybridIngressError::InvalidTime)
+        );
+    }
+
+    #[test]
+    fn delivery_grant_is_bound_to_request_and_exact_object_version() {
+        let key = HybridIngressKey::new([7; 32]).unwrap();
+        let mut request = assertion();
+        request.method = "GET".into();
+        let target = HybridDeliveryTarget {
+            object_key: "tenant/cache/nar/abc.nar.zst".into(),
+            object_size: 42,
+            object_etag: "\"r2-version\"".into(),
+            content_type: "application/octet-stream".into(),
+            cache_control: "public, max-age=31536000, immutable".into(),
+            producer_document: false,
+        };
+
+        let signed = key.sign_delivery(&request, target.clone()).unwrap();
+        assert_eq!(key.verify_delivery(&signed, &request, 110), Ok(target));
+
+        let mut other_request = request.clone();
+        other_request.request_id = "request-2".into();
+        assert_eq!(
+            key.verify_delivery(&signed, &other_request, 110),
+            Err(HybridIngressError::RequestMismatch)
+        );
+        assert_eq!(
+            key.verify_delivery(&signed, &request, 131),
+            Err(HybridIngressError::InvalidTime)
+        );
+
+        let mut forged = signed.into_bytes();
+        forged[0] = if forged[0] == b'A' { b'B' } else { b'A' };
+        assert_eq!(
+            key.verify_delivery(&String::from_utf8(forged).unwrap(), &request, 110),
+            Err(HybridIngressError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn delivery_grants_reject_escaped_keys_and_weak_versions() {
+        let key = HybridIngressKey::new([7; 32]).unwrap();
+        let mut request = assertion();
+        request.method = "GET".into();
+        let mut target = HybridDeliveryTarget {
+            object_key: "tenant/cache/nar/abc.nar.zst".into(),
+            object_size: 42,
+            object_etag: "\"r2-version\"".into(),
+            content_type: "application/octet-stream".into(),
+            cache_control: "private, no-store".into(),
+            producer_document: false,
+        };
+
+        target.object_key = "tenant/../other/secret".into();
+        assert_eq!(
+            key.sign_delivery(&request, target.clone()),
+            Err(HybridIngressError::Malformed)
+        );
+        target.object_key = "tenant/cache/nar/abc.nar.zst".into();
+        target.object_etag = "W/\"weak\"".into();
+        assert_eq!(
+            key.sign_delivery(&request, target),
+            Err(HybridIngressError::Malformed)
         );
     }
 }

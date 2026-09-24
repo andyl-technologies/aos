@@ -5,7 +5,8 @@
 //! fallback: they must be implemented by the Worker storage data plane.
 
 use aos_hub_core::hybrid_ingress::{
-    HybridIngressAssertion, HybridIngressKey, HYBRID_INGRESS_HEADER,
+    HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey, HYBRID_DELIVERY_HEADER,
+    HYBRID_INGRESS_HEADER,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
@@ -191,6 +192,7 @@ pub async fn proxy(mut request: Request, env: &Env) -> Result<Response> {
         .headers()
         .get("cf-connecting-ip")?
         .ok_or_else(|| worker::Error::RustError("Cloudflare client IP is missing".into()))?;
+    let requested_range = request.headers().get("range")?;
     let Some(body) = read_bounded_body(&mut request, MAX_CONTROL_BODY_BYTES).await? else {
         return Response::error("control request body is too large", 413);
     };
@@ -255,6 +257,18 @@ pub async fn proxy(mut request: Request, env: &Env) -> Result<Response> {
     }
     headers.delete("x-aos-hybrid-origin")?;
     let status = response.status_code();
+    if let Some(compact) = headers.get(HYBRID_DELIVERY_HEADER)? {
+        if status != 200 || !matches!(request.method(), worker::Method::Get | worker::Method::Head)
+        {
+            return Response::error("invalid hybrid delivery response", 502);
+        }
+        let target =
+            match key.verify_delivery(&compact, &assertion, aos_hub_core::clock::now_unix_secs()) {
+                Ok(target) => target,
+                Err(_) => return Response::error("hybrid delivery grant is invalid", 502),
+            };
+        return deliver_from_r2(env, request.method(), requested_range.as_deref(), target).await;
+    }
     let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
         return Response::error("hybrid control response is too large", 502);
     };
@@ -266,6 +280,62 @@ pub async fn proxy(mut request: Request, env: &Env) -> Result<Response> {
     })?
     .with_status(status)
     .with_headers(headers))
+}
+
+async fn deliver_from_r2(
+    env: &Env,
+    method: worker::Method,
+    range_header: Option<&str>,
+    target: HybridDeliveryTarget,
+) -> Result<Response> {
+    let requested = aos_hub_core::service::parse_byte_range(range_header);
+    let served = requested.and_then(|(start, end)| {
+        (start < target.object_size).then_some((start, end.min(target.object_size - 1)))
+    });
+    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+    let body = if method == worker::Method::Head {
+        if let Err(error) = crate::surface::hybrid_delivery_head(bucket, &target).await {
+            worker::console_error!("hybrid_delivery_head_failed: {error:#}");
+            return Response::error("hybrid delivery unavailable", 503);
+        }
+        axum::body::Body::empty()
+    } else {
+        let read = match crate::surface::hybrid_delivery_read(bucket, &target, served).await {
+            Ok(read) => read,
+            Err(error) => {
+                worker::console_error!("hybrid_delivery_read_failed: {error:#}");
+                return Response::error("hybrid delivery unavailable", 503);
+            }
+        };
+        if read.range != served {
+            return Response::error("hybrid delivery range changed", 503);
+        }
+        read.body
+    };
+
+    let mut response = axum::response::Response::builder()
+        .status(if served.is_some() { 206 } else { 200 })
+        .header("content-type", &target.content_type)
+        .header("cache-control", &target.cache_control)
+        .header("accept-ranges", "bytes");
+    if target.producer_document {
+        response = response
+            .header("content-security-policy", "sandbox")
+            .header("content-disposition", "attachment");
+    }
+    response = match served {
+        Some((start, end)) => response
+            .header(
+                "content-range",
+                format!("bytes {start}-{end}/{}", target.object_size),
+            )
+            .header("content-length", end - start + 1),
+        None => response.header("content-length", target.object_size),
+    };
+    let response = response
+        .body(body)
+        .map_err(|error| worker::Error::RustError(format!("hybrid delivery response: {error}")))?;
+    crate::bridge::to_worker(response).await
 }
 
 async fn read_bounded_response(mut response: Response, maximum: usize) -> Result<Option<Vec<u8>>> {
@@ -328,6 +398,7 @@ fn is_forwarded_header(name: &str) -> bool {
         || matches!(
             name.as_str(),
             "x-aos-hybrid-ingress"
+                | "x-aos-hybrid-delivery"
                 | "x-aos-delivery-attestation"
                 | "x-aos-client-ip"
                 | "x-aos-console-route"

@@ -1477,7 +1477,7 @@ fn render_nix_cache_info(want_mass_query: bool, priority: i64) -> String {
 /// fetcher clamps to the object's last byte. Returns `None` for an absent,
 /// malformed, multi-range, or suffix (`bytes=-N`) header — the caller then
 /// serves the whole object.
-fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
+pub fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
     let spec = header?.trim().strip_prefix("bytes=")?;
     if spec.contains(',') {
         return None;
@@ -2530,6 +2530,8 @@ pub struct RpcService {
     /// binding; the Worker returns an R2-backed fetcher scoped to the
     /// registry's prefix.
     pub surface: Arc<dyn SurfaceProvider>,
+    /// Native hybrid origins authorize exact R2 delivery snapshots here.
+    pub hybrid_delivery: bool,
     /// The placement surface-write port used by typed cache uploads and
     /// placement-aware registry publications.
     ///
@@ -10122,6 +10124,7 @@ impl RpcService {
             container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
             surface,
+            hybrid_delivery: false,
             surface_write,
             lease,
             reindexer,
@@ -10458,6 +10461,13 @@ impl RpcService {
     #[must_use]
     pub fn with_origin_fetch(mut self, origin_fetch: Arc<dyn crate::fetch::OriginFetch>) -> Self {
         self.origin_fetch = Some(origin_fetch);
+        self
+    }
+
+    /// Enables exact R2 delivery grants on the signed hybrid Native origin.
+    #[must_use]
+    pub fn with_hybrid_delivery(mut self) -> Self {
+        self.hybrid_delivery = true;
         self
     }
 
@@ -27628,6 +27638,10 @@ impl RpcService {
             return Ok(Some(resp));
         }
 
+        if self.hybrid_delivery {
+            return self.cache_hybrid_delivery(cache.id, path).await;
+        }
+
         let requested = parse_byte_range(range_header);
         match placement_read::stream_from_placements(
             self.db.as_ref(),
@@ -27644,6 +27658,81 @@ impl RpcService {
             }
             PlacementReadOutcome::NotFound => return Ok(None),
         }
+    }
+
+    async fn cache_hybrid_delivery(
+        &self,
+        cache_id: i64,
+        path: &str,
+    ) -> Result<Option<axum::response::Response>, RpcError> {
+        use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
+        use crate::placement_read::{classify_read_error, ReadFailureClass};
+
+        let surface = SurfaceTarget::BinaryCache(cache_id);
+        let plan = self
+            .db
+            .readable_surface_placements(
+                surface,
+                placement_read::requirement_for_path(surface, path),
+            )
+            .await
+            .map_err(RpcError::surface_read)?;
+        if !plan.has_configured_placements
+            || (plan.candidates.is_empty() && plan.has_policy_only_shards)
+        {
+            return Err(RpcError::FailedPrecondition(
+                "cache has no eligible complete storage placement".into(),
+            ));
+        }
+
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let fetch = match self.surface.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RpcError::surface_read(error)),
+            };
+            let head = match fetch.delivery_head(path).await {
+                Ok(head) => head,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RpcError::surface_read(error)),
+            };
+            let Some(head) = head else {
+                continue;
+            };
+            let target = HybridDeliveryTarget {
+                object_key: keymap::r2_key(&placement.prefix, path),
+                object_size: head.size,
+                object_etag: head.strong_etag,
+                content_type: keymap::content_type(path).into(),
+                cache_control: keymap::cache_control(path).into(),
+                producer_document: keymap::is_producer_document(path),
+            };
+            let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+            let response = axum::response::Response::builder()
+                .header(HYBRID_DELIVERY_HEADER, encoded)
+                .header(axum::http::header::CACHE_CONTROL, "private, no-store")
+                .body(axum::body::Body::empty())
+                .map_err(RpcError::internal)?;
+            return Ok(Some(response));
+        }
+
+        if let Some(error) = last_retryable {
+            return Err(RpcError::surface_read(error));
+        }
+        if plan.miss_is_inconsistent {
+            return Err(RpcError::surface_read(placement_read::terminal_read_error(
+                "cache object is missing from an inventoried placement",
+            )));
+        }
+        Ok(None)
     }
 
     /// Builds the `200`/`206` response for a streamed surface object.
