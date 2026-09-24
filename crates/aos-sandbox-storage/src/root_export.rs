@@ -5,6 +5,8 @@
 //! AOSRME01 proof is only a selector; Storage independently derives its current
 //! physical inventory before and after cloning the mount.
 
+use std::os::fd::AsFd as _;
+
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
