@@ -287,7 +287,9 @@ fn split_canonical_response(
 mod tests {
     use super::*;
     use aos_sandbox_source_provider_protocol::{
-        SourceProviderResponseStatusV1, empty_descriptor_set_commitment_v1, sign_response_status,
+        InventoryReadbackQueryV1, InventorySourceRequestV1, SignedInventoryReadbackV1,
+        SourceProviderResponseStatusV1, digest_signed_request, empty_descriptor_set_commitment_v1,
+        encode_inventory_request, sign_request, sign_response_status, verify_request,
     };
     use ed25519_dalek::SigningKey;
 
@@ -333,5 +335,143 @@ mod tests {
         assert!(verify_response_status(&decoded, &key.verifying_key().to_bytes()).is_ok());
         assert!(verify_response_status(&decoded, &wrong_key.verifying_key().to_bytes()).is_err());
         assert!(split_canonical_response(SourceProviderMethod::Release, &payload).is_err());
+    }
+
+    #[test]
+    fn historical_inventory_readback_keeps_request_and_mount_record_bound() {
+        // Fixed owners require UID-0 custody under /var/lib/aos. This fixture
+        // exercises signed response binding before the protected journal claim.
+        let root_key = SigningKey::from_bytes(&[21; 32]);
+        let root_signer = SourceProviderSigningKeyV1::for_signing_key(
+            [11; 16],
+            1,
+            ObjectDigest::from_bytes([12; 32]),
+            [13; 16],
+            1,
+            SourceProviderKeyUsageV1::RootMountRecord,
+            &root_key,
+        )
+        .unwrap();
+        let old_request = InventorySourceRequestV1::new(
+            ObjectDigest::from_bytes([14; 32]),
+            1,
+            [15; 16],
+            [11; 16],
+            1,
+            ObjectDigest::from_bytes([12; 32]),
+            None,
+            100,
+        )
+        .unwrap();
+        let signed_request = sign_request(
+            SourceProviderMethod::Inventory,
+            encode_inventory_request(&old_request),
+            root_signer,
+            &root_key,
+        )
+        .unwrap();
+        let old_request_digest = digest_signed_request(&signed_request);
+
+        let provider_key = SigningKey::from_bytes(&[17; 32]);
+        let provider_signer = SourceProviderSigningKeyV1::for_signing_key(
+            [1; 16],
+            1,
+            ObjectDigest::from_bytes([2; 32]),
+            [3; 16],
+            1,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &provider_key,
+        )
+        .unwrap();
+        let status = SourceProviderResponseStatusV1::new(
+            SourceProviderMethod::Inventory,
+            [15; 16],
+            old_request_digest,
+            SourceProviderStatus::Unavailable,
+            [16; 16],
+            old_request.session_binding(),
+            1,
+            response_result_digest_v1(
+                SourceProviderMethod::Inventory,
+                SourceProviderStatus::Unavailable,
+                None,
+            ),
+            empty_descriptor_set_commitment_v1(),
+        )
+        .unwrap();
+        let signed_status =
+            sign_response_status(status, provider_signer.clone(), &provider_key).unwrap();
+        let historical_response = encode_inventory_response(
+            &InventorySourceResponseV1::new(signed_status, None).unwrap(),
+        );
+        let query = InventoryReadbackQueryV1::new(
+            ObjectDigest::from_bytes([18; 32]),
+            [19; 32],
+            1,
+            [1; 16],
+            [11; 16],
+            old_request_digest,
+            ObjectDigest::from_bytes([20; 32]),
+        )
+        .unwrap();
+
+        let completed = SignedInventoryReadbackV1::sign(
+            &query,
+            Some((historical_response.clone(), 10, 100)),
+            provider_signer.clone(),
+            &provider_key,
+        )
+        .unwrap();
+        let decoded =
+            SignedInventoryReadbackV1::from_canonical_bytes(&completed.to_canonical_bytes())
+                .unwrap();
+        decoded
+            .verify_for_query(
+                &query,
+                &provider_signer,
+                &provider_key.verifying_key().to_bytes(),
+            )
+            .unwrap();
+        let (response, completed_at, deadline) = decoded.completed().unwrap();
+        assert_eq!((completed_at, deadline), (10, 100));
+        assert_eq!(response, historical_response);
+        verify_request(&signed_request, &root_key.verifying_key().to_bytes()).unwrap();
+
+        let (status_bytes, result, needs_source_root) =
+            split_canonical_response(SourceProviderMethod::Inventory, response).unwrap();
+        let status = SignedSourceProviderStatusV1::from_canonical_bytes(&status_bytes).unwrap();
+        verify_response_status(&status, &provider_key.verifying_key().to_bytes()).unwrap();
+        assert_eq!(status.subject().signed_request_digest(), old_request_digest);
+        assert_eq!(
+            status.subject().request_id(),
+            old_request.request_identity().1
+        );
+        assert!(result.is_empty());
+        assert!(!needs_source_root);
+
+        let unresolved =
+            SignedInventoryReadbackV1::sign(&query, None, provider_signer.clone(), &provider_key)
+                .unwrap();
+        assert!(unresolved.completed().is_none());
+
+        let changed_mount_record = InventoryReadbackQueryV1::new(
+            query.session_binding(),
+            [19; 32],
+            1,
+            [1; 16],
+            [11; 16],
+            old_request_digest,
+            ObjectDigest::from_bytes([22; 32]),
+        )
+        .unwrap();
+        assert!(
+            decoded
+                .verify_for_query(
+                    &changed_mount_record,
+                    &provider_signer,
+                    &provider_key.verifying_key().to_bytes(),
+                )
+                .is_err()
+        );
     }
 }

@@ -17,6 +17,7 @@ use aos_sandbox_source_provider_protocol::{
     SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1, SourceProviderMethod,
     decode_acquire_request, decode_inventory_request,
 };
+use aos_sandbox_source_provider_ledger::ledger::model::AttemptRecordV1;
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
 };
@@ -1031,31 +1032,7 @@ impl FixedProviderOwnerV1 {
         query: &InventoryReadbackQueryV1,
     ) -> Result<Option<FixedProviderHistoricalOutcomeV1>, ProviderLedgerError> {
         let signed = self.with_ledger(|ledger| {
-            let mut matches =
-                ledger.recovered.attempts.values().filter(|attempt| {
-                    attempt.signed_request_digest == query.signed_request_digest()
-                });
-            let Some(attempt) = matches.next() else {
-                return Ok(None);
-            };
-            if matches.next().is_some()
-                || attempt.method != SourceProviderMethod::Inventory
-                || attempt.provider.authority_id() != query.authorities().0
-                || attempt.holder.authority_id() != query.authorities().1
-            {
-                return Err(ProviderLedgerError::Equivocation);
-            }
-            match attempt.state {
-                crate::ProviderAttemptStateV1::Reserved => Ok(None),
-                crate::ProviderAttemptStateV1::Completed => {
-                    let signed = SignedSourceProviderRequestV1::from_canonical_bytes(
-                        &attempt.signed_request,
-                    )
-                    .map_err(|_| ProviderLedgerError::Equivocation)?;
-                    Ok(Some(signed))
-                }
-                crate::ProviderAttemptStateV1::Retired => Err(ProviderLedgerError::Equivocation),
-            }
+            select_completed_inventory_request(ledger.recovered.attempts.values(), query)
         })?;
         let Some(signed) = signed else {
             return Ok(None);
@@ -2155,6 +2132,40 @@ fn validate_catalog_query_progress(
     Ok(())
 }
 
+fn select_completed_inventory_request<'attempt>(
+    attempts: impl Iterator<Item = &'attempt AttemptRecordV1>,
+    query: &InventoryReadbackQueryV1,
+) -> Result<Option<SignedSourceProviderRequestV1>, ProviderLedgerError> {
+    let mut matches =
+        attempts.filter(|attempt| attempt.signed_request_digest == query.signed_request_digest());
+    let Some(attempt) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some()
+        || attempt.method != SourceProviderMethod::Inventory
+        || attempt.provider.authority_id() != query.authorities().0
+        || attempt.holder.authority_id() != query.authorities().1
+    {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    match attempt.state {
+        crate::ProviderAttemptStateV1::Reserved => Ok(None),
+        crate::ProviderAttemptStateV1::Completed => {
+            let signed =
+                SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
+                    .map_err(|_| ProviderLedgerError::Equivocation)?;
+            if signed.method() != SourceProviderMethod::Inventory
+                || aos_sandbox_source_provider_protocol::digest_signed_request(&signed)
+                    != query.signed_request_digest()
+            {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            Ok(Some(signed))
+        }
+        crate::ProviderAttemptStateV1::Retired => Err(ProviderLedgerError::Equivocation),
+    }
+}
+
 const fn provider_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
@@ -2188,6 +2199,134 @@ fn validate_production_source_request(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod inventory_readback_selection_tests {
+    use super::*;
+    use aos_sandbox_source_provider_protocol::{
+        InventorySourceRequestV1, SourceProviderAuthorityV1, SourceProviderKeyUsageV1,
+        SourceProviderSigningKeyV1, digest_inventory_request, digest_signed_request,
+        encode_inventory_request, sign_request,
+    };
+    use ed25519_dalek::SigningKey;
+
+    fn reserved_inventory() -> (AttemptRecordV1, InventoryReadbackQueryV1) {
+        let key = SigningKey::from_bytes(&[21; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [11; 16],
+            1,
+            ObjectDigest::from_bytes([12; 32]),
+            [13; 16],
+            1,
+            SourceProviderKeyUsageV1::RootMountRecord,
+            &key,
+        )
+        .unwrap();
+        let request = InventorySourceRequestV1::new(
+            ObjectDigest::from_bytes([14; 32]),
+            1,
+            [15; 16],
+            [11; 16],
+            1,
+            ObjectDigest::from_bytes([12; 32]),
+            None,
+            100,
+        )
+        .unwrap();
+        let signed = sign_request(
+            SourceProviderMethod::Inventory,
+            encode_inventory_request(&request),
+            signer.clone(),
+            &key,
+        )
+        .unwrap();
+        let digest = digest_signed_request(&signed);
+        let holder =
+            SourceProviderAuthorityV1::new([11; 16], 1, ObjectDigest::from_bytes([12; 32]))
+                .unwrap();
+        let provider =
+            SourceProviderAuthorityV1::new([1; 16], 1, ObjectDigest::from_bytes([2; 32])).unwrap();
+        let attempt = crate::transaction::reserved_attempt(
+            provider,
+            holder,
+            signer,
+            SourceProviderMethod::Inventory,
+            [15; 16],
+            digest,
+            digest_inventory_request(&request),
+            ObjectDigest::from_bytes([16; 32]),
+            0,
+            ObjectDigest::from_bytes([17; 32]),
+            request.session_binding(),
+            1,
+            100,
+            1,
+            100,
+            1,
+            false,
+            false,
+            [18; 16],
+            [19; 16],
+            ObjectDigest::from_bytes([20; 32]),
+            None,
+            signed.to_canonical_bytes(),
+        );
+        let query = InventoryReadbackQueryV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            [22; 32],
+            1,
+            [1; 16],
+            [11; 16],
+            digest,
+            ObjectDigest::from_bytes([23; 32]),
+        )
+        .unwrap();
+        (attempt, query)
+    }
+
+    #[test]
+    fn reserved_stays_unavailable_and_completed_selects_exact_request() {
+        let (mut attempt, query) = reserved_inventory();
+        assert!(
+            select_completed_inventory_request([&attempt].into_iter(), &query)
+                .unwrap()
+                .is_none()
+        );
+
+        attempt.state = crate::ProviderAttemptStateV1::Completed;
+        let selected = select_completed_inventory_request([&attempt].into_iter(), &query)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            digest_signed_request(&selected),
+            query.signed_request_digest()
+        );
+
+        let mut corrupt = attempt.clone();
+        corrupt.signed_request[16] ^= 1;
+        assert!(select_completed_inventory_request([&corrupt].into_iter(), &query).is_err());
+        assert!(
+            select_completed_inventory_request([&attempt, &attempt].into_iter(), &query).is_err()
+        );
+
+        let wrong_provider = InventoryReadbackQueryV1::new(
+            query.session_binding(),
+            [22; 32],
+            1,
+            [24; 16],
+            [11; 16],
+            query.signed_request_digest(),
+            query.mount_attempt_record_digest(),
+        )
+        .unwrap();
+        assert!(
+            select_completed_inventory_request([&attempt].into_iter(), &wrong_provider).is_err()
+        );
+
+        attempt.state = crate::ProviderAttemptStateV1::Retired;
+        assert!(select_completed_inventory_request([&attempt].into_iter(), &query).is_err());
+    }
 }
 
 #[cfg(test)]
