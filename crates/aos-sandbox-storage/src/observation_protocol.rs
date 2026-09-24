@@ -1161,7 +1161,7 @@ fn encode_physical_plan_rows(
     targets: &[WorkspaceCatalogObservationTargetV1],
 ) -> Result<(), ZfsWorkerError> {
     for root in roots {
-        encode_text_u16(&mut bytes, &root.name)?;
+        encode_text_u16(bytes, &root.name)?;
         bytes.extend_from_slice(&root.guid.to_be_bytes());
     }
     for object in allowed_objects {
@@ -1170,14 +1170,14 @@ fn encode_physical_plan_rows(
             WorkspaceCatalogObservationObjectKindV1::Filesystem => 0,
             WorkspaceCatalogObservationObjectKindV1::Volume => 1,
         });
-        encode_text_u16(&mut bytes, &object.name)?;
+        encode_text_u16(bytes, &object.name)?;
         bytes.extend_from_slice(&object.guid.to_be_bytes());
     }
     for target in targets {
         bytes.extend_from_slice(&target.workspace_handle);
         bytes.extend_from_slice(&target.creation_operation_id);
         bytes.extend_from_slice(&target.root_index.to_be_bytes());
-        encode_text_u16(&mut bytes, &target.dataset_name)?;
+        encode_text_u16(bytes, &target.dataset_name)?;
         bytes.extend_from_slice(&target.dataset_guid.to_be_bytes());
         match target.expectation {
             WorkspaceCatalogObservationExpectationV1::Absent => bytes.push(0),
