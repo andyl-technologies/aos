@@ -8,10 +8,12 @@
 //! This module neither sends to Host nor admits an ExecutionSpec.
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerAuthorizationArtifactsV1, ObserveHostExecutionArgumentRequestV1, RequestHeader,
+    Audience, BrokerAuthorizationArtifactsV1, ObserveHostExecutionArgumentRequestV1,
+    QueryHostExecutionArgumentRequestV1, RequestHeader,
 };
 use aos_sandbox::controller_execution_argument_attempt::{
     ControllerExecutionArgumentAttemptV1, prepare_controller_execution_argument_attempt_v1,
+    read_historical_controller_execution_argument_attempt_v1,
     retain_controller_execution_argument_attempt_v1,
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
@@ -23,7 +25,9 @@ use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ExecutionId, OperationId, ProtocolId,
     ProtocolVersion, RawPairedClockSample,
 };
-use aos_sandbox_protocol::semantics::host_execution_argument_observe_grant_v1;
+use aos_sandbox_protocol::semantics::{
+    host_execution_argument_observe_grant_v1, host_execution_argument_query_grant_v1,
+};
 use buffa::Message as _;
 
 use crate::DormantBrokerRequestCoordinatesV1;
@@ -41,6 +45,22 @@ impl SignedExecutionArgumentObserveV1 {
         &self.attempt
     }
 
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub(crate) const fn authorization(&self) -> &BrokerAuthorizationArtifactsV1 {
+        &self.authorization
+    }
+}
+
+/// Carries a fresh signed read-only query of the immutable original attempt.
+pub(crate) struct SignedExecutionArgumentQueryV1 {
+    body: Vec<u8>,
+    authorization: BrokerAuthorizationArtifactsV1,
+}
+
+impl SignedExecutionArgumentQueryV1 {
     pub(crate) fn body(&self) -> &[u8] {
         &self.body
     }
@@ -212,6 +232,167 @@ where
     .encode_to_vec();
     Ok(SignedExecutionArgumentObserveV1 {
         attempt,
+        body,
+        authorization: BrokerAuthorizationArtifactsV1 {
+            broker_plan: signed.canonical_plan().to_vec(),
+            broker_plan_signature: signed.canonical_signature().to_vec(),
+            ownership_lease: current.lease().canonical_lease().to_vec(),
+            ownership_lease_signature: current.lease().canonical_signature().to_vec(),
+            ..Default::default()
+        },
+    })
+}
+
+/// Signs a read-only Query38 for the sole original method-37 source.
+///
+/// The original deadline may have expired. A query still requires the same
+/// protected output locator, current signed assignment and Host boot, a new
+/// authenticated-session ID, and a fresh bounded Host-audience plan. Its
+/// response can report historical custody only, never fresh ARG_MAX evidence.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sign_current_host_execution_argument_query_v1<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    attempt: &ControllerExecutionArgumentAttemptV1,
+    signer: &ControllerBrokerPlanSignerV1,
+    coordinates: DormantBrokerRequestCoordinatesV1,
+    clock: &mut T,
+) -> Result<SignedExecutionArgumentQueryV1, EffectFailure>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    if coordinates.request_id() == [0; 16]
+        || coordinates.request_id() == attempt.request_id()
+        || coordinates.protocol_version() != ProtocolVersion::new(1, 0)
+        || coordinates.audience() != Audience::AUDIENCE_NODE_CONTROLLER
+    {
+        return Err(retryable(
+            "Host argument query coordinates are incompatible",
+        ));
+    }
+    let recovered = read_historical_controller_execution_argument_attempt_v1(
+        controller,
+        assignment,
+        attempt.execution(),
+        attempt.create_operation(),
+        clock,
+    )
+    .map_err(|_| retryable("protected Host argument attempt is unavailable"))?;
+    if recovered.as_ref() != Some(attempt) {
+        return Err(retryable("original Host argument attempt differs"));
+    }
+
+    let current = AuthorityPublicationStore::new(controller)
+        .current(assignment.sandbox())
+        .map_err(|_| retryable("current Host authority is unavailable"))?
+        .ok_or_else(|| retryable("current Host authority is absent"))?;
+    let publication = current.manifest();
+    let manifest = publication.manifest();
+    let broker_assignment = publication
+        .broker_assignment()
+        .map_err(|_| retryable("current Host assignment is invalid"))?;
+    let lease_assignment = current.lease().lease().assignment();
+    if manifest.sandbox() != assignment.sandbox()
+        || manifest.incarnation() != assignment.incarnation()
+        || manifest.namespace_generation().get() != assignment.namespace_generation()
+        || publication.digest() != attempt.assignment_digest()
+        || lease_assignment.sandbox() != broker_assignment.sandbox()
+        || lease_assignment.incarnation() != broker_assignment.incarnation()
+        || lease_assignment.epoch() != broker_assignment.epoch()
+        || lease_assignment.digest() != broker_assignment.digest()
+        || current.lease().lease().node() != manifest.node()
+    {
+        return Err(retryable("Host argument query assignment is stale"));
+    }
+    let source = attempt.canonical_bytes();
+    let semantics = host_execution_argument_query_grant_v1(
+        broker_assignment,
+        coordinates.request_id(),
+        &source,
+    )
+    .map_err(|_| retryable("Host argument query semantics are invalid"))?;
+    let template = current
+        .templates()
+        .iter()
+        .find(|candidate| candidate.audience() == BrokerAudience::Host)
+        .ok_or_else(|| retryable("current Host authorization template is absent"))?;
+    let parent_plan = template.plan();
+    if parent_plan.assignment() != broker_assignment || parent_plan.node() != manifest.node() {
+        return Err(retryable("Host argument query template differs"));
+    }
+
+    let sample = clock().map_err(|_| retryable("protected Controller clock is unavailable"))?;
+    if sample.host_boot_id() != attempt.host_boot_id()
+        || sample.boottime_nanoseconds() >= coordinates.deadline_boottime_nanoseconds()
+    {
+        return Err(retryable("Host argument query boot or deadline changed"));
+    }
+    let now = sample.wall_seconds();
+    let expires = now
+        .checked_add(30)
+        .map(|limit| {
+            limit
+                .min(parent_plan.expires_seconds())
+                .min(current.lease().lease().authority_expires_seconds())
+        })
+        .ok_or_else(|| retryable("Host argument query clock overflowed"))?;
+    if now < parent_plan.issued_seconds() || expires <= now {
+        return Err(retryable("Host argument query authority has expired"));
+    }
+    let grant = BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        4 * 1_024,
+        0,
+    )
+    .map_err(|_| retryable("Host argument query grant is invalid"))?;
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 0),
+        broker_assignment,
+        manifest.node(),
+        parent_plan.ownership_authority().clone(),
+        vec![grant],
+        parent_plan.policy_commitment(),
+        parent_plan.revocation_scope(),
+        now,
+        expires,
+        Vec::new(),
+    )
+    .map_err(|_| retryable("Host argument query plan is invalid"))?;
+    let signed = signer
+        .sign_plan(plan, now)
+        .map_err(|_| retryable("Host argument query signature is unavailable"))?;
+    let reread = read_historical_controller_execution_argument_attempt_v1(
+        controller,
+        assignment,
+        attempt.execution(),
+        attempt.create_operation(),
+        clock,
+    )
+    .map_err(|_| retryable("protected Host argument attempt changed"))?;
+    if reread.as_ref() != Some(attempt) {
+        return Err(retryable("protected Host argument attempt changed"));
+    }
+
+    let body = QueryHostExecutionArgumentRequestV1 {
+        header: Some(RequestHeader {
+            protocol_major: u32::from(coordinates.protocol_version().major()),
+            protocol_minor: u32::from(coordinates.protocol_version().minor()),
+            request_id: coordinates.request_id().to_vec(),
+            audience: coordinates.audience().into(),
+            deadline_boottime_nanoseconds: coordinates.deadline_boottime_nanoseconds(),
+            maximum_response_bytes: coordinates.maximum_response_bytes(),
+            ..Default::default()
+        })
+        .into(),
+        canonical_attempt: source.to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    Ok(SignedExecutionArgumentQueryV1 {
         body,
         authorization: BrokerAuthorizationArtifactsV1 {
             broker_plan: signed.canonical_plan().to_vec(),

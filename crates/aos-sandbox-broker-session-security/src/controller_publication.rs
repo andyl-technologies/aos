@@ -8,6 +8,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry, BrokerMethod, BrokerRequestEnvelope,
     PublishHostCatalogRequest, RequestHeader, RuntimeAction,
 };
+use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttemptV1;
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
@@ -38,7 +39,9 @@ use crate::controller_service::execution::{
     ControllerExecutionCompletionV1, ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
     ControllerExecutionObservationV1,
 };
-use crate::controller_service::execution_argument_observe::SignedExecutionArgumentObserveV1;
+use crate::controller_service::execution_argument_observe::{
+    SignedExecutionArgumentObserveV1, SignedExecutionArgumentQueryV1,
+};
 use crate::controller_service::execution_output_reserve::{
     SignedExecutionOutputReserveV1, sign_current_host_output_query_v1,
 };
@@ -319,6 +322,18 @@ impl ControllerHostPublication {
     ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
         let (exchange, session) = self.argument_exchange()?;
         exchange.observe(session, issue)
+    }
+
+    /// Queries only historical custody for the protected original attempt.
+    pub(crate) fn query_execution_argument(
+        &mut self,
+        attempt: &ControllerExecutionArgumentAttemptV1,
+        issue: impl FnOnce(
+            DormantBrokerRequestCoordinatesV1,
+        ) -> Result<SignedExecutionArgumentQueryV1, EffectFailure>,
+    ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
+        let (exchange, session) = self.argument_exchange()?;
+        exchange.query(session, attempt, issue)
     }
 
     /// Drains only the retained in-process method-37 request.

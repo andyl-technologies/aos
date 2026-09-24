@@ -3,7 +3,7 @@
 //! AOSCIA02 binds the actual authenticated-session request ID to the accepted
 //! Create preissue and authenticated Host output settlement. Its checksum is
 //! structural integrity, not a signature or permission to contact a Guest.
-//! A future method-37 broker grant must sign these exact bytes, and Host must
+//! The method-37 broker grant signs these exact bytes, and Host must
 //! independently verify its current assignment, output claim, runtime, and
 //! retained Guest session before returning a signed observation. No public
 //! Create or Host execution authority follows from this record.
@@ -488,6 +488,71 @@ where
         || record.issuer_nonce != source.preissue.issuer_nonce()
         || record.deadline_boottime_nanoseconds > source.preissue.deadline_boottime_nanoseconds()
         || record.deadline_boottime_nanoseconds <= sample.boottime_nanoseconds()
+    {
+        return Err(ControllerExecutionArgumentAttemptErrorV1::NotCurrent);
+    }
+    assignment.recheck(controller, clock)?;
+    Ok(Some(record))
+}
+
+/// Cold-reads the original attempt solely as a historical Query38 locator.
+///
+/// The original observation deadline may have passed. This readback still
+/// requires the current signed assignment and the same Host boot, plus exact
+/// protected output-attempt and settlement custody. It does not revalidate
+/// the environment, confer fresh ARG_MAX authority, or permit another Guest
+/// observation. A historical Host response is never a spec-admission source.
+///
+/// # Errors
+///
+/// Rejects changed assignment or Host boot, substituted output custody,
+/// corrupt attempt bytes, or unavailable protected journal and clock.
+pub fn read_historical_controller_execution_argument_attempt_v1<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    clock: &mut T,
+) -> Result<Option<ControllerExecutionArgumentAttemptV1>, ControllerExecutionArgumentAttemptErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    controller.ensure_protected_authority()?;
+    assignment.recheck(controller, clock)?;
+    let output_attempt = load_controller_execution_output_attempt_v1(controller, execution)?
+        .ok_or(ControllerExecutionArgumentAttemptErrorV1::NotCurrent)?;
+    if output_attempt.create_operation() != create_operation {
+        return Err(ControllerExecutionArgumentAttemptErrorV1::NotCurrent);
+    }
+    let settlement = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ControllerExecutionArgumentAttemptErrorV1::NotCurrent)?;
+    let Some(bytes) = controller.get(
+        RecordNamespace::ControllerExecutionArgumentAttempt,
+        execution.as_bytes(),
+    ) else {
+        return Ok(None);
+    };
+    let record = ControllerExecutionArgumentAttemptV1::decode_canonical(bytes)?;
+    let sample = clock()?;
+    let preissue = output_attempt.source().preissue();
+    if record.execution != execution
+        || record.create_operation != create_operation
+        || record.preissue_digest != preissue.record_digest()
+        || record.output_settlement_digest != settlement.record_digest()
+        || record.output_claim_digest != settlement.claim_digest()
+        || record.host_correlation_digest != settlement.correlation_digest()
+        || record.assignment_digest != assignment.binding().assignment_digest()
+        || record.reserve_source_digest != output_attempt.source().carrier_digest()
+        || record.host_boot_id != preissue.host_boot_id()
+        || record.host_boot_id != sample.host_boot_id()
+        || record.issuer_nonce != preissue.issuer_nonce()
+        || record.deadline_boottime_nanoseconds > preissue.deadline_boottime_nanoseconds()
     {
         return Err(ControllerExecutionArgumentAttemptErrorV1::NotCurrent);
     }

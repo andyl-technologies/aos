@@ -2,12 +2,14 @@
 //!
 //! Method 37 sends only the one signed request already bound to AOSCIA02.
 //! The protected broker-session owner retains its exact packet through
-//! ambiguity. This adapter checks request identity and returns an opaque
-//! signed outcome; it does not interpret Guest evidence, admit an execution
-//! specification, or issue a second observation after process restart.
+//! ambiguity. Method 38 can query the original attempt with a fresh signed
+//! read-only request after restart. This adapter checks request identity and
+//! returns an opaque signed outcome; it does not interpret Guest evidence,
+//! admit an execution specification, or issue a second observation.
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, BrokerRequestEnvelope, ObserveHostExecutionArgumentRequestV1,
+    QueryHostExecutionArgumentRequestV1,
 };
 use aos_sandbox::EffectFailure;
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
@@ -17,7 +19,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use buffa::Message as _;
 
 use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
-use crate::controller_service::execution_argument_observe::SignedExecutionArgumentObserveV1;
+use crate::controller_service::execution_argument_observe::{
+    SignedExecutionArgumentObserveV1, SignedExecutionArgumentQueryV1,
+};
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
     DormantBrokerRequestCoordinatesV1,
@@ -29,8 +33,24 @@ const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
     unusable: "Host argument session is unusable; query original attempt after recovery",
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArgumentMethodV1 {
+    Observe,
+    Query,
+}
+
+impl ArgumentMethodV1 {
+    const fn broker_method(self) -> BrokerMethod {
+        match self {
+            Self::Observe => BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
+            Self::Query => BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ArgumentExchangeContextV1 {
+    method: ArgumentMethodV1,
     attempt: ControllerExecutionArgumentAttemptV1,
     exact_body: Vec<u8>,
 }
@@ -38,11 +58,16 @@ struct ArgumentExchangeContextV1 {
 /// Holds a signed outcome without granting ARG_MAX or specification authority.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ControllerHostArgumentOutcomeV1 {
+    method: BrokerMethod,
     attempt: ControllerExecutionArgumentAttemptV1,
     outcome: AuthenticatedBrokerMethodOutcomeV1,
 }
 
 impl ControllerHostArgumentOutcomeV1 {
+    pub(crate) const fn method(&self) -> BrokerMethod {
+        self.method
+    }
+
     pub(crate) const fn attempt(&self) -> &ControllerExecutionArgumentAttemptV1 {
         &self.attempt
     }
@@ -83,7 +108,7 @@ impl ControllerHostArgumentExchangeV1 {
         let mut issued = None;
         let preparation = session
             .prepare_authenticated_request_checked_fallible(
-                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
+                ArgumentMethodV1::Observe.broker_method(),
                 |coordinates| {
                     let signed = issue(coordinates).map_err(|_| {
                         BrokerSessionSecurityError::manifest("protected Host argument issuer")
@@ -102,7 +127,7 @@ impl ControllerHostArgumentExchangeV1 {
                         ));
                     }
                     let envelope = BrokerRequestEnvelope {
-                        method: BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT.into(),
+                        method: ArgumentMethodV1::Observe.broker_method().into(),
                         body: body.clone(),
                         authorization: Some(signed.authorization().clone()).into(),
                         ..Default::default()
@@ -122,7 +147,73 @@ impl ControllerHostArgumentExchangeV1 {
         })?;
         self.exchange.start(
             ArgumentExchangeContextV1 {
+                method: ArgumentMethodV1::Observe,
                 attempt: signed.attempt().clone(),
+                exact_body: body,
+            },
+            preparation,
+        );
+        self.drain(session)?.ok_or_else(|| retryable(ERRORS.absent))
+    }
+
+    /// Sends a new read-only Query38 for the immutable original attempt.
+    ///
+    /// Query has its own session-selected request ID and distinct signed verb.
+    /// It never issues a Guest challenge or upgrades historical Host custody.
+    pub(crate) fn query(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        attempt: &ControllerExecutionArgumentAttemptV1,
+        issue: impl FnOnce(
+            DormantBrokerRequestCoordinatesV1,
+        ) -> Result<SignedExecutionArgumentQueryV1, EffectFailure>,
+    ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
+        if self.exchange.has_pending() {
+            return Err(retryable("another Host argument request retains custody"));
+        }
+        let mut issued = None;
+        let preparation = session
+            .prepare_authenticated_request_checked_fallible(
+                ArgumentMethodV1::Query.broker_method(),
+                |coordinates| {
+                    let signed = issue(coordinates).map_err(|_| {
+                        BrokerSessionSecurityError::manifest("protected Host argument query issuer")
+                    })?;
+                    let body = signed.body().to_vec();
+                    let decoded = QueryHostExecutionArgumentRequestV1::decode_from_slice(&body)
+                        .map_err(|_| {
+                            BrokerSessionSecurityError::manifest("canonical Host argument query")
+                        })?;
+                    if decoded.encode_to_vec() != body
+                        || decoded.canonical_attempt != attempt.canonical_bytes()
+                    {
+                        return Err(BrokerSessionSecurityError::manifest(
+                            "Host argument query changed after signing",
+                        ));
+                    }
+                    let envelope = BrokerRequestEnvelope {
+                        method: ArgumentMethodV1::Query.broker_method().into(),
+                        body: body.clone(),
+                        authorization: Some(signed.authorization().clone()).into(),
+                        ..Default::default()
+                    };
+                    issued = Some(body);
+                    Ok(envelope)
+                },
+                |_| true,
+            )
+            .map_err(|_| {
+                self.exchange.mark_failed();
+                retryable("Host argument query needs exact session recovery")
+            })?;
+        let body = issued.ok_or_else(|| {
+            self.exchange.mark_failed();
+            retryable("Host argument query returned no signed request")
+        })?;
+        self.exchange.start(
+            ArgumentExchangeContextV1 {
+                method: ArgumentMethodV1::Query,
+                attempt: attempt.clone(),
                 exact_body: body,
             },
             preparation,
@@ -152,8 +243,9 @@ fn classify_outcome(
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<ControllerHostArgumentOutcomeV1, EffectFailure> {
     let request = outcome.request();
-    if outcome.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-        || request.request_id() != context.attempt.request_id()
+    if outcome.method() != context.method.broker_method()
+        || (context.method == ArgumentMethodV1::Observe
+            && request.request_id() != context.attempt.request_id())
         || request.exact_body() != context.exact_body
     {
         return Err(EffectFailure::Permanent(
@@ -169,6 +261,7 @@ fn classify_outcome(
         ));
     }
     Ok(ControllerHostArgumentOutcomeV1 {
+        method: outcome.method(),
         attempt: context.attempt.clone(),
         outcome: outcome.clone(),
     })
