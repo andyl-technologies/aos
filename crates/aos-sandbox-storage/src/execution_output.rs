@@ -170,6 +170,52 @@ struct RetainedOutputRecord {
     delete_operation: [u8; 16],
 }
 
+/// Carries a cold-replayed AOSEOR03 record, not caller-supplied claim fields.
+///
+/// This is a Storage-local readback witness. It is not a Controller grant or a
+/// permission to create a dataset, mount it, or dispatch Host execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProtectedRetainedCaptureV1 {
+    execution: [u8; 16],
+    create: [u8; 16],
+    claim_digest: ObjectDigest,
+    record_digest: ObjectDigest,
+    admitted_bytes: u64,
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
+}
+
+impl ProtectedRetainedCaptureV1 {
+    pub(crate) const fn record_digest(&self) -> ObjectDigest {
+        self.record_digest
+    }
+
+    pub(crate) const fn admitted_bytes(&self) -> u64 {
+        self.admitted_bytes
+    }
+
+    pub(crate) const fn maximum_stdout_bytes(&self) -> u64 {
+        self.maximum_stdout_bytes
+    }
+
+    pub(crate) const fn maximum_stderr_bytes(&self) -> u64 {
+        self.maximum_stderr_bytes
+    }
+
+    pub(crate) fn matches_capture_requirement(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        claim_digest: ObjectDigest,
+        admitted_bytes: u64,
+    ) -> bool {
+        self.execution == execution
+            && self.create == create
+            && self.claim_digest == claim_digest
+            && self.admitted_bytes == admitted_bytes
+    }
+}
+
 struct PhysicalBindingRecord {
     binding: ObjectDigest,
     claim_digest: [u8; 32],
@@ -336,6 +382,43 @@ impl ExecutionOutputLedgerV1 {
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
         self.retained_bytes
+    }
+
+    /// Replays one exact retained capture record under the Storage MAC key.
+    ///
+    /// The requested digest must be the AOSEOR03 record digest returned at
+    /// logical reservation. A zero-byte Stream or PTY record cannot be used as
+    /// physical capture authority.
+    pub(crate) fn read_protected_retained_capture(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        record_digest: ObjectDigest,
+    ) -> Result<ProtectedRetainedCaptureV1, ExecutionOutputLedgerErrorV1> {
+        let location = reservation_key(execution);
+        let bytes = self
+            .journal
+            .get(NAMESPACE, &location)
+            .ok_or(ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        let record = decode_record(&location, bytes, &self.key)?;
+        let observed_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
+        if record.state != STATE_RETAINED
+            || record.create != create
+            || record.bytes == 0
+            || observed_digest != record_digest
+        {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+
+        Ok(ProtectedRetainedCaptureV1 {
+            execution: record.execution,
+            create: record.create,
+            claim_digest: ObjectDigest::from_bytes(record.claim_digest),
+            record_digest: observed_digest,
+            admitted_bytes: record.bytes,
+            maximum_stdout_bytes: record.maximum_stdout_bytes,
+            maximum_stderr_bytes: record.maximum_stderr_bytes,
+        })
     }
 
     /// Reserves the exact v2 accepted-Create output claim read under its owner.
@@ -900,6 +983,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::catalog_transition::execution_capture::readback::{
+        CaptureZfsReadbackErrorV1, CaptureZfsReadbackPlanV1, CaptureZfsToolV1,
+    };
     use crate::catalog_transition::execution_capture::tests::{
         deleted_fixture, fixture as capture_fixture,
     };
@@ -1045,7 +1131,11 @@ mod tests {
         let path = directory.path().join("output.journal");
         let mut ledger = open(&path, 0).unwrap();
         let stream = record(1, 0);
-        ledger.reserve_record(stream.clone()).unwrap();
+        let digest = ledger.reserve_record(stream.clone()).unwrap();
+        assert!(matches!(
+            ledger.read_protected_retained_capture(stream.execution, stream.create, digest),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
         assert!(matches!(
             ledger.reserve_record(record(2, 1)),
             Err(ExecutionOutputLedgerErrorV1::Capacity)
@@ -1110,6 +1200,97 @@ mod tests {
             open(&path, 20),
             Err(ExecutionOutputLedgerErrorV1::Corrupt)
         ));
+    }
+
+    #[test]
+    fn readback_plan_requires_cold_replayed_aoseor03_and_exact_live_properties() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 200).unwrap();
+        let (requirement, catalog) = capture_fixture();
+        let verified = requirement.verify_present(&catalog).unwrap();
+        let mut retained = record(1, 100);
+        retained.claim_digest = [3; 32];
+        retained.maximum_stdout_bytes = 60;
+        retained.maximum_stderr_bytes = 40;
+        let digest = ledger.reserve_record(retained).unwrap();
+        drop(ledger);
+
+        let ledger = open(&path, 200).unwrap();
+        let protected = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], digest)
+            .unwrap();
+        assert_eq!(protected.maximum_stdout_bytes(), 60);
+        assert_eq!(protected.maximum_stderr_bytes(), 40);
+        assert_eq!(protected.admitted_bytes(), 100);
+        assert!(matches!(
+            ledger.read_protected_retained_capture([1; 16], [9; 16], digest),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        assert!(matches!(
+            ledger.read_protected_retained_capture(
+                [1; 16],
+                [2; 16],
+                ObjectDigest::from_bytes([9; 32]),
+            ),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+
+        let plan = CaptureZfsReadbackPlanV1::new(&verified, &protected, 20, 100).unwrap();
+        assert_eq!(plan.commands()[0].tool, CaptureZfsToolV1::Zpool);
+        assert_eq!(plan.commands()[1].tool, CaptureZfsToolV1::Zfs);
+        assert_eq!(plan.commands()[2].tool, CaptureZfsToolV1::Zfs);
+        assert_eq!(plan.commands()[0].arguments[5], "pool");
+        assert_eq!(plan.commands()[2].arguments[8], verified.dataset_name());
+        assert!(matches!(
+            CaptureZfsReadbackPlanV1::new(&verified, &protected, 101, 100),
+            Err(CaptureZfsReadbackErrorV1::InvalidRequirement)
+        ));
+
+        let pool = b"pool\t-\t1000\tONLINE\n".as_slice();
+        let root = b"pool/aos\tfilesystem\t11\t900\n".as_slice();
+        let dataset = format!(
+            "{}\tfilesystem\t17\t-\t200\t200\tnone\toff\tno\t130\n",
+            verified.dataset_name()
+        );
+        let readback = plan.evaluate([pool, root, dataset.as_bytes()]).unwrap();
+        assert_eq!(readback.record_digest, digest);
+        assert_eq!(readback.catalog_binding, verified.binding());
+        assert_ne!(readback.observation_digest.as_bytes(), &[0; 32]);
+        assert_eq!(readback.dataset_available_bytes, 130);
+        assert_eq!(readback.observed_headroom_bytes, 30);
+
+        for substituted_pool in [
+            b"pool\t0\t1000\tONLINE\n".as_slice(),
+            b"pool\t1\t1000\tONLINE\n",
+            b"pool\t-\t99\tONLINE\n",
+            b"pool\t-\t1000\tDEGRADED\n",
+        ] {
+            assert_eq!(
+                plan.evaluate([substituted_pool, root, dataset.as_bytes()])
+                    .err(),
+                Some(CaptureZfsReadbackErrorV1::PoolUnavailable)
+            );
+        }
+        for substituted_dataset in [
+            dataset.replace("\t200\t200\t", "\t199\t200\t"),
+            dataset.replace("\tnone\toff\tno\t", "\tlegacy\ton\tyes\t"),
+            dataset.replace("\tno\t130\n", "\tno\t119\n"),
+            format!(
+                "{dataset}{}@snapshot\tsnapshot\t18\n",
+                verified.dataset_name()
+            ),
+        ] {
+            assert!(
+                plan.evaluate([pool, root, substituted_dataset.as_bytes()])
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            plan.evaluate([pool, b"pool/aos\tfilesystem\t12\t900\n", dataset.as_bytes()])
+                .err(),
+            Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
+        );
     }
 
     #[test]

@@ -42,6 +42,9 @@ use aos_sandbox_linux::seqpacket::{
 };
 use sha2::{Digest as _, Sha256};
 
+use crate::catalog_transition::execution_capture::readback::{
+    CaptureZfsReadbackPlanV1, CaptureZfsReadbackV1, CaptureZfsToolV1, MAXIMUM_MACHINE_OUTPUT_BYTES,
+};
 use crate::observation::{
     MAXIMUM_CATALOG_ZFS_STDOUT_BYTES, ZfsObservationPlan, ZfsObservationResult,
     evaluate_workspace_catalog_zfs, workspace_catalog_zfs_arguments,
@@ -123,6 +126,66 @@ pub enum ZfsWorkerError {
 #[must_use]
 pub const fn process_timeout() -> Duration {
     PROCESS_TIMEOUT
+}
+
+/// Runs the capture readback contract with two pinned executables in one deadline.
+///
+/// This is deliberately not wired to a broker request or physical binding.
+/// Only a future dedicated Storage worker may call it after authenticating a
+/// Controller create grant and protecting the effect barrier. The pool probe
+/// itself cannot prevent a checkpoint from being created after observation.
+pub(crate) fn observe_capture_zfs_for(
+    zfs: &ZfsHelperContract,
+    plan: &CaptureZfsReadbackPlanV1,
+) -> Result<CaptureZfsReadbackV1, ZfsWorkerError> {
+    if zfs
+        .executable()
+        .file_name()
+        .is_none_or(|name| name != "zfs")
+    {
+        return Err(ZfsWorkerError::Executable(
+            "capture readback requires the fixed AOS zfs executable".to_owned(),
+        ));
+    }
+    let zpool = ZfsHelperContract::new(zfs.executable().with_file_name("zpool"))?;
+    let zfs_pin = PinnedExecutable::open(zfs)?;
+    let zpool_pin = PinnedExecutable::open(&zpool)?;
+    let deadline = Deadline::after(PROCESS_TIMEOUT);
+    let mut outputs = Vec::with_capacity(plan.commands().len());
+
+    for command in plan.commands() {
+        let (contract, pin) = match command.tool {
+            CaptureZfsToolV1::Zpool => (&zpool, &zpool_pin),
+            CaptureZfsToolV1::Zfs => (zfs, &zfs_pin),
+        };
+        pin.validate_current(contract)?;
+        let timeout = deadline.remaining().ok_or(ZfsWorkerError::Protocol(
+            "capture readback deadline elapsed",
+        ))?;
+        let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
+        let output = run_fixed_process(FixedProcessRequest {
+            executable: contract.executable(),
+            arguments: &arguments,
+            timeout,
+            maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
+            maximum_stderr_bytes: MAXIMUM_STDERR_BYTES,
+        })?;
+        match output {
+            FixedProcessOutcome::Completed(output)
+                if output.exit_code == Some(0)
+                    && output.signal.is_none()
+                    && output.stderr.is_empty() =>
+            {
+                outputs.push(output.stdout);
+            }
+            _ => return Err(ZfsWorkerError::Protocol("capture ZFS readback failed")),
+        }
+    }
+
+    zfs_pin.validate_current(zfs)?;
+    zpool_pin.validate_current(&zpool)?;
+    plan.evaluate([&outputs[0], &outputs[1], &outputs[2]])
+        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback mismatch"))
 }
 
 /// Runs one complete host-wide ZFS catalog observation before an absolute deadline.

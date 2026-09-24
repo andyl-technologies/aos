@@ -17,6 +17,8 @@ use crate::{
     WorkspaceSpacePolicyV1,
 };
 
+pub(crate) mod readback;
+
 const NAME_PREFIX: &str = "aos-output-";
 const BINDING_DOMAIN: &[u8] = b"aos.sandbox.storage.execution-capture-dataset.v1\0";
 pub(crate) const MAX_CAPTURE_DATASET_NAME_BYTES: usize = 1024;
