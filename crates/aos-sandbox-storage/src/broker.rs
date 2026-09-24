@@ -4014,7 +4014,7 @@ mod tests {
         decode_response_envelope, decode_server_hello, decode_storage_resource_inventory_response,
         encode_authorized_request_envelope, encode_unauthed_request_envelope,
     };
-    use buffa::Message as _;
+    use buffa::Message;
     use ed25519_dalek::SigningKey;
     use tempfile::TempDir;
 
@@ -5004,9 +5004,12 @@ mod tests {
         request_with_generation(operation, handle, 5)
     }
 
-    fn with_request_id(request: &[u8], request_id: [u8; 16]) -> Vec<u8> {
-        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        decoded.header.get_or_insert_default().request_id = request_id.to_vec();
+    fn mutate_request<M: Message + Default>(
+        request: &[u8],
+        mutation: impl FnOnce(&mut M),
+    ) -> Vec<u8> {
+        let mut decoded = M::decode_from_slice(request).unwrap();
+        mutation(&mut decoded);
         decoded.encode_to_vec()
     }
 
@@ -5015,27 +5018,11 @@ mod tests {
         incarnation_id: [u8; 16],
         assignment_epoch: u64,
     ) -> Vec<u8> {
-        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        let fence = decoded.fence.get_or_insert_default();
-        fence.incarnation_id = incarnation_id.to_vec();
-        fence.assignment_epoch = assignment_epoch;
-        decoded.encode_to_vec()
-    }
-
-    fn with_assignment_digest(request: &[u8], assignment_digest: ObjectDigest) -> Vec<u8> {
-        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        decoded.fence.get_or_insert_default().assignment_digest =
-            assignment_digest.as_bytes().to_vec();
-        decoded.encode_to_vec()
-    }
-
-    fn with_deadline(request: &[u8], deadline_boottime_nanoseconds: u64) -> Vec<u8> {
-        let mut decoded = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        decoded
-            .header
-            .get_or_insert_default()
-            .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
-        decoded.encode_to_vec()
+        mutate_request::<ApplyStorageRequest>(request, |decoded| {
+            let fence = decoded.fence.get_or_insert_default();
+            fence.incarnation_id = incarnation_id.to_vec();
+            fence.assignment_epoch = assignment_epoch;
+        })
     }
 
     fn preparation_request(
@@ -5243,24 +5230,6 @@ mod tests {
         value.encode_to_vec()
     }
 
-    fn with_assignment_epoch(request: &[u8], epoch: u64) -> Vec<u8> {
-        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().assignment_epoch = epoch;
-        value.encode_to_vec()
-    }
-
-    fn with_incarnation(request: &[u8], incarnation: [u8; 16]) -> Vec<u8> {
-        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().incarnation_id = incarnation.to_vec();
-        value.encode_to_vec()
-    }
-
-    fn with_sandbox(request: &[u8], sandbox: [u8; 16]) -> Vec<u8> {
-        let mut value = ApplyStorageRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().sandbox_id = sandbox.to_vec();
-        value.encode_to_vec()
-    }
-
     fn repair_request(
         request_id: u8,
         operation_id: u8,
@@ -5288,34 +5257,34 @@ mod tests {
     }
 
     fn with_repair_sandbox(request: &[u8], sandbox_id: [u8; 16]) -> Vec<u8> {
-        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().sandbox_id = sandbox_id.to_vec();
-        value.encode_to_vec()
+        mutate_request::<RepairStorageWorkspacePinRequest>(request, |decoded| {
+            decoded.fence.get_or_insert_default().sandbox_id = sandbox_id.to_vec();
+        })
     }
 
     fn with_repair_incarnation(request: &[u8], incarnation_id: [u8; 16]) -> Vec<u8> {
-        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().incarnation_id = incarnation_id.to_vec();
-        value.encode_to_vec()
+        mutate_request::<RepairStorageWorkspacePinRequest>(request, |decoded| {
+            decoded.fence.get_or_insert_default().incarnation_id = incarnation_id.to_vec();
+        })
     }
 
     fn with_repair_epoch(request: &[u8], assignment_epoch: u64) -> Vec<u8> {
-        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().assignment_epoch = assignment_epoch;
-        value.encode_to_vec()
+        mutate_request::<RepairStorageWorkspacePinRequest>(request, |decoded| {
+            decoded.fence.get_or_insert_default().assignment_epoch = assignment_epoch;
+        })
     }
 
     fn with_repair_generation(request: &[u8], desired_generation: u64) -> Vec<u8> {
-        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().desired_generation = desired_generation;
-        value.encode_to_vec()
+        mutate_request::<RepairStorageWorkspacePinRequest>(request, |decoded| {
+            decoded.fence.get_or_insert_default().desired_generation = desired_generation;
+        })
     }
 
     fn with_repair_assignment(request: &[u8], assignment_digest: ObjectDigest) -> Vec<u8> {
-        let mut value = RepairStorageWorkspacePinRequest::decode_from_slice(request).unwrap();
-        value.fence.get_or_insert_default().assignment_digest =
-            assignment_digest.as_bytes().to_vec();
-        value.encode_to_vec()
+        mutate_request::<RepairStorageWorkspacePinRequest>(request, |decoded| {
+            decoded.fence.get_or_insert_default().assignment_digest =
+                assignment_digest.as_bytes().to_vec();
+        })
     }
 
     fn vm_repair_request(
@@ -5333,12 +5302,12 @@ mod tests {
             desired_generation,
             assignment_digest,
         );
-        let mut request = RepairStorageWorkspacePinRequest::decode_from_slice(&encoded).unwrap();
-        request
-            .header
-            .get_or_insert_default()
-            .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
-        request.encode_to_vec()
+        mutate_request::<RepairStorageWorkspacePinRequest>(&encoded, |request| {
+            request
+                .header
+                .get_or_insert_default()
+                .deadline_boottime_nanoseconds = deadline_boottime_nanoseconds;
+        })
     }
 
     fn reverse_length_delimited_fields(bytes: &[u8]) -> Vec<u8> {
@@ -10096,7 +10065,12 @@ mod tests {
         let directory = TempDir::new().unwrap();
         let fixture = Fixture::new();
         let request = request(7, 8);
-        let conflicting = with_deadline(&request, 201);
+        let conflicting = mutate_request::<ApplyStorageRequest>(&request, |decoded| {
+            decoded
+                .header
+                .get_or_insert_default()
+                .deadline_boottime_nanoseconds = 201;
+        });
         let catalog = catalog(8, 9);
         let artifacts = fixture.artifacts_authorizing(
             &request,
@@ -10187,7 +10161,9 @@ mod tests {
         assert_eq!(occupied.transactions.phase([7; 16]).unwrap(), None);
 
         let same_id_directory = TempDir::new().unwrap();
-        let same_id_request = with_request_id(&request, [135; 16]);
+        let same_id_request = mutate_request::<ApplyStorageRequest>(&request, |decoded| {
+            decoded.header.get_or_insert_default().request_id = vec![135; 16];
+        });
         let same_id_artifacts = fixture.artifacts(
             &same_id_request,
             &catalog,
@@ -11097,9 +11073,11 @@ mod tests {
                     seal_current_fence(&broker, &stale_request, &stale_artifacts, &catalog, None)
                 }
                 HeadCase::AssignmentDigest => {
-                    let incomparable_request = with_assignment_digest(
+                    let incomparable_request = mutate_request::<ApplyStorageRequest>(
                         &request_with_generation(9, 8, 5),
-                        ObjectDigest::from_bytes([77; 32]),
+                        |decoded| {
+                            decoded.fence.get_or_insert_default().assignment_digest = vec![77; 32];
+                        },
                     );
                     let incomparable_artifacts = fixture.artifacts(
                         &incomparable_request,
@@ -11117,8 +11095,12 @@ mod tests {
                     )
                 }
                 HeadCase::Incarnation => {
-                    let incomparable_request =
-                        with_incarnation(&request_with_generation(9, 8, 6), [78; 16]);
+                    let incomparable_request = mutate_request::<ApplyStorageRequest>(
+                        &request_with_generation(9, 8, 6),
+                        |decoded| {
+                            decoded.fence.get_or_insert_default().incarnation_id = vec![78; 16];
+                        },
+                    );
                     let incomparable_artifacts = fixture.artifacts(
                         &incomparable_request,
                         &catalog,
@@ -11135,8 +11117,12 @@ mod tests {
                     )
                 }
                 HeadCase::Sandbox => {
-                    let wrong_sandbox_request =
-                        with_sandbox(&request_with_generation(9, 8, 6), [79; 16]);
+                    let wrong_sandbox_request = mutate_request::<ApplyStorageRequest>(
+                        &request_with_generation(9, 8, 6),
+                        |decoded| {
+                            decoded.fence.get_or_insert_default().sandbox_id = vec![79; 16];
+                        },
+                    );
                     let wrong_sandbox_artifacts = fixture.artifacts(
                         &wrong_sandbox_request,
                         &catalog,
@@ -11315,7 +11301,10 @@ mod tests {
             )
             .unwrap();
 
-        let successor = with_assignment_epoch(&request_with_generation(9, 8, 1), 5);
+        let successor =
+            mutate_request::<ApplyStorageRequest>(&request_with_generation(9, 8, 1), |decoded| {
+                decoded.fence.get_or_insert_default().assignment_epoch = 5;
+            });
         let successor_artifacts = fixture.artifacts(
             &successor,
             &catalog,
