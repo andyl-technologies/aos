@@ -372,6 +372,85 @@ fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
 }
 
 #[test]
+fn network_fault_selections_survive_configuration_artifact_restart() {
+    let world = crucible::World::from_nodes_and_links(Vec::new(), Vec::new())
+        .expect("network artifact world");
+    let selectables = crucible::model::ScenarioSelectables::new(
+        &world,
+        crucible::model::ScenarioSelectableLimits::default(),
+        vec![crucible::NetworkFaultSelectable::declaration().expect("network declaration")],
+    )
+    .expect("network selectables");
+    let scenario = ScenarioDefForm::from_components(
+        &world,
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        crucible::Seed::from_u64(20),
+    )
+    .expect("network artifact scenario")
+    .with_selectables(selectables)
+    .expect("attach network declarations");
+    let scenario_artifact =
+        encode_crucible_scenario_artifact(&scenario).expect("network scenario artifact");
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new("network-choice-artifact", u64::MAX)),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let parent = Configuration::genesis(scenario.scenario_def());
+    let selectable = crucible::NetworkFaultSelectable::next(
+        &scenario,
+        &parent,
+        crucible::NetworkFaultPhase::First,
+        VirtualTime { ticks: 10 },
+        &[],
+    )
+    .expect("next network group")
+    .expect("active network group");
+    let selection = selectable
+        .branch_selection(selectable.declaration_ref().default().clone())
+        .expect("network group selection");
+    repository
+        .publish_choice_domain(selectable.domain())
+        .expect("publish network domain");
+    repository
+        .publish_selectable(selectable.declaration_ref())
+        .expect("publish network declaration");
+    repository
+        .publish_choice_opportunity(selectable.opportunity())
+        .expect("publish network opportunity");
+    repository
+        .publish_selection(&selection)
+        .expect("publish network selection");
+    let branch = selectable
+        .resolve_branch(&selection)
+        .expect("network branch");
+    let selected = branch.selected().clone();
+    let branches = vec![branch];
+    let artifact = encode_crucible_configuration_artifact(&scenario_artifact, &selected.schedule)
+        .expect("network configuration artifact");
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let (decoded, replay) = decode_crucible_configuration_artifact_with_signal_fault_replay(
+        &scenario,
+        &scenario_artifact,
+        &artifact,
+        &store,
+    )
+    .expect("network artifact decode");
+    assert_eq!(decoded, selected);
+    assert_eq!(replay.network_branches(), branches);
+
+    let restarted_store = CampaignExecutorStore::new(repository);
+    let (_, restarted) = decode_crucible_configuration_artifact_with_signal_fault_replay(
+        &scenario,
+        &scenario_artifact,
+        &artifact,
+        &restarted_store,
+    )
+    .expect("network artifact restart");
+    assert_eq!(restarted.network_branches(), replay.network_branches());
+}
+
+#[test]
 fn crucible_payloads_reject_schema_and_identity_drift() {
     let scenario = crucible::happy_path_scenario()
         .expect("happy-path scenario")

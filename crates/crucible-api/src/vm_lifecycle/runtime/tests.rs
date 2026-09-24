@@ -29,6 +29,25 @@ fn node() -> NodeId {
 }
 
 #[test]
+fn failed_physical_marker_release_cannot_commit_checkpoint_proof() {
+    let committed = std::cell::Cell::new(false);
+    let result = release_then_record_campaign_marker(
+        || {
+            Err(SchedulerError::BoundaryViolation {
+                message: String::from("backend release failed"),
+            })
+        },
+        || {
+            committed.set(true);
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert!(!committed.get());
+}
+
+#[test]
 fn selectable_reply_pairing_rejects_another_valid_selection() {
     use crucible::{AppRandomSelectable, BackendRngEvidence, RngStreamId};
 

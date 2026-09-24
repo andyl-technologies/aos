@@ -40,6 +40,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
+mod network_boundary;
+
 fn prepared_semantic_observation(product: AttemptExecutionProduct) -> ObservationCandidate {
     let AttemptExecutionProduct::PreparedSemantic(result) = product else {
         panic!("modeled driver must return a prepared semantic result")
@@ -3436,11 +3438,19 @@ fn pending_guest_request(
 }
 
 fn input_for_scenario(scenario: ScenarioDefForm, stop: StopCondition) -> CrucibleAttemptExecution {
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    input_for_configuration(scenario, configuration, stop)
+}
+
+fn input_for_configuration(
+    scenario: ScenarioDefForm,
+    configuration: Configuration,
+    stop: StopCondition,
+) -> CrucibleAttemptExecution {
     let scenario_artifact =
         encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
     let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
     let scenario_content = scenario_artifact.id().expect("scenario artifact id");
-    let configuration = Configuration::genesis(scenario.scenario_def());
     let configuration_artifact =
         encode_crucible_configuration_artifact(&scenario_artifact, &configuration.schedule)
             .expect("configuration artifact");

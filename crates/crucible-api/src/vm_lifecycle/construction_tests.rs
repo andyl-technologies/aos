@@ -1,7 +1,60 @@
 //! Restored production scheduler event-log dependency tests.
 
 use super::*;
-use crucible::model::MemoryDagStore;
+use crucible::model::{
+    MemoryDagStore, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioSelectableLimits,
+    ScenarioSelectables, WhiteBoxPolicy, WorldNode,
+};
+
+#[test]
+fn exact_restore_defers_network_fault_replay_to_checkpoint_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let world = World::from_nodes(vec![WorldNode {
+        id: NodeId {
+            name: String::from("router-a"),
+        },
+        arch: NodeTemplate::DEFAULT_ARCH,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("network-restore-guard-test"),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: 1,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?;
+    let base = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(20),
+    )?;
+    let scenario = base.with_selectables(ScenarioSelectables::new(
+        &world,
+        ScenarioSelectableLimits::default(),
+        vec![crucible::NetworkFaultSelectable::declaration()?],
+    )?)?;
+    let parent = Configuration::genesis(scenario.scenario_def());
+    let selectable = crucible::NetworkFaultSelectable::next(
+        &scenario,
+        &parent,
+        crucible::NetworkFaultPhase::First,
+        VirtualTime { ticks: 10_000 },
+        &[],
+    )?
+    .ok_or("missing network fault group")?;
+    let selected = selectable.branch_selection(selectable.declaration_ref().default().clone())?;
+    let branch = selectable.resolve_branch(&selected)?;
+    let replay = SignalFaultCampaignReplayPlan::empty(branch.selected().clone())
+        .with_network_branches(vec![branch])?;
+
+    assert!(reject_fresh_fault_replay_on_restore(false, Some(&replay)).is_ok());
+    assert!(reject_fresh_fault_replay_on_restore(true, Some(&replay)).is_ok());
+    Ok(())
+}
 
 #[test]
 fn resumed_capture_reads_authenticated_event_log_segments_from_new_run_store() {

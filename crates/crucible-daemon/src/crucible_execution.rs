@@ -7,8 +7,8 @@
 //! policy and cannot alter the canonical attempt.
 
 use crucible::{
-    Configuration, Decision, ScenarioDefForm, SelectionDecision, SignalFaultCampaignReplayPlan,
-    SignalFaultSelectable, try_step,
+    Configuration, Decision, NetworkFaultSelectable, ScenarioDefForm, SelectionDecision,
+    SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
 };
 use crucible_campaign::{
     Attempt, AttemptContinuationInput, AttemptResourceLimits, AttemptStart, BranchPath,
@@ -672,25 +672,47 @@ fn decode_base_crucible_start(
                 }
                 _ => None,
             };
-            let selected = match signal_fault.as_ref() {
-                Some(branch) => branch.selected().clone(),
-                None => try_step(
+            let network_fault = match selection.opportunity().source() {
+                ChoiceSource::Environment { adapter, .. }
+                    if adapter == crucible::NETWORK_FAULT_CAMPAIGN_ADAPTER =>
+                {
+                    let selectable = NetworkFaultSelectable::from_records(
+                        scenario,
+                        &parent,
+                        selection.declaration(),
+                        selection.opportunity(),
+                        selection.domain(),
+                    )?;
+                    Some(selectable.resolve_branch(recorded)?)
+                }
+                _ => None,
+            };
+            let selected = if let Some(branch) = signal_fault.as_ref() {
+                branch.selected().clone()
+            } else if let Some(branch) = network_fault.as_ref() {
+                branch.selected().clone()
+            } else {
+                try_step(
                     &parent,
                     Decision::Selection(SelectionDecision::new(recorded)),
                 )
                 .map_err(|source| CrucibleArtifactError::InvalidPayload {
                     artifact: "selected branch configuration",
                     source: Box::new(source),
-                })?,
+                })?
             };
             if let Some(budget) = origin_budget {
                 budget.charge_branch_start(&selected)?;
             }
-            let (_, mut branches) = parent_replay.into_parts();
+            let (_, mut branches, mut network_branches) = parent_replay.into_parts();
             if let Some(branch) = signal_fault.as_deref() {
                 branches.push(branch.clone());
             }
-            let replay = SignalFaultCampaignReplayPlan::new(selected.clone(), branches)?;
+            if let Some(branch) = network_fault {
+                network_branches.push(branch);
+            }
+            let replay = SignalFaultCampaignReplayPlan::new(selected.clone(), branches)?
+                .with_network_branches(network_branches)?;
             Ok((
                 CrucibleResolvedAttemptStart::Branch {
                     parent,

@@ -585,15 +585,20 @@ pub(super) fn validate_execution_side(
     }
 
     let plan = scenario.plan().fault_signals();
-    match (plan.programs().is_empty(), &side.resolved_effect_trace) {
-        (true, None) => {}
-        (false, Some(bytes)) => {
-            ResolvedEffectTrace::from_canonical_bytes(bytes, plan.resource_limits())
-                .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
-        }
-        (true, Some(_)) | (false, None) => {
-            return Err(FindingProductionReplayCaptureError::InvalidResolvedEffectTrace);
-        }
+    let network_fault_declared = scenario
+        .selectables()
+        .declaration("fault.network")
+        .is_some();
+    if !plan.programs().is_empty() && side.resolved_effect_trace.is_none()
+        || plan.programs().is_empty()
+            && !network_fault_declared
+            && side.resolved_effect_trace.is_some()
+    {
+        return Err(FindingProductionReplayCaptureError::InvalidResolvedEffectTrace);
+    }
+    if let Some(bytes) = &side.resolved_effect_trace {
+        ResolvedEffectTrace::from_canonical_bytes(bytes, plan.resource_limits())
+            .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
     }
     Ok(())
 }

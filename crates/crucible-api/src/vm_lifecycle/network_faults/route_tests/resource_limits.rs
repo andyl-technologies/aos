@@ -491,6 +491,9 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
         observations:
             super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state,
+        campaign_records: Vec::new(),
+        campaign_replay_identity: None,
+        campaign_marker_releases: Vec::new(),
     };
     let error = scheduler_error(
         validate_network_adapter_checkpoint(&checkpoint, limits),
@@ -535,6 +538,9 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
         observations:
             super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state,
+        campaign_records: Vec::new(),
+        campaign_replay_identity: None,
+        campaign_marker_releases: Vec::new(),
     };
     let limits = FaultResourceLimits {
         network_queue_frames: 1,

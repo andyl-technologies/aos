@@ -29,7 +29,9 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
-use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuVmRealizationError};
+use crucible_qemu::{
+    QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker, QemuVmRealizationError,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use thiserror::Error;
@@ -211,6 +213,59 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// inspected consistently.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    /// Reads an exact physical park for a declared campaign phase marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the live VM's physical stop cannot be verified.
+    fn parked_campaign_marker(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign marker proof is unavailable"),
+        })
+    }
+
+    /// Releases a parked VM after the atomic environment choice is applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no matching physical marker park exists.
+    fn release_parked_campaign_marker(
+        &mut self,
+        _node: &NodeId,
+        _marker: &str,
+        _selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign marker release is unavailable"),
+        })
+    }
+
+    /// Authenticates a previously released physical marker on this selected branch.
+    fn campaign_marker_release_committed(
+        &self,
+        _node: &NodeId,
+        _marker: &str,
+        _selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign marker release proof is unavailable"),
+        })
+    }
+
+    /// Reports whether adapter-owned network queues are empty at activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when network queue state cannot be authenticated.
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign network queue proof is unavailable"),
+        })
+    }
+
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// # Errors
@@ -338,6 +393,39 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         ProductionVmLifecycleLoop::exact_checkpoint_ready(self)
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        ProductionVmLifecycleLoop::parked_campaign_marker(self, node)
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        ProductionVmLifecycleLoop::release_parked_campaign_marker(self, node, marker, selected)
+    }
+
+    fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        Ok(
+            ProductionVmLifecycleLoop::campaign_marker_release_committed(
+                self, node, marker, selected,
+            ),
+        )
+    }
+
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        ProductionVmLifecycleLoop::campaign_network_queues_empty(self)
     }
 
     fn drain_pending_selectable_requests(
@@ -518,6 +606,57 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.owner.exact_checkpoint_ready()
+    }
+
+    /// Reads the parked physical marker proof for one VM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the live proof cannot be authenticated.
+    pub fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        self.owner.parked_campaign_marker(node)
+    }
+
+    /// Releases one parked VM after its network fault selection commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained park is absent or stale.
+    pub fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        self.owner
+            .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    /// Authenticates a prior release of one selected physical marker park.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner cannot inspect its exact release ledger.
+    pub fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        self.owner
+            .campaign_marker_release_committed(node, marker, selected)
+    }
+
+    /// Reports whether network effect queues are empty at activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when queue state cannot be authenticated.
+    pub fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        self.owner.campaign_network_queues_empty()
     }
 
     /// Drains node-qualified guest selectable requests at the paused boundary.

@@ -728,19 +728,34 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault runtime lock is poisoned"),
             })?;
-        match runtime.recorded_trace(crucible::model::FaultReplayMode::RecomputedCause) {
-            Ok(trace) => trace.canonical_bytes().map(Some).map_err(|error| {
-                SchedulerError::BoundaryViolation {
-                    message: format!("encode production resolved-effect trace: {error}"),
+        let recorded =
+            match runtime.recorded_trace(crucible::model::FaultReplayMode::RecomputedCause) {
+                Ok(trace) => Some(trace),
+                Err(crucible_qemu::ProductionFaultRuntimeError::Execution(
+                    crucible::model::FaultExecutionError::CheckpointPresence,
+                )) => None,
+                Err(error) => {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!("capture production resolved-effect trace: {error}"),
+                    });
                 }
-            }),
-            Err(crucible_qemu::ProductionFaultRuntimeError::Execution(
-                crucible::model::FaultExecutionError::CheckpointPresence,
-            )) => Ok(None),
-            Err(error) => Err(SchedulerError::BoundaryViolation {
-                message: format!("capture production resolved-effect trace: {error}"),
-            }),
-        }
+            };
+        let network = self.inner.network_output_interceptor();
+        let combined = super::network_faults::trace_with_campaign_network_records(
+            recorded,
+            network.campaign_effect_records(),
+            network.resource_limits(),
+            crucible::model::FaultReplayMode::RecomputedCause,
+        )?;
+        combined
+            .map(|trace| {
+                trace
+                    .canonical_bytes()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("encode production resolved-effect trace: {error}"),
+                    })
+            })
+            .transpose()
     }
 
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -809,6 +824,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         } else {
             None
         };
+        let campaign_replay_error = self
+            .inner
+            .network_output_interceptor()
+            .verify_campaign_effect_replay_exhausted()
+            .err();
         let search_override_error = if self.fault_search_overrides_installed {
             let runtime =
                 self.fault_runtime
@@ -881,6 +901,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             failures.push(error);
         }
         if let Some(error) = replay_error {
+            failures.push(error);
+        }
+        if let Some(error) = campaign_replay_error {
             failures.push(error);
         }
         if let Some(error) = search_override_error {
