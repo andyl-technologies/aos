@@ -65,8 +65,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 pub use choice::{
     AlternativeId, BooleanDomain, ChoiceCodecError, ChoiceDomain, ChoiceValue, DiscreteAlternative,
-    DiscreteDomain, ExactRational, GuestChoiceGroup, IntegerDomain, IntegerRepresentation,
-    IntegerValue,
+    DiscreteDomain, ExactRational, GuestChoiceConstraint, GuestChoiceGroup, IntegerDomain,
+    IntegerRepresentation, IntegerValue,
 };
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,

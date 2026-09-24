@@ -321,7 +321,13 @@ fn atomic_guest_group_crosses_registration_discovery_and_one_reply() -> Result<(
             ))
         })
         .collect::<Result<Vec<_>, crucible_protocol::ChoiceCodecError>>()?;
-    let guest_group = build_guest_group(&node.name, "envoy.recovery", 1, guest_members)?;
+    let guest_group = build_guest_group(
+        &node.name,
+        "envoy.recovery",
+        1,
+        guest_members,
+        BTreeSet::new(),
+    )?;
     let group_domain = ChoiceDomain::Group(Box::new(group.clone()));
     let declaration = SelectableDeclaration::new(
         "recovery.response",

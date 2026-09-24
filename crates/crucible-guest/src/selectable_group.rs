@@ -1,6 +1,6 @@
 //! CLI for one atomic guest group registration or choice request.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_guest::group::{build_group_registration, build_guest_group, request_group_selection};
 use crucible_guest::{
@@ -81,7 +81,7 @@ fn parse_group(
         .iter()
         .map(|(name, _, _)| name.clone())
         .collect::<Vec<_>>();
-    let group = build_guest_group(node, adapter, version, members)
+    let group = build_guest_group(node, adapter, version, members, BTreeSet::new())
         .map_err(|error| usage(format!("invalid group: {error}")))?;
     Ok(GroupSpec {
         group,
