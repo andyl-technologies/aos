@@ -1410,14 +1410,14 @@
 
       authorizePackageDeclaration = decl: let
         package = strings.removePrefix "package:" decl.provenance;
+        pathStr = builtins.concatStringsSep "." decl.path;
         samePath =
           builtins.filter
           (candidate: candidate.path == decl.path)
-          allOptionDecls;
+          declarationsByPath.${pathStr};
         declaringOwners = lists.unique (builtins.map
           (candidate: ownerForProvenance (candidate.provenance or "@base"))
           samePath);
-        pathStr = builtins.concatStringsSep "." decl.path;
         extensibleBaseDeclarations =
           builtins.filter
           (candidate:
