@@ -433,6 +433,21 @@ impl ProductionFaultRuntime {
             .ok_or(FaultExecutionError::CheckpointPresence)?
             .recorded_trace(mode)?)
     }
+
+    /// Returns committed signal-effect usage of the shared resolved-record budget.
+    #[must_use]
+    pub fn recorded_effect_count(&self) -> u64 {
+        self.runtime
+            .as_ref()
+            .map_or(0, OwnedFaultExecutionRuntime::recorded_effect_count)
+    }
+
+    /// Charges campaign-owned committed effects against the shared signal budget.
+    pub fn set_external_effect_count(&mut self, count: u64) {
+        if let Some(runtime) = self.runtime.as_mut() {
+            runtime.set_external_effect_count(count);
+        }
+    }
 }
 
 fn runtime_clone_allocation(

@@ -50,6 +50,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
         let mut next_wakeup_nanos = None;
         let mut runtime_committed = false;
         let mut staged_effect_state = self.effect_state.clone();
+        let mut staged_campaign_records = Vec::new();
+        let mut staged_campaign_replay_cursor = self.campaign_effect_replay_cursor;
         let staged = (|| {
             for output in source_outputs {
                 'route: for route in staged_scheduler.resolve_backend_network_routes(&output)? {
@@ -279,6 +281,40 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                 }
                                 frame_actions.push(action.clone());
                             }
+                            let campaign_actions = self
+                                .campaign_replay
+                                .as_ref()
+                                .map(|replay| {
+                                    replay.actions_for_opportunity(&self.topology, &opportunity)
+                                })
+                                .transpose()
+                                .map_err(|error| SchedulerError::BoundaryViolation {
+                                    message: format!(
+                                        "resolve selected network fault action: {error}"
+                                    ),
+                                })?
+                                .unwrap_or_default();
+                            super::super::fault_implementation::require_network_actions_implemented(
+                                campaign_actions.iter(),
+                            )
+                            .map_err(|error| SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "selected network availability lacks a production implementation: {error}"
+                                ),
+                            })?;
+                            for action in &campaign_actions {
+                                if let EffectSpecification::Network(
+                                    NetworkEffectSpecification::Availability { state, .. },
+                                ) = action.effect.specification()
+                                {
+                                    admitted &= availability_allows(*state, stage.direction);
+                                    if !admitted {
+                                        resolved_effects.mark_drop();
+                                    }
+                                } else {
+                                    frame_actions.push(action.clone());
+                                }
+                            }
                             super::super::fault_implementation::require_network_actions_implemented(
                                 frame_actions.iter(),
                             )
@@ -287,6 +323,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                     "active network frame action is absent from the production implementation registry: {error}"
                                 ),
                             })?;
+                            let campaign_precondition = ContentHash::from_bytes(&output.payload);
                             let application = if !frame_actions.is_empty() {
                                 let base_rate_bps = output
                                     .route
@@ -306,13 +343,20 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                     &mut resolved_effects,
                                     &frame_actions,
                                     &opportunity,
-                                    runtime.scenario_seed().ok_or_else(|| {
+                                    runtime
+                                        .scenario_seed()
+                                        .or_else(|| {
+                                            self.campaign_replay
+                                                .as_ref()
+                                                .map(|replay| replay.target().def.id())
+                                        })
+                                        .ok_or_else(|| {
                                         SchedulerError::BoundaryViolation {
                                             message: String::from(
                                                 "production network runtime omitted its scenario seed",
                                             ),
                                         }
-                                    })?,
+                                        })?,
                                     &self.topology,
                                     &mut staged_effect_state,
                                     &mut staged_pending,
@@ -323,6 +367,89 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                             } else {
                                 NetworkFrameApplication::default()
                             };
+                            if !campaign_actions.is_empty() {
+                                let campaign_current = self
+                                    .campaign_records
+                                    .len()
+                                    .checked_add(staged_campaign_records.len())
+                                    .and_then(|count| u64::try_from(count).ok())
+                                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                                        message: String::from(
+                                            "campaign network effect record count exceeds u64",
+                                        ),
+                                    })?;
+                                let current = runtime
+                                    .recorded_effect_count()
+                                    .checked_add(campaign_current)
+                                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                                        message: String::from(
+                                            "combined resolved-effect record count exceeds u64",
+                                        ),
+                                    })?;
+                                let requested =
+                                    u64::try_from(campaign_actions.len()).map_err(|_| {
+                                        SchedulerError::BoundaryViolation {
+                                            message: String::from(
+                                                "campaign network action count exceeds u64",
+                                            ),
+                                        }
+                                    })?;
+                                self.resource_limits
+                                    .reserve("resolved_effect_records", current, requested)
+                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "campaign network effect evidence exceeds authored limits: {error}"
+                                        ),
+                                    })?;
+                                let mut outcome_material = Vec::new();
+                                outcome_material.extend_from_slice(b"campaign-network-outcome-v1");
+                                outcome_material.extend_from_slice(
+                                    &ContentHash::from_bytes(&output.payload).bytes,
+                                );
+                                outcome_material.push(u8::from(resolved_effects.is_dropped()));
+                                outcome_material.extend_from_slice(
+                                    &resolved_effects.additional_delay_nanos().to_be_bytes(),
+                                );
+                                outcome_material.extend_from_slice(
+                                    &resolved_effects.latency_delta_nanos().to_be_bytes(),
+                                );
+                                let evidence_digest = ContentHash::from_bytes(&outcome_material);
+                                for action in &campaign_actions {
+                                    let record = crucible::model::ResolvedEffectRecord::from_committed_action(
+                                        action,
+                                        Some(&opportunity),
+                                        sequence.same_coordinate,
+                                        action.mapped_digest,
+                                        Some(campaign_precondition),
+                                        evidence_digest,
+                                    )
+                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                        message: format!("record selected network fault effect: {error}"),
+                                    })?;
+                                    if let Some(expected) = &self.campaign_effect_replay {
+                                        if expected.get(staged_campaign_replay_cursor)
+                                            != Some(&record)
+                                        {
+                                            return Err(SchedulerError::BoundaryViolation {
+                                                message: String::from(
+                                                    "selected network effect differs from exact replay evidence",
+                                                ),
+                                            });
+                                        }
+                                        staged_campaign_replay_cursor += 1;
+                                    }
+                                    staged_campaign_records.push(record);
+                                }
+                                runtime.set_external_effect_count(
+                                    campaign_current.checked_add(requested).ok_or_else(|| {
+                                        SchedulerError::BoundaryViolation {
+                                            message: String::from(
+                                                "campaign resolved-effect record count exceeds u64",
+                                            ),
+                                        }
+                                    })?,
+                                );
+                            }
                             if application.repeat_effect_on_resume.is_none() {
                                 output
                                     .fault_continuation
@@ -515,6 +642,15 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                     runtime.poison();
                 } else {
                     *cursor = cursor_before;
+                    runtime.set_external_effect_count(
+                        u64::try_from(self.campaign_records.len()).map_err(|_| {
+                            SchedulerError::BoundaryViolation {
+                                message: String::from(
+                                    "campaign network effect record count exceeds u64",
+                                ),
+                            }
+                        })?,
+                    );
                 }
                 return Err(error);
             }
@@ -523,6 +659,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
         *pending_outputs = staged_pending;
         *outputs = routed;
         self.effect_state = staged_effect_state;
+        self.campaign_records.extend(staged_campaign_records);
+        self.campaign_effect_replay_cursor = staged_campaign_replay_cursor;
         Ok(appends)
     }
 }

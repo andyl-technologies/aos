@@ -521,3 +521,32 @@ pub(super) const fn in_flight_policy_tag(policy: NetworkInFlightPolicy) -> u8 {
         NetworkInFlightPolicy::TypedError => 4,
     }
 }
+
+impl ProductionFaultNetworkInterceptor {
+    pub(in crate::vm_lifecycle) fn active_queue_evidence(
+        &self,
+    ) -> Result<Vec<super::super::ProductionNetworkQueueEvidence>, SchedulerError> {
+        self.effect_state
+            .queues
+            .iter()
+            .filter(|(_target, queue)| !queue.reservations.is_empty())
+            .map(|(target, queue)| {
+                let encoded = serde_json::to_vec(&(target, queue)).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("encode production queue evidence: {error}"),
+                    }
+                })?;
+                Ok(super::super::ProductionNetworkQueueEvidence {
+                    target: target.clone(),
+                    reservations: queue.reservations.len(),
+                    continuation_digest: ContentHash::from_bytes(&encoded),
+                    last_finish_nanos: queue
+                        .reservations
+                        .iter()
+                        .map(|reservation| reservation.finish_nanos)
+                        .max(),
+                })
+            })
+            .collect()
+    }
+}

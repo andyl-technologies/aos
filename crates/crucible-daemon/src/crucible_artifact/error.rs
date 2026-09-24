@@ -97,6 +97,9 @@ pub enum CrucibleArtifactError {
     /// A promoted signal-fault selection did not match its standardized records.
     #[error(transparent)]
     SignalFaultSelection(#[from] crucible::SignalFaultSelectableError),
+    /// A scenario-owned network fault selection failed exact producer replay.
+    #[error(transparent)]
+    NetworkFaultSelection(#[from] crucible::NetworkFaultSelectableError),
     /// A standardized signal-fault selection was not followed by its exact prefix.
     #[error("Crucible configuration signal-fault branch differs from its authenticated prefix")]
     SignalFaultScheduleMismatch,

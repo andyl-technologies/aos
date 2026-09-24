@@ -491,6 +491,7 @@ pub struct SignalFaultCampaignBranch {
 pub struct SignalFaultCampaignReplayPlan {
     target: Configuration,
     branches: Vec<SignalFaultCampaignBranch>,
+    network_branches: Vec<crate::NetworkFaultCampaignBranch>,
 }
 
 impl SignalFaultCampaignReplayPlan {
@@ -541,7 +542,11 @@ impl SignalFaultCampaignReplayPlan {
             prior_frontier = Some(branch.frontier);
         }
 
-        Ok(Self { target, branches })
+        Ok(Self {
+            target,
+            branches,
+            network_branches: Vec::new(),
+        })
     }
 
     /// Builds the empty replay plan for a target without promoted branches.
@@ -550,7 +555,29 @@ impl SignalFaultCampaignReplayPlan {
         Self {
             target,
             branches: Vec::new(),
+            network_branches: Vec::new(),
         }
+    }
+
+    /// Adds authenticated scenario-owned network fault branches to this replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the network branches do not certify this target
+    /// configuration or their exact prefixes are invalid.
+    pub fn with_network_branches(
+        mut self,
+        branches: Vec<crate::NetworkFaultCampaignBranch>,
+    ) -> Result<Self, crate::NetworkFaultSelectableError> {
+        let validated = crate::NetworkFaultCampaignReplayPlan::new(self.target.clone(), branches)?;
+        self.network_branches = validated.into_parts().1;
+        Ok(self)
+    }
+
+    /// Returns authenticated scenario-owned network fault branches.
+    #[must_use]
+    pub fn network_branches(&self) -> &[crate::NetworkFaultCampaignBranch] {
+        &self.network_branches
     }
 
     /// Returns the exact configuration reconstructed by the plan.
@@ -565,10 +592,16 @@ impl SignalFaultCampaignReplayPlan {
         &self.branches
     }
 
-    /// Consumes the plan into its target and ordered branches.
+    /// Consumes the plan into its target and both ordered branch families.
     #[must_use]
-    pub fn into_parts(self) -> (Configuration, Vec<SignalFaultCampaignBranch>) {
-        (self.target, self.branches)
+    pub fn into_parts(
+        self,
+    ) -> (
+        Configuration,
+        Vec<SignalFaultCampaignBranch>,
+        Vec<crate::NetworkFaultCampaignBranch>,
+    ) {
+        (self.target, self.branches, self.network_branches)
     }
 }
 

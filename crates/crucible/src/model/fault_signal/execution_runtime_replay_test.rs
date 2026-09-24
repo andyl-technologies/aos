@@ -72,6 +72,61 @@ fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored
 }
 
 #[test]
+fn signal_preflight_charges_campaign_records_against_one_authored_limit() {
+    let base = test_plan();
+    let limits = FaultResourceLimits {
+        resolved_effect_records: 2,
+        ..FaultResourceLimits::default()
+    };
+    let plan = FaultSignalPlan::new(base.programs().to_vec(), base.bindings().to_vec(), limits)
+        .unwrap_or_else(|error| panic!("limited plan: {error}"));
+    let mut owner = OwnedFaultExecutionRuntime::new(
+        plan,
+        Arc::new(NoArtifacts),
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"shared-effect-budget"),
+        manifests(),
+    )
+    .unwrap_or_else(|error| panic!("owner: {error}"));
+    let mut backend = HostFaultActionSink::new(limits);
+    owner.set_external_effect_count(2);
+    assert!(matches!(
+        owner.evaluate_boundary_with_backend(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut backend,
+        ),
+        Err(FaultExecutionError::Runtime(
+            FaultRuntimeError::ResourceLimit(FaultResourceLimitError::Exceeded {
+                field: "resolved_effect_records",
+                current: 2,
+                requested: 1,
+                configured: 2,
+                ..
+            })
+        ))
+    ));
+    assert_eq!(owner.recorded_effect_count(), 0);
+    assert!(backend.state().is_empty());
+
+    owner.set_external_effect_count(1);
+    owner
+        .evaluate_boundary_with_backend(
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            0,
+            &mut backend,
+        )
+        .unwrap_or_else(|error| panic!("one remaining record should admit: {error}"));
+    assert_eq!(owner.recorded_effect_count(), 1);
+}
+
+#[test]
 fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"recomputed-derivation-mismatch");

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::*;
+use crucible::model::{FaultReplayMode, ResolvedEffectTrace, ResolvedReplayWorkItem};
 #[test]
 fn production_fault_cursor_sequences_only_within_one_coordinate() {
     let mut cursor = ProductionFaultEvaluationCursor::default();
@@ -43,14 +44,15 @@ fn production_journal_sequence_never_reuses_an_a_b_a_coordinate() {
     assert_eq!(cursor.journal_sequence, 3);
 }
 use crucible::model::{
-    BindingActionCause, BindingMapping, BindingObservabilityPolicy, BindingSampling,
-    BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, EvaluatedSignal,
-    FaultBinding, FaultDirection, FaultOperation, FaultResourceLimits, InverseCdfTable,
-    NetworkInFlightPolicy, ResolvedFaultTarget, ResolvedMappingOutput, ResolvedTargetSet,
-    SampleObservation, SignalChoiceContext, SignalCoordinate, SignalDomain, SignalEvaluationError,
-    SignalId, SignalNode, SignalNodeKind, SignalResourceLimits, SignalShape,
-    SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, TargetSelector,
-    WorldNetworkInterface, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+    BindingActionCause, BindingActionKind, BindingMapping, BindingObservabilityPolicy,
+    BindingSampling, BindingSearchPolicy, EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest,
+    EvaluatedSignal, FaultBinding, FaultDirection, FaultOperation, FaultResourceLimits,
+    InverseCdfTable, NetworkInFlightPolicy, OpportunityPayload, ResolvedFaultTarget,
+    ResolvedMappingOutput, ResolvedTargetSet, SampleObservation, SignalChoiceContext,
+    SignalCoordinate, SignalDomain, SignalEvaluationError, SignalId, SignalNode, SignalNodeKind,
+    SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit, SignalValue,
+    SignalValueType, TargetSelector, WorldFaultDomain, WorldFaultTargetRef, WorldNetworkInterface,
+    WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
 };
 use crucible::{
     BackendNetworkOutput, Icount, LinkDef, MemoryDagStore, QuantumLoop, ReadyPoint,
@@ -86,6 +88,377 @@ impl crucible::model::SignalArtifactProvider for NoArtifacts {
 fn object_id(value: &str) -> FaultObjectId {
     FaultObjectId::parse(value)
         .unwrap_or_else(|error| panic!("test object ID should be valid: {error}"))
+}
+
+fn campaign_frame_record(segment: FaultObjectId) -> ResolvedEffectRecord {
+    let coordinate = FaultCoordinate {
+        virtual_nanos: 0,
+        retired_instructions: None,
+    };
+    let target = ResolvedFaultTarget::NetworkSegment {
+        segment,
+        direction: FaultDirection::AToB,
+    };
+    let opportunity = FaultOpportunity::new(
+        target.clone(),
+        FaultOperation::NetworkTraverse,
+        FaultPhase::Resolve,
+        coordinate,
+        1,
+        Some(FaultDirection::AToB),
+        OpportunityPayload::NetworkFrame {
+            producer: object_id("left"),
+            destination: object_id("right"),
+            producer_sequence: 1,
+            protocol_expansion_path: Vec::new(),
+            generated_response_depth: 0,
+            generated_response_cause: None,
+            forwarding_mutation_path: Vec::new(),
+            length_bytes: 14,
+            payload_digest: ContentHash::from_bytes(b"campaign-checkpoint-frame"),
+        },
+    )
+    .unwrap_or_else(|error| panic!("campaign checkpoint opportunity: {error}"));
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Opportunity,
+        EffectSpecification::Network(NetworkEffectSpecification::FrameLoss {
+            probability: None,
+            outcome: Some(crucible::model::NetworkLossDecision::Drop),
+        }),
+    )
+    .unwrap_or_else(|error| panic!("campaign checkpoint effect: {error}"));
+    let action = ResolvedBindingAction {
+        kind: BindingActionKind::Apply,
+        binding: object_id("campaign-network-first"),
+        target,
+        phase: FaultPhase::Resolve,
+        effect: Arc::new(effect),
+        mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+        mapped_digest: ContentHash::from_bytes(b"campaign-checkpoint-mapping"),
+        transition_sequence: 0,
+        opportunity: Some(opportunity.id()),
+        coordinate,
+        cause: BindingActionCause::Opportunity {
+            identity: opportunity.id(),
+            payload: opportunity.payload().clone(),
+        },
+        expected_precondition: None,
+    };
+    ResolvedEffectRecord::from_committed_action(
+        &action,
+        Some(&opportunity),
+        0,
+        ContentHash::from_bytes(b"campaign-checkpoint-derivation"),
+        Some(ContentHash::from_bytes(b"campaign-checkpoint-precondition")),
+        ContentHash::from_bytes(b"campaign-checkpoint-outcome-v1"),
+    )
+    .unwrap_or_else(|error| panic!("campaign checkpoint record: {error}"))
+}
+
+#[test]
+fn campaign_record_enters_canonical_resolved_trace() {
+    let record = campaign_frame_record(object_id("segment-primary"));
+    let limits = FaultResourceLimits::default();
+    let trace = trace_with_campaign_network_records(
+        None,
+        &[record.clone()],
+        limits,
+        FaultReplayMode::RecomputedCause,
+    )
+    .unwrap_or_else(|error| panic!("campaign trace should assemble: {error}"))
+    .unwrap_or_else(|| panic!("campaign trace must be present"));
+    let bytes = trace
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("campaign trace should encode: {error}"));
+    let decoded = ResolvedEffectTrace::from_canonical_bytes(&bytes, limits)
+        .unwrap_or_else(|error| panic!("campaign trace should decode: {error}"));
+    assert_eq!(decoded.work_items[0].records, vec![record.clone()]);
+
+    let locked = trace_with_campaign_network_records(
+        None,
+        &[record.clone()],
+        limits,
+        FaultReplayMode::LockedEffect,
+    )
+    .unwrap_or_else(|error| panic!("locked campaign trace should assemble: {error}"))
+    .unwrap_or_else(|| panic!("locked campaign trace must be present"));
+    assert_eq!(locked.mode, FaultReplayMode::LockedEffect);
+    assert_eq!(locked.work_items[0].records, vec![record.clone()]);
+
+    let fingerprint = ContentHash::from_bytes(b"signal-continuation");
+    let shared = ResolvedEffectTrace {
+        mode: FaultReplayMode::RecomputedCause,
+        work_items: vec![ResolvedReplayWorkItem {
+            coordinate: record.coordinate,
+            same_coordinate_sequence: record.same_coordinate_sequence,
+            opportunity: record.opportunity,
+            target: Some(record.target.clone()),
+            operation: record.operation,
+            direction: record.direction,
+            phase: Some(record.phase),
+            network_frame_key: record.network_frame_key,
+            network_producer_direction_key: record.network_producer_direction_key,
+            derivation_fingerprint: fingerprint,
+            records: Vec::new(),
+        }],
+        cursor: 0,
+    };
+    let merged = trace_with_campaign_network_records(
+        Some(shared),
+        &[record],
+        limits,
+        FaultReplayMode::RecomputedCause,
+    )
+    .unwrap_or_else(|error| panic!("campaign trace should merge: {error}"))
+    .unwrap_or_else(|| panic!("merged trace must be present"));
+    assert_eq!(merged.work_items.len(), 2);
+    assert_eq!(merged.work_items[0].derivation_fingerprint, fingerprint);
+    assert_eq!(
+        merged.work_items[1].records[0].derivation_fingerprint,
+        merged.work_items[1].derivation_fingerprint
+    );
+}
+
+#[test]
+fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
+    let (base_world, segment) = availability_world();
+    let mut topology = base_world.fault_topology().clone();
+    topology.network_segments[0].fault_domains = vec![signal_id("primary"), signal_id("backup")];
+    topology.fault_domains = vec![
+        WorldFaultDomain {
+            id: signal_id("primary"),
+            targets: vec![WorldFaultTargetRef::NetworkSegment {
+                segment: signal_id(segment.as_str()),
+                direction: FaultDirection::AToB,
+            }],
+        },
+        WorldFaultDomain {
+            id: signal_id("backup"),
+            targets: vec![WorldFaultTargetRef::NetworkSegment {
+                segment: signal_id(segment.as_str()),
+                direction: FaultDirection::BToA,
+            }],
+        },
+    ];
+    let world = base_world
+        .with_fault_topology(topology.clone())
+        .expect("network choice topology");
+    let scenario = crucible::ScenarioDefForm::from_components(
+        &world,
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        crucible::Seed::from_u64(20),
+    )
+    .expect("network choice scenario");
+    let selectables = crucible::model::ScenarioSelectables::new(
+        &world,
+        crucible::model::ScenarioSelectableLimits::default(),
+        vec![crucible::NetworkFaultSelectable::declaration().expect("network declaration")],
+    )
+    .expect("network selectables");
+    let scenario = scenario
+        .with_selectables(selectables)
+        .expect("selected network scenario");
+    let parent = Configuration::genesis(scenario.scenario_def());
+    let selectable = crucible::NetworkFaultSelectable::next(
+        &scenario,
+        &parent,
+        crucible::NetworkFaultPhase::First,
+        VirtualTime { ticks: 0 },
+        &[],
+    )
+    .expect("next network group")
+    .expect("active network group");
+    let value =
+        crucible::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)
+            .expect("network group value");
+    let branch = selectable
+        .resolve_branch(
+            &selectable
+                .branch_selection(value)
+                .expect("network selection"),
+        )
+        .expect("network branch");
+    let replay =
+        crucible::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])
+            .expect("exact selected fault");
+    replay.validate_topology(&topology).expect("path domains");
+
+    let mut expected_records = None;
+    for exact_replay in [false, true] {
+        let scheduler_scenario = SchedulerLivenessScenario::from_runnable_world(
+            "production-campaign-frame-loss",
+            Shift::default(),
+            16,
+            SimInstant { nanos: 128 },
+            0,
+            &world,
+        );
+        let mut scheduler = SingleScheduler::from_world(
+            scheduler_scenario,
+            &world,
+            &MemoryDagStore::new(),
+            WorldIoLayoutPolicy::default(),
+        )
+        .expect("network scheduler");
+        let mut nodes = QemuNodeSet::new();
+        let runtime = ProductionFaultRuntime::new(
+            crucible::model::FaultSignalPlan::empty(),
+            Some(Arc::new(NoArtifacts)),
+            SignalBoundarySnapshot::default(),
+            scenario.scenario_def().id(),
+            super::super::fault_implementation::test_host_manifests(),
+            &nodes,
+        )
+        .expect("network runtime");
+        let mut interceptor = ProductionFaultNetworkInterceptor::new(
+            runtime,
+            topology.clone(),
+            world.links().to_vec(),
+        );
+        interceptor
+            .install_campaign_replay(Some(replay.clone()), None)
+            .expect("selected fault");
+        interceptor
+            .record_campaign_marker_release(
+                &node("left").id,
+                "fault.transport.ready",
+                Icount { retired: 10 },
+                Icount { retired: 11 },
+                replay.branches()[0].selected().id(),
+            )
+            .expect("exact selected marker release");
+        // The outage is selected and checkpointable before any frame reaches
+        // the interceptor. Its interval ends at the exact virtual deadline.
+        assert_eq!(
+            interceptor.active_outages(0).expect("active outage").len(),
+            1
+        );
+        assert!(
+            interceptor
+                .active_outages(1_000_000)
+                .expect("deadline restore")
+                .is_empty()
+        );
+        let checkpoint = interceptor
+            .checkpoint(&scheduler, VirtualTime { ticks: 0 }, &[], &mut nodes)
+            .expect("pre-frame selected outage checkpoint");
+        let (_, _, _, adapter_bytes, _) = checkpoint
+            .network_state()
+            .cloned()
+            .expect("network state")
+            .into_parts();
+        let adapter: NetworkAdapterCheckpoint =
+            serde_json::from_slice(&adapter_bytes).expect("decode selected outage state");
+        assert_eq!(adapter.campaign_replay_identity, Some(replay.identity()));
+        assert_eq!(adapter.campaign_marker_releases.len(), 1);
+        assert!(interceptor.campaign_marker_release_committed(
+            &node("left").id,
+            "fault.transport.ready",
+            replay.branches()[0].selected().id(),
+        ));
+        validate_network_adapter_checkpoint(&adapter, interceptor.resource_limits())
+            .expect("decoded release proof remains valid");
+        assert!(adapter.campaign_records.is_empty());
+        if exact_replay {
+            interceptor
+                .install_campaign_effect_replay(expected_records.clone(), false)
+                .expect("install canonical effect replay");
+        }
+
+        for sequence in 1..=2 {
+            let mut payload = vec![0_u8; 14];
+            payload[..6].copy_from_slice(&deterministic_node_mac(&node("right").id));
+            let mut pending = Vec::new();
+            let mut outputs = vec![BackendNetworkOutput {
+                source: NodeId {
+                    name: String::from("left"),
+                },
+                destination: NodeId {
+                    name: String::from("right"),
+                },
+                emit_icount: Icount { retired: 0 },
+                sequence,
+                payload,
+                route: None,
+                fault_continuation: Default::default(),
+            }];
+            interceptor
+                .intercept_network_outputs(
+                    &mut scheduler,
+                    &mut nodes,
+                    VirtualTime { ticks: 0 },
+                    &mut pending,
+                    &mut outputs,
+                )
+                .expect("campaign frame admission");
+            assert!(
+                outputs.is_empty(),
+                "availability/down drops the routed frame"
+            );
+            assert_eq!(
+                interceptor.campaign_effect_records().len(),
+                sequence as usize
+            );
+        }
+        let mut payload = vec![0_u8; 14];
+        payload[..6].copy_from_slice(&deterministic_node_mac(&node("right").id));
+        let mut pending = Vec::new();
+        let mut after_deadline = vec![BackendNetworkOutput {
+            source: node("left").id,
+            destination: node("right").id,
+            emit_icount: Icount { retired: 0 },
+            sequence: 3,
+            payload,
+            route: None,
+            fault_continuation: Default::default(),
+        }];
+        interceptor
+            .intercept_network_outputs(
+                &mut scheduler,
+                &mut nodes,
+                VirtualTime { ticks: 1_000_000 },
+                &mut pending,
+                &mut after_deadline,
+            )
+            .expect("frame after selected outage deadline");
+        assert_eq!(after_deadline.len(), 1, "selected availability restored");
+        assert_eq!(interceptor.campaign_effect_records().len(), 2);
+        assert!(
+            interceptor
+                .active_outages(1_000_000)
+                .expect("restored state")
+                .is_empty()
+        );
+        if exact_replay {
+            interceptor
+                .verify_campaign_effect_replay_exhausted()
+                .expect("both actions reproduced their exact records");
+            assert_eq!(
+                Some(interceptor.campaign_effect_records().to_vec()),
+                expected_records
+            );
+        } else {
+            let trace = trace_with_campaign_network_records(
+                None,
+                interceptor.campaign_effect_records(),
+                interceptor.resource_limits(),
+                FaultReplayMode::RecomputedCause,
+            )
+            .expect("capture canonical campaign trace")
+            .expect("frame actions produce trace evidence");
+            let decoded = ResolvedEffectTrace::from_canonical_bytes(
+                &trace.canonical_bytes().expect("encode captured trace"),
+                interceptor.resource_limits(),
+            )
+            .expect("decode captured trace");
+            let (signal, campaign) = split_campaign_network_trace(decoded, true)
+                .expect("dispatch captured trace to the network verifier");
+            assert!(signal.work_items.is_empty());
+            expected_records = Some(campaign);
+        }
+    }
 }
 
 fn signal_id(value: &str) -> SignalId {
@@ -409,9 +782,43 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     let drained = journal.drain_ready(u64::MAX);
     assert_eq!(drained.len(), 1);
     drop(journal);
+    let campaign_record = campaign_frame_record(segment.clone());
+    interceptor.campaign_records.push(campaign_record.clone());
+    let campaign_trace = trace_with_campaign_network_records(
+        None,
+        interceptor.campaign_effect_records(),
+        interceptor.resource_limits(),
+        FaultReplayMode::RecomputedCause,
+    )
+    .unwrap_or_else(|error| panic!("campaign trace before capture: {error}"))
+    .unwrap_or_else(|| panic!("campaign trace before capture must exist"))
+    .canonical_bytes()
+    .unwrap_or_else(|error| panic!("encode campaign trace before capture: {error}"));
     let checkpoint = interceptor
         .checkpoint(&scheduler, committed_frontier, &pending_outputs, &mut nodes)
         .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
+    let (_, _, _, adapter_bytes, _) = checkpoint
+        .network_state()
+        .cloned()
+        .unwrap_or_else(|| panic!("checkpoint must retain network state"))
+        .into_parts();
+    let decoded_adapter: NetworkAdapterCheckpoint = serde_json::from_slice(&adapter_bytes)
+        .unwrap_or_else(|error| panic!("decode versioned network adapter: {error}"));
+    assert_eq!(
+        decoded_adapter.campaign_records,
+        vec![campaign_record.clone()]
+    );
+    assert_eq!(
+        serde_json::to_vec(&decoded_adapter)
+            .unwrap_or_else(|error| panic!("re-encode network adapter: {error}")),
+        adapter_bytes
+    );
+    let mut older_adapter = decoded_adapter;
+    older_adapter.semantic_version = NETWORK_ADAPTER_CHECKPOINT_VERSION - 1;
+    assert!(
+        validate_network_adapter_checkpoint(&older_adapter, FaultResourceLimits::default())
+            .is_err()
+    );
     let restored_scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-availability-drop",
         Shift::default(),
@@ -535,6 +942,21 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         )
         .unwrap_or_else(|error| panic!("network continuation should restore: {error}"));
     assert_eq!(restored_committed_frontier, committed_frontier);
+    assert_eq!(
+        restored_interceptor.campaign_effect_records(),
+        &[campaign_record]
+    );
+    let restored_campaign_trace = trace_with_campaign_network_records(
+        None,
+        restored_interceptor.campaign_effect_records(),
+        restored_interceptor.resource_limits(),
+        FaultReplayMode::RecomputedCause,
+    )
+    .unwrap_or_else(|error| panic!("campaign trace after restore: {error}"))
+    .unwrap_or_else(|| panic!("campaign trace after restore must exist"))
+    .canonical_bytes()
+    .unwrap_or_else(|error| panic!("encode campaign trace after restore: {error}"));
+    assert_eq!(restored_campaign_trace, campaign_trace);
     let restored_checkpoint = restored_interceptor
         .checkpoint(
             &restored_scheduler,
@@ -916,6 +1338,9 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
         journal_sequence: 2,
         observations: super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state.clone(),
+        campaign_records: Vec::new(),
+        campaign_replay_identity: None,
+        campaign_marker_releases: Vec::new(),
     };
     let encoded = serde_json::to_vec(&checkpoint)
         .unwrap_or_else(|error| panic!("encode nonempty network checkpoint: {error}"));

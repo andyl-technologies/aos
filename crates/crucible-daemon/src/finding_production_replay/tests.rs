@@ -3,16 +3,17 @@
 use super::capture::validate_execution_side;
 use super::*;
 use crucible::model::{
-    FaultResourceLimits, FaultSignalPlan, NormalizedSpatialArtifact, SignalBoundaryBehavior,
-    SignalDomain, SignalId, SignalInterpolation, SignalNode, SignalNodeKind, SignalProgram,
-    SignalResourceLimits, SignalShape, SignalSourceSpecification, SignalUnit, SignalValue,
-    SignalValueType, SpatialArtifactKind,
+    FaultReplayMode, FaultResourceLimits, FaultSignalPlan, NormalizedSpatialArtifact,
+    ResolvedEffectTrace, SignalBoundaryBehavior, SignalDomain, SignalId, SignalInterpolation,
+    SignalNode, SignalNodeKind, SignalProgram, SignalResourceLimits, SignalShape,
+    SignalSourceSpecification, SignalUnit, SignalValue, SignalValueType, SpatialArtifactKind,
 };
 use crucible::{
     Configuration, ContentAddressedBlobRef, EventAttributeValue, EventLevel, EventLogTime,
     EventPayload, EventSource, Icount, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm,
-    Schedule, SchedulerEventLogClass, Seed, WhiteBoxPolicy, World, WorldBlockLatency,
-    WorldIoCoreConfig, WorldIoNode, WorldNode, WorldNodeDef,
+    ScenarioSelectableLimits, ScenarioSelectables, Schedule, SchedulerEventLogClass, Seed,
+    WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNode,
+    WorldNodeDef,
 };
 use crucible_campaign::{CampaignHash, FindingKind, FindingSignature};
 
@@ -245,6 +246,41 @@ fn terminal_fingerprint_may_precede_but_not_exceed_shared_frontier() {
         validate_execution_side(&paused, finding.artifact.scenario_form(), recipe, limits),
         Err(FindingProductionReplayCaptureError::InvalidTerminalFingerprints)
     ));
+}
+
+#[test]
+fn network_only_finding_accepts_canonical_effect_trace() {
+    let world = World::from_nodes(vec![vm_node()]).expect("network-only world");
+    let base = ScenarioDefForm::from_components(
+        &world,
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(1),
+    )
+    .expect("network-only scenario");
+    let selectables = ScenarioSelectables::new(
+        &world,
+        ScenarioSelectableLimits::default(),
+        vec![crucible::NetworkFaultSelectable::declaration().expect("network declaration")],
+    )
+    .expect("network selectables");
+    let scenario = base
+        .with_selectables(selectables)
+        .expect("selected scenario");
+    let trace = ResolvedEffectTrace {
+        mode: FaultReplayMode::RecomputedCause,
+        work_items: Vec::new(),
+        cursor: 0,
+    }
+    .canonical_bytes()
+    .expect("canonical network trace");
+    let mut execution = side("network-fault");
+    execution.resolved_effect_trace = Some(trace);
+    let limits = FindingProductionReplayCaptureLimits::for_finding(&finding());
+    let recipe = FindingProductionReplayRecipe::new(10_000, 64, true).expect("valid recipe");
+
+    validate_execution_side(&execution, &scenario, recipe, limits)
+        .expect("network-only scenario accepts its canonical trace");
 }
 
 #[test]

@@ -202,12 +202,13 @@ pub(crate) fn decode_crucible_configuration_artifact_with_owned_candidate(
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
     let mut retained = Vec::new();
-    let replay = resolve_selection_decisions(&configuration, artifact, None, |ids, _| {
-        retained = store
-            .resolve_selections_with_owned_candidate(ids, owned)
-            .map_err(CrucibleArtifactError::SelectionRepository)?;
-        Ok(retained.clone())
-    })?;
+    let replay =
+        resolve_selection_decisions(scenario, &configuration, artifact, None, |ids, _| {
+            retained = store
+                .resolve_selections_with_owned_candidate(ids, owned)
+                .map_err(CrucibleArtifactError::SelectionRepository)?;
+            Ok(retained.clone())
+        })?;
     Ok((configuration, replay, retained))
 }
 
@@ -219,11 +220,12 @@ fn decode_crucible_configuration_artifact_with_resolver(
 ) -> Result<(Configuration, SignalFaultCampaignReplayPlan), CrucibleArtifactError> {
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
-    let replay = resolve_selection_decisions(&configuration, artifact, None, |ids, _| {
-        resolver
-            .resolve_configuration_selections(ids)
-            .map_err(Into::into)
-    })?;
+    let replay =
+        resolve_selection_decisions(scenario, &configuration, artifact, None, |ids, _| {
+            resolver
+                .resolve_configuration_selections(ids)
+                .map_err(Into::into)
+        })?;
     Ok((configuration, replay))
 }
 
@@ -237,6 +239,7 @@ pub(crate) fn decode_crucible_configuration_artifact_with_signal_fault_replay_gu
     let configuration =
         decode_crucible_configuration_artifact_structural(scenario, scenario_artifact, artifact)?;
     let replay = resolve_selection_decisions(
+        scenario,
         &configuration,
         artifact,
         retained_memory_guard,
@@ -329,6 +332,7 @@ fn decode_crucible_configuration_artifact_structural(
 }
 
 fn resolve_selection_decisions<R>(
+    scenario: &ScenarioDefForm,
     configuration: &Configuration,
     artifact: &ConfigurationArtifact,
     retained_memory_guard: Option<&mut RetainedConfigurationMemoryGuard<'_>>,
@@ -386,6 +390,7 @@ where
         .collect::<Result<Vec<_>, _>>()?;
     let resolved = resolve(&selection_ids, selection_resolution_limit)?;
     let mut signal_fault_branches = Vec::new();
+    let mut network_fault_branches = Vec::new();
     let mut covered_signal_fault_overrides = BTreeSet::new();
     for ((index, selection), resolved) in selections.into_iter().zip(resolved) {
         if resolved.selection() != &selection
@@ -436,6 +441,20 @@ where
                     }
                     signal_fault_branches.push(branch);
                 }
+                if matches!(
+                    resolved.opportunity().source(),
+                    crucible_campaign::ChoiceSource::Environment { adapter, .. }
+                        if adapter == crucible::NETWORK_FAULT_CAMPAIGN_ADAPTER
+                ) {
+                    let selectable = NetworkFaultSelectable::from_records(
+                        scenario,
+                        &parent,
+                        resolved.declaration(),
+                        resolved.opportunity(),
+                        resolved.domain(),
+                    )?;
+                    network_fault_branches.push(selectable.resolve_branch(&selection)?);
+                }
             }
             SelectionOrigin::ModelSample(_) => {
                 crucible::validate_app_random_model_selection(
@@ -460,7 +479,8 @@ where
     {
         return Err(CrucibleArtifactError::UnboundSignalFaultOverride);
     }
-    SignalFaultCampaignReplayPlan::new(configuration.clone(), signal_fault_branches)
+    SignalFaultCampaignReplayPlan::new(configuration.clone(), signal_fault_branches)?
+        .with_network_branches(network_fault_branches)
         .map_err(Into::into)
 }
 

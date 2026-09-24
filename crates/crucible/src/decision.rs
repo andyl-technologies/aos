@@ -6,6 +6,7 @@
 //! [`Decision`] values in scheduler order.
 
 mod app_random_selectable;
+mod network_fault_selectable;
 mod reseed;
 mod signal_fault_selectable;
 
@@ -23,6 +24,10 @@ pub use app_random_selectable::{
 };
 pub(crate) use app_random_selectable::{
     is_app_random_model_selection, is_app_random_schedule_decision,
+};
+pub use network_fault_selectable::{
+    NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
+    NetworkFaultPhase, NetworkFaultSelectable, NetworkFaultSelectableError,
 };
 pub use signal_fault_selectable::{
     MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,

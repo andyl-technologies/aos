@@ -161,6 +161,12 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         &self.network_output_interceptor
     }
 
+    /// Returns the disjoint live backend and host network interceptor together.
+    #[must_use]
+    pub fn backend_and_network_output_interceptor_mut(&mut self) -> (&mut B, &mut I) {
+        (&mut self.backend, &mut self.network_output_interceptor)
+    }
+
     /// Returns the number of emitted frames awaiting global-frontier commitment.
     #[must_use]
     pub fn pending_network_output_count(&self) -> usize {

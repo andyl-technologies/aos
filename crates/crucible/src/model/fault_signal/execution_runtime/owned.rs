@@ -15,6 +15,8 @@ pub struct OwnedFaultExecutionRuntime {
     scenario_seed: ContentHash,
     manifests: FaultAdapterManifests,
     checkpoint: FaultRuntimeCheckpoint,
+    recorded_effect_count: u64,
+    external_effect_count: u64,
 }
 
 impl OwnedFaultExecutionRuntime {
@@ -71,6 +73,8 @@ impl OwnedFaultExecutionRuntime {
             scenario_seed,
             manifests,
             checkpoint,
+            recorded_effect_count: 0,
+            external_effect_count: 0,
         })
     }
 
@@ -87,6 +91,7 @@ impl OwnedFaultExecutionRuntime {
         manifests: FaultAdapterManifests,
         checkpoint: FaultRuntimeCheckpoint,
     ) -> Result<Self, FaultExecutionError> {
+        let recorded_effect_count = count_recorded_effects(&checkpoint)?;
         if checkpoint.poisoned {
             checkpoint.validate(&plan, scenario_seed)?;
             admit_manifests(plan.bindings(), &manifests)?;
@@ -96,6 +101,8 @@ impl OwnedFaultExecutionRuntime {
                 scenario_seed,
                 manifests,
                 checkpoint,
+                recorded_effect_count,
+                external_effect_count: 0,
             });
         }
         let runtime = FaultExecutionRuntime::restore(
@@ -112,6 +119,8 @@ impl OwnedFaultExecutionRuntime {
             scenario_seed,
             manifests,
             checkpoint,
+            recorded_effect_count,
+            external_effect_count: 0,
         })
     }
 
@@ -161,6 +170,10 @@ impl OwnedFaultExecutionRuntime {
                 return Err(error);
             }
         };
+        self.recorded_effect_count = count_new_records(
+            self.recorded_effect_count,
+            checkpoint.recorded_work_items.last(),
+        )?;
         self.checkpoint = checkpoint;
         Ok(evaluation)
     }
@@ -257,6 +270,10 @@ impl OwnedFaultExecutionRuntime {
                 return Err(error);
             }
         };
+        self.recorded_effect_count = count_new_records(
+            self.recorded_effect_count,
+            checkpoint.recorded_work_items.last(),
+        )?;
         self.checkpoint = checkpoint;
         Ok(evaluation)
     }
@@ -280,6 +297,16 @@ impl OwnedFaultExecutionRuntime {
             }
             None => runtime.preview_boundary(coordinate, same_coordinate_sequence)?,
         };
+        let committed = self
+            .recorded_effect_count
+            .checked_add(self.external_effect_count)
+            .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+        let requested = u64::try_from(evaluation.actions.len())
+            .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+        self.plan
+            .resource_limits()
+            .reserve("resolved_effect_records", committed, requested)
+            .map_err(FaultRuntimeError::ResourceLimit)?;
         let candidate = runtime.checkpoint()?;
         let derivation = ContentHash::from_bytes(b"checkpoint-capacity-preflight-derivation");
         let precondition = ContentHash::from_bytes(b"checkpoint-capacity-preflight-before");
@@ -323,6 +350,17 @@ impl OwnedFaultExecutionRuntime {
     #[must_use]
     pub const fn checkpoint(&self) -> &FaultRuntimeCheckpoint {
         &self.checkpoint
+    }
+
+    /// Returns the number of committed signal effects without scanning history.
+    #[must_use]
+    pub const fn recorded_effect_count(&self) -> u64 {
+        self.recorded_effect_count
+    }
+
+    /// Sets committed effects owned by another adapter sharing this scenario budget.
+    pub fn set_external_effect_count(&mut self, count: u64) {
+        self.external_effect_count = count;
     }
 
     /// Installs a fresh authoritative replay trace into this continuation.
@@ -459,6 +497,25 @@ impl OwnedFaultExecutionRuntime {
     pub const fn scenario_seed(&self) -> ContentHash {
         self.scenario_seed
     }
+}
+
+fn count_recorded_effects(checkpoint: &FaultRuntimeCheckpoint) -> Result<u64, FaultExecutionError> {
+    checkpoint
+        .recorded_work_items
+        .iter()
+        .try_fold(0_u64, |total, item| count_new_records(total, Some(item)))
+}
+
+fn count_new_records(
+    current: u64,
+    item: Option<&ResolvedReplayWorkItem>,
+) -> Result<u64, FaultExecutionError> {
+    let additional = item.map_or(0, |item| item.records.len());
+    let additional = u64::try_from(additional)
+        .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
+    current
+        .checked_add(additional)
+        .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records").into())
 }
 
 impl fmt::Debug for OwnedFaultExecutionRuntime {

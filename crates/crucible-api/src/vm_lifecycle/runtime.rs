@@ -11,6 +11,14 @@ mod observation;
 use debug_evidence::*;
 use observation::*;
 
+fn release_then_record_campaign_marker(
+    release: impl FnOnce() -> Result<(), SchedulerError>,
+    record: impl FnOnce() -> Result<(), SchedulerError>,
+) -> Result<(), SchedulerError> {
+    release()?;
+    record()
+}
+
 #[path = "runtime/control_boundary.rs"]
 mod control_boundary;
 
@@ -284,6 +292,98 @@ impl ProductionVmLifecycleLoop {
         Ok(true)
     }
 
+    /// Reads one VM's physical marker park for an atomic network fault boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when QEMU cannot authenticate the stopped node's
+    /// physical instruction count.
+    pub fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<crucible_qemu::QemuParkedCampaignMarker>, SchedulerError> {
+        Ok(self.inner.backend_mut().parked_campaign_marker(node)?)
+    }
+
+    /// Releases one VM only after its atomic network selection is committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained park is absent, stale, or names a
+    /// different phase marker.
+    pub fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        let proof = self
+            .inner
+            .backend_mut()
+            .parked_campaign_marker(node)?
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("selected network marker park vanished before release"),
+            })?;
+        if proof.marker != marker {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("selected network marker phase changed before release"),
+            });
+        }
+        self.inner
+            .network_output_interceptor()
+            .validate_campaign_marker_release(
+                node,
+                marker,
+                proof.marker_icount,
+                proof.physical_icount,
+                selected,
+            )?;
+        // The checkpoint ledger can advance only after QEMU releases the
+        // verified park. A post-release recording error terminates the attempt.
+        let (backend, network) = self.inner.backend_and_network_output_interceptor_mut();
+        release_then_record_campaign_marker(
+            || {
+                backend.release_parked_campaign_marker(node, marker)?;
+                Ok(())
+            },
+            || {
+                network.record_campaign_marker_release(
+                    node,
+                    marker,
+                    proof.marker_icount,
+                    proof.physical_icount,
+                    selected,
+                )
+            },
+        )
+    }
+
+    /// Authenticates that one selected VM marker was already released on this branch.
+    #[must_use]
+    pub fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> bool {
+        self.inner
+            .network_output_interceptor()
+            .campaign_marker_release_committed(node, marker, selected)
+    }
+
+    /// Reports whether no adapter-owned network frame remains queued at activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if queue continuations cannot be authenticated.
+    pub fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        Ok(self
+            .inner
+            .network_output_interceptor()
+            .active_queue_evidence()?
+            .is_empty())
+    }
+
     /// Captures a portable exact checkpoint under an operational boundary.
     ///
     /// The callback is observed between bounded file-hash and persistence
@@ -393,10 +493,23 @@ impl ProductionVmLifecycleLoop {
         let emitted_events = runtime.emitted_events().to_vec();
         drop(runtime);
 
+        let network = self.inner.network_output_interceptor();
+        let resolved_effect_trace = super::network_faults::trace_with_campaign_network_records(
+            resolved_effect_trace,
+            network.campaign_effect_records(),
+            network.resource_limits(),
+            crucible::model::FaultReplayMode::RecomputedCause,
+        )?;
+        let locked_effect_trace = super::network_faults::trace_with_campaign_network_records(
+            locked_effect_trace,
+            network.campaign_effect_records(),
+            network.resource_limits(),
+            crucible::model::FaultReplayMode::LockedEffect,
+        )?;
         let network_outages = self
             .inner
             .network_output_interceptor()
-            .active_outages(frontier.ticks)
+            .active_outages(frontier.ticks)?
             .into_iter()
             .map(
                 |(target, unavailable_until_nanos)| ProductionNetworkOutageEvidence {
