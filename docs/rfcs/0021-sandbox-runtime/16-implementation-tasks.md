@@ -8865,3 +8865,30 @@ compiler publication, or an effect. A dedicated VM check exercises initialized
 readback, missing or replaced names, and no mutation; a passing VM result is
 still required as qualification evidence. Q04 and effects remain closed until
 the complete all-owner held cut and release/recovery barrier are proved.
+
+### Closed Q04 same-challenge owner readback
+
+Root can optionally admit an exact public-only AOSSPK01 Source hold signer
+credential at policy-authority startup. Its protected pin rejects removal,
+rotation, malformed framing, and reuse of deployment, project, Controller, or
+Cache signer keys. No Source private issuer key or new Source/Controller mount
+is provisioned. Root's library-only all-owner readback spends a monotonic
+AOSCTH01 epoch and fresh nonce durably before calling any receipt transport.
+The same nonce and root cut bind the root-pinned AOSCTW01 Controller,
+AOSSRB01 Source, and AOSCRB01 Cache-purpose signatures. The cut commits to
+their exact public pins and expected held identities. Root then compares a
+four-journal Cache hold replay through only the fixed read-only Cache view
+with the expected project, partition, head, binding, and epoch. It rechecks
+the challenge, pins, protected root snapshot, and named journal location
+before returning a nonauthorizing observation.
+
+Focused tests pass for same-challenge replay after simulated disconnect and
+root reopen, stale nonce, missing or rotated Source pin, role-key reuse,
+altered or wrong-generation Source receipt, bad Cache signature, and changed
+Cache hold: two all-owner tests, two Source-pin tests, and two existing
+Controller-session tests. The Cache physical signer statement and read-only
+journal replay are still separate observations, not one simultaneous owner
+writer cut. There is no production Source signer transport or private-key
+custody, all-owner CAS, crash-safe release/recovery composition, or Q04
+request admission. The daemon's early Q04 gate remains closed; these bytes
+cannot authorize public Create, publication, or effects.
