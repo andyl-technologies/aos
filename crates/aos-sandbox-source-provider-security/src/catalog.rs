@@ -683,24 +683,9 @@ pub(crate) fn current_catalog_head_matches(
 ) -> bool {
     use aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1;
 
-    if journal.validate_source_provider_authority().is_err() {
-        return false;
-    }
-    let Ok(records) = journal.records() else {
+    let Some(records) = validated_catalog_records(journal) else {
         return false;
     };
-    let Ok(records) = aos_sandbox_source_provider_ledger::collect_bounded_records(records) else {
-        return false;
-    };
-    if aos_sandbox_source_provider_ledger::validate_prospective_records(
-        records
-            .iter()
-            .map(|(key, value)| (key.as_slice(), value.as_slice())),
-    )
-    .is_err()
-    {
-        return false;
-    }
     let authority = records.iter().find_map(|(key, value)| {
         match aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value).ok()? {
             DecodedRecordV1::Authority(value) => Some(value),
@@ -735,24 +720,7 @@ pub(crate) fn retained_catalog_head_cleanup_status(
 ) -> Option<bool> {
     use aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1;
 
-    if journal.validate_source_provider_authority().is_err() {
-        return None;
-    }
-    let Ok(records) = journal.records() else {
-        return None;
-    };
-    let Ok(records) = aos_sandbox_source_provider_ledger::collect_bounded_records(records) else {
-        return None;
-    };
-    if aos_sandbox_source_provider_ledger::validate_prospective_records(
-        records
-            .iter()
-            .map(|(key, value)| (key.as_slice(), value.as_slice())),
-    )
-    .is_err()
-    {
-        return None;
-    }
+    let records = validated_catalog_records(journal)?;
     let authority = records.iter().find_map(|(key, value)| {
         match aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value).ok()? {
             DecodedRecordV1::Authority(value) => Some(value),
@@ -808,6 +776,22 @@ pub(crate) fn retained_catalog_head_cleanup_status(
     .and_then(|(publication, cleanup_only)| {
         publication_matches_catalog(&publication, &catalog).then_some(cleanup_only)
     })
+}
+
+fn validated_catalog_records(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+) -> Option<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
+    journal.validate_source_provider_authority().ok()?;
+    let records =
+        aos_sandbox_source_provider_ledger::collect_bounded_records(journal.records().ok()?)
+            .ok()?;
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        records
+            .iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )
+    .ok()?;
+    Some(records)
 }
 
 #[allow(clippy::too_many_arguments)]
