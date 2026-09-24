@@ -897,6 +897,7 @@ impl OwnedCallbackRuntimeState {
                 args.app_random(),
                 state.setup.app_random_branch_plan(),
                 selectable_catalog_plan.as_ref(),
+                args.campaign_marker_parking().is_on(),
             ),
         )?;
         let mut callback_state = Box::pin(callback_state);

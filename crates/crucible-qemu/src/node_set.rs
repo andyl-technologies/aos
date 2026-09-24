@@ -13,8 +13,8 @@ use std::thread;
 
 use crucible::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendRngEvidence, BackendSnapshot,
-    FingerprintSample, Icount, NodeId, ObservableEvent, SimulationBackend, StepObservation,
-    VirtualTime,
+    FingerprintSample, Icount, NodeId, ObservableEvent, ObservableEventPayload, SimulationBackend,
+    StepObservation, VirtualTime,
 };
 #[cfg(target_os = "linux")]
 use crucible::{ContentHash, EventLog};
@@ -462,7 +462,106 @@ pub struct QemuNodeSet {
     permanently_closed: Vec<NodeId>,
     fault_event_staging_budget: Option<QemuFaultEventStagingBudget>,
     pending_selectable_requests: BTreeMap<NodeId, SelectablePlanPendingRequest>,
+    parked_campaign_markers: BTreeMap<NodeId, QemuParkedCampaignMarker>,
+    retained_observable_events: Vec<ObservableEvent>,
     last_host_parallelism: Option<QemuHostParallelismEvidence>,
+}
+
+/// One QEMU VMStop bound to a campaign marker and its exact retired count.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QemuParkedCampaignMarker {
+    /// The declared campaign boundary marker name.
+    pub marker: String,
+    /// Retired count recorded by the white-box doorbell callback.
+    pub marker_icount: Icount,
+    /// Physical retired count published with QEMU's native VMStop.
+    pub physical_icount: Icount,
+}
+
+const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
+
+fn campaign_marker_parked_at(
+    node: &NodeId,
+    physical_icount: Icount,
+    events: &[ObservableEvent],
+) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
+    let mut matched = None;
+    for event in events {
+        let ObservableEventPayload::GuestMarker {
+            retired_icount,
+            node: marker_node,
+            marker,
+        } = event.payload()
+        else {
+            continue;
+        };
+        if marker_node != node || !CAMPAIGN_BOUNDARY_MARKERS.contains(&marker.name.as_str()) {
+            continue;
+        }
+        // The trap reports its instruction's pre-retirement count. A forced
+        // TB exit publishes the native stop after that one instruction retires.
+        let expected =
+            retired_icount
+                .retired
+                .checked_add(1)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("QEMU node `{}` marker retired count overflowed", node.name),
+                })?;
+        if expected != physical_icount.retired || matched.is_some() {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` campaign marker `{}` at {} does not uniquely prove physical stop {}",
+                    node.name, marker.name, retired_icount.retired, physical_icount.retired,
+                ),
+            });
+        }
+        matched = Some(QemuParkedCampaignMarker {
+            marker: marker.name.clone(),
+            marker_icount: *retired_icount,
+            physical_icount,
+        });
+    }
+    Ok(matched)
+}
+
+#[cfg(test)]
+mod campaign_marker_parking_tests {
+    use super::*;
+    use crucible::MarkerId;
+
+    #[test]
+    fn only_exact_campaign_marker_stop_is_retained() {
+        let node = NodeId {
+            name: "west".to_owned(),
+        };
+        let marker_at = Icount { retired: 41 };
+        let event = ObservableEvent::guest_marker(
+            marker_at,
+            node.clone(),
+            MarkerId::from_name("fault.transport.ready"),
+        );
+        let stopped_at = Icount { retired: 42 };
+
+        assert_eq!(
+            campaign_marker_parked_at(&node, stopped_at, &[event.clone()]),
+            Ok(Some(QemuParkedCampaignMarker {
+                marker: "fault.transport.ready".to_owned(),
+                marker_icount: marker_at,
+                physical_icount: stopped_at,
+            }))
+        );
+        assert!(campaign_marker_parked_at(&node, marker_at, &[event]).is_err());
+
+        let unrelated = ObservableEvent::guest_marker(
+            marker_at,
+            node.clone(),
+            MarkerId::from_name("setup.complete"),
+        );
+        assert_eq!(
+            campaign_marker_parked_at(&node, stopped_at, &[unrelated]),
+            Ok(None)
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,6 +583,7 @@ impl QemuNodeSet {
     /// Returns the prior node when `node` was already present.
     pub fn insert(&mut self, node: NodeId, backend: QemuNode) -> Option<QemuNode> {
         self.permanently_closed.retain(|closed| closed != &node);
+        self.parked_campaign_markers.remove(&node);
         self.nodes.insert(node, backend)
     }
 
@@ -492,7 +592,62 @@ impl QemuNodeSet {
     /// This is used only when a replay lifecycle transfers an oracle-validated
     /// node into the authoritative lifecycle at the same configuration.
     pub fn take(&mut self, node: &NodeId) -> Option<QemuNode> {
+        self.parked_campaign_markers.remove(node);
         self.nodes.remove(node)
+    }
+
+    /// Reads the exact native stop retained for one campaign boundary marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its live physical
+    /// count has changed since the VMStop proof was retained.
+    pub fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
+        let Some(parked) = self.parked_campaign_markers.get(node).cloned() else {
+            self.node_mut(node)?;
+            return Ok(None);
+        };
+        let current = self.node_mut(node)?.current_icount()?;
+        if current != parked.physical_icount {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` moved from parked campaign boundary {} to {}",
+                    node.name, parked.physical_icount.retired, current.retired,
+                ),
+            });
+        }
+        Ok(Some(parked))
+    }
+
+    /// Releases one marker park after the campaign commits its atomic choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent, the marker differs,
+    /// or its physical retired count changed while parked.
+    pub fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+    ) -> Result<(), BackendError> {
+        let parked = self
+            .parked_campaign_marker(node)?
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("QEMU node `{}` has no parked campaign marker", node.name),
+            })?;
+        if parked.marker != marker {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` parked at `{}` rather than `{marker}`",
+                    node.name, parked.marker,
+                ),
+            });
+        }
+        self.parked_campaign_markers.remove(node);
+        Ok(())
     }
 
     /// Re-adopts one reconstructed child as a fresh template source.
@@ -1029,6 +1184,21 @@ impl QemuNodeSet {
         self.pending_selectable_requests
             .insert(node.clone(), pending);
         Ok(PendingSelectableRetention::NewlyRetained { boundary_icount })
+    }
+
+    fn retain_campaign_marker_if_paused(
+        &mut self,
+        node: &NodeId,
+        physical_icount: Icount,
+    ) -> Result<bool, BackendError> {
+        let events = self.node_mut(node)?.drain_observable_events()?;
+        let matched = campaign_marker_parked_at(node, physical_icount, &events)?;
+        self.retained_observable_events.extend(events);
+        if let Some(parked) = matched {
+            self.parked_campaign_markers.insert(node.clone(), parked);
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Enqueues a reply for the exact node-qualified pending request.
@@ -1688,6 +1858,15 @@ impl SimulationBackend for QemuNodeSet {
         node: &NodeId,
         ceiling: VirtualTime,
     ) -> Result<StepObservation, BackendError> {
+        if let Some(parked) = self.parked_campaign_marker(node)? {
+            return Ok(StepObservation {
+                requested_ceiling: ceiling,
+                reached: ceiling,
+                outcome: crucible::AdvanceOutcome::Paused {
+                    at: parked.physical_icount,
+                },
+            });
+        }
         if self.pending_selectable_requests.contains_key(node) {
             return Err(BackendError::Rejected {
                 message: format!(
@@ -1738,6 +1917,10 @@ impl SimulationBackend for QemuNodeSet {
                         });
                     }
                     PendingSelectableRetention::Absent => {}
+                }
+                if self.retain_campaign_marker_if_paused(node, at)? {
+                    observation.reached = ceiling;
+                    return Ok(observation);
                 }
             }
             if observation.reached == ceiling {
@@ -1807,7 +1990,7 @@ impl SimulationBackend for QemuNodeSet {
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.retained_observable_events);
         for node in self.nodes.values_mut() {
             events.extend(node.drain_observable_events()?);
         }

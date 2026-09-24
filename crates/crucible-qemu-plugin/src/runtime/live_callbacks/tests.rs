@@ -685,6 +685,37 @@ fn selectable_stop_is_admitted_after_exact_sim_publication() {
 }
 
 #[test]
+fn campaign_marker_stop_is_admitted_after_one_retired_doorbell_instruction() {
+    TEST_REQUEST_VMSTOP_CALLS.set(0);
+    TEST_REQUEST_VMSTOP_STATUS.set(0);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = Box::new(
+        test_live_state(79, 1, 0, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
+    );
+    let handoff = state.selectable_vmstop_handoff();
+    let trap_icount = 8;
+    assert_eq!(
+        handoff.defer_campaign_marker(test_force_vcpu_tb_exit),
+        Ok(true)
+    );
+
+    let userdata = std::ptr::from_ref(state.as_ref()).cast_mut().cast();
+    crucible_qemu_plugin_live_publish_icount_cb(trap_icount + 1, userdata);
+
+    let paused = slot.snapshot();
+    assert_eq!(paused.current_icount, trap_icount + 1);
+    assert_eq!(paused.idle_wake_icount, trap_icount + 1);
+    assert_eq!(paused.status, STATUS_IDLE);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    assert!(!handoff.is_pending());
+}
+
+#[test]
 fn rejected_exact_selectable_stop_restores_the_handoff() {
     TEST_REQUEST_VMSTOP_CALLS.set(0);
     TEST_REQUEST_VMSTOP_STATUS.set(-7);
