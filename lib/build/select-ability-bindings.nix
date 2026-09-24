@@ -6,6 +6,11 @@
   candidatesByName =
     builtins.mapAttrs (_: implementation: {
       inherit implementation;
+      interface = interfaceIdentityFor implementation;
+      providedGuarantees =
+        builtins.map
+        (guarantee: guaranteeIdentityFor "ability implementation" guarantee)
+        implementation.guarantees;
     })
     abilities.implementations;
   pendingRequestDeclarations =
@@ -88,8 +93,7 @@
           semanticInterfaceDeclaration "ability implementation" (interfaceDeclarationFor implementation)
         )
       );
-  implementationMatches = requirement: implementation: let
-    interface = interfaceIdentityFor implementation;
+  matchingRequirementFor = requirement: {
     selectors =
       if requirement ? accepted_interfaces
       then requirement.accepted_interfaces
@@ -102,27 +106,27 @@
             inherit (requirement) descriptor;
           })
       ];
-    requiredGuarantees =
+    guarantees =
       builtins.map
       (guarantee: guaranteeIdentityFor "ability requirement" guarantee)
       requirement.guarantees;
-    providedGuarantees =
-      builtins.map
-      (guarantee: guaranteeIdentityFor "ability implementation" guarantee)
-      implementation.guarantees;
-  in
+    methods = requirement.methods;
+  };
+  implementationMatches = requirement: candidate:
     builtins.any
-    (selector: lib.abilities.interfaceSelectorMatches selector interface)
-    selectors
+    (selector: lib.abilities.interfaceSelectorMatches selector candidate.interface)
+    requirement.selectors
     && builtins.all
-    (method: builtins.elem method implementation.methods)
+    (method: builtins.elem method candidate.implementation.methods)
     requirement.methods
     && builtins.all
-    (guarantee: builtins.elem guarantee providedGuarantees)
-    requiredGuarantees;
-  candidateNamesFor = requirement:
+    (guarantee: builtins.elem guarantee candidate.providedGuarantees)
+    requirement.guarantees;
+  candidateNamesFor = requirement: let
+    matchingRequirement = matchingRequirementFor requirement;
+  in
     builtins.filter
-    (name: implementationMatches requirement candidatesByName.${name}.implementation)
+    (name: implementationMatches matchingRequirement candidatesByName.${name})
     (builtins.attrNames candidatesByName);
   packageForImplementation = implementationName: implementation:
     if implementation.package == null
