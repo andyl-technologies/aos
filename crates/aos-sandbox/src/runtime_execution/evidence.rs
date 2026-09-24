@@ -145,8 +145,9 @@ pub fn decode_control_completion_phase_v1(
 ///
 /// The caller first authenticates the Host outcome. The fixed evidence then
 /// binds the authorization to the controller operation, source request,
-/// execution, admitted specification, and observation sequence. Earlier
-/// Authorized or Starting observations cannot establish a public RUNNING state.
+/// execution, admitted specification, and observation sequence. Even a
+/// Running authorization result is not a current public observation; a
+/// separately authenticated Observe operation must establish public RUNNING.
 ///
 /// # Errors
 ///
@@ -161,6 +162,36 @@ pub fn decode_authorize_completion_running_v1(
     observation_sequence: u64,
 ) -> Result<(), RuntimeExecutionEvidenceError> {
     decode_running_completion(
+        bytes,
+        EffectOperationV1::AuthorizeExecution,
+        operation_id,
+        source_commitment,
+        execution_id,
+        specification_digest,
+        observation_sequence,
+    )
+}
+
+/// Reads authorization evidence from an already authenticated Host outcome.
+///
+/// This decoder does not authenticate the Host packet itself. Authorization
+/// completion only acknowledges an effect. Even if its embedded
+/// backend observation says Running, a separate, current Observe operation is
+/// required before the controller may publish public RUNNING.
+///
+/// # Errors
+///
+/// Returns an error for malformed evidence or an operation, source request,
+/// execution, specification, or observation sequence mismatch.
+pub fn decode_authorize_completion_binding_v1(
+    bytes: &[u8],
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
+    decode_bound_completion(
         bytes,
         EffectOperationV1::AuthorizeExecution,
         operation_id,
@@ -208,6 +239,30 @@ fn decode_running_completion(
     specification_digest: ObjectDigest,
     observation_sequence: u64,
 ) -> Result<(), RuntimeExecutionEvidenceError> {
+    if decode_bound_completion(
+        bytes,
+        operation,
+        operation_id,
+        source_commitment,
+        execution_id,
+        specification_digest,
+        observation_sequence,
+    )? != BackendExecutionPhaseV1::Running
+    {
+        return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
+    }
+    Ok(())
+}
+
+fn decode_bound_completion(
+    bytes: &[u8],
+    operation: EffectOperationV1,
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
     if bytes.len() != EVIDENCE_BYTES
         || bytes.get(..8) != Some(EVIDENCE_MAGIC.as_slice())
         || bytes.get(266..298) != Some(evidence_digest(&bytes[..266]).as_bytes().as_slice())
@@ -224,10 +279,7 @@ fn decode_running_completion(
     {
         return Err(RuntimeExecutionEvidenceError::OperationMismatch);
     }
-    if decode_phase(bytes[225])? != BackendExecutionPhaseV1::Running {
-        return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
-    }
-    Ok(())
+    decode_phase(bytes[225])
 }
 
 pub(crate) fn completion_from_authenticated_absence_v1(
@@ -598,8 +650,9 @@ mod tests {
 
     use super::{
         EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
-        decode_authorize_completion_running_v1, decode_cancel_completion_phase_v1,
-        decode_control_completion_phase_v1, decode_observe_completion_running_v1, evidence_digest,
+        decode_authorize_completion_binding_v1, decode_authorize_completion_running_v1,
+        decode_cancel_completion_phase_v1, decode_control_completion_phase_v1,
+        decode_observe_completion_running_v1, evidence_digest,
     };
 
     #[test]
@@ -633,6 +686,17 @@ mod tests {
             Ok(())
         );
         assert_eq!(
+            decode_authorize_completion_binding_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Ok(BackendExecutionPhaseV1::Running)
+        );
+        assert_eq!(
             decode_authorize_completion_running_v1(
                 &bytes,
                 operation,
@@ -657,6 +721,28 @@ mod tests {
                 sequence,
             ),
             Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+        assert_eq!(
+            decode_authorize_completion_binding_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Ok(BackendExecutionPhaseV1::Starting)
+        );
+        assert_eq!(
+            decode_authorize_completion_binding_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                ObjectDigest::from_bytes([9; 32]),
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
         );
     }
 

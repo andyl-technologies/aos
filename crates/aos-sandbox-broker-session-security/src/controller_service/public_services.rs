@@ -52,6 +52,15 @@ const QUERY_BINDING_HEADER: &str = "aos-query-binding-v1";
 const PAGE_TOKEN_MAGIC: &[u8; 8] = b"AOSPGT01";
 const PAGE_TOKEN_BYTES: usize = 8 + QUERY_BINDING_TRANSPORT_BYTES + 32 + 16 + 32;
 
+fn require_execution_create_admission_ready() -> Result<(), ConnectError> {
+    // The accepted request would otherwise create a durable REQUESTED resource
+    // with no cross-owner path to physical output backing or a Host effect.
+    Err(ConnectError::new(
+        ErrorCode::Unavailable,
+        "execution creation awaits protected cross-owner handoff",
+    ))
+}
+
 impl CapabilityService {
     pub(super) async fn admit_public_command(
         &self,
@@ -663,6 +672,7 @@ impl ExecutionService for CapabilityService {
         context: RequestContext,
         request: ServiceRequest<'_, CreateExecutionRequest>,
     ) -> ServiceResult<impl Encodable<CreateExecutionResponse> + Send + use<'a>> {
+        require_execution_create_admission_ready()?;
         aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(
             &request.to_owned_message(),
         )
@@ -1560,4 +1570,15 @@ fn lower_hex(bytes: &[u8]) -> String {
         encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+#[cfg(test)]
+mod execution_admission_tests {
+    use super::*;
+
+    #[test]
+    fn public_create_is_unavailable_before_cross_owner_handoff() {
+        let error = require_execution_create_admission_ready().unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unavailable);
+    }
 }

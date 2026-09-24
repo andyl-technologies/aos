@@ -24,7 +24,7 @@ use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
 use aos_sandbox::runtime_execution::{
-    RuntimeExecutionEvidenceError, decode_authorize_completion_running_v1,
+    RuntimeExecutionEvidenceError, decode_authorize_completion_binding_v1,
     decode_control_completion_phase_v1, decode_observe_completion_running_v1,
 };
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
@@ -106,12 +106,20 @@ impl ControllerExecutionCompletionV1 {
     fn public_phase(&self) -> Result<ExecutionPhase, EffectFailure> {
         match self.phase {
             BackendExecutionPhaseV1::Running => Ok(ExecutionPhase::EXECUTION_PHASE_RUNNING),
+            BackendExecutionPhaseV1::Authorized | BackendExecutionPhaseV1::Starting => {
+                Err(EffectFailure::Retryable(
+                    "execution authorization awaits a distinct Host Observe".to_owned(),
+                ))
+            }
             // The Host completion binds the phase but carries no exit code or
             // termination kind. Public EXITED requires that result evidence.
             BackendExecutionPhaseV1::Exited => Err(EffectFailure::Retryable(
                 "execution exit requires authenticated terminal result".to_owned(),
             )),
-            BackendExecutionPhaseV1::Canceled => Ok(ExecutionPhase::EXECUTION_PHASE_CANCELED),
+            BackendExecutionPhaseV1::Canceled => Err(EffectFailure::Retryable(
+                "execution cancellation requires terminal result and capture disposition"
+                    .to_owned(),
+            )),
             _ => Err(EffectFailure::Permanent(
                 "control completion has an unsupported phase".to_owned(),
             )),
@@ -119,7 +127,13 @@ impl ControllerExecutionCompletionV1 {
     }
 
     fn is_terminal(&self) -> bool {
-        self.phase != BackendExecutionPhaseV1::Running
+        matches!(
+            self.phase,
+            BackendExecutionPhaseV1::Exited
+                | BackendExecutionPhaseV1::Canceled
+                | BackendExecutionPhaseV1::Failed
+                | BackendExecutionPhaseV1::Lost
+        )
     }
 }
 
@@ -217,6 +231,11 @@ impl ControllerExecutionIntentV1 {
         journal: &mut Journal,
         completion: &ControllerExecutionCompletionV1,
     ) -> Result<(), EffectFailure> {
+        if self.action == ControllerExecutionActionV1::Authorize {
+            return Err(EffectFailure::Retryable(
+                "execution authorization cannot publish a public phase".to_owned(),
+            ));
+        }
         let current = PublicProjectionStoreV1::new(journal)
             .get(PublicProjectionKindV1::Execution, self.execution_id)
             .map_err(retryable)?
@@ -373,10 +392,10 @@ impl ControllerExecutionIntentV1 {
     /// Binds a supplied specification to the exact Create request, selected
     /// assignment, and retained guest credential policy before Host dispatch.
     ///
-    /// This lowering step does not establish runtime observations or a
-    /// broker-ledger reservation. Production Create remains closed until a
-    /// protected producer establishes and durably retains those inputs before
-    /// calling this method, then rechecks currentness at effect handoff.
+    /// This lowering step accepts a caller-supplied value and therefore does
+    /// not prove protected spec admission, physical output backing, or a live
+    /// Host effect handoff. Production Create remains closed until those
+    /// owners can be joined and rechecked at dispatch.
     ///
     /// # Errors
     ///
@@ -919,11 +938,12 @@ impl ControllerExecutionExchangeV1 {
         kind: ExecutionAuthorizationKindV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        // Create has no protected producer for its canonical specification yet.
-        // An in-memory specification cannot be reconstructed after reconnect.
+        // A canonical spec exists, but no cross-owner physical Storage and
+        // live Host effect handoff proves its admission at this boundary.
+        // An in-memory specification cannot substitute for that custody.
         if intent.action == ControllerExecutionActionV1::Authorize {
             return Err(EffectFailure::Retryable(
-                "execution authorization requires protected specification custody".to_owned(),
+                "execution authorization requires protected cross-owner handoff".to_owned(),
             ));
         }
         if self.requires_reconnect() {
@@ -993,6 +1013,98 @@ impl ControllerExecutionExchangeV1 {
             .drive(session, &ERRORS)
             .map(|(_, outcome)| outcome)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox::JournalLimits;
+
+    use super::*;
+
+    #[test]
+    fn authorization_acknowledgment_cannot_publish_running() {
+        for phase in [
+            BackendExecutionPhaseV1::Authorized,
+            BackendExecutionPhaseV1::Starting,
+            BackendExecutionPhaseV1::Running,
+        ] {
+            assert_eq!(
+                authorization_acknowledgment_phase(phase).unwrap(),
+                BackendExecutionPhaseV1::Authorized
+            );
+        }
+        for phase in [
+            BackendExecutionPhaseV1::Exited,
+            BackendExecutionPhaseV1::Canceled,
+            BackendExecutionPhaseV1::Failed,
+            BackendExecutionPhaseV1::Lost,
+        ] {
+            assert!(authorization_acknowledgment_phase(phase).is_err());
+        }
+
+        let receipt = EffectReceipt::new(vec![1]).unwrap();
+        let completion = ControllerExecutionCompletionV1 {
+            receipt,
+            phase: BackendExecutionPhaseV1::Authorized,
+            observation_sequence: 1,
+        };
+        assert!(matches!(
+            completion.public_phase(),
+            Err(EffectFailure::Retryable(_))
+        ));
+        assert!(!completion.is_terminal());
+
+        let canceled = ControllerExecutionCompletionV1 {
+            receipt: EffectReceipt::new(vec![2]).unwrap(),
+            phase: BackendExecutionPhaseV1::Canceled,
+            observation_sequence: 2,
+        };
+        assert!(matches!(
+            canceled.public_phase(),
+            Err(EffectFailure::Retryable(_))
+        ));
+
+        let operation_id = OperationId::from_bytes([1; 16]);
+        let intent = ControllerExecutionIntentV1 {
+            operation_id,
+            projection_operation_id: operation_id,
+            execution_id: [2; 16],
+            action: ControllerExecutionActionV1::Authorize,
+            specification: None,
+            observation_specification_digest: None,
+            source_operation_commitment: [3; 32],
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let (mut journal, _) = Journal::open(
+            directory.path().join("controller.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        let error = intent
+            .commit_control_projection(ProjectId::from_bytes([4; 16]), &mut journal, &completion)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            EffectFailure::Retryable(message) if message == "execution authorization cannot publish a public phase"
+        ));
+    }
+}
+
+fn authorization_acknowledgment_phase(
+    observed_phase: BackendExecutionPhaseV1,
+) -> Result<BackendExecutionPhaseV1, EffectFailure> {
+    if !matches!(
+        observed_phase,
+        BackendExecutionPhaseV1::Authorized
+            | BackendExecutionPhaseV1::Starting
+            | BackendExecutionPhaseV1::Running
+    ) {
+        return Err(EffectFailure::Permanent(
+            "Host authorization cannot settle a terminal execution".to_owned(),
+        ));
+    }
+    // Authorization is an effect acknowledgment, not a public observation.
+    Ok(BackendExecutionPhaseV1::Authorized)
 }
 
 fn classify_outcome(
@@ -1087,7 +1199,7 @@ fn classify_outcome(
                 })?;
                 BackendExecutionPhaseV1::Running
             } else if let Some(specification) = &intent.specification {
-                decode_authorize_completion_running_v1(
+                let observed_phase = decode_authorize_completion_binding_v1(
                     &body.completion_bytes,
                     *intent.operation_id.as_bytes(),
                     intent.source_operation_commitment,
@@ -1095,15 +1207,12 @@ fn classify_outcome(
                     execution_spec_digest_v1(specification),
                     body.observation_sequence,
                 )
-                .map_err(|error| match error {
-                    RuntimeExecutionEvidenceError::PhaseMismatch => EffectFailure::Retryable(
-                        "Host authorization has not established a running execution".to_owned(),
-                    ),
-                    _ => EffectFailure::Permanent(
+                .map_err(|_| {
+                    EffectFailure::Permanent(
                         "Host authorization completion evidence is invalid".to_owned(),
-                    ),
+                    )
                 })?;
-                BackendExecutionPhaseV1::Running
+                authorization_acknowledgment_phase(observed_phase)?
             } else {
                 decode_control_completion_phase_v1(
                     &body.completion_bytes,
