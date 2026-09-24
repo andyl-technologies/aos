@@ -1227,6 +1227,8 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
+            | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1309,6 +1311,8 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+        | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1829,6 +1833,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
+                | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
                 | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE

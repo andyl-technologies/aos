@@ -18,13 +18,14 @@
 
 pub mod authenticated_session;
 pub mod fencing;
-pub mod host_attach_gate;
 pub mod host_argument_source;
+pub mod host_attach_gate;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
 pub mod host_consumer_cgroup;
 pub mod host_execution;
 pub mod host_observation;
+pub mod host_output;
 pub mod inventory;
 pub mod mount_catalog;
 pub mod mount_destination_slot;

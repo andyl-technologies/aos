@@ -79,10 +79,9 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 
 /// Lists registered authenticated methods in canonical numeric order.
 ///
-/// Registration is not production advertisement. The argument-source carrier
-/// remains excluded from production hello until its protected issuer and
-/// one-shot Host owner are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 32] = [
+/// Registration is not production advertisement. Closed provisional carriers
+/// remain excluded until their protected issuers and Host owners are joined.
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 34] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -115,6 +114,8 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 32] = [
     BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP,
+    BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -124,8 +125,8 @@ pub const AUTHENTICATED_BROKER_METHOD_COUNT_V1: usize = AUTHENTICATED_BROKER_MET
 ///
 /// The returned methods are in registry order and include every method that
 /// production may advertise or require for the selected protocol and
-/// audience. The registered argument-source carrier is deliberately excluded
-/// until its authority path is implemented.
+/// audience. Registered provisional carriers are deliberately excluded until
+/// their authority paths are implemented.
 #[must_use]
 pub fn authenticated_broker_methods_for_role_v1(
     protocol: BrokerSessionProtocolV1,
@@ -138,6 +139,8 @@ pub fn authenticated_broker_methods_for_role_v1(
                 method,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+                    | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             )
         })
         .filter(|method| {
@@ -398,7 +401,9 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => BrokerSessionProtocolV1::Host,
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+        | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => BrokerSessionProtocolV1::Host,
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -445,6 +450,8 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+            | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
@@ -1214,6 +1221,41 @@ mod tests {
                 value.namespace == HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE
             })
         );
+    }
+
+    #[test]
+    fn provisional_output_methods_are_registered_but_not_advertised() {
+        let methods = [
+            BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
+        ];
+        let production = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+        );
+
+        for method in methods {
+            let profile = authenticated_broker_method_profile_v1(method).unwrap();
+            assert_eq!(
+                profile.authorization(),
+                BrokerSessionAuthorizationPresenceV1::Required
+            );
+            assert!(profile.request_descriptor_roles().is_empty());
+            assert!(!production.contains(&method));
+        }
+
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert!(methods.iter().all(|method| {
+            !hello
+                .required_methods
+                .iter()
+                .any(|value| value.as_known() == Some(*method))
+        }));
     }
 
     #[test]

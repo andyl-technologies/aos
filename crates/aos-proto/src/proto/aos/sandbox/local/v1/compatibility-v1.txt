@@ -46,6 +46,8 @@ BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
 BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
 BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;
 BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;
+BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT = 35;
+BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT = 36;
 BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE = 12;
 message ObserveHostRuntimeArgumentRequestV1 {
 RequestHeader header = 1;
@@ -56,6 +58,25 @@ bytes source_digest = 5;
 bytes source_attempt_commitment = 6;
 bytes execution_id = 7;
 bytes create_operation_id = 8;
+message ReserveHostExecutionOutputRequestV1 {
+RequestHeader header = 1;
+bytes canonical_source = 2;
+message QueryHostExecutionOutputRequestV1 {
+bytes original_reserve_request_id = 4;
+bytes preissue_record_digest = 5;
+bytes output_claim_digest = 6;
+bytes reserve_source_digest = 7;
+bytes assignment_digest = 8;
+bytes host_boot_id = 9;
+enum HostExecutionOutputReservationStatusV1 {
+HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_ABSENT = 1;
+HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_COMMITTED = 2;
+message HostExecutionOutputReservationV1 {
+HostExecutionOutputReservationStatusV1 status = 1;
+bytes original_plan_digest = 10;
+bytes original_semantic_request_digest = 11;
+bytes host_correlation_record_digest = 12;
+uint64 original_host_journal_sequence = 13;
 message ObserveConsumerCgroupRequestV1 {
 RequestHeader header = 1;
 AssignmentFence fence = 2;

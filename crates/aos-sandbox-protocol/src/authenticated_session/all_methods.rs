@@ -249,6 +249,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostQueryExecution,
     /// Sealed Controller argument-source transport; no successful outcome exists yet.
     HostObserveRuntimeArgument,
+    /// Controller-signed provisional Host output reservation.
+    HostReserveExecutionOutput,
+    /// Read-only exact original Host output reservation query.
+    HostQueryExecutionOutput,
     /// Host OpenSSH forced-command installation and signed readback.
     HostInstallAttachGate,
     /// Advisory current Host OpenSSH gate readiness.
@@ -380,6 +384,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveRuntimeArgument
+        }
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT => {
+            AuthenticatedBrokerMethodSemanticsV1::HostReserveExecutionOutput
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionOutput
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             AuthenticatedBrokerMethodSemanticsV1::HostInstallAttachGate
@@ -1078,6 +1088,8 @@ enum RequestOutcomeContextV1 {
     HostPublishCatalog(crate::host_catalog::ValidatedHostCatalogPublication),
     HostExecutionApply(crate::ValidatedHostExecutionApplyV1),
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
+    HostOutputReserve(crate::host_output::ValidatedHostOutputReserveRequestV1),
+    HostOutputQuery(crate::host_output::ValidatedHostOutputQueryRequestV1),
     HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
     HostAttachReadiness,
     HostAttachRoute(crate::ValidatedHostAttachRouteQueryV1),
@@ -1250,6 +1262,24 @@ fn validate_request_semantics(
             )?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostObserveRuntimeArgument,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT => {
+            let request =
+                crate::host_output::decode_host_output_reserve_request_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostReserveExecutionOutput,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
+            let request =
+                crate::host_output::decode_host_output_query_request_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionOutput,
                 *request.header(),
                 None,
             )
@@ -1468,6 +1498,16 @@ fn validate_request_semantics(
             )?;
             RequestOutcomeContextV1::None
         }
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT => {
+            RequestOutcomeContextV1::HostOutputReserve(
+                crate::host_output::decode_host_output_reserve_request_v1(body, peer, policy, now)?,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
+            RequestOutcomeContextV1::HostOutputQuery(
+                crate::host_output::decode_host_output_query_request_v1(body, peer, policy, now)?,
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             RequestOutcomeContextV1::HostAttachGate(crate::decode_host_attach_gate_request_v1(
                 body, peer, policy, now,
@@ -1641,6 +1681,28 @@ fn validate_success_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
             return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT => {
+            let RequestOutcomeContextV1::HostOutputReserve(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_output::decode_host_output_reservation_response_v1(
+                body,
+                original.locator(),
+                false,
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
+            let RequestOutcomeContextV1::HostOutputQuery(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_output::decode_host_output_reservation_response_v1(
+                body,
+                original.locator(),
+                true,
+            )?;
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
             let RequestOutcomeContextV1::HostConsumerCgroup(original) = &request.outcome_context

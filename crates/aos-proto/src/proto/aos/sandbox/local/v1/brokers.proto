@@ -98,6 +98,8 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
   BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;
   BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;
+  BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT = 35;
+  BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT = 36;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -201,6 +203,53 @@ message ObserveHostRuntimeArgumentRequestV1 {
   bytes source_attempt_commitment = 6; // Binds this content to request and Create locator.
   bytes execution_id = 7; // Exact accepted execution identifier.
   bytes create_operation_id = 8; // Exact accepted Create operation identifier.
+}
+
+// AOSCIR01 is an exact 688-byte Controller-derived source. Its bytes are
+// authorized only by the Host-audience plan in BrokerRequestEnvelope; the
+// structural carrier alone cannot reserve Host output or start an execution.
+message ReserveHostExecutionOutputRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_source = 2; // Exact 688-byte AOSCIR01.
+}
+
+// Queries one original reserve attempt after an ambiguous transport outcome.
+// ABSENT is historical observation, never permission to mint a new attempt.
+message QueryHostExecutionOutputRequestV1 {
+  RequestHeader header = 1;
+  bytes execution_id = 2; // Exactly 16 nonzero bytes.
+  bytes create_operation_id = 3; // Exactly 16 nonzero bytes.
+  bytes original_reserve_request_id = 4; // Original method-35 header ID.
+  bytes preissue_record_digest = 5; // Exact AOSCIP01 record digest.
+  bytes output_claim_digest = 6; // Raw AOSEOR02 claim SHA-256.
+  bytes reserve_source_digest = 7; // Domain-separated AOSCIR01 carrier digest.
+  bytes assignment_digest = 8; // Current signed assignment manifest.
+  bytes host_boot_id = 9; // Original Host kernel boot ID.
+}
+
+enum HostExecutionOutputReservationStatusV1 {
+  HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_UNSPECIFIED = 0;
+  HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_ABSENT = 1;
+  HOST_EXECUTION_OUTPUT_RESERVATION_STATUS_COMMITTED = 2;
+}
+
+// Both methods return this body under the authenticated session outcome.
+// COMMITTED names the exact original protected Host append; ABSENT echoes its
+// locator but has no plan, semantic, correlation, or sequence fields.
+message HostExecutionOutputReservationV1 {
+  HostExecutionOutputReservationStatusV1 status = 1;
+  bytes execution_id = 2;
+  bytes create_operation_id = 3;
+  bytes preissue_record_digest = 4;
+  bytes output_claim_digest = 5;
+  bytes reserve_source_digest = 6;
+  bytes original_reserve_request_id = 7;
+  bytes assignment_digest = 8;
+  bytes host_boot_id = 9;
+  bytes original_plan_digest = 10;
+  bytes original_semantic_request_digest = 11;
+  bytes host_correlation_record_digest = 12; // Protected AOSHOP01 SHA-256.
+  uint64 original_host_journal_sequence = 13;
 }
 
 enum HostExecutionPhaseV1 {
