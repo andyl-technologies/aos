@@ -157,7 +157,7 @@ crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gat
 crucible.executor.scheduler-continuation	3	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.production-exact-closure	9	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.production-network-adapter-checkpoint	9	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
-crucible.production-run-state	2	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-operational-continuity
+crucible.production-run-state	2	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-cold-continuity,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-object	5	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-index	1	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.checkpoint-choice-closure	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming
