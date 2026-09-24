@@ -867,12 +867,7 @@ where
                     return Err(AttemptWorkerFailure::Terminal(error.into()));
                 }
             };
-            if requires_exact && materialization != CrucibleMaterializationTier::ExactRestore {
-                self.runner.quarantine_pending_execution();
-                return Err(AttemptWorkerFailure::Terminal(
-                    CrucibleExecutionModelError::ExactRestoreRequired,
-                ));
-            }
+            enforce_required_exact_restore(&mut self.runner, requires_exact, materialization)?;
         }
         self.last_materialization = Some(materialization);
         record_materialization_diagnostic(input, materialization);
@@ -887,6 +882,23 @@ where
             .reconcile_execution(disposition)
             .map_err(map_runner_failure)
     }
+}
+
+// A missing selected checkpoint can cold-replay in the generic runner. Public
+// selected captures promise a physical exact restore, so discard any result
+// and quarantine its retained authority before semantic publication.
+fn enforce_required_exact_restore<R: CrucibleExecutionRunner>(
+    runner: &mut R,
+    requires_exact: bool,
+    materialization: CrucibleMaterializationTier,
+) -> Result<(), AttemptWorkerFailure<CrucibleExecutionModelError<R::Error>>> {
+    if requires_exact && materialization != CrucibleMaterializationTier::ExactRestore {
+        runner.quarantine_pending_execution();
+        return Err(AttemptWorkerFailure::Terminal(
+            CrucibleExecutionModelError::ExactRestoreRequired,
+        ));
+    }
+    Ok(())
 }
 
 fn map_artifact_failure<E>(
@@ -918,5 +930,65 @@ fn map_runner_failure<E>(
         AttemptWorkerFailure::Terminal(error) => {
             AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Runner(error))
         }
+    }
+}
+
+#[cfg(test)]
+mod exact_source_tests {
+    use super::*;
+
+    struct QuarantineProbe {
+        quarantined: bool,
+    }
+
+    impl CrucibleExecutionRunner for QuarantineProbe {
+        type Error = ();
+
+        fn execute(
+            &mut self,
+            _input: &CrucibleAttemptExecution,
+            _context: &AttemptExecutionContext,
+        ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+            panic!("materialization policy test does not execute a guest")
+        }
+
+        fn quarantine_pending_execution(&mut self) {
+            self.quarantined = true;
+        }
+    }
+
+    #[test]
+    fn public_exact_source_rejects_cold_fallback_and_quarantines() {
+        let mut runner = QuarantineProbe { quarantined: false };
+
+        let result = enforce_required_exact_restore(
+            &mut runner,
+            true,
+            CrucibleMaterializationTier::ThinReplay,
+        );
+
+        assert!(matches!(
+            result,
+            Err(AttemptWorkerFailure::Terminal(
+                CrucibleExecutionModelError::ExactRestoreRequired
+            ))
+        ));
+        assert!(runner.quarantined);
+    }
+
+    #[test]
+    fn generic_selected_source_keeps_cold_fallback_available() {
+        let mut runner = QuarantineProbe { quarantined: false };
+
+        assert!(
+            enforce_required_exact_restore(
+                &mut runner,
+                false,
+                CrucibleMaterializationTier::ThinReplay
+            )
+            .is_ok()
+        );
+
+        assert!(!runner.quarantined);
     }
 }

@@ -28,10 +28,9 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
         CampaignName::new("absent").expect("campaign name"),
         snapshot("absent"),
         crucible_campaign::CampaignSavepointAction::Status {
-            request: crucible_campaign::CampaignFactId::from_content_id(ContentId::for_bytes(
-                ObjectKind::CampaignFact,
-                1,
-                b"capture",
+            request: crucible_campaign::CampaignFactId::parse(&format!(
+                "crucible.campaign.fact@{}",
+                ContentId::for_bytes(ObjectKind::CampaignFact, 15, b"capture").encode()
             ))
             .expect("capture fact"),
         },
