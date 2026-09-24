@@ -262,5 +262,7 @@ fn start_packaged_network_service(
         .arg(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)
         .arg("--campaign-executor-socket")
         .arg(fixture._temporary.path().join("envoy-executor.sock"));
-    fixture.start_service_command(invocation, Duration::from_secs(120))
+    // Capturing baked genesis copies the RAM and disk of all five guests
+    // before the service binds its campaign socket.
+    fixture.start_service_command(invocation, Duration::from_secs(600))
 }
