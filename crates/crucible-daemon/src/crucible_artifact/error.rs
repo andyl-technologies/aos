@@ -99,11 +99,17 @@ pub enum CrucibleArtifactError {
     SignalFaultSelection(#[from] crucible::SignalFaultSelectableError),
     /// A scenario-owned network fault selection failed exact producer replay.
     #[error(transparent)]
-    NetworkFaultSelection(#[from] crucible::NetworkFaultSelectableError),
+    NetworkFaultSelection(Box<crucible::NetworkFaultSelectableError>),
     /// A standardized signal-fault selection was not followed by its exact prefix.
     #[error("Crucible configuration signal-fault branch differs from its authenticated prefix")]
     SignalFaultScheduleMismatch,
     /// A raw signal-fault override was not certified by a standardized selection.
     #[error("Crucible configuration contains an unbound signal-fault override")]
     UnboundSignalFaultOverride,
+}
+
+impl From<crucible::NetworkFaultSelectableError> for CrucibleArtifactError {
+    fn from(error: crucible::NetworkFaultSelectableError) -> Self {
+        Self::NetworkFaultSelection(Box::new(error))
+    }
 }

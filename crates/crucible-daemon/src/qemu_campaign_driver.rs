@@ -107,7 +107,7 @@ pub enum QemuFreshModeledDriverError {
     Campaign(#[source] CampaignCodecError),
     /// A scenario-owned network fault choice failed typed projection.
     #[error("fresh campaign network fault choice failed: {0}")]
-    NetworkFault(#[source] crucible::NetworkFaultSelectableError),
+    NetworkFault(#[source] Box<crucible::NetworkFaultSelectableError>),
     /// A worked-network marker did not name an exact, settled world boundary.
     #[error("worked-network fault marker is not a settled exact boundary: {reason}")]
     NetworkFaultBoundary {
