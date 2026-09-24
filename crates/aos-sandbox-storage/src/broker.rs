@@ -20,11 +20,15 @@ use aos_sandbox_core::{
     BrokerAssignment, BrokerGrantTarget, BrokerVerb, CanonicalAssignmentManifestV1, NodeId,
     ObjectDigest, ProtocolVersion, RawPairedClockSample,
 };
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::semantics::storage::StorageOperation;
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::storage_capture_candidate::{
+    StorageCaptureCandidateQueryV1, decode_storage_capture_candidate_request_v1,
+};
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAtomicStorageSnapshotRequestV1,
     ValidatedStorageWorkspace, decode_atomic_storage_snapshot_request,
@@ -35,6 +39,7 @@ use crate::authorization::{StorageAuthorityV1, decode_assignment};
 use crate::catalog_preparation::{
     RetainedStorageCatalogPreparationV1, StoragePreparationAuthorityRecordsV1,
 };
+use crate::catalog_transition::VerifiedPhysicalCatalogSnapshotV1;
 use crate::guest_root_attempt::{GuestRootAttemptPhaseV1, GuestRootPublicationAttemptV1};
 use crate::guest_root_worker::encode_request as encode_guest_root_worker_request;
 use crate::helper::{
@@ -186,6 +191,34 @@ impl AuthenticatedWorkspaceCatalogPhysicalPlanV1 {
 pub struct StorageAdmissionCoordinator {
     authority: StorageAuthorityV1,
     transactions: StorageTransactionStore,
+}
+
+/// Retains one signed read-only request and a cold-verified Storage owner cut.
+///
+/// This is not an effect authorization. The complete admission must be
+/// repeated after ZFS readback, and both owner heads must still match.
+pub(crate) struct AuthenticatedCaptureCandidateCutV1 {
+    query: StorageCaptureCandidateQueryV1,
+    catalog: VerifiedPhysicalCatalogSnapshotV1,
+    authority_head_sequence: u64,
+    desired_state_digest: ObjectDigest,
+}
+
+impl AuthenticatedCaptureCandidateCutV1 {
+    pub(crate) const fn query(&self) -> &StorageCaptureCandidateQueryV1 {
+        &self.query
+    }
+
+    pub(crate) const fn catalog(&self) -> &VerifiedPhysicalCatalogSnapshotV1 {
+        &self.catalog
+    }
+
+    pub(crate) fn matches(&self, successor: &Self) -> bool {
+        self.query == successor.query
+            && self.catalog.binding() == successor.catalog.binding()
+            && self.authority_head_sequence == successor.authority_head_sequence
+            && self.desired_state_digest == successor.desired_state_digest
+    }
 }
 
 struct AuthenticatedCatalogPreparation {
@@ -561,6 +594,49 @@ impl StorageAdmissionCoordinator {
         self.transactions
             .verified_resolver_journal()
             .map_err(Into::into)
+    }
+
+    /// Authenticates a read-only candidate against the current fenced catalog.
+    ///
+    /// The returned cut is not a durable reservation. The caller must repeat
+    /// this verification after ZFS readback and compare both protected heads.
+    pub(crate) fn authenticate_capture_candidate(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        clock: &RawPairedClockSample,
+    ) -> Result<AuthenticatedCaptureCandidateCutV1, StorageBrokerError> {
+        let decoded = decode_storage_capture_candidate_request_v1(
+            request.exact_body(),
+            request.peer(),
+            request.peer_policy(),
+            clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageBrokerError::Request)?;
+        let query = *decoded.query();
+        let prior = self
+            .transactions
+            .authority_record(
+                RecordNamespace::DesiredState,
+                query.assignment().sandbox().as_bytes(),
+            )?
+            .ok_or(StorageBrokerError::Authority)?;
+        self.authority
+            .admit_capture_candidate(request, artifacts, protocol_version, clock, prior)
+            .map_err(|_| StorageBrokerError::Authority)?;
+        let catalog = self
+            .transactions
+            .verified_resolver_journal()?
+            .physical()
+            .clone();
+        let authority_head_sequence = self.transactions.authority_head_sequence()?;
+        Ok(AuthenticatedCaptureCandidateCutV1 {
+            query,
+            catalog,
+            authority_head_sequence,
+            desired_state_digest: ObjectDigest::from_bytes(Sha256::digest(prior).into()),
+        })
     }
 
     pub(crate) fn atomic_dataset_snapshot_inventory(

@@ -265,6 +265,36 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Verifies one read-only Storage capture candidate on its retained fence.
+    ///
+    /// The exact Controller plan may differ from the shared Storage base plan,
+    /// but the assignment and lease may not move. No durable effect is
+    /// committed by this verification.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a wrong domain or verb, substituted signed plan, stale lease,
+    /// or changed protected assignment fence.
+    pub fn admit_storage_capture_candidate(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Storage
+            || request.verb != BrokerVerb::StorageCaptureCandidateReadback
+            || request.target != BrokerGrantTarget::Assignment
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        let current = self.open_fence(request.assignment.sandbox().as_bytes(), prior_fence)?;
+        if current.assignment() != request.assignment {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
     fn admit_with_plan_rotation(
         &self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,

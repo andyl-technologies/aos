@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
+use aos_proto::aos::sandbox::local::v1::{ApplyStorageRequest, BrokerMethod};
 use aos_sandbox::RecordNamespace;
 use aos_sandbox_broker::{
     AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerAuthorityConfigError,
@@ -20,11 +20,15 @@ use aos_sandbox_core::{
     BrokerResourceHandle, BrokerVerb, DesiredGeneration, IncarnationId, NodeId, ObjectDigest,
     OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion, RawPairedClockSample, SandboxId,
 };
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_prepare::CanonicalStoragePreparationSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::storage_capture_candidate::{
+    StorageCaptureCandidateQueryV1, decode_storage_capture_candidate_request_v1,
+};
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAtomicStorageSnapshotRequestV1,
     decode_atomic_storage_snapshot_request,
@@ -328,6 +332,75 @@ impl VerifiedStoragePreparationAdmissionV1 {
 }
 
 impl StorageAuthorityV1 {
+    /// Verifies a read-only candidate's exact signed plan on the current fence.
+    ///
+    /// This does not commit the prospective effect returned by common broker
+    /// admission. Storage must recheck the protected fence and owner heads
+    /// after physical readback before a BSA outcome may be signed.
+    pub(crate) fn admit_capture_candidate(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<(StorageCaptureCandidateQueryV1, VerifiedBrokerAdmission), StorageAdmissionError>
+    {
+        if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+            || request.peer_policy().audience
+                != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        let decoded = decode_storage_capture_candidate_request_v1(
+            request.exact_body(),
+            request.peer(),
+            request.peer_policy(),
+            current_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        let query = *decoded.query();
+        let grant = query
+            .broker_grant(request.request_id())
+            .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        if decoded.header().request_id() != &request.request_id()
+            || decoded.header().protocol_version() != protocol_version
+            || query.claimed_session_binding() != request.session_binding()
+            || query.deadline_boottime_nanoseconds() != request.deadline_boottime_nanoseconds()
+            || request.semantic_commitment() != *grant.argument_commitment().digest().as_bytes()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        let admission = self.0.admit_storage_capture_candidate(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Storage,
+                protocol: ProtocolId::StorageBroker,
+                protocol_version,
+                assignment: query.assignment(),
+                request_id: request.request_id(),
+                request_body: request.exact_body(),
+                descriptor_count: 0,
+                verb: grant.verb(),
+                target: grant.target(),
+                argument_commitment: grant.argument_commitment(),
+                request_deadline_boottime_nanoseconds: query.deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )?;
+        if admission.effect.status() != BrokerEffectStatusV1::Pending
+            || admission.effect.verb() != BrokerVerb::StorageCaptureCandidateReadback
+            || admission.effect.request_id() != &request.request_id()
+            || admission.effect.transport_request_digest()
+                != ObjectDigest::from_bytes(Sha256::digest(request.exact_body()).into())
+            || admission.effect.request_digest() != grant.argument_commitment().digest()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        Ok((query, admission))
+    }
+
     /// Constructs storage authority from validated protected anchors.
     ///
     /// # Errors

@@ -322,6 +322,24 @@ impl ValidatedStorageCaptureCandidateV1 {
         )
     }
 
+    /// Returns the exact aggregate byte ceiling retained by Storage.
+    #[must_use]
+    pub fn admitted_bytes(&self) -> u64 {
+        read_u64(&self.bytes[560..568])
+    }
+
+    /// Returns the exact stdout byte ceiling retained by Storage.
+    #[must_use]
+    pub fn maximum_stdout_bytes(&self) -> u64 {
+        read_u64(&self.bytes[568..576])
+    }
+
+    /// Returns the exact stderr byte ceiling retained by Storage.
+    #[must_use]
+    pub fn maximum_stderr_bytes(&self) -> u64 {
+        read_u64(&self.bytes[576..584])
+    }
+
     /// Returns the measured, not owner-pinned, pool GUID and root GUID.
     #[must_use]
     pub fn observed_guids(&self) -> (u64, u64) {

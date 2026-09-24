@@ -17,7 +17,8 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyStorageRequest, InventoryStorageResourcesResponse, StorageOperatorRepairCommitRecordV1,
+    ApplyStorageRequest, InventoryStorageResourcesResponse, StorageExecutionCaptureCandidateV1,
+    StorageOperatorRepairCommitRecordV1,
 };
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec, UnmappableIdentityPolicy};
@@ -27,9 +28,13 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
+};
 use aos_sandbox_protocol::semantics::storage::{CanonicalStorageSemanticsV1, StorageOperation};
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::storage_capture_candidate::decode_storage_capture_candidate_response_for_query_v1;
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
     decode_storage_resource_inventory_response,
@@ -44,6 +49,8 @@ use crate::broker::{
     AuthenticatedWorkspaceCatalogPhysicalPlanV1, AuthorizedWorkspacePinRepairAttemptV1,
     WorkspacePinExecutionOutcomeV1, WorkspaceRemovePinRequirementV1,
 };
+use crate::execution_capture_policy::ProtectedCaptureAllocationPolicyV1;
+use crate::execution_output::ExecutionOutputLedgerV1;
 use crate::guest_root_inventory::{
     ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
 };
@@ -306,6 +313,129 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
+    /// Observes one authenticated, read-only method-41 candidate.
+    ///
+    /// This dormant callsite never reserves output or creates a dataset. The
+    /// protected assignment, both Storage journal heads, root-owned policies,
+    /// and live ZFS are joined twice before the informational body is returned.
+    /// The BSA owner must still sign the exact body under its verified session;
+    /// this method is not registered in the production hello or service.
+    pub(crate) fn observe_authenticated_capture_candidate(
+        &self,
+        output: &ExecutionOutputLedgerV1,
+        allocation_policy: &ProtectedCaptureAllocationPolicyV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Vec<u8>, StorageRuntimeError> {
+        if request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || self.readiness != StorageRuntimeReadiness::Ready
+            || allocation_policy.authority_binding() != self.configuration_binding
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let initial_clock = trusted_paired_clock_sample()?;
+        let initial = self.coordinator.authenticate_capture_candidate(
+            request,
+            artifacts,
+            protocol_version,
+            &initial_clock,
+        )?;
+        if initial.query().host_boot_id() != initial_clock.host_boot_id() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let resolver_directory = self
+            .resolver_policies
+            .as_ref()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let resolver_catalog = resolver_directory
+            .load()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let resolver_binding = resolver_catalog
+            .binding()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let selected = resolver_catalog
+            .select(initial.query().assignment())
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let selected_binding = selected.binding();
+        let selected_policy = selected.into_policy();
+        let allocation = allocation_policy
+            .load_pinned()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if selected_binding.catalog_digest() != allocation.resolver_catalog_digest()
+            || resolver_binding.digest() != selected_binding.catalog_digest()
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let candidate = output
+            .observe_authenticated_capture_candidate(
+                &initial,
+                &selected_policy,
+                allocation,
+                &self.pin_contract,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+
+        let final_clock = trusted_paired_clock_sample()?;
+        if final_clock.host_boot_id() != initial_clock.host_boot_id() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let final_cut = self.coordinator.authenticate_capture_candidate(
+            request,
+            artifacts,
+            protocol_version,
+            &final_clock,
+        )?;
+        let final_resolver = resolver_directory
+            .load()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let final_binding = final_resolver
+            .binding()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let final_selected = final_resolver
+            .select(initial.query().assignment())
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !initial.matches(&final_cut)
+            || final_binding != resolver_binding
+            || final_selected.binding() != selected_binding
+            || final_selected.into_policy() != selected_policy
+            || allocation_policy
+                .load_pinned()
+                .map_err(|_| StorageRuntimeError::Recovery)?
+                != allocation
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let body = StorageExecutionCaptureCandidateV1 {
+            canonical_candidate: candidate.to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let validated = decode_storage_capture_candidate_response_for_query_v1(
+            &body,
+            initial.query(),
+            request.maximum_response_bytes(),
+            final_clock.boottime_nanoseconds(),
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        if output
+            .candidate_head_sequence()
+            .map_err(|_| StorageRuntimeError::Recovery)?
+            != validated.output_journal_sequence()
+            || validated.catalog_head()
+                != (
+                    final_cut.catalog().binding().generation(),
+                    final_cut.catalog().binding().digest(),
+                )
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(body)
+    }
+
     pub(crate) fn prepare_lifecycle_atomic_snapshot(
         &self,
         plan: &aos_sandbox::lifecycle::LifecycleAtomicDatasetSnapshotPlanV1,

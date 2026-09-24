@@ -454,6 +454,7 @@ impl ExecutionOutputLedgerV1 {
         claim_digest: ObjectDigest,
         assignment_digest: ObjectDigest,
     ) -> Result<(ProtectedRetainedCaptureV1, u64), ExecutionOutputLedgerErrorV1> {
+        self.journal.ensure_healthy()?;
         let location = reservation_key(execution);
         let bytes = self
             .journal
@@ -471,7 +472,14 @@ impl ExecutionOutputLedgerV1 {
 
         let record_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
         let protected = self.read_protected_retained_capture(execution, create, record_digest)?;
+        self.journal.ensure_healthy()?;
         Ok((protected, self.journal.snapshot_sequence()))
+    }
+
+    /// Rechecks the protected output owner head after candidate readback.
+    pub(crate) fn candidate_head_sequence(&self) -> Result<u64, ExecutionOutputLedgerErrorV1> {
+        self.journal.ensure_healthy()?;
+        Ok(self.journal.snapshot_sequence())
     }
 
     /// Reserves the exact v2 accepted-Create output claim read under its owner.

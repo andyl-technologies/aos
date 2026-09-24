@@ -40,6 +40,7 @@ mod dormant_broker_session;
     reason = "capture file effects await authenticated worker mount custody"
 )]
 mod execution_capture_files;
+mod execution_capture_policy;
 #[cfg(target_os = "linux")]
 #[allow(
     dead_code,

@@ -8,7 +8,7 @@
 //! owner identity that this read-only source does not yet possess. This
 //! observation grants no effect.
 
-use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
+use aos_sandbox_core::{BrokerAssignment, ObjectDigest, OperationId};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::storage_capture_candidate::STORAGE_CAPTURE_CANDIDATE_BYTES_V1;
 use aos_sandbox_protocol::storage_capture_grant::ControllerOutputSettlementPreimageV1;
@@ -16,15 +16,20 @@ use sha2::{Digest as _, Sha256};
 
 use super::{ExecutionOutputLedgerErrorV1, ExecutionOutputLedgerV1};
 use crate::ZfsHelperContract;
+use crate::broker::AuthenticatedCaptureCandidateCutV1;
 use crate::catalog_transition::VerifiedPhysicalCatalogSnapshotV1;
 use crate::catalog_transition::execution_capture::CaptureDatasetRequirementV1;
 use crate::catalog_transition::execution_capture::readback::{
     CaptureZfsPreflightPlanV1, CaptureZfsPreflightV1, CaptureZfsReadbackErrorV1,
 };
+use crate::execution_capture_policy::CaptureAllocationV1;
 use crate::pin_worker::boottime_now_nanoseconds;
 use crate::process::{ZfsWorkerError, observe_capture_zfs_preflight_for};
+use crate::resolver::policy::ProtectedStorageResolverPolicyV1;
 
 const CANDIDATE_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-candidate.v1\0";
+const POLICY_JOIN_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-candidate-policy-join.v1\0";
+const CREATE_OPERATION_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-create-operation.v1\0";
 const MAXIMUM_CANDIDATE_LIFETIME_NANOSECONDS: u64 = 5_000_000_000;
 
 /// Rejects a stale owner, occupied dataset, changed claim, or failed probe.
@@ -92,6 +97,71 @@ pub(super) struct ProtectedCaptureCandidateV1 {
 }
 
 impl ExecutionOutputLedgerV1 {
+    /// Resolves Storage-selected policy and emits only an informational readback.
+    ///
+    /// The admission cut is private to the signed-plan verifier. The caller
+    /// must reauthenticate that cut and both policy publications after this
+    /// ZFS observation before signing any broker outcome.
+    pub(crate) fn observe_authenticated_capture_candidate(
+        &self,
+        cut: &AuthenticatedCaptureCandidateCutV1,
+        resolver_policy: &ProtectedStorageResolverPolicyV1,
+        allocation_policy: CaptureAllocationV1,
+        zfs: &ZfsHelperContract,
+    ) -> Result<[u8; STORAGE_CAPTURE_CANDIDATE_BYTES_V1], CaptureCandidateErrorV1> {
+        let query = cut.query();
+        if resolver_policy.assignment() != query.assignment() {
+            return Err(CaptureCandidateErrorV1::NotCurrent);
+        }
+        let (retained, _) = self.read_current_capture_for_candidate(
+            *query.settlement().execution().as_bytes(),
+            *query.settlement().create_operation().as_bytes(),
+            query.output_claim_digest(),
+            query.assignment().digest(),
+        )?;
+        let allocation_bytes = allocation_policy
+            .allocation_for(retained.admitted_bytes())
+            .map_err(|_| CaptureCandidateErrorV1::NotCurrent)?;
+        let storage_create_operation = capture_create_operation(
+            query.settlement().execution(),
+            query.settlement().create_operation(),
+            query.output_claim_digest(),
+        );
+        let requirement = CaptureDatasetRequirementV1::new(
+            query.settlement().execution(),
+            query.settlement().create_operation(),
+            query.output_claim_digest(),
+            storage_create_operation,
+            resolver_policy.root().clone(),
+            resolver_policy.domains(),
+            retained.admitted_bytes(),
+            allocation_bytes,
+        )
+        .map_err(|_| CaptureCandidateErrorV1::NotCurrent)?;
+        let verified = VerifiedCaptureCandidateQueryV1 {
+            settlement: *query.settlement(),
+            assignment: query.assignment(),
+            output_claim_digest: query.output_claim_digest(),
+            request_id: query.request_id(),
+            session_binding: query.claimed_session_binding(),
+            host_boot_id: query.host_boot_id(),
+            deadline_boottime_nanoseconds: query.deadline_boottime_nanoseconds(),
+        };
+        let candidate = self.observe_capture_candidate(
+            &verified,
+            &requirement,
+            cut.catalog(),
+            allocation_policy.metadata_headroom_bytes(),
+            allocation_policy.minimum_remaining_bytes(),
+            allocation_policy.digest(),
+            zfs,
+        )?;
+        if candidate.pool_guid != allocation_policy.expected_pool_guid() {
+            return Err(CaptureCandidateErrorV1::NotCurrent);
+        }
+        Ok(candidate.canonical_bytes())
+    }
+
     /// Observes one candidate without writing either Storage owner or ZFS.
     ///
     /// The catalog snapshot must be a fresh protected readback. This method
@@ -104,6 +174,7 @@ impl ExecutionOutputLedgerV1 {
         catalog: &VerifiedPhysicalCatalogSnapshotV1,
         metadata_headroom_bytes: u64,
         minimum_remaining_bytes: u64,
+        allocation_policy_digest: ObjectDigest,
         zfs: &ZfsHelperContract,
     ) -> Result<ProtectedCaptureCandidateV1, CaptureCandidateErrorV1> {
         self.observe_capture_candidate_with(
@@ -112,6 +183,7 @@ impl ExecutionOutputLedgerV1 {
             catalog,
             metadata_headroom_bytes,
             minimum_remaining_bytes,
+            allocation_policy_digest,
             |plan| observe_capture_zfs_preflight_for(zfs, plan).map_err(Into::into),
         )
     }
@@ -123,6 +195,7 @@ impl ExecutionOutputLedgerV1 {
         catalog: &VerifiedPhysicalCatalogSnapshotV1,
         metadata_headroom_bytes: u64,
         minimum_remaining_bytes: u64,
+        allocation_policy_digest: ObjectDigest,
         observe: impl FnOnce(
             &CaptureZfsPreflightPlanV1,
         ) -> Result<CaptureZfsPreflightV1, CaptureCandidateErrorV1>,
@@ -138,6 +211,7 @@ impl ExecutionOutputLedgerV1 {
             || requirement.execution() != query.settlement.execution()
             || requirement.create_operation() != query.settlement.create_operation()
             || requirement.claim_digest() != query.output_claim_digest
+            || allocation_policy_digest.as_bytes() == &[0; 32]
         {
             return Err(CaptureCandidateErrorV1::NotCurrent);
         }
@@ -194,8 +268,10 @@ impl ExecutionOutputLedgerV1 {
             kernel_boot_id: boot,
             request_deadline_boottime_nanoseconds: query.deadline_boottime_nanoseconds,
             expires_boottime_nanoseconds,
-            dataset_policy_digest: requirement
-                .attempt_policy_digest(metadata_headroom_bytes, minimum_remaining_bytes),
+            dataset_policy_digest: joined_policy_digest(
+                allocation_policy_digest,
+                requirement.attempt_policy_digest(metadata_headroom_bytes, minimum_remaining_bytes),
+            ),
             storage_create_operation: *requirement.storage_create_operation().as_bytes(),
             admitted_bytes: retained.admitted_bytes(),
             maximum_stdout_bytes: retained.maximum_stdout_bytes(),
@@ -213,6 +289,22 @@ impl ExecutionOutputLedgerV1 {
         candidate.candidate_digest = candidate.digest();
         Ok(candidate)
     }
+}
+
+fn capture_create_operation(
+    execution: aos_sandbox_core::ExecutionId,
+    create: OperationId,
+    claim_digest: ObjectDigest,
+) -> OperationId {
+    let mut digest = Sha256::new();
+    digest.update(CREATE_OPERATION_DOMAIN);
+    digest.update(execution.as_bytes());
+    digest.update(create.as_bytes());
+    digest.update(claim_digest.as_bytes());
+    let hash: [u8; 32] = digest.finalize().into();
+    let mut operation = [0; 16];
+    operation.copy_from_slice(&hash[..16]);
+    OperationId::from_bytes(operation)
 }
 
 impl ProtectedCaptureCandidateV1 {
@@ -274,6 +366,17 @@ impl ProtectedCaptureCandidateV1 {
         bytes[672..704].copy_from_slice(&digest.finalize());
         bytes
     }
+}
+
+fn joined_policy_digest(
+    allocation_policy_digest: ObjectDigest,
+    attempt_policy_digest: ObjectDigest,
+) -> ObjectDigest {
+    let mut digest = Sha256::new();
+    digest.update(POLICY_JOIN_DOMAIN);
+    digest.update(allocation_policy_digest.as_bytes());
+    digest.update(attempt_policy_digest.as_bytes());
+    ObjectDigest::from_bytes(digest.finalize().into())
 }
 
 #[cfg(test)]
@@ -366,7 +469,21 @@ mod tests {
             .unwrap();
         drop(owner);
 
-        let owner = ledger(&path);
+        let mut owner = ledger(&path);
+        assert!(matches!(
+            owner.reserve_record(RetainedOutputRecord {
+                execution: [1; 16],
+                create: [99; 16],
+                assignment: [13; 32],
+                claim_digest: [3; 32],
+                bytes: 100,
+                maximum_stdout_bytes: 60,
+                maximum_stderr_bytes: 40,
+                state: STATE_RETAINED,
+                delete_operation: [0; 16],
+            }),
+            Err(ExecutionOutputLedgerErrorV1::Conflict)
+        ));
         let (requirement, catalog) = precreate_fixture();
         let lookup = query();
         let observe = |plan: &CaptureZfsPreflightPlanV1| {
@@ -377,7 +494,15 @@ mod tests {
             .map_err(Into::into)
         };
         let candidate = owner
-            .observe_capture_candidate_with(&lookup, &requirement, &catalog, 20, 100, observe)
+            .observe_capture_candidate_with(
+                &lookup,
+                &requirement,
+                &catalog,
+                20,
+                100,
+                ObjectDigest::from_bytes([23; 32]),
+                observe,
+            )
             .unwrap();
         assert_eq!(
             candidate.output_journal_sequence,
@@ -454,6 +579,9 @@ mod tests {
         .unwrap();
         assert_eq!(validated.candidate_digest(), candidate.candidate_digest);
         assert_eq!(validated.output_record_digest(), record_digest);
+        assert_eq!(validated.admitted_bytes(), 100);
+        assert_eq!(validated.maximum_stdout_bytes(), 60);
+        assert_eq!(validated.maximum_stderr_bytes(), 40);
 
         let mut substituted = query();
         substituted.assignment = BrokerAssignment::new(
@@ -472,6 +600,7 @@ mod tests {
                     &catalog,
                     20,
                     100,
+                    ObjectDigest::from_bytes([23; 32]),
                     observe
                 )
                 .is_err()
@@ -486,6 +615,7 @@ mod tests {
                 &catalog,
                 20,
                 100,
+                ObjectDigest::from_bytes([23; 32]),
                 observe
             ),
             Err(CaptureCandidateErrorV1::NotCurrent)
@@ -499,6 +629,7 @@ mod tests {
                 &occupied,
                 20,
                 100,
+                ObjectDigest::from_bytes([23; 32]),
                 observe
             ),
             Err(CaptureCandidateErrorV1::Catalog)
@@ -518,11 +649,20 @@ mod tests {
                 &catalog,
                 20,
                 100,
+                ObjectDigest::from_bytes([23; 32]),
                 checkpoint
             ),
             Err(CaptureCandidateErrorV1::Readback(
                 CaptureZfsReadbackErrorV1::PoolUnavailable
             ))
+        ));
+
+        drop(owner);
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let rotated = ExecutionOutputLedgerKeyV1::new([8; 16], [9; 32]).unwrap();
+        assert!(matches!(
+            ExecutionOutputLedgerV1::from_journal(journal, 200, rotated),
+            Err(ExecutionOutputLedgerErrorV1::Corrupt)
         ));
     }
 }

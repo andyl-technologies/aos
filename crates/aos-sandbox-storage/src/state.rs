@@ -2916,6 +2916,12 @@ impl StorageTransactionStore {
             .ok_or(StorageStateError::InvalidTransition)
     }
 
+    /// Returns the protected journal head for a read-only authority cut.
+    pub(crate) fn authority_head_sequence(&self) -> Result<u64, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(self.journal.snapshot_sequence())
+    }
+
     /// Reloads the durable physical head and operation records for resolution.
     ///
     /// The method deliberately ignores the provider and record caches. Both
