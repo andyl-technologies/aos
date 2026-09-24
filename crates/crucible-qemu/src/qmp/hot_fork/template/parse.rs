@@ -3,7 +3,7 @@
 //! The versioned envelope records withheld proofs explicitly:
 //!
 //! ```text
-//! { "schema-version": 27, "generation": N, "outcome": "draining",
+//! { "schema-version": 28, "generation": N, "outcome": "draining",
 //!   "acknowledged-proofs": A, "missing-proofs": M, ... }
 //! ```
 //!
@@ -17,8 +17,8 @@ use serde_json::Value;
 
 use super::{
     QMP_HOT_FORK_AIO_PROOF, QMP_HOT_FORK_BLOCK_PROOF, QMP_HOT_FORK_PLUGIN_RING_PROOF,
-    QMP_HOT_FORK_RCU_PROOF, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QmpHotForkTemplateOutcome,
-    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
+    QMP_HOT_FORK_RCU_PROOF, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QmpHotForkTemplateFailureStage,
+    QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
 use crate::qmp::hot_fork::{
     QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QmpHotForkPluginBarrierState,
@@ -41,6 +41,8 @@ pub(crate) fn parse_hot_fork_template_state(
         "schema-version",
         "generation",
         "outcome",
+        "failure-stage",
+        "failure-detail",
         "transaction-active",
         "required-proofs",
         "acknowledged-proofs",
@@ -74,6 +76,28 @@ pub(crate) fn parse_hot_fork_template_state(
         Some("aborted") => QmpHotForkTemplateOutcome::Aborted,
         _ => return Err(malformed()),
     };
+    let failure_stage = match object.get("failure-stage").and_then(Value::as_str) {
+        Some("none") => QmpHotForkTemplateFailureStage::None,
+        Some("block-hold") => QmpHotForkTemplateFailureStage::BlockHold,
+        Some("block-owner") => QmpHotForkTemplateFailureStage::BlockOwner,
+        Some("source-snapshot") => QmpHotForkTemplateFailureStage::SourceSnapshot,
+        Some("source-capture") => QmpHotForkTemplateFailureStage::SourceCapture,
+        Some("source-release") => QmpHotForkTemplateFailureStage::SourceRelease,
+        Some("source-freeze") => QmpHotForkTemplateFailureStage::SourceFreeze,
+        Some("block-rehold") => QmpHotForkTemplateFailureStage::BlockRehold,
+        Some("frozen-snapshot") => QmpHotForkTemplateFailureStage::FrozenSnapshot,
+        Some("native-pools") => QmpHotForkTemplateFailureStage::NativePools,
+        Some("plugin-hold") => QmpHotForkTemplateFailureStage::PluginHold,
+        _ => return Err(malformed()),
+    };
+    let failure_detail = object
+        .get("failure-detail")
+        .and_then(Value::as_str)
+        .filter(|detail| detail.len() <= 255)
+        .ok_or_else(&malformed)?;
+    if (failure_stage == QmpHotForkTemplateFailureStage::None) != failure_detail.is_empty() {
+        return Err(malformed());
+    }
     let transaction_active = object
         .get("transaction-active")
         .and_then(Value::as_bool)
@@ -221,6 +245,8 @@ pub(crate) fn parse_hot_fork_template_state(
     Ok(QmpHotForkTemplateState {
         generation,
         outcome,
+        failure_stage,
+        failure_detail: failure_detail.to_owned(),
         transaction_active,
         acknowledged_proofs,
         missing_proofs,

@@ -41,8 +41,8 @@ fn aio_proof_still_requires_closed_quiescent_admission() {
 
 /// Reproduces the complete prepared response used by the typed QMP fixture.
 pub(super) fn prepared_report() -> Value {
-    json!({
-        "schema-version": 27,
+    let mut report = json!({
+        "schema-version": 28,
         "generation": 4,
         "outcome": "prepared",
         "transaction-active": true,
@@ -186,5 +186,8 @@ pub(super) fn prepared_report() -> Value {
         },
         "rollback-complete": false,
         "ready": true
-    })
+    });
+    report["failure-stage"] = json!("none");
+    report["failure-detail"] = json!("");
+    report
 }

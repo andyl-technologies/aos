@@ -20,7 +20,7 @@ use super::{
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 27;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 28;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -43,6 +43,33 @@ pub enum QmpHotForkTemplateOutcome {
     ChildAdopted,
     /// An active transaction was explicitly rolled back.
     Aborted,
+}
+
+/// First native template-acquisition step that failed in the current generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmpHotForkTemplateFailureStage {
+    /// No acquisition step has failed.
+    None,
+    /// The native block barrier could not be held.
+    BlockHold,
+    /// The held block barrier lacked a valid owner.
+    BlockOwner,
+    /// The original writable snapshot basis could not be bound.
+    SourceSnapshot,
+    /// The complete native source set could not be captured.
+    SourceCapture,
+    /// The first block barrier could not be released.
+    SourceRelease,
+    /// The captured source set could not be frozen.
+    SourceFreeze,
+    /// The block barrier could not be held again after freezing.
+    BlockRehold,
+    /// The frozen snapshot basis could not be rebound.
+    FrozenSnapshot,
+    /// Native thread pools could not be prepared.
+    NativePools,
+    /// The plugin barrier could not be held.
+    PluginHold,
 }
 
 /// Exact transaction binding for resources retained beside a template.
@@ -271,6 +298,8 @@ impl QmpHotForkTemplateResourceStageState {
 pub struct QmpHotForkTemplateState {
     generation: u64,
     outcome: QmpHotForkTemplateOutcome,
+    failure_stage: QmpHotForkTemplateFailureStage,
+    failure_detail: String,
     transaction_active: bool,
     acknowledged_proofs: u64,
     missing_proofs: u64,
@@ -291,6 +320,8 @@ impl QmpHotForkTemplateState {
         Self {
             generation: request.template_generation(),
             outcome: QmpHotForkTemplateOutcome::Draining,
+            failure_stage: QmpHotForkTemplateFailureStage::None,
+            failure_detail: String::new(),
             transaction_active: true,
             acknowledged_proofs: QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS
                 & !QMP_HOT_FORK_PLUGIN_RING_PROOF,
@@ -317,6 +348,8 @@ impl QmpHotForkTemplateState {
         Self {
             generation: request.template_generation(),
             outcome: QmpHotForkTemplateOutcome::Prepared,
+            failure_stage: QmpHotForkTemplateFailureStage::None,
+            failure_detail: String::new(),
             transaction_active: true,
             acknowledged_proofs: QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS,
             missing_proofs: 0,
@@ -382,6 +415,18 @@ impl QmpHotForkTemplateState {
     #[must_use]
     pub const fn outcome(&self) -> QmpHotForkTemplateOutcome {
         self.outcome
+    }
+
+    /// Returns the first failed native acquisition step, retained after rollback.
+    #[must_use]
+    pub const fn failure_stage(&self) -> QmpHotForkTemplateFailureStage {
+        self.failure_stage
+    }
+
+    /// Returns the bounded QEMU error detail for the failed step.
+    #[must_use]
+    pub fn failure_detail(&self) -> &str {
+        &self.failure_detail
     }
 
     /// Returns whether QEMU still owns acquired subsystem-barrier state.
