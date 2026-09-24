@@ -11,6 +11,13 @@ struct WrongGetService {
 impl CampaignService for WrongGetService {
     type Error = Infallible;
 
+    fn campaign_savepoint(
+        &self,
+        _request: &crate::CampaignSavepointRequest,
+    ) -> Result<crate::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
+
     fn list_campaigns(
         &self,
         _request: &ListCampaignsRequest,
@@ -212,6 +219,13 @@ struct FixedFailureService(CampaignServiceFailure);
 impl CampaignService for FixedFailureService {
     type Error = CampaignServiceFailure;
 
+    fn campaign_savepoint(
+        &self,
+        _request: &crate::CampaignSavepointRequest,
+    ) -> Result<crate::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
+
     fn list_campaigns(
         &self,
         _request: &ListCampaignsRequest,
@@ -383,6 +397,13 @@ impl CampaignService for FixedFailureService {
 
 impl CampaignService for WrongApplyService {
     type Error = Infallible;
+
+    fn campaign_savepoint(
+        &self,
+        _request: &crate::CampaignSavepointRequest,
+    ) -> Result<crate::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
 
     fn list_campaigns(
         &self,

@@ -35,6 +35,8 @@ mod replay;
 mod report;
 #[path = "campaign/request_attempts.rs"]
 mod request_attempts;
+#[path = "campaign/savepoint.rs"]
+mod savepoint;
 #[path = "campaign/scenario.rs"]
 mod scenario;
 #[path = "campaign/schedule.rs"]
@@ -73,6 +75,9 @@ use report::{query_campaign_report, render_campaign_report, validate_campaign_re
 use request_attempts::{
     query_campaign_request_attempts, render_campaign_request_attempts,
     validate_campaign_request_attempts,
+};
+use savepoint::{
+    prepare_campaign_savepoint_command, query_campaign_savepoint, render_campaign_savepoint,
 };
 use scenario::{compile_campaign_scenario, render_campaign_scenario_compilation};
 use schedule::{compile_campaign_schedule, render_campaign_schedule_compilation};
@@ -295,6 +300,7 @@ enum PreparedCampaignCommand {
     Derive(DeriveCampaignRequest),
     Branch(SubmitCampaignBranchRequest),
     Attach(AttachCampaignRuntimeRequest),
+    Savepoint(crucible_campaign::CampaignSavepointRequest),
 }
 
 #[derive(Serialize)]
@@ -544,6 +550,23 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         );
         return Ok(());
     }
+    if matches!(
+        args.command,
+        CampaignCommand::CaptureAttempt(_)
+            | CampaignCommand::CaptureStatus(_)
+            | CampaignCommand::SelectCapture(_)
+    ) {
+        let Some(PreparedCampaignCommand::Savepoint(request)) = prepared.take() else {
+            return Err(backend_error("campaign savepoint request was not prepared"));
+        };
+        let client = CampaignClient::new(service);
+        let report = query_campaign_savepoint(&client, &request)?;
+        println!(
+            "{}",
+            render_campaign_savepoint(&report, cli.output_format())?
+        );
+        return Ok(());
+    }
     if let CampaignCommand::Triage(triage) = &args.command {
         let client = CampaignClient::new(service);
         let report = run_campaign_triage_invocation(cli, triage, &client, principal)?;
@@ -731,6 +754,13 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
         CampaignCommand::ExplainAttempt(_) => {
             let report = query_campaign_attempt_explanation(&client, principal, &args.command)?;
             render_campaign_attempt_explanation(&report, cli.output_format())?
+        }
+        CampaignCommand::CaptureAttempt(_)
+        | CampaignCommand::CaptureStatus(_)
+        | CampaignCommand::SelectCapture(_) => {
+            return Err(backend_error(
+                "campaign savepoint reached semantic dispatch",
+            ));
         }
         CampaignCommand::Rankings(_) => {
             let report = query_campaign_rankings(&client, principal, &args.command)?;
@@ -1004,6 +1034,11 @@ fn prepare_campaign_command(
             validate_campaign_attempt_explain_command(command)?;
             Ok(None)
         }
+        CampaignCommand::CaptureAttempt(_)
+        | CampaignCommand::CaptureStatus(_)
+        | CampaignCommand::SelectCapture(_) => Ok(Some(PreparedCampaignCommand::Savepoint(
+            prepare_campaign_savepoint_command(command, principal)?,
+        ))),
         CampaignCommand::Rankings(_) => {
             validate_campaign_rankings_command(command)?;
             Ok(None)
@@ -2450,6 +2485,9 @@ where
         PreparedCampaignCommand::Attach(_) => Err(backend_error(
             "campaign runtime attachment reached semantic acceptance dispatch",
         )),
+        PreparedCampaignCommand::Savepoint(_) => Err(backend_error(
+            "campaign savepoint reached acceptance dispatch",
+        )),
     }
 }
 
@@ -2701,6 +2739,9 @@ fn campaign_mutation_spec(
         | CampaignCommand::Explain(_)
         | CampaignCommand::ExplainFinding(_)
         | CampaignCommand::ExplainAttempt(_)
+        | CampaignCommand::CaptureAttempt(_)
+        | CampaignCommand::CaptureStatus(_)
+        | CampaignCommand::SelectCapture(_)
         | CampaignCommand::Rankings(_)
         | CampaignCommand::RequestAttempts(_)
         | CampaignCommand::Graph(_)

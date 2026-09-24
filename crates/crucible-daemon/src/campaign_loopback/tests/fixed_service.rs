@@ -8,6 +8,13 @@ pub(super) struct FixedCampaignService;
 impl CampaignService for FixedCampaignService {
     type Error = Infallible;
 
+    fn campaign_savepoint(
+        &self,
+        _request: &crucible_campaign::CampaignSavepointRequest,
+    ) -> Result<crucible_campaign::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
+
     fn list_campaigns(
         &self,
         request: &crucible_campaign::ListCampaignsRequest,

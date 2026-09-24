@@ -819,9 +819,15 @@ pub enum CrucibleExecutionModelError<E> {
     /// Nested execution-model bytes failed strict authentication.
     #[error(transparent)]
     Artifact(#[from] CrucibleArtifactError),
+    /// The authenticated selected capture could not be re-read.
+    #[error(transparent)]
+    Repository(#[from] crucible_campaign::CampaignRepositoryError),
     /// The concrete Crucible runner failed after authentication.
     #[error("Crucible execution runner failed")]
     Runner(#[source] E),
+    /// A public exact-source continuation ran through a lower tier.
+    #[error("selected public exact source did not materialize by exact restore")]
+    ExactRestoreRequired,
 }
 
 impl<R> AttemptExecutionModel for CrucibleExecutionModel<R>
@@ -847,6 +853,27 @@ where
             .execute(&decoded, context)
             .map_err(map_runner_failure)?;
         let (product, materialization) = outcome.into_parts();
+        if let crucible_campaign::AttemptStartMode::SelectedSavepoint {
+            snapshot, request, ..
+        } = context.start_mode()
+        {
+            let requires_exact = match self
+                .store
+                .selected_capture_requires_exact_restore(snapshot, request)
+            {
+                Ok(requires_exact) => requires_exact,
+                Err(error) => {
+                    self.runner.quarantine_pending_execution();
+                    return Err(AttemptWorkerFailure::Terminal(error.into()));
+                }
+            };
+            if requires_exact && materialization != CrucibleMaterializationTier::ExactRestore {
+                self.runner.quarantine_pending_execution();
+                return Err(AttemptWorkerFailure::Terminal(
+                    CrucibleExecutionModelError::ExactRestoreRequired,
+                ));
+            }
+        }
         self.last_materialization = Some(materialization);
         record_materialization_diagnostic(input, materialization);
         Ok(product)
