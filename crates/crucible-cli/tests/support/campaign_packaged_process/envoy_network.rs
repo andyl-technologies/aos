@@ -484,6 +484,25 @@ fn initial_discovery_attempt(
     .id()?)
 }
 
+fn initial_discovery_admitted(status: &Value) -> Result<bool, Box<dyn Error>> {
+    let admitted = status["semantic"]["admitted_attempts"]
+        .as_u64()
+        .ok_or("public campaign status omitted its admitted-attempt count")?;
+    Ok(admitted > 0)
+}
+
+#[test]
+fn initial_discovery_wait_requires_typed_public_admission_count() -> Result<(), Box<dyn Error>> {
+    let pending = serde_json::json!({ "semantic": { "admitted_attempts": 0 } });
+    let admitted = serde_json::json!({ "semantic": { "admitted_attempts": 1 } });
+    let malformed = serde_json::json!({ "semantic": { "admitted_attempts": "1" } });
+
+    assert!(!initial_discovery_admitted(&pending)?);
+    assert!(initial_discovery_admitted(&admitted)?);
+    assert!(initial_discovery_admitted(&malformed).is_err());
+    Ok(())
+}
+
 fn explain_public_attempt(
     fixture: &FlightFixture,
     snapshot: &str,
@@ -501,9 +520,7 @@ fn explain_public_attempt(
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("campaign-attempt-is-not-in-snapshot")
-            || stderr.contains("campaign request used stale snapshot")
-        {
+        if stderr.contains("campaign request used stale snapshot") {
             return Ok(None);
         }
     }
@@ -525,6 +542,11 @@ fn wait_for_public_attempt(
             .into());
         }
         let head = campaign_status(fixture)?;
+        // This empty-frontier campaign can only admit discovery first. Wait
+        // for its execution basis before requesting the snapshot explanation.
+        if !initial_discovery_admitted(&head)? {
+            return Ok(None);
+        }
         let snapshot = json_string(&head, "snapshot")?;
         let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
         else {
