@@ -184,13 +184,18 @@ in
             --libselinux ${pkgs.libselinux}/lib/libselinux.so.1 \
             --expected expected-contexts.json
 
+          ${pkgs.python3}/bin/python3 -B \
+            ${policySupport}/labeled_erofs_tar.py \
+            --root "$root" \
+            --map expected-contexts.json \
+            --output labeled-image.tar
           ${pkgs.erofs-utils}/bin/mkfs.erofs \
             --all-root \
-            --file-contexts=exact-file-contexts \
+            --tar=f \
             -T0 \
             -U bdfb6fc9-0000-4000-8000-000000000002 \
             image.erofs \
-            "$root"
+            labeled-image.tar
           ${pkgs.erofs-utils}/bin/fsck.erofs image.erofs
           ${pkgs.python3}/bin/python3 -B \
             ${policySupport}/verify_erofs_contexts.py \

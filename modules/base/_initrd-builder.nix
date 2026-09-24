@@ -902,15 +902,20 @@ in
               ${stage0Init}/bin/aos-selinux-stage0 \
               ${systemd}/lib/systemd/systemd
 
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/labeled_erofs_tar.py \
+              --root root \
+              --map expected-contexts.json \
+              --output stage1-labeled.tar
             ${nativeErofsUtils}/bin/mkfs.erofs \
               --all-root \
-              --file-contexts=exact-file-contexts \
+              --tar=f \
               -T0 \
               -U bdfb6fc9-0000-4000-8000-000000000021 \
               --workers=$NIX_BUILD_CORES \
               -z zstd,level=19 \
               aos-stage1.erofs \
-              root
+              stage1-labeled.tar
             ${nativeErofsUtils}/bin/fsck.erofs aos-stage1.erofs
             ${nativePython}/bin/python3 -B \
               ${policySupport}/verify_erofs_contexts.py \

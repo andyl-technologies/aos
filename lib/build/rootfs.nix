@@ -504,14 +504,21 @@ in
                 # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
                 # to work" and risks aborting a worker.
                 export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-                mkfs.erofs --all-root ${lib.optionalString labelImmutableRoot "--file-contexts=rootfs-file-contexts"} \
+                ${lib.optionalString labelImmutableRoot ''
+                  ${nativePython}/bin/python3 -B \
+                    ${policySupport}/labeled_erofs_tar.py \
+                    --root rootfs \
+                    --map rootfs-selinux-contexts.json \
+                    --output rootfs-labeled.tar
+                ''}
+                mkfs.erofs --all-root ${lib.optionalString labelImmutableRoot "--tar=f"} \
                   -T0 \
                   -U bdfb6fc9-0000-4000-8000-000000000001 \
                   --workers="$NIX_BUILD_CORES" \
                   -z zstd,level=${toString erofsCompressionLevel} \
                   -C262144 \
                   -Eztailpacking \
-                  -L ${label} root.img rootfs
+                  -L ${label} root.img ${if labelImmutableRoot then "rootfs-labeled.tar" else "rootfs"}
                 fsck.erofs root.img >/dev/null
                 ${lib.optionalString labelImmutableRoot ''
                   ${nativePython}/bin/python3 -B \

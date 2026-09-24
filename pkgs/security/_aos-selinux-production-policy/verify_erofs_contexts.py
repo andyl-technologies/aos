@@ -110,9 +110,8 @@ def verify_record(
             f"expected {expected_kind}, observed {observed_kind}"
         )
 
-    # erofs-utils' --file-contexts writer deliberately stores strlen(context)
-    # bytes. Keep this verifier specific to that producer and reject alternate
-    # encodings, even though the kernel accepts a trailing NUL too.
+    # The PAX-label producer deliberately stores strlen(context) bytes.
+    # Reject alternate encodings even though the kernel accepts a trailing NUL.
     expected_value = None if expected_context is None else expected_context.encode("ascii")
     if record.value != expected_value:
         raise VerificationError(
