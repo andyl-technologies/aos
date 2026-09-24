@@ -9,10 +9,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::*;
+use crate::{
+    ExactPinMaterializationSelection, ExecutionCancellation,
+    install_attempt_production_exact_checkpoint,
+    prepare_attempt_production_replay_oracle_promotion,
+};
+use crucible::{Configuration, ContentHash};
+use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
 use crucible_campaign::{
-    CampaignArchivePlan, CampaignArchivePolicy, CampaignHash, CampaignLineage, CampaignMode,
-    CampaignPolicy, CampaignRepository, CampaignRepositoryError, CampaignSeed, ConfigurationId,
-    ExplorerPolicy, FairnessPolicy, RetentionPolicy, ScenarioDefId,
+    CampaignArchivePlan, CampaignArchivePolicy, CampaignCommandId, CampaignHash, CampaignLineage,
+    CampaignMode, CampaignName, CampaignPolicy, CampaignRepository, CampaignRepositoryError,
+    CampaignSeed, ConfigurationId, ExplorerPolicy, FairnessPolicy, PinChange, PinRequest,
+    PinRetention, RetentionPolicy, ScenarioDefId,
 };
 use crucible_cas::content_store::{
     ContentId, DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,
@@ -630,4 +638,295 @@ fn directory_object_path(root: &Path, id: crucible_cas::content_store::ContentId
         .join(id.schema_version().to_string())
         .join(&digest[..2])
         .join(digest)
+}
+
+#[test]
+fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
+    let temporary = tempfile::tempdir().expect("transfer fixture");
+    let source_backend = Arc::new(DirectoryBlobBackend::new(
+        "source",
+        temporary.path().join("source-objects"),
+    ));
+    let source = CampaignRepository::new(
+        source_backend.clone(),
+        Arc::new(DirectoryRefBackend::new(
+            temporary.path().join("source-refs"),
+        )),
+    );
+    let source_checkpoints =
+        ExactCheckpointStore::new(source_backend, 64 * 1024 * 1024).expect("source checkpoints");
+    let native_root = temporary.path().join("native");
+    fs::create_dir(&native_root).expect("native fixture directory");
+    let production = build_authenticated_production_checkpoint_codec_fixture(&native_root)
+        .expect("authenticated production fixture");
+    let scenario_source = production.source().clone();
+    let scenario = scenario_source.scenario_def();
+    let configuration = production.configuration().clone();
+    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
+    let configuration_id =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+    let scenario_artifact = source
+        .publish_scenario_artifact(scenario_id, 1, scenario_source.to_compact_binary())
+        .expect("scenario artifact");
+    let configuration_artifact = source
+        .publish_configuration_artifact(
+            scenario_id,
+            scenario_artifact,
+            configuration_id,
+            1,
+            configuration.schedule.to_compact_binary(),
+        )
+        .expect("configuration artifact");
+    let lineage = CampaignLineage::new(
+        scenario_id,
+        scenario_artifact,
+        configuration_id,
+        configuration_artifact,
+        "crucible-import-test",
+        "qemu-import-test",
+        BTreeMap::from([("control".to_owned(), 1)]),
+        1,
+        1,
+    )
+    .expect("lineage");
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            scenario_id,
+            CampaignSeed::from_bytes([0x51; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 1,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
+    )
+    .expect("policy");
+    let created = source
+        .create("source", &lineage, &policy, &BTreeMap::new())
+        .expect("create campaign");
+    let pin = PinRequest {
+        command: CampaignCommandId::from_hash(CampaignHash::derive(
+            "crucible.test.archive-import.pin.v1",
+            b"source",
+        )),
+        expected_snapshot: created.snapshot_id(),
+        change: PinChange::new(
+            configuration_id,
+            Some(PinRetention::Exact),
+            "retain imported checkpoint",
+        )
+        .expect("exact pin"),
+    };
+    let pinned = source.apply_pin("source", &pin).expect("pin campaign");
+
+    let raw = source_checkpoints
+        .prepare_production_closure(production.closure().clone())
+        .expect("prepare raw checkpoint");
+    let raw_root = raw.root();
+    source_checkpoints
+        .publish_production_closure(&raw)
+        .expect("publish raw checkpoint");
+    raw.retire_native_source().expect("retire native source");
+    let cancellation = ExecutionCancellation::default();
+    let mut installed = install_attempt_production_exact_checkpoint(
+        &source_checkpoints,
+        raw_root,
+        &scenario_source,
+        &Configuration::genesis(scenario),
+        None,
+        &cancellation,
+    )
+    .expect("install raw checkpoint");
+    let mut admissions = installed
+        .take_node_restore_admissions()
+        .expect("node restore admissions");
+    let mut matches = BTreeMap::new();
+    while let Some(admission) = admissions.take_next().expect("next node admission") {
+        let node = admission.node().clone();
+        let matched = admission
+            .into_replay_oracle_match_for_test(ContentHash::from_bytes(b"matching replay"));
+        assert!(matches.insert(node, matched).is_none());
+    }
+    let evidence = admissions
+        .prepare_replay_oracle_promotion_with_boundary(raw_root, matches, &mut || Ok(()))
+        .expect("replay oracle evidence");
+    let promoted = prepare_attempt_production_replay_oracle_promotion(
+        &source_checkpoints,
+        raw_root,
+        &installed,
+        evidence,
+        &cancellation,
+    )
+    .expect("prepare promoted checkpoint");
+    let promoted_root = promoted.promoted();
+    source_checkpoints
+        .publish_production_closure(promoted.replacement())
+        .expect("publish promoted checkpoint");
+
+    let campaign = CampaignName::new("source").expect("campaign name");
+    let source_selection = ExactPinMaterializationSelection::prepare(
+        &source,
+        &source_checkpoints,
+        &campaign,
+        configuration_id,
+        promoted_root,
+    )
+    .expect("source selection");
+    let mut source_pins =
+        DirectoryExactPinMaterializationStore::open(temporary.path().join("source-exact-pins"))
+            .expect("source selection store");
+    source_pins
+        .select(source_selection)
+        .expect("select checkpoint");
+    let mut resolver = ExactPinCampaignArchiveCheckpointResolver::new(
+        &source,
+        &source_checkpoints,
+        campaign,
+        &mut source_pins,
+    )
+    .expect("archive checkpoint resolver");
+    let plan = source
+        .plan_campaign_archive(
+            pinned.new_snapshot,
+            CampaignArchivePolicy::Executable,
+            BTreeSet::new(),
+            Some(&mut resolver),
+        )
+        .expect("executable archive plan");
+    assert_eq!(plan.manifest().checkpoint_selections().len(), 1);
+    drop(resolver);
+
+    let destination_backend = Arc::new(DirectoryBlobBackend::new(
+        "destination",
+        temporary.path().join("destination-objects"),
+    ));
+    let destination = CampaignRepository::new(
+        destination_backend.clone(),
+        Arc::new(DirectoryRefBackend::new(
+            temporary.path().join("destination-refs"),
+        )),
+    );
+    let destination_checkpoints =
+        ExactCheckpointStore::new(destination_backend.clone(), 64 * 1024 * 1024)
+            .expect("fresh destination checkpoints");
+    let selection_root = temporary.path().join("destination-exact-pins");
+    let mut destination_pins =
+        DirectoryExactPinMaterializationStore::open(&selection_root).expect("destination pins");
+    let source_journal_root = temporary.path().join("source-transfer-journal");
+    let destination_journal_root = temporary.path().join("destination-transfer-journal");
+    let durability = DurabilityRequirement::new(1, false).expect("durability");
+    {
+        let mut source_journal =
+            DirectoryCampaignTransferJournal::open(&source_journal_root).expect("source journal");
+        let mut destination_journal =
+            DirectoryCampaignTransferJournal::open(&destination_journal_root)
+                .expect("destination journal");
+        let mut source_endpoint =
+            CampaignArchiveTransferEndpoint::new(&source, &mut source_journal, "source", true);
+        let mut destination_endpoint =
+            CampaignArchiveTransferEndpoint::new_with_operational_checkpoints(
+                &destination,
+                &mut destination_journal,
+                "destination",
+                true,
+                &destination_checkpoints,
+                &mut destination_pins,
+            );
+        transfer_campaign_archive_durably(
+            &mut source_endpoint,
+            &mut destination_endpoint,
+            &plan,
+            "executable",
+            Some("imported"),
+            durability,
+        )
+        .expect("import without process-local promotion claim");
+    }
+    assert!(
+        destination_pins
+            .selection(
+                &CampaignName::new("imported").expect("imported campaign"),
+                configuration_id,
+            )
+            .expect("imported selection")
+            .is_some()
+    );
+    assert!(matches!(
+        authenticate_archive_checkpoint(
+            &destination,
+            &destination_checkpoints,
+            pinned.new_snapshot,
+            configuration_id,
+            plan.manifest().checkpoint_selections()[0].pin_fact(),
+            raw_root,
+        ),
+        Err(ExactPinRetentionError::CheckpointReplayOracleNotReady { .. })
+    ));
+    drop(destination_pins);
+    drop(destination_checkpoints);
+
+    let restarted_checkpoints = ExactCheckpointStore::new(destination_backend, 64 * 1024 * 1024)
+        .expect("restarted destination checkpoints");
+    let mut restarted_pins =
+        DirectoryExactPinMaterializationStore::open(&selection_root).expect("reopened pins");
+    let mut source_journal = DirectoryCampaignTransferJournal::open(&source_journal_root)
+        .expect("reopened source journal");
+    let mut destination_journal = DirectoryCampaignTransferJournal::open(&destination_journal_root)
+        .expect("reopened destination journal");
+    let mut source_endpoint =
+        CampaignArchiveTransferEndpoint::new(&source, &mut source_journal, "source", true);
+    let mut destination_endpoint =
+        CampaignArchiveTransferEndpoint::new_with_operational_checkpoints(
+            &destination,
+            &mut destination_journal,
+            "destination",
+            true,
+            &restarted_checkpoints,
+            &mut restarted_pins,
+        );
+    let retry = transfer_campaign_archive_durably(
+        &mut source_endpoint,
+        &mut destination_endpoint,
+        &plan,
+        "executable",
+        Some("imported"),
+        durability,
+    )
+    .expect("idempotent import after restart");
+    assert_eq!(retry.transfer().copied_objects, 0);
+
+    transfer_campaign_archive_durably(
+        &mut source_endpoint,
+        &mut destination_endpoint,
+        &plan,
+        "archive-only",
+        None,
+        durability,
+    )
+    .expect("archive-only import uses durable closure proof");
+    assert_eq!(
+        destination
+            .inspect_campaign_archive_ref("archive-only")
+            .expect("archive-only ref")
+            .manifest_id(),
+        plan.manifest_id()
+    );
+    let archive_retry = transfer_campaign_archive_durably(
+        &mut source_endpoint,
+        &mut destination_endpoint,
+        &plan,
+        "archive-only",
+        None,
+        durability,
+    )
+    .expect("archive-only import remains idempotent after restart");
+    assert_eq!(archive_retry.transfer().copied_objects, 0);
 }
