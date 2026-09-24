@@ -174,6 +174,9 @@ pub enum QemuFreshModeledDriverError {
     /// A selected continuation replay did not stop at its claimed boundary.
     #[error("selected continuation origin replay did not match its claimed boundary")]
     SelectedOriginBoundaryMismatch,
+    /// The resulting schedule does not preserve the authenticated start.
+    #[error("fresh campaign child schedule does not extend its authenticated attempt start")]
+    StartSchedulePrefixMismatch,
     /// An attempt start or selected checkpoint lies beyond the immutable attempt stop.
     #[error("attempt start or selected checkpoint lies beyond the attempt stop")]
     SelectedResumeBeyondAttemptStop,
@@ -2521,20 +2524,11 @@ fn project_boundary(
         .iter()
         .map(|discovery| discovery.opportunity().id())
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let produced_selections = pending
-        .configuration
-        .schedule
-        .decisions()
-        .iter()
-        .filter_map(|decision| match decision {
-            Decision::Selection(selection) => Some(selection),
-            _ => None,
-        })
-        .map(|decision| Selection::from_canonical_bytes(decision.canonical_bytes()))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|selection| discovered_ids.contains(&selection.opportunity()))
-        .collect();
+    let produced_selections = produced_selections_after_start(
+        pending.input.start().configuration(),
+        &pending.configuration,
+        &discovered_ids,
+    )?;
     Ok(QemuBoundaryProjection {
         input: pending.input,
         child,
@@ -2548,6 +2542,33 @@ fn project_boundary(
         produced_selections,
         stop,
     })
+}
+
+fn produced_selections_after_start(
+    start: &Configuration,
+    child: &Configuration,
+    discovered_ids: &BTreeSet<ChoiceOpportunityId>,
+) -> Result<Vec<Selection>, QemuFreshModeledDriverError> {
+    let start_decisions = start.schedule.decisions();
+    let child_decisions = child.schedule.decisions();
+    if !child_decisions.starts_with(start_decisions) {
+        return Err(QemuFreshModeledDriverError::StartSchedulePrefixMismatch);
+    }
+
+    // A branch start already owns its selected prefix. Only decisions made by
+    // this attempt can be published as selections produced by its observation.
+    let selections = child_decisions[start_decisions.len()..]
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Selection(selection) => Some(selection),
+            _ => None,
+        })
+        .map(|decision| Selection::from_canonical_bytes(decision.canonical_bytes()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|selection| discovered_ids.contains(&selection.opportunity()))
+        .collect();
+    Ok(selections)
 }
 
 fn retain_modeled_timeout(
