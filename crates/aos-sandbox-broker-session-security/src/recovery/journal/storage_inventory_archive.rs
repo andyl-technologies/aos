@@ -15,12 +15,20 @@ use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurablePhaseV1, BrokerSessionProtocolV1, decode_canonical_request_v1,
     decode_canonical_response_v1,
 };
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodOutcomeV1,
+    AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodResultV1,
+    AuthenticatedBrokerRequestDirectionV1,
+    admit_client_received_authenticated_broker_method_outcome_v1,
+    prepare_client_sent_authenticated_broker_method_request_v1,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::{
     BrokerSessionSecurityError, ProtectedBrokerSessionJournalV1, StoredProtocolHistoryV1,
-    authority_envelope_digest, protocol_key, read_array, read_u16, read_u32, reconstruct_traffic,
-    successful_terminal,
+    authenticated_semantic_bindings_from_envelope_v1, authority_envelope_digest,
+    historical_terminal_outcome, protocol_key, read_array, read_u16, read_u32, reconstruct_traffic,
+    reconstruct_traffic_records, request_matches_head, successful_terminal,
 };
 
 const MAGIC: &[u8; 8] = b"AOSBSIA1";
@@ -309,11 +317,160 @@ impl ProtectedBrokerSessionJournalV1 {
         self.classify_storage_inventory_archive(&archive)
     }
 
+    pub(super) fn verify_original_storage_inventory_terminal(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        packet: &[u8],
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, BrokerSessionSecurityError> {
+        let archive = self
+            .read_storage_inventory_archive(inventory_request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if archive.group_request_id != group_request_id
+            || archive.group_request_digest != group_request_digest
+            || archive.inventory_request_digest != inventory_request_digest
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let head = self.classify_storage_inventory_archive(&archive)?;
+        let checkpoint = archive
+            .history
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let model = archive.history.history_model()?;
+        let records = model.records();
+        if let Some(retained) = head.terminal_packet {
+            if retained != packet {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let terminal_index = records
+                .len()
+                .checked_sub(1)
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            return historical_terminal_outcome(records, terminal_index, checkpoint, &transcript);
+        }
+        let prepared = records
+            .last()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let prior = reconstruct_traffic_records(
+            &records[..records.len() - 1],
+            &transcript,
+            checkpoint.context(),
+        )?;
+        let canonical = decode_canonical_request_v1(prepared.request_packet())
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let bindings = authenticated_semantic_bindings_from_envelope_v1(
+            canonical.message(),
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let peer = checkpoint.peer();
+        let policy = aos_sandbox_protocol::PeerPolicy {
+            uid: peer.uid,
+            gid: Some(peer.gid),
+            audience: checkpoint.context().audience(),
+        };
+        let retained_time = prepared
+            .request_companion()
+            .deadline_boottime_nanoseconds()
+            .checked_sub(1)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let (request, pending_traffic) =
+            match prepare_client_sent_authenticated_broker_method_request_v1(
+                &prior,
+                prepared.request_packet(),
+                None,
+                canonical.message().descriptors.len(),
+                peer,
+                policy,
+                retained_time,
+                bindings,
+                checkpoint.context(),
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            {
+                AuthenticatedBrokerMethodRequestAdmissionV1::New {
+                    request,
+                    next_traffic,
+                } => (request, next_traffic),
+                AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+            };
+        if !request_matches_head(
+            &request,
+            prepared,
+            AuthenticatedBrokerRequestDirectionV1::ClientSend,
+        ) || request.semantic_commitment() != prepared.request_semantic_binding()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let canonical_response = decode_canonical_response_v1(packet)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let outcome = match admit_client_received_authenticated_broker_method_outcome_v1(
+            &pending_traffic,
+            &request,
+            packet,
+            None,
+            canonical_response.message().descriptors.len(),
+            checkpoint.context(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        {
+            AuthenticatedBrokerMethodOutcomeAdmissionV1::New { outcome, .. } => outcome,
+            AuthenticatedBrokerMethodOutcomeAdmissionV1::ExactReplay(_) => {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+        };
+        if !matches!(
+            outcome.result(),
+            AuthenticatedBrokerMethodResultV1::Success { .. }
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(outcome)
+    }
+
     pub(super) fn original_storage_inventory_coordinates(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
-    ) -> Result<ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+    ) -> Result<Option<ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError> {
+        let archived = {
+            let authority = self
+                .journal_mut()?
+                .claim_protected_authority(RecordNamespace::BrokerSessionStorageInventoryArchive)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let mut records = Vec::new();
+            for (key, value) in authority
+                .records()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            {
+                if records.len() == super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                records.push((key.to_vec(), value.to_vec()));
+            }
+            records
+        };
+        let mut matching = None;
+        for (key, value) in archived {
+            let archive = StorageInventoryArchiveV1::decode(&key, &value)?;
+            if archive.group_request_id == group_request_id {
+                if archive.group_request_digest != group_request_digest || matching.is_some() {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                matching = Some(self.classify_storage_inventory_archive(&archive)?);
+            }
+        }
+        if matching.is_some() {
+            return Ok(matching);
+        }
+
         let history = self
             .read_optional(BrokerSessionProtocolV1::Storage)?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
@@ -321,6 +478,14 @@ impl ProtectedBrokerSessionJournalV1 {
         let head = model
             .head()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if head.phase() == BrokerSessionDurablePhaseV1::Terminal
+            && head.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            && head.request_id() == group_request_id
+            && authority_envelope_digest(head.request_packet())? == group_request_digest
+            && successful_terminal(head)?
+        {
+            return Ok(None);
+        }
         let inventory_request_id = head.request_id();
         let inventory_request_digest = Sha256::digest(head.request_packet()).into();
         let archive = StorageInventoryArchiveV1 {
@@ -330,7 +495,7 @@ impl ProtectedBrokerSessionJournalV1 {
             inventory_request_digest,
             history,
         };
-        self.classify_storage_inventory_archive(&archive)
+        self.classify_storage_inventory_archive(&archive).map(Some)
     }
 
     fn read_storage_inventory_archive(

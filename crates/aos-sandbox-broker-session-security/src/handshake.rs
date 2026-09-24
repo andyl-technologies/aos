@@ -26,9 +26,9 @@ use aos_sandbox_linux::seqpacket::{
 use aos_sandbox_protocol::PeerCredentials;
 
 use crate::recovery::{
-    FixedEndpointCustodyV1, HistoricalSessionCheckpointV1, ProtectedBrokerSessionOwnerV1,
-    ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
-    ProtectedVerifiedAtomicStorageHistoryV1,
+    ArchivedStorageInventoryHeadV1, FixedEndpointCustodyV1, HistoricalSessionCheckpointV1,
+    ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
+    ProtectedPriorTerminalExchangeV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
     BrokerSessionSecurityError, ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1,
@@ -1209,6 +1209,60 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn original_storage_inventory_coordinates(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<Option<ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError> {
+        self.owner.original_storage_inventory_coordinates(
+            group_request_id,
+            group_request_digest,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
+    pub(super) fn client_storage_inventory_abandonment_committed(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        client_original_head: [u8; 32],
+    ) -> Result<bool, BrokerSessionSecurityError> {
+        self.owner.client_storage_inventory_abandonment_committed(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            client_original_head,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
+    pub(super) fn verify_original_storage_inventory_terminal(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        packet: &[u8],
+    ) -> Result<
+        aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        BrokerSessionSecurityError,
+    >{
+        self.owner.verify_original_storage_inventory_terminal(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            packet,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn broker_storage_inventory_recovery_response(
         &mut self,
         request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,

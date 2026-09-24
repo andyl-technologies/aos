@@ -8,7 +8,8 @@
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, BrokerRequestEnvelope, InventoryDestinationSlotsRequest,
     InventoryMountSourceAcquisitionsRequest, InventoryMountsRequest, InventoryNetworksRequest,
-    InventoryRuntimeRequest, InventoryStorageRequest, RequestHeader,
+    InventoryRuntimeRequest, InventoryStorageRequest, RecoverStorageInventoryRequestV1,
+    RequestHeader,
 };
 use aos_sandbox::attachment_source::{
     AttachmentSourceAttemptKindV1, DurableCurrentAttachmentSourceDispatchV1,
@@ -36,6 +37,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
 use aos_sandbox_protocol::semantics::ProtectedStorageCreatePreparationV1;
+use aos_sandbox_protocol::{
+    ValidatedStorageInventoryRecoveryResponseV1, decode_storage_inventory_recovery_response_v1,
+};
 use buffa::Message as _;
 
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
@@ -1246,7 +1250,172 @@ impl DormantAtomicStorageInventoryCompletionV1 {
     }
 }
 
+/// Classifies the exact post-group inventory after protected cold recovery.
+pub(crate) enum DormantAtomicStorageInventoryColdRecoveryV1 {
+    /// No original post-group inventory was sent; a fresh status may be read.
+    NoOriginalRequest,
+    /// Both endpoints durably abandoned the original read-only request.
+    AbandonedReadOnly,
+    /// The broker returned the original signed terminal, reauthenticated here.
+    OriginalTerminal(AuthenticatedBrokerMethodOutcomeV1),
+}
+
 impl DormantStorageLifecycleInventoryOwnerV1 {
+    /// Resolves a pending original post-group inventory through Method32.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if original history, the signed control result, or
+    /// either endpoint's protected abandonment cannot be verified.
+    pub(crate) fn recover_atomic_snapshot_inventory(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<DormantAtomicStorageInventoryColdRecoveryV1, EffectFailure> {
+        let original = self
+            .0
+            .session
+            .original_storage_inventory_coordinates(group_request_id, group_request_digest)
+            .map_err(|_| {
+                EffectFailure::Retryable("original Storage inventory is unavailable".to_owned())
+            })?;
+        let Some(original) = original else {
+            return Ok(DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest);
+        };
+        if let Some(packet) = original.terminal_packet.as_deref() {
+            let terminal = self
+                .0
+                .session
+                .verify_original_storage_inventory_terminal(
+                    group_request_id,
+                    group_request_digest,
+                    original.inventory_request_id,
+                    original.inventory_request_digest,
+                    packet,
+                )
+                .map_err(|_| {
+                    EffectFailure::Permanent(
+                        "original Storage inventory terminal did not reauthenticate".to_owned(),
+                    )
+                })?;
+            return Ok(DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(terminal));
+        }
+        if self
+            .0
+            .session
+            .client_storage_inventory_abandonment_committed(
+                group_request_id,
+                group_request_digest,
+                original.inventory_request_id,
+                original.inventory_request_digest,
+                original.original_head,
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable("Storage inventory abandonment is unavailable".to_owned())
+            })?
+        {
+            return Ok(DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly);
+        }
+
+        let inventory_id = original.inventory_request_id;
+        let inventory_digest = original.inventory_request_digest;
+        let client_head = original.original_head;
+        let (outcome, currentness) = self
+            .0
+            .exact_request_complete(
+                BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY,
+                |session| {
+                    session.prepare_authenticated_request(
+                        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY,
+                        |coordinates| {
+                            let version = coordinates.protocol_version();
+                            let body = RecoverStorageInventoryRequestV1 {
+                                header: Some(RequestHeader {
+                                    protocol_major: version.major().into(),
+                                    protocol_minor: version.minor().into(),
+                                    request_id: coordinates.request_id().to_vec(),
+                                    audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                                    deadline_boottime_nanoseconds: coordinates
+                                        .deadline_boottime_nanoseconds(),
+                                    maximum_response_bytes: coordinates.maximum_response_bytes(),
+                                    ..Default::default()
+                                })
+                                .into(),
+                                group_request_id: group_request_id.to_vec(),
+                                group_request_digest: group_request_digest.to_vec(),
+                                inventory_request_id: inventory_id.to_vec(),
+                                inventory_request_digest: inventory_digest.to_vec(),
+                                client_original_head: client_head.to_vec(),
+                                ..Default::default()
+                            };
+                            BrokerRequestEnvelope {
+                                method: BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+                                    .into(),
+                                body: body.encode_to_vec(),
+                                ..Default::default()
+                            }
+                        },
+                    )
+                },
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "Storage inventory control exchange is unavailable".to_owned(),
+                )
+            })?;
+        self.0.recheck(currentness).map_err(|_| {
+            EffectFailure::Retryable("Storage inventory control is no longer current".to_owned())
+        })?;
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+            return Err(EffectFailure::Permanent(
+                "Storage inventory control was rejected".to_owned(),
+            ));
+        };
+        let decision = decode_storage_inventory_recovery_response_v1(
+            exact_body,
+            outcome.request().maximum_response_bytes(),
+        )
+        .map_err(|_| {
+            EffectFailure::Permanent("Storage inventory control result is invalid".to_owned())
+        })?;
+        match decision {
+            ValidatedStorageInventoryRecoveryResponseV1::OriginalTerminal { packet, .. } => {
+                let original = self
+                    .0
+                    .session
+                    .verify_original_storage_inventory_terminal(
+                        group_request_id,
+                        group_request_digest,
+                        inventory_id,
+                        inventory_digest,
+                        &packet,
+                    )
+                    .map_err(|_| {
+                        EffectFailure::Permanent(
+                            "original Storage terminal did not reauthenticate".to_owned(),
+                        )
+                    })?;
+                Ok(DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(original))
+            }
+            ValidatedStorageInventoryRecoveryResponseV1::AbandonedReadOnly { .. } => {
+                self.0
+                    .session
+                    .client_confirm_storage_inventory_abandonment(
+                        group_request_id,
+                        group_request_digest,
+                        inventory_id,
+                        inventory_digest,
+                    )
+                    .map_err(|_| {
+                        EffectFailure::Retryable(
+                            "client Storage abandonment was not durable".to_owned(),
+                        )
+                    })?;
+                Ok(DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly)
+            }
+        }
+    }
+
     /// Retains one exact signed Create Prepare and its authenticated catalog.
     ///
     /// A returned catalog is not Apply authority. The separate signed Apply
@@ -1403,6 +1572,27 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         else {
             return Ok(None);
         };
+        self.attest_original_atomic_snapshot_terminal(
+            predecessor,
+            group,
+            current,
+            challenge,
+            operation,
+            plan,
+        )
+        .map(Some)
+    }
+
+    /// Attests a Method32-recovered original terminal against the original trio.
+    pub(crate) fn attest_original_atomic_snapshot_terminal(
+        &mut self,
+        predecessor: AuthenticatedBrokerMethodOutcomeV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
+        current: AuthenticatedBrokerMethodOutcomeV1,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        operation: &CurrentLifecycleOperationV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+    ) -> Result<DormantAtomicStorageInventoryCompletionV1, EffectFailure> {
         let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
             return Err(EffectFailure::Permanent(
                 "historical Storage group was not successful".to_owned(),
@@ -1443,12 +1633,12 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             .map_err(|_| {
                 EffectFailure::Permanent("historical Storage successor is invalid".to_owned())
             })?;
-        Ok(Some(DormantAtomicStorageInventoryCompletionV1 {
+        Ok(DormantAtomicStorageInventoryCompletionV1 {
             successor,
             predecessor,
             group,
             current,
-        }))
+        })
     }
 
     /// Attests a successful historical group with a fresh read-only status.

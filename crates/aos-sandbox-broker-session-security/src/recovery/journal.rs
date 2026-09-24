@@ -12,6 +12,7 @@ mod historical_checkpoint;
 mod owner;
 mod storage_inventory_abandonment;
 mod storage_inventory_archive;
+pub(crate) use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
@@ -37,6 +38,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerRequestDirectionV1,
     admit_client_received_authenticated_broker_method_outcome_v1,
     authenticated_semantic_bindings_from_envelope_v1,
+};
+use aos_sandbox_protocol::{
+    ValidatedStorageInventoryRecoveryResponseV1, decode_storage_inventory_recovery_response_v1,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -606,8 +610,7 @@ impl ProtectedBrokerSessionOwnerV1 {
         group_request_digest: [u8; 32],
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
-    ) -> Result<storage_inventory_archive::ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError>
-    {
+    ) -> Result<Option<ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError> {
         self.revalidate_transport(transcript, connection_peer)?;
         let before = self
             .journal
@@ -649,6 +652,52 @@ impl ProtectedBrokerSessionOwnerV1 {
         )?;
         self.revalidate_transport(transcript, connection_peer)?;
         Ok(head)
+    }
+
+    pub(crate) fn client_storage_inventory_abandonment_committed(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        client_original_head: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<bool, BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let committed = self
+            .journal
+            .client_storage_inventory_abandonment_committed(
+                group_request_id,
+                group_request_digest,
+                inventory_request_id,
+                inventory_request_digest,
+                client_original_head,
+            )?;
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(committed)
+    }
+
+    pub(crate) fn verify_original_storage_inventory_terminal(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        packet: &[u8],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let outcome = self.journal.verify_original_storage_inventory_terminal(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            packet,
+        )?;
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(outcome)
     }
 
     /// Commits only the broker's exact nonterminal read-only abandonment.
@@ -2644,8 +2693,8 @@ impl ProtectedBrokerSessionJournalV1 {
         Ok(())
     }
 
-    // A read-only control response is not itself permission to query again.
-    // Both endpoints must have retained the exact abandonment decision first.
+    // The signed original terminal or two durable abandonment markers must
+    // settle the old request before another inventory can be sent.
     fn require_storage_inventory_abandonment_successor(
         &mut self,
         history: &BrokerSessionDurableHistoryV1,
@@ -2693,6 +2742,74 @@ impl ProtectedBrokerSessionJournalV1 {
             .as_slice()
             .try_into()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let stored = self
+            .read_optional(BrokerSessionProtocolV1::Storage)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let verified_history = stored.history_model()?;
+        if verified_history != *history {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        reconstruct_traffic(&verified_history, &transcript, checkpoint.context())?;
+        let response = decode_canonical_response_v1(
+            records[1]
+                .outcome_packet()
+                .ok_or(BrokerSessionSecurityError::Currentness)?,
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if response.message().error.as_option().is_some() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let decision = decode_storage_inventory_recovery_response_v1(
+            &response.message().body,
+            first.maximum_response_bytes(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if let ValidatedStorageInventoryRecoveryResponseV1::OriginalTerminal {
+            packet,
+            broker_head,
+            archive_digest,
+        } = decision
+        {
+            let archived = self.archived_storage_inventory_head(
+                group_id,
+                group_digest,
+                inventory_id,
+                inventory_digest,
+            )?;
+            if archived.original_head != client_head
+                && self.endpoint.role() == BrokerSessionDurableEndpointV1::Client
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            match self.endpoint.role() {
+                BrokerSessionDurableEndpointV1::Broker
+                    if archived.terminal_packet.as_deref() == Some(packet.as_slice())
+                        && archived.original_head == broker_head
+                        && archived.archive_digest == archive_digest
+                        && decode_canonical_response_v1(&packet)
+                            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                            .message()
+                            .error
+                            .as_option()
+                            .is_none() => {}
+                BrokerSessionDurableEndpointV1::Client => {
+                    self.verify_original_storage_inventory_terminal(
+                        group_id,
+                        group_digest,
+                        inventory_id,
+                        inventory_digest,
+                        &packet,
+                    )?;
+                }
+                _ => return Err(BrokerSessionSecurityError::Currentness),
+            }
+            return Ok(());
+        }
         let marker = self.read_storage_inventory_abandonment(inventory_id)?;
         if !exact_storage_inventory_abandonment_marker(
             marker.as_ref(),
@@ -2704,6 +2821,7 @@ impl ProtectedBrokerSessionJournalV1 {
         ) {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        self.validate_storage_inventory_abandonments()?;
         Ok(())
     }
 

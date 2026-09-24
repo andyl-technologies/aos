@@ -40,12 +40,13 @@ use crate::BrokerSessionSecurityError;
 
 mod journal;
 
-pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
 pub(crate) use journal::{
-    HistoricalSessionCheckpointV1, ProtectedBrokerReceivedRequestAdmissionV1,
-    ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
-    ProtectedPriorTerminalExchangeV1, ProtectedVerifiedAtomicStorageHistoryV1,
+    ArchivedStorageInventoryHeadV1, HistoricalSessionCheckpointV1,
+    ProtectedBrokerReceivedRequestAdmissionV1, ProtectedBrokerSessionOwnerV1,
+    ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
+    ProtectedVerifiedAtomicStorageHistoryV1,
 };
+pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
 pub use journal::{
     ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
     ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerRequestCommitResultV1,

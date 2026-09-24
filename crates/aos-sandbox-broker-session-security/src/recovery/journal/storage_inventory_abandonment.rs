@@ -181,6 +181,35 @@ impl StorageInventoryAbandonmentV1 {
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    pub(super) fn client_storage_inventory_abandonment_committed(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        client_original_head: [u8; 32],
+    ) -> Result<bool, BrokerSessionSecurityError> {
+        if self.endpoint.role() != BrokerSessionDurableEndpointV1::Client {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let marker = self.read_storage_inventory_abandonment(inventory_request_id)?;
+        if marker.is_none() {
+            return Ok(false);
+        }
+        if !super::exact_storage_inventory_abandonment_marker(
+            marker.as_ref(),
+            BrokerSessionDurableEndpointV1::Client,
+            group_request_id,
+            group_request_digest,
+            inventory_request_digest,
+            client_original_head,
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.validate_storage_inventory_abandonments()?;
+        Ok(true)
+    }
+
     fn verify_client_storage_inventory_abandonment(
         &mut self,
         record: &StorageInventoryAbandonmentV1,

@@ -220,14 +220,33 @@ impl ProductionEffectExecutor {
                                     session,
                                     checkpoint,
                                 )?;
-                                let completion = storage.recover_verified_atomic_snapshot_status(
-                                    predecessor,
-                                    group,
-                                    &challenge,
-                                    &current,
-                                    &plan,
-                                )?;
-                                (completion, true)
+                                match storage.recover_atomic_snapshot_inventory(
+                                    request_id,
+                                    *request_packet.as_bytes(),
+                                )? {
+                                    crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(successor) => (
+                                        storage.attest_original_atomic_snapshot_terminal(
+                                            predecessor,
+                                            group,
+                                            successor,
+                                            &challenge,
+                                            &current,
+                                            &plan,
+                                        )?,
+                                        false,
+                                    ),
+                                    crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
+                                    | crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly => (
+                                        storage.recover_verified_atomic_snapshot_status(
+                                            predecessor,
+                                            group,
+                                            &challenge,
+                                            &current,
+                                            &plan,
+                                        )?,
+                                        true,
+                                    ),
+                                }
                             }
                             _ => return Err(retryable("protected Storage history changed")),
                         };

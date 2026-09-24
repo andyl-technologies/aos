@@ -1279,6 +1279,53 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn original_storage_inventory_coordinates(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<Option<crate::recovery::ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError>
+    {
+        self.0
+            .original_storage_inventory_coordinates(group_request_id, group_request_digest)
+    }
+
+    pub(crate) fn client_storage_inventory_abandonment_committed(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        client_original_head: [u8; 32],
+    ) -> Result<bool, BrokerSessionSecurityError> {
+        self.0.client_storage_inventory_abandonment_committed(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            client_original_head,
+        )
+    }
+
+    pub(crate) fn verify_original_storage_inventory_terminal(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        packet: &[u8],
+    ) -> Result<
+        aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        BrokerSessionSecurityError,
+    >{
+        self.0.verify_original_storage_inventory_terminal(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            packet,
+        )
+    }
+
     pub(crate) fn client_confirm_storage_inventory_abandonment(
         &mut self,
         group_request_id: [u8; 16],
