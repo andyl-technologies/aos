@@ -381,6 +381,8 @@ crucible.qemu.vmstate.block-crucible-shmem	1	qemu-patch::vmstate	device-state	ga
 crucible.qemu.vmstate.ich9-pm-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.piix4-pm-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.virtio-blk-dropped-requests	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.virtio-blk-crucible-backend-wce	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.serial-crucible-timing	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.apic-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.apic-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.arm-gic-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
@@ -395,5 +397,6 @@ crucible.qemu.vmstate.i8254-crucible-clock	1	qemu-patch::vmstate	device-state	ga
 crucible.qemu.vmstate.virtio-crucible-accelerator	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.virtio-crucible-queue-signal	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.virtio-crucible-queue-signals	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.virtio-crucible-start-on-kick	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
