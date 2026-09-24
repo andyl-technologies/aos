@@ -922,11 +922,17 @@ struct CampaignWorkedNetworkFixtureArgs {
     #[arg(long, value_name = "DIR", required = true)]
     output: PathBuf,
     /// AOS-built Linux kernel for the executable Envoy network fixture.
-    #[arg(long, value_name = "FILE", requires = "root_image")]
+    #[arg(long, value_name = "FILE", requires_all = ["root_image", "qemu", "plugin"])]
     kernel: Option<PathBuf>,
     /// Immutable root.ext4 from the AOS Envoy network guest package.
-    #[arg(long, value_name = "FILE", requires = "kernel")]
+    #[arg(long, value_name = "FILE", requires_all = ["kernel", "qemu", "plugin"])]
     root_image: Option<PathBuf>,
+    /// Packaged Crucible QEMU executable for the executable fixture.
+    #[arg(long, value_name = "FILE", requires_all = ["kernel", "root_image", "plugin"])]
+    qemu: Option<PathBuf>,
+    /// Matching packaged Crucible QEMU plugin for the executable fixture.
+    #[arg(long, value_name = "FILE", requires_all = ["kernel", "root_image", "qemu"])]
+    plugin: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

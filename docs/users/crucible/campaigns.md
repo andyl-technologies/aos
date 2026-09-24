@@ -129,10 +129,16 @@ canonical scenario, schedule, lineage, policy, and dependency-ordered generator
 files, then validates the emitted import manifest before returning success. The
 fixture contains the RFC topology (three routers and two traffic endpoints),
 semantic recovery boundaries, measurement contracts, safety properties, and a
-progressive-PUCT policy. Its VM records deliberately carry no product kernel or
-root-image references: this checked fixture exercises the complete
-import/create/control-plane path, while the final §14 operator flight must use a
-separately authored scenario containing the actual supported product build.
+progressive-PUCT policy. Without boot-artifact options, its VM records carry no
+kernel or root-image references and exercise the import/create/control-plane
+path. For the five-VM AOS Envoy workload, build `.#pkg-linux` and
+`.#crucible-envoy-network-guest`, then pass their kernel and immutable
+`root.ext4` through `--kernel` and `--root-image`. Pass the suite's matched
+QEMU and plugin through `--qemu` and `--plugin` so the generated lineage uses
+their authenticated build identity and current protocol versions. This binds
+all five VM roles to the actual guest image and produces new scenario, lineage,
+and policy identities. The [manual flight runbook](campaign-manual-flights.md) gives the
+recorded command sequence; final §14 acceptance remains an independent flight.
 
 Campaign creation uses content identities, not large artifact bodies in a
 control message. Import manifests therefore list dependency-ordered canonical

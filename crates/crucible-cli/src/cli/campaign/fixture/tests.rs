@@ -40,7 +40,7 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
     let temporary = tempfile::tempdir().expect("fixture temporary directory");
     let output = temporary.path().join("worked-network");
     let report =
-        generate_worked_network_fixture(&output, None, None).expect("worked-network fixture");
+        generate_worked_network_fixture(&output, None, None, None).expect("worked-network fixture");
     let validation = validate_campaign_import_manifests(std::slice::from_ref(&report.manifest))
         .expect("strict generated manifest");
     assert_eq!(validation.configurations().len(), 1);
@@ -167,7 +167,7 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
 
 #[test]
 fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_trip() {
-    let fixture = worked_network_fixture(None).expect("worked-network fixture");
+    let fixture = worked_network_fixture(None, None).expect("worked-network fixture");
     let artifact = encode_crucible_scenario_artifact(&fixture.scenario).expect("scenario artifact");
     let scenario = crucible_daemon::decode_crucible_scenario_artifact(&artifact)
         .expect("authenticated scenario round trip");
@@ -265,7 +265,7 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
 fn generated_network_fault_group_discovers_both_phases_and_projects_typed_paths() {
     let temporary = tempfile::tempdir().expect("fixture temporary directory");
     let output = temporary.path().join("worked-network");
-    generate_worked_network_fixture(&output, None, None).expect("generated fixture");
+    generate_worked_network_fixture(&output, None, None, None).expect("generated fixture");
     let source = ScenarioDefForm::from_compact_binary(
         &fs::read(output.join("scenario.bin")).expect("generated scenario bytes"),
     )
@@ -453,7 +453,7 @@ fn worked_network_fixture_never_overwrites_an_existing_output() {
     let temporary = tempfile::tempdir().expect("fixture temporary directory");
     let output = temporary.path().join("worked-network");
     fs::create_dir(&output).expect("existing output directory");
-    assert!(generate_worked_network_fixture(&output, None, None).is_err());
+    assert!(generate_worked_network_fixture(&output, None, None, None).is_err());
     assert_eq!(fs::read_dir(&output).expect("empty output").count(), 0);
 }
 
@@ -466,8 +466,14 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     fs::write(&root_image, b"Envoy immutable root fixture").expect("root fixture");
 
     let output = temporary.path().join("envoy-network");
-    let report = generate_worked_network_fixture(&output, Some(&kernel), Some(&root_image))
-        .expect("materialized worked-network fixture");
+    let qemu_build = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let report = generate_worked_network_fixture(
+        &output,
+        Some(&kernel),
+        Some(&root_image),
+        Some(qemu_build),
+    )
+    .expect("materialized worked-network fixture");
     let scenario = ScenarioDefForm::from_compact_binary(
         &fs::read(output.join("scenario.bin")).expect("scenario bytes"),
     )
@@ -518,7 +524,7 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     );
 
     let offline = temporary.path().join("offline-network");
-    let offline_report = generate_worked_network_fixture(&offline, None, None)
+    let offline_report = generate_worked_network_fixture(&offline, None, None, None)
         .expect("offline worked-network fixture");
     assert_ne!(report.scenario, offline_report.scenario);
     assert_ne!(report.configuration, offline_report.configuration);
@@ -555,6 +561,15 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     let lineage =
         CampaignLineage::from_canonical_bytes(&fs::read(&report.lineage).expect("lineage bytes"))
             .expect("canonical lineage");
+    assert_eq!(lineage.qemu_build(), qemu_build);
+    assert_eq!(
+        lineage.protocol_versions().get("control"),
+        Some(&crucible_protocol::CONTROL_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        lineage.protocol_versions().get("shared-memory"),
+        Some(&crucible_shmem::ABI_VERSION)
+    );
     let policy =
         CampaignPolicy::from_canonical_bytes(&fs::read(&report.policy).expect("policy bytes"))
             .expect("canonical policy");
@@ -582,7 +597,9 @@ fn worked_network_fixture_rejects_incomplete_boot_assets_before_creating_output(
     let temporary = tempfile::tempdir().expect("fixture temporary directory");
     let output = temporary.path().join("envoy-network");
     let missing = temporary.path().join("missing-vmlinuz");
-    assert!(generate_worked_network_fixture(&output, Some(&missing), None).is_err());
-    assert!(generate_worked_network_fixture(&output, Some(&missing), Some(&missing)).is_err());
+    assert!(generate_worked_network_fixture(&output, Some(&missing), None, None).is_err());
+    assert!(
+        generate_worked_network_fixture(&output, Some(&missing), Some(&missing), None).is_err()
+    );
     assert!(!output.exists());
 }

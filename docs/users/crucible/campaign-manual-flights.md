@@ -11,14 +11,14 @@ feature under test. A separate reviewer challenges the result. Dogfood also
 includes an operator handoff. One person's actions or one shortened session
 cannot satisfy both layers.
 
-The checked worked-network fixture supplies a reproducible control-plane basis,
-but its VM records deliberately omit product artifacts. Before a final flight,
-the release owner must provide a supported product scenario with at least three
-router VMs, two traffic endpoints, the supported guest integration, real
-configuration and convergence, meaningful RAM and disk state, and immutable
-base images with private overlays. The existing AOS server image, minimal
-Crucible fixture, and nginx/curl integration fixture are useful prerequisites;
-none is by itself the required router product workload.
+The checked worked-network generator has an offline, artifact-free form and a
+materialized AOS Envoy form. Use the latter for the release fixture: three VMs
+run AOS-built Envoy and the Crucible guest integration, an nginx endpoint
+serves responses, and a Python endpoint sends sequenced traffic through the
+modeled network. The immutable `crucible-envoy-network-guest` root image and
+AOS Linux kernel identify the guest build; every branch uses a private disk
+overlay. The automated five-VM gate is a prerequisite, while an independent
+operator must still run and sign the full flight below.
 
 ## Acceptance boundary
 
@@ -54,6 +54,7 @@ source tree:
 nix-build -A checks.crucible.phase2.gates.typedChoiceProductCheckpoint
 nix-build -A checks.crucible.phase4.packagedCampaignVm
 nix-build -A checks.crucible.phase4.packagedCampaignChoiceVm
+nix-build -A checks.crucible.phase4.packagedCampaignEnvoyNetworkVm
 nix-build -A checks.crucible.phase7.qemuHotForkAtomicWorldVm
 nix-build -A checks.crucible.phase2.gates.abiConformance
 nix-build -A checks.crucible.phase5.gates.campaignStoreComposition
@@ -75,13 +76,36 @@ enter the dev shell so the recorder uses AOS-built tools:
 nix build .#pkg-crucible -o result-crucible
 nix build .#pkg-jq -o result-jq
 nix build .#pkg-openssl -o result-openssl
+nix build .#pkg-linux -o result-linux
+nix build .#crucible-envoy-network-guest -o result-envoy-guest
+nix build .#crucible-envoy-network-smoke -o result-envoy-smoke
 nix develop
 
 CRUCIBLE=./result-crucible/bin/crucible
 JQ=./result-jq/bin/jq
 RECORDER=docs/rfcs/0020-crucible-campaigns/fixtures/campaign-manual-flight-recorder.sh
 set -eu
+set -- ./result-linux/boot/vmlinuz-*
+test "$#" -eq 1
+CRUCIBLE_KERNEL=$(readlink -f "$1")
+CRUCIBLE_ROOT_IMAGE=$(readlink -f ./result-envoy-guest/root.ext4)
+BUILD_INFO=./result-crucible/nix-support/crucible-build-info
+CRUCIBLE_QEMU=$(sed -n 's/^qemu_path=//p' "$BUILD_INFO")
+CRUCIBLE_PLUGIN=$(sed -n 's/^plugin_path=//p' "$BUILD_INFO")
+test -f "$CRUCIBLE_KERNEL"
+test -f "$CRUCIBLE_ROOT_IMAGE"
+test -x "$CRUCIBLE_QEMU"
+test -f "$CRUCIBLE_PLUGIN"
 ~~~
+
+The Envoy smoke result checks the real AOS-built proxy chain on loopback. The
+packaged five-VM gate checks it under QEMU and the modeled fabric. Record both
+result paths and the kernel, root-image, Envoy, nginx, Python, guest-integration,
+QEMU, and plugin build identities in the flight provenance. Pin the executor's
+`CRUCIBLE_KERNEL`, `CRUCIBLE_ROOT_IMAGE`, `CRUCIBLE_QEMU`, and
+`CRUCIBLE_PLUGIN` to these exact files. The fixture authenticates the QEMU and
+plugin build markers when it writes the lineage. The QEMU lifecycle verifies
+the kernel and root-image content against the scenario before boot.
 
 Create a JSON object following RFC-0020 sections 14.4 and 14.14. Include the
 actual values; do not copy placeholders into accepted evidence. This example
@@ -187,14 +211,22 @@ command output is authoritative; video and screenshots are supplemental.
 
 ## Author and validate
 
-First prove that a fresh operator can act on a public validation error without
-source or daemon logs. The invalid and corrected scenarios should differ only
-by the declared bad guest domain and its documented correction:
+First materialize the supported Envoy guest into the canonical worked-network
+topology. The output contains `import.toml`, `lineage.bin`, and `policy.bin` for
+the campaign run below. Separately prove that a fresh operator can act on a
+public validation error without source or daemon logs. The invalid and
+corrected authoring examples should differ only by the declared bad guest
+domain and its documented correction:
 
 ~~~sh
-record 009-worked-network-basis zero \
+record 008-guest-artifact-digests zero \
+  sha256sum "$CRUCIBLE_KERNEL" "$CRUCIBLE_ROOT_IMAGE" \
+  "$CRUCIBLE_QEMU" "$CRUCIBLE_PLUGIN"
+record 009-worked-network-envoy zero \
   "$CRUCIBLE" --format json campaign fixture worked-network \
-  --output ./worked-network-basis
+  --output ./envoy-network-fixture \
+  --kernel "$CRUCIBLE_KERNEL" --root-image "$CRUCIBLE_ROOT_IMAGE" \
+  --qemu "$CRUCIBLE_QEMU" --plugin "$CRUCIBLE_PLUGIN"
 record 010-invalid-scenario nonzero \
   "$CRUCIBLE" --format json campaign scenario compile \
   ./product-network-invalid.toml --output ./invalid-bundle
@@ -212,6 +244,7 @@ record 014-validate-policy zero \
   "$CRUCIBLE" --format json campaign validate --policy ./product-policy.bin
 record 015-validate-import zero \
   "$CRUCIBLE" --format json campaign validate-import \
+  ./envoy-network-fixture/import.toml \
   ./product-bundle/import.toml ./product-generators/import.toml
 ~~~
 
@@ -246,7 +279,8 @@ retry:
 record 030-create zero \
   "$CRUCIBLE" --format json campaign --socket "$CAMPAIGN_SOCKET" \
   --principal operator create "$CAMPAIGN_NAME" \
-  --lineage ./product-lineage.bin --policy ./product-policy.bin
+  --lineage ./envoy-network-fixture/lineage.bin \
+  --policy ./envoy-network-fixture/policy.bin
 CREATED=$("$JQ" -er .snapshot "$EVIDENCE/commands/030-create/stdout")
 
 PRODUCT_EXECUTOR_UNIT=REPLACE_WITH_SUPPORTED_UNIT

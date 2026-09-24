@@ -97,20 +97,21 @@ pub(super) fn generate_worked_network_fixture(
     output: &Path,
     kernel: Option<&Path>,
     root_image: Option<&Path>,
+    qemu_build: Option<&str>,
 ) -> Result<WorkedNetworkFixtureReport, CliError> {
-    let boot = match (kernel, root_image) {
-        (None, None) => None,
-        (Some(kernel), Some(root_image)) => Some(WorkedNetworkBoot {
+    let boot = match (kernel, root_image, qemu_build) {
+        (None, None, None) => None,
+        (Some(kernel), Some(root_image), Some(_)) => Some(WorkedNetworkBoot {
             kernel: reference_for_file("kernel", kernel)?,
             root_image: reference_for_file("root image", root_image)?,
         }),
         _ => {
             return Err(fixture_error(
-                "kernel and root image must be supplied together",
+                "kernel, root image, and authenticated QEMU build must be supplied together",
             ));
         }
     };
-    let fixture = worked_network_fixture(boot)?;
+    let fixture = worked_network_fixture(boot, qemu_build)?;
     let output = absolute_output_path(output)?;
     create_fixture_directory(&output)?;
 
@@ -236,6 +237,7 @@ pub(super) fn render_worked_network_fixture(
 
 fn worked_network_fixture(
     boot: Option<WorkedNetworkBoot>,
+    qemu_build: Option<&str>,
 ) -> Result<WorkedNetworkFixture, CliError> {
     let world = worked_network_world(boot)?;
     let properties = worked_network_properties(&world)?;
@@ -270,10 +272,13 @@ fn worked_network_fixture(
             .id()
             .map_err(|error| fixture_error(format!("address configuration artifact: {error}")))?,
         env!("CARGO_PKG_VERSION"),
-        "reference-qemu-11.1.1",
+        qemu_build.unwrap_or("offline-worked-network-fixture"),
         BTreeMap::from([
-            (String::from("control"), 1),
-            (String::from("shared-memory"), 1),
+            (
+                String::from("control"),
+                crucible_protocol::CONTROL_PROTOCOL_VERSION,
+            ),
+            (String::from("shared-memory"), crucible_shmem::ABI_VERSION),
         ]),
         scenario_artifact.payload_schema(),
         crucible_daemon::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
