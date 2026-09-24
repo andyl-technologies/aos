@@ -316,7 +316,7 @@ mod tests {
     use crate::policy_compiler::{
         AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
         AuthenticatedSandboxProjectRelationV1, EndpointCatalogVerifierV1, HardLimitRequestV1,
-        HardResourceKeyV1, HardResourceProfileV1, NamespaceCatalogVerifierV1, NodePolicyInputV1,
+        HardResourceKeyV1, HardResourceProfileV1, NamespaceCatalogVerifierV1,
         PORTABLE_LIMIT_DIMENSIONS, PolicyCompilerLimitsV1, PolicyDeploymentInputsV1, PolicyLayerV1,
         ProjectPolicyInputV1, RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
         decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,

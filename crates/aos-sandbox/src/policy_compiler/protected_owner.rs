@@ -708,6 +708,9 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
     use crate::journal::{JournalRecord, JournalTransaction};
 
     use super::*;
@@ -752,7 +755,11 @@ mod tests {
         let mut key = POLICY_BINDING_KEY_PREFIX.to_vec();
         key.extend_from_slice(binding_digest(&binding).as_bytes());
         let directory = tempfile::tempdir().expect("protected test directory");
-        let uid = rustix::process::getuid().as_raw();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private test directory");
+        let uid = fs::metadata(directory.path())
+            .expect("directory owner")
+            .uid();
         let (mut journal, _) = Journal::open_protected_at_uid(
             directory.path(),
             "authority.journal",
