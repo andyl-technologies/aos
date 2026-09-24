@@ -26,7 +26,7 @@ use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_systemd::{OwnedValue, SystemdClient};
 use ed25519_dalek::SigningKey;
-use rustix::fs::{Mode, OFlags, open};
+use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use zeroize::Zeroizing;
 
 const TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
@@ -102,6 +102,8 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
                 "PrivateNetwork",
                 "PrivateDevices",
                 "ProtectSystem",
+                "CapabilityBoundingSet",
+                "RestrictNamespaces",
             ],
         )
         .await
@@ -116,6 +118,8 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
     {
         return Err("fixed shifted target is not PID 1's main process".to_owned());
     }
+    // PID 1's unit label and cgroup do not establish which image the target ran.
+    verify_target_executable(service.main_pid, &inspector_path)?;
     let cgroup =
         CgroupV2Root::from_owned(open_cgroup_root()?).map_err(|error| error.to_string())?;
     let relative_cgroup = service
@@ -161,6 +165,7 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
     verify_target_status(&read_target_status(service.main_pid)?)?;
 
     let target_after = target.info().map_err(|error| error.to_string())?;
+    verify_target_executable(service.main_pid, &inspector_path)?;
     verify_target_status(&read_target_status(service.main_pid)?)?;
     if target_before != target_after
         || anchor
@@ -206,6 +211,38 @@ fn open_cgroup_root() -> Result<OwnedFd, String> {
         Mode::empty(),
     )
     .map_err(|error| error.to_string())
+}
+
+fn verify_target_executable(pid: NonZeroU32, inspector_path: &Path) -> Result<(), String> {
+    let expected = open(
+        inspector_path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| error.to_string())?;
+    let observed = open(
+        format!("/proc/{pid}/exe"),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| error.to_string())?;
+    verify_executable_identity(&expected, &observed)
+}
+
+fn verify_executable_identity(expected: &OwnedFd, observed: &OwnedFd) -> Result<(), String> {
+    let expected = fstat(expected).map_err(|error| error.to_string())?;
+    let observed = fstat(observed).map_err(|error| error.to_string())?;
+    if FileType::from_raw_mode(expected.st_mode) != FileType::RegularFile
+        || FileType::from_raw_mode(observed.st_mode) != FileType::RegularFile
+        || expected.st_dev != observed.st_dev
+        || expected.st_ino != observed.st_ino
+        || expected.st_size != observed.st_size
+        || expected.st_uid != observed.st_uid
+        || expected.st_mode != observed.st_mode
+    {
+        return Err("shifted target does not run the packaged inspector executable".to_owned());
+    }
+    Ok(())
 }
 
 fn read_id_map(pid: NonZeroU32, name: &str) -> Result<(u32, u32), String> {
@@ -278,6 +315,8 @@ fn verify_target_unit_hardening(values: &[OwnedValue]) -> Result<(), String> {
         private_network,
         private_devices,
         protect_system,
+        capability_bounding_set,
+        restrict_namespaces,
     ] = values
     else {
         return Err("shifted target unit readback is incomplete".to_owned());
@@ -289,6 +328,11 @@ fn verify_target_unit_hardening(values: &[OwnedValue]) -> Result<(), String> {
     }
     if <&str>::try_from(protect_system).map_err(|error| error.to_string())? != "strict" {
         return Err("shifted target filesystem policy is not strict".to_owned());
+    }
+    if u64::try_from(capability_bounding_set).map_err(|error| error.to_string())? != 0
+        || u64::try_from(restrict_namespaces).map_err(|error| error.to_string())? != 0
+    {
+        return Err("shifted target capability or namespace policy is not closed".to_owned());
     }
     Ok(())
 }
@@ -378,7 +422,51 @@ fn publish_report(bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_shifted_id_map, verify_target_status};
+    use std::num::NonZeroU32;
+
+    use aos_systemd::{OwnedValue, Value};
+
+    use super::{
+        parse_shifted_id_map, verify_target_executable, verify_target_status,
+        verify_target_unit_hardening,
+    };
+
+    #[test]
+    fn target_executable_must_be_the_exact_packaged_file() {
+        let own_pid = NonZeroU32::new(std::process::id()).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        assert!(verify_target_executable(own_pid, &executable).is_ok());
+
+        let substituted = tempfile::NamedTempFile::new().unwrap();
+        assert!(verify_target_executable(own_pid, substituted.path()).is_err());
+    }
+
+    #[test]
+    fn target_unit_requires_closed_capabilities_and_namespaces() {
+        let values = [
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            OwnedValue::try_from(Value::from("strict")).unwrap(),
+            OwnedValue::from(0_u64),
+            OwnedValue::from(0_u64),
+        ];
+        assert!(verify_target_unit_hardening(&values).is_ok());
+
+        for position in 4..6 {
+            let mut changed = [
+                OwnedValue::from(true),
+                OwnedValue::from(true),
+                OwnedValue::from(true),
+                OwnedValue::try_from(Value::from("strict")).unwrap(),
+                OwnedValue::from(0_u64),
+                OwnedValue::from(0_u64),
+            ];
+            changed[position] = OwnedValue::from(1_u64);
+            assert!(verify_target_unit_hardening(&changed).is_err());
+        }
+        assert!(verify_target_unit_hardening(&values[..5]).is_err());
+    }
 
     #[test]
     fn shifted_map_requires_one_nonidentity_nonoverflowing_range() {

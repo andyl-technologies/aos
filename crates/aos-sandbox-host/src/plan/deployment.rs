@@ -38,6 +38,8 @@ const TARGET_HARDENING_PROPERTIES: &[&str] = &[
     "PrivateNetwork",
     "PrivateDevices",
     "ProtectSystem",
+    "CapabilityBoundingSet",
+    "RestrictNamespaces",
 ];
 
 /// Retains an independently verified, boot-local phase-0 deployment claim.
@@ -413,6 +415,8 @@ fn verify_target_unit_hardening(values: &[OwnedValue]) -> Result<()> {
         private_network,
         private_devices,
         protect_system,
+        capability_bounding_set,
+        restrict_namespaces,
     ] = values
     else {
         return Err(HostError::State(
@@ -434,6 +438,17 @@ fn verify_target_unit_hardening(values: &[OwnedValue]) -> Result<()> {
     {
         return Err(HostError::State(
             "shifted target filesystem policy is not strict".to_owned(),
+        ));
+    }
+    if u64::try_from(capability_bounding_set)
+        .map_err(|_| HostError::State("shifted target capability policy is malformed".to_owned()))?
+        != 0
+        || u64::try_from(restrict_namespaces).map_err(|_| {
+            HostError::State("shifted target namespace policy is malformed".to_owned())
+        })? != 0
+    {
+        return Err(HostError::State(
+            "shifted target capability or namespace policy is not closed".to_owned(),
         ));
     }
     Ok(())
@@ -620,6 +635,8 @@ Seccomp_filters:\t1\n";
             OwnedValue::from(true),
             OwnedValue::from(true),
             strict,
+            OwnedValue::from(0_u64),
+            OwnedValue::from(0_u64),
         ];
         assert!(verify_target_unit_hardening(&values).is_ok());
 
@@ -629,6 +646,8 @@ Seccomp_filters:\t1\n";
                 OwnedValue::from(true),
                 OwnedValue::from(true),
                 OwnedValue::try_from(Value::from("strict")).unwrap(),
+                OwnedValue::from(0_u64),
+                OwnedValue::from(0_u64),
             ];
             changed[position] = OwnedValue::from(false);
             assert!(verify_target_unit_hardening(&changed).is_err());
@@ -638,8 +657,22 @@ Seccomp_filters:\t1\n";
             OwnedValue::from(true),
             OwnedValue::from(true),
             OwnedValue::try_from(Value::from("full")).unwrap(),
+            OwnedValue::from(0_u64),
+            OwnedValue::from(0_u64),
         ];
         assert!(verify_target_unit_hardening(&wrong_protection).is_err());
+        for position in 4..6 {
+            let mut changed = [
+                OwnedValue::from(true),
+                OwnedValue::from(true),
+                OwnedValue::from(true),
+                OwnedValue::try_from(Value::from("strict")).unwrap(),
+                OwnedValue::from(0_u64),
+                OwnedValue::from(0_u64),
+            ];
+            changed[position] = OwnedValue::from(1_u64);
+            assert!(verify_target_unit_hardening(&changed).is_err());
+        }
         assert!(verify_target_unit_hardening(&values[..3]).is_err());
     }
 

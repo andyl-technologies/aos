@@ -7655,6 +7655,15 @@ and MAC observations, transient-unit readback, root continuity, and real
 shifted-payload inspection remain open; no `BackendReadiness` production
 constructor exists and Host Apply stays closed.
 
+The fixed inspector now checks the target's `/proc/<pid>/exe` device and inode
+against its own packaged executable before and after inspection while the
+target pidfd remains live. The signer and zero-capability Host also require
+PID 1's current target unit to report an empty capability bounding set and
+closed namespace creation policy. This rejects executable substitution during
+the signed phase-0 observation. It does not measure an actual nspawn payload or
+establish the trusted deployment generation, transient-unit, payload filter,
+MAC, or root-continuity proofs.
+
 ### Storage Prepared-to-Aborted retirement (source qualified)
 
 Commit `19b51baf` extends the sole existing Storage transaction v1 format with
