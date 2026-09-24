@@ -35,7 +35,11 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         .arg("--kernel")
         .arg(&kernel)
         .arg("--root-image")
-        .arg(&root_image),
+        .arg(&root_image)
+        .arg("--qemu")
+        .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
+        .arg("--plugin")
+        .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?),
         "materialize the five-node Envoy fixture",
     )?;
     let manifest = json_path(&generated, "manifest")?;
@@ -64,7 +68,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         0,
     )?);
     let followup_recovery = recovery_argument(&scenario, RETAIN_AND_PROBE)?;
-    let lineage = compile_packaged_lineage(&fixture, &generated)?;
+    let lineage = json_path(&generated, "lineage")?;
     let policy = compile_bounded_policy(&fixture, &generated)?;
     println!("envoy_five_node_fixture={generated}");
 
@@ -730,50 +734,6 @@ fn require_measured_backup_route(explanation: &Value) -> Result<(), Box<dyn Erro
         }
     }
     Ok(())
-}
-
-fn compile_packaged_lineage(
-    fixture: &FlightFixture,
-    generated: &Value,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let source =
-        CampaignLineage::from_canonical_bytes(&fs::read(json_path(generated, "lineage")?)?)?;
-    let input = fixture._temporary.path().join("envoy-lineage.toml");
-    let output = fixture._temporary.path().join("envoy-lineage.bin");
-    fs::write(
-        &input,
-        format!(
-            r#"schema_version = 1
-scenario = {:?}
-scenario_content = {:?}
-genesis = {:?}
-genesis_content = {:?}
-crucible_version = {:?}
-qemu_build = "qemu-11.1.1-crucible"
-scenario_schema = {}
-exact_closure_schema = {}
-
-[protocol_versions]
-control = 3
-shared-memory = 25
-"#,
-            source.scenario().to_string(),
-            source.scenario_content().to_string(),
-            source.genesis().to_string(),
-            source.genesis_content().to_string(),
-            source.crucible_version(),
-            source.scenario_schema(),
-            source.exact_closure_schema(),
-        ),
-    )?;
-    run_json(
-        command(&["--format", "jsonl", "campaign", "lineage", "compile"])
-            .arg(&input)
-            .arg("--output")
-            .arg(&output),
-        "compile packaged QEMU lineage",
-    )?;
-    Ok(output)
 }
 
 fn compile_bounded_policy(

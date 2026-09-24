@@ -70,10 +70,17 @@ The release fixture is the network recovery campaign in
 [`13-worked-network-campaign.md`](13-worked-network-campaign.md), promoted from
 an illustrative example to an executable operator fixture. The public
 `crucible campaign fixture worked-network --output DIR` command produces its
-canonical import/create/control-plane basis. Final operator evidence replaces
-the intentionally artifact-free VM definitions with the actual supported
-product build while preserving the declared topology, boundaries,
-measurements, properties, and policy shape. The release flight contains:
+artifact-free import/create/control-plane basis. Supplying the AOS Linux kernel
+and `root.ext4` from `.#crucible-envoy-network-guest`, plus the matched
+QEMU/plugin pair, to the same command's `--kernel`, `--root-image`, `--qemu`,
+and `--plugin` options binds that topology to the in-tree AOS-built Envoy
+guest and its authenticated execution build. The three router roles execute
+Envoy, the east endpoint executes nginx, and the west endpoint generates and
+checks sequenced traffic.
+The [manual flight runbook](../../users/crucible/campaign-manual-flights.md)
+records the exact guest files and their identities. This executable baseline
+does not itself satisfy independent operator acceptance. The release flight
+contains:
 
 - at least three product router VMs and two traffic endpoints;
 - the actual supported product build and guest integration library, not a stub

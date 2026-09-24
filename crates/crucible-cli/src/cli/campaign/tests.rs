@@ -2117,7 +2117,13 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             principal: None,
             command: CampaignCommand::Fixture(CampaignFixtureArgs {
                 fixture: CampaignFixtureCommand::WorkedNetwork(
-                    CampaignWorkedNetworkFixtureArgs { ref output, kernel: None, root_image: None },
+                    CampaignWorkedNetworkFixtureArgs {
+                        ref output,
+                        kernel: None,
+                        root_image: None,
+                        qemu: None,
+                        plugin: None,
+                    },
                 ),
             }),
         }) if output == &PathBuf::from("/tmp/worked-network")
@@ -2134,6 +2140,10 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
         "/tmp/vmlinuz",
         "--root-image",
         "/tmp/root.ext4",
+        "--qemu",
+        "/tmp/qemu-system-x86_64",
+        "--plugin",
+        "/tmp/libcrucible_qemu_plugin.so",
     ])
     .expect("materialized worked-network fixture arguments");
     assert!(matches!(
@@ -2143,12 +2153,16 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
                 fixture: CampaignFixtureCommand::WorkedNetwork(CampaignWorkedNetworkFixtureArgs {
                     kernel: Some(ref kernel),
                     root_image: Some(ref root_image),
+                    qemu: Some(ref qemu),
+                    plugin: Some(ref plugin),
                     ..
                 }),
             }),
             ..
         }) if kernel == &PathBuf::from("/tmp/vmlinuz")
             && root_image == &PathBuf::from("/tmp/root.ext4")
+            && qemu == &PathBuf::from("/tmp/qemu-system-x86_64")
+            && plugin == &PathBuf::from("/tmp/libcrucible_qemu_plugin.so")
     ));
     assert!(
         Cli::try_parse_from([
@@ -2160,6 +2174,21 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             "/tmp/envoy-network",
             "--kernel",
             "/tmp/vmlinuz",
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "fixture",
+            "worked-network",
+            "--output",
+            "/tmp/envoy-network",
+            "--kernel",
+            "/tmp/vmlinuz",
+            "--root-image",
+            "/tmp/root.ext4",
         ])
         .is_err()
     );

@@ -24,27 +24,34 @@ through the checked service API.
 The command above omits kernel and root-image references for an offline,
 deterministic import/create/control-plane fixture. To bind the same campaign
 topology to the AOS-built Envoy network guest, provide the actual AOS Linux
-kernel and the immutable `root.ext4` from `.#crucible-envoy-network-guest`:
+kernel and the immutable `root.ext4` from `.#crucible-envoy-network-guest`,
+plus the matched QEMU and plugin from the published Crucible suite:
 
 ```sh
 crucible campaign fixture worked-network \
   --output ./envoy-network-fixture \
   --kernel /path/to/aos-vmlinuz \
-  --root-image /path/to/crucible-envoy-network-guest/root.ext4
+  --root-image /path/to/crucible-envoy-network-guest/root.ext4 \
+  --qemu /path/to/qemu-system-x86_64 \
+  --plugin /path/to/libcrucible_qemu_plugin.so
 crucible campaign validate-import ./envoy-network-fixture/import.toml
 ```
 
-This form hashes both files into portable scenario references and gives each
-node its Envoy role and `root=/dev/vda init=/init` boot arguments. It derives
-new scenario, configuration, policy, and lineage identities from that exact
-material. Production execution reads `CRUCIBLE_KERNEL` and
-`CRUCIBLE_ROOT_IMAGE` when assembling the QEMU lifecycle. Set those to the
-same immutable files in the executor environment (or use a build whose
-compiled AOS defaults resolve to those exact files). The lifecycle hashes
-the files and checks them against each node's scenario references before
-QEMU launch. Campaign import stores the scenario and schedule, while boot
-artifacts remain deployment files; generating and importing the fixture
-alone does not start the guest or establish acceptance.
+This form hashes the kernel and root image into portable scenario references
+and gives each node its Envoy role and `root=/dev/vda init=/init` boot
+arguments. It authenticates the matched QEMU/plugin build markers and binds
+the emitted lineage to that build and the current control and shared-memory
+protocol versions. It derives new scenario, configuration, policy, and lineage
+identities from that exact material. Production execution reads
+`CRUCIBLE_KERNEL` and `CRUCIBLE_ROOT_IMAGE` when assembling the QEMU lifecycle.
+Set those to the same immutable files in the executor environment, and use the
+same QEMU and plugin pair. The lifecycle hashes the boot files and checks them
+against each node's scenario references before launch. Campaign import stores
+the scenario and schedule, while boot artifacts remain deployment files;
+generating and importing the fixture alone does not start the guest or
+establish acceptance. The
+[manual flight runbook](../../users/crucible/campaign-manual-flights.md) shows
+how to obtain these exact paths from AOS build outputs.
 
 The implementation promotes this example into the realistic reference fixture
 for the independent operator, destructive recovery, finding handoff, and

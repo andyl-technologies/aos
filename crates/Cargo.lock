@@ -2314,6 +2314,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",
+ "crucible-shmem",
  "hex",
  "libc",
  "rcgen",
