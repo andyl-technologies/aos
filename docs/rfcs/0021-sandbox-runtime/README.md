@@ -112,6 +112,7 @@ snapshot views or service protocols.
 - [Implementation sequence and code ownership](14-implementation-plan.md)
 - [Decisions, alternatives, and open questions](15-decisions-and-open-questions.md)
 - [Implementation task ledger](16-implementation-tasks.md)
+- [Production authority closure amendment](17-production-authority-closure.md)
 
 ## Completion criteria
 

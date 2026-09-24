@@ -168,6 +168,11 @@ replacement or stop.
 
 ## Capability issuance
 
+Production policy binding and opaque-handle issuance also obey the
+[authority closure amendment](17-production-authority-closure.md). Its
+cross-owner currentness and holder-binding requirements are prerequisites,
+not optional implementation advice.
+
 Authentication proves the caller identity; a capability proves a specific
 delegated authority. V1 uses controller-resolved opaque capability records,
 not portable self-authorizing bearer tokens. A random capability handle is

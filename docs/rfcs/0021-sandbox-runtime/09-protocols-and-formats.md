@@ -163,6 +163,11 @@ an operation, the server records its own wall timestamp for audit and a bounded
 monotonic duration for admission/cancellation behavior. Node sub-deadlines are
 durations relative to receipt and can never extend the assignment lease.
 
+Production Create policy binding, execution authorization, opaque capability
+handles, and Host readiness also follow the
+[authority closure amendment](17-production-authority-closure.md). A valid wire
+shape alone does not establish those independent authorities.
+
 ## Operations and events
 
 Long-running requests return an operation resource. The operation contains
