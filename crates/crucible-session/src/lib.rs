@@ -13,9 +13,12 @@
 /// Engine vocabulary exposed through the session boundary for control-plane clients.
 pub mod engine {
     pub use crucible::model::{
-        Aggregation, BoundarySelector, CohortPolicy, FaultResourceLimits, MeasurementDefinition,
-        MeasurementDefinitions, MeasurementId, MetricDefinition, MetricId, MetricSource,
-        MetricValueType, ModeledMeasurementTimeout, ResolvedEffectTrace, UnitId,
+        Aggregation, BoundarySelector, CohortPolicy, FaultDirection, FaultResourceLimits,
+        MeasurementDefinition, MeasurementDefinitions, MeasurementId, MetricDefinition, MetricId,
+        MetricSource, MetricValueType, ModeledMeasurementTimeout, ResolvedEffectTrace, SignalId,
+        UnitId, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface,
+        WorldNetworkPath, WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind,
+        WorldNetworkTechnology,
     };
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
