@@ -2,7 +2,9 @@
 //!
 //! This service commits the monotonic deployment input head and serves an
 //! authenticated, read-only signed-head receipt to the node controller. It
-//! cannot issue compiler candidate bindings or authorize Create effects.
+//! verifies the signed project source but cannot admit it against the
+//! controller-owned publisher journal, issue compiler candidate bindings,
+//! or authorize Create effects.
 
 use std::{
     error::Error,
@@ -17,7 +19,7 @@ use std::{
 
 use aos_sandbox::policy_compiler::{
     PolicyDeploymentInputsV1, admit_fixed_policy_deployment_head_v1,
-    admit_fixed_signed_project_policy_source_v1,
+    verify_signed_project_policy_source_v1,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
@@ -86,14 +88,21 @@ fn run() -> Result<(), Box<dyn Error>> {
         backend: &backend,
         catalogs: &catalogs,
     };
-    admit_fixed_policy_deployment_head_v1(&packet, &inputs, &verifying_key, now_unix_seconds)?;
-    admit_fixed_signed_project_policy_source_v1(
+    let deployment =
+        admit_fixed_policy_deployment_head_v1(&packet, &inputs, &verifying_key, now_unix_seconds)?;
+    let project = verify_signed_project_policy_source_v1(
         &project_packet,
         &project_input,
         &project_key,
-        &packet,
         now_unix_seconds,
     )?;
+    if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "project deployment head mismatch",
+        )
+        .into());
+    }
 
     let socket_path = Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2);
     if let Ok(metadata) = socket_path.symlink_metadata() {
@@ -159,14 +168,21 @@ fn serve_current_head(
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let now_unix_seconds = i64::try_from(now.as_secs())?;
-    admit_fixed_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
-    admit_fixed_signed_project_policy_source_v1(
+    let deployment =
+        admit_fixed_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
+    let project = verify_signed_project_policy_source_v1(
         project_packet,
         project_input,
         project_key,
-        packet,
         now_unix_seconds,
     )?;
+    if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "project deployment head mismatch",
+        )
+        .into());
+    }
 
     let mut receipt = Vec::with_capacity(MAXIMUM_RECEIPT_BYTES);
     receipt.extend_from_slice(POLICY_HEAD_RECEIPT_MAGIC_V2);
