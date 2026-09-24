@@ -252,7 +252,12 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
         .expect("promoted closure retains evidence identity");
     assert!(
         checkpoints
-            .acquire_live_replay_promotion(promoted, evidence)
+            .acquire_live_replay_promotion(
+                fixture.key,
+                fixture.state.execution(),
+                promoted,
+                evidence,
+            )
             .expect("inspect spent promotion claim")
             .is_none(),
         "promotion reconciliation consumes its own publication claim"
@@ -295,6 +300,126 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
             checkpoint,
         }) if checkpoint == raw
     ));
+}
+
+#[test]
+fn identical_replay_root_can_reconcile_a_later_pause_execution() {
+    let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
+    let backend = Arc::new(DirectoryBlobBackend::new(
+        "promotion-repeat-test",
+        repository.path(),
+    ));
+    let checkpoints =
+        ExactCheckpointStore::new(backend, 64 * 1024 * 1024).expect("admit checkpoint store");
+    let first = prepare_repository_promotion_fixture(&checkpoints);
+    let key = first.key;
+    let first_execution = first.state.execution();
+    let mut first_ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        first_ledger
+            .compare_exchange_attempt(key, None, Some(first.state))
+            .expect("seed first paused execution"),
+        AttemptStateCas::Advanced
+    );
+    let mut first_supervisor = LocalExecutorSupervisor::new(
+        first_ledger,
+        AllowAllAttemptAdmission,
+        first.daemon_epoch,
+        first.capacity,
+    );
+    let PausedCheckpointPromotionStageOutcome::Publish(first_staged) =
+        stage_prepared_paused_checkpoint_promotion(&mut first_supervisor, first.prepared)
+            .expect("stage first replay promotion")
+    else {
+        panic!("first replay promotion did not stage");
+    };
+    let first_published = publish_staged_paused_checkpoint_promotion(&checkpoints, *first_staged)
+        .expect("publish first replay promotion");
+    let promoted = first_published.promoted();
+    assert_eq!(
+        reconcile_published_paused_checkpoint_promotion(
+            &checkpoints,
+            &mut first_supervisor,
+            first_published,
+        )
+        .expect("reconcile first replay promotion"),
+        CheckpointPromotionCompletionOutcome::Promoted
+    );
+
+    let mut second = prepare_repository_promotion_fixture(&checkpoints);
+    assert_eq!(second.key, key);
+    assert_eq!(second.prepared.promoted(), promoted);
+    let second_execution = ExecutionId::from_bytes([0x65; 16]).expect("later execution identity");
+    let AttemptRuntimeState::Paused {
+        execution_basis,
+        origin,
+        daemon_epoch,
+        checkpoint,
+        promotion_basis,
+        ..
+    } = second.state
+    else {
+        panic!("repository fixture is not paused");
+    };
+    second.state = AttemptRuntimeState::Paused {
+        execution_basis,
+        origin,
+        daemon_epoch,
+        execution: second_execution,
+        checkpoint,
+        promotion_basis,
+    };
+    second.prepared.execution = second_execution;
+
+    let mut second_ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        second_ledger
+            .compare_exchange_attempt(key, None, Some(second.state))
+            .expect("seed later paused execution"),
+        AttemptStateCas::Advanced
+    );
+    let mut second_supervisor = LocalExecutorSupervisor::new(
+        second_ledger,
+        AllowAllAttemptAdmission,
+        second.daemon_epoch,
+        second.capacity,
+    );
+    let PausedCheckpointPromotionStageOutcome::Publish(second_staged) =
+        stage_prepared_paused_checkpoint_promotion(&mut second_supervisor, second.prepared)
+            .expect("stage later replay promotion")
+    else {
+        panic!("later replay promotion did not stage");
+    };
+    let second_published = publish_staged_paused_checkpoint_promotion(&checkpoints, *second_staged)
+        .expect("publish identical root for later execution");
+    assert_eq!(second_published.promoted(), promoted);
+    assert_eq!(
+        reconcile_published_paused_checkpoint_promotion(
+            &checkpoints,
+            &mut second_supervisor,
+            second_published,
+        )
+        .expect("reconcile later replay promotion"),
+        CheckpointPromotionCompletionOutcome::Promoted
+    );
+
+    let evidence = checkpoints
+        .load_production_closure(promoted)
+        .expect("load shared promoted root")
+        .promotion_evidence_id()
+        .expect("shared root has replay evidence");
+    assert!(
+        checkpoints
+            .acquire_live_replay_promotion(key, first_execution, promoted, evidence)
+            .expect("inspect first claim")
+            .is_none()
+    );
+    assert!(
+        checkpoints
+            .acquire_live_replay_promotion(key, second_execution, promoted, evidence)
+            .expect("inspect later claim")
+            .is_none()
+    );
 }
 
 #[test]

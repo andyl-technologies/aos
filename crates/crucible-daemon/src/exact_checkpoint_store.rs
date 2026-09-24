@@ -31,7 +31,7 @@ use crucible_api::ProductionExactCheckpointClosure;
 pub use crucible_campaign::ExactCheckpointId;
 use crucible_campaign::{
     AuthenticatedFindingExactCheckpoint, CampaignExecutorStore, CampaignHash, ConfigurationId,
-    FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
+    ExecutionId, FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
     ScenarioArtifactId, ScenarioDefId,
 };
 use crucible_cas::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
@@ -40,7 +40,7 @@ use crucible_cas::content_store::{
 };
 use thiserror::Error;
 
-use crate::ExecutionCancellation;
+use crate::{AttemptExecutionKey, ExecutionCancellation};
 
 const CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES: usize = 1024 * 1024;
 
@@ -198,7 +198,16 @@ impl From<CapturedAttemptCheckpoint> for AttemptCheckpointResult {
 pub struct ExactCheckpointStore {
     backend: Arc<dyn ImmutableBlobBackend>,
     maximum_checkpoint_bytes: u64,
-    live_replay_promotions: Mutex<BTreeMap<ExactCheckpointId, LiveReplayPromotionState>>,
+    live_replay_promotions: Mutex<BTreeMap<LiveReplayPromotionIdentity, LiveReplayPromotionState>>,
+}
+
+// Resume allocates a new execution, so identical root bytes on a later pause
+// have a separate one-use reconciliation authority.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct LiveReplayPromotionIdentity {
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+    root: ExactCheckpointId,
 }
 
 #[derive(Clone, Copy)]
@@ -210,7 +219,7 @@ enum LiveReplayPromotionState {
 
 pub(crate) struct LiveReplayPromotionClaim<'a> {
     store: &'a ExactCheckpointStore,
-    root: ExactCheckpointId,
+    identity: LiveReplayPromotionIdentity,
     evidence: ContentId,
     committed: bool,
 }
@@ -222,9 +231,9 @@ impl LiveReplayPromotionClaim<'_> {
             .live_replay_promotions
             .lock()
             .map_err(|_| invalid_root("live replay-promotion registry is poisoned"))?;
-        match promotions.get(&self.root).copied() {
+        match promotions.get(&self.identity).copied() {
             Some(LiveReplayPromotionState::Claimed(evidence)) if evidence == self.evidence => {
-                promotions.insert(self.root, LiveReplayPromotionState::Spent);
+                promotions.insert(self.identity, LiveReplayPromotionState::Spent);
                 self.committed = true;
                 Ok(())
             }
@@ -240,12 +249,12 @@ impl Drop for LiveReplayPromotionClaim<'_> {
         }
         if let Ok(mut promotions) = self.store.live_replay_promotions.lock()
             && matches!(
-                promotions.get(&self.root),
+                promotions.get(&self.identity),
                 Some(LiveReplayPromotionState::Claimed(evidence)) if *evidence == self.evidence
             )
         {
             promotions.insert(
-                self.root,
+                self.identity,
                 LiveReplayPromotionState::Available(self.evidence),
             );
         }
@@ -293,16 +302,23 @@ impl ExactCheckpointStore {
 
     pub(crate) fn retain_live_replay_promotion(
         &self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
         root: ExactCheckpointId,
         evidence: ContentId,
     ) -> Result<(), ExactCheckpointStoreError> {
+        let identity = LiveReplayPromotionIdentity {
+            key,
+            execution,
+            root,
+        };
         let mut promotions = self
             .live_replay_promotions
             .lock()
             .map_err(|_| invalid_root("live replay-promotion registry is poisoned"))?;
-        match promotions.get(&root) {
+        match promotions.get(&identity) {
             None => {
-                promotions.insert(root, LiveReplayPromotionState::Available(evidence));
+                promotions.insert(identity, LiveReplayPromotionState::Available(evidence));
                 Ok(())
             }
             Some(LiveReplayPromotionState::Available(expected)) if *expected == evidence => Ok(()),
@@ -320,19 +336,26 @@ impl ExactCheckpointStore {
 
     pub(crate) fn acquire_live_replay_promotion(
         &self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
         root: ExactCheckpointId,
         evidence: ContentId,
     ) -> Result<Option<LiveReplayPromotionClaim<'_>>, ExactCheckpointStoreError> {
+        let identity = LiveReplayPromotionIdentity {
+            key,
+            execution,
+            root,
+        };
         let mut promotions = self
             .live_replay_promotions
             .lock()
             .map_err(|_| invalid_root("live replay-promotion registry is poisoned"))?;
-        match promotions.get(&root).copied() {
+        match promotions.get(&identity).copied() {
             Some(LiveReplayPromotionState::Available(expected)) if expected == evidence => {
-                promotions.insert(root, LiveReplayPromotionState::Claimed(evidence));
+                promotions.insert(identity, LiveReplayPromotionState::Claimed(evidence));
                 Ok(Some(LiveReplayPromotionClaim {
                     store: self,
-                    root,
+                    identity,
                     evidence,
                     committed: false,
                 }))
