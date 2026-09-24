@@ -116,7 +116,8 @@
     "operator-recovery-controller-key-v1:/run/credentials/@system/${cfg.credentials.operatorRecoveryControllerKey}"
     "operator-recovery-storage-owner-key-v1:/run/credentials/@system/${cfg.credentials.operatorRecoveryStorageOwnerPublicKey}"
   ];
-  publisherScopeCredential = lib.optional cfg.publisherIngress.enable
+  publisherScopeCredential =
+    lib.optional cfg.publisherIngress.enable
     "publisher-service-scope-v1:/run/credentials/@system/${cfg.credentials.publisherServiceScope}";
   publisherPolicySourceCredentials = lib.optionals cfg.publisherIngress.enable [
     "publisher-policy-source-v1:/run/credentials/@system/${cfg.credentials.publisherPolicySource}"
@@ -253,7 +254,8 @@ in {
         }
         {
           assertion =
-            cfg.credentials.cacheOwnerReadbackSigningKey == null
+            cfg.credentials.cacheOwnerReadbackSigningKey
+            == null
             || (config.aos.sandbox.policyAuthority.enable
               && config.aos.sandbox.policyAuthority.credentials.cacheOwnerReadbackPublicKey
               == cfg.credentials.cacheOwnerReadbackPublicKey);
@@ -270,7 +272,8 @@ in {
         {
           assertion =
             !cfg.publisherIngress.enable
-            || (cfg.credentials.publisherPolicySource != null
+            || (cfg.credentials.publisherPolicySource
+              != null
               && cfg.credentials.publisherPolicy != null
               && cfg.credentials.publisherPolicySourcePublicKey != null);
           message = "publisher ingress requires signed publisher policy source, canonical policy, and dedicated verification key credentials";
@@ -301,11 +304,13 @@ in {
         }
         {
           assertion =
-            (cfg.credentials.opensshAttachGrantSigningKey == null
+            (cfg.credentials.opensshAttachGrantSigningKey
+              == null
               && cfg.credentials.opensshAttachCaSigningKey == null
               && attachTrustCredential == null
               && attachGrantPublicKeyCredential == null)
-            || (cfg.credentials.opensshAttachGrantSigningKey != null
+            || (cfg.credentials.opensshAttachGrantSigningKey
+              != null
               && cfg.credentials.opensshAttachCaSigningKey != null
               && attachTrustCredential != null
               && attachGrantPublicKeyCredential != null);

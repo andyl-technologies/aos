@@ -42,16 +42,15 @@ in {
         type = lib.types.nullOr lib.serviceTypes.credentialName;
         default = null;
         description =
-          if option == "deploymentPublicKey" then
-            "Externally provisioned 80-byte AOSPDK01 deployment signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
-          else if option == "projectPublicKey" then
-            "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
-          else if option == "cacheOwnerReadbackPublicKey" then
-            "Optional 80-byte AOSCPK01 Cache-only signer pin. Root persists exact replay but does not accept Cache readbacks or publish Create."
-          else if option == "projectHeadPacketV2" || option == "projectLayerV2" then
-            "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
-          else
-            "Externally provisioned signed deployment policy authority input.";
+          if option == "deploymentPublicKey"
+          then "Externally provisioned 80-byte AOSPDK01 deployment signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "projectPublicKey"
+          then "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "cacheOwnerReadbackPublicKey"
+          then "Optional 80-byte AOSCPK01 Cache-only signer pin. Root persists exact replay but does not accept Cache readbacks or publish Create."
+          else if option == "projectHeadPacketV2" || option == "projectLayerV2"
+          then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
+          else "Externally provisioned signed deployment policy authority input.";
       })
     credentialFiles;
   };
@@ -90,9 +89,9 @@ in {
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid}";
-        LoadCredential = lib.mapAttrsToList (option: name:
-          "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
-        (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);
+        LoadCredential =
+          lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
+          (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);
         StateDirectory = "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-policy-authority";
