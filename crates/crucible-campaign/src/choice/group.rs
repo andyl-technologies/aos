@@ -573,6 +573,12 @@ impl ChoiceGroup {
         &self.application
     }
 
+    /// Returns the exact schema used to interpret this group's constraints.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
     /// Returns the stable group identity.
     ///
     /// # Errors
@@ -659,6 +665,37 @@ impl ChoiceGroupValue {
     #[must_use]
     pub const fn tuple(&self) -> &ChoiceTuple {
         &self.tuple
+    }
+
+    /// Revalidates a decoded value against its exact group and constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the group identity differs or the
+    /// complete tuple is not admitted by its member domains and constraints.
+    pub fn validate_resolved(&self, group: &ChoiceGroup) -> Result<(), CampaignCodecError> {
+        if self.group != group.id()? || !group.domain.contains(&self.tuple) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "choice-group value disagrees with its resolved group",
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the strict canonical value bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        codec::encode(self)
+    }
+
+    /// Decodes a structurally valid group value; call [`Self::validate_resolved`]
+    /// before accepting it as a selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for malformed or noncanonical bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
+        codec::decode(bytes)
     }
 }
 
