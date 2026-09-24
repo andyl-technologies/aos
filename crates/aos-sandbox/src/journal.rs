@@ -1221,8 +1221,20 @@ impl Journal {
         self.ensure_healthy()
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_protected_at_uid(
+    /// Opens a final private directory for dependent crate journal fixtures.
+    ///
+    /// This opener retains final-directory and journal-file owner/mode checks,
+    /// but deliberately omits production root-ancestry validation so an
+    /// unprivileged test can use its private temporary directory. The feature
+    /// is never enabled by production SourceProvider builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a protected-boundary or journal error for an unsafe final
+    /// directory, symlink, lock, or malformed journal.
+    #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
+    #[doc(hidden)]
+    pub fn open_protected_at_uid(
         directory_path: &Path,
         name: &str,
         limits: JournalLimits,

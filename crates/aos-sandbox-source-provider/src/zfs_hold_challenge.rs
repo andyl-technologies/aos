@@ -4,6 +4,9 @@
 //! every operation holds locks in ledger-then-challenge order. It retains one
 //! immutable key per attempt, including spent and expired challenges. Losing
 //! the live holder session across reboot makes a retained challenge unusable.
+//! The 1,024-record lifetime ceiling deliberately closes new issuance when
+//! exhausted. Native Acquire must remain disabled until a versioned,
+//! rollback-safe retention epoch can replace this conservative bound.
 //!
 //! ```text
 //! key: AOSZHK01 | challenge[32]
@@ -83,14 +86,50 @@ pub(crate) struct ChallengeRecordV1 {
     receipt_digest: ObjectDigest,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct CurrentZfsHoldChallengeContextV1 {
+    pub(crate) nonce: [u8; 32],
+    pub(crate) provider_id: [u8; 16],
+    pub(crate) holder_id: [u8; 16],
+    pub(crate) session_binding: ObjectDigest,
+    pub(crate) attempt_digest: ObjectDigest,
+    pub(crate) acquisition_id: ObjectDigest,
+    pub(crate) binding_digest: ObjectDigest,
+    pub(crate) publication_head: ObjectDigest,
+    pub(crate) validity: (i64, i64),
+}
+
 pub(crate) struct ProtectedZfsHoldChallengesV1 {
     journal: Journal,
+    location: ChallengeJournalLocationV1,
+}
+
+#[derive(Clone, Copy)]
+enum ChallengeJournalLocationV1 {
+    Fixed,
+    #[cfg(test)]
+    Fixture,
 }
 
 impl ProtectedZfsHoldChallengesV1 {
     pub(crate) fn open_fixed() -> Result<Self, ProviderLedgerError> {
         let (journal, _) = Journal::open_protected_at(Path::new(ROOT), FILE, limits())?;
-        let mut owner = Self { journal };
+        let mut owner = Self {
+            journal,
+            location: ChallengeJournalLocationV1::Fixed,
+        };
+        owner.validate_records()?;
+        Ok(owner)
+    }
+
+    #[cfg(test)]
+    fn open_fixture(directory: &Path) -> Result<Self, ProviderLedgerError> {
+        let uid = rustix::process::geteuid().as_raw();
+        let (journal, _) = Journal::open_protected_at_uid(directory, FILE, limits(), uid)?;
+        let mut owner = Self {
+            journal,
+            location: ChallengeJournalLocationV1::Fixture,
+        };
         owner.validate_records()?;
         Ok(owner)
     }
@@ -99,6 +138,10 @@ impl ProtectedZfsHoldChallengesV1 {
         &mut self,
         mut record: ChallengeRecordV1,
     ) -> Result<ProviderZfsHoldChallengeV1, ProviderLedgerError> {
+        let now = current_seconds()?;
+        if !record.is_issued_now(now) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let (count, attempts) = self.validate_records()?;
         if count >= MAXIMUM_CHALLENGES {
             return Err(ProviderLedgerError::LimitExceeded("native hold challenges"));
@@ -125,11 +168,11 @@ impl ProtectedZfsHoldChallengesV1 {
         let mut authority = self
             .journal
             .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
-        authority.validate_fixed_source_provider_hold_challenge_storage()?;
+        validate_location(self.location, &authority)?;
         if authority.get(&key)?.is_some() {
             return Err(ProviderLedgerError::Equivocation);
         }
-        commit(&mut authority, key.clone(), value)?;
+        commit(&mut authority, self.location, key.clone(), value)?;
         let retained = authority
             .get(&key)?
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
@@ -143,17 +186,24 @@ impl ProtectedZfsHoldChallengesV1 {
         &mut self,
         challenge: [u8; 32],
     ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
+        self.issued_for_at(challenge, current_seconds()?)
+    }
+
+    fn issued_for_at(
+        &mut self,
+        challenge: [u8; 32],
+        now: i64,
+    ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
         self.validate_records()?;
         let key = key(challenge);
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
-        authority.validate_fixed_source_provider_hold_challenge_storage()?;
+        validate_location(self.location, &authority)?;
         let value = authority
             .get(&key)?
             .ok_or(ProviderLedgerError::Unavailable)?;
         let record = ChallengeRecordV1::decode(&key, value)?;
-        let now = current_seconds()?;
         if !record.is_issued_now(now) {
             return Err(ProviderLedgerError::Unavailable);
         }
@@ -179,8 +229,8 @@ impl ProtectedZfsHoldChallengesV1 {
         let mut authority = self
             .journal
             .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
-        authority.validate_fixed_source_provider_hold_challenge_storage()?;
-        commit(&mut authority, key.clone(), spent.encode())?;
+        validate_location(self.location, &authority)?;
+        commit(&mut authority, self.location, key.clone(), spent.encode())?;
         let retained = authority
             .get(&key)?
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
@@ -196,7 +246,7 @@ impl ProtectedZfsHoldChallengesV1 {
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
-        authority.validate_fixed_source_provider_hold_challenge_storage()?;
+        validate_location(self.location, &authority)?;
         validate_record_set(authority.records()?)
     }
 }
@@ -227,6 +277,9 @@ fn validate_record_set<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     fn digest(byte: u8) -> ObjectDigest {
@@ -247,6 +300,156 @@ mod tests {
         );
         record.challenge.nonce = [8; 32];
         record
+    }
+
+    fn fixture_directory() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    #[test]
+    fn protected_issue_is_durable_before_return_and_replay_is_exact_after_reopen() {
+        let directory = fixture_directory();
+        let now = current_seconds().unwrap();
+        let proposed = ChallengeRecordV1::new(
+            [1; 16],
+            [2; 16],
+            digest(3),
+            digest(4),
+            digest(5),
+            digest(6),
+            digest(7),
+            now,
+            expiry(now).unwrap(),
+        );
+
+        let mut owner = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+        let issued = owner.issue(proposed).unwrap();
+        assert_ne!(issued.nonce(), [0; 32]);
+        assert_eq!(issued.attempt_digest(), proposed.challenge.attempt_digest());
+        assert_eq!(owner.validate_records().unwrap().0, 1);
+        drop(owner);
+
+        let mut reopened = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+        let retained = reopened.issued_for_at(issued.nonce(), now).unwrap();
+        assert_eq!(retained.challenge, issued);
+        assert_eq!(retained.session_binding, proposed.session_binding);
+        assert_eq!(retained.publication_head, proposed.publication_head);
+        let current = CurrentZfsHoldChallengeContextV1 {
+            nonce: issued.nonce(),
+            provider_id: proposed.provider_id,
+            holder_id: proposed.holder_id,
+            session_binding: proposed.session_binding,
+            attempt_digest: issued.attempt_digest(),
+            acquisition_id: proposed.acquisition_id,
+            binding_digest: proposed.binding_digest,
+            publication_head: proposed.publication_head,
+            validity: issued.validity(),
+        };
+        assert!(retained.matches_current(current));
+        assert!(!retained.matches_current(CurrentZfsHoldChallengeContextV1 {
+            session_binding: digest(8),
+            ..current
+        }));
+        assert!(!retained.matches_current(CurrentZfsHoldChallengeContextV1 {
+            attempt_digest: digest(9),
+            ..current
+        }));
+        assert!(!retained.matches_current(CurrentZfsHoldChallengeContextV1 {
+            publication_head: digest(10),
+            ..current
+        }));
+        assert!(reopened.issue(proposed).is_err());
+        assert!(
+            reopened
+                .issued_for_at(issued.nonce(), issued.validity().1)
+                .is_err()
+        );
+        assert_eq!(reopened.validate_records().unwrap().0, 1);
+    }
+
+    #[test]
+    fn rejected_expired_issue_does_not_mutate_protected_journal() {
+        let directory = fixture_directory();
+        let now = current_seconds().unwrap();
+        let expired = ChallengeRecordV1::new(
+            [1; 16],
+            [2; 16],
+            digest(3),
+            digest(4),
+            digest(5),
+            digest(6),
+            digest(7),
+            now - 61,
+            now - 1,
+        );
+        let mut owner = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+
+        assert!(owner.issue(expired).is_err());
+        assert_eq!(owner.validate_records().unwrap().0, 0);
+        drop(owner);
+
+        let mut reopened = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+        assert_eq!(reopened.validate_records().unwrap().0, 0);
+    }
+
+    #[test]
+    fn protected_reopen_rejects_unknown_record_bytes() {
+        let directory = fixture_directory();
+        let uid = rustix::process::geteuid().as_raw();
+        let (mut journal, _) =
+            Journal::open_protected_at_uid(directory.path(), FILE, limits(), uid).unwrap();
+        let mut authority = journal
+            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+            .unwrap();
+        let transaction = JournalTransaction::new(
+            [1; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                b"old-format-key".to_vec(),
+                b"old-format-value".to_vec(),
+            )],
+        )
+        .unwrap();
+        authority.commit(&transaction).unwrap();
+        drop(authority);
+        drop(journal);
+
+        assert!(ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).is_err());
+    }
+
+    #[test]
+    fn retained_challenge_rejects_changed_holder_attempt_and_publication_head() {
+        let record = issued_record();
+        let context = CurrentZfsHoldChallengeContextV1 {
+            nonce: record.challenge.nonce(),
+            provider_id: record.provider_id,
+            holder_id: record.holder_id,
+            session_binding: record.session_binding,
+            attempt_digest: record.challenge.attempt_digest(),
+            acquisition_id: record.acquisition_id,
+            binding_digest: record.binding_digest,
+            publication_head: record.publication_head,
+            validity: record.challenge.validity(),
+        };
+        assert!(record.matches_current(context));
+
+        let mut changed = context;
+        changed.session_binding = digest(10);
+        assert!(!record.matches_current(changed));
+        changed = context;
+        changed.attempt_digest = digest(11);
+        assert!(!record.matches_current(changed));
+        changed = context;
+        changed.holder_id = [12; 16];
+        assert!(!record.matches_current(changed));
+        changed = context;
+        changed.publication_head = digest(13);
+        assert!(!record.matches_current(changed));
+        changed = context;
+        changed.validity.1 -= 1;
+        assert!(!record.matches_current(changed));
     }
 
     #[test]
@@ -341,6 +544,18 @@ mod tests {
 }
 
 impl ChallengeRecordV1 {
+    pub(crate) fn matches_current(self, current: CurrentZfsHoldChallengeContextV1) -> bool {
+        self.challenge.nonce == current.nonce
+            && self.provider_id == current.provider_id
+            && self.holder_id == current.holder_id
+            && self.session_binding == current.session_binding
+            && self.challenge.attempt_digest == current.attempt_digest
+            && self.acquisition_id == current.acquisition_id
+            && self.binding_digest == current.binding_digest
+            && self.publication_head == current.publication_head
+            && self.challenge.validity() == current.validity
+    }
+
     fn is_issued_now(self, now: i64) -> bool {
         self.state == ISSUED
             && now >= self.challenge.issued_seconds
@@ -473,6 +688,7 @@ fn digest(bytes: &[u8], start: usize) -> Result<ObjectDigest, ProviderLedgerErro
 
 fn commit(
     authority: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+    location: ChallengeJournalLocationV1,
     key: Vec<u8>,
     value: Vec<u8>,
 ) -> Result<(), ProviderLedgerError> {
@@ -491,11 +707,25 @@ fn commit(
             value,
         )],
     )?;
-    authority.validate_fixed_source_provider_hold_challenge_storage()?;
+    validate_location(location, authority)?;
     let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
     authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
-    authority.validate_fixed_source_provider_hold_challenge_storage()?;
+    validate_location(location, authority)?;
     authority.commit(&transaction)?;
+    Ok(())
+}
+
+fn validate_location(
+    location: ChallengeJournalLocationV1,
+    authority: &aos_sandbox::ProtectedJournalAuthority<'_>,
+) -> Result<(), ProviderLedgerError> {
+    match location {
+        ChallengeJournalLocationV1::Fixed => {
+            authority.validate_fixed_source_provider_hold_challenge_storage()?
+        }
+        #[cfg(test)]
+        ChallengeJournalLocationV1::Fixture => authority.validate_source_provider_authority()?,
+    }
     Ok(())
 }
 

@@ -23,6 +23,9 @@
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
+#[cfg(all(feature = "test-fixtures", not(debug_assertions)))]
+compile_error!("the protected-journal test fixture is unavailable in release builds");
+
 pub mod attach_holder_proof;
 pub mod attach_route_issuer;
 #[cfg(target_os = "linux")]

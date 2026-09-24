@@ -17,6 +17,7 @@ thiserror.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "rand", "time"] }
 
 [dev-dependencies]
+aos-sandbox = { workspace = true, features = ["test-fixtures"] }
 tempfile.workspace = true
 
 [lints]

@@ -15,7 +15,8 @@ use aos_sandbox_source_provider_protocol::{
 
 use crate::model::{ProviderAcquisitionStateV1, ProviderAttemptStateV1};
 use crate::zfs_hold_challenge::{
-    ChallengeRecordV1, ProviderZfsHoldChallengeV1, current_seconds, expiry,
+    ChallengeRecordV1, CurrentZfsHoldChallengeContextV1, ProviderZfsHoldChallengeV1,
+    current_seconds, expiry,
 };
 use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1};
@@ -206,15 +207,18 @@ impl FixedProviderOwnerV1 {
                 valid_until_seconds,
             )?;
             let reserved = challenges.issued_for(challenge_nonce)?;
-            if reserved.provider_id != claim.provider.authority_id()
-                || reserved.holder_id != holder_authority_id
-                || reserved.session_binding != claim.session_binding
-                || reserved.challenge.attempt_digest() != attempt_digest
-                || reserved.challenge.validity() != receipt.validity()
-                || reserved.acquisition_id != acquisition_id
-                || reserved.binding_digest != claim.binding_digest
-                || reserved.publication_head != claim.publication_head_commitment
-            {
+            let current = CurrentZfsHoldChallengeContextV1 {
+                nonce: challenge_nonce,
+                provider_id: claim.provider.authority_id(),
+                holder_id: holder_authority_id,
+                session_binding: claim.session_binding,
+                attempt_digest,
+                acquisition_id,
+                binding_digest: claim.binding_digest,
+                publication_head: claim.publication_head_commitment,
+                validity: receipt.validity(),
+            };
+            if !reserved.matches_current(current) {
                 return Err(ProviderLedgerError::Unavailable);
             }
             verifier.verify_for(&signed, receipt)?;

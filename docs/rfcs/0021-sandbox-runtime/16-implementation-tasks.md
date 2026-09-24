@@ -8473,7 +8473,11 @@ after these protected checks and commits it to a separate fixed, root-owned
 journal before exposing the nonce. Each challenge is bound to one exact holder
 session, attempt, acquisition, binding, and publication head. Recovery rejects
 unknown records or duplicate attempts, retains expired records under a fixed
-ceiling, and never treats a retained challenge as a live session after reboot.
+1,024-record lifetime ceiling, and never treats a retained challenge as a live
+session after reboot. Exhausting that ceiling closes further issuance; this
+source-only boundary deliberately has no automatic pruning or reset. A later
+version needs a protected, rollback-safe retention epoch before enabling
+long-lived native Acquire availability.
 Inspection matches the receipt to the durable issued challenge without spending
 it while no trusted Storage-head carrier can complete acceptance. The verifier
 checks the signature and full signed subject, but a Storage-asserted head alone

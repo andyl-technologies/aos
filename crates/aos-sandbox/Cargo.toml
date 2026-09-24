@@ -7,6 +7,8 @@ license.workspace = true
 [features]
 # Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+# Enables a private-directory protected-journal opener for dependent crate tests.
+test-fixtures = []
 
 [dependencies]
 aos-filesystem-view-core.workspace = true
