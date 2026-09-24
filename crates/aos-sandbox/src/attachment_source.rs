@@ -24,7 +24,9 @@ pub use custody::{
     DurableAttachmentSourceCompletionV1, ExpiredAttachmentSourceAcquireV1,
     PostDeadlineRowlessAcquireV1,
 };
-pub use dispatch_custody::DurableCurrentAttachmentSourceDispatchV1;
+pub use dispatch_custody::{
+    ClosedControllerLiveConsumerSourceV1, DurableCurrentAttachmentSourceDispatchV1,
+};
 pub use planning::{
     AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
     CurrentAttachmentSourcePlanV1,

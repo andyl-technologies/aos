@@ -36,6 +36,10 @@ use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope};
 use crate::{Journal, JournalRecord, RecordNamespace};
 
+mod live_consumer;
+
+pub use live_consumer::ClosedControllerLiveConsumerSourceV1;
+
 const NAMESPACE: RecordNamespace = RecordNamespace::AttachmentSourceDispatch;
 const MAGIC: &[u8; 8] = b"AOSASD01";
 const DOMAIN: &[u8] = b"aos.sandbox.attachment-source-dispatch.v1\0";
