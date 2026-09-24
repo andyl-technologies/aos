@@ -364,6 +364,11 @@ struct ProductionExactRamPublishedParent {
     targets: BTreeMap<NodeId, ProductionExactRamCheckpoint>,
 }
 
+#[derive(Clone, Debug)]
+struct ProductionRepositoryExactRamRebase {
+    targets: BTreeMap<NodeId, QmpCheckpointIdentity>,
+}
+
 impl ProductionVmExactCheckpointTarget {
     fn native_materialization(
         &self,
@@ -1085,6 +1090,7 @@ pub struct ProductionVmLifecycleLoop {
     config: ProductionVmLifecycleConfig,
     checkpoint_targets: BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>,
     exact_ram_parents: BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
+    repository_exact_ram_rebase: Option<ProductionRepositoryExactRamRebase>,
     recorded_controls: Vec<ProductionVmRecordedControl>,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
