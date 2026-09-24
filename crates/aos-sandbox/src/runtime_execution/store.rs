@@ -41,6 +41,10 @@ use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key,
 };
 
+mod output_budget;
+
+use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
+
 const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
 const ADMISSION_RESOURCE_KEY_PREFIX: u8 = b'r';
@@ -682,6 +686,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         {
             return Err(AdmissionCommitError::StaleAuthority);
         }
+        reserve_output_bytes(&self.authority, draft)?;
         let advanced_ledger = advance_resource_ledger(draft);
         let advanced_state = ProtectedExecutionAdmissionStateV1 {
             authority_binding: protected_state.authority_binding,
@@ -1545,6 +1550,7 @@ fn validate_runtime_execution_replay(
     let mut all_reservations = BTreeSet::new();
     let mut admission_commitments = BTreeSet::new();
     let mut durable_sequences = BTreeSet::new();
+    let mut output_budget: Option<OutputBudget> = None;
     for admission in ordered_admissions {
         if admission.journal_sequence() > protected_sequence
             || !durable_sequences.insert(admission.journal_sequence())
@@ -1565,6 +1571,19 @@ fn validate_runtime_execution_replay(
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
         let operation = *admission.idempotency().operation().as_bytes();
+        let claim = decode_output_claim(admission.specification_bytes())
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        match output_budget.as_mut() {
+            Some(budget) => budget
+                .include(claim)
+                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+            None => {
+                output_budget = Some(
+                    OutputBudget::from_first(claim)
+                        .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+                );
+            }
+        }
         if idempotency.get(&operation) != Some(&admission.admission_commitment()) {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
