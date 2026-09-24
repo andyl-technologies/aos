@@ -1,4 +1,4 @@
-From 2d90dd2d13481a5ff2946df4f0b638bf8e7e17ac Mon Sep 17 00:00:00 2001
+From 1f181666f98d7523f413552fb4db89e94284e497 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -43,6 +43,11 @@ versioned template QMP failure stage and detail.
 Complete instruction-rule and lifecycle translation invalidation on the
 serial vCPU before leaving a fault boundary. Avoid rebuilding the
 instruction index for unrelated node rules.
+
+Preserve active serial transmit timing, virtio-blk backend cache mode,
+and virtio legacy first-kick state in versioned sim VMState continuations.
+Require a subsection name component boundary so nested virtio state does
+not consume outer virtio-blk subsections.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -11695,18 +11700,19 @@ index a13b91967ed8f8f39e0f7a2405525577e2e7ecac..04d4557316f743504c71649e1ccb423c
                                                          pfl);
      }
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd118cfa3b 100644
+index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..807f5f68d101904d6c89682b86c7d2ed6bf69618 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,8 @@
   */
  
  #include "qemu/osdep.h"
++#include "qemu/accel.h"
 +#include "exec/icount.h"
  #include "qemu/defer-call.h"
  #include "qapi/error.h"
  #include "qemu/iov.h"
-@@ -72,8 +73,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
+@@ -72,8 +74,19 @@ static int virtio_blk_handle_rw_error(VirtIOBlockReq *req, int error,
      bool is_read, bool acct_failed)
  {
      VirtIOBlock *s = req->dev;
@@ -11726,7 +11732,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
      if (action == BLOCK_ERROR_ACTION_STOP) {
          /* Break the link as the next request is going to be parsed from the
           * ring again. Otherwise we may end up doing a double completion! */
-@@ -260,6 +272,26 @@ static inline void submit_requests(VirtIOBlock *s, MultiReqBuffer *mrb,
+@@ -260,6 +273,26 @@ static inline void submit_requests(VirtIOBlock *s, MultiReqBuffer *mrb,
          flags |= BDRV_REQ_REGISTERED_BUF;
      }
  
@@ -11753,7 +11759,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
      if (is_write) {
          blk_aio_pwritev(blk, sector_num << BDRV_SECTOR_BITS, qiov,
                          flags, virtio_blk_rw_complete,
-@@ -1142,30 +1174,43 @@ static void virtio_blk_dma_restart_cb(void *opaque, bool running,
+@@ -1142,30 +1175,43 @@ static void virtio_blk_dma_restart_cb(void *opaque, bool running,
      }
  }
  
@@ -11808,7 +11814,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
  
      blk_set_enable_write_cache(s->blk, s->original_wce);
  }
-@@ -1395,6 +1440,132 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
+@@ -1395,6 +1441,132 @@ static int virtio_blk_load_device(VirtIODevice *vdev, QEMUFile *f,
      return 0;
  }
  
@@ -11941,7 +11947,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
  static void virtio_resize_cb(void *opaque)
  {
      VirtIODevice *vdev = opaque;
-@@ -1812,6 +1983,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
+@@ -1812,6 +1984,7 @@ static void virtio_blk_device_realize(DeviceState *dev, Error **errp)
  
      s->blk = conf->conf.blk;
      s->rq = NULL;
@@ -11949,7 +11955,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
      s->sector_mask = (s->conf.conf.logical_block_size / BDRV_SECTOR_SIZE) - 1;
  
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1860,6 +2032,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
+@@ -1860,6 +2033,7 @@ static void virtio_blk_device_unrealize(DeviceState *dev)
      unsigned i;
  
      blk_drain(s->blk);
@@ -11957,7 +11963,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
      del_boot_device_lchs(dev, "/disk@0,0");
      virtio_blk_vq_aio_context_cleanup(s);
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1882,14 +2055,117 @@ static void virtio_blk_instance_init(Object *obj)
+@@ -1882,14 +2056,157 @@ static void virtio_blk_instance_init(Object *obj)
                                    DEVICE(obj));
  }
  
@@ -12059,10 +12065,49 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
 +    .save = virtio_blk_fingerprint_projection,
 +};
 +
++static int virtio_blk_crucible_pre_save(void *opaque)
++{
++    VirtIOBlock *s = opaque;
++
++    s->crucible_backend_wce_vmstate = blk_enable_write_cache(s->blk);
++    return 0;
++}
++
++static bool virtio_blk_crucible_wce_needed(void *opaque)
++{
++    const char *accelerator = current_accel_name();
++
++    (void)opaque;
++    return icount_enabled() && accelerator &&
++           strcmp(accelerator, "sim") == 0;
++}
++
++static int virtio_blk_crucible_wce_post_load(void *opaque, int version_id)
++{
++    VirtIOBlock *s = opaque;
++
++    (void)version_id;
++    blk_set_enable_write_cache(s->blk, s->crucible_backend_wce_vmstate);
++    return 0;
++}
++
++static const VMStateDescription vmstate_virtio_blk_crucible_wce = {
++    .name = "virtio-blk/crucible-backend-wce",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = virtio_blk_crucible_wce_needed,
++    .post_load = virtio_blk_crucible_wce_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_BOOL(crucible_backend_wce_vmstate, VirtIOBlock),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
  static const VMStateDescription vmstate_virtio_blk = {
      .name = "virtio-blk",
      .minimum_version_id = 2,
      .version_id = 2,
++    .pre_save = virtio_blk_crucible_pre_save,
 +    .crucible_fingerprint_projection = &virtio_blk_fingerprint,
      .fields = (const VMStateField[]) {
          VMSTATE_VIRTIO_DEVICE,
@@ -12070,6 +12115,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..ef8c64f16d05e89f879a6a50307bd5fd
      },
 +    .subsections = (const VMStateDescription * const []) {
 +        &vmstate_virtio_blk_dropped_requests,
++        &vmstate_virtio_blk_crucible_wce,
 +        NULL
 +    },
  };
@@ -12226,10 +12272,16 @@ index eaa4e843c028b94248cb4a2a65268dbbd5dbcbe2..de295b2b583e3d3d373b0230434d3115
          VMSTATE_STRUCT(state, ISASerialState, 0, vmstate_serial, SerialState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/char/serial.c b/hw/char/serial.c
-index 4339562ab003a71fc227931a76daa66fa0c7c142..1e28780e8f50ce7c7a53c9a830b7c393733406da 100644
+index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b43d36a17 100644
 --- a/hw/char/serial.c
 +++ b/hw/char/serial.c
-@@ -28,6 +28,7 @@
+@@ -24,10 +24,13 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/accel.h"
+ #include "qemu/bitops.h"
++#include "exec/icount.h"
  #include "hw/char/serial.h"
  #include "hw/core/irq.h"
  #include "migration/vmstate.h"
@@ -12237,7 +12289,67 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1e28780e8f50ce7c7a53c9a830b7c393
  #include "chardev/char-serial.h"
  #include "qapi/error.h"
  #include "qemu/timer.h"
-@@ -821,6 +822,84 @@ static const VMStateDescription vmstate_serial_poll = {
+@@ -634,6 +637,7 @@ static int serial_pre_save(void *opaque)
+ {
+     SerialState *s = opaque;
+     s->fcr_vmstate = s->fcr;
++    s->crucible_char_transmit_time_vmstate = s->char_transmit_time;
+ 
+     return 0;
+ }
+@@ -643,6 +647,7 @@ static int serial_pre_load(void *opaque)
+     SerialState *s = opaque;
+     s->thr_ipending = -1;
+     s->poll_msl = -1;
++    s->crucible_char_transmit_time_loaded = false;
+     return 0;
+ }
+ 
+@@ -685,9 +690,43 @@ static int serial_post_load(void *opaque, int version_id)
+     /* Initialize fcr via setter to perform essential side-effects */
+     serial_write_fcr(s, s->fcr_vmstate);
+     serial_update_parameters(s);
++    if (s->crucible_char_transmit_time_loaded) {
++        /* The sim continuation must keep the source's active transmit time. */
++        s->char_transmit_time = s->crucible_char_transmit_time_vmstate;
++    }
++    return 0;
++}
++
++static bool serial_crucible_timing_needed(void *opaque)
++{
++    const char *accelerator = current_accel_name();
++
++    (void)opaque;
++    return icount_enabled() && accelerator &&
++           strcmp(accelerator, "sim") == 0;
++}
++
++static int serial_crucible_timing_post_load(void *opaque, int version_id)
++{
++    SerialState *s = opaque;
++
++    (void)version_id;
++    s->crucible_char_transmit_time_loaded = true;
+     return 0;
+ }
+ 
++static const VMStateDescription vmstate_serial_crucible_timing = {
++    .name = "serial/crucible-timing",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = serial_crucible_timing_needed,
++    .post_load = serial_crucible_timing_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT64(crucible_char_transmit_time_vmstate, SerialState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
+ static bool serial_thr_ipending_needed(void *opaque)
+ {
+     SerialState *s = opaque;
+@@ -821,6 +860,84 @@ static const VMStateDescription vmstate_serial_poll = {
      }
  };
  
@@ -12322,7 +12434,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1e28780e8f50ce7c7a53c9a830b7c393
  const VMStateDescription vmstate_serial = {
      .name = "serial",
      .version_id = 3,
-@@ -828,6 +907,7 @@ const VMStateDescription vmstate_serial = {
+@@ -828,6 +945,7 @@ const VMStateDescription vmstate_serial = {
      .pre_save = serial_pre_save,
      .pre_load = serial_pre_load,
      .post_load = serial_post_load,
@@ -12330,6 +12442,14 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..1e28780e8f50ce7c7a53c9a830b7c393
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16_V(divider, SerialState, 2),
          VMSTATE_UINT8(rbr, SerialState),
+@@ -849,6 +967,7 @@ const VMStateDescription vmstate_serial = {
+         &vmstate_serial_fifo_timeout_timer,
+         &vmstate_serial_timeout_ipending,
+         &vmstate_serial_poll,
++        &vmstate_serial_crucible_timing,
+         NULL
+     }
+ };
 diff --git a/hw/char/virtio-serial-bus.c b/hw/char/virtio-serial-bus.c
 index c1973f0248fce621be7c70e15df4928337c4669f..5aae6076c3feb107c01f43f5baa4c7584a768538 100644
 --- a/hw/char/virtio-serial-bus.c
@@ -21715,7 +21835,7 @@ index d68d9011953b5ee03a36c89d16c9384a27984caa..492a8e238eabc679efb07ffa5fb78a34
          VMSTATE_END_OF_LIST()
      },
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index daa5607338c94d2205fae1343559b97bf62480aa..ba69a227e7c7603d19dedd6a0bcd909bda9f0871 100644
+index daa5607338c94d2205fae1343559b97bf62480aa..1ecac5cac390d7b866cf2d0417f3c8f30aa8bbdb 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -12,6 +12,8 @@
@@ -21950,11 +22070,58 @@ index daa5607338c94d2205fae1343559b97bf62480aa..ba69a227e7c7603d19dedd6a0bcd909b
  static const VMStateDescription vmstate_ringsize = {
      .name = "ringsize_state",
      .version_id = 1,
-@@ -3061,10 +3154,397 @@ static const VMStateDescription vmstate_virtio = {
+@@ -3008,6 +3101,45 @@ static const VMStateDescription vmstate_virtio_started = {
+     }
+ };
+ 
++static bool virtio_crucible_start_on_kick_needed(void *opaque)
++{
++    const char *accelerator = current_accel_name();
++
++    (void)opaque;
++    return icount_enabled() && accelerator &&
++           strcmp(accelerator, "sim") == 0;
++}
++
++static int virtio_crucible_start_on_kick_pre_save(void *opaque)
++{
++    VirtIODevice *vdev = opaque;
++
++    vdev->crucible_start_on_kick_vmstate = vdev->start_on_kick;
++    return 0;
++}
++
++static int virtio_crucible_start_on_kick_post_load(void *opaque, int version_id)
++{
++    VirtIODevice *vdev = opaque;
++
++    (void)version_id;
++    vdev->crucible_start_on_kick_loaded = true;
++    return 0;
++}
++
++static const VMStateDescription vmstate_virtio_crucible_start_on_kick = {
++    .name = "virtio/crucible-start-on-kick",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = virtio_crucible_start_on_kick_needed,
++    .pre_save = virtio_crucible_start_on_kick_pre_save,
++    .post_load = virtio_crucible_start_on_kick_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_BOOL(crucible_start_on_kick_vmstate, VirtIODevice),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
+ static const VMStateDescription vmstate_virtio_disabled = {
+     .name = "virtio/disabled",
+     .version_id = 1,
+@@ -3061,10 +3193,398 @@ static const VMStateDescription vmstate_virtio = {
          &vmstate_virtio_started,
          &vmstate_virtio_packed_virtqueues,
          &vmstate_virtio_disabled,
 +        &vmstate_virtio_crucible_queue_signals,
++        &vmstate_virtio_crucible_start_on_kick,
          NULL
      }
  };
@@ -22348,7 +22515,27 @@ index daa5607338c94d2205fae1343559b97bf62480aa..ba69a227e7c7603d19dedd6a0bcd909b
  int virtio_save(VirtIODevice *vdev, QEMUFile *f)
  {
      BusState *qbus = qdev_get_parent_bus(DEVICE(vdev));
-@@ -3764,12 +4244,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+@@ -3517,6 +4037,8 @@ virtio_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
+     VirtioDeviceClass *vdc = VIRTIO_DEVICE_GET_CLASS(vdev);
+     Error *local_err = NULL;
+ 
++    vdev->crucible_start_on_kick_loaded = false;
++
+     /*
+      * We poison the endianness to ensure it does not get used before
+      * subsections have been loaded.
+@@ -3652,6 +4174,10 @@ virtio_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
+         !virtio_vdev_has_feature(vdev, VIRTIO_F_VERSION_1)) {
+         vdev->start_on_kick = true;
+     }
++    if (vdev->crucible_start_on_kick_loaded) {
++        /* The sim continuation must preserve the source's pending first kick. */
++        vdev->start_on_kick = vdev->crucible_start_on_kick_vmstate;
++    }
+ 
+     RCU_READ_LOCK_GUARD();
+     for (i = 0; i < num; i++) {
+@@ -3764,12 +4290,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
  }
  
  void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
@@ -22370,7 +22557,7 @@ index daa5607338c94d2205fae1343559b97bf62480aa..ba69a227e7c7603d19dedd6a0bcd909b
      if (nvectors) {
          vdev->vector_queues =
              g_malloc0(sizeof(*vdev->vector_queues) * nvectors);
-@@ -3793,7 +4282,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
+@@ -3793,7 +4328,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
          vdev->vq[i].host_notifier_enabled = false;
      }
  
@@ -22379,7 +22566,7 @@ index daa5607338c94d2205fae1343559b97bf62480aa..ba69a227e7c7603d19dedd6a0bcd909b
      vdev->config_len = config_size;
      if (vdev->config_len) {
          vdev->config = g_malloc0(config_size);
-@@ -4276,6 +4765,50 @@ static void virtio_device_realize(DeviceState *dev, Error **errp)
+@@ -4276,6 +4811,50 @@ static void virtio_device_realize(DeviceState *dev, Error **errp)
          return;
      }
  
@@ -22430,7 +22617,7 @@ index daa5607338c94d2205fae1343559b97bf62480aa..ba69a227e7c7603d19dedd6a0bcd909b
      vdev->listener.commit = virtio_memory_listener_commit;
      vdev->listener.name = "virtio";
      memory_listener_register(&vdev->listener, vdev->dma_as);
-@@ -4643,6 +5176,8 @@ VirtioQueueElement *qmp_x_query_virtio_queue_element(const char *path,
+@@ -4643,6 +5222,8 @@ VirtioQueueElement *qmp_x_query_virtio_queue_element(const char *path,
              int64_t len;
              len = address_space_cache_init(&indirect_desc_cache, vdev->dma_as,
                                             desc.addr, desc.len, false);
@@ -23195,6 +23382,20 @@ index 0000000000000000000000000000000000000000..5638546f455dd8f169b138c04abd3711
 +}
 +
 +#endif
+diff --git a/include/hw/char/serial.h b/include/hw/char/serial.h
+index ea82ffac47608c78e8e774ddc99357eb9184ff43..7d5f36ed4fd2e3e7e9244c382bbb3ab7e1813ab5 100644
+--- a/include/hw/char/serial.h
++++ b/include/hw/char/serial.h
+@@ -73,6 +73,9 @@ struct SerialState {
+     int timeout_ipending;           /* timeout interrupt pending state */
+ 
+     uint64_t char_transmit_time;    /* time to transmit a char in ticks */
++    /* Sim migration preserves the active timing instead of recomputing it. */
++    uint64_t crucible_char_transmit_time_vmstate;
++    bool crucible_char_transmit_time_loaded;
+     int poll_msl;
+ 
+     QEMUTimer *modem_status_poll;
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
 index b54035fb13b22a530692186b0afbe2718f1fb8b8..56c058fea30098d593bfee74e7f0ca35c801df48 100644
 --- a/include/hw/core/cpu.h
@@ -23718,10 +23919,10 @@ index 1761deb4cf7e15212c1a37b14a30db5d667d8359..94130eae8051d7d093ac7d85432e2507
  
  struct PITCommonState {
 diff --git a/include/hw/virtio/virtio-blk.h b/include/hw/virtio/virtio-blk.h
-index 3d8dee7ec15848e59b87c055045a070b6967e62c..881c16031741439734670a34c23592bf87064368 100644
+index 3d8dee7ec15848e59b87c055045a070b6967e62c..8a44ffdfcda4236439f09c33e8c14f01b9f1f2f6 100644
 --- a/include/hw/virtio/virtio-blk.h
 +++ b/include/hw/virtio/virtio-blk.h
-@@ -56,6 +56,7 @@ struct VirtIOBlock {
+@@ -56,9 +56,12 @@ struct VirtIOBlock {
      BlockBackend *blk;
      QemuMutex rq_lock;
      struct VirtIOBlockReq *rq; /* protected by rq_lock */
@@ -23729,6 +23930,11 @@ index 3d8dee7ec15848e59b87c055045a070b6967e62c..881c16031741439734670a34c23592bf
      VirtIOBlkConf conf;
      unsigned short sector_mask;
      bool original_wce;
++    /* The live backend cache mode can differ from the initial device option. */
++    bool crucible_backend_wce_vmstate;
+     VMChangeStateEntry *change;
+     bool ioeventfd_disabled;
+     bool ioeventfd_started;
 diff --git a/include/hw/virtio/virtio-bus.h b/include/hw/virtio/virtio-bus.h
 index f80fd71424419f4ec64536990753ed4bed1c5d45..082f11b776b542bbf6c63960d5ca484e7a871cb8 100644
 --- a/include/hw/virtio/virtio-bus.h
@@ -23866,10 +24072,20 @@ index 7e6d27f9f0816eccae475a9ee814c27ffbcd7d56..e90631fa29aa6cd66178c08601759eeb
      VMChangeStateEntry *vmstate;
  };
 diff --git a/include/hw/virtio/virtio.h b/include/hw/virtio/virtio.h
-index c99cb19d8865b448edee9ec2eac249807be983cd..6963744982fa8f2cfad5cb265a344bbb93a50e51 100644
+index c99cb19d8865b448edee9ec2eac249807be983cd..499bb7a719cfdf58a82247fdd9aebc645a4c9684 100644
 --- a/include/hw/virtio/virtio.h
 +++ b/include/hw/virtio/virtio.h
-@@ -201,6 +201,7 @@ struct VirtIODevice
+@@ -189,6 +189,9 @@ struct VirtIODevice
+     bool use_started;
+     bool started;
+     bool start_on_kick; /* when virtio 1.0 feature has not been negotiated */
++    /* Sim migration restores the source's pending legacy first-kick state. */
++    bool crucible_start_on_kick_vmstate;
++    bool crucible_start_on_kick_loaded;
+     bool disable_legacy_check;
+     bool vhost_started;
+     VMChangeStateEntry *vmstate;
+@@ -201,6 +204,7 @@ struct VirtIODevice
       */
      bool use_guest_notifier_mask;
      AddressSpace *dma_as;
@@ -23877,7 +24093,7 @@ index c99cb19d8865b448edee9ec2eac249807be983cd..6963744982fa8f2cfad5cb265a344bbb
      QLIST_HEAD(, VirtQueue) *vector_queues;
      QTAILQ_ENTRY(VirtIODevice) next;
      /**
-@@ -293,8 +294,26 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+@@ -293,8 +297,26 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
   */
  void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size);
  
@@ -23904,7 +24120,7 @@ index c99cb19d8865b448edee9ec2eac249807be983cd..6963744982fa8f2cfad5cb265a344bbb
  void virtio_error(VirtIODevice *vdev, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
  
  /* Set the child bus name. */
-@@ -324,6 +343,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
+@@ -324,6 +346,8 @@ void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
  void *virtqueue_pop(VirtQueue *vq, size_t sz);
  unsigned int virtqueue_drop_all(VirtQueue *vq);
  void *qemu_get_virtqueue_element(VirtIODevice *vdev, QEMUFile *f, size_t sz);
@@ -31040,7 +31256,7 @@ index f7dcdd7d1b6b7b5397eb1b6aab5cb5816a92f1a8..366ad0c3d0cbcc26e74d0f3ccfe66054
  int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
                             Error **errp);
 diff --git a/migration/vmstate.c b/migration/vmstate.c
-index 50ebe37845285d7cc1d427d35a261dff58b914b7..0b91ba43a596cbc372c9b2fdf1465029ea859eaa 100644
+index 50ebe37845285d7cc1d427d35a261dff58b914b7..5eeea254a92db653b4a84f0a58e16d009ea2c3ab 100644
 --- a/migration/vmstate.c
 +++ b/migration/vmstate.c
 @@ -21,6 +21,31 @@
@@ -31075,6 +31291,16 @@ index 50ebe37845285d7cc1d427d35a261dff58b914b7..0b91ba43a596cbc372c9b2fdf1465029
  static bool vmstate_subsection_save(QEMUFile *f, const VMStateDescription *vmsd,
                                      void *opaque, JSONWriter *vmdesc,
                                      Error **errp);
+@@ -820,7 +845,8 @@ static bool vmstate_subsection_load(QEMUFile *f, const VMStateDescription *vmsd,
+         memcpy(idstr, idstr_ret, size);
+         idstr[size] = 0;
+ 
+-        if (strncmp(vmsd->name, idstr, strlen(vmsd->name)) != 0) {
++        if (strncmp(vmsd->name, idstr, strlen(vmsd->name)) != 0 ||
++            idstr[strlen(vmsd->name)] != '/') {
+             trace_vmstate_subsection_load_bad(vmsd->name, idstr, "(prefix)");
+             /* it doesn't have a valid subsection name */
+             return true;
 diff --git a/monitor/fds.c b/monitor/fds.c
 index cc35d2ec334929216bb9653890b058406035f4f6..5553aa8e9f7a6f6018c3965da69b9ced631c0ff3 100644
 --- a/monitor/fds.c
@@ -110549,10 +110775,10 @@ index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0ea48ed727ff451ce8efa23036931254
              return g_test_run();
          }
 diff --git a/tests/unit/test-vmstate.c b/tests/unit/test-vmstate.c
-index df1fb4c7780813b1f2063035e2447f7dbc3427b9..e6bd2f8c25e98a3a2bab1e6d6738665fbdb9a0a7 100644
+index df1fb4c7780813b1f2063035e2447f7dbc3427b9..71d7d41e27464e7293a58e73c91943465130e377 100644
 --- a/tests/unit/test-vmstate.c
 +++ b/tests/unit/test-vmstate.c
-@@ -1619,6 +1619,142 @@ static void test_tmp_struct(void)
+@@ -1619,6 +1619,212 @@ static void test_tmp_struct(void)
      g_assert_cmpint(obj.f, ==, 8); /* From the child->parent */
  }
  
@@ -110692,15 +110918,87 @@ index df1fb4c7780813b1f2063035e2447f7dbc3427b9..e6bd2f8c25e98a3a2bab1e6d6738665f
 +    error_free(local_err);
 +}
 +
++typedef struct TestSubsectionPrefixNested {
++    uint8_t nested_value;
++} TestSubsectionPrefixNested;
++
++typedef struct TestSubsectionPrefixState {
++    TestSubsectionPrefixNested nested;
++    uint8_t cache_value;
++} TestSubsectionPrefixState;
++
++static bool test_subsection_prefix_needed(void *opaque)
++{
++    (void)opaque;
++    return true;
++}
++
++static const VMStateDescription vmstate_prefix_nested = {
++    .name = "virtio",
++    .version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT8(nested_value, TestSubsectionPrefixNested),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static const VMStateDescription vmstate_prefix_cache = {
++    .name = "virtio-blk/cache",
++    .version_id = 1,
++    .needed = test_subsection_prefix_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT8(cache_value, TestSubsectionPrefixState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static const VMStateDescription vmstate_prefix_outer = {
++    .name = "virtio-blk",
++    .version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT(nested, TestSubsectionPrefixState, 1,
++                       vmstate_prefix_nested, TestSubsectionPrefixNested),
++        VMSTATE_END_OF_LIST()
++    },
++    .subsections = (const VMStateDescription * const[]) {
++        &vmstate_prefix_cache,
++        NULL
++    }
++};
++
++static void test_subsection_prefix_boundary(void)
++{
++    TestSubsectionPrefixState source = {
++        .nested.nested_value = 0x12,
++        .cache_value = 0x34,
++    };
++    TestSubsectionPrefixState restored = { 0 };
++    Error *local_err = NULL;
++    QEMUFile *file;
++
++    save_vmstate(&vmstate_prefix_outer, &source);
++
++    file = open_test_file(false);
++    SUCCESS(vmstate_load_state(file, &vmstate_prefix_outer, &restored, 1,
++                               &local_err));
++    g_assert_null(local_err);
++    g_assert_cmpuint(restored.nested.nested_value, ==,
++                     source.nested.nested_value);
++    g_assert_cmpuint(restored.cache_value, ==, source.cache_value);
++    qemu_fclose(file);
++}
++
  int main(int argc, char **argv)
  {
      g_autofree char *temp_file = g_strdup_printf("%s/vmst.test.XXXXXX",
-@@ -1663,6 +1799,8 @@ int main(int argc, char **argv)
+@@ -1663,6 +1869,10 @@ int main(int argc, char **argv)
      g_test_add_func("/vmstate/qlist/save/saveqlist", test_save_qlist);
      g_test_add_func("/vmstate/qlist/load/loadqlist", test_load_qlist);
      g_test_add_func("/vmstate/tmp_struct", test_tmp_struct);
 +    g_test_add_func("/vmstate/fingerprint-projection/registry",
 +                    test_fingerprint_projection_registry);
++    g_test_add_func("/vmstate/subsection/prefix-boundary",
++                    test_subsection_prefix_boundary);
      g_test_run();
  
      close(temp_fd);
