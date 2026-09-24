@@ -11,7 +11,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerRequestEnvelope, HostExecutionActionV1, HostExecutionCompletionStatusV1,
     HostExecutionPhaseV1, QueryHostExecutionRequestV1, RequestHeader,
 };
-use aos_proto::aos::sandbox::v1::ExecutionPhase;
+use aos_proto::aos::sandbox::v1::{ExecutionIoMode, ExecutionPhase};
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
 use aos_sandbox::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
@@ -20,15 +20,20 @@ use aos_sandbox::controller_service::public_projection::{
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
-use aos_sandbox::runtime_execution::decode_control_completion_phase_v1;
+use aos_sandbox::runtime_execution::{
+    RuntimeExecutionEvidenceError, decode_authorize_completion_running_v1,
+    decode_control_completion_phase_v1,
+};
 use aos_sandbox::{
     AuthorityPublicationStore, EffectFailure, EffectReceipt, Journal, JournalRecord,
     JournalTransaction, PublicMutationEffectV1, RecordNamespace,
 };
 use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 use aos_sandbox_core::{
-    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ExecutionId, NodeId, ObjectDigest,
-    OperationId, ProjectId, ProtocolId, ProtocolVersion, SandboxId,
+    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ExecutionEndpointCapabilityV1,
+    ExecutionId, ExecutionOutputModeV1, ExecutionSpecV1, ExecutionTerminalModeV1, NodeId,
+    ObjectDigest, OperationId, ProjectId, ProtocolId, ProtocolVersion, SandboxId,
+    encode_execution_spec_v1, execution_spec_digest_v1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -38,7 +43,9 @@ use aos_sandbox_protocol::semantics::{
     host_execution_apply_grant_v1, host_execution_query_grant_v1,
 };
 use buffa::Message as _;
+use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
+use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
@@ -50,6 +57,9 @@ const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-requ
 const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-receipt.v1\0";
 const CONTROL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.controller.execution-control-projection.v1\0";
+// The current Host method accepts a 64-KiB body. A larger versioned handoff
+// is required before all valid ExecutionSpecV1 values can be transported.
+const MAX_CURRENT_HOST_SPECIFICATION_BYTES: usize = 60 * 1024;
 const RETAINED_RECOVERY: &str = "execution effect retains protected Host session recovery custody";
 const SESSION_UNUSABLE: &str = "execution effect Host session is unusable";
 const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
@@ -58,17 +68,19 @@ const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
     unusable: SESSION_UNUSABLE,
 };
 
-/// Carries one exact source-domain execution-control operation into the Host carrier.
+/// Carries one exact source-domain execution operation into the Host carrier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ControllerExecutionIntentV1 {
     operation_id: OperationId,
     execution_id: [u8; 16],
     action: ControllerExecutionActionV1,
+    specification: Option<ExecutionSpecV1>,
     source_operation_commitment: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ControllerExecutionActionV1 {
+    Authorize,
     Resize { rows: u16, columns: u16 },
     Signal { signal_code: u8 },
     Cancel,
@@ -112,6 +124,12 @@ impl ControllerExecutionActionV1 {
     // Apply encoding and signed-request validation must agree on every field.
     fn wire_fields(self) -> (HostExecutionActionV1, u32, u32, u32) {
         match self {
+            Self::Authorize => (
+                HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE,
+                0,
+                0,
+                0,
+            ),
             Self::Resize { rows, columns } => (
                 HostExecutionActionV1::HOST_EXECUTION_ACTION_RESIZE,
                 u32::from(rows),
@@ -125,6 +143,15 @@ impl ControllerExecutionActionV1 {
                 u32::from(signal_code),
             ),
             Self::Cancel => (HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL, 0, 0, 0),
+        }
+    }
+
+    fn effect_operation(self) -> EffectOperationV1 {
+        match self {
+            Self::Authorize => EffectOperationV1::AuthorizeExecution,
+            Self::Resize { rows, columns } => EffectOperationV1::ResizeTerminal { rows, columns },
+            Self::Signal { signal_code } => EffectOperationV1::Signal { signal_code },
+            Self::Cancel => EffectOperationV1::Cancel,
         }
     }
 }
@@ -183,7 +210,11 @@ impl ControllerExecutionIntentV1 {
         {
             return Ok(());
         }
-        if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+        let expected_previous_phase = match self.action {
+            ControllerExecutionActionV1::Authorize => ExecutionPhase::EXECUTION_PHASE_REQUESTED,
+            _ => ExecutionPhase::EXECUTION_PHASE_RUNNING,
+        };
+        if execution.phase.as_known() != Some(expected_previous_phase)
             || completion.observation_sequence < execution.observation_sequence
         {
             return Err(EffectFailure::Retryable(
@@ -288,6 +319,171 @@ impl ControllerExecutionIntentV1 {
             operation_id,
             execution_id,
             action,
+            specification: None,
+            source_operation_commitment,
+        })
+    }
+
+    /// Binds a supplied specification to the exact Create request and
+    /// requested projection before Host dispatch.
+    ///
+    /// This lowering step does not establish runtime observations, guest
+    /// credential authority, or broker-ledger reservation. Production Create
+    /// remains closed until a protected producer establishes and durably
+    /// retains those inputs before calling this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the specification substitutes the command, holder
+    /// key, principal, audit identity, or current requested execution.
+    #[allow(dead_code)]
+    pub(crate) fn from_create_specification(
+        operation_id: OperationId,
+        context: &PublicMutationEffectV1,
+        journal: &Journal,
+        specification: ExecutionSpecV1,
+    ) -> Result<Self, EffectFailure> {
+        let DormantSandboxRequestKindV1::Exec(request) = context
+            .validated_request()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?
+        else {
+            return Err(EffectFailure::Permanent(
+                "execution authorization has the wrong public method".to_owned(),
+            ));
+        };
+        let projection = PublicProjectionStoreV1::new(journal)
+            .get(
+                PublicProjectionKindV1::Execution,
+                *specification.execution().as_bytes(),
+            )
+            .map_err(retryable)?
+            .ok_or_else(|| EffectFailure::Retryable("execution projection is absent".to_owned()))?;
+        let PublicProjectionResourceV1::Execution(execution) = projection.resource() else {
+            return Err(EffectFailure::Permanent(
+                "execution projection has another resource kind".to_owned(),
+            ));
+        };
+        let command = request.command.as_option().ok_or_else(|| {
+            EffectFailure::Permanent("execution request has no command".to_owned())
+        })?;
+        let exact_arguments = specification.command().arguments() == command.arguments;
+        let exact_environment = specification.command().environment_overlay().len()
+            == command.environment.len()
+            && specification
+                .command()
+                .environment_overlay()
+                .iter()
+                .zip(&command.environment)
+                .all(|(admitted, requested)| {
+                    admitted.name() == requested.name && admitted.value() == requested.value
+                });
+        let expected_io = match command.io_mode.as_known() {
+            Some(ExecutionIoMode::EXECUTION_IO_MODE_STREAM) => {
+                specification.io().terminal_mode() == ExecutionTerminalModeV1::None
+                    && specification.io().output_mode() == ExecutionOutputModeV1::Stream
+            }
+            Some(ExecutionIoMode::EXECUTION_IO_MODE_PTY) => {
+                specification.io().terminal_mode() == ExecutionTerminalModeV1::Pty
+                    && specification.io().output_mode() == ExecutionOutputModeV1::Stream
+            }
+            Some(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE) => {
+                specification.io().terminal_mode() == ExecutionTerminalModeV1::None
+                    && matches!(
+                        specification.io().output_mode(),
+                        ExecutionOutputModeV1::Capture {
+                            maximum_stdout_bytes,
+                            maximum_stderr_bytes,
+                        } if maximum_stdout_bytes.checked_add(maximum_stderr_bytes)
+                            == Some(command.detached_capture_bytes)
+                    )
+            }
+            _ => false,
+        };
+        let expected_timeout = command
+            .execution_timeout
+            .as_option()
+            .is_some_and(|duration| duration.nanoseconds == specification.timeout().nanoseconds());
+        let expected_working_directory = specification
+            .command()
+            .working_directory()
+            .components()
+            .iter()
+            .map(|component| component.as_bytes())
+            .collect::<Vec<_>>()
+            .join(&b'/');
+        let holder_key = specification.io().access_route().public_key();
+        let conservative_route =
+            specification
+                .io()
+                .access_route()
+                .capabilities()
+                .iter()
+                .all(|capability| {
+                    matches!(
+                        capability,
+                        ExecutionEndpointCapabilityV1::StandardInput
+                            | ExecutionEndpointCapabilityV1::StandardOutput
+                            | ExecutionEndpointCapabilityV1::StandardError
+                            | ExecutionEndpointCapabilityV1::TerminalResize
+                    )
+                });
+        let key_matches = if command.io_mode.as_known()
+            == Some(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE)
+        {
+            holder_key.is_none()
+        } else {
+            holder_key.is_some_and(|key| {
+                VerifyingKey::from_bytes(key.key_material())
+                    .ok()
+                    .and_then(|key| {
+                        PublicKey::new(Ed25519PublicKey::from(key).into(), "")
+                            .to_openssh()
+                            .ok()
+                    })
+                    .is_some_and(|line| request.client_public_key == line.as_bytes())
+            })
+        };
+        if projection.project() != context.project()
+            || projection.operation() != operation_id
+            || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_REQUESTED)
+            || execution.sandbox_id != request.sandbox_id
+            || execution.sandbox_incarnation_id != specification.target().incarnation().as_bytes()
+            || execution.assignment_epoch != specification.target().assignment_epoch().get()
+            || execution.audit_id != operation_id.as_bytes()
+            || specification.target().sandbox().as_bytes() != request.sandbox_id.as_slice()
+            || specification.principal() != context.caller()
+            || specification.audit().as_bytes() != operation_id.as_bytes()
+            || !exact_arguments
+            || !exact_environment
+            || expected_working_directory != command.working_directory
+            || !expected_io
+            || !expected_timeout
+            || !key_matches
+            || !conservative_route
+            || !command.sandbox_shell.is_empty()
+        {
+            return Err(EffectFailure::Permanent(
+                "execution specification differs from its admitted Create request".to_owned(),
+            ));
+        }
+        aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(&request).map_err(
+            |_| EffectFailure::Permanent("execution holder proof is invalid".to_owned()),
+        )?;
+
+        let source_operation_commitment: [u8; 32] = Sha256::new()
+            .chain_update(PUBLIC_REQUEST_DIGEST_DOMAIN)
+            .chain_update(REQUEST_SCOPE)
+            .chain_update(context.caller().as_bytes())
+            .chain_update(context.project().as_bytes())
+            .chain_update((context.canonical_request().len() as u64).to_be_bytes())
+            .chain_update(context.canonical_request())
+            .finalize()
+            .into();
+        Ok(Self {
+            operation_id,
+            execution_id: *specification.execution().as_bytes(),
+            action: ControllerExecutionActionV1::Authorize,
+            specification: Some(specification),
             source_operation_commitment,
         })
     }
@@ -347,27 +543,41 @@ impl ControllerExecutionIntentV1 {
                 "execution assignment is not current".to_owned(),
             ));
         }
+        if let Some(specification) = &self.specification {
+            if encode_execution_spec_v1(specification).len() > MAX_CURRENT_HOST_SPECIFICATION_BYTES
+            {
+                return Err(EffectFailure::Retryable(
+                    "execution specification requires a larger authenticated Host handoff"
+                        .to_owned(),
+                ));
+            }
+            let target = specification.target();
+            if target.sandbox() != manifest.manifest().sandbox()
+                || target.incarnation() != manifest.manifest().incarnation()
+                || target.assignment_epoch() != manifest.manifest().epoch()
+                || target.assignment_digest() != manifest.digest()
+                || target.namespace_generation() != manifest.manifest().namespace_generation()
+                || specification.environment_descriptor() != manifest.manifest().environment()
+                || specification.resources().parent_profile_commitment()
+                    != manifest.manifest().resource_commitment()
+                || specification.resources().output_bytes().assignment() != manifest
+                || specification.execution().as_bytes() != &self.execution_id
+            {
+                return Err(EffectFailure::Retryable(
+                    "execution specification is stale for current assignment".to_owned(),
+                ));
+            }
+        }
 
         let semantics = match kind {
-            ExecutionAuthorizationKindV1::Apply => {
-                let action = match self.action {
-                    ControllerExecutionActionV1::Resize { rows, columns } => {
-                        EffectOperationV1::ResizeTerminal { rows, columns }
-                    }
-                    ControllerExecutionActionV1::Signal { signal_code } => {
-                        EffectOperationV1::Signal { signal_code }
-                    }
-                    ControllerExecutionActionV1::Cancel => EffectOperationV1::Cancel,
-                };
-                host_execution_apply_grant_v1(
-                    assignment,
-                    *self.operation_id.as_bytes(),
-                    ExecutionId::from_bytes(self.execution_id),
-                    ObjectDigest::from_bytes(self.source_operation_commitment),
-                    action,
-                    None,
-                )
-            }
+            ExecutionAuthorizationKindV1::Apply => host_execution_apply_grant_v1(
+                assignment,
+                *self.operation_id.as_bytes(),
+                ExecutionId::from_bytes(self.execution_id),
+                ObjectDigest::from_bytes(self.source_operation_commitment),
+                self.action.effect_operation(),
+                self.specification.as_ref(),
+            ),
             ExecutionAuthorizationKindV1::Query => host_execution_query_grant_v1(
                 assignment,
                 *self.operation_id.as_bytes(),
@@ -466,6 +676,11 @@ impl ControllerExecutionIntentV1 {
                     terminal_rows,
                     terminal_columns,
                     signal_number,
+                    canonical_execution_spec: self
+                        .specification
+                        .as_ref()
+                        .map(encode_execution_spec_v1)
+                        .unwrap_or_default(),
                     ..Default::default()
                 };
                 request.encode_to_vec()
@@ -678,26 +893,39 @@ fn classify_outcome(
                     ));
                 }
             }
-            let action = match intent.action {
-                ControllerExecutionActionV1::Resize { rows, columns } => {
-                    EffectOperationV1::ResizeTerminal { rows, columns }
-                }
-                ControllerExecutionActionV1::Signal { signal_code } => {
-                    EffectOperationV1::Signal { signal_code }
-                }
-                ControllerExecutionActionV1::Cancel => EffectOperationV1::Cancel,
+            let phase = if let Some(specification) = &intent.specification {
+                decode_authorize_completion_running_v1(
+                    &body.completion_bytes,
+                    *intent.operation_id.as_bytes(),
+                    intent.source_operation_commitment,
+                    intent.execution_id,
+                    execution_spec_digest_v1(specification),
+                    body.observation_sequence,
+                )
+                .map_err(|error| match error {
+                    RuntimeExecutionEvidenceError::PhaseMismatch => EffectFailure::Retryable(
+                        "Host authorization has not established a running execution".to_owned(),
+                    ),
+                    _ => EffectFailure::Permanent(
+                        "Host authorization completion evidence is invalid".to_owned(),
+                    ),
+                })?;
+                BackendExecutionPhaseV1::Running
+            } else {
+                decode_control_completion_phase_v1(
+                    &body.completion_bytes,
+                    intent.action.effect_operation(),
+                    *intent.operation_id.as_bytes(),
+                    intent.source_operation_commitment,
+                    intent.execution_id,
+                    body.observation_sequence,
+                )
+                .map_err(|_| {
+                    EffectFailure::Permanent(
+                        "Host control completion evidence is invalid".to_owned(),
+                    )
+                })?
             };
-            let phase = decode_control_completion_phase_v1(
-                &body.completion_bytes,
-                action,
-                *intent.operation_id.as_bytes(),
-                intent.source_operation_commitment,
-                intent.execution_id,
-                body.observation_sequence,
-            )
-            .map_err(|_| {
-                EffectFailure::Permanent("Host control completion evidence is invalid".to_owned())
-            })?;
             if intent.action == ControllerExecutionActionV1::Cancel
                 && phase != BackendExecutionPhaseV1::Canceled
             {
@@ -760,7 +988,12 @@ fn request_matches_intent(
                 && request.operation_id == intent.operation_id.as_bytes()
                 && request.execution_id == intent.execution_id
                 && request.source_operation_commitment == intent.source_operation_commitment
-                && request.canonical_execution_spec.is_empty()
+                && request.canonical_execution_spec
+                    == intent
+                        .specification
+                        .as_ref()
+                        .map(encode_execution_spec_v1)
+                        .unwrap_or_default()
                 && request.action.as_known() == Some(action)
                 && request.terminal_rows == rows
                 && request.terminal_columns == columns

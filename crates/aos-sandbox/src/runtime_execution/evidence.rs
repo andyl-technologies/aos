@@ -141,6 +141,47 @@ pub fn decode_control_completion_phase_v1(
     Ok(phase)
 }
 
+/// Reads a running phase from exact Host-authenticated authorization evidence.
+///
+/// The caller first authenticates the Host outcome. The fixed evidence then
+/// binds the authorization to the controller operation, source request,
+/// execution, admitted specification, and observation sequence. Earlier
+/// Authorized or Starting observations cannot establish a public RUNNING state.
+///
+/// # Errors
+///
+/// Returns an error for malformed, foreign, or non-running authorization
+/// evidence.
+pub fn decode_authorize_completion_running_v1(
+    bytes: &[u8],
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<(), RuntimeExecutionEvidenceError> {
+    if bytes.len() != EVIDENCE_BYTES
+        || bytes.get(..8) != Some(EVIDENCE_MAGIC.as_slice())
+        || bytes.get(266..298) != Some(evidence_digest(&bytes[..266]).as_bytes().as_slice())
+    {
+        return Err(RuntimeExecutionEvidenceError::MalformedEvidence);
+    }
+    if bytes[8] != EffectOperationV1::AuthorizeExecution.code()
+        || bytes.get(9..25) != Some(operation_id.as_slice())
+        || bytes.get(33..65) != Some(source_commitment.as_slice())
+        || bytes.get(65..81) != Some(execution_id.as_slice())
+        || bytes.get(81..113) != Some(specification_digest.as_bytes().as_slice())
+        || observation_sequence == 0
+        || bytes.get(226..234) != Some(observation_sequence.to_be_bytes().as_slice())
+    {
+        return Err(RuntimeExecutionEvidenceError::OperationMismatch);
+    }
+    if decode_phase(bytes[225])? != BackendExecutionPhaseV1::Running {
+        return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
+    }
+    Ok(())
+}
+
 pub(crate) fn completion_from_authenticated_absence_v1(
     effect: &DurableExecutionEffectV1,
     inventory: &BackendExecutionInventoryV1,
@@ -504,12 +545,72 @@ pub enum RuntimeExecutionEvidenceError {
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_core::ObjectDigest;
     use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 
     use super::{
         EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
-        decode_cancel_completion_phase_v1, decode_control_completion_phase_v1, evidence_digest,
+        decode_authorize_completion_running_v1, decode_cancel_completion_phase_v1,
+        decode_control_completion_phase_v1, evidence_digest,
     };
+
+    #[test]
+    fn authorize_completion_requires_running_and_exact_specification() {
+        let operation = [1; 16];
+        let source = [2; 32];
+        let execution = [3; 16];
+        let specification = ObjectDigest::from_bytes([4; 32]);
+        let sequence = 5_u64;
+        let mut bytes = vec![0; EVIDENCE_BYTES];
+        bytes[..8].copy_from_slice(EVIDENCE_MAGIC);
+        bytes[8] = EffectOperationV1::AuthorizeExecution.code();
+        bytes[9..25].copy_from_slice(&operation);
+        bytes[33..65].copy_from_slice(&source);
+        bytes[65..81].copy_from_slice(&execution);
+        bytes[81..113].copy_from_slice(specification.as_bytes());
+        bytes[225] = 3;
+        bytes[226..234].copy_from_slice(&sequence.to_be_bytes());
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+
+        assert_eq!(
+            decode_authorize_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            decode_authorize_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                ObjectDigest::from_bytes([9; 32]),
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
+        );
+
+        bytes[225] = 2;
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+        assert_eq!(
+            decode_authorize_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+    }
 
     #[test]
     fn cancel_completion_phase_requires_exact_bound_evidence() {
