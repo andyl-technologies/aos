@@ -24,7 +24,7 @@ use aos_sandbox_source_provider_protocol::storage_live_export_lease::{
     StorageLiveExportVerifierV1,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
-use rustix::fs::{FileType, Mode, OFlags};
+use rustix::fs::{FileType, Mode, OFlags, Stat};
 use zeroize::Zeroizing;
 
 const KEY_FILE: &str = "storage-live-export-key-v1";
@@ -210,21 +210,25 @@ fn read_key_record(
     file.read_exact_at(&mut *repeated, 0)
         .map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
     let after = rustix::fs::fstat(&file).map_err(|_| StorageLiveExportKeyErrorV1::Custody)?;
-    if before.st_dev != after.st_dev
-        || before.st_ino != after.st_ino
-        || before.st_size != after.st_size
-        || before.st_mode != after.st_mode
-        || before.st_uid != after.st_uid
-        || before.st_nlink != after.st_nlink
-        || before.st_mtime != after.st_mtime
-        || before.st_mtime_nsec != after.st_mtime_nsec
-        || before.st_ctime != after.st_ctime
-        || before.st_ctime_nsec != after.st_ctime_nsec
-        || *record != *repeated
-    {
+    if !same_stable_file_metadata(&before, &after) || *record != *repeated {
         return Err(StorageLiveExportKeyErrorV1::Custody);
     }
     Ok((record, before.st_dev, before.st_ino))
+}
+
+// A double-read is valid only while the exact protected file identity and
+// change indicators remain stable across both reads.
+pub(crate) fn same_stable_file_metadata(before: &Stat, after: &Stat) -> bool {
+    before.st_dev == after.st_dev
+        && before.st_ino == after.st_ino
+        && before.st_size == after.st_size
+        && before.st_mode == after.st_mode
+        && before.st_uid == after.st_uid
+        && before.st_nlink == after.st_nlink
+        && before.st_mtime == after.st_mtime
+        && before.st_mtime_nsec == after.st_mtime_nsec
+        && before.st_ctime == after.st_ctime
+        && before.st_ctime_nsec == after.st_ctime_nsec
 }
 
 fn decode_key_record(

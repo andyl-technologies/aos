@@ -28,7 +28,7 @@ use aos_sandbox_source_provider_protocol::storage_live_export_lease::StorageLive
 use rustix::fs::{FileType, Mode, OFlags};
 use sha2::{Digest as _, Sha256};
 
-use crate::live_export_key::open_protected_directory;
+use crate::live_export_key::{open_protected_directory, same_stable_file_metadata};
 use crate::live_export_origin::StorageLiveExportOriginV1;
 
 const CATALOG_FILE: &str = "storage-live-export-catalog-v1";
@@ -375,18 +375,7 @@ fn read_catalog(
     file.read_exact_at(&mut repeated, 0)
         .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
     let after = rustix::fs::fstat(&file).map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
-    if before.st_dev != after.st_dev
-        || before.st_ino != after.st_ino
-        || before.st_size != after.st_size
-        || before.st_mode != after.st_mode
-        || before.st_uid != after.st_uid
-        || before.st_nlink != after.st_nlink
-        || before.st_mtime != after.st_mtime
-        || before.st_mtime_nsec != after.st_mtime_nsec
-        || before.st_ctime != after.st_ctime
-        || before.st_ctime_nsec != after.st_ctime_nsec
-        || bytes != repeated
-    {
+    if !same_stable_file_metadata(&before, &after) || bytes != repeated {
         return Err(StorageLiveExportCatalogErrorV1::Custody);
     }
     Ok((bytes, before.st_dev, before.st_ino))
