@@ -541,6 +541,28 @@ impl ProtectedStorageInventoryV1 {
         self.snapshots.get(&(*storage_handle, *version_handle))
     }
 
+    /// Selects only a currently catalogued hold on the exact immutable object.
+    ///
+    /// This is a protected-catalog claim, not a live OpenZFS readback or a
+    /// SourceRoot authorization. The caller must reobserve ZFS under the same
+    /// catalog lock before using these names in a fixed observation plan.
+    pub(crate) fn held_snapshot(
+        &self,
+        storage_handle: &[u8; 32],
+        version_handle: &[u8; 32],
+        source_guid: u64,
+        snapshot_guid: u64,
+        hold_id: HoldId,
+    ) -> Option<&ResolvedSnapshot> {
+        let snapshot = self.snapshot(storage_handle, version_handle)?.snapshot();
+        (snapshot.dataset().storage_handle() == *storage_handle
+            && snapshot.version_handle() == *version_handle
+            && snapshot.dataset().guid() == source_guid
+            && snapshot.guid() == snapshot_guid
+            && self.has_hold(snapshot_guid, hold_id))
+        .then_some(snapshot)
+    }
+
     pub(crate) fn has_hold(&self, snapshot_guid: u64, hold_id: HoldId) -> bool {
         self.holds.contains(&(snapshot_guid, hold_id.as_bytes()))
     }

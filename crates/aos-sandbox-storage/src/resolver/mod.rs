@@ -335,6 +335,78 @@ mod tests {
     }
 
     #[test]
+    fn held_snapshot_selection_requires_exact_handles_guids_and_hold() {
+        let fixture = fixture(50, Vec::new());
+        let inventory = fixture.resolver.inventory();
+        let snapshot = &fixture.held_snapshot;
+        let storage = snapshot.dataset().storage_handle();
+        let version = snapshot.version_handle();
+        let source_guid = snapshot.dataset().guid();
+        let snapshot_guid = snapshot.guid();
+
+        assert_eq!(
+            inventory.held_snapshot(
+                &storage,
+                &version,
+                source_guid,
+                snapshot_guid,
+                fixture.hold_id,
+            ),
+            Some(snapshot),
+        );
+        for (storage_handle, version_handle, source, guid, hold) in [
+            (
+                [99; 32],
+                version,
+                source_guid,
+                snapshot_guid,
+                fixture.hold_id,
+            ),
+            (
+                storage,
+                [99; 32],
+                source_guid,
+                snapshot_guid,
+                fixture.hold_id,
+            ),
+            (
+                storage,
+                version,
+                source_guid + 1,
+                snapshot_guid,
+                fixture.hold_id,
+            ),
+            (
+                storage,
+                version,
+                source_guid,
+                snapshot_guid + 1,
+                fixture.hold_id,
+            ),
+            (
+                storage,
+                version,
+                source_guid,
+                snapshot_guid,
+                HoldId::from_bytes([99; 16]).unwrap(),
+            ),
+            (
+                storage,
+                fixture.unheld_snapshot.version_handle(),
+                source_guid,
+                fixture.unheld_snapshot.guid(),
+                fixture.hold_id,
+            ),
+        ] {
+            assert!(
+                inventory
+                    .held_snapshot(&storage_handle, &version_handle, source, guid, hold)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn every_storage_action_resolves_to_one_closed_v1_catalog() {
         let fixture = fixture(50, Vec::new());
         let create = resolve(

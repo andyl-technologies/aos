@@ -1,8 +1,10 @@
 //! Closed OpenZFS observation plans and machine-output validation.
 //!
-//! Observation is separate from mutation execution. A plan is derived only
-//! from a validated [`ZfsTransaction`](crate::ZfsTransaction), compiles exact
-//! read-only `zfs` argument vectors, and accepts output only from commands that
+//! Observation is separate from mutation execution. Transaction plans derive
+//! from a validated [`ZfsTransaction`](crate::ZfsTransaction); held-snapshot
+//! readback accepts a resolved snapshot that its caller must select from the
+//! protected inventory under the catalog lock. Both compile exact
+//! read-only `zfs` argument vectors and accept output only from commands that
 //! completed successfully within the process boundary. In particular, absence
 //! is proved by a successful parent inventory that omits the exact object; a
 //! failed direct lookup is never interpreted as absence.
@@ -19,7 +21,7 @@ use crate::observation_protocol::{
 };
 use crate::{
     CatalogObjectKind, HoldId, PostconditionPolicyV1, ProjectAncestorPolicyV1, ReservationPolicy,
-    WorkspaceSpacePolicyV1, ZfsPrecondition, ZfsTransaction,
+    ResolvedSnapshot, WorkspaceSpacePolicyV1, ZfsPrecondition, ZfsTransaction,
 };
 
 const OBSERVATION_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.zfs-observation.v1\0";
@@ -37,6 +39,8 @@ pub(crate) enum ZfsObservationPhase {
     Preconditions,
     /// Determines whether the exact typed postcondition is now present.
     Postcondition,
+    /// Reobserves one protected held snapshot without an effect attempt.
+    HeldSnapshotReadback,
 }
 
 impl ZfsObservationPhase {
@@ -44,6 +48,7 @@ impl ZfsObservationPhase {
         match self {
             Self::Preconditions => 1,
             Self::Postcondition => 2,
+            Self::HeldSnapshotReadback => 3,
         }
     }
 }
@@ -85,6 +90,39 @@ pub(crate) struct ZfsObservationPlan {
 }
 
 impl ZfsObservationPlan {
+    /// Reobserves a catalogued held snapshot without deriving executable arguments from a peer.
+    ///
+    /// The second identity pass brackets the hold inventory and detects a
+    /// replacement still visible then. This is not an atomic ZFS snapshot:
+    /// exclusive Storage effect custody must also exclude foreign mutations.
+    pub(crate) fn held_snapshot(
+        snapshot: &ResolvedSnapshot,
+        hold_id: HoldId,
+    ) -> Result<Self, ZfsObservationError> {
+        let dataset = snapshot.dataset();
+        let mut commands = Vec::with_capacity(5);
+        for pass in 0..2 {
+            commands.push(object_command(
+                dataset.name(),
+                CatalogObjectKind::Dataset,
+                ObjectExpectation::PreconditionPresent(dataset.guid()),
+            )?);
+            commands.push(object_command(
+                snapshot.name(),
+                CatalogObjectKind::Snapshot,
+                ObjectExpectation::PreconditionPresent(snapshot.guid()),
+            )?);
+            if pass == 0 {
+                commands.push(hold_command(snapshot.name(), hold_id, true, false));
+            }
+        }
+
+        Ok(Self {
+            phase: ZfsObservationPhase::HeldSnapshotReadback,
+            commands,
+        })
+    }
+
     /// Compiles physical precondition checks from a validated transaction.
     pub(crate) fn preconditions(transaction: &ZfsTransaction) -> Result<Self, ZfsObservationError> {
         let mut commands = Vec::new();
@@ -970,7 +1008,8 @@ mod tests {
     use super::*;
     use crate::{
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
-        ResolvedCatalogCommitmentV1, ResolvedDataset, StorageDomainsV1, StorageOperation,
+        ResolvedCatalogCommitmentV1, ResolvedDataset, ResolvedSnapshot, StorageDomainsV1,
+        StorageOperation,
     };
 
     fn transaction() -> ZfsTransaction {
@@ -1073,6 +1112,115 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    fn held_snapshot() -> (ResolvedSnapshot, HoldId) {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([21; 32]),
+            ObjectDigest::from_bytes([22; 32]),
+            ObjectDigest::from_bytes([23; 32]),
+            ObjectDigest::from_bytes([24; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 10).unwrap();
+        let dataset = ResolvedDataset::from_catalog(
+            root,
+            "tank/aos/project/workspace",
+            23,
+            [25; 32],
+            domains,
+        )
+        .unwrap();
+        let snapshot = ResolvedSnapshot::from_catalog(dataset, "held", 29, [30; 32]).unwrap();
+        (snapshot, HoldId::from_bytes([1; 16]).unwrap())
+    }
+
+    #[test]
+    fn held_snapshot_plan_brackets_exact_hold_with_source_and_snapshot_guids() {
+        let (snapshot, hold_id) = held_snapshot();
+        let plan = ZfsObservationPlan::held_snapshot(&snapshot, hold_id).unwrap();
+        assert_eq!(plan.commands().len(), 5);
+        assert_eq!(
+            plan.commands()[0].arguments(),
+            plan.commands()[3].arguments()
+        );
+        assert_eq!(
+            plan.commands()[1].arguments(),
+            plan.commands()[4].arguments()
+        );
+        assert_eq!(
+            plan.commands()[2]
+                .arguments()
+                .iter()
+                .map(|argument| argument.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["holds", "-H", "-p", "tank/aos/project/workspace@held"],
+        );
+
+        let dataset = b"tank/aos/project\tfilesystem\t15\n\
+                        tank/aos/project/workspace\tfilesystem\t23\n"
+            .to_vec();
+        let snapshot = b"tank/aos/project/workspace\tfilesystem\t23\n\
+                         tank/aos/project/workspace@held\tsnapshot\t29\n"
+            .to_vec();
+        let hold = format!(
+            "tank/aos/project/workspace@held\t{}\t123\n",
+            hold_tag(hold_id)
+        )
+        .into_bytes();
+        let mut evaluation = plan.evaluation();
+        for output in [dataset.clone(), snapshot.clone(), hold, dataset, snapshot] {
+            let result = evaluation.accept(output).unwrap();
+            if let Some(result) = result {
+                assert_eq!(result.state, ZfsObservationState::Matched);
+                assert!(result.digest.is_some());
+                return;
+            }
+        }
+        panic!("complete hold readback did not finish");
+    }
+
+    #[test]
+    fn held_snapshot_plan_rejects_missing_hold_and_late_guid_replacement() {
+        let (snapshot, hold_id) = held_snapshot();
+        let plan = ZfsObservationPlan::held_snapshot(&snapshot, hold_id).unwrap();
+        let dataset = b"tank/aos/project\tfilesystem\t15\n\
+                        tank/aos/project/workspace\tfilesystem\t23\n"
+            .to_vec();
+        let snapshot = b"tank/aos/project/workspace\tfilesystem\t23\n\
+                         tank/aos/project/workspace@held\tsnapshot\t29\n"
+            .to_vec();
+
+        let mut missing_hold = plan.evaluation();
+        assert!(missing_hold.accept(dataset.clone()).unwrap().is_none());
+        assert!(missing_hold.accept(snapshot.clone()).unwrap().is_none());
+        assert_eq!(
+            missing_hold.accept(Vec::new()).unwrap().unwrap().state,
+            ZfsObservationState::Mismatch,
+        );
+
+        let mut changed = plan.evaluation();
+        assert!(changed.accept(dataset.clone()).unwrap().is_none());
+        assert!(changed.accept(snapshot).unwrap().is_none());
+        let hold = format!(
+            "tank/aos/project/workspace@held\t{}\t123\n",
+            hold_tag(hold_id)
+        )
+        .into_bytes();
+        assert!(changed.accept(hold).unwrap().is_none());
+        assert!(changed.accept(dataset).unwrap().is_none());
+        assert_eq!(
+            changed
+                .accept(
+                    b"tank/aos/project/workspace\tfilesystem\t23\n\
+                      tank/aos/project/workspace@held\tsnapshot\t30\n"
+                        .to_vec(),
+                )
+                .unwrap()
+                .unwrap()
+                .state,
+            ZfsObservationState::Mismatch,
+        );
     }
 
     #[test]
