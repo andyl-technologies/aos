@@ -12,7 +12,7 @@
     inherit src;
     name = "aos-sandbox-guardian-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-KZOyMSlKc2Qr4LjVk6+iyd0jnCpsGvvAeqzbcFDtopQ=";
+    hash = "sha256-rjEGWRDoHbBs/Tw4nTXrdWxviNd1rzX3ztNprM3idp8=";
   };
   cargoArtifactContract = {
     family = "aos-sandbox-guardian-native";
