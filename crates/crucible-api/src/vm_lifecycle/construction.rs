@@ -57,6 +57,35 @@ fn hydrate_checkpoint_event_log_dependencies(
     Ok(())
 }
 
+pub(super) fn hydrate_checkpoint_signal_artifacts(
+    objects: &BTreeMap<ContentHash, Vec<u8>>,
+    store: &dyn DagStore,
+) -> Result<(), LifecycleApiError> {
+    // Validate every identity before exposing any bytes to the resumed run.
+    for (identity, bytes) in objects {
+        if ContentHash::from_bytes(bytes) != *identity {
+            return Err(loop_factory_error(
+                "exact checkpoint signal artifact changed before restore",
+            ));
+        }
+    }
+
+    for (identity, bytes) in objects {
+        let stored = store.put(bytes).map_err(|error| {
+            loop_factory_error(format!(
+                "rehydrate exact checkpoint signal artifact: {error}"
+            ))
+        })?;
+        if stored != *identity {
+            return Err(loop_factory_error(
+                "exact checkpoint signal artifact changed while rehydrating",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
@@ -1019,6 +1048,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let signal_artifact_objects = if signal_plan.programs().is_empty() {
         Arc::new(BTreeMap::new())
     } else if let Some(checkpoint) = &restore_checkpoint {
+        hydrate_checkpoint_signal_artifacts(
+            &checkpoint.signal_artifact_objects,
+            checkpoint_dag.as_ref(),
+        )?;
         Arc::clone(&checkpoint.signal_artifact_objects)
     } else {
         let store = config.signal_artifacts.as_ref().ok_or_else(|| {
