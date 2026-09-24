@@ -104,11 +104,27 @@
     lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
     (lib.filterAttrs (option: _: cfg.credentials.${option} != null) publicCredentialNames)
   );
+  publisherScopeCredential = lib.optional cfg.publisherIngress.enable
+    "publisher-service-scope-v1:/run/credentials/@system/${cfg.credentials.publisherServiceScope}";
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
 
     publicApi.enable = lib.mkEnableOption "the registered mutual-TLS controller API on /run/aos/sandboxd/public.sock";
+
+    publisherIngress.enable = lib.mkEnableOption "the exact-process project publisher registration channel; publication effects remain unavailable";
+
+    publisherIngress.uid = lib.mkOption {
+      type = lib.types.int;
+      default = 991;
+      description = "Dedicated networkless publisher service UID, matched to the protected scope credential.";
+    };
+
+    publisherIngress.gid = lib.mkOption {
+      type = lib.types.int;
+      default = 991;
+      description = "Dedicated networkless publisher service GID, matched to the protected scope credential.";
+    };
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -144,6 +160,11 @@ in {
           default = null;
           description = "Optional protected canonical cache Replay bundle; required for clean cache bootstrap unless the controller source journal was provisioned earlier.";
         };
+        publisherServiceScope = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External 64-byte AOSPMS01 scope: principal, project, cache resource, publisher UID/GID; never derived from socket credentials.";
+        };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
       // lib.mapAttrs (_: name:
@@ -161,6 +182,18 @@ in {
         {
           assertion = cfg.credentials.nodeId != null;
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
+        }
+        {
+          assertion = !cfg.publisherIngress.enable || cfg.credentials.publisherServiceScope != null;
+          message = "publisher ingress requires an externally provisioned publisherServiceScope credential";
+        }
+        {
+          assertion = !cfg.publisherIngress.enable || (cfg.publisherIngress.uid > 0 && cfg.publisherIngress.uid < 65536 && cfg.publisherIngress.gid > 0 && cfg.publisherIngress.gid < 65536);
+          message = "publisher ingress UID and GID must be within 1..65535";
+        }
+        {
+          assertion = !cfg.publisherIngress.enable || (cfg.publisherIngress.uid != controller.uid && cfg.publisherIngress.gid != controller.gid);
+          message = "publisher execution must not share the controller UID or GID";
         }
         {
           assertion = brokers.hostBroker.enable;
@@ -236,6 +269,37 @@ in {
       })
       publicCredentialNames;
 
+    aos.users.users.aos-view-publisher = lib.mkIf cfg.publisherIngress.enable {
+      uid = cfg.publisherIngress.uid;
+      group = "aos-view-publisher";
+      home = "/";
+      shell = "/sbin/nologin";
+      description = "AOS networkless project publisher registration process";
+      extraGroups = [];
+    };
+    aos.users.groups.aos-view-publisher = lib.mkIf cfg.publisherIngress.enable {
+      gid = cfg.publisherIngress.gid;
+      members = [];
+    };
+
+    systemd.sockets.aos-sandboxd-publisher = lib.mkIf cfg.publisherIngress.enable {
+      description = "AOS project publisher registration listener";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-publisher/control.sock";
+        FileDescriptorName = "aos-sandboxd-publisher";
+        Service = "aos-sandboxd.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "aos-sandboxd";
+        SocketGroup = "aos-view-publisher";
+        SocketMode = "0660";
+        DirectoryMode = "0711";
+        RemoveOnStop = true;
+      };
+    };
+
     systemd.services.aos-sandboxd = {
       description = "AOS unprivileged sandbox node controller";
       wantedBy = ["multi-user.target"];
@@ -246,7 +310,8 @@ in {
           "aos-sandbox-mountd.service"
           "aos-netd.service"
         ]
-        ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
+        ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket"
+        ++ lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
       after =
         [
           "aos-sandbox-hostd.service"
@@ -255,7 +320,8 @@ in {
           "aos-netd.service"
           "local-fs.target"
         ]
-        ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket";
+        ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket"
+        ++ lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
       unitConfig = {
         RequiresMountsFor = ["/sys/fs/cgroup"];
         StartLimitIntervalSec = 60;
@@ -266,7 +332,9 @@ in {
         NotifyAccess = "main";
         ExecStart =
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
-          + lib.optionalString cfg.publicApi.enable " --public-api";
+          + lib.optionalString cfg.publicApi.enable " --public-api"
+          + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress";
+        Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
         ExecStartPre = brokerSessionConfiguration.installCommands;
         LoadCredential =
           nodeCredentials
@@ -277,7 +345,8 @@ in {
           ++ opensshAttachCredentials
           ++ ownershipCredentials
           ++ brokerSessionConfiguration.loadCredentials
-          ++ publicCredentials;
+          ++ publicCredentials
+          ++ publisherScopeCredential;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";
@@ -327,6 +396,47 @@ in {
         RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         TasksMax = 8;
+      };
+    };
+
+    systemd.services.aos-view-publisher = lib.mkIf cfg.publisherIngress.enable {
+      description = "AOS networkless project publisher registration process";
+      wantedBy = ["multi-user.target"];
+      requires = ["aos-sandboxd.service" "aos-sandboxd-publisher.socket"];
+      after = ["aos-sandboxd.service" "aos-sandboxd-publisher.socket"];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/aos-view-publisher";
+        Restart = "on-failure";
+        RestartSec = "2s";
+        User = "aos-view-publisher";
+        Group = "aos-view-publisher";
+        UMask = "0077";
+
+        CapabilityBoundingSet = "";
+        DevicePolicy = "closed";
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        TasksMax = 4;
       };
     };
   };

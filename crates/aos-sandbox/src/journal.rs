@@ -4978,6 +4978,7 @@ mod tests {
                 &mut listener,
                 scope,
                 anchor(),
+                None,
                 config,
                 &mut || Ok(sample(150, 1000)),
             ),

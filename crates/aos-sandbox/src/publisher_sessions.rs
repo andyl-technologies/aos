@@ -36,7 +36,7 @@ use aos_sandbox_core::{
     ChannelBinding, NodeId, PrincipalId, ProjectId, PublisherInstanceId, ResourceId,
 };
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
 use aos_sandbox_linux::seqpacket::{
     ReceivedRecord, RecordSubjectListener, SeqpacketError, SeqpacketSocket,
 };
@@ -123,6 +123,34 @@ pub struct PublisherSessionRegistry {
 }
 
 impl PublisherSessionRegistry {
+    /// Returns the retained instance occupying one configured service scope.
+    ///
+    /// This is a process-local lookup, not evidence of a live channel or
+    /// permission to reuse its durable execution identity.
+    #[must_use]
+    pub fn reserved_instance(&self, scope: PublisherSessionScope) -> Option<PublisherInstanceId> {
+        self.slots
+            .iter()
+            .flatten()
+            .find_map(|session| (session.scope == scope).then_some(session.instance))
+    }
+
+    /// Rechecks the original registered execution without reading a request.
+    ///
+    /// A failed check retires the channel but retains its service reservation
+    /// until the exact pinned process has exited.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown or retired instance, a closed channel, changed
+    /// cgroup membership, process exit, or failed kernel observations.
+    pub fn recheck_registered(
+        &mut self,
+        instance: PublisherInstanceId,
+    ) -> Result<PidFdInfo, PublisherSessionError> {
+        self.retain_execution(instance)?.recheck()
+    }
+
     /// Retains the registered execution without consuming another request record.
     pub(crate) fn retain_execution(
         &mut self,
@@ -394,6 +422,13 @@ pub(crate) struct PreparedPublisherSession<'a> {
 }
 
 impl PreparedPublisherSession<'_> {
+    pub(crate) fn verify_expected_process(
+        &self,
+        expected: &PidFd,
+    ) -> Result<PidFdInfo, PublisherSessionError> {
+        Ok(self.session.anchor.verify_exact_membership(expected)?)
+    }
+
     pub(crate) fn instance(&self) -> PublisherInstanceId {
         self.session.instance
     }

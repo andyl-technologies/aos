@@ -5029,7 +5029,7 @@ where
     /// clock, and protected storage failures. A failed or ambiguous commit may
     /// retain a retired execution pin until its original process exits.
     #[cfg(target_os = "linux")]
-    pub(crate) fn register_publisher_execution<T>(
+    pub fn register_publisher_execution<T>(
         &mut self,
         sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
         listener: &mut aos_sandbox_linux::seqpacket::RecordSubjectListener,
@@ -5052,6 +5052,7 @@ where
             listener,
             service.scope,
             service.anchor,
+            Some(&service.expected_process),
             config,
             clock,
         )

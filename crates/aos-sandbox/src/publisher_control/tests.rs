@@ -107,6 +107,7 @@ fn register_samples(
         listener,
         scope,
         anchor(),
+        None,
         config,
         &mut || {
             observations

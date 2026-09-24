@@ -19,6 +19,7 @@ pub use join::{
 
 use aos_sandbox_core::ownership_lease::RawPairedClockSample;
 use aos_sandbox_core::{Operation, PublisherInstanceId, ResourceKind, Selector};
+use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::{
     boot::KernelBootId, cgroup::RetainedCgroupAnchor, seqpacket::RecordSubjectListener,
 };
@@ -45,6 +46,8 @@ pub struct PublisherServiceRegistration {
     pub scope: PublisherSessionScope,
     /// Retained exact cgroup for the configured publisher process.
     pub anchor: RetainedCgroupAnchor,
+    /// PID 1-attested main process retained until the connector is checked.
+    pub expected_process: PidFd,
 }
 
 /// Configures bounded registration independently of incoming request fields.
@@ -98,6 +101,7 @@ pub(crate) fn register<T>(
     listener: &mut RecordSubjectListener,
     scope: PublisherSessionScope,
     anchor: RetainedCgroupAnchor,
+    expected_process: Option<&PidFd>,
     config: PublisherControlPolicy,
     clock: &mut T,
 ) -> Result<PublisherExecutionRegistrationV1, PublisherControlError>
@@ -106,6 +110,15 @@ where
 {
     validate_config(config)?;
     let mut prepared = sessions.prepare(listener, scope, anchor)?;
+    if let Some(expected_process) = expected_process {
+        let expected = prepared.verify_expected_process(expected_process)?;
+        let connected = prepared.check_current()?;
+        if expected.pid() != connected.pid()
+            || expected.thread_group_id() != connected.thread_group_id()
+        {
+            return Err(PublisherSessionError::ExecutionMismatch.into());
+        }
+    }
     let scope = *prepared.scope();
     let boot = KernelBootId::current()?.into_bytes();
     let observed = clock().map_err(|_| PublisherControlError::Clock)?;

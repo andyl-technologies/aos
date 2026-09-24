@@ -127,6 +127,7 @@ mod public_attach;
 mod public_hierarchy;
 mod public_services;
 mod public_watch;
+mod publisher_ingress;
 mod storage_snapshot;
 mod view_mutations;
 
@@ -284,6 +285,8 @@ where
 /// Positional arguments are the fixed decimal controller UID and GID. The
 /// optional `--public-api` flag requires all four protected public TLS credentials
 /// and enables the registered-client public endpoint at the fixed socket.
+/// `--publisher-ingress` requires one protected service-scope credential and
+/// PID 1's exact record-subject listener; it registers an execution only.
 /// The node identity is read from
 /// `CREDENTIALS_DIRECTORY/node-id`; broker endpoints,
 /// cgroups, journal location, and root-only diagnostic socket are fixed
@@ -297,7 +300,27 @@ where
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
+    let publisher_listener = if configuration.publisher_ingress {
+        Some(
+            publisher_ingress::adopt_listener()
+                .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let node_id = read_node_id()?;
+    let publisher_registration = if let Some(listener) = publisher_listener {
+        let scope = publisher_ingress::PublisherServiceScopeV1::from_process_credential(
+            NodeId::from_bytes(node_id),
+        )
+        .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+        Some(
+            publisher_ingress::PublisherRegistrationOwnerV1::new(listener, scope)
+                .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     if let Some(bundle) = read_cache_replay_bundle()? {
         CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
             configuration.uid,
@@ -364,6 +387,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 attach_credentials,
                 attach_plan_signer,
                 guest_root_pins,
+                publisher_registration,
                 worker_capabilities,
                 sessions,
                 commands_rx,
@@ -513,6 +537,7 @@ fn controller_worker(
     attach_credentials: Option<ControllerAttachCredentialsV1>,
     attach_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    mut publisher_registration: Option<publisher_ingress::PublisherRegistrationOwnerV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
     commands: mpsc::Receiver<ControllerCommand>,
@@ -565,7 +590,20 @@ fn controller_worker(
             next_cycle = Instant::now() + RECONCILIATION_INTERVAL;
         }
 
-        let wait = next_cycle.saturating_duration_since(Instant::now());
+        if let Some(owner) = publisher_registration.as_mut() {
+            if let Err(message) = owner.try_register(&mut controller) {
+                let _ = events.send(WorkerEvent::Fatal(message));
+                return;
+            }
+        }
+
+        let mut wait = next_cycle.saturating_duration_since(Instant::now());
+        if publisher_registration
+            .as_ref()
+            .is_some_and(|owner| owner.needs_registration())
+        {
+            wait = wait.min(Duration::from_millis(250));
+        }
         match commands.recv_timeout(wait) {
             Ok(command) => {
                 if let Err(message) = handle_controller_command(
@@ -1838,6 +1876,7 @@ struct RuntimeConfiguration {
     state_directory: PathBuf,
     diagnostic_socket: PathBuf,
     public_api: bool,
+    publisher_ingress: bool,
 }
 
 impl RuntimeConfiguration {
@@ -1846,18 +1885,22 @@ impl RuntimeConfiguration {
         let _program = arguments.next();
         let uid = parse_identity(arguments.next(), "controller UID")?;
         let gid = parse_identity(arguments.next(), "controller GID")?;
-        let public_api = match arguments.next().as_deref() {
-            None => false,
-            Some("--public-api") => true,
-            Some(_) => {
-                return Err(ControllerRuntimeError::InvalidArguments(
-                    "invalid public API activation",
-                ));
+        let mut public_api = false;
+        let mut publisher_ingress = false;
+        for argument in arguments {
+            match argument.as_str() {
+                "--public-api" if !public_api => public_api = true,
+                "--publisher-ingress" if !publisher_ingress => publisher_ingress = true,
+                _ => {
+                    return Err(ControllerRuntimeError::InvalidArguments(
+                        "unknown or duplicate activation flag",
+                    ));
+                }
             }
-        };
-        if arguments.next().is_some() {
+        }
+        if !publisher_ingress && std::env::var_os("LISTEN_FDS").is_some() {
             return Err(ControllerRuntimeError::InvalidArguments(
-                "usage: aos-sandboxd CONTROLLER_UID CONTROLLER_GID [--public-api]",
+                "unexpected controller socket activation",
             ));
         }
         Ok(Self {
@@ -1866,6 +1909,7 @@ impl RuntimeConfiguration {
             state_directory: PathBuf::from(STATE_DIRECTORY),
             diagnostic_socket: PathBuf::from(DIAGNOSTIC_SOCKET),
             public_api,
+            publisher_ingress,
         })
     }
 
@@ -5197,6 +5241,9 @@ pub enum ControllerRuntimeError {
     /// The optional guest-root template pin set is partial or malformed.
     #[error("protected controller guest-root template credentials are invalid")]
     InvalidGuestRootCredential,
+    /// The protected publisher scope or exact listener activation is invalid.
+    #[error("controller publisher ingress failed: {0}")]
+    PublisherIngress(String),
     /// Controller journal identity or assignment validation failed.
     #[error(transparent)]
     ControllerJournal(#[from] aos_sandbox::controller_service::journal::ControllerJournalError),
@@ -5278,6 +5325,7 @@ mod tests {
             state_directory: directory.path().join("state"),
             diagnostic_socket: directory.path().join("diagnostics.sock"),
             public_api: false,
+            publisher_ingress: false,
         }
     }
 
