@@ -1226,6 +1226,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1284,6 +1285,9 @@ fn validate_outbound_carriers(
     roles: &[BrokerDescriptorRole],
 ) -> Result<(), ProtocolValidationError> {
     let valid = match method {
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
+            roles == [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE]
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY => roles.iter().all(|role| {
             matches!(
                 role,
@@ -1812,6 +1816,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
                 | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE

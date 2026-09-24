@@ -23,6 +23,8 @@ use crate::projection::{
 
 const SIGNED_PLAN_LEASE_FEATURE: &str = "aos.sandbox.authorization.signed-plan-lease";
 const MOUNT_SOURCE_ACQUISITION_FEATURE: &str = "aos.sandbox.mount.source-acquisition";
+const HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE: &str =
+    "aos.sandbox.host.argument-source-descriptor";
 
 const NO_FEATURES: [BrokerSessionMethodFeatureV1; 0] = [];
 const SIGNED_PLAN_LEASE_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
@@ -37,11 +39,17 @@ const HOST_EXECUTION_SPEC_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
     BrokerSessionMethodFeatureV1::HostExecutionSpecDescriptor,
 ];
+const HOST_ARGUMENT_SOURCE_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
+    BrokerSessionMethodFeatureV1::SignedPlanLease,
+    BrokerSessionMethodFeatureV1::HostArgumentSourceDescriptor,
+];
 const NO_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 0] = [];
 const HOST_CATALOG_REQUEST_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 1] =
     [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG];
 const HOST_EXECUTION_SPEC_REQUEST_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 1] =
     [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC];
+const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 1] =
+    [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE];
 const HOST_PAYLOAD_SCOPE_RESPONSE_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 2] = [
     BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD,
     BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP,
@@ -58,9 +66,15 @@ const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
 const HOST_EXECUTION_SPEC_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 1] =
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
+const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 1] =
+    [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
 
-/// Lists every authenticated broker method in canonical numeric order.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 30] = [
+/// Lists registered authenticated methods in canonical numeric order.
+///
+/// Registration is not production advertisement. The argument-source carrier
+/// remains excluded from production hello until its protected issuer and
+/// one-shot Host owner are joined.
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 31] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -91,6 +105,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 30] = [
     BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
     BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT,
     BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -99,10 +114,9 @@ pub const AUTHENTICATED_BROKER_METHOD_COUNT_V1: usize = AUTHENTICATED_BROKER_MET
 /// Returns the complete canonical method profile for one endpoint role.
 ///
 /// The returned methods are in registry order and include every method that
-/// production must advertise or require for the selected protocol and
-/// audience. This is the sole all-method hello profile; callers cannot
-/// accidentally omit a feature-conditioned method while claiming production
-/// readiness.
+/// production may advertise or require for the selected protocol and
+/// audience. The registered argument-source carrier is deliberately excluded
+/// until its authority path is implemented.
 #[must_use]
 pub fn authenticated_broker_methods_for_role_v1(
     protocol: BrokerSessionProtocolV1,
@@ -110,6 +124,7 @@ pub fn authenticated_broker_methods_for_role_v1(
 ) -> Vec<BrokerMethod> {
     AUTHENTICATED_BROKER_METHODS_V1
         .into_iter()
+        .filter(|method| *method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT)
         .filter(|method| {
             authenticated_broker_method_profile_v1(*method).is_some_and(|profile| {
                 profile.protocol() == protocol && profile.audience() == audience
@@ -219,6 +234,8 @@ pub enum BrokerSessionMethodFeatureV1 {
     MountSourceAcquisition,
     /// Requires exact sealed Host execution-spec descriptor transport 1.0.
     HostExecutionSpecDescriptor,
+    /// Requires exact sealed Host argument-source descriptor transport 1.0.
+    HostArgumentSourceDescriptor,
 }
 
 impl BrokerSessionMethodFeatureV1 {
@@ -229,6 +246,7 @@ impl BrokerSessionMethodFeatureV1 {
             Self::SignedPlanLease => SIGNED_PLAN_LEASE_FEATURE,
             Self::MountSourceAcquisition => MOUNT_SOURCE_ACQUISITION_FEATURE,
             Self::HostExecutionSpecDescriptor => HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
+            Self::HostArgumentSourceDescriptor => HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
         }
     }
 
@@ -358,6 +376,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => BrokerSessionProtocolV1::Host,
@@ -398,6 +417,7 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -422,6 +442,7 @@ pub const fn authenticated_broker_method_profile_v1(
     let required_features: &'static [BrokerSessionMethodFeatureV1] = match method {
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => &HOST_EXECUTION_SPEC_FEATURES,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => &HOST_ARGUMENT_SOURCE_FEATURES,
         BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
             &MOUNT_SOURCE_EFFECT_FEATURES
@@ -457,6 +478,9 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
             &HOST_EXECUTION_SPEC_REQUEST_DESCRIPTOR_ROLES
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
+            &HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_ROLES
+        }
         _ => &NO_DESCRIPTOR_ROLES,
     };
     let success_response_descriptor_roles: &'static [BrokerDescriptorRole] = match method {
@@ -474,6 +498,9 @@ pub const fn authenticated_broker_method_profile_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
             &HOST_EXECUTION_SPEC_REQUEST_DESCRIPTOR_DISPOSITIONS
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
+            &HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS
         }
         _ => &NO_DESCRIPTOR_DISPOSITIONS,
     };
@@ -576,6 +603,7 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
     let mut require_signed_plan_lease = false;
     let mut require_mount_source_acquisition = false;
     let mut require_host_execution_spec_descriptor = false;
+    let mut require_host_argument_source_descriptor = false;
 
     for method in methods {
         let Some(profile) = authenticated_broker_method_profile_v1(*method) else {
@@ -591,6 +619,9 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
                 }
                 BrokerSessionMethodFeatureV1::HostExecutionSpecDescriptor => {
                     require_host_execution_spec_descriptor = true;
+                }
+                BrokerSessionMethodFeatureV1::HostArgumentSourceDescriptor => {
+                    require_host_argument_source_descriptor = true;
                 }
             }
         }
@@ -621,6 +652,14 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
     if require_host_execution_spec_descriptor {
         features.push(Feature {
             namespace: HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+    }
+    if require_host_argument_source_descriptor {
+        features.push(Feature {
+            namespace: HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE.to_owned(),
             major: 1,
             minor: 0,
             ..Default::default()
@@ -835,6 +874,22 @@ fn validate_feature_conditions(
     {
         return Err(BrokerSessionNegotiationError::FeatureCondition);
     }
+    if required_methods
+        .iter()
+        .chain(advertised_methods)
+        .any(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT)
+        && (protocol != BrokerSessionProtocolV1::Host
+            || !has_feature(
+                required_features,
+                HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
+            )
+            || !has_feature(
+                advertised_features,
+                HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
+            ))
+    {
+        return Err(BrokerSessionNegotiationError::FeatureCondition);
+    }
     if protocol == BrokerSessionProtocolV1::Mount {
         let required_source_feature =
             has_feature(required_features, MOUNT_SOURCE_ACQUISITION_FEATURE);
@@ -908,6 +963,11 @@ pub(crate) fn method_has_required_traffic_features(
             required_features,
             HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
         ))
+        && (method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
+            || has_feature(
+                required_features,
+                HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
+            ))
 }
 
 const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
@@ -1058,6 +1118,44 @@ mod tests {
         assert_eq!(
             validate_authenticated_negotiation_v1(&client, &broker, protocol, 1, 0, audience),
             Err(BrokerSessionNegotiationError::FeatureCondition)
+        );
+    }
+
+    #[test]
+    fn argument_source_transport_is_registered_but_not_advertised() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        assert_eq!(
+            profile.request_descriptor_roles(),
+            &HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_ROLES
+        );
+        assert_eq!(
+            profile.request_descriptor_dispositions(),
+            &HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS
+        );
+        assert!(
+            !authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+            )
+            .contains(&method)
+        );
+        let client = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert!(
+            !client
+                .required_methods
+                .iter()
+                .any(|value| value.as_known() == Some(method))
+        );
+        assert!(
+            !client.required_features.iter().any(|value| {
+                value.namespace == HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE
+            })
         );
     }
 }

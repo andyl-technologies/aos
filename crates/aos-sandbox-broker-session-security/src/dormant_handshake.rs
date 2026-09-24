@@ -732,6 +732,21 @@ impl ProtectedBrokerDomainResponseV1 {
 }
 
 impl DormantReceivedBrokerRequestV1 {
+    pub(crate) fn decode_host_runtime_argument_request(
+        &self,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<
+        aos_sandbox_protocol::host_argument_source::ValidatedHostRuntimeArgumentRequestV1,
+        aos_sandbox_protocol::ProtocolValidationError,
+    > {
+        aos_sandbox_protocol::host_argument_source::decode_host_runtime_argument_request_v1(
+            self.0.exact_body(),
+            self.0.peer(),
+            self.0.peer_policy(),
+            now_boottime_nanoseconds,
+        )
+    }
+
     /// Returns the authenticated method selected by the signed request.
     #[must_use]
     pub const fn method(&self) -> BrokerMethod {
@@ -800,6 +815,21 @@ impl DormantReceivedBrokerDescriptorRequestV1 {
         &self,
     ) -> Option<(DormantReceivedBrokerRequestV1, &OwnedFd)> {
         if self.request.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            || self.descriptors.len() != 1
+        {
+            return None;
+        }
+        Some((
+            DormantReceivedBrokerRequestV1(self.request.clone()),
+            &self.descriptors[0],
+        ))
+    }
+
+    /// Clones the signed argument request while retaining its sole source descriptor.
+    pub(crate) fn clone_host_argument_source_request(
+        &self,
+    ) -> Option<(DormantReceivedBrokerRequestV1, &OwnedFd)> {
+        if self.request.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
             || self.descriptors.len() != 1
         {
             return None;
@@ -5543,7 +5573,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// The fixed V1 profile derives the required role count from `method`; the
     /// exact supplied FD count and signed descriptor table must both match it.
-    /// Host PublishCatalog and Host ApplyExecution each carry one descriptor.
+    /// Host PublishCatalog, Host ApplyExecution, and the closed argument-source
+    /// transport each carry one descriptor.
     ///
     /// # Errors
     ///
@@ -5559,6 +5590,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             method,
             BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
         ) || descriptors.len() != 1
         {
             return Err(BrokerSessionSecurityError::Currentness);

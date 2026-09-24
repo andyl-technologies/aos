@@ -6,8 +6,8 @@
 //! is not a signature, a Controller journal proof, or permission to contact a
 //! Guest. A future issuer must derive it under the exclusive Controller owner;
 //! the pinned grant signer and generation belong to the authenticated broker
-//! envelope, not caller-selected fields here. No broker method advertises or
-//! dispatches this carrier.
+//! envelope, not caller-selected fields here. The broker transport is
+//! registered but production dispatch rejects it before any Guest effect.
 //!
 //! ```text
 //! AOSCAS01 || execution:16 || create-operation:16
@@ -32,9 +32,17 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
+mod transport;
+
+pub use transport::{
+    HostArgumentSourceContentFieldsV1, ValidatedHostRuntimeArgumentRequestV1,
+    decode_host_runtime_argument_request_v1, host_argument_source_content_fields_v1,
+};
+
 const MAGIC: &[u8; 8] = b"AOSCAS01";
 const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-argument-source.v1\0";
-const MAXIMUM_SOURCE_BYTES: usize = 1_024;
+/// Maximum canonical AOSCAS01 content carried by its sealed descriptor.
+pub const MAXIMUM_CONTROLLER_EXECUTION_ARGUMENT_SOURCE_BYTES_V1: usize = 1_024;
 
 /// Reports a malformed or noncanonical Controller argument-source carrier.
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
@@ -251,7 +259,7 @@ impl DecodedControllerExecutionArgumentSourceV1 {
 pub fn decode_controller_execution_argument_source_v1(
     bytes: &[u8],
 ) -> Result<DecodedControllerExecutionArgumentSourceV1, ControllerExecutionArgumentSourceErrorV1> {
-    if bytes.len() > MAXIMUM_SOURCE_BYTES {
+    if bytes.len() > MAXIMUM_CONTROLLER_EXECUTION_ARGUMENT_SOURCE_BYTES_V1 {
         return Err(ControllerExecutionArgumentSourceErrorV1::InvalidCarrier);
     }
     let mut cursor = 0;
@@ -391,6 +399,11 @@ fn digest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{PeerCredentials, PeerPolicy};
+    use aos_proto::aos::sandbox::local::v1::{
+        Audience, ObserveHostRuntimeArgumentRequestV1, RequestHeader,
+    };
+    use buffa::Message as _;
 
     fn reseal(bytes: &mut [u8]) {
         let digest_start = bytes.len() - 32;
@@ -498,5 +511,61 @@ mod tests {
         bytes[media_type_start] = b'A';
         reseal(&mut bytes);
         assert!(decode_controller_execution_argument_source_v1(&bytes).is_err());
+    }
+
+    #[test]
+    fn argument_source_sealed_reference_checks_attempt_bytes_boot_and_both_deadlines() {
+        let source = source();
+        let fields = host_argument_source_content_fields_v1(
+            [31; 16],
+            ExecutionId::from_bytes([1; 16]),
+            OperationId::from_bytes([2; 16]),
+            &source,
+        )
+        .unwrap();
+        let mut request = ObserveHostRuntimeArgumentRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                request_id: vec![31; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 10,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .into(),
+            source_transfer_version: 1,
+            source_content_bytes: fields.bytes(),
+            source_content_digest: fields.digest().to_vec(),
+            source_digest: fields.source_digest().as_bytes().to_vec(),
+            source_attempt_commitment: fields.attempt_commitment().to_vec(),
+            execution_id: vec![1; 16],
+            create_operation_id: vec![2; 16],
+            ..Default::default()
+        };
+        let peer = PeerCredentials {
+            uid: 100,
+            gid: 200,
+            pid: Some(300),
+        };
+        let policy = PeerPolicy {
+            uid: 100,
+            gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let decode = |request: &ObserveHostRuntimeArgumentRequestV1| {
+            decode_host_runtime_argument_request_v1(&request.encode_to_vec(), peer, policy, 1)
+        };
+
+        let decoded = decode(&request).unwrap();
+        assert!(decoded.verify_source(&source, [26; 16], 1).is_ok());
+        assert!(decoded.verify_source(&source, [27; 16], 1).is_err());
+        assert!(decoded.verify_source(&source, [26; 16], 10).is_err());
+        assert!(decoded.verify_source(&source, [26; 16], 25).is_err());
+
+        let mut changed = source.clone();
+        changed[9] ^= 1;
+        assert!(decoded.verify_source(&changed, [26; 16], 1).is_err());
+        request.source_attempt_commitment[0] ^= 1;
+        assert!(decode(&request).is_err());
     }
 }

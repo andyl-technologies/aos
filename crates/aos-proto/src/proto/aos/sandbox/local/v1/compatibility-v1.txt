@@ -43,6 +43,17 @@ BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
 BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
 BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
+BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;
+BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE = 12;
+message ObserveHostRuntimeArgumentRequestV1 {
+RequestHeader header = 1;
+uint32 source_transfer_version = 2;
+uint64 source_content_bytes = 3;
+bytes source_content_digest = 4;
+bytes source_digest = 5;
+bytes source_attempt_commitment = 6;
+bytes execution_id = 7;
+bytes create_operation_id = 8;
 message RecoverStorageInventoryRequestV1 {
 RequestHeader header = 1;
 bytes group_request_id = 2;

@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x2f6b_533e_f9bc_035d;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xb978_4e35_c668_978a;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -156,6 +156,21 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;",
             "BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;",
             "BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;",
+            "BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ObserveHostRuntimeArgumentRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "uint32 source_transfer_version = 2;",
+            "uint64 source_content_bytes = 3;",
+            "bytes source_content_digest = 4;",
+            "bytes source_digest = 5;",
+            "bytes source_attempt_commitment = 6;",
+            "bytes execution_id = 7;",
+            "bytes create_operation_id = 8;",
         ],
     )?;
     verify_scoped_declarations(

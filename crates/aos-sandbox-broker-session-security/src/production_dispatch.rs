@@ -6,6 +6,7 @@
 //! after dispatch retain the existing opaque outcome-recovery custody.
 
 use aos_proto::aos::sandbox::local::v1::{ApplyHostExecutionRequestV1, BrokerMethod};
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use buffa::Message as _;
 
@@ -45,6 +46,13 @@ pub enum ProductionHostBrokerDispatchFailureV1 {
     ExecutionDescriptor {
         failure: DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>,
         request: DormantReceivedBrokerDescriptorRequestV1,
+    },
+    /// The sealed argument source was checked but has no accepted-Create issuer.
+    ArgumentSourceDescriptor {
+        failure: DormantBrokerExecutionFailureV1<()>,
+        request: DormantReceivedBrokerDescriptorRequestV1,
+        /// Distinguishes valid transport from malformed sealed content.
+        transport_validated: bool,
     },
     /// A descriptor-producing scope operation failed with its custody retained.
     Descriptor(
@@ -318,6 +326,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 failure,
                 request: _,
             }) => self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds),
+            Err(ProductionHostBrokerDispatchFailureV1::ArgumentSourceDescriptor {
+                failure,
+                request: _,
+                transport_validated: _,
+            }) => self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds),
             Err(ProductionHostBrokerDispatchFailureV1::Descriptor(failure)) => match failure {
                 DormantBrokerDescriptorExecutionFailureV1::BeforeEffect { error, request } => self
                     .finish_ordinary_dispatch(
@@ -496,6 +509,25 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 }
                 Err(_) => Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request)),
             };
+        }
+
+        if request.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT {
+            let Some((argument_request, descriptor)) = request.clone_host_argument_source_request()
+            else {
+                return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
+            };
+            let transport_validated =
+                verify_argument_source_descriptor(&argument_request, descriptor);
+
+            // The signed accepted-Create issuer and Host one-shot owner bridge
+            // are not installed. Valid transport cannot authorize Guest send.
+            return Err(
+                ProductionHostBrokerDispatchFailureV1::ArgumentSourceDescriptor {
+                    failure: before_effect_currentness(argument_request),
+                    request,
+                    transport_validated,
+                },
+            );
         }
 
         let request = request
@@ -731,6 +763,41 @@ fn before_effect_currentness<Domain>(
         error: crate::BrokerSessionSecurityError::Currentness,
         request,
     }
+}
+
+fn current_boottime_nanoseconds() -> Option<u64> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec).ok()?;
+    let nanoseconds = u64::try_from(now.tv_nsec).ok()?;
+    seconds.checked_mul(1_000_000_000)?.checked_add(nanoseconds)
+}
+
+fn verify_argument_source_descriptor(
+    request: &DormantReceivedBrokerRequestV1,
+    descriptor: &std::os::fd::OwnedFd,
+) -> bool {
+    let Some(now) = current_boottime_nanoseconds() else {
+        return false;
+    };
+    let Ok(decoded) = request.decode_host_runtime_argument_request(now) else {
+        return false;
+    };
+    let Ok(boot) = KernelBootId::current() else {
+        return false;
+    };
+    let Ok(duplicate) = rustix::io::dup(descriptor) else {
+        return false;
+    };
+
+    matches!(
+        SealedMemfdMapping::run(
+            duplicate,
+            decoded.content_fields().bytes(),
+            aos_sandbox_protocol::host_argument_source::MAXIMUM_CONTROLLER_EXECUTION_ARGUMENT_SOURCE_BYTES_V1 as u64,
+            |content, _identity| decoded.verify_source(content, boot.into_bytes(), now),
+        ),
+        Ok(Ok(_))
+    )
 }
 
 fn map_execution_failure<Source, Target>(
