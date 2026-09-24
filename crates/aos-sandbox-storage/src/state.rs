@@ -3758,14 +3758,17 @@ impl StorageTransactionStore {
     ) -> Result<(), StorageStateError> {
         // The closed Repair guard conservatively freezes every Storage state
         // transition, not only writes that visibly name its workspace.
-        if self
-            .repair_guards
-            .values()
-            .any(repair_guard::StorageRepairGuardRecordV1::is_held)
-        {
+        if self.has_held_repair_guard() {
             return Err(StorageStateError::InvalidTransition);
         }
         self.commit_journal_unfenced(transaction)
+    }
+
+    /// Reports a MAC-authenticated, restart-persistent Repair hold.
+    pub(crate) fn has_held_repair_guard(&self) -> bool {
+        self.repair_guards
+            .values()
+            .any(repair_guard::StorageRepairGuardRecordV1::is_held)
     }
 
     // Only the closed guard resolver may call this while a held row exists.

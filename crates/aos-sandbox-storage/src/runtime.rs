@@ -11,6 +11,10 @@
 //! that creates this directory. This module enforces root ownership, fixed
 //! filenames, bounded canonical records, and exact genesis identity; it does
 //! not accept a caller-provided boolean as proof of completeness.
+//! Repair worker admission closes before the final pin/ZFS and guest-root
+//! cgroup scans; it does not itself authorize a Repair commit.
+
+mod repair_worker_drain;
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -84,6 +88,7 @@ use crate::{
     StorageStateError, StorageTransactionStore, StorageWorkspaceCatalogError, SystemdZfsExecutor,
     ZfsHelperContract, ZfsTransactionError, ZfsWorkerError,
 };
+use repair_worker_drain::{RepairWorkerDispatchGate, close_and_drain_worker_scopes};
 
 const BOOTSTRAP_FILE: &str = "storage-genesis.catalog";
 const MINIMUM_GENERATION_FILE: &str = "storage-minimum-generation";
@@ -99,6 +104,23 @@ const GUEST_ROOT_PUBLISHER_SOCKET: &str = "/run/aos/sandbox-guest-root-publisher
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+
+/// Rejects a retained Repair hold before startup observation can dispatch.
+///
+/// # Errors
+///
+/// Returns [`StorageRuntimeError::Recovery`] while the authenticated journal
+/// retains an unresolved held guard.
+pub(crate) fn reject_held_repair_guard_after_quiescence(
+    transactions: &StorageTransactionStore,
+) -> Result<(), StorageRuntimeError> {
+    // A persisted hold is not a new dispatch grant. A future resolver must
+    // authenticate the Controller terminal outcome before opening this gate.
+    if transactions.has_held_repair_guard() {
+        return Err(StorageRuntimeError::Recovery);
+    }
+    Ok(())
+}
 
 fn live_export_origin_matches_source(
     origin: &StorageLiveExportOriginV1,
@@ -308,6 +330,7 @@ pub struct StorageBrokerRuntime {
     apply_readiness: StorageApplyReadiness,
     resolver_policies: Option<ProtectedStorageResolverPolicyDirectoryV1>,
     prepare_readiness: StoragePrepareReadiness,
+    worker_dispatch: RepairWorkerDispatchGate,
     #[cfg(test)]
     fail_repair_completion_commit_for_test: bool,
 }
@@ -328,6 +351,10 @@ impl StorageBrokerRuntime {
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         protocol_version: ProtocolVersion,
     ) -> Result<Vec<u8>, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         if request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
             || self.readiness != StorageRuntimeReadiness::Ready
             || allocation_policy.authority_binding() != self.configuration_binding
@@ -457,6 +484,10 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -566,6 +597,10 @@ impl StorageBrokerRuntime {
         &mut self,
         operation: [u8; 16],
     ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -795,6 +830,9 @@ impl StorageBrokerRuntime {
         )?;
         guest_root_publisher.recover_quiescence()?;
 
+        // This runs after both cgroup scans and before any startup observer.
+        reject_held_repair_guard_after_quiescence(&transactions)?;
+
         transactions.validate_runtime_restart(
             configuration_binding,
             bootstrap.genesis_generation,
@@ -855,6 +893,7 @@ impl StorageBrokerRuntime {
             apply_readiness,
             resolver_policies,
             prepare_readiness,
+            worker_dispatch: RepairWorkerDispatchGate::new(),
             #[cfg(test)]
             fail_repair_completion_commit_for_test: false,
         };
@@ -884,6 +923,9 @@ impl StorageBrokerRuntime {
         // then open the workspace journal under the already-held first lock.
         let mut pin_io = SystemdWorkspacePinRuntimeIo::new(pin_custody, pin_executor, pin_observer);
         pin_io.recover_quiescence()?;
+        if coordinator.has_held_repair_guard() {
+            return Err(StorageRuntimeError::Recovery);
+        }
         let workspaces = open_validated_workspace_catalog_after_startup(
             &mut coordinator,
             trusted_clock,
@@ -902,6 +944,7 @@ impl StorageBrokerRuntime {
             apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
             resolver_policies: None,
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
+            worker_dispatch: RepairWorkerDispatchGate::new(),
             fail_repair_completion_commit_for_test: false,
         };
         runtime.readiness = runtime.reconcile_startup()?;
@@ -925,6 +968,9 @@ impl StorageBrokerRuntime {
         C: FnMut() -> Result<RawPairedClockSample, crate::StorageAdmissionError>,
     {
         pin_io.recover_quiescence()?;
+        if coordinator.has_held_repair_guard() {
+            return Err(StorageRuntimeError::Recovery);
+        }
         let workspaces = open_validated_workspace_catalog_after_startup(
             &mut coordinator,
             trusted_clock,
@@ -942,6 +988,7 @@ impl StorageBrokerRuntime {
             apply_readiness: StorageApplyReadiness::WorkspaceBackendUnavailable,
             resolver_policies: None,
             prepare_readiness: StoragePrepareReadiness::Unconfigured,
+            worker_dispatch: RepairWorkerDispatchGate::new(),
             fail_repair_completion_commit_for_test: false,
         };
         runtime.readiness = runtime.reconcile_startup()?;
@@ -1022,14 +1069,16 @@ impl StorageBrokerRuntime {
 
     /// Reports whether production Prepare is safe in the current runtime state.
     #[must_use]
-    pub const fn is_prepare_ready(&self) -> bool {
+    pub fn is_prepare_ready(&self) -> bool {
         matches!(self.prepare_readiness, StoragePrepareReadiness::Ready)
             && self.readiness.permits_catalog_methods()
+            && self.worker_dispatch.is_open()
     }
 
     fn operation_permits_apply(&self, operation_id: [u8; 16]) -> Result<bool, StorageRuntimeError> {
         if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
             || !self.readiness.permits_catalog_methods()
+            || !self.worker_dispatch.is_open()
         {
             return Ok(false);
         }
@@ -1043,8 +1092,8 @@ impl StorageBrokerRuntime {
     /// method re-observes its exact precondition and rechecks all authority on
     /// every call, including while another recovered operation remains pending.
     #[must_use]
-    pub const fn is_repair_ready(&self) -> bool {
-        self.readiness.permits_repair()
+    pub fn is_repair_ready(&self) -> bool {
+        self.readiness.permits_repair() && self.worker_dispatch.is_open()
     }
 
     /// Reports whether authenticated authoritative inventory may be exposed.
@@ -1053,7 +1102,7 @@ impl StorageBrokerRuntime {
     /// workspace catalog is opened.
     #[must_use]
     pub fn is_inventory_ready(&self) -> bool {
-        if !self.readiness.permits_catalog_methods() {
+        if !self.readiness.permits_catalog_methods() || !self.worker_dispatch.is_open() {
             return false;
         }
         let Some(workspaces) = self.workspaces.as_ref() else {
@@ -1069,6 +1118,10 @@ impl StorageBrokerRuntime {
     /// Returns an error when current Storage inventory is closed, or the
     /// socket-activated publisher cannot authenticate and exit cleanly.
     pub fn probe_guest_root_publisher(&self) -> Result<(), StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         if !self.is_inventory_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -1094,6 +1147,10 @@ impl StorageBrokerRuntime {
         activation_deadline_boottime_nanoseconds: u64,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<Vec<u8>, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let now = boottime_now_nanoseconds()?;
         if !self.is_inventory_ready()
             || now >= worker_cutoff_boottime_nanoseconds
@@ -1139,6 +1196,10 @@ impl StorageBrokerRuntime {
         template: &ProtectedGuestRootTemplateV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<OwnedFd, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let now = boottime_now_nanoseconds()?;
         let cutoff = guest_root_inventory_cutoff(now, deadline_boottime_nanoseconds)?;
         let before = self.inventory_resources(deadline_boottime_nanoseconds, cutoff)?;
@@ -1227,6 +1288,10 @@ impl StorageBrokerRuntime {
         source: StorageLiveExportSourceV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<OwnedFd, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let before =
             self.observe_live_export_origin(source.workspace_id(), deadline_boottime_nanoseconds)?;
         if !live_export_origin_matches_source(&before, source) {
@@ -1300,6 +1365,10 @@ impl StorageBrokerRuntime {
         policy: PeerPolicy,
         template: &ProtectedGuestRootTemplateV1,
     ) -> Result<GuestRootPublicationProofV1, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let clock = trusted_paired_clock_sample()?;
         let semantics = CanonicalStorageGuestRootSemanticsV1::decode(
             request_body,
@@ -1685,6 +1754,10 @@ impl StorageBrokerRuntime {
         if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let clock = trusted_clock().map_err(|_| StorageRuntimeError::Recovery)?;
         if self
             .coordinator
@@ -1845,6 +1918,10 @@ impl StorageBrokerRuntime {
         if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         if let Some(expected) = expected_attestation_digest {
             let Some((owner, signed_intent)) = operator_owner.as_mut() else {
                 return Err(StorageRuntimeError::Recovery);
@@ -2230,6 +2307,10 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         if !self.operation_permits_apply(operation_id)? {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -2337,7 +2418,41 @@ impl StorageBrokerRuntime {
         Ok(StorageRuntimeMutationOutcome::Committed(committed))
     }
 
+    /// Closes every new worker launch before the final global cgroup drain.
+    ///
+    /// This is deliberately not an acquisition proof: no caller may yet hold
+    /// this process and its protected journals across live physical readback,
+    /// the Controller transaction, and ambiguous-outcome recovery.
+    ///
+    /// # Errors
+    ///
+    /// Rejects nonterminal or poisoned journal custody, an in-flight dispatch,
+    /// or either global worker-scope scan failing to prove quiescence. Once
+    /// admission closes, failure cannot reopen it in this process.
+    #[allow(dead_code, reason = "Repair guard acquisition remains closed")]
+    pub(crate) fn drain_repair_worker_dispatch(&mut self) -> Result<(), StorageRuntimeError> {
+        if !self.is_inventory_ready() || self.coordinator.transaction_journal_requires_reopen() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        close_and_drain_worker_scopes(
+            &self.worker_dispatch,
+            || self.pin_io.recover_quiescence().map_err(Into::into),
+            || {
+                let mut publisher = SystemdGuestRootPublisherClientV1::new(
+                    PathBuf::from(GUEST_ROOT_PUBLISHER_SOCKET),
+                    open_cgroup_root()?,
+                )?;
+                publisher.recover_quiescence().map_err(Into::into)
+            },
+        )
+    }
+
     fn reconcile_startup(&mut self) -> Result<StorageRuntimeReadiness, StorageRuntimeError> {
+        let _dispatch = self
+            .worker_dispatch
+            .enter()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let mut pending = reconcile_transaction_recovery(&mut self.coordinator, &mut self.helper)?;
         for dispatch in self
             .coordinator

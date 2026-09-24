@@ -428,6 +428,8 @@ mod tests {
 
         let mut reopened =
             StorageTransactionStore::open_for_test(directory.path(), state_key(), 0).unwrap();
+        assert!(reopened.has_held_repair_guard());
+        assert!(crate::runtime::reject_held_repair_guard_after_quiescence(&reopened).is_err());
         assert!(
             reopened
                 .repair_guards
@@ -541,6 +543,8 @@ mod tests {
 
         let mut reopened =
             StorageTransactionStore::open_for_test(directory.path(), state_key(), 0).unwrap();
+        assert!(reopened.has_held_repair_guard());
+        assert!(crate::runtime::reject_held_repair_guard_after_quiescence(&reopened).is_err());
         assert!(
             reopened
                 .repair_guards
