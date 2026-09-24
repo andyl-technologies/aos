@@ -4,7 +4,7 @@
 //! authority = AOSRAA01 || currentness_and_probe[32] || ledger[32]
 //! output-v2 = AOSROV02 || store_binding[32]
 //! output-marker = AOSEOM01 || assignment[32] || parent_output_bytes:u64be
-//! output-claim = 'o' || execution[16] => AOSEOR01 accepted-Create claim
+//! output-claim = 'o' || execution[16] => AOSEOR02 accepted-Create claim
 //! sequence  = operation_sequence:u64be || operation[16] || issue_anchor[32]
 //! resource  = prior_ledger[32] || output_reservation[32]
 //!             || successor_ledger[32] || admission[32]
@@ -319,6 +319,7 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .ok_or(JournalRuntimeExecutionError::RecordConflict)?;
         if retained.create_operation != *proposed.create_operation.as_bytes()
             || retained.assignment != proposed.request.runtime().assignment_digest()
+            || retained.stream_limits.is_none()
         {
             return Err(JournalRuntimeExecutionError::RecordConflict);
         }
@@ -335,7 +336,12 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .encode()
             .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
         let transaction = JournalTransaction::new(
-            *proposed.execution.as_bytes(),
+            transaction_id(
+                b"argument-observation-begin",
+                proposed
+                    .digest()
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+            ),
             vec![JournalRecord::put(
                 RecordNamespace::Effect,
                 ArgumentObservationRecordV1::key(proposed.execution).to_vec(),
@@ -378,7 +384,12 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .encode()
             .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
         let transaction = JournalTransaction::new(
-            *execution.as_bytes(),
+            transaction_id(
+                b"argument-observation-complete",
+                record
+                    .digest()
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+            ),
             vec![JournalRecord::put(
                 RecordNamespace::Effect,
                 ArgumentObservationRecordV1::key(execution).to_vec(),
@@ -2592,17 +2603,18 @@ mod output_v2_tests {
     }
 
     fn claim(execution: u8, requested: u64, parent: u64) -> Vec<u8> {
-        let mut bytes = [0_u8; 312];
-        bytes[..8].copy_from_slice(b"AOSEOR01");
+        let mut bytes = [0_u8; 328];
+        bytes[..8].copy_from_slice(b"AOSEOR02");
         bytes[8..24].fill(execution);
         bytes[24..40].fill(3);
-        for (index, start) in [40, 72, 104, 136, 168, 200, 248].into_iter().enumerate() {
+        for (index, start) in [40, 72, 104, 136, 168, 200, 264].into_iter().enumerate() {
             bytes[start..start + 32].fill(if start == 104 { 5 } else { index as u8 + 1 });
         }
         bytes[232..240].copy_from_slice(&requested.to_be_bytes());
         bytes[240..248].copy_from_slice(&parent.to_be_bytes());
-        let checksum = Sha256::digest(&bytes[..280]);
-        bytes[280..].copy_from_slice(&checksum);
+        bytes[248..256].copy_from_slice(&requested.to_be_bytes());
+        let checksum = Sha256::digest(&bytes[..296]);
+        bytes[296..].copy_from_slice(&checksum);
         bytes.to_vec()
     }
 
@@ -2731,6 +2743,7 @@ mod output_v2_tests {
                 .load_accepted_output_v2(ExecutionId::from_bytes([execution; 16]))?
                 .expect("durable provisional claim");
             assert_eq!(retained.requested_bytes, requested);
+            assert_eq!(retained.stream_limits, Some((requested, 0)));
             assert_eq!(retained.create_operation, [3; 16]);
             assert_eq!(retained.assignment, assignment);
             assert_eq!(

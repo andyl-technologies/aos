@@ -17,6 +17,7 @@ mod outcome_record;
 mod owner;
 mod recovery;
 mod route_record;
+mod spec_producer;
 mod store;
 
 #[cfg(unix)]
@@ -62,6 +63,7 @@ pub use owner::{
     RecoveredRuntimeArgumentChallengeV1,
 };
 pub use recovery::AppliedExecutionRecoveryV1;
+pub use spec_producer::{ProtectedExecutionSpecProducerErrorV1, admit_accepted_execution_spec_v1};
 pub use store::{
     AuthenticatedJournalExecutionRecoveryV1, ExecutionJournalRecoveryTokenV1,
     JournalRuntimeExecutionError,

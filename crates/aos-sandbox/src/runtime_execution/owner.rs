@@ -698,6 +698,18 @@ impl ProtectedAcceptedExecutionOutputV2 {
     pub const fn currentness(&self) -> &AdmissionCurrentnessV1 {
         &self.currentness
     }
+
+    /// Returns the accepted and durably bound stdout capture ceiling.
+    #[must_use]
+    pub const fn maximum_stdout_bytes(&self) -> u64 {
+        self.reservation.maximum_stdout_bytes()
+    }
+
+    /// Returns the accepted and durably bound stderr capture ceiling.
+    #[must_use]
+    pub const fn maximum_stderr_bytes(&self) -> u64 {
+        self.reservation.maximum_stderr_bytes()
+    }
 }
 
 /// Holds a protected pre-issued one-shot Guest measurement challenge.
@@ -1146,6 +1158,11 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             || retained.assignment != accepted.assignment
             || retained.requested_bytes != accepted.requested_bytes
             || retained.parent_bytes != accepted.parent_bytes
+            || retained.stream_limits
+                != Some((
+                    accepted.record.maximum_stdout_bytes(),
+                    accepted.record.maximum_stderr_bytes(),
+                ))
         {
             return Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch);
         }
@@ -1364,6 +1381,45 @@ impl DormantRuntimeExecutionClaimV1<'_> {
                 readback.packet_digest(),
             )
             .map_err(Into::into)
+    }
+
+    /// Rechecks a fresh readback against current protected session custody.
+    ///
+    /// Historical recovery deliberately cannot produce this opaque value.
+    /// Even a live proof ceases to qualify when its original agent session is
+    /// no longer the protected current session or its owner/record changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale owner, changed live session, or mismatched
+    /// challenge, packet, or current execution target.
+    pub fn revalidate_fresh_runtime_argument_readback_v1(
+        &self,
+        proof: &AuthenticatedRuntimeArgumentReadbackV1,
+    ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        let record = self
+            .execution
+            .load_argument_observation_v1(proof.execution)?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        self.validate_argument_observation_record_v1(&record)?;
+        if record.create_operation != proof.create_operation
+            || record.signed_packet_digest != Some(proof.packet_digest)
+            || digest(&record.request.encode()) != proof.request_digest
+            || record
+                .digest()
+                .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?
+                != proof.custody_digest
+            || !self
+                .agent
+                .authenticates_session(&record.handshake, &record.response)?
+            || proof.evidence.target().assignment_digest()
+                != self.currentness.runtime().currentness().assignment_digest()
+            || proof.evidence.target().payload_boot_id() != self.currentness.payload_boot_id()
+            || proof.evidence.runtime_profile_commitment() != self.protected_plan.runtime_profile()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        Ok(())
     }
 
     fn validate_argument_observation_record_v1(
@@ -4406,6 +4462,7 @@ mod accepted_output_currentness_tests {
             claim_commitment: ObjectDigest::from_bytes([18; 32]),
             requested_bytes: 0,
             parent_bytes: 0,
+            stream_limits: Some((0, 0)),
             record_digest: ObjectDigest::from_bytes([19; 32]),
         }
     }

@@ -7,7 +7,9 @@
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitError, ExecutionAdmissionDraftV1, decode_durable_execution_admission_v1,
 };
-use aos_sandbox_core::{DecodeLimits, ObjectDigest, ResourceDimension, decode_execution_spec_v1};
+use aos_sandbox_core::{
+    DecodeLimits, ExecutionOutputModeV1, ObjectDigest, ResourceDimension, decode_execution_spec_v1,
+};
 
 use crate::execution_output_reservation::RetainedClaim;
 use crate::journal::ProtectedJournalAuthority;
@@ -22,6 +24,7 @@ pub(super) struct OutputClaim {
     requested_bytes: u64,
     parent_bytes: u64,
     admitted_bytes: u64,
+    stream_limits: (u64, u64),
 }
 
 impl OutputClaim {
@@ -40,6 +43,7 @@ impl OutputClaim {
             && retained.requested_bytes == self.requested_bytes
             && retained.requested_bytes == self.admitted_bytes
             && retained.parent_bytes == self.parent_bytes
+            && retained.stream_limits == Some(self.stream_limits)
             && retained.record_digest == reservation_record
     }
 }
@@ -95,6 +99,13 @@ pub(super) fn decode_output_claim(specification_bytes: &[u8]) -> Result<OutputCl
     )
     .map_err(|_| ())?;
     let output = specification.resources().output_bytes();
+    let stream_limits = match specification.io().output_mode() {
+        ExecutionOutputModeV1::Stream => (0, 0),
+        ExecutionOutputModeV1::Capture {
+            maximum_stdout_bytes,
+            maximum_stderr_bytes,
+        } => (maximum_stdout_bytes, maximum_stderr_bytes),
+    };
     Ok(OutputClaim {
         assignment: output.assignment_digest(),
         commitment: output.reservation_commitment(),
@@ -104,6 +115,7 @@ pub(super) fn decode_output_claim(specification_bytes: &[u8]) -> Result<OutputCl
             .parent_reservations()
             .get(ResourceDimension::OutputBytes),
         admitted_bytes: output.admitted_bytes(),
+        stream_limits,
     })
 }
 
@@ -176,6 +188,7 @@ mod tests {
             requested_bytes: admitted_bytes,
             parent_bytes,
             admitted_bytes,
+            stream_limits: (admitted_bytes, 0),
         }
     }
 
@@ -217,6 +230,7 @@ mod tests {
             claim_commitment: claim.commitment,
             requested_bytes: 20,
             parent_bytes: 100,
+            stream_limits: Some((20, 0)),
             record_digest: ObjectDigest::from_bytes([4; 32]),
         };
 
@@ -225,6 +239,16 @@ mod tests {
             &[2; 16],
             &[3; 16],
             ObjectDigest::from_bytes([4; 32]),
+        ));
+        let changed_split = OutputClaim {
+            stream_limits: (19, 1),
+            ..claim
+        };
+        assert!(!changed_split.matches_provisional(
+            &retained,
+            &[2; 16],
+            &[3; 16],
+            retained.record_digest
         ));
         assert!(!claim.matches_provisional(&retained, &[2; 16], &[3; 16], claim.commitment));
         assert!(!claim.matches_provisional(

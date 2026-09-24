@@ -8,10 +8,12 @@
 //!
 //! ```text
 //! marker = AOSEOM01 || assignment[32] || parent-bytes:u64be
-//! claim  = AOSEOR01 || execution[16] || create-operation[16]
+//! claim  = AOSEOR02 || execution[16] || create-operation[16]
 //!          || accepted-resource-version[32] || projection[32] || assignment[32]
 //!          || parent-profile[32] || parent-binding[32] || spec-record[32]
-//!          || requested:u64be || parent-bytes:u64be || claim[32] || sha256[32]
+//!          || requested:u64be || parent-bytes:u64be
+//!          || maximum-stdout:u64be || maximum-stderr:u64be
+//!          || claim[32] || sha256[32]
 //! ```
 //!
 //! The runtime store's protected-open provenance, exclusive claim, and
@@ -37,10 +39,12 @@ use crate::journal::JournalError;
 
 pub(crate) const MARKER_KEY: &[u8] = b"execution-output-owner-v1";
 const MARKER_MAGIC: &[u8; 8] = b"AOSEOM01";
-const CLAIM_MAGIC: &[u8; 8] = b"AOSEOR01";
+const CLAIM_MAGIC: &[u8; 8] = b"AOSEOR02";
+const LEGACY_CLAIM_MAGIC: &[u8; 8] = b"AOSEOR01";
 pub(crate) const CLAIM_KEY_PREFIX: u8 = b'o';
 const MARKER_BYTES: usize = 48;
-pub(crate) const CLAIM_BYTES: usize = 312;
+pub(crate) const CLAIM_BYTES: usize = 328;
+const LEGACY_CLAIM_BYTES: usize = 312;
 
 /// Reports absent accepted input, capacity exhaustion, or protected-ledger failure.
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +74,8 @@ pub struct DurableExecutionOutputReservationV1 {
     accepted_resource_version: ObjectDigest,
     projection_revision: ObjectDigest,
     output: ExecutionOutputByteAdmissionV1,
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
     record_digest: ObjectDigest,
 }
 
@@ -78,6 +84,18 @@ impl DurableExecutionOutputReservationV1 {
     #[must_use]
     pub const fn output(&self) -> &ExecutionOutputByteAdmissionV1 {
         &self.output
+    }
+
+    /// Returns the exact accepted per-stream stdout retention ceiling.
+    #[must_use]
+    pub const fn maximum_stdout_bytes(&self) -> u64 {
+        self.maximum_stdout_bytes
+    }
+
+    /// Returns the exact accepted per-stream stderr retention ceiling.
+    #[must_use]
+    pub const fn maximum_stderr_bytes(&self) -> u64 {
+        self.maximum_stderr_bytes
     }
 
     /// Returns the exact execution reserved by the protected ledger.
@@ -178,7 +196,8 @@ pub(crate) fn accepted_claim(
     {
         return Err(ExecutionOutputReservationErrorV1::NotCurrent);
     }
-    let requested_bytes = requested_output_bytes(command)?;
+    let (requested_bytes, maximum_stdout_bytes, maximum_stderr_bytes) =
+        requested_output_limits(command)?;
     let output = ExecutionOutputByteAdmissionV1::new(
         requested_bytes,
         requested_bytes,
@@ -210,9 +229,11 @@ pub(crate) fn accepted_claim(
     bytes[200..232].copy_from_slice(parent.specification_record_digest().as_bytes());
     bytes[232..240].copy_from_slice(&requested_bytes.to_be_bytes());
     bytes[240..248].copy_from_slice(&parent_bytes.to_be_bytes());
-    bytes[248..280].copy_from_slice(output.reservation_commitment().as_bytes());
-    let checksum = Sha256::digest(&bytes[..280]);
-    bytes[280..].copy_from_slice(&checksum);
+    bytes[248..256].copy_from_slice(&maximum_stdout_bytes.to_be_bytes());
+    bytes[256..264].copy_from_slice(&maximum_stderr_bytes.to_be_bytes());
+    bytes[264..296].copy_from_slice(output.reservation_commitment().as_bytes());
+    let checksum = Sha256::digest(&bytes[..296]);
+    bytes[296..].copy_from_slice(&checksum);
     let record_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
     Ok(ClaimDraft {
         record: DurableExecutionOutputReservationV1 {
@@ -221,6 +242,8 @@ pub(crate) fn accepted_claim(
             accepted_resource_version,
             projection_revision: projection.revision(),
             output,
+            maximum_stdout_bytes,
+            maximum_stderr_bytes,
             record_digest,
         },
         bytes,
@@ -230,7 +253,14 @@ pub(crate) fn accepted_claim(
     })
 }
 
+#[cfg(test)]
 fn requested_output_bytes(command: &Command) -> Result<u64, ExecutionOutputReservationErrorV1> {
+    requested_output_limits(command).map(|(aggregate, _, _)| aggregate)
+}
+
+fn requested_output_limits(
+    command: &Command,
+) -> Result<(u64, u64, u64), ExecutionOutputReservationErrorV1> {
     match command.io_mode.as_known() {
         Some(
             ExecutionIoMode::EXECUTION_IO_MODE_STREAM | ExecutionIoMode::EXECUTION_IO_MODE_PTY,
@@ -238,7 +268,7 @@ fn requested_output_bytes(command: &Command) -> Result<u64, ExecutionOutputReser
             && command.maximum_stdout_bytes.is_none()
             && command.maximum_stderr_bytes.is_none() =>
         {
-            Ok(0)
+            Ok((0, 0, 0))
         }
         Some(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE)
             if crate::controller_query::portable_resource::checked_detached_capture_bytes(
@@ -246,7 +276,13 @@ fn requested_output_bytes(command: &Command) -> Result<u64, ExecutionOutputReser
             )
             .is_some() =>
         {
-            Ok(command.detached_capture_bytes)
+            let stdout = command
+                .maximum_stdout_bytes
+                .ok_or(ExecutionOutputReservationErrorV1::NotCurrent)?;
+            let stderr = command
+                .maximum_stderr_bytes
+                .ok_or(ExecutionOutputReservationErrorV1::NotCurrent)?;
+            Ok((command.detached_capture_bytes, stdout, stderr))
         }
         _ => Err(ExecutionOutputReservationErrorV1::NotCurrent),
     }
@@ -271,16 +307,38 @@ pub(crate) struct RetainedClaim {
     pub(crate) claim_commitment: ObjectDigest,
     pub(crate) requested_bytes: u64,
     pub(crate) parent_bytes: u64,
+    pub(crate) stream_limits: Option<(u64, u64)>,
     pub(crate) record_digest: ObjectDigest,
 }
 
 pub(crate) fn decode_claim(
     bytes: &[u8],
 ) -> Result<RetainedClaim, ExecutionOutputReservationErrorV1> {
-    let required_digests = [40, 72, 104, 136, 168, 200, 248];
-    if bytes.len() != CLAIM_BYTES
-        || bytes.get(..8) != Some(CLAIM_MAGIC.as_slice())
-        || Sha256::digest(&bytes[..280]).as_slice() != &bytes[280..]
+    let (claim_start, checksum_start, stream_limits) = match bytes.get(..8) {
+        Some(magic) if magic == CLAIM_MAGIC.as_slice() && bytes.len() == CLAIM_BYTES => {
+            let stdout = u64::from_be_bytes(
+                bytes[248..256]
+                    .try_into()
+                    .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
+            );
+            let stderr = u64::from_be_bytes(
+                bytes[256..264]
+                    .try_into()
+                    .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
+            );
+            (264, 296, Some((stdout, stderr)))
+        }
+        Some(magic)
+            if magic == LEGACY_CLAIM_MAGIC.as_slice() && bytes.len() == LEGACY_CLAIM_BYTES =>
+        {
+            // Legacy claims remain counted on cold replay but cannot supply
+            // the v2-only split-bound witness used by a new spec admission.
+            (248, 280, None)
+        }
+        _ => return Err(ExecutionOutputReservationErrorV1::CorruptLedger),
+    };
+    let required_digests = [40, 72, 104, 136, 168, 200, claim_start];
+    if Sha256::digest(&bytes[..checksum_start]).as_slice() != &bytes[checksum_start..]
         || bytes[8..24] == [0; 16]
         || bytes[24..40] == [0; 16]
         || required_digests
@@ -299,7 +357,10 @@ pub(crate) fn decode_claim(
             .try_into()
             .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
     );
-    if requested_bytes > parent_bytes {
+    if requested_bytes > parent_bytes
+        || stream_limits
+            .is_some_and(|(stdout, stderr)| stdout.checked_add(stderr) != Some(requested_bytes))
+    {
         return Err(ExecutionOutputReservationErrorV1::CorruptLedger);
     }
 
@@ -321,12 +382,13 @@ pub(crate) fn decode_claim(
                 .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
         ),
         claim_commitment: ObjectDigest::from_bytes(
-            bytes[248..280]
+            bytes[claim_start..checksum_start]
                 .try_into()
                 .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
         ),
         requested_bytes,
         parent_bytes,
+        stream_limits,
         record_digest: ObjectDigest::from_bytes(Sha256::digest(bytes).into()),
     })
 }
@@ -445,7 +507,7 @@ mod tests {
         bytes[..8].copy_from_slice(CLAIM_MAGIC);
         bytes[8..24].fill(execution);
         bytes[24..40].fill(3);
-        for (index, start) in [40, 72, 104, 136, 168, 200, 248].into_iter().enumerate() {
+        for (index, start) in [40, 72, 104, 136, 168, 200, 264].into_iter().enumerate() {
             bytes[start..start + 32].fill(if start == 104 {
                 assignment
             } else {
@@ -454,8 +516,9 @@ mod tests {
         }
         bytes[232..240].copy_from_slice(&requested.to_be_bytes());
         bytes[240..248].copy_from_slice(&parent.to_be_bytes());
-        let checksum = Sha256::digest(&bytes[..280]);
-        bytes[280..].copy_from_slice(&checksum);
+        bytes[248..256].copy_from_slice(&requested.to_be_bytes());
+        let checksum = Sha256::digest(&bytes[..296]);
+        bytes[296..].copy_from_slice(&checksum);
         bytes.to_vec()
     }
 
@@ -494,6 +557,45 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn versioned_claim_binds_each_stream_and_rejects_rehashed_split_substitution() {
+        let bytes = retained_record(1, 9, 79, 100);
+        let retained = decode_claim(&bytes).expect("split-bound claim");
+        assert_eq!(retained.stream_limits, Some((79, 0)));
+
+        let mut substituted = bytes;
+        substituted[248..256].copy_from_slice(&78_u64.to_be_bytes());
+        substituted[256..264].copy_from_slice(&2_u64.to_be_bytes());
+        let checksum = Sha256::digest(&substituted[..296]);
+        substituted[296..].copy_from_slice(&checksum);
+        assert!(matches!(
+            decode_claim(&substituted),
+            Err(ExecutionOutputReservationErrorV1::CorruptLedger)
+        ));
+
+        substituted[256..264].copy_from_slice(&1_u64.to_be_bytes());
+        let checksum = Sha256::digest(&substituted[..296]);
+        substituted[296..].copy_from_slice(&checksum);
+        let changed = decode_claim(&substituted).expect("internally valid different split");
+        assert_eq!(changed.stream_limits, Some((78, 1)));
+        assert_ne!(changed.record_digest, retained.record_digest);
+    }
+
+    #[test]
+    fn legacy_claim_remains_counted_but_has_no_stream_limit_witness() {
+        let current = retained_record(1, 9, 79, 100);
+        let mut legacy = [0_u8; LEGACY_CLAIM_BYTES];
+        legacy[..8].copy_from_slice(LEGACY_CLAIM_MAGIC);
+        legacy[8..248].copy_from_slice(&current[8..248]);
+        legacy[248..280].copy_from_slice(&current[264..296]);
+        let checksum = Sha256::digest(&legacy[..280]);
+        legacy[280..].copy_from_slice(&checksum);
+
+        let retained = decode_claim(&legacy).expect("legacy cold replay");
+        assert_eq!(retained.requested_bytes, 79);
+        assert_eq!(retained.stream_limits, None);
     }
 
     #[test]
