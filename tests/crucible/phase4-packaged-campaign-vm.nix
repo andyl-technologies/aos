@@ -199,8 +199,9 @@
       else if findingForkWrite || hotForkFlight
       then 3072
       else 2048;
-    # Baked genesis keeps five full 512 MiB RAM snapshots and five 512 MiB
-    # guest disks under /tmp/run-state before any attempt begins.
+    # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
+    # baked genesis alone. Leave 16 GiB writable for staged checkpoints,
+    # quota-backed attempts, and copy-on-write overhead on the ext4 rootfs.
     extraWritableMiB =
       if envoyNetwork
       then 16384
@@ -218,6 +219,15 @@
       );
     testScript = ''
       set -eu
+      ${lib.optionalString envoyNetwork ''
+        # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
+        # five-guest checkpoint workspace on the already-sized ext4 rootfs.
+        ${pkgs.util-linux}/bin/mount -o remount,rw /
+        ${pkgs.util-linux}/bin/mount --bind /var/tmp /tmp
+        chmod 1777 /tmp
+        printf 'campaign-workspace-capacity='
+        ${pkgs.coreutils}/bin/df -Pm /tmp | ${pkgs.coreutils}/bin/tail -n 1
+      ''}
       setup_log=/tmp/campaign-host-setup.log
       : > "$setup_log"
 
