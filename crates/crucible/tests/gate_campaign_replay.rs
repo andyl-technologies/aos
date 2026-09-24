@@ -632,7 +632,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         verification_selected.id()?,
     );
     let observation =
-        content_id::<ObservationId>(ObjectKind::Observation, 13, b"portable finding observation")?;
+        content_id::<ObservationId>(ObjectKind::Observation, 14, b"portable finding observation")?;
     let bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observation,

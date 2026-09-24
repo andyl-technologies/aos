@@ -259,7 +259,7 @@ impl CampaignRecordKind {
             Self::Attempt => 9,
             Self::AttemptAdmission => 3,
             Self::MeasurementSet => 2,
-            Self::Observation => 13,
+            Self::Observation => 14,
             Self::ObjectiveEvaluation | Self::RankingExplanation => 2,
             Self::ReproductionArtifact => 2,
             Self::Finding => 4,

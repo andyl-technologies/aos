@@ -5,10 +5,10 @@ use super::*;
 #[test]
 fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
     let observation_in =
-        ObservationId::from_content_id(content_id(ObjectKind::Observation, 13, "event-in"))
+        ObservationId::from_content_id(content_id(ObjectKind::Observation, 14, "event-in"))
             .expect("event-in observation ID");
     let observation_out =
-        ObservationId::from_content_id(content_id(ObjectKind::Observation, 13, "event-out"))
+        ObservationId::from_content_id(content_id(ObjectKind::Observation, 14, "event-out"))
             .expect("event-out observation ID");
     let endpoint = |coordinate, observation, weight| {
         crate::StatisticalEndpointEstimate::new(

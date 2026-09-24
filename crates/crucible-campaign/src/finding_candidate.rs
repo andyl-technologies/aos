@@ -806,7 +806,7 @@ mod tests {
     fn bundle_round_trip_preserves_an_acyclic_child_graph() -> Result<(), CampaignCodecError> {
         let observation = ObservationId::from_content_id(ContentId::for_bytes(
             ObjectKind::Observation,
-            13,
+            14,
             b"finding-candidate-observation",
         ))?;
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(

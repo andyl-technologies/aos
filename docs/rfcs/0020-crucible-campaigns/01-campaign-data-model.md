@@ -786,17 +786,21 @@ pub struct Observation {
     pub coverage: CoverageProjectionId,
     pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
     pub produced_selections: CanonicalSet<SelectionId>,
+    pub resolved_effect_trace: Option<ContentId>,
 }
 ```
 
-Observation schema v13 is the sole current encoding. It carries the current
+Observation schema v14 is the sole current encoding. It carries the current
 stop outcome plus the bounded canonical set of selections produced while execution
 continued through choices discovered by that attempt. Each selection must
 resolve to exactly one of the observation's discovered opportunities, and no
 opportunity may be selected twice. The selection IDs are envelope children, so
 the accepted observation roots the complete replay closure. The combined
 discovered-opportunity and produced-selection count cannot exceed the
-envelope's 65,530 variable-child allowance. Any other observation schema is
+envelope's 65,529 variable-child allowance. An optional schema-1 trace leaf
+retains the canonical resolved effects from the same completed attempt. Its
+content identity is an observation child; producer and public reader decode
+the bounded trace against the Crucible fault contract. Any other observation schema is
 rejected.
 
 Stop-condition tags 5 and 6 add `ExecutionQuanta` and
@@ -831,7 +835,7 @@ authenticated timeout outcome; no timer event is delivered to guest code for
 recovery.
 
 These stop tags occur only in the current enclosing records: `Attempt` v9,
-`BranchRequest` v10, `CampaignFact` v15, `Observation` v13, and discovery-service
+`BranchRequest` v10, `CampaignFact` v15, `Observation` v14, and discovery-service
 request v4. A noncurrent enclosing schema is rejected before interpreting the
 stop body.
 

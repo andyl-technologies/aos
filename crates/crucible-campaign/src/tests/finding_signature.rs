@@ -20,7 +20,7 @@ fn finding_signature_and_membership_invariants_fail_closed() {
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        13,
+        14,
         b"omitted-observation",
     ))
     .expect("observation id");
