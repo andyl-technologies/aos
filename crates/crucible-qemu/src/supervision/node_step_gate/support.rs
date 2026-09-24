@@ -328,6 +328,9 @@ pub(super) fn live_node_plugin_config(
     } else {
         plugin_base.with_whitebox(config.whitebox)
     };
+    if config.campaign_marker_parking {
+        plugin = plugin.with_campaign_marker_parking();
+    }
     if let Some(app_random) = &config.app_random {
         plugin = plugin.with_app_random(app_random.clone());
     }
