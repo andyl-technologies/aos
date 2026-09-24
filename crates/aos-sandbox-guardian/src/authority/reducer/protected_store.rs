@@ -1724,38 +1724,35 @@ fn recover_fixed_reducer(
 fn load_fixed_guardian_admission(
     path: &str,
 ) -> Result<super::GuardianEffectAdmissionV1, DormantGuardianProtectedOwnerErrorV1> {
-    let mut file = open_fixed_file(path, false)?;
-    let bytes = read_bounded_fixed_file(&mut file, super::MAXIMUM_GUARDIAN_CHECKPOINT_BYTES)?;
-    super::codec::decode_protected_admission(&bytes)
-        .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)
+    load_fixed_guardian(path, super::codec::decode_protected_admission)
 }
 
 fn load_fixed_guardian_current(
     path: &str,
 ) -> Result<super::ProtectedGuardianCurrentV1, DormantGuardianProtectedOwnerErrorV1> {
-    let mut file = open_fixed_file(path, false)?;
-    let bytes = read_bounded_fixed_file(&mut file, super::MAXIMUM_GUARDIAN_CHECKPOINT_BYTES)?;
-    super::codec::decode_protected_current(&bytes)
-        .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)
+    load_fixed_guardian(path, super::codec::decode_protected_current)
 }
 
 fn load_fixed_guardian_outcome(
     path: &str,
 ) -> Result<super::ProtectedGuardianOutcomeV1, DormantGuardianProtectedOwnerErrorV1> {
-    let mut file = open_fixed_file(path, false)?;
-    let bytes = read_bounded_fixed_file(&mut file, super::MAXIMUM_GUARDIAN_CHECKPOINT_BYTES)?;
-    super::codec::decode_protected_outcome(&bytes)
-        .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)
+    load_fixed_guardian(path, super::codec::decode_protected_outcome)
 }
 
 fn load_fixed_guardian_worker_death(
     path: &str,
 ) -> Result<super::ProtectedGuardianWorkerDeathSupersessionV1, DormantGuardianProtectedOwnerErrorV1>
 {
+    load_fixed_guardian(path, super::codec::decode_protected_worker_death)
+}
+
+fn load_fixed_guardian<T>(
+    path: &str,
+    decode: fn(&[u8]) -> Result<T, GuardianReducerError>,
+) -> Result<T, DormantGuardianProtectedOwnerErrorV1> {
     let mut file = open_fixed_file(path, false)?;
     let bytes = read_bounded_fixed_file(&mut file, super::MAXIMUM_GUARDIAN_CHECKPOINT_BYTES)?;
-    super::codec::decode_protected_worker_death(&bytes)
-        .map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)
+    decode(&bytes).map_err(|_| DormantGuardianProtectedOwnerErrorV1::InvalidState)
 }
 
 fn open_fixed_file(
@@ -2149,39 +2146,29 @@ fn guardian_receipt_digest(
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, GuardianProtectedStoreErrorV1> {
-    let end = offset
-        .checked_add(4)
-        .ok_or(GuardianProtectedStoreErrorV1::ReadbackMismatch)?;
-    let value = bytes
-        .get(offset..end)
-        .ok_or(GuardianProtectedStoreErrorV1::ReadbackMismatch)?
-        .try_into()
-        .map_err(|_| GuardianProtectedStoreErrorV1::ReadbackMismatch)?;
-    Ok(u32::from_be_bytes(value))
+    Ok(u32::from_be_bytes(read_array(bytes, offset)?))
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, GuardianProtectedStoreErrorV1> {
-    let end = offset
-        .checked_add(8)
-        .ok_or(GuardianProtectedStoreErrorV1::ReadbackMismatch)?;
-    let value = bytes
-        .get(offset..end)
-        .ok_or(GuardianProtectedStoreErrorV1::ReadbackMismatch)?
-        .try_into()
-        .map_err(|_| GuardianProtectedStoreErrorV1::ReadbackMismatch)?;
-    Ok(u64::from_be_bytes(value))
+    Ok(u64::from_be_bytes(read_array(bytes, offset)?))
 }
 
 fn read_digest(bytes: &[u8], offset: usize) -> Result<ObjectDigest, GuardianProtectedStoreErrorV1> {
+    Ok(ObjectDigest::from_bytes(read_array(bytes, offset)?))
+}
+
+fn read_array<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], GuardianProtectedStoreErrorV1> {
     let end = offset
-        .checked_add(32)
+        .checked_add(N)
         .ok_or(GuardianProtectedStoreErrorV1::ReadbackMismatch)?;
-    let value = bytes
+    bytes
         .get(offset..end)
         .ok_or(GuardianProtectedStoreErrorV1::ReadbackMismatch)?
         .try_into()
-        .map_err(|_| GuardianProtectedStoreErrorV1::ReadbackMismatch)?;
-    Ok(ObjectDigest::from_bytes(value))
+        .map_err(|_| GuardianProtectedStoreErrorV1::ReadbackMismatch)
 }
 
 #[allow(clippy::too_many_arguments)]
