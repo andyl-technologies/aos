@@ -55,6 +55,8 @@ impl EndpointRole {
     }
 }
 
+// Exclude st_blocks: filesystem writeback may change allocation after the
+// endpoint is sealed, while identity, timestamps, and exact bytes stay fixed.
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct MetadataSnapshot {
     device: u64,
@@ -66,7 +68,6 @@ struct MetadataSnapshot {
     special_device: u64,
     size: i64,
     block_size: i64,
-    blocks: i64,
     modified_seconds: i64,
     modified_nanoseconds: u64,
     changed_seconds: i64,
@@ -85,7 +86,6 @@ impl MetadataSnapshot {
             special_device: stat.st_rdev,
             size: stat.st_size,
             block_size: stat.st_blksize,
-            blocks: stat.st_blocks,
             modified_seconds: stat.st_mtime,
             modified_nanoseconds: stat.st_mtime_nsec,
             changed_seconds: stat.st_ctime,
