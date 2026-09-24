@@ -13,7 +13,7 @@ its on-wire magic may use a shorter or older spelling. For example,
 | `crucible-campaign` object, choice, exploration, observation, finding, archive, authority, planner, execution, and service modules | Content records and independently versioned component requests and responses. The request-attempts page pair is version 2. |
 | `crucible-cas` content envelope, content-store, and `cas::campaign_codec` modules | Envelope, mutable refs, graph configuration, physical objects, inventory, quota, key, pack, transfer, corpus, coverage, findings, manifest, and frontier records. The pre-RFC campaign CAS records are still current and have their own rows. |
 | `crucible-daemon` campaign, planner, executor, checkpoint, and loopback modules | Component frames, operational journals, campaign state identity, exact checkpoint records, and replay evidence. The campaign loopback frame is version 21. |
-| `crucible-cli` campaign and verify-serve modules | Input schemas, durable deployment configuration, bundle exports, and versioned machine-readable reports. The general campaign-object report uses the `crucible.cli.campaign-object.v1` tag; its choice-object variant uses the `v2` tag. |
+| `crucible-cli` campaign, store-repair, and verify-serve modules | Input schemas, durable deployment configuration, bundle exports, and versioned machine-readable reports. The store-repair placement report uses `crucible.cli.store-repair.v1`. The general campaign-object report uses the `crucible.cli.campaign-object.v1` tag; its choice-object variant uses the `v2` tag. |
 | `crucible-protocol`, `crucible-shmem`, `crucible-api` | Control frames, selectable and guest doorbell messages, shared-memory region and fault payloads, and the debug gateway. |
 | `crucible`, `crucible-device`, `crucible-qemu` | Campaign execution payloads, exact continuation and device snapshots, QMP commands, and hot-fork responses. |
 | `pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch` | QEMU-side block, fault VMState, RAM checkpoint/restore, and hot-fork protocol versions; matching host-side shared-memory and QMP records are listed above. |
@@ -47,7 +47,11 @@ rows. They do not create an additional wire or durable schema:
   scenario, reproduction, schedule, or checkpoint payloads. Their source tags
   live in `crucible::model::toml`; they do not create a new RFC-0020 contract.
 
-This inventory does not prove exhaustive source closure: a full review of all
-serialization and output paths is still needed before T-CAM-0.3 can close.
+The current `crucible.cli.*.vN` source-tag review found the store-repair report
+missing from the registry; its row is now present. The other unmatched CLI tags
+are `crucible.cli.test.*` fixtures and the registered choice-object alias noted
+above. This inventory does not prove exhaustive source closure: the review has
+not covered every serialization and output path that constructs a format
+without a literal version tag, so T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
