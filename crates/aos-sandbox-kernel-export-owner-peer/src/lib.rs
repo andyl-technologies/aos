@@ -1,13 +1,16 @@
-//! Closed Storage-to-kernel-owner transport and signed stage-ack codecs.
+//! Closed Storage-to-kernel-owner transport and physical/signature readbacks.
 //!
 //! This library cannot install, activate, or revoke a BPF map row. The C
 //! kernel-export owner remains the sole map custodian. An opt-in root-only
 //! listener pins two external public verifiers and drops each received handoff;
 //! no Storage sender, private signer key, map stage, or descriptor release is
-//! wired. A successful decode is a nonauthorizing observation, never a grant.
+//! wired. The origin module can check a separately authenticated mutable-origin
+//! FD, but the deployed two-FD carrier cannot supply one. A successful decode
+//! or readback is a nonauthorizing observation, never a grant.
 
 pub mod deployment;
 pub mod handoff;
+pub mod origin;
 pub mod peer;
 pub mod stage_ack;
 
@@ -17,6 +20,9 @@ pub enum OwnerPeerError {
     /// The exact fixed-width protocol fields are noncanonical or inconsistent.
     #[error("kernel-export owner input is noncanonical")]
     Noncanonical,
+    /// A signed lease or private handoff has passed its exclusive deadline.
+    #[error("kernel-export owner input is no longer current")]
+    NotCurrent,
     /// A signed input does not verify under the supplied protected verifier.
     #[error("kernel-export owner signature is invalid")]
     Signature,
