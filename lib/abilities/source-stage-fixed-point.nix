@@ -53,10 +53,41 @@
       then {}
       else {inherit package;}
     );
+  lifetimeRank = {
+    attempt = 0;
+    transaction = 1;
+    instance = 2;
+    persistent = 3;
+  };
+  resolveRequestValue = requestName: recipientLifetime: trail: value:
+    if builtins.isAttrs value && (value._type or null) == "aos-request-output-reference"
+    then let
+      reference = "${value.request}.${value.output}";
+      outputs = projectedOutputs.${value.request} or {};
+      output = outputs.${value.output} or null;
+    in
+      if builtins.attrNames value != ["_type" "output" "request"]
+      then throw "source-stage request '${requestName}' has a malformed output reference"
+      else if output == null
+      then throw "source-stage request '${requestName}' references absent planning output '${reference}'"
+      else if output.phase != "planning"
+      then throw "source-stage request '${requestName}' references non-planning output '${reference}'"
+      else if lifetimeRank.${output.lifetime} < lifetimeRank.${recipientLifetime}
+      then throw "source-stage request '${requestName}' outlives output '${reference}'"
+      else if builtins.elem reference trail
+      then throw "source-stage request '${requestName}' has an output cycle through '${reference}'"
+      else resolveRequestValue requestName recipientLifetime (trail ++ [reference]) output.value
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: resolveRequestValue requestName recipientLifetime trail) value
+    else if builtins.isList value
+    then builtins.map (resolveRequestValue requestName recipientLifetime trail) value
+    else value;
   projectRequest = name: request: requirement: {
     provenance = provenanceFor name request;
     inherit (request) consumer scope lifetime;
-    parameters = normalizeOwnedValue (declarationOwner request) request.parameters;
+    parameters = normalizeOwnedValue
+      (declarationOwner request)
+      (resolveRequestValue name request.lifetime [] request.parameters);
     inherit requirement;
   };
   projectRootRequest = name: request:
@@ -113,6 +144,10 @@
     // {
       value = normalizeOwnedValue (declarationOwner (requestFor requestName)) output.value;
     };
+  projectedOutputs =
+    builtins.mapAttrs
+    (requestName: outputs: builtins.mapAttrs (projectOutput requestName) outputs)
+    abilities.compositionOutputs;
   projectResolvedResource = name: resource: let
     controller = resource.controller or null;
     binding =
@@ -148,10 +183,7 @@ in
     instances = builtins.mapAttrs projectInstance abilities.instances;
     requests = builtins.mapAttrs projectRootRequest abilities.requests;
     compositionRequests = builtins.mapAttrs projectCompositionRequest abilities.compositionRequests;
-    compositionOutputs =
-      builtins.mapAttrs
-      (requestName: outputs: builtins.mapAttrs (projectOutput requestName) outputs)
-      abilities.compositionOutputs;
+    compositionOutputs = projectedOutputs;
     resolvedResources = builtins.mapAttrs projectResolvedResource abilities.resolvedResources;
   }
   // (

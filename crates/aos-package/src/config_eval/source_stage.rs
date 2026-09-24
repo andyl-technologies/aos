@@ -295,13 +295,24 @@ fn load_static_catalog(contract_bytes: &[u8]) -> Result<SourceCatalog> {
         }
         packages.push(package);
     }
-    packages.sort_by(|left, right| left.package.name.cmp(&right.package.name));
+    let package_names = packages
+        .iter()
+        .map(|package| package.package.name.clone())
+        .collect::<BTreeSet<_>>();
     ensure!(
-        packages
-            .windows(2)
-            .all(|pair| pair[0].package.name < pair[1].package.name),
+        package_names.len() == packages.len(),
         "static contract package names are not unique"
     );
+    let package_count = packages.len();
+    let packages_by_digest = packages
+        .into_iter()
+        .map(|package| Ok((package.content_digest()?, package)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    ensure!(
+        packages_by_digest.len() == package_count,
+        "static contract repeats an exact package document"
+    );
+    let packages = packages_by_digest.into_values().collect::<Vec<_>>();
     let interfaces = interfaces.into_values().collect::<Vec<_>>();
     let package_by_name = packages
         .iter()
@@ -872,7 +883,7 @@ impl<'a> SourceComposition<'a> {
             .get(&binding.provider_instance)
             .with_context(|| format!("binding {binding_name:?} has no provider instance"))?;
         ensure!(
-            instance.package.as_ref() == Some(&binding.implementation.package),
+            instance.accepts_binding_package(&binding.implementation.package),
             "binding crosses package provenance"
         );
         let package = self.package(&binding.implementation.package)?;

@@ -25,7 +25,7 @@ use crate::graph::{
 };
 use crate::schema::{SchemaPath, validate_materialized_value, validate_value};
 use aos_contract::limits::BoundedWriter;
-use package::{validate_declared_root_requests, validate_package_document};
+use package::validate_package_document;
 
 pub(crate) fn validate_package_contract(
     context: &ValidationContext,

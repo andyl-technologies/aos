@@ -1,59 +1,6 @@
-//! Package manifests, required root requests, and provider implementation catalogs.
+//! Package manifests and provider implementation catalogs.
 
 use super::*;
-
-pub(super) fn validate_declared_root_requests(
-    desired: &aos_ability_model::document::DesiredInstance,
-    package: &PackageDocument,
-    requests: &[aos_ability_model::BindingRequest],
-    request_indices: &BTreeMap<RequestId, usize>,
-    desired_index: usize,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if !desired.enabled {
-        return;
-    }
-    for requirement in package
-        .requirements
-        .iter()
-        .filter(|requirement| requirement.strength == RequirementStrength::Required)
-    {
-        let request_id = RequestId {
-            consumer: desired.instance.clone(),
-            scope: aos_ability_model::ScopePath::root(),
-            key: requirement.alias.clone(),
-        };
-        let supplied = request_indices
-            .get(&request_id)
-            .map(|index| &requests[*index])
-            .is_some_and(|request| {
-                request.accepted_interfaces.len() == requirement.accepted_interfaces.len()
-                    && request
-                        .accepted_interfaces
-                        .iter()
-                        .zip(&requirement.accepted_interfaces)
-                        .all(|(interface, selector)| selector.matches(interface))
-                    && request.methods == requirement.methods
-                    && request.guarantees == requirement.guarantees
-            });
-        if !supplied {
-            let mut item = diagnostic(
-                DiagnosticCode::MissingReference,
-                DiagnosticClass::UnsatisfiedObligation,
-                DiagnosticPhase::Binding,
-                vec![
-                    "desired_state".to_string(),
-                    "instances".to_string(),
-                    desired_index.to_string(),
-                ],
-                "enabled package omits a required root ability request from desired state"
-                    .to_string(),
-            );
-            item.request = Some(request_id);
-            push_diagnostic(diagnostics, item);
-        }
-    }
-}
 
 pub(super) fn validate_package_document(
     context: &ValidationContext,

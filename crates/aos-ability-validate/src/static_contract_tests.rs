@@ -302,6 +302,36 @@ fn assert_artifact_contract_rejected(contract: &Value, artifacts: &StaticPackage
     .expect_err("artifact-backed identity mutation must fail closed");
 }
 
+#[test]
+fn retains_method_targets_without_package_local_aliases() {
+    let (mut contract, mut artifacts) = artifact_backed_container_contract();
+    let mut package: PackageDocument =
+        serde_json::from_slice(&artifacts.manifest).expect("fixture package must decode");
+    package
+        .interfaces
+        .remove(&LocalKey::new("handler").expect("fixture alias"));
+    artifacts.manifest = encode_canonical(&package).expect("fixture package must encode");
+    set_manifest_digest(
+        &mut contract,
+        json!(Sha256Digest::of_bytes(&artifacts.manifest)),
+    );
+
+    let bytes = aos_contract::canonical::to_vec(&contract).expect("fixture contract must encode");
+    let checked = validate_static_ability_artifacts_with(&bytes, &aggregate_expectation(), |_| {
+        Ok(artifacts.clone())
+    })
+    .expect("method target is part of the authenticated package catalog");
+    let selected = checked
+        .packages()
+        .next()
+        .expect("fixture package selection");
+
+    assert_eq!(
+        selected.retained_interfaces().len(),
+        artifacts.retained_interfaces.len(),
+    );
+}
+
 fn set_manifest_digest(contract: &mut Value, digest: Value) {
     contract["platforms"][0]["packages"][0]["manifest"]["digest"] = digest.clone();
     contract["platforms"][0]["abilities"]
