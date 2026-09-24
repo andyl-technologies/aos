@@ -13,7 +13,7 @@
 use std::{
     error::Error,
     fs::File,
-    io::{self, Read as _, Write as _},
+    io::{self, Read, Write},
     os::unix::{fs::FileTypeExt as _, net::UnixListener},
     path::Path,
     process::ExitCode,
@@ -23,7 +23,7 @@ use std::{
 
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedCacheReadbackRootChallengeV1, ClosedPolicyRootCasBaseV2,
-    ClosedPolicyRootCasObservationV2, PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
+    PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     decode_policy_deployment_sources_v1, read_fixed_inert_closed_policy_binding_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
@@ -36,8 +36,9 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
     POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
-    POLICY_HEAD_LEASE_ACK_MAGIC_V3, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
-    POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+    POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
+    POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+    POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use aos_sandbox_broker_session_security::policy_cache_readback_client::{
     CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5,
@@ -433,7 +434,7 @@ fn serve_current_head(
     receipt.extend_from_slice(&u32::try_from(selected_project_input.len())?.to_be_bytes());
     receipt.extend_from_slice(selected_project_input);
     if matches!(mode, HeadRequestMode::ClosedBinding) {
-        let committed = with_fixed_explicit_closed_policy_binding_session_v2(
+        with_fixed_explicit_closed_policy_binding_session_v2(
             packet,
             deployment_signer_generation,
             verifying_key,
@@ -444,7 +445,7 @@ fn serve_current_head(
             controller_uid,
             controller_gid,
             now_unix_seconds,
-            |session| -> io::Result<ClosedPolicyRootCasObservationV2> {
+            |session| -> io::Result<()> {
                 let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
                 stream.write_all(&length.to_be_bytes())?;
                 stream.write_all(&receipt)?;
@@ -464,7 +465,8 @@ fn serve_current_head(
                     stream,
                     POLICY_BINDING_COMMITTED_MAGIC_V4,
                     &request[8..24],
-                    committed,
+                    committed.binding().as_bytes(),
+                    committed.handoff_epoch(),
                 )?;
 
                 let mut acknowledgement = [0_u8; CLOSED_BINDING_ACK_BYTES];
@@ -476,21 +478,23 @@ fn serve_current_head(
                     committed.handoff_epoch(),
                 )?;
                 check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
-                session
-                    .release_inert_hold(committed)
-                    .map_err(io::Error::other)?;
-                Ok(committed)
+                complete_closed_binding_handoff_v4(
+                    stream,
+                    &request[8..24],
+                    committed.binding().as_bytes(),
+                    committed.handoff_epoch(),
+                    || {
+                        check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
+                        session
+                            .release_inert_hold(committed)
+                            .map_err(io::Error::other)
+                    },
+                )?;
+                Ok(())
             },
         )??;
-        // The root journal is unlocked only after the exact postcommit
-        // snapshot check. A lost completion leaves an inert durable record.
-        // The value returned below is an observation, not an effect token.
-        write_closed_binding_frame(
-            stream,
-            POLICY_BINDING_COMPLETE_MAGIC_V4,
-            &request[8..24],
-            committed,
-        )?;
+        // The terminal ACK and postcommit snapshot were checked under the
+        // root writer. This remains an inert observation, not an effect token.
     } else if matches!(mode, HeadRequestMode::Lease) {
         with_fixed_current_policy_head_lease_v1(packet, || -> io::Result<()> {
             let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
@@ -632,15 +636,52 @@ fn decode_closed_binding_submission<'a>(
 }
 
 fn write_closed_binding_frame(
-    stream: &mut std::os::unix::net::UnixStream,
+    stream: &mut impl Write,
     magic: &[u8; 8],
     nonce: &[u8],
-    committed: ClosedPolicyRootCasObservationV2,
+    binding: &[u8; 32],
+    epoch: u64,
 ) -> io::Result<()> {
     stream.write_all(magic)?;
     stream.write_all(nonce)?;
-    stream.write_all(committed.binding().as_bytes())?;
-    stream.write_all(&committed.handoff_epoch().to_be_bytes())
+    stream.write_all(binding)?;
+    stream.write_all(&epoch.to_be_bytes())
+}
+
+fn complete_closed_binding_handoff_v4(
+    stream: &mut (impl Read + Write),
+    nonce: &[u8],
+    binding: &[u8; 32],
+    epoch: u64,
+    release: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    write_closed_binding_frame(
+        stream,
+        POLICY_BINDING_COMPLETE_MAGIC_V4,
+        nonce,
+        binding,
+        epoch,
+    )?;
+
+    let mut terminal_ack = [0_u8; CLOSED_BINDING_ACK_BYTES];
+    stream.read_exact(&mut terminal_ack)?;
+    validate_closed_binding_ack_with_magic(
+        &terminal_ack,
+        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
+        nonce,
+        binding,
+        epoch,
+    )?;
+    // The terminal ACK ends this one-shot connection; no trailing record may
+    // be interpreted as part of the same held authority cut.
+    let mut trailing = [0_u8; 1];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing closed binding acknowledgement bytes",
+        ));
+    }
+    release()
 }
 
 fn write_closed_binding_base(
@@ -661,7 +702,23 @@ fn validate_closed_binding_ack(
     binding: &[u8; 32],
     handoff_epoch: u64,
 ) -> io::Result<()> {
-    if &acknowledgement[..8] != POLICY_BINDING_ACK_MAGIC_V4
+    validate_closed_binding_ack_with_magic(
+        acknowledgement,
+        POLICY_BINDING_ACK_MAGIC_V4,
+        nonce,
+        binding,
+        handoff_epoch,
+    )
+}
+
+fn validate_closed_binding_ack_with_magic(
+    acknowledgement: &[u8; CLOSED_BINDING_ACK_BYTES],
+    magic: &[u8; 8],
+    nonce: &[u8],
+    binding: &[u8; 32],
+    handoff_epoch: u64,
+) -> io::Result<()> {
+    if &acknowledgement[..8] != magic
         || &acknowledgement[8..24] != nonce
         || &acknowledgement[24..56] != binding
         || acknowledgement[56..64] != handoff_epoch.to_be_bytes()
@@ -722,7 +779,131 @@ fn select_project_source<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::io::Cursor;
+
     use super::*;
+
+    struct ScriptedExchange {
+        incoming: Cursor<Vec<u8>>,
+        outgoing: Vec<u8>,
+        fail_write: bool,
+    }
+
+    impl ScriptedExchange {
+        fn new(incoming: Vec<u8>, fail_write: bool) -> Self {
+            Self {
+                incoming: Cursor::new(incoming),
+                outgoing: Vec::new(),
+                fail_write,
+            }
+        }
+    }
+
+    impl Read for ScriptedExchange {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.incoming.read(buffer)
+        }
+    }
+
+    impl Write for ScriptedExchange {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            }
+            self.outgoing.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn lost_complete_or_terminal_ack_retains_root_hold() {
+        let nonce = [9; 16];
+        let binding = [10; 32];
+        let epoch = 11_u64;
+        let released = Cell::new(false);
+
+        let mut lost_complete = ScriptedExchange::new(Vec::new(), true);
+        assert!(
+            complete_closed_binding_handoff_v4(&mut lost_complete, &nonce, &binding, epoch, || {
+                released.set(true);
+                Ok(())
+            },)
+            .is_err()
+        );
+        assert!(!released.get());
+
+        let mut lost_terminal_ack = ScriptedExchange::new(Vec::new(), false);
+        assert!(
+            complete_closed_binding_handoff_v4(
+                &mut lost_terminal_ack,
+                &nonce,
+                &binding,
+                epoch,
+                || {
+                    released.set(true);
+                    Ok(())
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            &lost_terminal_ack.outgoing[..8],
+            POLICY_BINDING_COMPLETE_MAGIC_V4
+        );
+        assert!(!released.get());
+    }
+
+    #[test]
+    fn exact_terminal_ack_releases_only_after_complete() {
+        let nonce = [9; 16];
+        let binding = [10; 32];
+        let epoch = 11_u64;
+        let mut terminal_ack = Vec::new();
+        terminal_ack.extend_from_slice(POLICY_BINDING_TERMINAL_ACK_MAGIC_V4);
+        terminal_ack.extend_from_slice(&nonce);
+        terminal_ack.extend_from_slice(&binding);
+        terminal_ack.extend_from_slice(&epoch.to_be_bytes());
+        let released = Cell::new(false);
+
+        let mut exchange = ScriptedExchange::new(terminal_ack.clone(), false);
+        complete_closed_binding_handoff_v4(&mut exchange, &nonce, &binding, epoch, || {
+            released.set(true);
+            Ok(())
+        })
+        .expect("exact terminal acknowledgement");
+        assert_eq!(&exchange.outgoing[..8], POLICY_BINDING_COMPLETE_MAGIC_V4);
+        assert!(released.get());
+
+        let mut trailing_ack = terminal_ack.clone();
+        trailing_ack.push(1);
+        let mut trailing = ScriptedExchange::new(trailing_ack, false);
+        released.set(false);
+        assert!(
+            complete_closed_binding_handoff_v4(&mut trailing, &nonce, &binding, epoch, || {
+                released.set(true);
+                Ok(())
+            },)
+            .is_err()
+        );
+        assert!(!released.get());
+
+        terminal_ack[..8].copy_from_slice(POLICY_BINDING_ACK_MAGIC_V4);
+        let mut wrong_version = ScriptedExchange::new(terminal_ack, false);
+        released.set(false);
+        assert!(
+            complete_closed_binding_handoff_v4(&mut wrong_version, &nonce, &binding, epoch, || {
+                released.set(true);
+                Ok(())
+            },)
+            .is_err()
+        );
+        assert!(!released.get());
+    }
 
     #[test]
     fn offline_hold_selector_requires_one_exact_nonzero_digest() {

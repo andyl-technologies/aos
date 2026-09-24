@@ -10,10 +10,13 @@
 //! `AOSPHQ04` additionally accepts one canonical AOSPCB02 proposal and
 //! commits a closed root CAS. It requires an `AOSPHR04` receipt with an
 //! `AOSPPH02` project source; the V1 receipt cannot downgrade this exchange.
-//! Its response never authorizes publication.
+//! After the root sends `AOSPHC04` under its writer, the client echoes the
+//! exact nonce, binding, and epoch in `AOSPHT04`. Only that terminal ACK can
+//! release the root-local hold. An older client that stops at completion
+//! leaves the hold unresolved. No response authorizes publication.
 
 use std::{
-    io::{self, Read as _, Write as _},
+    io::{self, Read, Write},
     os::unix::net::UnixStream,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -57,6 +60,8 @@ pub const POLICY_BINDING_COMMITTED_MAGIC_V4: &[u8; 8] = b"AOSPBC04";
 pub const POLICY_BINDING_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHA04";
 /// Confirms exact root postcommit readback and snapshot validation.
 pub const POLICY_BINDING_COMPLETE_MAGIC_V4: &[u8; 8] = b"AOSPHC04";
+/// Acknowledges the exact completed response before the root releases custody.
+pub const POLICY_BINDING_TERMINAL_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHT04";
 const PACKET_BYTES: usize = 224;
 const PROJECT_PACKET_BYTES: usize = 312;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
@@ -374,6 +379,8 @@ pub fn with_current_policy_head_lease_v3<R>(
 /// writers in that order. Root independently pins its signer generations,
 /// signed heads, predecessor, and CAS epoch; the other fields remain claims.
 /// A successful response is not a policy-publication or effect capability.
+/// It may precede the root reading the terminal ACK; if that ACK is lost, the
+/// root retains its durable hold and the returned observation remains inert.
 /// There is no live controller callsite until complete replay and handoff are
 /// independently connected. The verification keys here only check the signed
 /// receipt; they do not nominate the root service's signer or head.
@@ -381,7 +388,8 @@ pub fn with_current_policy_head_lease_v3<R>(
 /// # Errors
 ///
 /// Rejects an unexpected root peer, malformed or stale signed receipt,
-/// noncanonical proposal, changed CAS response, or missing completion.
+/// noncanonical proposal, changed CAS response, missing completion, or failed
+/// terminal acknowledgement delivery.
 pub fn commit_closed_policy_binding_v4(
     deployment_verifying_key: &VerifyingKey,
     project_verifying_key: &VerifyingKey,
@@ -445,6 +453,19 @@ pub fn commit_closed_policy_binding_v4(
     stream.write_all(binding.as_bytes())?;
     stream.write_all(&epoch.to_be_bytes())?;
 
+    acknowledge_closed_binding_completion_v4(&mut stream, nonce, binding, epoch)?;
+    Ok(ClosedPolicyBindingClientObservationV4 {
+        binding,
+        handoff_epoch: epoch,
+    })
+}
+
+fn acknowledge_closed_binding_completion_v4(
+    stream: &mut (impl Read + Write),
+    nonce: [u8; 16],
+    binding: ObjectDigest,
+    epoch: u64,
+) -> io::Result<()> {
     let mut completion = [0_u8; CLOSED_BINDING_FRAME_BYTES];
     stream.read_exact(&mut completion)?;
     if validate_closed_binding_frame(
@@ -456,10 +477,11 @@ pub fn commit_closed_policy_binding_v4(
     {
         return Err(invalid_receipt());
     }
-    Ok(ClosedPolicyBindingClientObservationV4 {
-        binding,
-        handoff_epoch: epoch,
-    })
+
+    stream.write_all(POLICY_BINDING_TERMINAL_ACK_MAGIC_V4)?;
+    stream.write_all(&nonce)?;
+    stream.write_all(binding.as_bytes())?;
+    stream.write_all(&epoch.to_be_bytes())
 }
 
 fn decode_closed_binding_base(
@@ -702,6 +724,8 @@ fn invalid_receipt() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use aos_sandbox_core::ProjectId;
     use ed25519_dalek::{Signer as _, SigningKey};
     use sha2::{Digest as _, Sha256};
@@ -710,12 +734,14 @@ mod tests {
         CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, EXPLICIT_PROJECT_PACKET_BYTES,
         MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
         MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
-        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
-        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+        POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
+        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
         POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
-        PROJECT_PACKET_BYTES, decode_closed_binding_base, decode_explicit_receipt_v4,
-        decode_receipt, parse_receipt_frame, policy_query_request, validate_closed_binding_frame,
-        validate_lease_completion, validate_receipt_signer_generations,
+        PROJECT_PACKET_BYTES, acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
+        decode_explicit_receipt_v4, decode_receipt, parse_receipt_frame, policy_query_request,
+        validate_closed_binding_frame, validate_lease_completion,
+        validate_receipt_signer_generations,
     };
 
     #[test]
@@ -1067,6 +1093,48 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn lost_complete_never_sends_terminal_ack() {
+        let nonce = [7; 16];
+        let binding = ObjectDigest::from_bytes([8; 32]);
+        let mut partial = Cursor::new(vec![0_u8; 32]);
+        assert!(acknowledge_closed_binding_completion_v4(&mut partial, nonce, binding, 3).is_err());
+        assert_eq!(partial.get_ref().len(), 32);
+
+        let mut wrong_epoch = [0_u8; CLOSED_BINDING_FRAME_BYTES];
+        wrong_epoch[..8].copy_from_slice(POLICY_BINDING_COMPLETE_MAGIC_V4);
+        wrong_epoch[8..24].copy_from_slice(&nonce);
+        wrong_epoch[24..56].copy_from_slice(binding.as_bytes());
+        wrong_epoch[56..64].copy_from_slice(&4_u64.to_be_bytes());
+        let mut wrong_epoch = Cursor::new(wrong_epoch.to_vec());
+        assert!(
+            acknowledge_closed_binding_completion_v4(&mut wrong_epoch, nonce, binding, 3).is_err()
+        );
+        assert_eq!(wrong_epoch.get_ref().len(), CLOSED_BINDING_FRAME_BYTES);
+    }
+
+    #[test]
+    fn exact_complete_sends_distinct_terminal_ack() {
+        let nonce = [7; 16];
+        let binding = ObjectDigest::from_bytes([8; 32]);
+        let epoch = 3_u64;
+        let mut complete = [0_u8; CLOSED_BINDING_FRAME_BYTES];
+        complete[..8].copy_from_slice(POLICY_BINDING_COMPLETE_MAGIC_V4);
+        complete[8..24].copy_from_slice(&nonce);
+        complete[24..56].copy_from_slice(binding.as_bytes());
+        complete[56..64].copy_from_slice(&epoch.to_be_bytes());
+
+        let mut exchange = Cursor::new(complete.to_vec());
+        acknowledge_closed_binding_completion_v4(&mut exchange, nonce, binding, epoch)
+            .expect("exact completion");
+        let terminal = &exchange.get_ref()[CLOSED_BINDING_FRAME_BYTES..];
+        assert_eq!(terminal.len(), CLOSED_BINDING_FRAME_BYTES);
+        assert_eq!(&terminal[..8], POLICY_BINDING_TERMINAL_ACK_MAGIC_V4);
+        assert_eq!(&terminal[8..24], &nonce);
+        assert_eq!(&terminal[24..56], binding.as_bytes());
+        assert_eq!(&terminal[56..64], &epoch.to_be_bytes());
     }
 
     #[test]
