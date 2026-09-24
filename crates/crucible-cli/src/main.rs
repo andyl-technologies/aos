@@ -2119,6 +2119,9 @@ struct ServeArgs {
     /// Cap production-QEMU RUNs at this deterministic icount interval.
     #[arg(long, value_name = "icount")]
     qemu_rendezvous_icount: Option<u64>,
+    /// Limit the number of scheduler quanta in a production-QEMU session.
+    #[arg(long, value_name = "n")]
+    qemu_quantum_budget: Option<u64>,
     /// Accept only read-only API calls (query/watch); no mutate.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
