@@ -27,6 +27,7 @@
       zstd
       ;
     systemd = systemdArtifact;
+    nix = buildContext.packageSet.nix;
   };
   providerPackage = artifacts.aos-systemd-provider;
   rendererPackages =
@@ -176,7 +177,14 @@
     kernelModulePackages = config.aos.boot.initrd.modulePackages;
     firmwarePackages = config.aos.boot.initrd.firmwarePackages;
     loadModules = config.aos.boot.initrd.loadModules;
-    initrdRuntimeRoots = config.aos.boot.initrd.runtimeRoots;
+    initrdRuntimeRoots = lib.unique (
+      config.aos.boot.initrd.runtimeRoots
+      ++ [
+        buildContext.packageSet.nix
+        buildContext.initrdEvaluationLib
+      ]
+    );
+    initrdEvaluationLib = buildContext.initrdEvaluationLib;
     renderedUnits = plan.renderedUnits;
     initrdStaticContract = checkedStaticContract;
     initrdSourceStageBundle = sourceStageBundle;

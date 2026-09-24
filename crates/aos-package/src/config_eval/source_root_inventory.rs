@@ -15,7 +15,7 @@ use aos_ability_plan::ValidatedSourceStageTemplate;
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
     InvocationControl, ROOT_OBSERVATION_REQUEST_SCHEMA, RootObservationRequest,
-    RootObservationResult,
+    RootObservationResult, validate_root_observation,
 };
 use serde::Serialize;
 
@@ -25,6 +25,7 @@ use crate::package_contract::{VerifiedPackageContract, VerifiedPackageContractSe
 /// Carries the fresh inventory and native responses used for stage admission.
 pub(crate) struct ObservedSourceRoots {
     pub(crate) environment: EnvironmentDocument,
+    pub(crate) requests: Vec<RootObservationRequest>,
     pub(crate) responses: Vec<RootObservationResult>,
     observed_at: Vec<Instant>,
 }
@@ -92,35 +93,8 @@ pub(crate) fn observe_source_roots(
     )?;
     packages.reverify_live_retention()?;
 
-    let unresolved = template.template().unresolved_provider_bindings();
-    for binding_id in unresolved {
-        let selected_binding = binding
-            .binding(binding_id)
-            .context("unresolved source binding is absent from the checked plan")?;
-        ensure!(
-            binding.environment().providers.iter().any(|provider| {
-                provider.provider == selected_binding.provider
-                    && provider.interface == selected_binding.interface
-                    && provider.implementation == selected_binding.implementation
-            }),
-            "unresolved source binding has no selected terminal provider"
-        );
-    }
-
-    let selected_roots = binding
-        .environment()
-        .providers
-        .iter()
-        .filter(|provider| {
-            unresolved.iter().any(|binding_id| {
-                binding.binding(binding_id).is_some_and(|selected_binding| {
-                    provider.provider == selected_binding.provider
-                        && provider.interface == selected_binding.interface
-                        && provider.implementation == selected_binding.implementation
-                })
-            })
-        })
-        .collect::<Vec<_>>();
+    let selected_roots = selected_roots(template)?;
+    let mut requests = Vec::with_capacity(selected_roots.len());
     let mut responses = Vec::with_capacity(selected_roots.len());
     let mut observed_at = Vec::with_capacity(selected_roots.len());
     for selected in selected_roots {
@@ -151,6 +125,7 @@ pub(crate) fn observe_source_roots(
             "selected source-stage root provider {:?} is unavailable",
             selected.provider
         );
+        requests.push(request);
         responses.push(response);
         observed_at.push(Instant::now());
     }
@@ -158,11 +133,98 @@ pub(crate) fn observe_source_roots(
     let environment = environment_from_responses(binding.environment(), &responses, boot_id)?;
     let observation = ObservedSourceRoots {
         environment,
+        requests,
         responses,
         observed_at,
     };
     observation.ensure_fresh()?;
     Ok(observation)
+}
+
+fn selected_roots(template: &ValidatedSourceStageTemplate) -> Result<Vec<&ProviderInventory>> {
+    let binding = template.template().binding_plan();
+    let unresolved = template.template().unresolved_provider_bindings();
+    for binding_id in unresolved {
+        let selected_binding = binding
+            .binding(binding_id)
+            .context("unresolved source binding is absent from the checked plan")?;
+        ensure!(
+            binding.environment().providers.iter().any(|provider| {
+                provider.provider == selected_binding.provider
+                    && provider.interface == selected_binding.interface
+                    && provider.implementation == selected_binding.implementation
+            }),
+            "unresolved source binding has no selected terminal provider"
+        );
+    }
+
+    Ok(binding
+        .environment()
+        .providers
+        .iter()
+        .filter(|provider| {
+            unresolved.iter().any(|binding_id| {
+                binding.binding(binding_id).is_some_and(|selected_binding| {
+                    provider.provider == selected_binding.provider
+                        && provider.interface == selected_binding.interface
+                        && provider.implementation == selected_binding.implementation
+                })
+            })
+        })
+        .collect::<Vec<_>>())
+}
+
+/// Reconstructs the environment committed by recorded root exchanges.
+///
+/// This proves exact coverage and wire identity of the historical observation;
+/// callers must separately obtain a fresh current inventory before resuming.
+///
+/// # Errors
+///
+/// Returns an error when a recorded exchange omits, duplicates, or changes a
+/// selected root, or when its claimed environment cannot be reconstructed.
+pub(crate) fn verify_recorded_source_roots(
+    template: &ValidatedSourceStageTemplate,
+    requests: &[RootObservationRequest],
+    responses: &[RootObservationResult],
+    boot_id: &str,
+) -> Result<EnvironmentDocument> {
+    let roots = selected_roots(template)?;
+    verify_recorded_exchanges(
+        template.template().binding_plan().environment(),
+        &roots,
+        requests,
+        responses,
+        boot_id,
+    )
+}
+
+fn verify_recorded_exchanges(
+    sealed: &EnvironmentDocument,
+    roots: &[&ProviderInventory],
+    requests: &[RootObservationRequest],
+    responses: &[RootObservationResult],
+    boot_id: &str,
+) -> Result<EnvironmentDocument> {
+    ensure!(
+        requests.len() == roots.len() && responses.len() == roots.len(),
+        "recorded source root evidence differs from the selected root set"
+    );
+    for ((selected, request), response) in roots.iter().zip(requests).zip(responses) {
+        ensure!(
+            request.provider == selected.provider
+                && request.interface == selected.interface
+                && request.implementation == selected.implementation
+                && request.policy_revision == sealed.policy_revision,
+            "recorded root request differs from the selected implementation"
+        );
+        validate_root_observation(request, response)?;
+        ensure!(
+            response.state == ProviderState::Available,
+            "recorded source root was not available"
+        );
+    }
+    environment_from_responses(sealed, responses, boot_id)
 }
 
 fn selected_package<'a>(
@@ -259,9 +321,12 @@ mod tests {
     use aos_ability_model::document::{FreshnessCondition, ProviderState};
     use aos_ability_model::{AbilityValue, EnvironmentDocument, IncarnationId, RevisionId};
     use aos_contract::Sha256Digest;
-    use aos_provider_protocol::{ROOT_OBSERVATION_RESULT_SCHEMA, RootObservationResult};
+    use aos_provider_protocol::{
+        InvocationControl, ROOT_OBSERVATION_REQUEST_SCHEMA, ROOT_OBSERVATION_RESULT_SCHEMA,
+        RootObservationRequest, RootObservationResult,
+    };
 
-    use super::environment_from_responses;
+    use super::{environment_from_responses, verify_recorded_exchanges};
 
     fn sealed_environment() -> EnvironmentDocument {
         serde_json::from_value(serde_json::json!({
@@ -326,6 +391,24 @@ mod tests {
         }
     }
 
+    fn request(sealed: &EnvironmentDocument) -> RootObservationRequest {
+        let selected = &sealed.providers[0];
+        RootObservationRequest {
+            schema: ROOT_OBSERVATION_REQUEST_SCHEMA.to_string(),
+            provider: selected.provider.clone(),
+            interface: selected.interface.clone(),
+            implementation: selected.implementation.clone(),
+            policy_revision: sealed.policy_revision,
+            challenge: Sha256Digest::of_bytes(b"challenge"),
+            maximum_age_millis: 10_000,
+            control: InvocationControl {
+                attempt_remaining_millis: 5_000,
+                recovery_remaining_millis: 5_000,
+                cancelled: false,
+            },
+        }
+    }
+
     #[test]
     fn root_inventory_generation_follows_boot_and_native_assignment() {
         let mut sealed = sealed_environment();
@@ -369,5 +452,29 @@ mod tests {
         let mut unselected = observed;
         unselected.provider.key = "other".parse().expect("provider key");
         assert!(environment_from_responses(&sealed, &[unselected], "boot-a").is_err());
+    }
+
+    #[test]
+    fn recorded_root_evidence_requires_exact_selected_exchange() {
+        let sealed = sealed_environment();
+        let roots = [&sealed.providers[0]];
+        let request = request(&sealed);
+        let response = response(&sealed);
+
+        verify_recorded_exchanges(
+            &sealed,
+            &roots,
+            &[request.clone()],
+            &[response.clone()],
+            "boot-a",
+        )
+        .expect("selected root exchange");
+        assert!(verify_recorded_exchanges(&sealed, &roots, &[], &[], "boot-a").is_err());
+
+        let mut stale = response;
+        stale.challenge = Sha256Digest::of_bytes(b"older challenge");
+        assert!(
+            verify_recorded_exchanges(&sealed, &roots, &[request], &[stale], "boot-a").is_err()
+        );
     }
 }

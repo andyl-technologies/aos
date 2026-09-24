@@ -16,8 +16,8 @@ use aos_ability_model::{
     RevisionId, ScopePath, ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
-    BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan, ValidatedEffectTemplate,
-    ValidationContext, package_source_supported_features,
+    BindingValidationInputs, CheckedBindingPlan, ValidatedEffectTemplate, ValidationContext,
+    package_source_supported_features,
 };
 use aos_contract::Sha256Digest;
 use aos_contract::limits::{BoundedWriter, JsonLimits};
@@ -564,14 +564,6 @@ pub struct SourceStageBundle {
     transition: SourceStageTransitionProvenance,
 }
 
-/// Carries a source bundle whose complete graph passed common validation.
-#[derive(Debug)]
-pub struct CheckedSourceStageBundle {
-    bundle: SourceStageBundle,
-    digest: Sha256Digest,
-    plan: CheckedEffectPlan,
-}
-
 /// Retains a source stage whose offline graph passed template validation.
 ///
 /// Planned providers without readiness remain unresolved. This value cannot
@@ -823,44 +815,6 @@ impl SourceStageBundle {
             return Err(SourceStageBundleError::NoncanonicalEncoding);
         }
         Ok(bundle)
-    }
-
-    /// Reconstructs and validates the complete checked source plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an external commitment differs, the fixed point
-    /// and transition provenance do not match their source authority, or common
-    /// binding/effect validation fails.
-    pub fn check(
-        self,
-        expected_digest: Option<Sha256Digest>,
-    ) -> Result<CheckedSourceStageBundle, SourceStageBundleError> {
-        let digest = self.digest()?;
-        if expected_digest.is_some_and(|expected| expected != digest) {
-            return Err(SourceStageBundleError::CommitmentMismatch);
-        }
-
-        let (context, binding) = self.validate_binding()?;
-        let rebuilt = TransitionPlanner::new(&context)
-            .verify_source_transcript(
-                self.authority,
-                &binding,
-                &self.fixed_point,
-                &self.transition.evaluations,
-                self.effect_plan,
-            )
-            .map_err(SourceStageBundleError::Transition)?;
-        let plan = rebuilt.checked_effect().clone();
-        if plan.document() != &self.effect_document {
-            return Err(SourceStageBundleError::IdentityMismatch);
-        }
-
-        Ok(CheckedSourceStageBundle {
-            bundle: self,
-            digest,
-            plan,
-        })
     }
 
     /// Reconstructs and validates an offline source-stage template.
@@ -1255,26 +1209,6 @@ fn implementation_reference(
                 local_key: provider.name.clone(),
             })
     })
-}
-
-impl CheckedSourceStageBundle {
-    /// Returns the exact portable bundle that was checked.
-    #[must_use]
-    pub const fn bundle(&self) -> &SourceStageBundle {
-        &self.bundle
-    }
-
-    /// Returns the canonical bundle identity.
-    #[must_use]
-    pub const fn digest(&self) -> Sha256Digest {
-        self.digest
-    }
-
-    /// Returns the reconstructed semantically checked effect plan.
-    #[must_use]
-    pub const fn plan(&self) -> &CheckedEffectPlan {
-        &self.plan
-    }
 }
 
 impl ValidatedSourceStageTemplate {
@@ -1686,22 +1620,6 @@ mod tests {
             source_transition.evaluations().to_vec(),
         )
         .expect("source stage fixture must validate")
-    }
-
-    #[test]
-    fn source_stage_round_trip_reconstructs_the_checked_plan() {
-        let bundle = bundle();
-        let digest = bundle.digest().expect("bundle digest");
-        let bytes = bundle.canonical_bytes().expect("canonical bundle");
-
-        let checked = SourceStageBundle::decode(&bytes)
-            .expect("decoded bundle")
-            .check(Some(digest))
-            .expect("checked source bundle");
-
-        assert_eq!(checked.digest(), digest);
-        assert_eq!(checked.plan().id(), bundle.effect_plan());
-        assert_eq!(checked.bundle(), &bundle);
     }
 
     #[test]

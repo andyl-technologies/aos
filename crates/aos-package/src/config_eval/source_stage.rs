@@ -198,13 +198,13 @@ pub fn materialize_source_stage(
 /// inconsistent, or fails common binding/effect validation.
 pub(super) fn decode_source_stage(
     bytes: &[u8],
-) -> Result<aos_ability_plan::CheckedSourceStageBundle> {
+) -> Result<aos_ability_plan::ValidatedSourceStageTemplate> {
     ensure!(
         bytes.len() as u64 <= aos_ability_plan::SOURCE_STAGE_BUNDLE_MAX_BYTES as u64,
         "source stage bundle exceeds its document bound"
     );
     SourceStageBundle::decode(bytes)?
-        .check(None)
+        .check_template(None)
         .map_err(Into::into)
 }
 
