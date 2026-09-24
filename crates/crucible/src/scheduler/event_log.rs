@@ -771,7 +771,7 @@ pub enum BackendNetworkAdmission {
         /// Matching event-log append for the committed prefix.
         append: SchedulerEventLogAppend,
         /// The unselected frame and route at this boundary.
-        reservation: LiveNetworkPreselection,
+        reservation: Box<LiveNetworkPreselection>,
         /// Current and later outputs, after route expansion, awaiting resolution.
         remaining: Vec<BackendNetworkOutput>,
     },
