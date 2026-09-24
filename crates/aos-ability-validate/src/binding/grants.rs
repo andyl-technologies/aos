@@ -8,6 +8,7 @@ pub(super) fn validate_request(
     context: &ValidationContext,
     in_scope_instances: &BTreeSet<InstanceId>,
     request_authorities: &BTreeMap<InstanceId, aos_ability_model::DeclarationAuthority>,
+    provider_authors: &BTreeMap<InstanceId, BTreeSet<LocalKey>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     check_strict_order(
@@ -52,8 +53,15 @@ pub(super) fn validate_request(
         item.request = Some(request.id.clone());
         push_diagnostic(diagnostics, item);
     }
+    let authenticated_provider_child = !request.id.scope.as_slice().is_empty()
+        && request.authority.package().is_some_and(|package| {
+            provider_authors
+                .get(&request.id.consumer)
+                .is_some_and(|authors| authors.contains(package))
+        });
     match request_authorities.get(&request.id.consumer) {
         Some(authority) if authority == &request.authority => {}
+        Some(_) if authenticated_provider_child => {}
         Some(authority) => {
             let mut item = diagnostic(
                 DiagnosticCode::BindingPrincipalMismatch,
@@ -297,6 +305,7 @@ pub(super) fn validate_binding(
         aggregation,
         false,
         true,
+        true,
         index,
         "caller_grant",
         diagnostics,
@@ -311,6 +320,7 @@ pub(super) fn validate_binding(
         resources,
         aggregation,
         true,
+        false,
         false,
         index,
         "provider_grant",
@@ -504,6 +514,7 @@ pub(super) fn validate_grant(
     resources: &BTreeSet<aos_ability_model::ResourceId>,
     aggregation: Option<&aos_ability_model::AggregationContract>,
     permit_caller_observation: bool,
+    permit_external_observation: bool,
     permit_stateful_owner_write: bool,
     index: usize,
     field: &str,
@@ -563,6 +574,7 @@ pub(super) fn validate_grant(
             &binding.provider,
             &binding.request.consumer,
             permit_caller_observation,
+            permit_external_observation,
         ) && !(permit_stateful_owner_write
             && mediated_owner_write_in_scope(
                 permission,
@@ -638,11 +650,16 @@ pub(super) fn grant_resource_in_scope(
     provider: &InstanceId,
     caller: &InstanceId,
     permit_caller_observation: bool,
+    permit_external_observation: bool,
 ) -> bool {
     if !resources.contains(&permission.resource) {
         return false;
     }
     if permission.resource.provider == *provider {
+        return true;
+    }
+
+    if permit_external_observation && permission.access == AccessMode::Read {
         return true;
     }
 
@@ -659,7 +676,10 @@ pub(super) fn validate_contributions(
     resources: &BTreeSet<aos_ability_model::ResourceId>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let mut occupied_slots = BTreeSet::new();
+    let mut occupied_slots: BTreeMap<
+        (AggregateId, LocalKey),
+        Vec<(Sha256Digest, Option<Sha256Digest>)>,
+    > = BTreeMap::new();
     let artifacts = retained_contribution_artifacts(inputs);
     for (index, contribution) in inputs.desired_state.contributions.iter().enumerate() {
         let path = SchemaPath::root()
@@ -702,19 +722,33 @@ pub(super) fn validate_contributions(
             item.path = path.components().to_vec();
             push_diagnostic(diagnostics, item);
         }
-        if !occupied_slots.insert((contribution.aggregate.clone(), contribution.slot.clone()))
-            && aggregation.is_none_or(|contract| contract.reject_slot_collisions)
+        let peers = occupied_slots
+            .entry((contribution.aggregate.clone(), contribution.slot.clone()))
+            .or_default();
+        let merge_contract = aggregation.and_then(|contract| contract.merge_contract);
+        let same_implementation = peers
+            .iter()
+            .any(|(descriptor, _)| *descriptor == binding.implementation.descriptor);
+        let incompatible_facets = peers.iter().any(|(descriptor, contract)| {
+            *descriptor != binding.implementation.descriptor
+                && (merge_contract.is_none() || *contract != merge_contract)
+        });
+        if (same_implementation
+            && aggregation.is_none_or(|contract| contract.reject_slot_collisions))
+            || incompatible_facets
         {
             let mut item = diagnostic(
                 DiagnosticCode::DuplicateIdentity,
                 DiagnosticClass::ResourceConflict,
                 DiagnosticPhase::Binding,
                 path.child("slot").components().to_vec(),
-                "multiple contributions claim one exact aggregate slot".to_string(),
+                "aggregate slot has duplicate or incompatible implementation contributions"
+                    .to_string(),
             );
             item.request = Some(contribution.request.clone());
             push_diagnostic(diagnostics, item);
         }
+        peers.push((binding.implementation.descriptor, merge_contract));
         let Some(interface) = context.interface(&binding.interface) else {
             continue;
         };
@@ -759,6 +793,9 @@ pub(super) fn validate_contributions(
 
 pub(super) fn retained_contribution_artifacts(inputs: &BindingValidationInputs) -> ArtifactIndex {
     let mut artifacts = ArtifactIndex::new();
+    for artifact in &inputs.environment.artifacts {
+        insert_artifact(&mut artifacts, artifact);
+    }
     for inventory in &inputs.environment.providers {
         insert_artifact(&mut artifacts, &inventory.implementation.artifact);
     }

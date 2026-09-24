@@ -435,9 +435,10 @@ authenticated package module. That authority is not inferred from a qualified
 attribute name. A selected package artifact is a separate, optional identity:
 pure consumer instances need no package artifact, while provider instances and
 handler selections retain the exact package document and immutable artifact
-identities they execute. Validation compares requests with their consumer's
-module authority without pretending that system, operator, or runtime
-configuration was authored by a package.
+identities they execute. Root requests retain their consumer's module authority.
+Nested requests authored by a selected provider module retain that module's
+authenticated package authority even when the provider instance was selected
+by system or operator configuration.
 
 Source-composed stages serialize this completed fixed point directly. Their
 bundle retains the evaluated root requirement contracts referenced by concrete
@@ -445,7 +446,9 @@ requests, the module authority and local key of every instance and request,
 and selected provider package artifacts as separate fields. Materialization
 does not reopen a package document to reconstruct a root requirement, infer an
 authority from a namespace, or assign a package owner to a package-free
-consumer.
+consumer. The committed environment also inventories exact store artifacts
+referenced by the fixed point, including outputs outside selected provider
+manifests, before validating resource and artifact references.
 
 Image modules are source-backed paths retained with the in-image evaluator, so
 the evaluator replays the exact system graph that produced the image. Inline

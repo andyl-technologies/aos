@@ -469,7 +469,7 @@ fn materialized_input_rechecks_empty_resource_projection_baseline() {
         interface: operation.interface.clone(),
         resource: ungranted,
         operations: Vec::new(),
-        lifetime: ResourceLifetime::Attempt,
+        lifetime: ResourceLifetime::Instance,
     };
     let value = AbilityValue::new(
         serde_json::to_value(malicious).expect("resource reference must serialize"),

@@ -6,7 +6,7 @@
 //! generation inputs before the configuration commit. Failures after that
 //! commit preserve the selected generation and surface as degraded activation.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail, ensure};
@@ -743,10 +743,17 @@ pub(super) fn production_evaluator() -> Result<RestrictedAbilityEvaluator> {
         .context("reading AOS_NIX_INSTANTIATE for native activation")?;
     let prlimit =
         std::env::var("AOS_PRLIMIT").context("reading AOS_PRLIMIT for native activation")?;
+    let cache_home = std::env::var_os("AOS_ABILITY_EVALUATOR_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(EVALUATOR_CACHE));
+    ensure!(
+        cache_home.is_absolute(),
+        "ability evaluator cache path must be absolute"
+    );
     RestrictedAbilityEvaluator::new(
         nix_instantiate,
         prlimit,
-        Path::new(EVALUATOR_CACHE),
+        cache_home,
         AbilityEvaluationLimits::default(),
     )
 }

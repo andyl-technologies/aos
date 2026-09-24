@@ -62,8 +62,8 @@ pub enum ValueAuthorizationError {
     /// A resource reference names an unknown interface or plan resource.
     #[error("resource reference is absent from the checked catalog or plan")]
     UnknownResource,
-    /// A resource reference names another provider or exceeds its binding lifetime.
-    #[error("resource reference exceeds its checked provider or lifetime scope")]
+    /// A resource reference expires before the selected use of it.
+    #[error("resource reference does not outlive its checked use")]
     ResourceScopeEscape,
     /// A resource reference's baseline or operation projection exceeds the grant.
     #[error("resource reference exceeds its checked authority grant")]
@@ -182,7 +182,7 @@ pub(crate) fn authorize_materialized_references(
     value: &AbilityValue,
     artifacts: &ArtifactIndex,
     resources: &std::collections::BTreeSet<ResourceId>,
-    maximum_lifetime: ResourceLifetime,
+    minimum_lifetime: ResourceLifetime,
     required_lifetime: Option<ResourceLifetime>,
 ) -> Result<(), ValueAuthorizationError> {
     let mut stack = vec![(schema, value.as_json())];
@@ -207,7 +207,7 @@ pub(crate) fn authorize_materialized_references(
                     grant,
                     &reference,
                     resources,
-                    maximum_lifetime,
+                    minimum_lifetime,
                     required_lifetime,
                 )?;
             }
@@ -270,15 +270,14 @@ fn authorize_resource_reference(
     grant: &AuthorityGrant,
     reference: &ResourceReference,
     resources: &std::collections::BTreeSet<ResourceId>,
-    maximum_lifetime: ResourceLifetime,
+    minimum_lifetime: ResourceLifetime,
     required_lifetime: Option<ResourceLifetime>,
 ) -> Result<(), ValueAuthorizationError> {
     if !interfaces.contains_key(&reference.interface) || !resources.contains(&reference.resource) {
         return Err(ValueAuthorizationError::UnknownResource);
     }
-    if reference.resource.provider != binding.provider
-        || reference.lifetime > binding.lifetime
-        || reference.lifetime > maximum_lifetime
+    if reference.lifetime < binding.lifetime
+        || reference.lifetime < minimum_lifetime
         || required_lifetime.is_some_and(|required| reference.lifetime < required)
     {
         return Err(ValueAuthorizationError::ResourceScopeEscape);

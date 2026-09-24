@@ -142,7 +142,8 @@
       exportReferencesGraph.sourceStageArtifacts = sourceArtifactRoots;
       dontNukeRefs = true;
     } ''
-      ${buildContext.buildTools.packageRuntime}/bin/.aos-package-runtime-unwrapped \
+      export AOS_ABILITY_EVALUATOR_CACHE="$TMPDIR/aos-ability-evaluator"
+      ${buildContext.buildTools.packageRuntime}/bin/aos-package-runtime \
         __ability-materialize-source-stage \
         --spec ${specification}/specification.json \
         --exported-graph "$NIX_ATTRS_JSON_FILE" \

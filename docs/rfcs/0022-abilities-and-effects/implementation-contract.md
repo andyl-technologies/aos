@@ -24,7 +24,7 @@ and a closed body. Define these initial format families, each at version 1:
 | --- | --- |
 | `aos.ability.interface/v1` | Interface key, request/output schema, optional provider-instance configuration schema, method schemas, lifecycle and guarantee semantics |
 | `aos.ability.package/v1` | Exact release/artifact references, exports, declarative requirements, module entry points, handler catalog, ownership |
-| `aos.ability.environment/v1` | Environment/stage identity, provider inventory, platform, policy revision, guarantees, freshness conditions |
+| `aos.ability.environment/v1` | Environment/stage identity, provider and retained-artifact inventories, platform, policy revision, guarantees, freshness conditions |
 | `aos.ability.desired/v1` | Instances with operator-owned configuration where declared, admitted contributions, expanded child requests, desired resources, typed outputs, controller assignments |
 | `aos.ability.binding-plan/v1` | Input identities, exact provider choices, grants, resources, obligations, policy and environment commitments |
 | `aos.ability.effect-plan/v1` | Binding-plan identity, current/desired revisions, operation graph, resource accesses, deadlines, recovery and retention obligations |

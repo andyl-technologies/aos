@@ -209,6 +209,7 @@ pub(crate) fn validate_binding_document(
             context,
             &input_index.in_scope_instances,
             &input_index.request_authorities,
+            &input_index.provider_authors,
             &mut diagnostics,
         );
         let binding_count = request_bindings
@@ -313,6 +314,9 @@ pub(super) fn validate_desired_resource_realizations(
                         interface.interface.aggregation.controller_group
                             == controller.controller.group
                     })
+                && binding.caller_grant.resources.iter().any(|permission| {
+                    permission.resource == resource.resource && permission.access.is_write()
+                })
         });
         let Some(binding) = controller_bindings.next() else {
             push_diagnostic(
@@ -704,6 +708,31 @@ pub(super) fn validate_binding_inputs(
         ..BindingInputIndex::default()
     };
     for (provider_index, provider) in inputs.environment.providers.iter().enumerate() {
+        for package in &inputs.packages {
+            let exported_implementation =
+                package
+                    .implementation
+                    .providers
+                    .iter()
+                    .any(|implementation| {
+                        implementation.interface == provider.interface
+                            && implementation.artifact == provider.implementation.artifact
+                            && implementation.descriptor_digest().ok()
+                                == Some(provider.implementation.descriptor)
+                            && package.exports.iter().any(|export| {
+                                export.interface == provider.interface
+                                    && export.implementation == provider.implementation.descriptor
+                                    && export.implementation_name == implementation.name
+                            })
+                    });
+            if exported_implementation {
+                input_index
+                    .provider_authors
+                    .entry(provider.provider.clone())
+                    .or_default()
+                    .insert(package.package.name.clone());
+            }
+        }
         input_index
             .inventory_by_instance
             .entry(provider.provider.clone())
@@ -817,6 +846,30 @@ pub(super) fn validate_binding_inputs(
         "environment.providers",
         diagnostics,
     );
+    check_order_by(
+        &inputs.environment.artifacts,
+        |left, right| left.content.cmp(&right.content),
+        "environment.artifacts",
+        diagnostics,
+    );
+    for (index, artifact) in inputs.environment.artifacts.iter().enumerate() {
+        if let Err(error) = crate::static_contract::validate_store_path(&artifact.store_path) {
+            push_diagnostic(
+                diagnostics,
+                diagnostic(
+                    DiagnosticCode::ValueTypeMismatch,
+                    DiagnosticClass::InvalidContract,
+                    DiagnosticPhase::Binding,
+                    vec![
+                        "environment".to_string(),
+                        "artifacts".to_string(),
+                        index.to_string(),
+                    ],
+                    format!("environment artifact has an invalid store path: {error}"),
+                ),
+            );
+        }
+    }
     check_order_by(
         &inputs.environment.resources,
         |left, right| compare_resource_ids(&left.resource, &right.resource),

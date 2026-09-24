@@ -453,6 +453,9 @@ pub struct EnvironmentDocument {
     pub policy_revision: RevisionId,
     /// Lists trusted provider inventory in canonical provider order.
     pub providers: Vec<ProviderInventory>,
+    /// Lists exact immutable artifacts retained by this environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactReference>,
     /// Lists authenticated current resource revisions in canonical resource order.
     pub resources: Vec<ResourceRevision>,
     /// Lists authenticated current lifecycle controllers in canonical resource order.

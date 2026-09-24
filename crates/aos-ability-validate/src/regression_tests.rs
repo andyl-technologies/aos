@@ -603,6 +603,38 @@ fn package_requirement_does_not_activate_without_a_concrete_request() {
 }
 
 #[test]
+fn environment_artifact_authorizes_an_exact_contribution_reference() {
+    let mut fixture = contribution_fixture(ValueSchema::ArtifactReference);
+    let artifact = ArtifactReference {
+        content: digest('a'),
+        store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-stage-tool".to_string(),
+        nar_hash: digest('b'),
+        closure: digest('c'),
+    };
+    let value = AbilityValue::new(serde_json::to_value(&artifact).expect("artifact reference"))
+        .expect("bounded artifact reference");
+    fixture.binding_inputs.desired_state.child_requests[0].parameters = value.clone();
+    fixture.binding_plan.requests[0].parameters = value.clone();
+    install_contribution_value(&mut fixture, value);
+
+    let error = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan.clone(), fixture.binding_inputs.clone())
+        .expect_err("unretained artifact cannot be contributed");
+    assert!(error.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::ResourceScopeEscape
+            && diagnostic.message.contains("artifact reference is absent")
+    }));
+
+    fixture.binding_inputs.environment.artifacts.push(artifact);
+    fixture.refresh_commitments();
+    fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect("the committed environment inventory retains the exact artifact");
+}
+
+#[test]
 fn advisory_resource_fallback_cannot_synthesize_authority() {
     let mut fixture = plan_fixture();
     install_optional_resource_output(&mut fixture);
