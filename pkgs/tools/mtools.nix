@@ -60,9 +60,14 @@ in
               [ -f "$out/bin/$script" ] || continue
               sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$out/bin/$script"
             done
+            # The image finalizer executes an exact regular file, not a symlink.
+            rm "$out/bin/mcopy"
+            cp "$out/bin/mtools" "$out/bin/mcopy"
           ''
           else ''
             make install
+            rm "$out/bin/mcopy"
+            cp "$out/bin/mtools" "$out/bin/mcopy"
           '';
       }
     ];

@@ -79,7 +79,6 @@ pub async fn rebuild_erofs(
                 "-T0",
                 "-U",
                 &layout.root_filesystem_uuid,
-                "--workers=1",
                 "-z",
                 &compression,
                 "-C262144",
