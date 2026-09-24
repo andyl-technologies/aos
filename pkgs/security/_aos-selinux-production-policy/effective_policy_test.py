@@ -122,6 +122,61 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing effective transition"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_missing_nspawn_transition_fails(self) -> None:
+        policy = FakePolicy()
+        transition = next(
+            transition
+            for transition in effective_policy.TRANSITIONS
+            if transition.default == "aos_nspawn_t"
+        )
+        policy.transitions[transition] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_missing_host_payload_pidfd_access_fails(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "ioctl"
+        )
+        policy.allows[access] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_payload_sys_admin_allow_fails(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "aos_sandbox_payload_t", "*", "capability", "sys_admin"
+        )
+        policy.allows[access] = [FakeRule("payload CAP_SYS_ADMIN allow")]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_nspawn_cannot_execute_guest_init_without_transition(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "aos_nspawn_t",
+            "aos_sandbox_payload_bootstrap_exec_t",
+            "file",
+            "execute_no_trans",
+        )
+        policy.allows[access] = [FakeRule("nspawn guest init execute without transition")]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_nspawn_cannot_skip_bootstrap_for_guest_systemd(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "aos_nspawn_t", "aos_sandbox_payload_systemd_exec_t", "file", "execute"
+        )
+        policy.allows[access] = [FakeRule("nspawn direct guest systemd execute")]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_missing_allow_fails(self) -> None:
         policy = FakePolicy()
         access = effective_policy.POSITIVE_ACCESS[0]
@@ -221,6 +276,13 @@ class EffectivePolicyTest(unittest.TestCase):
     def test_permissive_domain_fails(self) -> None:
         policy = FakePolicy()
         policy.permissive.add("aos_sandbox_namespace_inspector_t")
+
+        with self.assertRaisesRegex(ValueError, "protected domain is permissive"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_permissive_payload_domain_fails(self) -> None:
+        policy = FakePolicy()
+        policy.permissive.add("aos_sandbox_payload_t")
 
         with self.assertRaisesRegex(ValueError, "protected domain is permissive"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)

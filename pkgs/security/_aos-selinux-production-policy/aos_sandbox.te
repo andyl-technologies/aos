@@ -14,12 +14,12 @@ require {
     type var_t;
 
     class blk_file getattr;
-    class capability { sys_admin sys_ptrace };
+    class capability { sys_admin sys_chroot sys_ptrace };
     class dir { add_name create getattr open read relabelfrom relabelto remove_name rename rmdir search setattr write };
     class file { append create entrypoint execute execute_no_trans getattr ioctl link lock map open read relabelfrom relabelto rename setattr unlink write };
     class filesystem getattr;
     class lnk_file { getattr read };
-    class process { ptrace setfscreate transition };
+    class process { ptrace setexec setfscreate transition };
 }
 
 # AOS privileged processes use distinct domains. The Network publisher is the
@@ -45,11 +45,28 @@ type aos_sandbox_runtime_roots_t;
 typeattribute aos_sandbox_runtime_roots_t domain;
 role system_r types aos_sandbox_runtime_roots_t;
 
+# The outer nspawn supervisor and shifted guest payload are separate enforcing
+# subjects. Only the supervisor is granted mount/chroot capability by this
+# module; the payload cannot inherit that AOS-specific authority.
+type aos_nspawn_t;
+typeattribute aos_nspawn_t domain;
+role system_r types aos_nspawn_t;
+
+type aos_sandbox_payload_t;
+typeattribute aos_sandbox_payload_t domain;
+role system_r types aos_sandbox_payload_t;
+
+# These labels are for the two copied workspace inodes, not their Nix-store
+# source binaries. A runtime publisher must apply and read back both labels.
+type aos_sandbox_payload_bootstrap_exec_t;
+type aos_sandbox_payload_systemd_exec_t;
+
 type aos_sandbox_host_exec_t;
 type aos_sandbox_network_publisher_exec_t;
 type aos_sandbox_namespace_inspector_exec_t;
 type aos_sandbox_network_lifecycle_worker_exec_t;
 type aos_sandbox_runtime_roots_exec_t;
+type aos_nspawn_exec_t;
 
 # PID 1 alone enters each fixed domain through its labeled executable.
 allow init_t aos_sandbox_host_exec_t:file { execute getattr map open read };
@@ -80,6 +97,24 @@ allow init_t aos_sandbox_runtime_roots_t:process transition;
 allow aos_sandbox_runtime_roots_t aos_sandbox_runtime_roots_exec_t:file entrypoint;
 type_transition init_t aos_sandbox_runtime_roots_exec_t:process aos_sandbox_runtime_roots_t;
 allow aos_sandbox_runtime_roots_t self:process setfscreate;
+
+# PID 1 enters the supervisor domain through the fixed packaged nspawn.
+# Patched nspawn first execs guest-init under --selinux-context; guest-init
+# replaces itself with the copied guest systemd without another transition.
+allow init_t aos_nspawn_exec_t:file { execute getattr map open read };
+allow init_t aos_nspawn_t:process transition;
+allow aos_nspawn_t aos_nspawn_exec_t:file entrypoint;
+type_transition init_t aos_nspawn_exec_t:process aos_nspawn_t;
+allow aos_nspawn_t self:capability { sys_admin sys_chroot };
+allow aos_nspawn_t self:process setexec;
+allow aos_nspawn_t aos_sandbox_payload_t:process transition;
+allow aos_nspawn_t aos_sandbox_payload_bootstrap_exec_t:file { execute getattr map open read };
+allow aos_sandbox_payload_t aos_sandbox_payload_bootstrap_exec_t:file entrypoint;
+allow aos_sandbox_payload_t aos_sandbox_payload_systemd_exec_t:file { execute execute_no_trans getattr map open read };
+
+# pidfs namespace ioctls use file read/ioctl against the target task SID.
+# Host's unit sandbox still carries no CAP_SYS_PTRACE or CAP_SYS_ADMIN.
+allow aos_sandbox_host_t aos_sandbox_payload_t:file { ioctl read };
 
 # The static provisioner observes only its immutable execution substrate,
 # SELinux state, own proc attributes, and the two fixed /var device names.

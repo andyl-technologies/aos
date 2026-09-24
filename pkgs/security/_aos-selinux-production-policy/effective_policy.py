@@ -13,12 +13,15 @@ DOMAINS = (
     "aos_sandbox_network_publisher_t",
     "aos_sandbox_namespace_inspector_t",
     "aos_sandbox_network_lifecycle_worker_t",
+    "aos_nspawn_t",
+    "aos_sandbox_payload_t",
 )
 PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
 ENFORCING_DOMAINS = ("init_t", PROVISIONER_DOMAIN, *DOMAINS)
 
 DOMAIN_EXECUTABLES = (
     ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
+    ("aos_nspawn_t", "aos_nspawn_exec_t"),
     ("aos_sandbox_network_publisher_t", "aos_sandbox_network_publisher_exec_t"),
     ("aos_sandbox_namespace_inspector_t", "aos_sandbox_namespace_inspector_exec_t"),
     (
@@ -53,6 +56,7 @@ class Transition:
 
 TRANSITIONS = (
     Transition("init_t", "aos_sandbox_host_exec_t", "process", "aos_sandbox_host_t"),
+    Transition("init_t", "aos_nspawn_exec_t", "process", "aos_nspawn_t"),
     Transition(
         "init_t",
         "aos_sandbox_network_publisher_exec_t",
@@ -326,6 +330,30 @@ POSITIVE_ACCESS = (
         "file",
         "ioctl",
     ),
+    Access("aos_nspawn_t", "aos_nspawn_t", "capability", "sys_admin"),
+    Access("aos_nspawn_t", "aos_nspawn_t", "capability", "sys_chroot"),
+    Access("aos_nspawn_t", "aos_nspawn_t", "process", "setexec"),
+    Access("aos_nspawn_t", "aos_sandbox_payload_t", "process", "transition"),
+    *accesses(
+        "aos_nspawn_t",
+        "aos_sandbox_payload_bootstrap_exec_t",
+        "file",
+        ("execute", "getattr", "map", "open", "read"),
+    ),
+    Access(
+        "aos_sandbox_payload_t",
+        "aos_sandbox_payload_bootstrap_exec_t",
+        "file",
+        "entrypoint",
+    ),
+    *accesses(
+        "aos_sandbox_payload_t",
+        "aos_sandbox_payload_systemd_exec_t",
+        "file",
+        ("execute", "execute_no_trans", "getattr", "map", "open", "read"),
+    ),
+    Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "read"),
+    Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "ioctl"),
 )
 
 
@@ -537,7 +565,8 @@ def negative_access() -> tuple[Access, ...]:
             checks.extend(accesses(domain, record, "file", forbidden))
 
     for domain in DOMAINS:
-        checks.append(Access(domain, "*", "capability", "sys_admin"))
+        if domain != "aos_nspawn_t":
+            checks.append(Access(domain, "*", "capability", "sys_admin"))
         checks.append(Access(domain, "*", "cap_userns", "sys_admin"))
         if domain != "aos_sandbox_namespace_inspector_t":
             checks.append(Access(domain, "*", "capability", "sys_ptrace"))
@@ -545,6 +574,21 @@ def negative_access() -> tuple[Access, ...]:
 
     for source in DOMAINS:
         checks.append(Access(source, "*", "process", "ptrace"))
+
+    # Nspawn may enter the guest domain only through the fixed bootstrap.
+    # It cannot execute bootstrap without the transition or skip directly to
+    # guest systemd while retaining the mount-capable supervisor domain.
+    checks.append(
+        Access(
+            "aos_nspawn_t",
+            "aos_sandbox_payload_bootstrap_exec_t",
+            "file",
+            "execute_no_trans",
+        )
+    )
+    checks.append(
+        Access("aos_nspawn_t", "aos_sandbox_payload_systemd_exec_t", "file", "execute")
+    )
 
     return tuple(sorted(set(checks)))
 
