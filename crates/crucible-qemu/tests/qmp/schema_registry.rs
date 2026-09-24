@@ -68,6 +68,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 
     let registered = registry
         .lines()
+        .filter(|line| line.contains("\tcrucible-qemu::qmp::hot_fork\tprocess-protocol-message\t"))
         .filter_map(|line| line.split_once('\t'))
         .map(|(name, _)| name)
         .filter(|name| name.starts_with("crucible.qemu.hot-fork."))
