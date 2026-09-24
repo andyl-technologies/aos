@@ -7,6 +7,7 @@
 //! merely because a process restarted or the wall clock moved backwards.
 
 use std::{
+    fs, io,
     path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -50,7 +51,12 @@ mod provisioning;
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 pub(crate) use provisioning::validate_genesis_checkpoint;
 
-const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
+// A sibling of the object root keeps the live journal directory beneath a
+// root-owned parent. An idmapped directory view then follows compaction renames
+// without disclosing object storage or allowing the Controller to replace the
+// mounted directory name.
+const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-journals";
+const LEGACY_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const CACHE_STATE_JOURNAL: &str = "state.journal";
 const CACHE_AUTHORITY_JOURNAL: &str = "authority.journal";
 const CACHE_CLOCK_JOURNAL: &str = "clock.journal";
@@ -69,7 +75,30 @@ fn open_cache_journal(
     limits: JournalLimits,
     owner_uid: u32,
 ) -> Result<(Journal, RecoveryReport), crate::journal::JournalError> {
+    reject_legacy_cache_journals()?;
     Journal::open_protected_at_for_uid(root, name, limits, owner_uid)
+}
+
+fn reject_legacy_cache_journals() -> Result<(), crate::journal::JournalError> {
+    reject_legacy_cache_journals_at(Path::new(LEGACY_CACHE_ROOT))
+}
+
+fn reject_legacy_cache_journals_at(root: &Path) -> Result<(), crate::journal::JournalError> {
+    for name in [
+        CACHE_STATE_JOURNAL,
+        CACHE_AUTHORITY_JOURNAL,
+        CACHE_CLOCK_JOURNAL,
+    ] {
+        for suffix in ["", ".lock", ".compact.tmp"] {
+            let legacy = root.join(format!("{name}{suffix}"));
+            match fs::symlink_metadata(legacy) {
+                Ok(_) => return Err(crate::journal::JournalError::ProtectedBoundary),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(crate::journal::JournalError::Io(error)),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reports the three protected journal replays performed by the fixed owner.
@@ -879,8 +908,8 @@ impl CacheResidencyProtectedOwnerV1 {
 
     /// Opens fixed cache journals for the configured service UID.
     ///
-    /// The fixed path is unchanged; only the exact filesystem owner accepted
-    /// by the protected journal opener differs from the root-owned variant.
+    /// The fixed protected journal directory is shared with the root-owned
+    /// variant; only the accepted filesystem owner differs.
     ///
     /// # Errors
     ///
@@ -2413,11 +2442,35 @@ fn read_array<const N: usize>(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
     use aos_sandbox_core::CacheDomainId;
     use aos_sandbox_core::model::CacheDomain;
 
     use super::*;
     use crate::cache_residency::{CacheNodeIdV1, ProtectedBackingIdentityV1};
+
+    #[test]
+    fn legacy_journal_names_fail_closed_before_new_store_creation() {
+        let directory = tempfile::tempdir().expect("legacy root");
+        assert!(reject_legacy_cache_journals_at(directory.path()).is_ok());
+
+        for name in [
+            CACHE_STATE_JOURNAL,
+            CACHE_AUTHORITY_JOURNAL,
+            CACHE_CLOCK_JOURNAL,
+        ] {
+            for suffix in ["", ".lock", ".compact.tmp"] {
+                let legacy = directory.path().join(format!("{name}{suffix}"));
+                symlink("missing", &legacy).expect("legacy symlink");
+                assert!(matches!(
+                    reject_legacy_cache_journals_at(directory.path()),
+                    Err(crate::journal::JournalError::ProtectedBoundary)
+                ));
+                std::fs::remove_file(legacy).expect("remove fixture");
+            }
+        }
+    }
 
     #[test]
     fn project_physical_cache_selection_requires_exactly_one_owner_head() {

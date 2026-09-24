@@ -1748,6 +1748,9 @@ in {
         sandbox-policy-negative = import ./tests/vm/sandbox-policy-negative.nix {
           inherit testing pkgs lib;
         };
+        sandbox-cache-journal-idmap = import ./tests/vm/sandbox-cache-journal-idmap.nix {
+          inherit testing pkgs;
+        };
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;

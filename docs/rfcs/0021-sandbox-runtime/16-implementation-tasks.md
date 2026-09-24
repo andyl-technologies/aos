@@ -8496,3 +8496,39 @@ and Storage's production service never invokes this precursor. A held Provider
 selected-row/current-attempt proof, durable pre-send attempt and recovery,
 authenticated Host-to-Storage cgroup transfer, and owner response/deployment
 are still required before any Stage, ACTIVE, FD release, or LocalLive path.
+
+### Protected Cache journal-only root view
+
+The three protected Cache journals now open from
+`/var/lib/aos/sandbox/cache-residency-journals`: `state.journal`,
+`authority.journal`, and `clock.journal`. This directory is a sibling of the
+Controller-owned object root beneath `/var/lib/aos/sandbox`, whose root-owned
+parent prevents the Controller from replacing the journal directory name. A
+root one-shot setup service creates a nonrecursive, read-only idmapped bind of
+that directory at `/run/aos/sandbox-policy-cache-journals` before either the
+Controller or cap-empty policy service starts. The one-entry UID/GID map
+presents the Controller-owned mode-0700 directory and mode-0600 journals as
+root-owned only in this view. The view also carries `nodev`, `nosuid`,
+`noexec`, and `nosymfollow`. It follows journal renames during compaction;
+mounting individual journal files would retain stale inodes.
+
+The new Controller opener and mount setup reject any legacy journal, lock, or
+compaction file at `/var/lib/aos/sandbox/cache-residency`. Existing installs
+with such files require an offline migration while the old Controller binary
+cannot run. Moving the three journals and their lock files online is not an
+atomic operation; any migration must durably record progress, resume after a
+crash, reject duplicate or mixed state, and prevent the old binary from
+recreating journals at the old path. The journal path also contributes to the
+Cache owner scope recorded in protected replay, so copying files directly to
+the new path fails closed; an offline migration must explicitly preserve or
+re-establish that scope. No automatic migration is performed.
+
+The view only supplies a mount and DAC boundary. The protected journal opener
+still requests a writer lock and opens files read-write, so the root policy
+service does not yet replay Cache quota or head records through this view. The
+setup-time name check is not a continuous filename allowlist; the future reader
+must open exact names and prove their current directory entries at the held
+cut.
+Q04, public Create, compiler publication, and effects remain closed until an
+independent read-only named-currentness check and the complete owner-held
+root CAS/effect barrier are proved.
