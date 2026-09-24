@@ -14,8 +14,9 @@
 //! physical      = AOSPOB02 || dataset-binding[32] || v2-claim-digest[32]
 //!                 || bytes:u64be || creation-generation:u64be || guid:u64be
 //!                 || name-length:u16be || dataset-name[bounded] || hmac[32]
-//! deletion      = AOSPOD01 || dataset-binding[32] || catalog-generation:u64be
-//!                 || catalog-digest[32] || delete-operation[16] || hmac[32]
+//! deletion      = AOSPOD02 || dataset-binding[32] || catalog-generation:u64be
+//!                 || catalog-digest[32] || execution-delete-operation[16]
+//!                 || storage-destroy-operation[16] || hmac[32]
 //! deletion-grant = AOSEOD01 || execution[16] || create[16]
 //!                 || v2-claim-digest[32] || delete-operation[16] || hmac[32]
 //! ```
@@ -52,8 +53,8 @@ const STATE_RETAINED: u8 = 1;
 const STATE_DELETED: u8 = 2;
 const PHYSICAL_MAGIC: &[u8; 8] = b"AOSPOB02";
 const PHYSICAL_MIN_BYTES: usize = 131;
-const DELETION_MAGIC: &[u8; 8] = b"AOSPOD01";
-const DELETION_BYTES: usize = 128;
+const DELETION_MAGIC: &[u8; 8] = b"AOSPOD02";
+const DELETION_BYTES: usize = 144;
 
 /// Rejects a corrupt ledger, exhausted budget, conflicting replay, or unsafe deletion.
 #[derive(Debug, thiserror::Error)]
@@ -182,7 +183,8 @@ struct PhysicalDeletionRecord {
     binding: ObjectDigest,
     catalog_generation: u64,
     catalog_digest: ObjectDigest,
-    operation: [u8; 16],
+    execution_delete_operation: [u8; 16],
+    storage_destroy_operation: [u8; 16],
 }
 
 /// Owns one exclusively locked, bounded Storage output-reservation journal.
@@ -286,7 +288,7 @@ impl ExecutionOutputLedgerV1 {
                             .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
                         let deletion = decode_deletion(&deletion_key, deletion, &key)?;
                         if deletion.binding != physical.binding
-                            || deletion.operation != logical.delete_operation
+                            || deletion.execution_delete_operation != logical.delete_operation
                         {
                             return Err(ExecutionOutputLedgerErrorV1::Corrupt);
                         }
@@ -310,7 +312,7 @@ impl ExecutionOutputLedgerV1 {
                         .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
                     let logical = decode_record(&logical_key, logical, &key)?;
                     if logical.state != STATE_DELETED
-                        || logical.delete_operation != deletion.operation
+                        || logical.delete_operation != deletion.execution_delete_operation
                     {
                         return Err(ExecutionOutputLedgerErrorV1::Corrupt);
                     }
@@ -461,7 +463,7 @@ impl ExecutionOutputLedgerV1 {
     /// # Errors
     ///
     /// Returns an error for an absent or substituted physical binding, a
-    /// mismatched deletion operation, or any authenticated deletion failure.
+    /// missing catalog tombstone, or any authenticated deletion failure.
     pub(crate) fn settle_verified_capture_deletion(
         &mut self,
         grant: &ExecutionOutputDeletionGrantV1,
@@ -477,9 +479,6 @@ impl ExecutionOutputLedgerV1 {
             .get(NAMESPACE, &key)
             .ok_or(ExecutionOutputLedgerErrorV1::MissingPhysicalBacking)?;
         let physical = decode_physical(&key, bytes, &self.key)?;
-        if storage_delete_operation.as_bytes() != &grant.0[72..88] {
-            return Err(ExecutionOutputLedgerErrorV1::MissingPhysicalBacking);
-        }
         let deletion = verify_deleted_persisted(
             physical.binding,
             &physical.dataset_name,
@@ -565,7 +564,8 @@ impl ExecutionOutputLedgerV1 {
             binding: deletion.dataset_binding(),
             catalog_generation: deletion.catalog().generation(),
             catalog_digest: deletion.catalog().digest(),
-            operation: *deletion.storage_delete_operation().as_bytes(),
+            execution_delete_operation: delete_operation,
+            storage_destroy_operation: *deletion.storage_delete_operation().as_bytes(),
         });
         if record.state == STATE_DELETED {
             if record.delete_operation != delete_operation {
@@ -648,9 +648,10 @@ fn encode_deletion(
     bytes[8..40].copy_from_slice(record.binding.as_bytes());
     bytes[40..48].copy_from_slice(&record.catalog_generation.to_be_bytes());
     bytes[48..80].copy_from_slice(record.catalog_digest.as_bytes());
-    bytes[80..96].copy_from_slice(&record.operation);
-    let mac = key.mac(location, &bytes[..96])?;
-    bytes[96..].copy_from_slice(&mac);
+    bytes[80..96].copy_from_slice(&record.execution_delete_operation);
+    bytes[96..112].copy_from_slice(&record.storage_destroy_operation);
+    let mac = key.mac(location, &bytes[..112])?;
+    bytes[112..].copy_from_slice(&mac);
     Ok(bytes)
 }
 
@@ -667,7 +668,8 @@ fn decode_deletion(
         || bytes[40..48] == [0; 8]
         || bytes[48..80] == [0; 32]
         || bytes[80..96] == [0; 16]
-        || !key.verify_mac(location, &bytes[..96], &bytes[96..])?
+        || bytes[96..112] == [0; 16]
+        || !key.verify_mac(location, &bytes[..112], &bytes[112..])?
     {
         return Err(ExecutionOutputLedgerErrorV1::Corrupt);
     }
@@ -687,7 +689,10 @@ fn decode_deletion(
                 .try_into()
                 .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
         ),
-        operation: bytes[80..96]
+        execution_delete_operation: bytes[80..96]
+            .try_into()
+            .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
+        storage_destroy_operation: bytes[96..112]
             .try_into()
             .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
     })
@@ -1039,7 +1044,7 @@ mod tests {
 
         let mut ledger = open(&path, 200).unwrap();
 
-        let grant = grant(&ledger, &retained, 7);
+        let grant = grant(&ledger, &retained, 6);
         assert!(matches!(
             ledger.settle_zero_output_deletion(&grant),
             Err(ExecutionOutputLedgerErrorV1::MissingPhysicalBacking)
@@ -1066,6 +1071,15 @@ mod tests {
 
         let mut reopened = open(&path, 200).unwrap();
         assert_eq!(reopened.retained_bytes(), 0);
+        let deletion_key = deletion_key([1; 16]);
+        let record = decode_deletion(
+            &deletion_key,
+            reopened.journal.get(NAMESPACE, &deletion_key).unwrap(),
+            &reopened.key,
+        )
+        .unwrap();
+        assert_eq!(record.execution_delete_operation, [6; 16]);
+        assert_eq!(record.storage_destroy_operation, [7; 16]);
         reopened
             .settle_verified_capture_deletion(&grant, &catalog, OperationId::from_bytes([7; 16]))
             .unwrap();

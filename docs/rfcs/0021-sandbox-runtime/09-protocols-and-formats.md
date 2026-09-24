@@ -1189,7 +1189,8 @@ Logical release requires an authenticated later catalog tombstone for that
 same name, GUID, and deleting Storage operation; it retains the original
 dataset binding, name, GUID, and creation generation so a restart between ZFS
 destroy and logical settlement can recheck the later tombstone. It also retains
-the deletion catalog head on replay. ZFS reservations are not
+the distinct authorized execution Delete operation, Storage Destroy operation,
+and deletion catalog head on replay. ZFS reservations are not
 sufficient while a pool checkpoint can consume them, so admission must also
 prove that condition absent at the effect barrier. These are requirements for
 future service wiring, not authority supplied by the current dormant producer.
