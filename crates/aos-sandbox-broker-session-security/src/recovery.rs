@@ -39,6 +39,9 @@ use sha2::{Digest as _, Sha256};
 use crate::BrokerSessionSecurityError;
 
 mod journal;
+mod role_direction;
+
+use role_direction::request_direction_for_endpoint;
 
 pub(crate) use journal::{
     ArchivedStorageInventoryHeadV1, HistoricalSessionCheckpointV1,
@@ -996,12 +999,9 @@ impl ProtectedBrokerOutcomeGateRecoveryV1 {
     ) -> Result<Self, BrokerSessionSecurityError> {
         let (history, traffic, current) = reopen_current(authority, transcript, context, peer)?;
         let head = history.head().map_err(map_durable)?;
-        if head.endpoint() != BrokerSessionDurableEndpointV1::Broker
-            || !request_matches_head(
-                request,
-                head,
-                AuthenticatedBrokerRequestDirectionV1::ServerReceive,
-            )
+        let endpoint = authority.endpoint_role();
+        if head.endpoint() != endpoint
+            || !request_matches_head(request, head, request_direction_for_endpoint(endpoint))
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }

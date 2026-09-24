@@ -59,7 +59,8 @@ use super::{
     ProtectedBrokerSessionJournalSnapshotV1,
     admit_server_received_authenticated_broker_method_request_v1,
     prepare_client_sent_authenticated_broker_method_request_v1, reconstruct_terminal_semantics,
-    reconstruct_traffic, reconstruct_traffic_records, reopen_current, request_matches_head,
+    reconstruct_traffic, reconstruct_traffic_records, reopen_current,
+    request_direction_for_endpoint, request_matches_head,
 };
 
 const KEY_MAGIC: &[u8; 8] = b"AOSBSJ01";
@@ -1596,6 +1597,10 @@ fn reconstruct_retained_server_request(
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    pub(super) fn endpoint_role(&self) -> BrokerSessionDurableEndpointV1 {
+        self.endpoint.role()
+    }
+
     fn bounded_storage_records(
         &mut self,
         namespace: RecordNamespace,
@@ -2945,12 +2950,12 @@ impl ProtectedBrokerSessionJournalV1 {
             || current.current_head != owner.protected_head
             || current.protected_bindings(&owner.context)? != owner.protected_bindings
             || peer_binding != owner.peer_binding
-            || head.endpoint() != BrokerSessionDurableEndpointV1::Broker
+            || head.endpoint() != self.endpoint.role()
             || head.phase() != BrokerSessionDurablePhaseV1::Terminal
             || !request_matches_head(
                 &owner.request,
                 head,
-                aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ServerReceive,
+                request_direction_for_endpoint(self.endpoint.role()),
             )
             || traffic.has_outstanding_request()
             || head.outcome_packet() != Some(owner.outcome.canonical_packet())
