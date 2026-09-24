@@ -399,7 +399,7 @@ content_object_id!(
 content_object_id!(
     CampaignBudgetLedgerId,
     ObjectKind::CampaignFact,
-    2,
+    3,
     "crucible.campaign.budget-ledger",
     "Identifies one exact aggregate campaign budget ledger."
 );

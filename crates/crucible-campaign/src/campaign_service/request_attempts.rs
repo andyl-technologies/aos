@@ -2,11 +2,57 @@
 
 use super::*;
 use crate::{
-    AttemptAdmission, AttemptAdmissionRole, AttemptId, BranchRequestId, CampaignBudgetLedger,
+    AttemptAdmission, AttemptAdmissionRole, BranchRequestId, CampaignBudgetLedger, Proposal,
+    ProposalId,
 };
 
-/// Maximum execution-basis admissions returned in one request-local page.
+/// Maximum admissions returned in one request-local page.
 pub const MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS: u32 = 8;
+const REQUEST_ATTEMPTS_SCHEMA_VERSION: u32 = 2;
+
+fn require_request_attempts_version(version: u32) -> Result<(), CampaignCodecError> {
+    if version != REQUEST_ATTEMPTS_SCHEMA_VERSION {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "unsupported campaign request-attempts schema version",
+        });
+    }
+    Ok(())
+}
+
+/// Proposal and admission authenticated together for one request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignRequestAdmissionEntry {
+    proposal: Proposal,
+    admission: AttemptAdmission,
+}
+
+impl CampaignRequestAdmissionEntry {
+    /// Returns the proposal whose request owns this admission.
+    #[must_use]
+    pub const fn proposal(&self) -> &Proposal {
+        &self.proposal
+    }
+
+    /// Returns the admitted attempt and its provenance role.
+    #[must_use]
+    pub const fn admission(&self) -> AttemptAdmission {
+        self.admission
+    }
+}
+
+impl Canonical for CampaignRequestAdmissionEntry {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.proposal.encode(encoder);
+        self.admission.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            proposal: Proposal::decode(decoder)?,
+            admission: AttemptAdmission::decode(decoder)?,
+        })
+    }
+}
 
 /// Snapshot-bound request for one page of a branch request's admitted attempts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,7 +62,7 @@ pub struct QueryCampaignRequestAttemptsRequest {
     campaign: CampaignName,
     snapshot: CampaignSnapshotId,
     branch_request: BranchRequestId,
-    after: Option<AttemptId>,
+    after: Option<ProposalId>,
     limit: u32,
 }
 
@@ -32,7 +78,7 @@ impl QueryCampaignRequestAttemptsRequest {
         campaign: CampaignName,
         snapshot: CampaignSnapshotId,
         branch_request: BranchRequestId,
-        after: Option<AttemptId>,
+        after: Option<ProposalId>,
         limit: u32,
     ) -> Result<Self, CampaignCodecError> {
         if limit == 0 || limit > MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS {
@@ -41,7 +87,7 @@ impl QueryCampaignRequestAttemptsRequest {
             });
         }
         let request = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: REQUEST_ATTEMPTS_SCHEMA_VERSION,
             principal,
             campaign,
             snapshot,
@@ -71,15 +117,15 @@ impl QueryCampaignRequestAttemptsRequest {
         self.snapshot
     }
 
-    /// Returns the branch request whose spending index is queried.
+    /// Returns the branch request whose admissions are queried.
     #[must_use]
     pub const fn branch_request(&self) -> BranchRequestId {
         self.branch_request
     }
 
-    /// Returns the exclusive attempt cursor.
+    /// Returns the exclusive proposal cursor.
     #[must_use]
-    pub const fn after(&self) -> Option<AttemptId> {
+    pub const fn after(&self) -> Option<ProposalId> {
         self.after
     }
 
@@ -124,33 +170,33 @@ impl Canonical for QueryCampaignRequestAttemptsRequest {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_service_version(u32::decode(decoder)?)?;
+        require_request_attempts_version(u32::decode(decoder)?)?;
         Self::new(
             CampaignPrincipal::decode(decoder)?,
             CampaignName::decode(decoder)?,
             CampaignSnapshotId::decode(decoder)?,
             BranchRequestId::decode(decoder)?,
-            Option::<AttemptId>::decode(decoder)?,
+            Option::<ProposalId>::decode(decoder)?,
             u32::decode(decoder)?,
         )
     }
 }
 
-/// Authenticated request-local page of execution-basis admissions.
+/// Authenticated request-local page of execution bases and additional causes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryCampaignRequestAttemptsResponse {
     schema_version: u32,
     request_digest: CampaignHash,
     snapshot_body: CampaignSnapshot,
     budget_ledger: CampaignBudgetLedger,
-    entries: Vec<AttemptAdmission>,
-    next_after: Option<AttemptId>,
+    entries: Vec<CampaignRequestAdmissionEntry>,
+    next_after: Option<ProposalId>,
     index_proof: MerkleMapLookupProof,
     page_proof: MerkleMapPageProof,
 }
 
 impl QueryCampaignRequestAttemptsResponse {
-    /// Builds a response bound to the snapshot's request-spending index.
+    /// Builds a response bound to the snapshot's request-admissions index.
     ///
     /// # Errors
     ///
@@ -160,17 +206,23 @@ impl QueryCampaignRequestAttemptsResponse {
         request: &QueryCampaignRequestAttemptsRequest,
         snapshot_body: CampaignSnapshot,
         budget_ledger: CampaignBudgetLedger,
-        entries: Vec<AttemptAdmission>,
-        next_after: Option<AttemptId>,
+        entries: Vec<(Proposal, AttemptAdmission)>,
+        next_after: Option<ProposalId>,
         index_proof: MerkleMapLookupProof,
         page_proof: MerkleMapPageProof,
     ) -> Result<Self, CampaignCodecError> {
         let response = Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: REQUEST_ATTEMPTS_SCHEMA_VERSION,
             request_digest: request.request_digest(),
             snapshot_body,
             budget_ledger,
-            entries,
+            entries: entries
+                .into_iter()
+                .map(|(proposal, admission)| CampaignRequestAdmissionEntry {
+                    proposal,
+                    admission,
+                })
+                .collect(),
             next_after,
             index_proof,
             page_proof,
@@ -182,13 +234,13 @@ impl QueryCampaignRequestAttemptsResponse {
 
     /// Returns the exact admitted attempts in this page.
     #[must_use]
-    pub fn entries(&self) -> &[AttemptAdmission] {
+    pub fn entries(&self) -> &[CampaignRequestAdmissionEntry] {
         &self.entries
     }
 
     /// Returns the exclusive next-page cursor, if the page is not complete.
     #[must_use]
-    pub const fn next_after(&self) -> Option<AttemptId> {
+    pub const fn next_after(&self) -> Option<ProposalId> {
         self.next_after
     }
 
@@ -239,8 +291,8 @@ impl QueryCampaignRequestAttemptsResponse {
             });
         }
         let index_root = MerkleMap::verify_lookup_proof(
-            self.budget_ledger.request_spending(),
-            crate::repository::request_spending_key(request.branch_request()),
+            self.budget_ledger.request_admissions(),
+            crate::repository::request_admissions_key(request.branch_request()),
             &self.index_proof,
         )
         .map_err(|_| CampaignCodecError::InvalidValue {
@@ -253,7 +305,7 @@ impl QueryCampaignRequestAttemptsResponse {
         })?);
         let verified = MerkleMap::verify_scan_proof(
             index_root,
-            request.after().map(crate::repository::request_attempt_key),
+            request.after().map(crate::repository::request_proposal_key),
             limit,
             &self.page_proof,
         )
@@ -269,18 +321,27 @@ impl QueryCampaignRequestAttemptsResponse {
             .entries()
             .iter()
             .zip(&self.entries)
-            .map(|((key, value), admission)| {
-                if !matches!(
-                    admission.role(),
-                    AttemptAdmissionRole::ExecutionBasis { .. }
-                ) || *key != crate::repository::request_attempt_key(admission.attempt())
+            .map(|((key, value), entry)| {
+                let proposal_id = entry.proposal.id()?;
+                let admission = entry.admission;
+                let admitted_proposal = match admission.role() {
+                    AttemptAdmissionRole::ExecutionBasis {
+                        proposal: Some(proposal),
+                        ..
+                    }
+                    | AttemptAdmissionRole::AdditionalCause { proposal } => Some(proposal),
+                    AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => None,
+                };
+                if admitted_proposal != Some(proposal_id)
+                    || entry.proposal.request() != request.branch_request()
+                    || *key != crate::repository::request_proposal_key(proposal_id)
                     || *value != admission.id()?.content_id()
                 {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "request-attempt entry differs from its authenticated index",
                     });
                 }
-                Ok(*admission)
+                Ok(entry.clone())
             })
             .collect::<Result<Vec<_>, CampaignCodecError>>()?;
         let verified_next = verified
@@ -288,10 +349,10 @@ impl QueryCampaignRequestAttemptsResponse {
             .map(|_| {
                 verified_entries
                     .last()
-                    .map(|admission| admission.attempt())
                     .ok_or(CampaignCodecError::InvalidValue {
                         reason: "request-attempt page has cursor without entries",
                     })
+                    .and_then(|entry| entry.proposal.id())
             })
             .transpose()?;
         if self.entries != verified_entries || self.next_after != verified_next {
@@ -316,18 +377,18 @@ impl Canonical for QueryCampaignRequestAttemptsResponse {
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_service_version(u32::decode(decoder)?)?;
+        require_request_attempts_version(u32::decode(decoder)?)?;
         Ok(Self {
-            schema_version: CAMPAIGN_SERVICE_SCHEMA_VERSION,
+            schema_version: REQUEST_ATTEMPTS_SCHEMA_VERSION,
             request_digest: CampaignHash::decode(decoder)?,
             snapshot_body: CampaignSnapshot::decode(decoder)?,
             budget_ledger: CampaignBudgetLedger::decode(decoder)?,
             entries: decoder.sequence_bounded(
                 MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS as usize,
                 "campaign-request-attempt-response-entries",
-                AttemptAdmission::decode,
+                CampaignRequestAdmissionEntry::decode,
             )?,
-            next_after: Option::<AttemptId>::decode(decoder)?,
+            next_after: Option::<ProposalId>::decode(decoder)?,
             index_proof: MerkleMapLookupProof::decode(decoder)?,
             page_proof: MerkleMapPageProof::decode(decoder)?,
         })

@@ -78,8 +78,8 @@ pub use repository::{RepositoryCampaignService, RepositoryCampaignServiceError};
 #[cfg(test)]
 use repository::{repository_service_failure, store_service_failure};
 pub use request_attempts::{
-    MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS, QueryCampaignRequestAttemptsRequest,
-    QueryCampaignRequestAttemptsResponse,
+    CampaignRequestAdmissionEntry, MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS,
+    QueryCampaignRequestAttemptsRequest, QueryCampaignRequestAttemptsResponse,
 };
 pub use status::{
     CampaignContinuationStatus, CampaignOperationalEvidence, CampaignOperationalStatus,

@@ -917,6 +917,9 @@ fn request_attempt_query_is_canonical_and_strictly_bounded() {
             .expect("canonical request"),
         request
     );
+    let mut previous_version = request.canonical_bytes();
+    previous_version[..4].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(QueryCampaignRequestAttemptsRequest::from_canonical_bytes(&previous_version).is_err());
     assert!(
         QueryCampaignRequestAttemptsRequest::new(
             principal.clone(),
