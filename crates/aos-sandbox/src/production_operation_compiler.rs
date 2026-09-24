@@ -1130,7 +1130,7 @@ mod renewal_replay_tests {
             "an active handle cannot enter committed replay"
         );
         let policy = aos_sandbox_core::ObjectDescriptor::new(
-            MediaType::new("application/json").unwrap(),
+            MediaType::new("application/vnd.aos.sandbox.policy.v1+cbor").unwrap(),
             ObjectDigest::from_bytes([10; 32]),
             1,
         );

@@ -1453,7 +1453,7 @@ pub(crate) mod tests {
             Err(PublisherAuthorityError::MalformedRecord)
         ));
 
-        for version in [b'0', b'3', b'4'] {
+        for version in [b'0', b'4', b'5'] {
             let mut unknown_version = canonical.clone();
             let position = unknown_version
                 .windows(b"\"version\":1".len())
