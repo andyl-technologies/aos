@@ -85,6 +85,113 @@ impl CurrentProviderIngressSessionV1 {
         }
     }
 
+    /// Signs one exact protected historical Inventory readback on this carrier.
+    ///
+    /// The caller must obtain `persisted` from the current Provider journal.
+    /// An absent completion is signed only as non-authorizing Unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for changed custody, query, or protected completion.
+    #[doc(hidden)]
+    pub fn sign_inventory_readback(
+        &mut self,
+        query: &InventoryReadbackQueryV1,
+        completed: Option<(Vec<u8>, crate::PersistedProviderOutcomeV1)>,
+    ) -> Result<SignedInventoryReadbackV1, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let current = self.current_projection()?;
+        if query.session_binding() != self.session.binding()
+            || query.authorities().0
+                != self
+                    .custody
+                    .inner()
+                    .provider_authority()
+                    .authority()
+                    .authority_id()
+            || query.authorities().1 != current.holder().authority_id()
+        {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        let completed = completed
+            .map(|(response, persisted)| {
+                if persisted.method
+                    != aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
+                    || persisted.signed_request_digest
+                        != *query.signed_request_digest().as_bytes()
+                    || persisted.response_digest
+                        != *aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+                            aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory,
+                            &response,
+                        )
+                        .as_bytes()
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                Ok((response, persisted.completed_at_seconds, persisted.deadline_seconds))
+            })
+            .transpose()
+            .map_err(|error| poison_and_close(&mut self.custody, &mut self.carrier, error))?;
+        let answer = {
+            let inner = self.custody.inner();
+            SignedInventoryReadbackV1::sign(
+                query,
+                completed,
+                inner.provider_authority().traffic_signer().clone(),
+                inner.outcome_key().signing_key(),
+            )
+        }
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        self.revalidate()?;
+        Ok(answer)
+    }
+
+    /// Sends only the signed descriptor-free Inventory readback answer.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for changed peer, answer, signer, or carrier.
+    #[doc(hidden)]
+    pub fn send_inventory_readback(
+        &mut self,
+        query: &InventoryReadbackQueryV1,
+        answer: &SignedInventoryReadbackV1,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let inner = self.custody.inner();
+        if query.session_binding() != self.session.binding()
+            || answer
+                .verify_for_query(
+                    query,
+                    inner.provider_authority().traffic_signer(),
+                    &inner.outcome_key().signing_key().verifying_key().to_bytes(),
+                )
+                .is_err()
+        {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        match self.carrier.send(&answer.to_canonical_bytes()) {
+            Ok(()) => {
+                self.revalidate()?;
+                Ok(true)
+            }
+            Err(CarrierFailureV1::Retryable) => Ok(false),
+            Err(CarrierFailureV1::Fatal(error)) => Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                error,
+            )),
+        }
+    }
+
     /// Receives only a descriptor-free catalog challenge on this current session.
     ///
     /// # Errors

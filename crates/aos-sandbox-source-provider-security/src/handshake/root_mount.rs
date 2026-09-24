@@ -5,10 +5,11 @@ use std::num::NonZeroU64;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, ProviderCatalogFloorV1, RecoveryCurrentnessQueryV1,
-    SignedCatalogCurrentnessV1, SignedRecoveryUnavailableV1, SignedSourceProviderHelloV1,
-    SourceProviderHelloV1, SourceProviderKeyTrustStateV1, SourceProviderMessageV1,
-    SourceProviderPeerRole, SourceProviderSessionV1, decode_message, encode_message, sign_hello,
+    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, ProviderCatalogFloorV1,
+    RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedInventoryReadbackV1,
+    SignedRecoveryUnavailableV1, SignedSourceProviderHelloV1, SourceProviderHelloV1,
+    SourceProviderKeyTrustStateV1, SourceProviderMessageV1, SourceProviderPeerRole,
+    SourceProviderSessionV1, decode_message, encode_message, sign_hello,
 };
 
 use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
@@ -47,6 +48,7 @@ pub struct CurrentRootMountSourceProviderSessionV1 {
     catalog_sequence: u64,
     catalog_floor: Option<(u64, ObjectDigest)>,
     recovery_exchange: Option<RootRecoveryExchangeV1>,
+    inventory_readback_exchange: Option<RootInventoryReadbackExchangeV1>,
     recovery_sequence: u64,
 }
 
@@ -58,6 +60,22 @@ struct RootCatalogExchangeV1 {
 struct RootRecoveryExchangeV1 {
     query: RecoveryCurrentnessQueryV1,
     sent: bool,
+}
+
+struct RootInventoryReadbackExchangeV1 {
+    query: InventoryReadbackQueryV1,
+    sent: bool,
+}
+
+/// Reports one authenticated non-effect historical Inventory readback step.
+#[must_use = "an unavailable readback does not settle Mount's Reserved attempt"]
+pub enum InventoryReadbackProgressV1 {
+    /// The exact challenge or answer remains pending on the carrier.
+    Pending,
+    /// Provider did not prove a completed historical response.
+    Unavailable,
+    /// Provider attested a completed response for Mount's historical verifier.
+    Completed(super::CapturedMountProviderRecoveryOutcomeV2),
 }
 
 /// Records only a signed, descriptor-free observation of a pending attempt.
@@ -177,6 +195,7 @@ impl RootMountSourceProviderOwnerV1 {
             catalog_sequence: _,
             catalog_floor: _,
             recovery_exchange: _,
+            inventory_readback_exchange: _,
             recovery_sequence: _,
         } = current;
         let prepared = RootMountHelloPreparedV1::prepare_carrier(custody, carrier)?;
@@ -536,6 +555,7 @@ impl RootMountHelloSentV1 {
             catalog_sequence: 0,
             catalog_floor: None,
             recovery_exchange: None,
+            inventory_readback_exchange: None,
             recovery_sequence: 0,
         })
     }
@@ -566,6 +586,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     {
         self.revalidate()?;
         if self.catalog_exchange.is_some()
+            || self.inventory_readback_exchange.is_some()
             || provider_id
                 != self
                     .custody
@@ -662,6 +683,137 @@ impl CurrentRootMountSourceProviderSessionV1 {
         }))
     }
 
+    /// Challenges Provider about one old protected Inventory without resending it.
+    ///
+    /// Only a current-session, nonce-bound, descriptor-free signed answer is
+    /// accepted. Completed evidence remains nonauthorizing until the existing
+    /// historical Mount receipt verifier consumes the opaque captured value.
+    ///
+    /// # Errors
+    ///
+    /// Closes this session for query drift, changed peer or signer, malformed
+    /// answer, transferred descriptor, or stale protected custody.
+    pub fn advance_inventory_readback(
+        &mut self,
+        provider_id: [u8; 16],
+        holder_id: [u8; 16],
+        signed_request_digest: ObjectDigest,
+        mount_attempt_record_digest: ObjectDigest,
+    ) -> Result<InventoryReadbackProgressV1, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let (current_holder, current_provider, _) = self.current_authority_scope_v2()?;
+        if self.catalog_exchange.is_some()
+            || self.recovery_exchange.is_some()
+            || provider_id != current_provider
+            || holder_id != current_holder
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        if let Some(exchange) = &self.inventory_readback_exchange {
+            if exchange.query.authorities() != (provider_id, holder_id)
+                || exchange.query.signed_request_digest() != signed_request_digest
+                || exchange.query.mount_attempt_record_digest() != mount_attempt_record_digest
+            {
+                return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+        } else {
+            let nonce = self.custody.draw_nonce_at(current_unix_seconds()?)?;
+            let sequence = self
+                .recovery_sequence
+                .checked_add(1)
+                .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let query = InventoryReadbackQueryV1::new(
+                self.session.binding(),
+                nonce,
+                sequence,
+                provider_id,
+                holder_id,
+                signed_request_digest,
+                mount_attempt_record_digest,
+            )
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            self.inventory_readback_exchange =
+                Some(RootInventoryReadbackExchangeV1 { query, sent: false });
+        }
+
+        let exchange = self
+            .inventory_readback_exchange
+            .as_mut()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        if !exchange.sent {
+            match self.carrier.send(&exchange.query.to_canonical_bytes()) {
+                Ok(()) => exchange.sent = true,
+                Err(CarrierFailureV1::Retryable) => {
+                    return Ok(InventoryReadbackProgressV1::Pending);
+                }
+                Err(CarrierFailureV1::Fatal(error)) => return Err(self.poison(error)),
+            }
+        }
+        let received = match self
+            .carrier
+            .receive_zero_descriptors(aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES)
+        {
+            Ok(received) => received,
+            Err(CarrierFailureV1::Retryable) => return Ok(InventoryReadbackProgressV1::Pending),
+            Err(CarrierFailureV1::Fatal(error)) => return Err(self.poison(error)),
+        };
+        if !received
+            .execution
+            .has_same_execution(&self.provider_execution)
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        self.revalidate()?;
+        let exchange = self
+            .inventory_readback_exchange
+            .take()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        let answer = SignedInventoryReadbackV1::from_canonical_bytes(&received.payload)
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let (signer, trusted_key) = {
+            let inner = self.custody.inner();
+            let signer = inner.provider_authority().traffic_signer().clone();
+            let trusted_key = inner
+                .trust()
+                .keys()
+                .iter()
+                .find(|entry| {
+                    entry.signer() == &signer
+                        && entry.state() == SourceProviderKeyTrustStateV1::Eligible
+                })
+                .map(|entry| *entry.public_key());
+            (signer, trusted_key)
+        };
+        let trusted_key = trusted_key
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        answer
+            .verify_for_query(&exchange.query, &signer, &trusted_key)
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        self.recovery_sequence = exchange.query.sequence();
+        let Some((response, completed_at_seconds, deadline_seconds)) = answer.completed() else {
+            return Ok(InventoryReadbackProgressV1::Unavailable);
+        };
+        let persisted = super::PersistedProviderOutcomeV1 {
+            method: aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory,
+            signed_request_digest: *signed_request_digest.as_bytes(),
+            response_digest:
+                *aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+                    aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory,
+                    response,
+                )
+                .as_bytes(),
+            completed_at_seconds,
+            deadline_seconds,
+        };
+        let captured = self.capture_persisted_mount_provider_outcome_v2(
+            aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory,
+            response.to_vec(),
+            None,
+            persisted,
+        )?;
+        Ok(InventoryReadbackProgressV1::Completed(captured))
+    }
+
     /// Advances one nonblocking catalog-currentness challenge and response.
     ///
     /// The caller supplies its protected minimum floor. The session refuses a
@@ -679,7 +831,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     ) -> Result<Option<AuthenticatedRootMountCatalogCurrentnessV1>, SourceProviderSecurityError>
     {
         self.revalidate()?;
-        if self.recovery_exchange.is_some() {
+        if self.recovery_exchange.is_some() || self.inventory_readback_exchange.is_some() {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         let inner = self.custody.inner();

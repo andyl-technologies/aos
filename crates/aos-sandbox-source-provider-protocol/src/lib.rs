@@ -18,7 +18,8 @@
 //!
 //! [`model`] owns operation values, [`proof`] owns backend proof claims,
 //! [`codec`] owns the canonical wire representation, and [`crypto`] owns
-//! domain-separated Ed25519 signatures and digests. [`trust`] models trust,
+//! domain-separated Ed25519 signatures and digests. [`inventory_readback`]
+//! owns the non-effect historical Inventory challenge. [`trust`] models trust,
 //! route, and supplied session inputs; [`verification`] authenticates signed
 //! records and validates their complete graph. A future branded Linux adapter
 //! must establish kernel-observation provenance before production use.
@@ -32,6 +33,7 @@ pub mod catalog_manifest;
 pub mod codec;
 pub mod crypto;
 pub mod held_snapshot_catalog;
+pub mod inventory_readback;
 pub mod model;
 pub mod normalized_intent;
 pub mod proof;
@@ -80,6 +82,9 @@ pub use crypto::{
 };
 pub use held_snapshot_catalog::{
     MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
+};
+pub use inventory_readback::{
+    InventoryReadbackErrorV1, InventoryReadbackQueryV1, SignedInventoryReadbackV1,
 };
 pub use model::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V1, ACQUIRE_SOURCE_REQUEST_VERSION_V2,

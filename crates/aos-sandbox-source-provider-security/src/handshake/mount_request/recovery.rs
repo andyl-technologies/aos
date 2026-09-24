@@ -223,7 +223,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     pub fn recover_mount_provider_outcome_v2(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: Option<&aos_sandbox::ProtectedJournalAuthority<'_>>,
         journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
         attempt_key: Vec<u8>,
         attempt_record: Vec<u8>,
@@ -249,6 +249,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
             Ok(StoredRecordV2::ProviderQueryAttempt { value }) => value,
             _ => return Err(self.poison(SourceProviderSecurityError::SessionContinuity)),
         };
+        if catalog_journal.is_none() && attempt.method != ProviderMethodV2::Inventory {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         let retained_session =
             match decode_mount_source_state_record_v2(&session_key, &session_record) {
                 Ok(StoredRecordV2::ProviderSession { value }) => value,
@@ -643,7 +646,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .map(crate::ProviderSourceRootHandoffV1::observation)
             .cloned();
         let verified = self.verify_provider_outcome_bytes_v2(
-            Some(catalog_journal),
+            catalog_journal,
             &authorization,
             canonical_response,
             source_observation,

@@ -13,9 +13,9 @@ use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1,
-    SignedSourceProviderRequestV1, SourceProviderMethod, decode_acquire_request,
-    decode_inventory_request,
+    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, RecoveryCurrentnessQueryV1,
+    SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1, SourceProviderMethod,
+    decode_acquire_request, decode_inventory_request,
 };
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
@@ -90,6 +90,8 @@ pub enum FixedProviderIngressProgressV1 {
     CatalogReplied,
     /// A new authenticated carrier asks about one protected original attempt.
     Recovery(RecoveryCurrentnessQueryV1),
+    /// A new authenticated carrier asks for an old protected Inventory result.
+    InventoryReadback(InventoryReadbackQueryV1),
     /// A kernel-coupled Acquire or holder Inventory awaits protected admission.
     Source(FixedProviderAuthenticatedSourceRequestV1),
 }
@@ -266,6 +268,7 @@ pub struct FixedProviderOwnerV1 {
     last_recovery_sequence: u64,
     pending_recovery_query_digest: Option<ObjectDigest>,
     pending_recovery_plan_digest: Option<ObjectDigest>,
+    pending_inventory_readback_digest: Option<ObjectDigest>,
 }
 
 impl core::fmt::Debug for FixedProviderOwnerV1 {
@@ -322,6 +325,7 @@ impl FixedProviderOwnerV1 {
                 last_recovery_sequence: 0,
                 pending_recovery_query_digest: None,
                 pending_recovery_plan_digest: None,
+                pending_inventory_readback_digest: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
         ))
@@ -683,6 +687,11 @@ impl FixedProviderOwnerV1 {
             recovered_execution_death,
         )?;
         self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
+        // Recovery query sequences are local to the authenticated carrier.
+        self.last_recovery_sequence = 0;
+        self.pending_recovery_query_digest = None;
+        self.pending_recovery_plan_digest = None;
+        self.pending_inventory_readback_digest = None;
         if let Some(recovery) = self.pending_backend_recovery.first_mut() {
             recovery.mark_successor_session_ready();
         }
@@ -834,8 +843,10 @@ impl FixedProviderOwnerV1 {
     /// Retry authority is returned only after replay validation under the fixed
     /// journal claim. A completed descriptor-free response is returned as an
     /// opaque historical outcome, while Complete Acquire returns a move-only
-    /// physical-reopen authority. Historical response bytes are never sent on a
-    /// successor session. A reserved request remains owned by recovery.
+    /// physical-reopen authority. Historical response bytes are never replayed
+    /// as an old-session operation reply; Inventory-only readback may carry
+    /// them in a fresh signed control answer. A reserved request remains owned
+    /// by recovery.
     ///
     /// # Errors
     ///
@@ -988,6 +999,56 @@ impl FixedProviderOwnerV1 {
             }
         }
         Ok(readback)
+    }
+
+    /// Reads only a completed historical Inventory selected by its signed digest.
+    ///
+    /// Absent or Reserved attempts yield `None`; this method never constructs a
+    /// new-session request or advances Provider's request sequence. The signed
+    /// query's Mount record digest is opaque here and must be checked by Mount.
+    ///
+    /// # Errors
+    ///
+    /// Rejects digest aliases, a foreign holder/provider, corrupt protected
+    /// response, or a retired attempt.
+    pub fn readback_inventory_by_digest(
+        &mut self,
+        query: &InventoryReadbackQueryV1,
+    ) -> Result<Option<FixedProviderHistoricalOutcomeV1>, ProviderLedgerError> {
+        let signed = self.with_ledger(|ledger| {
+            let mut matches =
+                ledger.recovered.attempts.values().filter(|attempt| {
+                    attempt.signed_request_digest == query.signed_request_digest()
+                });
+            let Some(attempt) = matches.next() else {
+                return Ok(None);
+            };
+            if matches.next().is_some()
+                || attempt.method != SourceProviderMethod::Inventory
+                || attempt.provider.authority_id() != query.authorities().0
+                || attempt.holder.authority_id() != query.authorities().1
+            {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            match attempt.state {
+                crate::ProviderAttemptStateV1::Reserved => Ok(None),
+                crate::ProviderAttemptStateV1::Completed => {
+                    let signed = SignedSourceProviderRequestV1::from_canonical_bytes(
+                        &attempt.signed_request,
+                    )
+                    .map_err(|_| ProviderLedgerError::Equivocation)?;
+                    Ok(Some(signed))
+                }
+                crate::ProviderAttemptStateV1::Retired => Err(ProviderLedgerError::Equivocation),
+            }
+        })?;
+        let Some(signed) = signed else {
+            return Ok(None);
+        };
+        match self.readback_mount_request(signed)? {
+            FixedProviderRequestReadbackV1::HistoricalOutcome(outcome) => Ok(Some(outcome)),
+            _ => Err(ProviderLedgerError::Equivocation),
+        }
     }
 
     /// Projects the method and stable provider acquisition owned by recovery.
@@ -1401,7 +1462,9 @@ impl FixedProviderOwnerV1 {
                     }
                 });
         }
-        if self.pending_recovery_query_digest.is_some() {
+        if self.pending_recovery_query_digest.is_some()
+            || self.pending_inventory_readback_digest.is_some()
+        {
             return Err(ProviderLedgerError::InvalidTransition(
                 "recovery answer remains pending on this carrier",
             ));
@@ -1452,6 +1515,25 @@ impl FixedProviderOwnerV1 {
             self.pending_recovery_plan_digest = None;
             return Ok(FixedProviderIngressProgressV1::Recovery(query));
         }
+        if packet.starts_with(b"AOSSPI01") {
+            let query = InventoryReadbackQueryV1::from_canonical_bytes(&packet)
+                .map_err(|_| ProviderLedgerError::Equivocation)?;
+            let binding = self.with_ledger(|ledger| {
+                let installed = ledger
+                    .current_sessions
+                    .values()
+                    .next()
+                    .ok_or(ProviderLedgerError::Unavailable)?;
+                Ok(installed.session.retained_session_binding())
+            })?;
+            if query.session_binding() != binding || query.sequence() <= self.last_recovery_sequence
+            {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            self.last_recovery_sequence = query.sequence();
+            self.pending_inventory_readback_digest = Some(query.digest());
+            return Ok(FixedProviderIngressProgressV1::InventoryReadback(query));
+        }
         let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&packet)
             .map_err(|_| ProviderLedgerError::Equivocation)?;
         validate_production_source_request(&signed)?;
@@ -1496,6 +1578,55 @@ impl FixedProviderOwnerV1 {
         if sent {
             self.pending_recovery_query_digest = None;
             self.pending_recovery_plan_digest = None;
+        }
+        Ok(sent)
+    }
+
+    /// Sends one signed, descriptor-free protected Inventory readback.
+    ///
+    /// The historical response is re-read from Provider's completed journal
+    /// row for each nonblocking retry. An absent or unresolved row signs only
+    /// Unavailable, which cannot complete Mount's Reserved attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed challenge, foreign descriptor, stale protected
+    /// completion, or lost authenticated carrier.
+    pub fn send_inventory_readback(
+        &mut self,
+        query: &InventoryReadbackQueryV1,
+        historical: Option<FixedProviderHistoricalOutcomeV1>,
+    ) -> Result<bool, ProviderLedgerError> {
+        if self.pending_inventory_readback_digest != Some(query.digest())
+            || self.last_recovery_sequence != query.sequence()
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        let completed = historical
+            .map(|outcome| {
+                let (response, source_root, persisted) = outcome.into_security_parts()?;
+                if source_root.is_some() {
+                    return Err(ProviderLedgerError::Equivocation);
+                }
+                Ok((response, persisted))
+            })
+            .transpose()?;
+        let sent = self.with_ledger(|ledger| {
+            let installed = ledger
+                .current_sessions
+                .values_mut()
+                .next()
+                .ok_or(ProviderLedgerError::Unavailable)?;
+            let answer = installed
+                .session
+                .sign_inventory_readback(query, completed)?;
+            installed
+                .session
+                .send_inventory_readback(query, &answer)
+                .map_err(Into::into)
+        })?;
+        if sent {
+            self.pending_inventory_readback_digest = None;
         }
         Ok(sent)
     }

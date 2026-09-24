@@ -185,7 +185,7 @@ impl SourceAcquisitionTableV2 {
     pub(crate) fn recover_and_consume_provider_outcome_v2(
         &mut self,
         journal: &mut ProtectedJournalAuthority<'_>,
-        catalog_journal: &ProtectedJournalAuthority<'_>,
+        catalog_journal: Option<&ProtectedJournalAuthority<'_>>,
         session: &mut CurrentRootMountSourceProviderSessionV1,
         attempt_id: [u8; 32],
         captured: aos_sandbox_source_provider_security::CapturedMountProviderRecoveryOutcomeV2,

@@ -185,3 +185,35 @@ pub fn observe_remote_source_inventory<W: MountWorker>(
     })?;
     Ok(response)
 }
+
+/// Recovers one old Reserved Inventory from Provider's protected journal.
+///
+/// This is a non-effect recovery operation. It never resends the old signed
+/// request, authorizes Acquire or Release, or activates source-method dispatch.
+///
+/// # Errors
+///
+/// Rejects signed Unavailable, changed protected history, ambiguous commit,
+/// or a response not completed before the absolute boot-time deadline.
+pub fn observe_remote_cold_source_inventory<W: MountWorker>(
+    owner: &mut RootMountSourceProviderOwnerV1,
+    broker: &mut MountBroker<W>,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<Vec<u8>, ProductionRootMountSourceProviderErrorV1> {
+    let response = broker.with_fixed_source_acquisition_owner(|source| {
+        loop {
+            let remaining = remaining_duration(deadline_boottime_nanoseconds)
+                .map_err(|error| MountError::State(error.to_string()))?;
+            match source.advance_remote_cold_inventory_readback(owner)? {
+                true => {
+                    let inventory = source.encode_current_inventory()?;
+                    remaining_duration(deadline_boottime_nanoseconds)
+                        .map_err(|error| MountError::State(error.to_string()))?;
+                    return Ok(inventory);
+                }
+                false => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
+            }
+        }
+    })?;
+    Ok(response)
+}

@@ -349,9 +349,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     ///
     /// # Errors
     ///
-    /// Returns an error unless the oldest cold barrier is an acquisition-owned
-    /// Reserved Acquire or Release request whose retained canonical bytes and
-    /// digest still match the durable attempt.
+    /// Returns an error unless the oldest cold barrier is a Reserved request
+    /// whose retained canonical bytes and digest still match the durable attempt.
     #[doc(hidden)]
     pub fn cold_reserved_provider_request(
         &self,
@@ -3263,6 +3262,91 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         Ok(true)
     }
 
+    /// Reauthenticates one old Reserved Inventory through protected remote readback.
+    ///
+    /// The old signed request is never sent on the successor carrier. Provider
+    /// may attest only its exact protected Completed response; Mount then runs
+    /// the existing historical response verifier against namespace 40 before
+    /// committing the disposition. `Ok(false)` retains the old Reserved row.
+    /// A commit that completed before a crash is terminal on journal replay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Inventory barrier, signed Unavailable, stale session,
+    /// mismatched protected history, or ambiguous commit. An ambiguous commit
+    /// requires restart and exact journal replay, not a new Inventory send.
+    #[doc(hidden)]
+    pub fn advance_remote_cold_inventory_readback(
+        &mut self,
+        root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+    ) -> Result<bool> {
+        if self.pending_provider.is_some() || self.pending_provider_send.is_some() {
+            return Err(state_error("live provider custody must be resolved first"));
+        }
+        let signed = self.cold_reserved_provider_request()?;
+        if signed.method() != aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
+        {
+            return Err(state_error("oldest cold attempt is not Inventory"));
+        }
+        let attempt_id = *self
+            .cold_pending_attempts
+            .first()
+            .ok_or_else(|| state_error("cold Inventory barrier is absent"))?;
+        let attempt = self
+            .table
+            .provider_attempts
+            .get(&attempt_id)
+            .ok_or_else(|| state_error("cold Inventory attempt is absent"))?;
+        let provider_id = attempt.scope.provider_authority_id;
+        let holder_id = attempt.scope.holder_authority_id;
+        let signed_request_digest =
+            aos_sandbox_source_provider_protocol::digest_signed_request(&signed);
+        let attempt_record_digest =
+            aos_sandbox_core::ObjectDigest::from_bytes(attempt.record_digest);
+        let progress = root
+            .with_current_session(|session| {
+                session.advance_inventory_readback(
+                    provider_id,
+                    holder_id,
+                    signed_request_digest,
+                    attempt_record_digest,
+                )
+            })
+            .map_err(|_| state_error("Root-Mount provider session is not current"))?
+            .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))?
+            .map_err(|_| state_error("remote Inventory readback was rejected"))?;
+        let captured = match progress {
+            aos_sandbox_source_provider_security::InventoryReadbackProgressV1::Pending => {
+                return Ok(false);
+            }
+            aos_sandbox_source_provider_security::InventoryReadbackProgressV1::Unavailable => {
+                return Err(state_error("Provider did not prove a completed Inventory"));
+            }
+            aos_sandbox_source_provider_security::InventoryReadbackProgressV1::Completed(
+                captured,
+            ) => captured,
+        };
+        let recovered = root
+            .with_current_session(|session| {
+                self.with_source_acquisition_authority(|table, authority| {
+                    authority.with_authority(|journal| {
+                        table.recover_and_consume_provider_outcome_v2(
+                            journal, None, session, attempt_id, captured,
+                        )
+                    })
+                })
+            })
+            .map_err(|_| state_error("Root-Mount provider session is not current"))?
+            .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))??;
+        self.retain_recovered_provider_outcome(
+            [0; 32],
+            ProviderMethodV2::Inventory,
+            recovered,
+            "Inventory cannot retain SourceRoot postcommit custody",
+        )?;
+        Ok(true)
+    }
+
     /// Retries the exact request whose first carrier send did not complete.
     ///
     /// # Errors
@@ -3476,7 +3560,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     authority.with_authority(|journal| {
                         table.recover_and_consume_provider_outcome_v2(
                             journal,
-                            catalog_journal,
+                            Some(catalog_journal),
                             session,
                             attempt_id,
                             captured,
@@ -3564,7 +3648,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                     authority.with_authority(|journal| {
                         table.recover_and_consume_provider_outcome_v2(
                             journal,
-                            catalog_journal,
+                            Some(catalog_journal),
                             session,
                             attempt_id,
                             captured,

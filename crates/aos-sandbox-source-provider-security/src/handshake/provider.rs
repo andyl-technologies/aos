@@ -2,8 +2,9 @@
 
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, MAXIMUM_FRAME_BYTES, ProviderRequestSequenceExpectationV1,
-    ProviderRequestVerificationContextV1, RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1,
+    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, MAXIMUM_FRAME_BYTES,
+    ProviderRequestSequenceExpectationV1, ProviderRequestVerificationContextV1,
+    RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedInventoryReadbackV1,
     SignedRecoveryUnavailableV1, SignedSourceExportLeaseV1, SignedSourceProviderHelloV1,
     SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1,
     SignedSourceProviderStatusV1, SignedSourceReleaseReceiptV1, SignedStorageLiveExportRequestV1,

@@ -27,7 +27,8 @@ pub use provider::{
 };
 pub use root_mount::{
     AuthenticatedRootMountCatalogCurrentnessV1, AuthenticatedRootMountRecoveryUnavailableV1,
-    CurrentRootMountSourceProviderSessionV1, RootMountSourceProviderHandshakeStatusV1,
+    CurrentRootMountSourceProviderSessionV1, InventoryReadbackProgressV1,
+    RootMountSourceProviderHandshakeStatusV1,
     RootMountSourceProviderOwnerV1,
 };
 

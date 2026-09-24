@@ -100,6 +100,13 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                                 std::thread::sleep(Duration::from_millis(2));
                             }
                         }
+                        FixedProviderIngressProgressV1::InventoryReadback(query) => loop {
+                            let historical = owner.readback_inventory_by_digest(&query)?;
+                            if owner.send_inventory_readback(&query, historical)? {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
+                        },
                         FixedProviderIngressProgressV1::Source(request) => {
                             let (publication, manifest) =
                                 ingress.read_current_catalog_manifest()?;

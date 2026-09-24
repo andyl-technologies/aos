@@ -75,6 +75,7 @@ pub use handshake::{
     CurrentMountProviderSessionPlanV2, CurrentProviderIngressSessionV1, CurrentProviderRequestV1,
     CurrentProviderSessionProjectionV1, CurrentRootMountSourceProviderSessionV1,
     HistoricalMountInventoryAuthorizationV2, HistoricalMountReleaseAuthorizationV2,
+    InventoryReadbackProgressV1,
     MountProviderAuthorityTrustProjectionV2, MountProviderRequestProjectionV2,
     MountProviderRequestSendRecoveryV2, MountProviderSessionProjectionV2,
     MountProviderSignerProjectionV2, PersistedProviderOutcomeV1, PreparedMountProviderRequestV2,
