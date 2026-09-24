@@ -36,6 +36,8 @@ clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-daemon = { path = "../crucible-daemon" }
+# The worked-network fixture declares the guest selectable wire version.
+crucible-protocol = { path = "../crucible-protocol" }
 crucible-session = { path = "../crucible-session" }
 rcgen = { workspace = true }
 rustix = { workspace = true, features = ["process", "termios"] }
@@ -55,8 +57,6 @@ crucible-core = { package = "crucible", path = "../crucible", features = ["test-
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-device = { path = "../crucible-device" }
 crucible-harness = { path = "../crucible-harness" }
-# Black-box guest protocol tests construct versioned observer frames directly.
-crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 libc = { workspace = true }
 sha2 = { workspace = true }
