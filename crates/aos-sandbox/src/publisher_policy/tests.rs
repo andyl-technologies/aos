@@ -14,6 +14,9 @@ use aos_sandbox_core::{CacheDomainId, CanonicalCborError, Grant, GrantId, Operat
 
 use super::*;
 use crate::JournalLimits;
+use crate::policy_compiler::{
+    AuthenticatedCacheDomainV1, CacheDomainBindingV1, CacheDomainVerifierV1, PolicyModelError,
+};
 
 #[test]
 fn all_record_families_match_fixed_goldens_and_reject_magic_or_length_changes() {
@@ -223,6 +226,145 @@ fn prepared(fixture: &Fixture, generation: u64) -> PreparedPublisherPolicyRevisi
         DecodeLimits::default(),
     )
     .unwrap()
+}
+
+fn bare_project_revision(
+    project: ProjectId,
+    generation: u64,
+    domain: CacheDomain,
+) -> PreparedPublisherPolicyRevisionV1 {
+    let policy = Policy::new(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        ResourceProfile::new(Vec::new()).unwrap(),
+        Vec::new(),
+        domain,
+        RevocationPolicy::new(RevocationMode::DenyNew, 0),
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
+        project,
+        generation,
+        100,
+        200,
+        &encode_policy(&policy),
+        DecodeLimits::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn project_cache_domain_head_tracks_current_policy_and_verifier_fails_closed() {
+    let directory = TestDirectory::new("project-cache-head");
+    let project = ProjectId::from_bytes([1; 16]);
+    let domain = CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([1; 16]));
+    let other_domain =
+        CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([9; 16]));
+    let mut journal = directory.open();
+    let mut store =
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+
+    assert!(store.project_cache_domain_head(project).unwrap().is_none());
+    assert!(
+        !store
+            .verify_project_cache_domain_claim(project, ObjectDigest::from_bytes([7; 32]))
+            .unwrap()
+    );
+    let verifier = PublisherProjectCacheDomainVerifierV1::new(&store, project);
+    assert!(matches!(
+        AuthenticatedCacheDomainV1::authenticate(
+            domain,
+            CacheDomainBindingV1::Project(project),
+            &verifier,
+        ),
+        Err(PolicyModelError::CacheDomainAuthenticationFailed)
+    ));
+
+    store
+        .publish_policy_from_trusted_controller(
+            [1; 16],
+            None,
+            &bare_project_revision(project, 1, domain),
+        )
+        .unwrap();
+    let first = store.project_cache_domain_head(project).unwrap().unwrap();
+    assert_eq!(first.project(), project);
+    assert_eq!(first.generation(), 1);
+    assert_eq!(first.domain(), domain);
+    assert!(
+        store
+            .verify_project_cache_domain_claim(project, first.digest())
+            .unwrap()
+    );
+    let verifier = PublisherProjectCacheDomainVerifierV1::new(&store, project);
+    let authenticated = AuthenticatedCacheDomainV1::authenticate(
+        domain,
+        CacheDomainBindingV1::Project(project),
+        &verifier,
+    )
+    .unwrap();
+    assert!(!verifier.verify(authenticated.descriptor(), &[]));
+
+    store
+        .publish_policy_from_trusted_controller(
+            [2; 16],
+            Some(1),
+            &bare_project_revision(project, 2, domain),
+        )
+        .unwrap();
+    let second = store.project_cache_domain_head(project).unwrap().unwrap();
+    assert_eq!(second.generation(), 2);
+    assert_ne!(second.digest(), first.digest());
+    assert_eq!(second.policy_digest(), first.policy_digest());
+    assert!(
+        !store
+            .verify_project_cache_domain_claim(project, first.digest())
+            .unwrap()
+    );
+    assert!(
+        store
+            .verify_project_cache_domain_claim(project, second.digest())
+            .unwrap()
+    );
+
+    store
+        .publish_policy_from_trusted_controller(
+            [3; 16],
+            Some(2),
+            &bare_project_revision(project, 3, other_domain),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.project_cache_domain_head(project),
+        Err(PublisherPolicyError::InvalidProjectCacheDomainBinding)
+    ));
+    assert!(matches!(
+        store.verify_project_cache_domain_claim(project, second.digest()),
+        Err(PublisherPolicyError::InvalidProjectCacheDomainBinding)
+    ));
+    let verifier = PublisherProjectCacheDomainVerifierV1::new(&store, project);
+    assert!(matches!(
+        AuthenticatedCacheDomainV1::authenticate(
+            domain,
+            CacheDomainBindingV1::Project(project),
+            &verifier,
+        ),
+        Err(PolicyModelError::CacheDomainAuthenticationFailed)
+    ));
+    drop(store);
+    drop(journal);
+
+    let mut reopened = directory.open();
+    let store =
+        PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+    assert!(matches!(
+        store.project_cache_domain_head(project),
+        Err(PublisherPolicyError::InvalidProjectCacheDomainBinding)
+    ));
 }
 
 fn raw(journal: &mut Journal, id: u8, key: Vec<u8>, value: Vec<u8>) {

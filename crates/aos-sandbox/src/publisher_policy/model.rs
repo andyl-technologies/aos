@@ -243,6 +243,48 @@ pub struct PublisherRevocationHeadV1 {
     pub generation: u64,
 }
 
+/// Identifies the project disclosure choice in a current publisher revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublisherProjectCacheDomainHeadV1 {
+    pub(super) project: ProjectId,
+    pub(super) generation: u64,
+    pub(super) policy_digest: ObjectDigest,
+    pub(super) domain: CacheDomain,
+    pub(super) digest: ObjectDigest,
+}
+
+impl PublisherProjectCacheDomainHeadV1 {
+    /// Returns the publisher project owning the current policy.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the contiguous current publisher-policy generation.
+    #[must_use]
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the exact current policy descriptor digest.
+    #[must_use]
+    pub const fn policy_digest(self) -> ObjectDigest {
+        self.policy_digest
+    }
+
+    /// Returns the current project disclosure domain.
+    #[must_use]
+    pub const fn domain(self) -> CacheDomain {
+        self.domain
+    }
+
+    /// Returns the project, generation, policy, and domain commitment.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        self.digest
+    }
+}
+
 /// Identifies the current protected revocation scope for one project.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublisherProjectRevocationHeadV1 {
@@ -300,6 +342,9 @@ pub enum PublisherPolicyError {
     /// a current policy or scope head.
     #[error("publisher project revocation binding is invalid")]
     InvalidProjectRevocationBinding,
+    /// A current publisher policy has no exact project disclosure identity.
+    #[error("publisher project cache-domain binding is invalid")]
+    InvalidProjectCacheDomainBinding,
     /// The immutable project-to-revocation-scope mapping already exists.
     #[error("publisher project revocation binding already exists")]
     ProjectRevocationBindingAlreadyExists,

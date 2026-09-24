@@ -44,6 +44,10 @@ const PROJECT_REVOCATION_MAGIC: &[u8; 8] = b"AOSREVP1";
 // The AOSPPH01 claim commits the protected mapping and exact scope generation:
 // SHA-256(domain || project:16 || scope:16 || generation:u64-be).
 const PROJECT_REVOCATION_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-revocation-head.v1\0";
+// The project cache claim follows the current publisher revision, even when
+// the disclosure domain itself remains unchanged between revisions.
+const PROJECT_CACHE_DOMAIN_HEAD_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-cache-domain-head.v1\0";
 
 const MAXIMUM_POLICY_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_RECORDS: usize = 65_536;
@@ -57,8 +61,8 @@ const MAXIMUM_DEPTH: usize = 64;
 mod model;
 pub use model::{
     PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyError,
-    PublisherPolicyLimits, PublisherProjectRevocationHeadV1, PublisherResourceBindingV1,
-    PublisherRevocationHeadV1,
+    PublisherPolicyLimits, PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,
+    PublisherResourceBindingV1, PublisherRevocationHeadV1,
 };
 
 /// Provides exclusive access to validated current publisher policy state.
@@ -228,6 +232,61 @@ impl<'journal> PublisherPolicyStore<'journal> {
             generation: head.generation,
             digest,
         }))
+    }
+
+    /// Resolves the project disclosure choice of the current protected policy.
+    ///
+    /// This publisher-owned head is not a physical cache-residency head. The
+    /// caller must retain the journal claim through any cross-owner authority
+    /// decision that relies on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a journal or corrupt-state error, or rejects a current policy
+    /// whose project disclosure identity is not the exact project. `Ok(None)`
+    /// means no publisher policy is current for the project.
+    pub fn project_cache_domain_head(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<PublisherProjectCacheDomainHeadV1>, PublisherPolicyError> {
+        let Some(policy) = self.current_policy(project)? else {
+            return Ok(None);
+        };
+        let domain = policy.policy().cache_domain();
+        if domain.kind() != CacheDomainKind::Project
+            || domain.domain_id().as_bytes() != project.as_bytes()
+        {
+            return Err(PublisherPolicyError::InvalidProjectCacheDomainBinding);
+        }
+        let policy_digest = policy.descriptor().digest();
+        let digest =
+            project_cache_domain_digest(project, policy.generation(), policy_digest, domain);
+        Ok(Some(PublisherProjectCacheDomainHeadV1 {
+            project,
+            generation: policy.generation(),
+            policy_digest,
+            domain,
+            digest,
+        }))
+    }
+
+    /// Compares a project cache-domain claim with the exact current head.
+    ///
+    /// This read alone does not retain authority across a later cross-owner
+    /// commit or effect handoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns a journal or invalid-binding error when current state cannot
+    /// establish the protected head. An absent policy returns `Ok(false)`.
+    pub fn verify_project_cache_domain_claim(
+        &self,
+        project: ProjectId,
+        claimed: ObjectDigest,
+    ) -> Result<bool, PublisherPolicyError> {
+        Ok(self
+            .project_cache_domain_head(project)?
+            .is_some_and(|head| head.digest() == claimed))
     }
 
     /// Atomically appends a policy revision and advances its exact current head.
@@ -515,6 +574,28 @@ pub(crate) fn project_revocation_digest(
             .into(),
     )
 }
+
+fn project_cache_domain_digest(
+    project: ProjectId,
+    generation: u64,
+    policy_digest: ObjectDigest,
+    domain: CacheDomain,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(PROJECT_CACHE_DOMAIN_HEAD_DOMAIN)
+            .chain_update(project.as_bytes())
+            .chain_update(generation.to_be_bytes())
+            .chain_update(policy_digest.as_bytes())
+            .chain_update([1_u8])
+            .chain_update(domain.domain_id().as_bytes())
+            .finalize()
+            .into(),
+    )
+}
+
+mod cache_domain;
+pub use cache_domain::PublisherProjectCacheDomainVerifierV1;
 
 mod record;
 use record::*;
