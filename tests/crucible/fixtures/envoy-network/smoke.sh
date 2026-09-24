@@ -118,6 +118,7 @@ test "$primary_body" = 'east:::1:1'
 
 python3 "$TRAFFIC_PY" control >"$work/control.log" 2>&1 &
 control_pid=$!
+east_control_url=http://127.77.0.4:8080/control
 
 wait_for_control_status() {
   expected=$1
@@ -139,6 +140,10 @@ wait_for_control_status() {
 }
 
 wait_for_control_status 425 converged
+east_status=$(curl --noproxy '*' --interface 127.77.0.5 --silent \
+  --output /dev/null --write-out '%{http_code}' \
+  "$east_control_url/converged")
+test "$east_status" = 425
 rejected=$(curl --noproxy '*' --silent --output /dev/null \
   --write-out '%{http_code}' --request POST --data '' \
   http://127.77.0.2:9090/ready/transport/router-b)
@@ -146,9 +151,26 @@ test "$rejected" = 425
 curl --noproxy '*' --silent --show-error --fail --request POST \
   --data '' http://127.77.0.2:9090/converged >/dev/null
 wait_for_control_status 204 converged
+east_status=$(curl --noproxy '*' --interface 127.77.0.5 --silent \
+  --output /dev/null --write-out '%{http_code}' \
+  "$east_control_url/converged")
+test "$east_status" = 204
+
+acknowledge_peer() {
+  phase=$1
+  peer=$2
+  if [ "$peer" = traffic-east ]; then
+    curl --noproxy '*' --interface 127.77.0.5 --silent --show-error \
+      --fail --request POST --data '' \
+      "$east_control_url/ready/$phase/$peer" >/dev/null
+  else
+    curl --noproxy '*' --silent --show-error --fail --request POST \
+      --data '' "http://127.77.0.2:9090/ready/$phase/$peer" >/dev/null
+  fi
+}
+
 for peer in router-b router-c traffic-east; do
-  curl --noproxy '*' --silent --show-error --fail --request POST \
-    --data '' "http://127.77.0.2:9090/ready/transport/$peer" >/dev/null
+  acknowledge_peer transport "$peer"
   wait_for_control_status 204 "ready/transport/$peer"
 done
 wait_for_control_status 425 followup-ready
@@ -163,8 +185,7 @@ curl --noproxy '*' --silent --show-error --fail --request POST \
   --data '' http://127.77.0.2:9090/followup-ready >/dev/null
 wait_for_control_status 204 followup-ready
 for peer in router-b router-c traffic-east; do
-  curl --noproxy '*' --silent --show-error --fail --request POST \
-    --data '' "http://127.77.0.2:9090/ready/followup/$peer" >/dev/null
+  acknowledge_peer followup "$peer"
   wait_for_control_status 204 "ready/followup/$peer"
 done
 

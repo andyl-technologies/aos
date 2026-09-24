@@ -26,6 +26,12 @@ case "$cmdline" in
 esac
 ip address add "$address/24" dev eth0
 
+control_url=http://10.77.0.2:9090
+if [ "$role" = traffic-east ]; then
+  # East has a direct link to C, but no direct path to A's control listener.
+  control_url=http://10.77.0.4:8080/control
+fi
+
 probe() {
   curl --noproxy '*' --connect-timeout 1 --max-time 4 --silent --show-error \
     --fail http://10.77.0.2:8080/probe
@@ -61,7 +67,7 @@ wait_for_control_boundary() {
   attempts=0
   until status=$(curl --noproxy '*' --connect-timeout 1 --max-time 2 \
     --silent --output /dev/null --write-out '%{http_code}' \
-    "http://10.77.0.2:9090/$boundary" 2>/dev/null) \
+    "$control_url/$boundary" 2>/dev/null) \
     && [ "$status" = 204 ]; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 90 ]; then
@@ -77,7 +83,7 @@ acknowledge_control_boundary() {
   attempts=0
   until curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent \
     --show-error --fail --request POST --data '' \
-    "http://10.77.0.2:9090/ready/$phase/$role" >/dev/null 2>&1; do
+    "$control_url/ready/$phase/$role" >/dev/null 2>&1; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 90 ]; then
       echo "$role could not acknowledge $phase readiness" >&2
