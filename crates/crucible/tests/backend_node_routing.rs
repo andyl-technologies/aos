@@ -605,12 +605,12 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
     let choice = adapter
         .live_network_preselection()
         .cloned()
-        .expect("probabilistic frame should remain unselected");
+        .unwrap_or_else(|| panic!("probabilistic frame should remain unselected"));
     let opportunity = choice
         .discovery
         .opportunity()
         .id()
-        .expect("reserved opportunity id");
+        .unwrap_or_else(|error| panic!("reserved opportunity id: {error}"));
 
     assert_eq!(paused.configuration, choice.parent);
     assert!(paused.discovered_choices.contains(&choice.discovery));
@@ -621,7 +621,7 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
 
     let settled = adapter
         .settle_live_network_preselection()
-        .expect("default should settle after discovery");
+        .unwrap_or_else(|error| panic!("default should settle after discovery: {error}"));
     assert_eq!(settled.configuration, default_outcome.configuration);
     assert_eq!(settled.decisions, default_outcome.decisions);
     assert_eq!(
@@ -634,7 +634,7 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
         .loop_impl()
         .search_frontiers()
         .first()
-        .expect("default should retain an exact branch frontier");
+        .unwrap_or_else(|| panic!("default should retain an exact branch frontier"));
     assert_eq!(frontier, &choice.frontier);
     let selected = frontier
         .choices
@@ -644,7 +644,7 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
             Some(Decision::Selection(selection)) => Some(selection.clone()),
             _ => None,
         })
-        .expect("live network branch selection");
+        .unwrap_or_else(|| panic!("live network branch selection"));
     let (branched, replay) = network_branch_fixture_with_pause(Some(selected), 0, true);
     assert!(replay.live_network_preselection().is_none());
     assert!(
@@ -657,11 +657,11 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
     let (_paused, mut handed) = network_branch_fixture_with_pause(None, 0, true);
     handed
         .handoff_live_network_preselection(&choice)
-        .expect("exact parent can hand off its unresolved route");
+        .unwrap_or_else(|error| panic!("exact parent can hand off its unresolved route: {error}"));
     assert!(
         handed
             .shutdown()
-            .expect("reap without defaulting")
+            .unwrap_or_else(|error| panic!("reap without defaulting: {error}"))
             .is_empty(),
         "teardown cannot append a default after the choice observation"
     );
@@ -682,13 +682,13 @@ fn live_network_preselection_does_not_intercept_a_later_due_frame() {
             configuration,
             control: Vec::new(),
         })
-        .expect("first scheduler quantum");
+        .unwrap_or_else(|error| panic!("first scheduler quantum: {error}"));
     let paused = adapter
         .drive_quantum(QuantumRequest {
             configuration: first.configuration,
             control: Vec::new(),
         })
-        .expect("first due frame reaches preselection");
+        .unwrap_or_else(|error| panic!("first due frame reaches preselection: {error}"));
     assert!(adapter.live_network_preselection().is_some());
     assert_eq!(adapter.network_output_interceptor().batches.len(), 1);
     assert!(
@@ -700,7 +700,7 @@ fn live_network_preselection_does_not_intercept_a_later_due_frame() {
 
     adapter
         .settle_live_network_preselection()
-        .expect("default settlement admits the remaining frame");
+        .unwrap_or_else(|error| panic!("default settlement admits the remaining frame: {error}"));
     assert_eq!(adapter.network_output_interceptor().batches.len(), 2);
 }
 
@@ -713,17 +713,19 @@ fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
             configuration,
             control: Vec::new(),
         })
-        .expect("first source quantum");
+        .unwrap_or_else(|error| panic!("first source quantum: {error}"));
     source
         .drive_quantum(QuantumRequest {
             configuration: first.configuration,
             control: Vec::new(),
         })
-        .expect("source preselection quantum");
+        .unwrap_or_else(|error| panic!("source preselection quantum: {error}"));
     let choice = source
         .live_network_preselection()
         .cloned()
-        .expect("first emitted frame is offered before the second is intercepted");
+        .unwrap_or_else(|| {
+            panic!("first emitted frame is offered before the second is intercepted")
+        });
     let selected = choice
         .frontier
         .choices
@@ -733,11 +735,16 @@ fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
             Some(Decision::Selection(selection)) => Some(selection.clone()),
             _ => None,
         })
-        .expect("source offered a selected branch");
+        .unwrap_or_else(|| panic!("source offered a selected branch"));
     source
         .handoff_live_network_preselection(&choice)
-        .expect("thin replay owns the deferred frame suffix");
-    assert!(source.shutdown().expect("source teardown").is_empty());
+        .unwrap_or_else(|error| panic!("thin replay owns the deferred frame suffix: {error}"));
+    assert!(
+        source
+            .shutdown()
+            .unwrap_or_else(|error| panic!("source teardown: {error}"))
+            .is_empty()
+    );
     assert_eq!(source.network_output_interceptor().batches.len(), 1);
 
     let (configuration, mut replay) = two_frame_network_adapter(Some(selected.clone()));
@@ -747,13 +754,13 @@ fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
             configuration,
             control: Vec::new(),
         })
-        .expect("first replay quantum");
+        .unwrap_or_else(|error| panic!("first replay quantum: {error}"));
     let selected_outcome = replay
         .drive_quantum(QuantumRequest {
             configuration: first.configuration,
             control: Vec::new(),
         })
-        .expect("selected replay regenerates the second frame");
+        .unwrap_or_else(|error| panic!("selected replay regenerates the second frame: {error}"));
     assert_eq!(replay.network_output_interceptor().batches.len(), 2);
     assert_eq!(
         replay
@@ -783,13 +790,15 @@ fn live_network_preselection_declines_a_split_frame_after_interception() {
             configuration,
             control: Vec::new(),
         })
-        .expect("first scheduler quantum");
+        .unwrap_or_else(|error| panic!("first scheduler quantum: {error}"));
     let settled = adapter
         .drive_quantum(QuantumRequest {
             configuration: first.configuration,
             control: Vec::new(),
         })
-        .expect("split frame must settle through its ordinary defaults");
+        .unwrap_or_else(|error| {
+            panic!("split frame must settle through its ordinary defaults: {error}")
+        });
 
     assert!(adapter.live_network_preselection().is_none());
     assert!(
@@ -807,7 +816,7 @@ fn live_network_preselection_declines_an_unrouted_broadcast() {
     assert_eq!(
         scheduler
             .backend_network_route_count(&backend.network_outputs[0])
-            .expect("broadcast World routes"),
+            .unwrap_or_else(|error| panic!("broadcast World routes: {error}")),
         2
     );
     let mut adapter = BackendQuantumLoop::new(scheduler, backend);
@@ -821,7 +830,9 @@ fn live_network_preselection_declines_an_unrouted_broadcast() {
                 configuration,
                 control: Vec::new(),
             })
-            .expect("broadcast routes must settle without a false pause");
+            .unwrap_or_else(|error| {
+                panic!("broadcast routes must settle without a false pause: {error}")
+            });
         assert!(adapter.live_network_preselection().is_none());
         selected |= outcome
             .decisions
@@ -989,10 +1000,11 @@ fn network_branch_fixture_components_with_broadcast(
                 other,
                 MIN_LINK_LATENCY,
                 SimDuration::default(),
-                LinkLossProbability::from_millionths(250_000).expect("loss probability"),
+                LinkLossProbability::from_millionths(250_000)
+                    .unwrap_or_else(|error| panic!("loss probability: {error}")),
                 None,
             )
-            .expect("second lossy link"),
+            .unwrap_or_else(|error| panic!("second lossy link: {error}")),
         );
     }
     let world = World::from_nodes_and_links(nodes, links)
