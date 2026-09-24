@@ -718,6 +718,75 @@ where
         )?)
     }
 
+    fn get_campaign_trace_chunk(
+        &self,
+        request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::GetCampaignTraceChunk,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let roots = head.snapshot().roots();
+        let (_attempt, attempt_proof) = self
+            .repository
+            .attempt_with_proof(roots.accounting, request.attempt())?;
+        let (observation, observation_proof) = self
+            .repository
+            .attempt_observation_with_proof(roots.observations, request.attempt())?;
+        let observation = observation.ok_or(CampaignRepositoryError::InvalidRequest {
+            reason: "campaign-trace-attempt-has-no-observation",
+        })?;
+        let (measurement_set, trace) = match request.kind() {
+            CampaignTraceKind::ResolvedEffect => (
+                None,
+                observation.resolved_effect_trace().ok_or(
+                    CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-observation-has-no-resolved-effect-trace",
+                    },
+                )?,
+            ),
+            CampaignTraceKind::MeasurementEventLog => {
+                let measurements = self
+                    .repository
+                    .load_measurement_set(observation.measurements())?;
+                let evidence = measurements.evaluation().evidence();
+                let trace = evidence
+                    .iter()
+                    .next()
+                    .copied()
+                    .filter(|_| evidence.len() == 1)
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-measurement-event-log-is-not-unique",
+                    })?;
+                (Some(measurements), trace)
+            }
+        };
+        let (total_bytes, chunk) =
+            self.repository
+                .load_trace_chunk(trace, request.offset(), request.limit())?;
+        Ok(GetCampaignTraceChunkResponse::new(
+            request,
+            head.snapshot().clone(),
+            observation,
+            measurement_set,
+            trace,
+            total_bytes,
+            chunk,
+            attempt_proof,
+            observation_proof,
+        )?)
+    }
+
     fn get_campaign_planner_rankings(
         &self,
         request: &GetCampaignPlannerRankingsRequest,

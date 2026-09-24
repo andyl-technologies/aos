@@ -60,6 +60,8 @@
 //!       53 (GetCampaignFindingTriageReplaySegmentResponseV1) |
 //!       54 (OpenCampaignDebugSessionRequestV1) |
 //!       55 (OpenCampaignDebugSessionResponseV1)
+//!       56 (GetCampaignTraceChunkRequestV1) |
+//!       57 (GetCampaignTraceChunkResponseV1)
 //! magic = "CRUCCS21"
 //! ```
 //!
@@ -97,8 +99,9 @@ use crucible_campaign::{
     GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
     GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
     GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, GetCampaignStatusRequest,
-    GetCampaignStatusResponse, ListCampaignsRequest, ListCampaignsResponse, PinCampaignRequest,
-    PinCampaignResponse, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    GetCampaignStatusResponse, GetCampaignTraceChunkRequest, GetCampaignTraceChunkResponse,
+    ListCampaignsRequest, ListCampaignsResponse, PinCampaignRequest, PinCampaignResponse,
+    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
@@ -139,6 +142,8 @@ const SUBMIT_BRANCH_RESPONSE_KIND: u8 = 6;
 const SERVICE_ERROR_RESPONSE_KIND: u8 = 7;
 const OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND: u8 = 54;
 const OPEN_CAMPAIGN_DEBUG_SESSION_RESPONSE_KIND: u8 = 55;
+const GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND: u8 = 56;
+const GET_CAMPAIGN_TRACE_CHUNK_RESPONSE_KIND: u8 = 57;
 const CREATE_CAMPAIGN_REQUEST_KIND: u8 = 8;
 const CREATE_CAMPAIGN_RESPONSE_KIND: u8 = 9;
 const DERIVE_CAMPAIGN_REQUEST_KIND: u8 = 10;
@@ -604,6 +609,24 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             |failure| failure.validate_for_explain_campaign_attempt(request.snapshot()),
+        )
+    }
+
+    fn get_campaign_trace_chunk(
+        &self,
+        request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        self.exchange(
+            GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND,
+            GET_CAMPAIGN_TRACE_CHUNK_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response = GetCampaignTraceChunkResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_get_campaign_trace_chunk(request.snapshot()),
         )
     }
 
@@ -1635,6 +1658,39 @@ where
                 }
             }
         }
+        GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND => {
+            let request = GetCampaignTraceChunkRequest::from_canonical_bytes(&body)?;
+            match service.get_campaign_trace_chunk(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        GET_CAMPAIGN_TRACE_CHUNK_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_get_campaign_trace_chunk(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
         GET_CAMPAIGN_PLANNER_RANKINGS_REQUEST_KIND => {
             let request = GetCampaignPlannerRankingsRequest::from_canonical_bytes(&body)?;
             match service.get_campaign_planner_rankings(&request) {
@@ -2017,6 +2073,9 @@ fn campaign_operation_for_request_kind(kind: u8) -> Option<CampaignServiceOperat
         }
         EXPLAIN_CAMPAIGN_ATTEMPT_REQUEST_KIND => {
             Some(CampaignServiceOperation::ExplainCampaignAttempt)
+        }
+        GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND => {
+            Some(CampaignServiceOperation::GetCampaignTraceChunk)
         }
         GET_CAMPAIGN_PLANNER_RANKINGS_REQUEST_KIND => {
             Some(CampaignServiceOperation::GetCampaignPlannerRankings)
