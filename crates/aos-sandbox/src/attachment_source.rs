@@ -21,7 +21,8 @@ mod preparation;
 pub use custody::{
     AttachmentSourceAttemptKindV1, AttachmentSourceAttemptOutcomeV1,
     AttachmentSourceCompletionOutcomeV1, DurableAttachmentSourceAttemptV1,
-    DurableAttachmentSourceCompletionV1,
+    DurableAttachmentSourceCompletionV1, ExpiredAttachmentSourceAcquireV1,
+    PostDeadlineRowlessAcquireV1,
 };
 pub use dispatch_custody::DurableCurrentAttachmentSourceDispatchV1;
 pub use planning::{
@@ -35,7 +36,8 @@ pub use preparation::{
 };
 
 pub(crate) use custody::{
-    current_predecessor, record_completion, record_current_attempt, recover_open_attempt,
+    begin_expired_acquire, bind_post_deadline_rowless, current_predecessor, record_completion,
+    record_current_attempt, record_rowless_cancellation, recover_open_attempt,
     validate_attempt_namespace, validate_completion_namespace,
 };
 pub(crate) use dispatch_custody::validate_namespace as validate_dispatch_namespace;

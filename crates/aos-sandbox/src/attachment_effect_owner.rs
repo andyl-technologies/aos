@@ -27,7 +27,8 @@ use crate::attachment_slot_state::{
 use crate::attachment_source::{
     self, AttachmentSourceActionV1, AttachmentSourceBoundsV1, AttachmentSourceError,
     CurrentAttachmentSourcePlanV1, DurableAttachmentSourceCompletionV1,
-    DurableCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceAcquireV1,
+    DurableCurrentAttachmentSourceDispatchV1, ExpiredAttachmentSourceAcquireV1,
+    PostDeadlineRowlessAcquireV1, PreparedCurrentAttachmentSourceAcquireV1,
     PreparedCurrentAttachmentSourceDispatchV1, PreparedCurrentAttachmentSourceReleaseDispatchV1,
     PreparedCurrentAttachmentSourceReleaseV1, PreparedCurrentAttachmentSourceResumeV1,
 };
@@ -334,6 +335,36 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         )
     }
 
+    /// Completes a source query begun after an exact superseded Acquire expired.
+    ///
+    /// The paired resource inventory and current source plan must still be
+    /// rechecked before the returned rowless witness can close custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale authenticated query, different Mount boot, or failed
+    /// protected inventory commit. A present row yields no cancellation witness.
+    pub fn complete_post_deadline_source_inventory(
+        &mut self,
+        expired: ExpiredAttachmentSourceAcquireV1,
+        fence: MountSourceAcquisitionInventoryObservationFenceV1,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<
+        (
+            DurableMountSourceAcquisitionInventorySnapshotV1,
+            Option<PostDeadlineRowlessAcquireV1>,
+        ),
+        AttachmentSourceError,
+    > {
+        let snapshot = mount_source_acquisition_inventory::authenticated::complete_observation(
+            self.journal,
+            fence,
+            outcome,
+        )?;
+        let witness = attachment_source::bind_post_deadline_rowless(expired, &snapshot)?;
+        Ok((snapshot, witness))
+    }
+
     /// Joins fresh resource and source inventories at one Mount journal boundary.
     ///
     /// # Errors
@@ -366,6 +397,42 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         attachment_source::plan_current(self.journal, desired, inventory, target, bounds, clock)
+    }
+
+    /// Captures an expired original Acquire before fresh Mount inventory I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired or Host authority, malformed exact packet
+    /// custody, or an invalid protected clock observation.
+    pub fn begin_expired_source_acquire<T>(
+        &mut self,
+        desired: &DurableAttachmentDesiredStateV1,
+        target: &CurrentNamespaceTarget,
+        clock: &mut T,
+    ) -> Result<Option<ExpiredAttachmentSourceAcquireV1>, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::begin_expired_acquire(self.journal, desired, target, clock)
+    }
+
+    /// Closes only an expired original Acquire absent from a post-deadline query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed exact packet, source plan, Host target, Mount boot,
+    /// rowless observation, or protected custody predecessor.
+    pub fn complete_rowless_source_cancel<T>(
+        &mut self,
+        proof: PostDeadlineRowlessAcquireV1,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<DurableAttachmentSourceCompletionV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::record_rowless_cancellation(self.journal, proof, plan, clock)
     }
 
     /// Compiles exact immutable Mount Acquire bytes from a current source plan.

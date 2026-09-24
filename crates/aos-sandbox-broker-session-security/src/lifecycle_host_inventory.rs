@@ -388,6 +388,33 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         self.0.recheck(currentness)?;
         Ok(outcome)
     }
+
+    /// Drains only retained Acquire custody without preparing a successor request.
+    pub(crate) fn drain_pending_mount_acquire(
+        &mut self,
+        attempt: &DurableCurrentAttachmentSourceDispatchV1,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        if attempt.kind() != AttachmentSourceAttemptKindV1::Acquire {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE;
+        let Some(pending) = self.0.pending.as_ref() else {
+            return Ok(());
+        };
+        if pending.method != method {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let (outcome, currentness) = self.0.exact_request_complete(method, |_| {
+            Err(crate::BrokerSessionSecurityError::Currentness)
+        })?;
+        self.0.recheck(currentness)?;
+        if outcome.method() != method
+            || outcome.request().exact_body() != attempt.dispatch_attempt().body()
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
 }
 
 impl DormantNetworkLifecycleInventoryOwnerV1 {

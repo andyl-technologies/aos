@@ -310,6 +310,11 @@ pub enum AttachmentSourceError {
     /// The joined Mount observation is stale or mismatched.
     #[error(transparent)]
     Inventory(#[from] MountFilesystemInventoryError),
+    /// The authenticated Mount source inventory is stale or malformed.
+    #[error(transparent)]
+    SourceInventory(
+        #[from] crate::mount_source_acquisition_inventory::MountSourceAcquisitionInventoryError,
+    ),
     /// Post-attach verification history is unavailable or contradictory.
     #[error("attachment verification failed: {0}")]
     Verification(#[from] AttachmentVerificationError),

@@ -13,12 +13,15 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use super::dispatch_custody::DispatchRecord;
+use super::dispatch_custody::{self, DispatchRecord};
 use super::planning::{
     AttachmentSourceActionV1, AttachmentSourceError, CanonicalPlan, CurrentAttachmentSourcePlanV1,
 };
 use crate::attachment_state;
+use crate::attachment_state::DurableAttachmentDesiredStateV1;
+use crate::mount_source_acquisition_inventory::DurableMountSourceAcquisitionInventorySnapshotV1;
 use crate::ownership_authority::ProtectedOwnershipClockError;
+use crate::runtime_scope::CurrentNamespaceTarget;
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 const ATTEMPT_NAMESPACE: RecordNamespace = RecordNamespace::AttachmentSourceAttempt;
@@ -116,6 +119,171 @@ pub enum AttachmentSourceCompletionOutcomeV1 {
 pub struct DurableAttachmentSourceAttemptV1 {
     pub(super) record: AttemptRecord,
     outcome: AttachmentSourceAttemptOutcomeV1,
+}
+
+/// Retains a protected, expired original Acquire before a new Mount inventory query.
+///
+/// This is not cancellation proof by itself. The exact authenticated source
+/// inventory must be observed after this value is created and remain rowless.
+/// Mount serves requests serially and durably records an acquisition row before
+/// provider I/O; an unadmitted original packet cannot pass its elapsed deadline.
+#[must_use = "query fresh authenticated Mount inventory before closing this Acquire"]
+pub struct ExpiredAttachmentSourceAcquireV1 {
+    pub(super) attachment_id: [u8; 16],
+    pub(super) operation_id: [u8; 16],
+    pub(super) attempt_digest: [u8; 32],
+    pub(super) acquisition_id: [u8; 32],
+    pub(super) kernel_boot_id: [u8; 16],
+    pub(super) deadline_boottime_nanoseconds: u64,
+}
+
+impl ExpiredAttachmentSourceAcquireV1 {
+    /// Returns the superseded original operation eligible for inert in-memory retirement.
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId {
+        OperationId::from_bytes(self.operation_id)
+    }
+}
+
+/// Retains a fresh authenticated rowless Mount observation after expiration.
+#[must_use = "recheck the paired inventory and close only the exact original Acquire"]
+pub struct PostDeadlineRowlessAcquireV1 {
+    pub(super) expired: ExpiredAttachmentSourceAcquireV1,
+    pub(super) source_snapshot_digest: [u8; 32],
+}
+
+/// Captures the exact original deadline before any cancellation inventory query.
+pub(crate) fn begin_expired_acquire<T>(
+    journal: &mut Journal,
+    desired: &DurableAttachmentDesiredStateV1,
+    target: &CurrentNamespaceTarget,
+    clock: &mut T,
+) -> Result<Option<ExpiredAttachmentSourceAcquireV1>, AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    journal.ensure_protected_authority()?;
+    attachment_state::recheck_current(journal, desired)?;
+    target.recheck(journal, clock)?;
+
+    let history = CustodyHistory::load(journal)?;
+    let Some(attempt) = history.open_acquire(*desired.intent().id().as_bytes()) else {
+        return Ok(None);
+    };
+    if attempt.desired_digest == *desired.record_digest().as_bytes() {
+        return Ok(None);
+    }
+    dispatch_custody::current(journal, attempt)?.ok_or(AttachmentSourceError::CorruptState)?;
+    let original = decode_historical_acquire_mount_source_request(&attempt.request_body)
+        .map_err(|_| AttachmentSourceError::CorruptState)?;
+    let plan = PlanReferences::decode(&attempt.plan_bytes)?;
+    let sample = clock()?;
+    let deadline = original.request().header().deadline_boottime_nanoseconds();
+    if !original_deadline_elapsed(
+        sample.host_boot_id(),
+        sample.boottime_nanoseconds(),
+        plan.kernel_boot_id,
+        deadline,
+    ) {
+        return Ok(None);
+    }
+
+    target.recheck(journal, clock)?;
+    attachment_state::recheck_current(journal, desired)?;
+    Ok(Some(ExpiredAttachmentSourceAcquireV1 {
+        attachment_id: attempt.attachment_id,
+        operation_id: attempt.operation_id,
+        attempt_digest: attempt.digest,
+        acquisition_id: attempt.acquisition_id,
+        kernel_boot_id: plan.kernel_boot_id,
+        deadline_boottime_nanoseconds: deadline,
+    }))
+}
+
+/// Binds the newly completed authenticated query to a rowless original Acquire.
+pub(crate) fn bind_post_deadline_rowless(
+    expired: ExpiredAttachmentSourceAcquireV1,
+    snapshot: &DurableMountSourceAcquisitionInventorySnapshotV1,
+) -> Result<Option<PostDeadlineRowlessAcquireV1>, AttachmentSourceError> {
+    if snapshot.observation_identity().kernel_boot_id() != &expired.kernel_boot_id {
+        return Err(AttachmentSourceError::Conflict);
+    }
+    if snapshot
+        .inventory()
+        .acquisitions()
+        .iter()
+        .any(|row| row.acquisition_id() == &expired.acquisition_id)
+    {
+        return Ok(None);
+    }
+    Ok(Some(PostDeadlineRowlessAcquireV1 {
+        expired,
+        source_snapshot_digest: *snapshot.record_digest().as_bytes(),
+    }))
+}
+
+/// Closes only the exact expired Acquire after fresh paired rowless Mount proof.
+pub(crate) fn record_rowless_cancellation<T>(
+    journal: &mut Journal,
+    proof: PostDeadlineRowlessAcquireV1,
+    plan: CurrentAttachmentSourcePlanV1,
+    clock: &mut T,
+) -> Result<DurableAttachmentSourceCompletionV1, AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let expired = &proof.expired;
+    if plan.action
+        != (AttachmentSourceActionV1::CancelAcquire {
+            acquisition_id: expired.acquisition_id,
+        })
+        || plan.plan.attachment_id != expired.attachment_id
+        || plan
+            .inventory
+            .source_acquisitions()
+            .record_digest()
+            .as_bytes()
+            != &proof.source_snapshot_digest
+        || plan.inventory.observation_identity().kernel_boot_id() != &expired.kernel_boot_id
+    {
+        return Err(AttachmentSourceError::Conflict);
+    }
+    plan.recheck(journal, clock)?;
+    let attempt = recover_open_attempt(journal, plan.desired.intent().id())?
+        .ok_or(AttachmentSourceError::Conflict)?;
+    if attempt.record.operation_id != expired.operation_id
+        || attempt.record.digest != expired.attempt_digest
+        || attempt.record.acquisition_id != expired.acquisition_id
+        || attempt.record.kind != AttachmentSourceAttemptKindV1::Acquire
+    {
+        return Err(AttachmentSourceError::Conflict);
+    }
+    dispatch_custody::current(journal, &attempt.record)?
+        .ok_or(AttachmentSourceError::CorruptState)?;
+    let original = decode_historical_acquire_mount_source_request(&attempt.record.request_body)
+        .map_err(|_| AttachmentSourceError::CorruptState)?;
+    let sample = clock()?;
+    if !original_deadline_elapsed(
+        sample.host_boot_id(),
+        sample.boottime_nanoseconds(),
+        expired.kernel_boot_id,
+        expired.deadline_boottime_nanoseconds,
+    ) || original.request().header().deadline_boottime_nanoseconds()
+        != expired.deadline_boottime_nanoseconds
+    {
+        return Err(AttachmentSourceError::Changed);
+    }
+    record_completion(journal, attempt, plan, clock)
+}
+
+fn original_deadline_elapsed(
+    current_boot_id: [u8; 16],
+    current_boottime_nanoseconds: u64,
+    original_boot_id: [u8; 16],
+    original_deadline_nanoseconds: u64,
+) -> bool {
+    current_boot_id == original_boot_id
+        && current_boottime_nanoseconds >= original_deadline_nanoseconds
 }
 
 impl DurableAttachmentSourceAttemptV1 {
@@ -1763,4 +1931,16 @@ pub(crate) fn validate_completion_namespace(
     journal: &mut Journal,
 ) -> Result<(), AttachmentSourceError> {
     CustodyHistory::load(journal).map(|_| ())
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::original_deadline_elapsed;
+
+    #[test]
+    fn original_acquire_deadline_is_boot_scoped_and_inclusive() {
+        assert!(!original_deadline_elapsed([2; 16], 101, [1; 16], 100));
+        assert!(!original_deadline_elapsed([1; 16], 99, [1; 16], 100));
+        assert!(original_deadline_elapsed([1; 16], 100, [1; 16], 100));
+    }
 }

@@ -72,7 +72,9 @@ pub(super) fn observe(
     sandbox: SandboxId,
     journal: &mut Journal,
 ) -> Result<VerifiedAttachmentPhysicalV1, EffectFailure> {
-    if drain_pending_before_slot(executor, journal)? {
+    if executor.pending_attachment_source_attempt.is_none()
+        && drain_pending_before_slot(executor, journal)?
+    {
         return Err(retryable("fresh authenticated Mount inventory is pending"));
     }
 
@@ -117,6 +119,38 @@ pub(super) fn observe(
         ));
     }
 
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    let mut expired_acquire = owner
+        .begin_expired_source_acquire(&desired, &target, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    if expired_acquire.as_ref().is_some_and(|expired| {
+        executor
+            .pending_attachment_source_attempt
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.source_attempt().operation_id() == expired.operation_id()
+            })
+    }) {
+        let pending = executor
+            .pending_attachment_source_attempt
+            .as_ref()
+            .ok_or_else(|| retryable("superseded Acquire custody is unavailable"))?;
+        with_mount_session(executor, |mount| {
+            mount
+                .drain_pending_mount_acquire(pending)
+                .map_err(|error| retryable(error.to_string()))
+        })?;
+        // The live token cannot authorize a send after its original deadline.
+        // Durable packet custody remains until fresh Mount inventory decides it.
+        executor.pending_attachment_source_attempt = None;
+    }
+    drop(owner);
+    if drain_pending_before_slot(executor, journal)? {
+        return Err(retryable("retained attachment effect is draining"));
+    }
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+
     let fence = owner
         .begin_authenticated_mount_inventory()
         .map_err(|error| retryable(error.to_string()))?;
@@ -128,7 +162,6 @@ pub(super) fn observe(
             .complete_authenticated_mount_inventory(fence, &outcome)
             .map_err(|error| retryable(error.to_string()))
     })?;
-    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
     let (target, snapshot, source_action) = if matches!(
         desired.presence(),
         AttachmentDesiredPresenceV1::Present | AttachmentDesiredPresenceV1::Released
@@ -136,13 +169,24 @@ pub(super) fn observe(
         let fence = owner
             .begin_authenticated_source_inventory()
             .map_err(|error| retryable(error.to_string()))?;
-        let sources = with_mount_session(executor, |mount| {
+        let (sources, rowless_cancellation) = with_mount_session(executor, |mount| {
             let outcome = mount
                 .current_source_inventory_observation()
                 .map_err(|error| retryable(error.to_string()))?;
-            owner
-                .complete_authenticated_source_inventory(fence, &outcome)
-                .map_err(|error| retryable(error.to_string()))
+            Ok(match expired_acquire.take() {
+                Some(expired) => {
+                    let (snapshot, proof) = owner
+                        .complete_post_deadline_source_inventory(expired, fence, &outcome)
+                        .map_err(|error| retryable(error.to_string()))?;
+                    (snapshot, proof)
+                }
+                None => (
+                    owner
+                        .complete_authenticated_source_inventory(fence, &outcome)
+                        .map_err(|error| retryable(error.to_string()))?,
+                    None,
+                ),
+            })
         })?;
         let inventory = owner
             .join_current_mount_filesystem_inventory(snapshot, sources)
@@ -152,6 +196,17 @@ pub(super) fn observe(
             .plan_current_source(desired.clone(), inventory, target, bounds, &mut clock)
             .map_err(|error| retryable(error.to_string()))?;
         let action = source.action();
+        if matches!(action, AttachmentSourceActionV1::CancelAcquire { .. }) {
+            let proof = rowless_cancellation.ok_or_else(|| {
+                retryable("original Acquire deadline or fresh rowless proof is pending")
+            })?;
+            owner
+                .complete_rowless_source_cancel(proof, source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "rowless Acquire custody is canceled; fresh Mount inventory is pending",
+            ));
+        }
         if executor
             .pending_attachment_source_consume
             .as_ref()
