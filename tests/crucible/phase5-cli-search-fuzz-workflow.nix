@@ -1215,7 +1215,7 @@ in
       finish_timeout_ms = 15000
       maximum_slots = 1
       maximum_vcpus = 2
-      maximum_resident_bytes = 1073741824
+      maximum_resident_bytes = 2147483648
       maximum_disk_bytes = 2147483648
       maximum_execution_quanta = 10000
       maximum_checkpoint_bytes = 1073741824
@@ -1241,7 +1241,7 @@ in
     testing = import ../../lib/testing {inherit pkgs lib;};
     vmTest = testing.mkVMTest {
       name = "crucible-phase5-cli-search-fuzz-live-qemu";
-      memory = 2048;
+      memory = 4096;
       rootfsDeps = [
         deployment
         liveFixtures
