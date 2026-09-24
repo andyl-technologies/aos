@@ -32,7 +32,7 @@ The untagged-writer review found these independently versioned contracts:
 | QEMU fuzz corpus index and descriptor | `crucible-cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json` and immutable descriptor objects, each with `CORPUS_SCHEMA = 1`. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor` |
 | Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
 | Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 6`; the client wire model uses that encoder. | `crucible.api.rpc` |
-| Crucible-owned QEMU migration sections | The QEMU patch declares 20 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
+| Crucible-owned QEMU migration sections | The QEMU patch declares 23 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -76,8 +76,6 @@ missing from the registry; its row is now present. The other unmatched CLI tags
 are `crucible.cli.test.*` fixtures and the registered choice-object alias noted
 above. This inventory does not prove exhaustive source closure. Generic
 `write_all`, serde, QMP, and Nix-generated guest output paths have not all been
-matched to registry rows or classified as nested fields. Three newer
-simulation-only QEMU VMState subsections also await review after their QEMU
-patch is integrated. T-CAM-0.3 remains open.
+matched to registry rows or classified as nested fields. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
