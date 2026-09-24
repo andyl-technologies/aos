@@ -175,6 +175,8 @@ pub enum BrokerVerb {
     StorageReserveExecutionCapture,
     /// Reads one exact prior execution-output capture attempt without reissuing it.
     StorageQueryExecutionCapture,
+    /// Reads a current Storage-owned capture candidate without reserving an effect.
+    StorageCaptureCandidateReadback,
     /// Prepares assignment networking and mints its network handle.
     NetworkPrepare,
     /// Arms the ownership-lease gate for an existing network.
@@ -247,6 +249,7 @@ impl BrokerVerb {
             45 => Ok(Self::HostQueryExecutionOutput),
             46 => Ok(Self::StorageReserveExecutionCapture),
             47 => Ok(Self::StorageQueryExecutionCapture),
+            50 => Ok(Self::StorageCaptureCandidateReadback),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -302,6 +305,7 @@ impl BrokerVerb {
             Self::HostQueryExecutionOutput => 45,
             Self::StorageReserveExecutionCapture => 46,
             Self::StorageQueryExecutionCapture => 47,
+            Self::StorageCaptureCandidateReadback => 50,
         }
     }
 
@@ -348,7 +352,8 @@ impl BrokerVerb {
             | Self::StorageAtomicSnapshot
             | Self::StoragePopulateGuestRoot
             | Self::StorageReserveExecutionCapture
-            | Self::StorageQueryExecutionCapture => BrokerAudience::Storage,
+            | Self::StorageQueryExecutionCapture
+            | Self::StorageCaptureCandidateReadback => BrokerAudience::Storage,
             Self::NetworkPrepare
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
@@ -382,6 +387,7 @@ impl BrokerVerb {
             | Self::StoragePopulateGuestRoot
             | Self::StorageReserveExecutionCapture
             | Self::StorageQueryExecutionCapture
+            | Self::StorageCaptureCandidateReadback
             | Self::NetworkPrepare
             | Self::NetworkInventory
             | Self::GuardianArm => BrokerGrantTargetShape::Assignment,
@@ -1545,6 +1551,7 @@ mod tests {
             (45, BrokerVerb::HostQueryExecutionOutput),
             (46, BrokerVerb::StorageReserveExecutionCapture),
             (47, BrokerVerb::StorageQueryExecutionCapture),
+            (50, BrokerVerb::StorageCaptureCandidateReadback),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1679,6 +1686,7 @@ mod tests {
             BrokerVerb::StoragePrepareCatalog,
             BrokerVerb::StorageReserveExecutionCapture,
             BrokerVerb::StorageQueryExecutionCapture,
+            BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkInventory,
             BrokerVerb::GuardianArm,

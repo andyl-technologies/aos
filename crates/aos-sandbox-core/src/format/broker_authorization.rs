@@ -460,6 +460,7 @@ mod tests {
             BrokerVerb::StorageRepairWorkspacePin,
             BrokerVerb::StorageReserveExecutionCapture,
             BrokerVerb::StorageQueryExecutionCapture,
+            BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkArmLease,
             BrokerVerb::NetworkRenewLease,
@@ -496,6 +497,7 @@ mod tests {
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::StorageReserveExecutionCapture
                 | BrokerVerb::StorageQueryExecutionCapture
+                | BrokerVerb::StorageCaptureCandidateReadback
                 | BrokerVerb::NetworkPrepare
                 | BrokerVerb::NetworkInventory
                 | BrokerVerb::GuardianArm => BrokerGrantTarget::Assignment,
