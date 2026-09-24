@@ -16,6 +16,8 @@ use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader, validate_request_header,
 };
 
+pub mod receipt;
+
 /// Exact canonical AOSCIA02 byte count.
 pub const HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1: usize = 336;
 const MAXIMUM_REQUEST_BODY_BYTES: usize = 2 * 1_024;
