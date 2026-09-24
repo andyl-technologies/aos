@@ -28,10 +28,11 @@
 //! pins the project, source and publisher generations, current publisher
 //! policy descriptor digest, four prerequisite-head claims, and the JSON
 //! digest. The root owner commits packet and JSON atomically under the exact
-//! current deployment head. The publisher-owned project cache-domain and
-//! revocation heads are checked while controller custody remains held through
-//! the root commit. Source-domain ancestry, physical cache state, and the
-//! public Create admission still need independent proof before AOSPCB01.
+//! current deployment head. The protected source-domain project tree and
+//! publisher-owned cache-domain and revocation heads are checked while their
+//! writers remain held through the root commit. The exact public Create,
+//! physical cache state, and effect handoff still need independent proof
+//! before AOSPCB01.
 
 use std::path::Path;
 
@@ -42,7 +43,11 @@ use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension, RevocationScopeId};
 
+use crate::hierarchy::protected_journal::{
+    HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
+};
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{
     PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
 };
@@ -93,6 +98,9 @@ pub enum PolicyDeploymentHeadErrorV1 {
     /// Protected publisher policy or revocation state is unavailable.
     #[error(transparent)]
     Publisher(#[from] PublisherPolicyError),
+    /// Protected source-domain hierarchy currentness is unavailable.
+    #[error(transparent)]
+    Hierarchy(#[from] HierarchyProtectedJournalErrorV1),
 }
 
 /// Retains the four exact canonical deployment inputs bound by one signed head.
@@ -583,25 +591,27 @@ pub fn verify_signed_project_policy_source_v1(
 ///
 /// The trusted controller supplies the project revocation scope independently
 /// of the signed packet and the time from its protected clock adapter. Neither
-/// value may come from the packet or public request. The controller journal
-/// stays locked while the current publisher revision, project cache-domain
-/// head, and revocation generation are checked, the immutable mapping is
-/// installed if absent, and the signed head is committed under the current
-/// protected AOSPDH01 packet. Controller custody must precede opening the
-/// policy authority journal to keep the lock order stable.
+/// value may come from the packet or public request. The caller holds the
+/// controller journal before the source-domain writer, and this function opens
+/// the root policy journal last. All three remain held while the protected
+/// hierarchy tree, publisher revision, cache-domain head, and revocation
+/// generation are checked, the immutable mapping is installed if absent, and
+/// the signed head is committed under the current AOSPDH01 packet.
 ///
-/// Ancestry and physical cache claims still need their separate owners. This
-/// record cannot authorize AOSPCB01 publication without a cross-owner barrier.
+/// The project tree head alone does not prove the exact Create or complete
+/// ancestry transition. Physical cache and effect handoff also remain outside
+/// this bounded barrier. This record cannot authorize AOSPCB01 publication.
 /// If the second journal commit fails, the trusted immutable mapping may
 /// remain; the caller receives no admitted project head.
 ///
 /// # Errors
 ///
-/// Returns an error for invalid source, mismatched publisher, cache-domain or
-/// revocation currentness, project substitution, noncontiguous generation, or
-/// failed protected commit.
+/// Returns an error for invalid source, absent or mismatched protected tree,
+/// publisher, cache-domain or revocation currentness, project substitution,
+/// noncontiguous generation, or failed protected commit.
 pub fn admit_fixed_signed_project_policy_source_v1(
     controller_journal: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
     trusted_revocation_scope: RevocationScopeId,
     packet: &[u8],
     input: &[u8],
@@ -610,6 +620,7 @@ pub fn admit_fixed_signed_project_policy_source_v1(
     now_unix_seconds: i64,
 ) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
     controller_journal.ensure_protected_authority()?;
+    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)?;
     let (mut authority_journal, _) = Journal::open_protected_at(
         Path::new(PROTECTED_POLICY_ROOT),
         POLICY_AUTHORITY_JOURNAL,
@@ -617,6 +628,7 @@ pub fn admit_fixed_signed_project_policy_source_v1(
     )?;
     admit_signed_project_policy_source_with_journals_v1(
         controller_journal,
+        &hierarchy,
         &mut authority_journal,
         trusted_revocation_scope,
         packet,
@@ -629,6 +641,7 @@ pub fn admit_fixed_signed_project_policy_source_v1(
 
 fn admit_signed_project_policy_source_with_journals_v1(
     controller_journal: &mut Journal,
+    hierarchy: &HierarchyProtectedJournalOwnerV1<'_>,
     authority_journal: &mut Journal,
     trusted_revocation_scope: RevocationScopeId,
     packet: &[u8],
@@ -639,6 +652,12 @@ fn admit_signed_project_policy_source_with_journals_v1(
 ) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
     let verified =
         verify_signed_project_policy_source_v1(packet, input, verifying_key, now_unix_seconds)?;
+    let ancestry = hierarchy
+        .project_ancestry_head(verified.head.project)?
+        .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+    if verified.head.prerequisites[0] != ancestry.evidence().head() {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
     let mut authority =
         authority_journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     if authority.get(HEAD_KEY)? != Some(deployment_packet)
@@ -714,6 +733,9 @@ fn admit_signed_project_policy_source_with_journals_v1(
     authority.commit(&transaction)?;
     if authority.get(PROJECT_HEAD_KEY)? != Some(packet)
         || authority.get(PROJECT_INPUT_KEY)? != Some(input)
+        || hierarchy
+            .project_ancestry_head(verified.head.project)?
+            .is_none_or(|current| current.evidence().head() != ancestry.evidence().head())
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
@@ -953,11 +975,18 @@ mod tests {
     use aos_sandbox_core::model::{
         CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
     };
-    use aos_sandbox_core::{CacheDomainId, DecodeLimits};
+    use aos_sandbox_core::{CacheDomainId, DecodeLimits, Revision};
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
     use crate::JournalLimits;
+    use crate::hierarchy::graph::SandboxTreeV1;
+    use crate::hierarchy::model::TreeLimitsV1;
+    use crate::hierarchy::protected_journal::{
+        HierarchyProtectedJournalKeyV1, HierarchyProtectedRecordKindV1,
+        HierarchyProtectedReplayValidatorV1, HierarchyReducerRecordV1,
+        claim_hierarchy_protected_journal_v1, hierarchy_reducer_envelope_v1,
+    };
     use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherRevocationHeadV1};
 
     fn open_journal(directory: &std::path::Path, name: &str) -> Journal {
@@ -990,6 +1019,7 @@ mod tests {
     fn signed_project_packet(
         project: ProjectId,
         publisher_digest: ObjectDigest,
+        ancestry_digest: ObjectDigest,
         cache_domain_digest: ObjectDigest,
         revocation_digest: ObjectDigest,
         deployment_packet: &[u8],
@@ -1004,7 +1034,7 @@ mod tests {
         packet.extend_from_slice(&1_u64.to_be_bytes());
         packet.extend_from_slice(publisher_digest.as_bytes());
         packet.extend_from_slice(&Sha256::digest(input));
-        packet.extend_from_slice(&[3; 32]);
+        packet.extend_from_slice(ancestry_digest.as_bytes());
         packet.extend_from_slice(&Sha256::digest(deployment_packet));
         packet.extend_from_slice(cache_domain_digest.as_bytes());
         packet.extend_from_slice(revocation_digest.as_bytes());
@@ -1018,6 +1048,7 @@ mod tests {
     fn fixture() -> (
         tempfile::TempDir,
         Journal,
+        ProtectedSourceDomainJournalOwnerV1,
         Journal,
         ProjectId,
         RevocationScopeId,
@@ -1027,8 +1058,12 @@ mod tests {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private directory");
         let mut controller = open_journal(directory.path(), "controller.journal");
-        let mut authority = open_journal(directory.path(), "authority.journal");
         let project = ProjectId::from_bytes([1; 16]);
+        let mut source_domains = ProtectedSourceDomainJournalOwnerV1::from_test_journal(
+            open_journal(directory.path(), "source-domains.journal"),
+        );
+        install_tree_revision(&mut source_domains, project, 1, None);
+        let mut authority = open_journal(directory.path(), "authority.journal");
         let scope = RevocationScopeId::from_bytes([7; 16]);
         let domain = CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([1; 16]));
         let policy = Policy::new(
@@ -1089,10 +1124,88 @@ mod tests {
         (
             directory,
             controller,
+            source_domains,
             authority,
             project,
             scope,
             publisher_digest,
+        )
+    }
+
+    fn install_tree_revision(
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        project: ProjectId,
+        generation: u64,
+        predecessor: Option<ObjectDigest>,
+    ) {
+        let limits = TreeLimitsV1::new(1, 8, 8, 7, 7, 7, 7).expect("tree limits");
+        let tree =
+            SandboxTreeV1::from_records(project, Revision::new(generation), limits, Vec::new())
+                .expect("canonical empty project tree");
+        let mut identity = Vec::with_capacity(48);
+        for _ in 0..3 {
+            identity.extend_from_slice(project.as_bytes());
+        }
+        let key =
+            HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)
+                .expect("tree key");
+        let validator =
+            HierarchyProtectedReplayValidatorV1::from_protected_current_heads(&[], &[], &[])
+                .expect("empty hierarchy head validator");
+        let envelope = hierarchy_reducer_envelope_v1(
+            key,
+            generation,
+            predecessor,
+            HierarchyReducerRecordV1::Tree(&tree),
+            &validator,
+        )
+        .expect("tree envelope");
+        let mut journal = claim_hierarchy_protected_journal_v1(source_domains.journal(), validator)
+            .expect("claimed hierarchy journal");
+        let prepared = journal
+            .plan([generation as u8; 16], vec![envelope])
+            .expect("tree transaction");
+        assert!(matches!(
+            journal.commit(prepared).expect("tree commit"),
+            crate::hierarchy::protected_journal::HierarchyJournalCommitOutcomeV1::Applied(_)
+        ));
+    }
+
+    fn current_ancestry_head(
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        project: ProjectId,
+    ) -> ObjectDigest {
+        HierarchyProtectedJournalOwnerV1::claim(source_domains)
+            .expect("claimed current hierarchy")
+            .project_ancestry_head(project)
+            .expect("project ancestry currentness")
+            .expect("current project tree")
+            .evidence()
+            .head()
+    }
+
+    fn admit_with_test_source(
+        controller: &mut Journal,
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        authority: &mut Journal,
+        scope: RevocationScopeId,
+        packet: &[u8],
+        input: &[u8],
+        key: &VerifyingKey,
+        deployment_packet: &[u8],
+        now: i64,
+    ) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
+        let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)?;
+        admit_signed_project_policy_source_with_journals_v1(
+            controller,
+            &hierarchy,
+            authority,
+            scope,
+            packet,
+            input,
+            key,
+            deployment_packet,
+            now,
         )
     }
 
@@ -1107,8 +1220,15 @@ mod tests {
 
     #[test]
     fn signed_project_admission_installs_trusted_revocation_mapping_and_rechecks_replay() {
-        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
-            fixture();
+        let (
+            _directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
         let input = project_input(project);
         let deployment_packet = b"current-deployment";
@@ -1116,6 +1236,7 @@ mod tests {
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_ancestry_head(&mut source_domains, project),
             current_cache_domain_digest(&mut controller, project),
             revocation_digest,
             deployment_packet,
@@ -1123,8 +1244,9 @@ mod tests {
             &key,
         );
 
-        let admitted = admit_signed_project_policy_source_with_journals_v1(
+        let admitted = admit_with_test_source(
             &mut controller,
+            &mut source_domains,
             &mut authority,
             scope,
             &packet,
@@ -1161,8 +1283,9 @@ mod tests {
         drop(store);
 
         assert!(matches!(
-            admit_signed_project_policy_source_with_journals_v1(
+            admit_with_test_source(
                 &mut controller,
+                &mut source_domains,
                 &mut authority,
                 scope,
                 &packet,
@@ -1177,14 +1300,22 @@ mod tests {
 
     #[test]
     fn mismatched_signed_revocation_claim_does_not_install_mapping_or_head() {
-        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
-            fixture();
+        let (
+            _directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
         let input = project_input(project);
         let deployment_packet = b"current-deployment";
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_ancestry_head(&mut source_domains, project),
             current_cache_domain_digest(&mut controller, project),
             ObjectDigest::from_bytes([5; 32]),
             deployment_packet,
@@ -1193,8 +1324,9 @@ mod tests {
         );
 
         assert!(matches!(
-            admit_signed_project_policy_source_with_journals_v1(
+            admit_with_test_source(
                 &mut controller,
+                &mut source_domains,
                 &mut authority,
                 scope,
                 &packet,
@@ -1221,8 +1353,15 @@ mod tests {
 
     #[test]
     fn mismatched_signed_cache_domain_claim_does_not_install_mapping_or_head() {
-        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
-            fixture();
+        let (
+            _directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
         let key = SigningKey::from_bytes(&[9; 32]);
         let input = project_input(project);
         let deployment_packet = b"current-deployment";
@@ -1232,6 +1371,7 @@ mod tests {
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_ancestry_head(&mut source_domains, project),
             wrong_cache_domain,
             project_revocation_digest(project, scope, 1),
             deployment_packet,
@@ -1240,8 +1380,9 @@ mod tests {
         );
 
         assert!(matches!(
-            admit_signed_project_policy_source_with_journals_v1(
+            admit_with_test_source(
                 &mut controller,
+                &mut source_domains,
                 &mut authority,
                 scope,
                 &packet,
@@ -1267,9 +1408,201 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_signed_ancestry_claim_does_not_install_mapping_or_head() {
+        let (
+            _directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let wrong_ancestry = ObjectDigest::from_bytes([3; 32]);
+        assert_ne!(
+            current_ancestry_head(&mut source_domains, project),
+            wrong_ancestry
+        );
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            wrong_ancestry,
+            current_cache_domain_digest(&mut controller, project),
+            project_revocation_digest(project, scope, 1),
+            deployment_packet,
+            &input,
+            &key,
+        );
+
+        assert!(matches!(
+            admit_with_test_source(
+                &mut controller,
+                &mut source_domains,
+                &mut authority,
+                scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        assert!(
+            PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+                .expect("publisher store")
+                .project_revocation_head(project)
+                .expect("protected mapping")
+                .is_none()
+        );
+        assert!(
+            authority
+                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn absent_protected_project_tree_rejects_signed_ancestry_claim() {
+        let (
+            directory,
+            mut controller,
+            source_domains,
+            authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
+        drop(authority);
+        drop(source_domains);
+        let mut source_domains = ProtectedSourceDomainJournalOwnerV1::from_test_journal(
+            open_journal(directory.path(), "empty-source-domains.journal"),
+        );
+        let mut authority = open_journal(directory.path(), "authority.journal");
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            ObjectDigest::from_bytes([3; 32]),
+            current_cache_domain_digest(&mut controller, project),
+            project_revocation_digest(project, scope, 1),
+            deployment_packet,
+            &input,
+            &key,
+        );
+
+        assert!(matches!(
+            admit_with_test_source(
+                &mut controller,
+                &mut source_domains,
+                &mut authority,
+                scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        assert!(
+            authority
+                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn source_domain_tree_successor_invalidates_signed_project_replay() {
+        let (
+            directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let initial_ancestry = current_ancestry_head(&mut source_domains, project);
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            initial_ancestry,
+            current_cache_domain_digest(&mut controller, project),
+            project_revocation_digest(project, scope, 1),
+            deployment_packet,
+            &input,
+            &key,
+        );
+        admit_with_test_source(
+            &mut controller,
+            &mut source_domains,
+            &mut authority,
+            scope,
+            &packet,
+            &input,
+            &key.verifying_key(),
+            deployment_packet,
+            20,
+        )
+        .expect("initial signed project admission");
+
+        // Release both owners before cold replay, and reacquire the source
+        // writer ahead of the root journal under the same lock order.
+        drop(authority);
+        drop(source_domains);
+        let mut source_domains = ProtectedSourceDomainJournalOwnerV1::from_test_journal(
+            open_journal(directory.path(), "source-domains.journal"),
+        );
+        assert_eq!(
+            current_ancestry_head(&mut source_domains, project),
+            initial_ancestry
+        );
+        install_tree_revision(&mut source_domains, project, 2, Some(initial_ancestry));
+        drop(source_domains);
+        let mut source_domains = ProtectedSourceDomainJournalOwnerV1::from_test_journal(
+            open_journal(directory.path(), "source-domains.journal"),
+        );
+        let mut authority = open_journal(directory.path(), "authority.journal");
+        assert_ne!(
+            current_ancestry_head(&mut source_domains, project),
+            initial_ancestry
+        );
+        assert!(matches!(
+            admit_with_test_source(
+                &mut controller,
+                &mut source_domains,
+                &mut authority,
+                scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+    }
+
+    #[test]
     fn trusted_scope_cannot_replace_an_existing_project_mapping() {
-        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
-            fixture();
+        let (
+            _directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
         let other_scope = RevocationScopeId::from_bytes([9; 16]);
         let mut store =
             PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
@@ -1295,6 +1628,7 @@ mod tests {
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_ancestry_head(&mut source_domains, project),
             current_cache_domain_digest(&mut controller, project),
             project_revocation_digest(project, other_scope, 1),
             deployment_packet,
@@ -1303,8 +1637,9 @@ mod tests {
         );
 
         assert!(matches!(
-            admit_signed_project_policy_source_with_journals_v1(
+            admit_with_test_source(
                 &mut controller,
+                &mut source_domains,
                 &mut authority,
                 other_scope,
                 &packet,

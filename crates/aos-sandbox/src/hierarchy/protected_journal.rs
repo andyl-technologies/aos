@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, SandboxId};
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision, SandboxId};
 
 use crate::journal::{Journal, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::{
@@ -31,7 +31,7 @@ use super::artifact_codec::{
 };
 use super::codec::{
     decode_history_record_v1, decode_history_v1, decode_tree_v1, encode_history_record_v1,
-    encode_history_v1, encode_tree_v1,
+    encode_history_v1, encode_tree_v1, tree_commitment_v1,
 };
 use super::evidence::{
     CurrentAssignmentEvidenceV1, CurrentLiveInspectionObservationV1,
@@ -562,6 +562,48 @@ pub struct CurrentHierarchyProtectedEvidenceV1<'current, T> {
     _current: std::marker::PhantomData<&'current ()>,
 }
 
+/// Identifies one project tree read from the current protected source-domain owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CurrentProjectAncestryHeadV1 {
+    project: ProjectId,
+    record_revision: u64,
+    tree_generation: Revision,
+    tree_commitment: ObjectDigest,
+    head: ObjectDigest,
+}
+
+impl CurrentProjectAncestryHeadV1 {
+    /// Returns the project selected by the protected hierarchy key and tree.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the protected journal record's CAS revision.
+    #[must_use]
+    pub const fn record_revision(self) -> u64 {
+        self.record_revision
+    }
+
+    /// Returns the tree's independently validated logical generation.
+    #[must_use]
+    pub const fn tree_generation(self) -> Revision {
+        self.tree_generation
+    }
+
+    /// Returns the canonical project tree commitment.
+    #[must_use]
+    pub const fn tree_commitment(self) -> ObjectDigest {
+        self.tree_commitment
+    }
+
+    /// Returns the exact protected hierarchy envelope head used for CAS.
+    #[must_use]
+    pub const fn head(self) -> ObjectDigest {
+        self.head
+    }
+}
+
 impl<T> CurrentHierarchyProtectedEvidenceV1<'_, T> {
     /// Borrows the evidence while its protected-current owner remains frozen.
     #[must_use]
@@ -609,6 +651,61 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
         &self,
     ) -> Result<HierarchyProtectedJournalProjectionV1, HierarchyProtectedJournalErrorV1> {
         self.journal.replay()
+    }
+
+    /// Reads the current project tree head under the source-domain writer lock.
+    ///
+    /// This is a source observation, not standalone policy publication
+    /// authority. A cross-owner issuer must keep this owner borrowed through
+    /// its root binding commit and effect handoff.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid project identities, malformed current hierarchy
+    /// records, or failed complete protected replay.
+    pub fn project_ancestry_head(
+        &self,
+        project: ProjectId,
+    ) -> Result<
+        Option<CurrentHierarchyProtectedEvidenceV1<'_, CurrentProjectAncestryHeadV1>>,
+        HierarchyProtectedJournalErrorV1,
+    > {
+        if project.as_bytes() == &[0; 16] {
+            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let mut identity = Vec::with_capacity(48);
+        for _ in 0..3 {
+            identity.extend_from_slice(project.as_bytes());
+        }
+        let key =
+            HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)?;
+        let projection = self.journal.replay()?;
+        let Some(record) = projection
+            .records()
+            .iter()
+            .find(|record| record.key() == &key)
+        else {
+            return Ok(None);
+        };
+        let payload = decode_reducer_payload_with_validator::<HierarchyProtectedJournalSchemaV1>(
+            &key,
+            record.payload(),
+            &self.validator,
+        )?;
+        let tree = decode_tree_v1(payload.body())
+            .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        if tree.project() != project {
+            return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let tree_commitment = tree_commitment_v1(&tree)
+            .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        Ok(Some(current(CurrentProjectAncestryHeadV1 {
+            project,
+            record_revision: record.revision(),
+            tree_generation: tree.tree_generation(),
+            tree_commitment,
+            head: record.digest(),
+        })))
     }
 
     /// Mints a descendant-inspection grant from one exact current record.

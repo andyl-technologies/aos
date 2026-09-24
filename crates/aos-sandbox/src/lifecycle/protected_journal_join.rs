@@ -55,6 +55,11 @@ pub struct ProtectedSourceDomainJournalOwnerV1 {
 }
 
 impl ProtectedSourceDomainJournalOwnerV1 {
+    #[cfg(test)]
+    pub(crate) fn from_test_journal(journal: Journal) -> Self {
+        Self { journal }
+    }
+
     /// Opens and cold-replays the fixed shared source-domain journal.
     ///
     /// # Errors
