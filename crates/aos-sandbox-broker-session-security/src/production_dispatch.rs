@@ -5,7 +5,9 @@
 //! response body. Pre-effect failures retain request custody, while failures
 //! after dispatch retain the existing opaque outcome-recovery custody.
 
-use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use aos_proto::aos::sandbox::local::v1::{ApplyHostExecutionRequestV1, BrokerMethod};
+use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
+use buffa::Message as _;
 
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitResultV1,
@@ -39,6 +41,11 @@ pub enum ProductionHostBrokerDispatchFailureV1 {
     Ordinary(DormantBrokerExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>),
     /// A Host execution intent failed with its protected replay custody.
     Execution(DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>),
+    /// Host ApplyExecution failed while its exact content descriptor remained owned.
+    ExecutionDescriptor {
+        failure: DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>,
+        request: DormantReceivedBrokerDescriptorRequestV1,
+    },
     /// A descriptor-producing scope operation failed with its custody retained.
     Descriptor(
         DormantBrokerDescriptorExecutionFailureV1<aos_sandbox_host::DormantHostBrokerCallErrorV1>,
@@ -307,6 +314,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Err(ProductionHostBrokerDispatchFailureV1::Execution(failure)) => {
                 self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds)
             }
+            Err(ProductionHostBrokerDispatchFailureV1::ExecutionDescriptor {
+                failure,
+                request: _,
+            }) => self.finish_ordinary_dispatch(Err(failure), deadline_boottime_nanoseconds),
             Err(ProductionHostBrokerDispatchFailureV1::Descriptor(failure)) => match failure {
                 DormantBrokerDescriptorExecutionFailureV1::BeforeEffect { error, request } => self
                     .finish_ordinary_dispatch(
@@ -419,8 +430,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Dispatches every Host protocol method through sealed production owners.
     ///
     /// The request arrives through the mixed zero-or-one descriptor receive
-    /// path. `PublishCatalog` alone retains its incoming descriptor; every
-    /// other method must convert to descriptor-free custody before dispatch.
+    /// path. `PublishCatalog` and `ApplyExecution` retain their sole incoming
+    /// descriptors; every other method uses descriptor-free custody.
     /// Scope observations preserve their exact outgoing descriptor table.
     ///
     /// # Errors
@@ -443,6 +454,50 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(ProductionHostBrokerDispatchFailureV1::Publication);
         }
 
+        if request.method() == BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION {
+            let Some((execution_request, descriptor)) = request.clone_host_execution_spec_request()
+            else {
+                return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
+            };
+            let content_bytes =
+                match ApplyHostExecutionRequestV1::decode_from_slice(execution_request.body()) {
+                    Ok(body) => body.spec_content_bytes,
+                    Err(_) => {
+                        return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
+                    }
+                };
+            let duplicate = match rustix::io::dup(descriptor) {
+                Ok(duplicate) => duplicate,
+                Err(_) => {
+                    return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
+                }
+            };
+            let dispatched = SealedMemfdMapping::run(
+                duplicate,
+                content_bytes,
+                aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64,
+                |content, _identity| {
+                    self.execute_host_execution_and_commit(
+                        execution_request,
+                        Some(content),
+                        host,
+                        agent,
+                        deadline_boottime_nanoseconds,
+                    )
+                },
+            );
+            return match dispatched {
+                Ok(Ok(committed)) => Ok(ProductionHostBrokerDispatchCommitV1::Ordinary(committed)),
+                Ok(Err(failure)) => {
+                    Err(ProductionHostBrokerDispatchFailureV1::ExecutionDescriptor {
+                        failure,
+                        request,
+                    })
+                }
+                Err(_) => Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request)),
+            };
+        }
+
         let request = request
             .into_descriptor_free_request()
             .map_err(ProductionHostBrokerDispatchFailureV1::RequestShape)?;
@@ -461,13 +516,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => self
                 .execute_host_execution_and_commit(
                     request,
+                    None,
                     host,
                     agent,
                     deadline_boottime_nanoseconds,

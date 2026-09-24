@@ -8,12 +8,14 @@ use aos_sandbox::EffectFailure;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
 use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestPreparationV1,
-    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
-    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerRequestV1,
-    DormantUnconfirmedBrokerRequestV1, ProtectedBrokerOutcomeCommitRecoveryV1,
-    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerRequestCommitRecoveryV1,
-    ProtectedBrokerSessionInitializationRecoveryV1,
+    DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorRequestPreparationV1,
+    DormantBrokerDescriptorRequestSendProgressV1, DormantBrokerDescriptorRequestSendRecoveryV1,
+    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
+    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
+    DormantPreparedBrokerDescriptorRequestV1, DormantPreparedBrokerRequestV1,
+    DormantUnconfirmedBrokerDescriptorRequestV1, DormantUnconfirmedBrokerRequestV1,
+    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
+    ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerSessionInitializationRecoveryV1,
 };
 
 /// Caller-specific diagnostics for a retained exchange.
@@ -32,7 +34,17 @@ enum ExchangeStageV1 {
         recovery: ProtectedBrokerRequestCommitRecoveryV1,
         request: DormantUnconfirmedBrokerRequestV1,
     },
+    DescriptorInitialization {
+        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
+        request: DormantUnconfirmedBrokerDescriptorRequestV1,
+    },
+    DescriptorSuccessor {
+        recovery: ProtectedBrokerRequestCommitRecoveryV1,
+        request: DormantUnconfirmedBrokerDescriptorRequestV1,
+    },
     Send(DormantPreparedBrokerRequestV1),
+    DescriptorSend(DormantPreparedBrokerDescriptorRequestV1),
+    DescriptorSendRecovery(DormantBrokerDescriptorRequestSendRecoveryV1),
     Receive(DormantOutstandingBrokerRequestV1),
     Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
 }
@@ -86,6 +98,18 @@ impl<C> RetainedBrokerExchangeV1<C> {
         });
     }
 
+    /// Retains a descriptor request and every FD across installation and send recovery.
+    pub(crate) fn start_descriptor(
+        &mut self,
+        context: C,
+        preparation: DormantBrokerDescriptorRequestPreparationV1,
+    ) {
+        self.pending = Some(PendingExchangeV1 {
+            context,
+            stage: descriptor_preparation_stage(preparation),
+        });
+    }
+
     /// Marks a session unusable after a caller-specific terminal failure.
     pub(crate) fn mark_failed(&mut self) {
         self.failed = true;
@@ -136,6 +160,32 @@ impl<C> RetainedBrokerExchangeV1<C> {
                     attempted_recovery = true;
                     preparation_stage(session.recover_prepared_successor(recovery, request))
                 }
+                ExchangeStageV1::DescriptorInitialization { recovery, request } => {
+                    if attempted_recovery {
+                        return self.retain(
+                            context,
+                            ExchangeStageV1::DescriptorInitialization { recovery, request },
+                            errors,
+                        );
+                    }
+                    attempted_recovery = true;
+                    descriptor_preparation_stage(
+                        session.recover_prepared_descriptor_initialization(recovery, request),
+                    )
+                }
+                ExchangeStageV1::DescriptorSuccessor { recovery, request } => {
+                    if attempted_recovery {
+                        return self.retain(
+                            context,
+                            ExchangeStageV1::DescriptorSuccessor { recovery, request },
+                            errors,
+                        );
+                    }
+                    attempted_recovery = true;
+                    descriptor_preparation_stage(
+                        session.recover_prepared_descriptor_successor(recovery, request),
+                    )
+                }
                 ExchangeStageV1::Send(prepared) => {
                     let deadline = prepared.deadline_boottime_nanoseconds();
                     match session.send_authenticated_request(prepared) {
@@ -153,6 +203,48 @@ impl<C> RetainedBrokerExchangeV1<C> {
                             ExchangeStageV1::Send(prepared)
                         }
                         Err(_) => return self.fail(errors),
+                    }
+                }
+                ExchangeStageV1::DescriptorSend(prepared) => {
+                    let deadline = prepared.deadline_boottime_nanoseconds();
+                    match session.send_authenticated_descriptor_request(prepared) {
+                        DormantBrokerDescriptorRequestSendProgressV1::Sent(outstanding) => {
+                            ExchangeStageV1::Receive(outstanding)
+                        }
+                        DormantBrokerDescriptorRequestSendProgressV1::Pending(prepared) => {
+                            if wait(session, true, deadline).is_err() {
+                                return self.retain(
+                                    context,
+                                    ExchangeStageV1::DescriptorSend(prepared),
+                                    errors,
+                                );
+                            }
+                            ExchangeStageV1::DescriptorSend(prepared)
+                        }
+                        DormantBrokerDescriptorRequestSendProgressV1::RecoveryRequired(
+                            recovery,
+                        ) => ExchangeStageV1::DescriptorSendRecovery(recovery),
+                    }
+                }
+                ExchangeStageV1::DescriptorSendRecovery(recovery) => {
+                    if attempted_recovery {
+                        return self.retain(
+                            context,
+                            ExchangeStageV1::DescriptorSendRecovery(recovery),
+                            errors,
+                        );
+                    }
+                    attempted_recovery = true;
+                    match session.retry_authenticated_descriptor_request(recovery) {
+                        DormantBrokerDescriptorRequestSendProgressV1::Sent(outstanding) => {
+                            ExchangeStageV1::Receive(outstanding)
+                        }
+                        DormantBrokerDescriptorRequestSendProgressV1::Pending(prepared) => {
+                            ExchangeStageV1::DescriptorSend(prepared)
+                        }
+                        DormantBrokerDescriptorRequestSendProgressV1::RecoveryRequired(
+                            recovery,
+                        ) => ExchangeStageV1::DescriptorSendRecovery(recovery),
                     }
                 }
                 ExchangeStageV1::Receive(outstanding) => {
@@ -242,6 +334,26 @@ fn preparation_stage(preparation: DormantBrokerRequestPreparationV1) -> Exchange
         DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
             recovery, request, ..
         } => ExchangeStageV1::Successor { recovery, request },
+    }
+}
+
+fn descriptor_preparation_stage(
+    preparation: DormantBrokerDescriptorRequestPreparationV1,
+) -> ExchangeStageV1 {
+    match preparation {
+        DormantBrokerDescriptorRequestPreparationV1::Prepared(prepared) => {
+            ExchangeStageV1::DescriptorSend(prepared)
+        }
+        DormantBrokerDescriptorRequestPreparationV1::InitializationRecoveryRequired {
+            recovery,
+            request,
+            ..
+        } => ExchangeStageV1::DescriptorInitialization { recovery, request },
+        DormantBrokerDescriptorRequestPreparationV1::SuccessorRecoveryRequired {
+            recovery,
+            request,
+            ..
+        } => ExchangeStageV1::DescriptorSuccessor { recovery, request },
     }
 }
 

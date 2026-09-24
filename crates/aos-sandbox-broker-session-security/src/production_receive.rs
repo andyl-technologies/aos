@@ -131,8 +131,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// The authenticated request decoder, rather than caller input or packet
     /// peeking, selects whether the exact table is empty or contains the sole
-    /// catalog-publication descriptor. Durable ambiguity is read back once and
-    /// otherwise fails closed as in [`Self::receive_production_request`].
+    /// catalog or execution-spec descriptor. Durable ambiguity is read back
+    /// once and otherwise fails closed as in [`Self::receive_production_request`].
     ///
     /// # Errors
     ///

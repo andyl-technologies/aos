@@ -794,6 +794,21 @@ impl DormantReceivedBrokerDescriptorRequestV1 {
             Err(self)
         }
     }
+
+    /// Clones the authenticated Apply request while retaining its sole descriptor.
+    pub(crate) fn clone_host_execution_spec_request(
+        &self,
+    ) -> Option<(DormantReceivedBrokerRequestV1, &OwnedFd)> {
+        if self.request.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+            || self.descriptors.len() != 1
+        {
+            return None;
+        }
+        Some((
+            DormantReceivedBrokerRequestV1(self.request.clone()),
+            &self.descriptors[0],
+        ))
+    }
 }
 
 /// Classifies protected request preparation and durable ambiguity.
@@ -1653,6 +1668,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// The fixed Host execution owner reopens protected currentness and exact
     /// operation history. A new intent may reach Pending only; guest dispatch
     /// requires the separately authenticated agent session and route permit.
+    /// Apply content remains borrowed from the sealed mapping through admission.
     ///
     /// # Errors
     ///
@@ -1661,6 +1677,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     pub fn execute_host_execution_and_commit(
         &mut self,
         request: DormantReceivedBrokerRequestV1,
+        execution_spec_content: Option<&[u8]>,
         host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
         agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
         deadline_boottime_nanoseconds: u64,
@@ -1685,6 +1702,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             host,
             method,
             request.0.exact_body(),
+            execution_spec_content,
             request.0.request_id(),
             artifacts,
             request.0.peer(),
@@ -4209,10 +4227,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
     /// Receives any authenticated Host request with its method-selected FD table.
     ///
-    /// Ordinary Host methods carry no descriptors and `PublishCatalog` carries
-    /// exactly one. The protected method decoder validates that relationship
-    /// before this method returns descriptor custody. This avoids selecting a
-    /// transport profile from unauthenticated packet bytes.
+    /// Ordinary Host methods carry no descriptors; `PublishCatalog` and
+    /// `ApplyExecution` each carry one. The protected method decoder validates
+    /// that relationship before this method returns descriptor custody. This
+    /// avoids selecting a transport profile from unauthenticated packet bytes.
     ///
     /// # Errors
     ///
@@ -5525,8 +5543,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// The fixed V1 profile derives the required role count from `method`; the
     /// exact supplied FD count and signed descriptor table must both match it.
-    /// This dormant path currently admits only Host PublishCatalog, the sole V1
-    /// request carrying SCM_RIGHTS descriptors.
+    /// Host PublishCatalog and Host ApplyExecution each carry one descriptor.
     ///
     /// # Errors
     ///
@@ -5538,7 +5555,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
         descriptors: Vec<OwnedFd>,
         build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
     ) -> Result<DormantBrokerDescriptorRequestPreparationV1, BrokerSessionSecurityError> {
-        if method != BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG || descriptors.len() != 1 {
+        if !matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
+                | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+        ) || descriptors.len() != 1
+        {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =

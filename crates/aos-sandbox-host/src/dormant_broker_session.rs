@@ -168,6 +168,7 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
     fn fixed_terminal_verifier_commitment(&self) -> Result<[u8; 32], DormantHostBrokerCallErrorV1>;
 
     /// Reserves a signed execution grant in the shared durable Host fence.
+    /// Apply carries sealed content for verification; Query carries none.
     ///
     /// # Errors
     ///
@@ -179,6 +180,7 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         method: BrokerMethod,
         request_body: &[u8],
+        execution_spec_content: Option<&[u8]>,
         request_id: [u8; 16],
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         peer: PeerCredentials,
@@ -410,6 +412,7 @@ where
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         method: BrokerMethod,
         request_body: &[u8],
+        execution_spec_content: Option<&[u8]>,
         request_id: [u8; 16],
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         peer: PeerCredentials,
@@ -422,6 +425,7 @@ where
                 claim,
                 method,
                 request_body,
+                execution_spec_content,
                 request_id,
                 artifacts,
                 peer,

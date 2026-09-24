@@ -433,6 +433,7 @@ where
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         method: BrokerMethod,
         request_body: &[u8],
+        execution_spec_content: Option<&[u8]>,
         request_id: [u8; 16],
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         peer: PeerCredentials,
@@ -462,12 +463,15 @@ where
         let (header, operation_id, execution_id, source_commitment, semantics, action, request) =
             match method {
                 BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
-                    let request = decode_host_execution_apply_v1(
+                    let mut request = decode_host_execution_apply_v1(
                         request_body,
                         peer,
                         policy,
                         admission_clock.boottime_nanoseconds(),
                     )?;
+                    let content = execution_spec_content
+                        .ok_or(HostError::Fence("Host execution content is absent"))?;
+                    request.verify_content(content)?;
                     let semantics = canonical_host_execution_apply_semantics_v1(
                         &request, assignment,
                     )
@@ -483,6 +487,9 @@ where
                     )
                 }
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence("Host execution query content is invalid"));
+                    }
                     let request = decode_host_execution_query_v1(
                         request_body,
                         peer,
