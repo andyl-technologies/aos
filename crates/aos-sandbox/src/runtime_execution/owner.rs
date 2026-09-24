@@ -64,8 +64,8 @@ use aos_sandbox_core::runtime_backend::{
 };
 use aos_sandbox_core::{
     AssignmentEpoch, DecodeLimits, DesiredGeneration, ExecutionId, IncarnationId,
-    NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, PayloadBootId, Revision,
-    SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
+    NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, OperationId, PayloadBootId,
+    Revision, SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -85,6 +85,11 @@ use super::agent_reducer::{
     agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
 };
 
+use crate::execution_output_reservation::{
+    ExecutionOutputReservationCommitV1, ExecutionOutputReservationRecoveryResultV1,
+    ExecutionOutputReservationRecoveryV1, RetainedClaim,
+};
+use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, Journal, JournalError, JournalLimits, JournalRecord,
     JournalTransaction, ProtectedJournalAuthority, RecordNamespace,
@@ -928,10 +933,88 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             .map_err(Into::into)
     }
 
-    /// Borrows the exact currentness admitted by this protected claim.
+    /// Borrows fixed bootstrap currentness, not a v2 execution reservation.
+    ///
+    /// New admissions must use [`Self::admission_currentness_for_accepted_output_v2`]
+    /// to bind the exact accepted Create and current durable ledger head.
     #[must_use]
     pub const fn currentness(&self) -> &AdmissionCurrentnessV1 {
         &self.currentness
+    }
+
+    /// Derives admission currentness from one protected accepted-Create claim.
+    ///
+    /// The fixed bootstrap output digest is not a per-execution reservation.
+    /// This readback uses the v2 claim's complete record digest and the latest
+    /// protected resource-ledger head, without accepting either from a caller.
+    /// It does not establish physical output storage or Host effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner changed, the exact claim is absent or
+    /// belongs to another assignment/Create operation, or either protected
+    /// journal cannot be read consistently.
+    pub fn admission_currentness_for_accepted_output_v2(
+        &self,
+        execution: ExecutionId,
+        create_operation: OperationId,
+    ) -> Result<AdmissionCurrentnessV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let claim = self
+            .execution
+            .load_accepted_output_v2(execution)?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::MissingAcceptedOutputClaim)?;
+        let state = self.execution.load_admission_state()?;
+
+        derive_accepted_output_currentness_v2(
+            &self.currentness,
+            &state,
+            &claim,
+            execution,
+            create_operation,
+        )
+    }
+
+    /// Reserves the exact accepted Create output bytes under this protected owner.
+    ///
+    /// Zero-byte streams still create an explicit durable record. Ambiguous
+    /// commits must be resolved after dropping this claim and cold-reopening
+    /// the owner; retrying with a fresh request is not a recovery procedure.
+    /// This reservation does not establish physical capture-storage or Host
+    /// effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale owner, accepted Create, or parent inputs,
+    /// insufficient capacity, or protected journal failure.
+    pub fn reserve_accepted_output_v2(
+        &mut self,
+        controller: &mut Journal,
+        create_operation: OperationId,
+        execution: ExecutionId,
+        parent: &ExecutionParentResourceSourceV1,
+    ) -> Result<ExecutionOutputReservationCommitV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .reserve_accepted_output_v2(controller, create_operation, execution, parent)
+            .map_err(Into::into)
+    }
+
+    /// Resolves an ambiguous output reservation after protected cold reopen.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if current ownership or the exact durable output
+    /// claim cannot be authenticated.
+    pub fn recover_accepted_output_v2(
+        &self,
+        token: ExecutionOutputReservationRecoveryV1,
+    ) -> Result<ExecutionOutputReservationRecoveryResultV1, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        self.validate_current()?;
+        self.execution
+            .recover_accepted_output_v2(token)
+            .map_err(Into::into)
     }
 
     /// Borrows the authenticated fixed-platform capability evidence.
@@ -1964,7 +2047,18 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             )
             .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
         let admission = effect.admission();
-        if effect.phase() != EffectPhaseV1::Issued || admission.currentness() != &self.currentness {
+        if effect.phase() != EffectPhaseV1::Issued {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
+        let current = self.admission_currentness_for_accepted_output_v2(
+            admission.execution(),
+            OperationId::from_bytes(*admission.idempotency().operation().as_bytes()),
+        )?;
+        let admitted = admission.currentness();
+        // The admission's ledger predecessor is historical after its commit;
+        // replay validates that chain. The assignment and per-execution output
+        // claim must still match the live owner before a guest route is issued.
+        if !same_owner_and_accepted_output_v2(admitted, &current) {
             return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
         }
         let specification = decode_execution_spec_v1(
@@ -2269,8 +2363,18 @@ impl ExecutionAdmissionStore for DormantRuntimeExecutionClaimV1<'_> {
         &mut self,
         draft: &ExecutionAdmissionDraftV1,
     ) -> Result<AdmissionStoreCommitV1<Self::RecoveryToken>, AdmissionCommitError> {
-        self.validate_current()
+        let current = self
+            .admission_currentness_for_accepted_output_v2(
+                draft.execution(),
+                OperationId::from_bytes(*draft.idempotency().operation().as_bytes()),
+            )
             .map_err(|_| AdmissionCommitError::StaleAuthority)?;
+        // Exact retry retains its historical predecessor after the ledger
+        // advances. The store checks that predecessor for a fresh commit and
+        // authenticates the complete draft for a durable replay.
+        if !same_owner_and_accepted_output_v2(draft.currentness(), &current) {
+            return Err(AdmissionCommitError::CurrentnessMismatch);
+        }
         self.execution.commit_execution_admission(draft)
     }
 
@@ -2279,8 +2383,15 @@ impl ExecutionAdmissionStore for DormantRuntimeExecutionClaimV1<'_> {
         token: Self::RecoveryToken,
         draft: &ExecutionAdmissionDraftV1,
     ) -> Result<AdmissionStoreCommitV1<Self::RecoveryToken>, AdmissionCommitError> {
-        self.validate_current()
+        let current = self
+            .admission_currentness_for_accepted_output_v2(
+                draft.execution(),
+                OperationId::from_bytes(*draft.idempotency().operation().as_bytes()),
+            )
             .map_err(|_| AdmissionCommitError::StaleAuthority)?;
+        if !same_owner_and_accepted_output_v2(draft.currentness(), &current) {
+            return Err(AdmissionCommitError::CurrentnessMismatch);
+        }
         self.execution.recover_execution_admission(token, draft)
     }
 }
@@ -3694,6 +3805,44 @@ fn digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(bytes).into())
 }
 
+fn derive_accepted_output_currentness_v2(
+    currentness: &AdmissionCurrentnessV1,
+    state: &ProtectedExecutionAdmissionStateV1,
+    claim: &RetainedClaim,
+    execution: ExecutionId,
+    create_operation: OperationId,
+) -> Result<AdmissionCurrentnessV1, DormantRuntimeExecutionOwnerErrorV1> {
+    if claim.execution != *execution.as_bytes()
+        || claim.create_operation != *create_operation.as_bytes()
+        || claim.assignment != currentness.runtime().currentness().assignment_digest()
+        || state.authority_binding()
+            != ProtectedExecutionAdmissionStateV1::new(currentness).authority_binding()
+    {
+        return Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch);
+    }
+
+    AdmissionCurrentnessV1::new(
+        *currentness.runtime(),
+        currentness.payload_boot_id(),
+        *currentness.backend_probe(),
+        currentness.authority_context(),
+        state.resource_ledger(),
+        claim.record_digest,
+    )
+    .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch)
+}
+
+fn same_owner_and_accepted_output_v2(
+    admitted: &AdmissionCurrentnessV1,
+    current: &AdmissionCurrentnessV1,
+) -> bool {
+    admitted.runtime() == current.runtime()
+        && admitted.payload_boot_id() == current.payload_boot_id()
+        && admitted.backend_probe() == current.backend_probe()
+        && admitted.authority_context() == current.authority_context()
+        && admitted.output_reservation() == current.output_reservation()
+}
+
 /// Reports fixed-root runtime execution ownership and replay failure.
 #[derive(Debug, thiserror::Error)]
 pub enum DormantRuntimeExecutionOwnerErrorV1 {
@@ -3727,6 +3876,12 @@ pub enum DormantRuntimeExecutionOwnerErrorV1 {
     /// The protected Host peer or runtime-currentness record is absent.
     #[error("protected runtime execution currentness is absent")]
     MissingCurrentness,
+    /// No durable v2 accepted-Create output claim exists for this execution.
+    #[error("protected accepted-Create output claim is absent")]
+    MissingAcceptedOutputClaim,
+    /// The durable claim or admission authority does not match current inputs.
+    #[error("protected accepted-Create output claim is stale or mismatched")]
+    AcceptedOutputClaimMismatch,
     /// A protected record is noncanonical, invalid, or internally inconsistent.
     #[error("protected runtime execution currentness is malformed")]
     MalformedCurrentness,
@@ -3745,4 +3900,137 @@ pub enum DormantRuntimeExecutionOwnerErrorV1 {
     /// The agent store failed initialization or full replay.
     #[error("runtime execution agent store failed: {0}")]
     Agent(#[from] JournalAgentStoreError),
+}
+
+#[cfg(test)]
+mod accepted_output_currentness_tests {
+    use super::*;
+
+    fn fixed_currentness(resource_ledger: u8, authority_context: u8) -> AdmissionCurrentnessV1 {
+        let runtime = RuntimeCurrentnessV1::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            NodeId::from_bytes([3; 16]),
+            AssignmentEpoch::new(4),
+            ObjectDigest::from_bytes([5; 32]),
+            DesiredGeneration::new(6),
+            NamespaceGeneration::new(7),
+        )
+        .expect("runtime currentness");
+        let handle = RuntimeHandleCommitmentV1::new(
+            runtime,
+            ObjectDigest::from_bytes([8; 32]),
+            ObjectDigest::from_bytes([9; 32]),
+        )
+        .expect("runtime handle");
+        let probe = BackendProbeCurrentnessV1::new(
+            NodeId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([10; 32]),
+            Revision::new(11),
+            ObjectDigest::from_bytes([12; 32]),
+        )
+        .expect("backend probe");
+        AdmissionCurrentnessV1::new(
+            handle,
+            PayloadBootId::new([13; 16]).expect("payload boot"),
+            probe,
+            ObjectDigest::from_bytes([authority_context; 32]),
+            ObjectDigest::from_bytes([resource_ledger; 32]),
+            ObjectDigest::from_bytes([14; 32]),
+        )
+        .expect("admission currentness")
+    }
+
+    fn retained_claim() -> RetainedClaim {
+        RetainedClaim {
+            execution: [15; 16],
+            create_operation: [16; 16],
+            assignment: ObjectDigest::from_bytes([5; 32]),
+            parent_profile: ObjectDigest::from_bytes([17; 32]),
+            claim_commitment: ObjectDigest::from_bytes([18; 32]),
+            requested_bytes: 0,
+            parent_bytes: 0,
+            record_digest: ObjectDigest::from_bytes([19; 32]),
+        }
+    }
+
+    #[test]
+    fn accepted_claim_replaces_fixed_digest_and_uses_latest_durable_ledger_head() {
+        let fixed = fixed_currentness(20, 21);
+        let advanced = fixed_currentness(22, 21);
+        let state = ProtectedExecutionAdmissionStateV1::new(&advanced);
+        let claim = retained_claim();
+
+        let derived = derive_accepted_output_currentness_v2(
+            &fixed,
+            &state,
+            &claim,
+            ExecutionId::from_bytes([15; 16]),
+            OperationId::from_bytes([16; 16]),
+        )
+        .expect("matching protected claim");
+
+        assert_eq!(derived.output_reservation(), claim.record_digest);
+        assert_ne!(derived.output_reservation(), fixed.output_reservation());
+        assert_eq!(derived.resource_ledger(), advanced.resource_ledger());
+
+        let historical = AdmissionCurrentnessV1::new(
+            *derived.runtime(),
+            derived.payload_boot_id(),
+            *derived.backend_probe(),
+            derived.authority_context(),
+            fixed.resource_ledger(),
+            claim.record_digest,
+        )
+        .expect("historical admission predecessor");
+        assert_ne!(historical.resource_ledger(), derived.resource_ledger());
+        assert!(same_owner_and_accepted_output_v2(&historical, &derived));
+        assert!(!same_owner_and_accepted_output_v2(&fixed, &derived));
+    }
+
+    #[test]
+    fn accepted_claim_rejects_foreign_execution_operation_assignment_and_authority() {
+        let fixed = fixed_currentness(20, 21);
+        let state = ProtectedExecutionAdmissionStateV1::new(&fixed);
+        let execution = ExecutionId::from_bytes([15; 16]);
+        let operation = OperationId::from_bytes([16; 16]);
+        let claim = retained_claim();
+
+        for (candidate, execution, operation, state) in [
+            (
+                retained_claim(),
+                ExecutionId::from_bytes([23; 16]),
+                operation,
+                state,
+            ),
+            (
+                retained_claim(),
+                execution,
+                OperationId::from_bytes([24; 16]),
+                state,
+            ),
+            (
+                RetainedClaim {
+                    assignment: ObjectDigest::from_bytes([25; 32]),
+                    ..retained_claim()
+                },
+                execution,
+                operation,
+                state,
+            ),
+            (
+                claim,
+                execution,
+                operation,
+                ProtectedExecutionAdmissionStateV1::new(&fixed_currentness(20, 26)),
+            ),
+        ] {
+            assert!(matches!(
+                derive_accepted_output_currentness_v2(
+                    &fixed, &state, &candidate, execution, operation
+                ),
+                Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch)
+            ));
+        }
+    }
 }

@@ -98,6 +98,12 @@ impl ProtectedExecutionAdmissionStateV1 {
     pub const fn resource_ledger(&self) -> ObjectDigest {
         self.resource_ledger
     }
+
+    /// Returns the fixed authority binding retained by the admission ledger.
+    #[must_use]
+    pub const fn authority_binding(&self) -> ObjectDigest {
+        self.authority_binding
+    }
 }
 
 /// Opaque authority for resolving one ambiguous protected-journal commit.
@@ -2538,18 +2544,39 @@ mod output_v2_tests {
         )
         .expect("cold reopened journal");
         let store = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())?;
+        let mut observed_digests = BTreeSet::new();
         for &(execution, requested) in requests {
             let retained = store
                 .load_accepted_output_v2(ExecutionId::from_bytes([execution; 16]))?
                 .expect("durable provisional claim");
             assert_eq!(retained.requested_bytes, requested);
+            assert_eq!(retained.create_operation, [3; 16]);
+            assert_eq!(retained.assignment, assignment);
+            assert_eq!(
+                retained.record_digest,
+                ObjectDigest::from_bytes(
+                    Sha256::digest(claim(execution, requested, parent_bytes)).into()
+                )
+            );
+            assert!(observed_digests.insert(retained.record_digest));
         }
+        assert!(
+            store
+                .load_accepted_output_v2(ExecutionId::from_bytes([99; 16]))?
+                .is_none()
+        );
         Ok(())
     }
 
     #[test]
     fn cold_replay_accepts_zero_byte_provisional_claim() {
         cold_replay(&[(1, 0)], 0, true, true).expect("zero-byte claim survives cold replay");
+    }
+
+    #[test]
+    fn cold_replay_keeps_zero_and_nonzero_execution_claims_distinct() {
+        cold_replay(&[(1, 0), (2, 1)], 1, true, true)
+            .expect("distinct claims survive one assignment ledger");
     }
 
     #[test]
