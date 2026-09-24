@@ -266,7 +266,8 @@ impl CampaignRecordKind {
             Self::FindingCandidateBundle => 7,
             Self::FindingTriageReplayEvidence => 2,
             Self::ArchiveManifest | Self::ArchiveInventoryPage => RECORD_SCHEMA_VERSION,
-            Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget | Self::BudgetLedger => 2,
+            Self::PlannerCandidateGuidance | Self::PlannerCandidateBudget => 2,
+            Self::BudgetLedger => 3,
             Self::PlannerBeamCandidate => 2,
             _ => RECORD_SCHEMA_VERSION,
         }
@@ -486,7 +487,7 @@ impl ObjectEnvelope {
         )
     }
 
-    /// Builds a budget envelope with the exact versioned request-spending child.
+    /// Builds a budget envelope with both authenticated request-index children.
     ///
     /// # Errors
     ///

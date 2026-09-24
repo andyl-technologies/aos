@@ -131,7 +131,7 @@ fn request_attempt_page_authenticates_cursor_and_empty_tail() {
         .scan_request_attempt_page(ledger, request_id, None, 1)
         .expect("indexed page");
     assert_eq!(entries.len(), 1);
-    let first_attempt = entries[0].attempt();
+    let first_proposal = entries[0].0.id().expect("first proposal ID");
     assert!(next.is_some());
     let response = crate::QueryCampaignRequestAttemptsResponse::new(
         &query,
@@ -160,13 +160,13 @@ fn request_attempt_page_authenticates_cursor_and_empty_tail() {
     .expect("second page query");
     assert!(decoded.validate_for(&second_query).is_err());
     let (entries, next, index_proof, page_proof) = repository
-        .scan_request_attempt_page(ledger, request_id, Some(first_attempt), 1)
+        .scan_request_attempt_page(ledger, request_id, Some(first_proposal), 1)
         .expect("second page");
     assert_eq!(entries.len(), 1);
-    let last_attempt = entries[0].attempt();
+    let last_proposal = entries[0].0.id().expect("last proposal ID");
     assert_eq!(
-        BTreeSet::from([first_attempt, last_attempt]),
-        BTreeSet::from([admitted.attempt, second.attempt])
+        BTreeSet::from([first_proposal, last_proposal]),
+        BTreeSet::from([admitted.proposal, second.proposal])
     );
     assert!(next.is_none());
     crate::QueryCampaignRequestAttemptsResponse::new(
@@ -185,12 +185,12 @@ fn request_attempt_page_authenticates_cursor_and_empty_tail() {
         campaign,
         snapshot,
         request_id,
-        Some(last_attempt),
+        Some(last_proposal),
         1,
     )
     .expect("tail query");
     let (entries, next, index_proof, page_proof) = repository
-        .scan_request_attempt_page(ledger, request_id, Some(last_attempt), 1)
+        .scan_request_attempt_page(ledger, request_id, Some(last_proposal), 1)
         .expect("empty tail");
     assert!(entries.is_empty());
     assert!(next.is_none());
@@ -204,4 +204,248 @@ fn request_attempt_page_authenticates_cursor_and_empty_tail() {
         page_proof,
     )
     .expect("proved empty tail");
+}
+
+#[test]
+fn request_admission_pages_include_convergent_causes_and_reject_wrong_proofs() {
+    let (repository, lineage, policy) = fixture();
+    let campaign = "request-causes";
+    let genesis = repository
+        .create_funded(campaign, &lineage, &policy, &BTreeMap::new())
+        .expect("create funded campaign");
+    let basis_request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        campaign,
+    );
+    repository
+        .submit_known_branch_request(campaign, genesis.snapshot_id(), &basis_request)
+        .expect("submit basis request");
+
+    let mut basis_admissions = Vec::new();
+    for (ordinal, value) in [(1, false), (2, true)] {
+        let head = repository.head(campaign).expect("head");
+        let proposal = finite_proposal(
+            &basis_request,
+            &policy,
+            &head,
+            ChoiceValue::Boolean(value),
+            ordinal,
+        );
+        let issued = repository
+            .issue_proposal(campaign, head.snapshot_id(), &proposal)
+            .expect("issue basis proposal");
+        let (selection, path, attempt) = branch_attempt(&repository, &basis_request, &proposal);
+        let admitted = repository
+            .admit_proposal(
+                campaign,
+                issued.new_snapshot,
+                issued.proposal,
+                &selection,
+                &path,
+                &attempt,
+            )
+            .expect("admit basis proposal");
+        basis_admissions.push(admitted);
+    }
+    let basis_id = basis_request.id().expect("basis request ID");
+    let prior_head = repository.head(campaign).expect("basis head");
+    let prior_ledger = repository
+        .read_budget_ledger(prior_head.snapshot().budget_ledger())
+        .expect("basis ledger");
+    let (_, _, stale_index_proof, _) = repository
+        .scan_request_attempt_page(prior_ledger, basis_id, None, 1)
+        .expect("basis proof before convergence");
+
+    let convergent_request = BranchRequest::new(
+        BranchRequest::identity(
+            basis_request.branch_point(),
+            basis_request.parent(),
+            basis_request.opportunity(),
+            basis_request.domain(),
+        ),
+        CandidateSource::finite(BTreeSet::from([ChoiceValue::Boolean(false)]))
+            .expect("convergent source"),
+        BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "test.request-causes",
+            b"additional-cause",
+        ))),
+        BranchBudget::new(1, 1).expect("convergent budget"),
+        basis_request.stop().clone(),
+    )
+    .expect("convergent request");
+    let head = repository.head(campaign).expect("head");
+    repository
+        .submit_known_branch_request(campaign, head.snapshot_id(), &convergent_request)
+        .expect("submit convergent request");
+    let head = repository.head(campaign).expect("head");
+    let proposal = finite_proposal(
+        &convergent_request,
+        &policy,
+        &head,
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let issued = repository
+        .issue_proposal(campaign, head.snapshot_id(), &proposal)
+        .expect("issue convergent proposal");
+    let (selection, path, attempt) = branch_attempt(&repository, &convergent_request, &proposal);
+    let additional = repository
+        .admit_proposal(
+            campaign,
+            issued.new_snapshot,
+            issued.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit additional cause");
+    assert_eq!(additional.attempt, basis_admissions[0].attempt);
+    let replay = repository
+        .admit_proposal(
+            campaign,
+            issued.new_snapshot,
+            issued.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("replay convergent admission");
+    assert!(replay.replayed);
+    assert_eq!(replay.admission, additional.admission);
+
+    let head = repository.head(campaign).expect("final head");
+    let snapshot = head.snapshot_id();
+    let ledger = repository
+        .read_budget_ledger(head.snapshot().budget_ledger())
+        .expect("ledger");
+    let principal = crate::CampaignPrincipal::new("operator:alice").expect("principal");
+    let name = crate::CampaignName::new(campaign).expect("campaign name");
+    let basis_request_id = basis_id;
+    let query = crate::QueryCampaignRequestAttemptsRequest::new(
+        principal.clone(),
+        name.clone(),
+        snapshot,
+        basis_request_id,
+        None,
+        1,
+    )
+    .expect("first page request");
+    let (first_entries, first_next, first_index, first_proof) = repository
+        .scan_request_attempt_page(ledger, basis_request_id, None, 1)
+        .expect("first page");
+    assert_eq!(first_entries.len(), 1);
+    assert!(first_next.is_some());
+    let first_response = crate::QueryCampaignRequestAttemptsResponse::new(
+        &query,
+        head.snapshot().clone(),
+        ledger,
+        first_entries,
+        first_next,
+        first_index,
+        first_proof.clone(),
+    )
+    .expect("authenticated first page");
+    first_response
+        .validate_for(&query)
+        .expect("first page proof");
+
+    let cursor = first_response.next_after().expect("next proposal cursor");
+    let second_query = crate::QueryCampaignRequestAttemptsRequest::new(
+        principal.clone(),
+        name.clone(),
+        snapshot,
+        basis_request_id,
+        Some(cursor),
+        1,
+    )
+    .expect("second page request");
+    let (second_entries, second_next, second_index, second_proof) = repository
+        .scan_request_attempt_page(ledger, basis_request_id, Some(cursor), 1)
+        .expect("second page");
+    assert_eq!(second_entries.len(), 1);
+    assert!(second_next.is_none());
+    crate::QueryCampaignRequestAttemptsResponse::new(
+        &second_query,
+        head.snapshot().clone(),
+        ledger,
+        second_entries,
+        second_next,
+        second_index,
+        second_proof,
+    )
+    .expect("authenticated second page");
+
+    let convergent_id = convergent_request.id().expect("convergent request ID");
+    assert_eq!(ledger.spent_attempts(), 2);
+    assert_eq!(
+        repository
+            .indexed_request_execution_bases(ledger, convergent_id)
+            .expect("convergent request spending"),
+        0
+    );
+    let convergent_query = crate::QueryCampaignRequestAttemptsRequest::new(
+        principal,
+        name,
+        snapshot,
+        convergent_id,
+        None,
+        1,
+    )
+    .expect("convergent page request");
+    let (entries, next, index_proof, page_proof) = repository
+        .scan_request_attempt_page(ledger, convergent_id, None, 1)
+        .expect("convergent page");
+    assert_eq!(entries.len(), 1);
+    assert!(next.is_none());
+    assert_eq!(entries[0].1.attempt(), additional.attempt);
+    assert!(matches!(
+        entries[0].1.role(),
+        AttemptAdmissionRole::AdditionalCause { .. }
+    ));
+    let response = crate::QueryCampaignRequestAttemptsResponse::new(
+        &convergent_query,
+        head.snapshot().clone(),
+        ledger,
+        entries.clone(),
+        next,
+        index_proof.clone(),
+        page_proof.clone(),
+    )
+    .expect("authenticated additional cause");
+    response
+        .validate_for(&convergent_query)
+        .expect("additional cause proof");
+    assert!(
+        crate::QueryCampaignRequestAttemptsResponse::new(
+            &convergent_query,
+            head.snapshot().clone(),
+            ledger,
+            entries.clone(),
+            next,
+            stale_index_proof,
+            page_proof.clone(),
+        )
+        .is_err()
+    );
+    assert!(
+        crate::QueryCampaignRequestAttemptsResponse::new(
+            &convergent_query,
+            head.snapshot().clone(),
+            ledger,
+            entries,
+            next,
+            index_proof,
+            first_proof,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::QueryCampaignRequestAttemptsResponse::from_canonical_bytes(
+            &response.canonical_bytes()[..response.canonical_bytes().len() - 1],
+        )
+        .is_err()
+    );
 }

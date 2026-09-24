@@ -1,15 +1,17 @@
 //! Versioned aggregate budget ledger and pure checked accounting transitions.
 //!
-//! Canonical version 2 uses big-endian fields in this order:
+//! Canonical version 3 uses big-endian fields in this order:
 //! ```text
-//! u32 version = 2
+//! u32 version = 3
 //! u128 granted_proposals
 //! u128 granted_attempts
 //! u64 spent_proposals
 //! u64 spent_attempts
 //! ContentId request_spending
+//! ContentId request_admissions
 //! ```
-//! Its nested maps count execution bases charged to each branch request.
+//! Spending maps count execution bases. Admission maps retain every
+//! proposal-backed execution basis and additional cause by request.
 //! A repository must authenticate these totals against its causal transition
 //! before treating a decoded ledger as authority. Historical debt is retained,
 //! not forgiven; a later grant must cover that debt before new spending.
@@ -53,6 +55,7 @@ pub struct CampaignBudgetLedger {
     spent_proposals: u64,
     spent_attempts: u64,
     request_spending: crucible_cas::content_store::ContentId,
+    request_admissions: crucible_cas::content_store::ContentId,
 }
 
 impl CampaignBudgetLedger {
@@ -62,14 +65,16 @@ impl CampaignBudgetLedger {
         spent_proposals: u64,
         spent_attempts: u64,
         request_spending: crucible_cas::content_store::ContentId,
+        request_admissions: crucible_cas::content_store::ContentId,
     ) -> Result<Self, CampaignCodecError> {
-        super::validate_merkle_roots(&[request_spending])?;
+        super::validate_merkle_roots(&[request_spending, request_admissions])?;
         Ok(Self {
             granted_proposals,
             granted_attempts,
             spent_proposals,
             spent_attempts,
             request_spending,
+            request_admissions,
         })
     }
 
@@ -84,9 +89,9 @@ impl CampaignBudgetLedger {
         )
     }
 
-    /// Builds an empty ledger bound to an authenticated request-spending index.
+    /// Builds an empty ledger with both request indexes at the same empty root.
     ///
-    /// The repository must authenticate every nested execution-basis entry;
+    /// The repository must authenticate every nested request-index entry;
     /// this constructor checks only the root's storage-domain type.
     ///
     /// # Errors
@@ -100,6 +105,7 @@ impl CampaignBudgetLedger {
             spent_proposals: 0,
             spent_attempts: 0,
             request_spending: root,
+            request_admissions: root,
         })
     }
 
@@ -109,14 +115,23 @@ impl CampaignBudgetLedger {
         self.request_spending
     }
 
+    /// Returns the authenticated index of all proposal-backed admissions.
+    #[must_use]
+    pub const fn request_admissions(self) -> crucible_cas::content_store::ContentId {
+        self.request_admissions
+    }
+
     pub(crate) const fn schema_version(self) -> u32 {
-        2
+        3
     }
 
     pub(crate) fn content_children(
         self,
     ) -> Vec<(&'static str, crucible_cas::content_store::ContentId)> {
-        vec![("request-spending", self.request_spending)]
+        vec![
+            ("request-spending", self.request_spending),
+            ("request-admissions", self.request_admissions),
+        ]
     }
 
     /// Returns the exact cumulative proposal grant.
@@ -207,7 +222,7 @@ impl CampaignBudgetLedger {
         })
     }
 
-    /// Returns the canonical version-2 ledger bytes.
+    /// Returns the canonical version-3 ledger bytes.
     #[must_use]
     pub fn canonical_bytes(self) -> Vec<u8> {
         codec::encode(&self)
@@ -235,11 +250,12 @@ impl Canonical for CampaignBudgetLedger {
         self.spent_proposals.encode(encoder);
         self.spent_attempts.encode(encoder);
         Canonical::encode(&self.request_spending, encoder);
+        Canonical::encode(&self.request_admissions, encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         let version = u32::decode(decoder)?;
-        if version != 2 {
+        if version != 3 {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "unsupported campaign budget ledger schema version",
             });
@@ -250,8 +266,9 @@ impl Canonical for CampaignBudgetLedger {
             spent_proposals: u64::decode(decoder)?,
             spent_attempts: u64::decode(decoder)?,
             request_spending: crucible_cas::content_store::ContentId::decode(decoder)?,
+            request_admissions: crucible_cas::content_store::ContentId::decode(decoder)?,
         };
-        super::validate_merkle_roots(&[value.request_spending])?;
+        super::validate_merkle_roots(&[value.request_spending, value.request_admissions])?;
         Ok(value)
     }
 }
@@ -276,9 +293,10 @@ mod tests {
         let bytes = ledger.canonical_bytes();
         assert_eq!(CampaignBudgetLedger::from_canonical_bytes(&bytes)?, ledger);
         let envelope = crate::ObjectEnvelope::for_budget_ledger(&ledger)?;
-        assert_eq!(envelope.content_id().schema_version(), 2);
-        assert_eq!(envelope.children().len(), 1);
+        assert_eq!(envelope.content_id().schema_version(), 3);
+        assert_eq!(envelope.children().len(), 2);
         assert_eq!(ledger.request_spending().kind(), ObjectKind::MerkleNode);
+        assert_eq!(ledger.request_admissions().kind(), ObjectKind::MerkleNode);
         Ok(())
     }
 
@@ -343,7 +361,7 @@ mod tests {
         let mut extra = bytes.clone();
         extra.push(0);
         assert!(CampaignBudgetLedger::from_canonical_bytes(&extra).is_err());
-        for version in [0_u32, 3, u32::MAX] {
+        for version in [0_u32, 2, u32::MAX] {
             let mut unknown = bytes.clone();
             unknown[..4].copy_from_slice(&version.to_be_bytes());
             assert!(CampaignBudgetLedger::from_canonical_bytes(&unknown).is_err());
@@ -359,6 +377,7 @@ mod tests {
             spent_proposals: u64::MAX,
             spent_attempts: u64::MAX,
             request_spending: empty_ledger()?.request_spending(),
+            request_admissions: empty_ledger()?.request_admissions(),
         };
         assert_eq!(
             max.with_grant(BudgetGrant::new(1, 0)?),
