@@ -47,7 +47,10 @@ Live Q04 admission still needs Controller, source-domain, protected Cache
 journals, and the physical Cache flock held in canonical order through root CAS
 and a recoverable effect handoff; root verification of the exact current
 protected Cache quota envelope; and crash/replay checks binding every owner to
-that same cut. A privileged read-only
-idmapped Cache view would instead permit root to resolve names itself while
-keeping on-disk mode 0700 and policy-authorityd cap-empty, but it introduces a
-trusted mount setup and still needs non-mutating protected journal replay.
+that same cut. The root-only idmapped Cache view now permits policy-authorityd
+to resolve the three protected journal names while the on-disk directory stays
+mode 0700 and the service stays cap-empty. Its read-only opener checks the fixed
+mount, owner, mode, and independently re-resolved names, then reuses the Cache
+authority and typed-history verifier without repairing a tail or taking the
+Controller lock. The result is diagnostic only: independent reads of three
+journals cannot establish one held Controller cut for Q04 or public Create.

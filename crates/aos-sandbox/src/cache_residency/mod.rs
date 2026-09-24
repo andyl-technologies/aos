@@ -131,7 +131,8 @@ pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
-    PublicLogicalPinAcquisitionCommitV1,
+    CacheResidencyRootReadOnlyReplayV1, PublicLogicalPinAcquisitionCommitV1,
+    replay_fixed_root_read_only_cache_journals_v1,
 };
 pub use public_pin::{PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};
 pub use read_authority::{
