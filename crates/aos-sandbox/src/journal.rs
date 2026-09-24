@@ -669,6 +669,16 @@ impl ReadOnlyProtectedJournal {
         Ok(())
     }
 
+    #[cfg(test)]
+    /// Checks the retained name using the test fixture's exact UID.
+    pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
+        self.witness.check_named_currentness_at_uid_for_test()?;
+        if FileIdentity::of(&self.journal.file)? != self.witness.file_identity {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
     /// Separates the read-only journal from its physical-name witness.
     pub(crate) fn into_parts(self) -> (Journal, ReadOnlyJournalNameWitness) {
         (self.journal, self.witness)
@@ -680,6 +690,27 @@ impl ReadOnlyJournalNameWitness {
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
         let directory =
             resolve_protected_directory_from_root(&self.directory_path, self.expected_uid)?;
+        self.check_in_directory(&directory)
+    }
+
+    #[cfg(test)]
+    /// Resolves a test-owned directory without changing production root ancestry checks.
+    pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
+        let directory: File = openat2(
+            CWD,
+            &self.directory_path,
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error)?
+        .into();
+        validate_protected_fd(
+            &directory,
+            self.expected_uid,
+            FileType::Directory,
+            Mode::RWXU,
+        )?;
         self.check_in_directory(&directory)
     }
 
@@ -960,21 +991,66 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
+        let (readback, report) =
+            Self::open_read_only_protected_directory(directory_path, directory, name, limits, 0)?;
+        readback.check_named_currentness()?;
+        Ok((readback, report))
+    }
+
+    #[cfg(test)]
+    /// Opens a protected test fixture read-only without requiring a root UID.
+    pub(crate) fn open_read_only_protected_at_uid_for_test(
+        directory_path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
+        let directory: File = openat2(
+            CWD,
+            directory_path,
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error)?
+        .into();
+        validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
+        let (readback, report) = Self::open_read_only_protected_directory(
+            directory_path,
+            directory,
+            name,
+            limits,
+            expected_uid,
+        )?;
+        readback.check_named_currentness_at_uid_for_test()?;
+        Ok((readback, report))
+    }
+
+    // Production and test openings share the same no-follow journal, lock,
+    // replay, and physical-name witness construction.
+    fn open_read_only_protected_directory(
+        directory_path: &Path,
+        directory: File,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
         validate_limits(limits)?;
         if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
             return Err(JournalError::ProtectedBoundary);
         }
         validate_basename(name)?;
-        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
         let directory_identity = FileIdentity::of(&directory)?;
-        let lock = open_read_only_protected_file(&directory, &format!("{name}.lock"), 0)?;
+        let lock =
+            open_read_only_protected_file(&directory, &format!("{name}.lock"), expected_uid)?;
         let lock_identity = FileIdentity::of(&lock)?;
-        let file = open_read_only_protected_file(&directory, name, 0)?;
+        let file = open_read_only_protected_file(&directory, name, expected_uid)?;
         let file_identity = FileIdentity::of(&file)?;
         let protected = ProtectedJournalLocation {
             directory,
             name: name.to_owned(),
-            expected_uid: 0,
+            expected_uid,
         };
         let (journal, report) = Self::recover_opened(
             PathBuf::from(name),
@@ -989,13 +1065,12 @@ impl Journal {
             witness: ReadOnlyJournalNameWitness {
                 directory_path: directory_path.to_owned(),
                 name: name.to_owned(),
-                expected_uid: 0,
+                expected_uid,
                 directory_identity,
                 file_identity,
                 lock_identity,
             },
         };
-        readback.check_named_currentness()?;
         Ok((readback, report))
     }
 
@@ -3835,9 +3910,9 @@ mod tests {
         FileIdentity, HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
         JournalLimits, JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
         ProtectedAncestry, ProtectedJournalLocation, ProtectedOwnerPolicy,
-        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport,
-        encode_transaction, open_protected_file, open_read_only_protected_file,
-        protected_open_error, traverse_protected_directory,
+        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
+        open_protected_file, open_read_only_protected_file, protected_open_error,
+        traverse_protected_directory,
     };
 
     struct TestDirectory(PathBuf);

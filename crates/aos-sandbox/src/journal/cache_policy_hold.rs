@@ -20,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
-    ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
+    ReadOnlyProtectedJournal, RecordNamespace,
 };
 
 pub(crate) const NAME: &str = "policy-hold.journal";
@@ -228,13 +228,6 @@ fn current(journal: &mut Journal) -> Result<Option<CachePolicyHoldV1>, JournalEr
 }
 
 impl ReadOnlyProtectedJournal {
-    /// Opens the exact protected hold name without writer authority.
-    pub(crate) fn open_cache_policy_hold_at(
-        directory: &Path,
-    ) -> Result<(Self, RecoveryReport), JournalError> {
-        Journal::open_read_only_protected_at(directory, NAME, hold_limits())
-    }
-
     /// Returns only an active, canonical hold from the fixed read-only name.
     pub(crate) fn held_cache_policy_hold(&mut self) -> Result<CachePolicyHoldV1, JournalError> {
         if self.witness.name != NAME {
@@ -308,6 +301,11 @@ pub(super) fn mutation_guard(journal: &Journal) -> Result<Option<Journal>, Journ
 }
 
 impl Journal {
+    /// Returns the fixed replay bounds for the protected Cache hold name.
+    pub(crate) fn cache_policy_hold_limits() -> JournalLimits {
+        hold_limits()
+    }
+
     pub(crate) fn initialize_cache_policy_hold_at(
         directory: &Path,
         uid: u32,

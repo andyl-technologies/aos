@@ -2636,7 +2636,10 @@ mod tests {
         }
     }
 
-    fn expired_cache_hold_fixture() -> (tempfile::TempDir, u32, CachePolicyHoldV1) {
+    fn cache_hold_fixture(
+        valid_until: u64,
+        observed_unix_seconds: u64,
+    ) -> (tempfile::TempDir, u32, CachePolicyHoldV1) {
         let directory = tempfile::tempdir().expect("protected Cache fixture");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private Cache directory");
@@ -2689,9 +2692,13 @@ mod tests {
             maximum_kernel_references: 16,
             maximum_backing_registrations: 16,
         };
-        let manifest =
-            encode_cache_replay_genesis_manifest_v1(partition, node_quota, vec![project_quota], 1)
-                .expect("expired canonical manifest");
+        let manifest = encode_cache_replay_genesis_manifest_v1(
+            partition,
+            node_quota,
+            vec![project_quota],
+            valid_until,
+        )
+        .expect("canonical manifest");
         let evidence = decode_cache_replay_manifest(&manifest, CacheRecoveryLimitsV1::default())
             .expect("decoded Replay evidence");
 
@@ -2712,7 +2719,7 @@ mod tests {
                         encode_cache_clock_floor(CacheClockFloorV1 {
                             owner_scope: cache_owner_scope(),
                             revision: 1,
-                            observed_unix_seconds: 1,
+                            observed_unix_seconds,
                             predecessor_unix_seconds: 0,
                         }),
                     )],
@@ -2797,6 +2804,16 @@ mod tests {
         Journal::acquire_cache_policy_hold_at(directory.path(), uid, hold)
             .expect("durable Cache hold");
         (directory, uid, hold)
+    }
+
+    fn expired_cache_hold_fixture() -> (tempfile::TempDir, u32, CachePolicyHoldV1) {
+        cache_hold_fixture(1, 1)
+    }
+
+    pub(super) fn live_cache_hold_fixture() -> (tempfile::TempDir, u32, CachePolicyHoldV1) {
+        let now = sample_wall_clock().expect("live Cache fixture time");
+        let valid_until = now.checked_add(86_400).expect("live Replay interval");
+        cache_hold_fixture(valid_until, now)
     }
 
     #[test]

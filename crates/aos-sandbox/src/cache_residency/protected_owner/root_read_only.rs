@@ -12,7 +12,8 @@ use std::sync::Arc;
 use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, statvfs, statx};
 
 use crate::journal::{
-    CachePolicyHoldV1, Journal, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
+    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalError, JournalLimits,
+    ReadOnlyJournalNameWitness, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
 };
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use aos_sandbox_core::ObjectDigest;
@@ -213,13 +214,42 @@ fn replay_fixed_root_read_only_cache_journals_inner(
     let mount = require_fixed_read_only_cache_mount()?;
     reject_legacy_cache_journals()?;
     let view = Path::new(ROOT_READ_ONLY_CACHE_VIEW);
+    let replay = replay_cache_journals_at(
+        view,
+        0,
+        require_hold,
+        Journal::open_read_only_protected_at,
+        ReadOnlyJournalNameWitness::check_named_currentness,
+        ReadOnlyProtectedJournal::check_named_currentness,
+    )?;
+    reject_legacy_cache_journals()?;
+    if require_fixed_read_only_cache_mount()? != mount {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+    }
+    Ok(replay)
+}
+
+fn replay_cache_journals_at(
+    view: &Path,
+    owner_uid: u32,
+    require_hold: bool,
+    open: impl Fn(
+        &Path,
+        &str,
+        JournalLimits,
+    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>,
+    check_name: impl Fn(&ReadOnlyJournalNameWitness) -> Result<(), JournalError>,
+    check_hold: impl Fn(&ReadOnlyProtectedJournal) -> Result<(), JournalError>,
+) -> Result<
+    (
+        CacheResidencyRootReadOnlyReplayV1,
+        Option<(CachePolicyHoldV1, RecoveryReport)>,
+    ),
+    CacheResidencyProtectedJournalErrorV1,
+> {
     let owner_scope = cache_owner_scope();
 
-    let (mut clock, clock_report) = Journal::open_read_only_protected_at(
-        view,
-        CACHE_CLOCK_JOURNAL,
-        cache_clock_journal_limits(),
-    )?;
+    let (mut clock, clock_report) = open(view, CACHE_CLOCK_JOURNAL, cache_clock_journal_limits())?;
     let floor = {
         let authority = clock
             .journal_mut()
@@ -236,7 +266,7 @@ fn replay_fixed_root_read_only_cache_journals_inner(
     let current_time: Arc<dyn CacheResidencyCurrentTimeAuthorityV1> =
         Arc::new(ReadOnlyCacheClockV1 { floor });
 
-    let (mut authority, authority_report) = Journal::open_read_only_protected_at(
+    let (mut authority, authority_report) = open(
         view,
         CACHE_AUTHORITY_JOURNAL,
         cache_authority_journal_limits(),
@@ -256,21 +286,21 @@ fn replay_fixed_root_read_only_cache_journals_inner(
         current_time,
     )?;
 
-    let (state, state_report) = Journal::open_read_only_protected_at(
-        view,
-        CACHE_STATE_JOURNAL,
-        cache_state_journal_limits(),
-    )?;
+    let (state, state_report) = open(view, CACHE_STATE_JOURNAL, cache_state_journal_limits())?;
     let (state_journal, state_witness) = state.into_parts();
     let mut owner = CacheResidencyProtectedOwnerV1 {
         state_journal: Some(state_journal),
         authority: replay_authority,
-        owner_uid: 0,
+        owner_uid,
     };
     let partitions = owner.reconstructed_partitions()?.len();
     let mut hold_witness = None;
     let hold = if require_hold {
-        let (mut journal, report) = ReadOnlyProtectedJournal::open_cache_policy_hold_at(view)?;
+        let (mut journal, report) = open(
+            view,
+            CACHE_POLICY_HOLD_JOURNAL,
+            Journal::cache_policy_hold_limits(),
+        )?;
         let hold = journal.held_cache_policy_hold()?;
         let current = owner.while_current_project_physical_cache(hold.project(), |head| head)?;
         if !hold_matches_replayed_head(hold, current.partition().digest(), current.head()) {
@@ -283,15 +313,11 @@ fn replay_fixed_root_read_only_cache_journals_inner(
     };
 
     if let Some(journal) = hold_witness.as_ref() {
-        journal.check_named_currentness()?;
+        check_hold(journal)?;
     }
-    state_witness.check_named_currentness()?;
-    authority_witness.check_named_currentness()?;
-    clock.check_named_currentness()?;
-    reject_legacy_cache_journals()?;
-    if require_fixed_read_only_cache_mount()? != mount {
-        return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
-    }
+    check_name(&state_witness)?;
+    check_name(&authority_witness)?;
+    check_hold(&clock)?;
 
     let replay = CacheResidencyRootReadOnlyReplayV1 {
         journals: CacheResidencyProtectedOpenReportV1 {
@@ -306,7 +332,87 @@ fn replay_fixed_root_read_only_cache_journals_inner(
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+
     use super::*;
+
+    fn replay_live_test_view(
+        view: &Path,
+        uid: u32,
+    ) -> Result<
+        (
+            CacheResidencyRootReadOnlyReplayV1,
+            Option<(CachePolicyHoldV1, RecoveryReport)>,
+        ),
+        CacheResidencyProtectedJournalErrorV1,
+    > {
+        replay_cache_journals_at(
+            view,
+            uid,
+            true,
+            |view, name, limits| {
+                Journal::open_read_only_protected_at_uid_for_test(view, name, limits, uid)
+            },
+            ReadOnlyJournalNameWitness::check_named_currentness_at_uid_for_test,
+            ReadOnlyProtectedJournal::check_named_currentness_at_uid_for_test,
+        )
+    }
+
+    #[test]
+    fn active_hold_replays_four_exact_names_without_mutation() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let names = [
+            CACHE_CLOCK_JOURNAL,
+            CACHE_AUTHORITY_JOURNAL,
+            CACHE_STATE_JOURNAL,
+            CACHE_POLICY_HOLD_JOURNAL,
+        ];
+        let before = names.map(|name| {
+            std::fs::read(directory.path().join(name)).expect("journal before readback")
+        });
+
+        let (replay, observed) =
+            replay_live_test_view(directory.path(), uid).expect("four-journal readback");
+
+        assert_eq!(replay.partitions, 1);
+        assert!(replay.journals.authority.committed_transactions > 0);
+        assert!(replay.journals.clock.committed_transactions > 0);
+        let (hold, report) = observed.expect("active canonical hold");
+        assert_eq!(hold, expected);
+        assert!(report.committed_transactions > 0);
+        for (name, expected_bytes) in names.into_iter().zip(before) {
+            assert_eq!(
+                std::fs::read(directory.path().join(name)).expect("journal after readback"),
+                expected_bytes,
+            );
+        }
+    }
+
+    #[test]
+    fn active_hold_name_witness_rejects_concurrent_mutation() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let (mut readback, _) = Journal::open_read_only_protected_at_uid_for_test(
+            directory.path(),
+            CACHE_POLICY_HOLD_JOURNAL,
+            Journal::cache_policy_hold_limits(),
+            uid,
+        )
+        .expect("read-only active hold");
+        assert_eq!(
+            readback.held_cache_policy_hold().expect("held record"),
+            expected
+        );
+
+        OpenOptions::new()
+            .append(true)
+            .open(directory.path().join(CACHE_POLICY_HOLD_JOURNAL))
+            .expect("test writer")
+            .write_all(b"changed")
+            .expect("append after readback");
+
+        assert!(readback.check_named_currentness_at_uid_for_test().is_err());
+    }
 
     #[test]
     fn mountinfo_requires_one_exact_protected_cache_mount() {
