@@ -660,6 +660,79 @@ fn receipt_key(operation_id: [u8; 16]) -> Vec<u8> {
     [RECEIPT_PREFIX_V3, operation_id.as_slice()].concat()
 }
 
+/// Carries only the authenticated owner facts needed by a future public ledger receipt.
+pub(super) struct VerifiedRetainedRepairReceiptV3 {
+    pub(super) record_digest: [u8; 32],
+    pub(super) signed_pair_digest: [u8; 32],
+    pub(super) resulting_physical_version: [u8; 32],
+    pub(super) owner_id: [u8; 16],
+    pub(super) owner_key_generation: u64,
+}
+
+/// Reauthenticates the retained V3 owner pair under the current deployment pin.
+pub(super) fn verified_retained_repair_receipt_v3(
+    journal: &Journal,
+    intent: &OperatorRecoveryEffectIntentV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+) -> Result<VerifiedRetainedRepairReceiptV3, OperatorRecoveryIssuanceErrorV1> {
+    owner.recheck()?;
+    let facts = verified_retained_repair_receipt_with_pin_v3(journal, intent, &owner.pin)?;
+    owner.recheck()?;
+    Ok(facts)
+}
+
+fn verified_retained_repair_receipt_with_pin_v3(
+    journal: &Journal,
+    intent: &OperatorRecoveryEffectIntentV1,
+    owner: &StorageOwnerPinV2,
+) -> Result<VerifiedRetainedRepairReceiptV3, OperatorRecoveryIssuanceErrorV1> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let legacy_key = [
+        LEGACY_RECEIPT_PREFIX_V2,
+        intent.recovery_operation_id.as_slice(),
+    ]
+    .concat();
+    if journal
+        .get(RecordNamespace::OperatorRecovery, &legacy_key)
+        .is_some()
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    let key = receipt_key(intent.recovery_operation_id);
+    let bytes = journal
+        .get(RecordNamespace::OperatorRecovery, &key)
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let retained = StoredReceiptV3::decode(&key, bytes, intent, owner)?;
+    let terminal_digest: [u8; 32] = retained.signed_receipt[192..224]
+        .try_into()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let (signed_result, _) = verify_operator_recovery_effect_receipt_v2(
+        &retained.signed_receipt,
+        &retained.signed_evidence,
+        &owner.verifier,
+        intent,
+        owner.owner_id,
+        owner.key_generation,
+        terminal_digest,
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    Ok(VerifiedRetainedRepairReceiptV3 {
+        record_digest: hash(
+            b"aos.sandbox.operator-storage-repair-owner-record.v3\0",
+            &[bytes],
+        ),
+        signed_pair_digest: hash(
+            b"aos.sandbox.operator-storage-repair-signed-pair.v2\0",
+            &[&retained.signed_evidence, &retained.signed_receipt],
+        ),
+        resulting_physical_version: signed_result.resulting_version,
+        owner_id: retained.owner_id,
+        owner_key_generation: retained.owner_key_generation,
+    })
+}
+
 fn reserve_receipt(
     journal: &mut Journal,
     intent: &OperatorRecoveryEffectIntentV1,
@@ -857,6 +930,10 @@ mod tests {
             reserve_receipt(&mut journal, &intent, &first.0, &first.1, &pin),
             Ok(())
         );
+        let verified =
+            verified_retained_repair_receipt_with_pin_v3(&journal, &intent, &pin).unwrap();
+        assert_eq!(verified.resulting_physical_version, [13; 32]);
+        assert_eq!(verified.owner_key_generation, 18);
         assert_eq!(
             reserve_receipt(&mut journal, &intent, &first.0, &first.1, &pin),
             Ok(())
@@ -875,6 +952,7 @@ mod tests {
             reserve_receipt(&mut journal, &intent, &first.0, &first.1, &rotated),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
+        assert!(verified_retained_repair_receipt_with_pin_v3(&journal, &intent, &rotated).is_err());
         let mut changed_intent = intent;
         changed_intent.effect_id = [21; 32];
         assert_eq!(
@@ -901,6 +979,12 @@ mod tests {
             reserve_receipt(&mut reopened, &intent, &first.0, &first.1, &pin),
             Ok(())
         );
+        assert_eq!(
+            verified_retained_repair_receipt_with_pin_v3(&reopened, &intent, &pin)
+                .unwrap()
+                .record_digest,
+            verified.record_digest
+        );
 
         let legacy_key = [
             LEGACY_RECEIPT_PREFIX_V2,
@@ -921,5 +1005,6 @@ mod tests {
             reserve_receipt(&mut reopened, &intent, &first.0, &first.1, &pin),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
+        assert!(verified_retained_repair_receipt_with_pin_v3(&reopened, &intent, &pin).is_err());
     }
 }

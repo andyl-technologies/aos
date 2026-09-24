@@ -39,6 +39,8 @@ const PAIR_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-signed-pair.v2\
 const PROOF_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-terminal-proof.v2\0";
 const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-proof-commit.v2\0";
 
+mod ledger_receipt;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StoredProofV2 {
     operation_id: [u8; 16],
