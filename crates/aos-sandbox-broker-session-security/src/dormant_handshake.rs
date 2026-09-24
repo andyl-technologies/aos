@@ -5076,34 +5076,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 "protected lifecycle request binding",
             ));
         }
-        let prepared = DormantPreparedBrokerRequestV1(request.clone());
-        if initialize {
-            return Ok(match self.0.initialize_authenticated_request(&request)? {
-                ProtectedBrokerSessionInitializationResultV1::Initialized => {
-                    DormantBrokerRequestPreparationV1::Prepared(prepared)
-                }
-                ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
-                    error,
-                    recovery,
-                } => DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-                    error,
-                    recovery,
-                    request: DormantUnconfirmedBrokerRequestV1(request),
-                },
-            });
-        }
-        Ok(match self.0.append_authenticated_request(&request)? {
-            ProtectedBrokerRequestCommitResultV1::Committed => {
-                DormantBrokerRequestPreparationV1::Prepared(prepared)
-            }
-            ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
-                DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-                    error,
-                    recovery,
-                    request: DormantUnconfirmedBrokerRequestV1(request),
-                }
-            }
-        })
+        self.reserve_exact_authenticated_request(request, initialize)
     }
 
     /// Signs and durably reserves one exact reconciler-prepared authority effect.
