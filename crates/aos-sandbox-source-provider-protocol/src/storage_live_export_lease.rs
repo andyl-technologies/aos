@@ -481,28 +481,13 @@ impl StorageLiveExportSignerV1 {
         if bytes.len() != SIGNER_BYTES {
             return Err(StorageLiveExportLeaseErrorV1::Noncanonical);
         }
+        let mut cursor = Cursor::new(bytes);
         Self::new(
-            bytes[..16]
-                .try_into()
-                .map_err(|_| StorageLiveExportLeaseErrorV1::Noncanonical)?,
-            u64::from_be_bytes(
-                bytes[16..24]
-                    .try_into()
-                    .map_err(|_| StorageLiveExportLeaseErrorV1::Noncanonical)?,
-            ),
-            ObjectDigest::from_bytes(
-                bytes[24..56]
-                    .try_into()
-                    .map_err(|_| StorageLiveExportLeaseErrorV1::Noncanonical)?,
-            ),
-            bytes[56..72]
-                .try_into()
-                .map_err(|_| StorageLiveExportLeaseErrorV1::Noncanonical)?,
-            u64::from_be_bytes(
-                bytes[72..80]
-                    .try_into()
-                    .map_err(|_| StorageLiveExportLeaseErrorV1::Noncanonical)?,
-            ),
+            cursor.take()?,
+            cursor.u64()?,
+            ObjectDigest::from_bytes(cursor.take()?),
+            cursor.take()?,
+            cursor.u64()?,
         )
     }
 }
