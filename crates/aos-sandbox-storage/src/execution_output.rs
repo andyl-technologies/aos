@@ -37,6 +37,8 @@ use crate::catalog_transition::execution_capture::{
     verify_deleted_persisted,
 };
 
+mod capture_attempt;
+
 type HmacSha256 = Hmac<Sha256>;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::StorageExecutionOutput;
@@ -363,6 +365,11 @@ impl ExecutionOutputLedgerV1 {
                     {
                         return Err(ExecutionOutputLedgerErrorV1::Corrupt);
                     }
+                }
+                Some(b'a') => {
+                    capture_attempt::verify_replayed_capture_attempt(
+                        &journal, location, value, &key,
+                    )?;
                 }
                 _ => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
             }

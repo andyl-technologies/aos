@@ -21,6 +21,7 @@ pub(crate) mod readback;
 
 const NAME_PREFIX: &str = "aos-output-";
 const BINDING_DOMAIN: &[u8] = b"aos.sandbox.storage.execution-capture-dataset.v1\0";
+const ATTEMPT_POLICY_DOMAIN: &[u8] = b"aos.sandbox.storage.execution-capture-attempt-policy.v1\0";
 pub(crate) const MAX_CAPTURE_DATASET_NAME_BYTES: usize = 1024;
 
 /// Rejects an absent, substituted, shared, or inadequately reserved dataset.
@@ -116,9 +117,45 @@ impl CaptureDatasetRequirementV1 {
         &self.planned
     }
 
+    pub(crate) const fn storage_create_operation(&self) -> OperationId {
+        self.storage_create_operation
+    }
+
     /// Returns the exact ZFS `refquota` and `reservation` policy.
     pub(crate) const fn space_policy(&self) -> WorkspaceSpacePolicyV1 {
         self.space
+    }
+
+    /// Commits every Storage-selected dataset and measured headroom input.
+    pub(crate) fn attempt_policy_digest(
+        &self,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+    ) -> ObjectDigest {
+        let mut digest = Sha256::new();
+        digest.update(ATTEMPT_POLICY_DOMAIN);
+        digest.update(self.execution.as_bytes());
+        digest.update(self.create_operation.as_bytes());
+        digest.update(self.claim_digest.as_bytes());
+        digest.update(self.storage_create_operation.as_bytes());
+        digest.update(self.root.guid().to_be_bytes());
+        for name in [self.root.pool(), self.root.dataset_prefix(), &self.name] {
+            digest.update((name.len() as u64).to_be_bytes());
+            digest.update(name.as_bytes());
+        }
+        for domain in [
+            self.domains.disclosure(),
+            self.domains.encryption(),
+            self.domains.accounting(),
+            self.domains.retention(),
+        ] {
+            digest.update(domain.as_bytes());
+        }
+        digest.update(self.admitted_bytes.to_be_bytes());
+        digest.update(self.allocation_bytes.to_be_bytes());
+        digest.update(metadata_headroom_bytes.to_be_bytes());
+        digest.update(minimum_remaining_bytes.to_be_bytes());
+        ObjectDigest::from_bytes(digest.finalize().into())
     }
 
     /// Verifies one authenticated physical-catalog readback after create.
