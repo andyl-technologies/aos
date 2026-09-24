@@ -1746,7 +1746,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         CampaignHash::derive("crucible.test.planner-submission-vector.v1", &planner_bytes,)
             .to_hex(),
         // Current snapshots bind the indexed budget ledger and current identities.
-        "f302ed8b47d1cb7ef8885198b7c35589914619566e0a97e5fa4ecc1b5aa7fba9",
+        "7b9ba062445fa923250d0410039db80b7e3f2fe1e5b31fa74c8c1c2c9b87bab4",
     );
     let decoded_planner =
         PlannerSubmission::from_canonical_bytes(&planner_bytes).expect("decode planner");
