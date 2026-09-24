@@ -493,8 +493,26 @@
     ];
     systemName = "unbundled-package-module";
   };
-in
-  assert canonicalListType.check ["alpha" "beta"];
+  mkCheck = {
+    pname,
+    buildDeps ? [],
+  }:
+    pkgs.mkDerivation {
+      inherit pname buildDeps;
+      version = "0";
+      src = null;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
+    };
+in {
+  authoring = assert canonicalListType.check ["alpha" "beta"];
   assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
   assert canonicalListType._aosDocType.unique && canonicalListType._aosDocType.canonical_order;
   assert mergedCanonicalList == ["alpha" "beta"];
@@ -653,7 +671,17 @@ in
     narHash = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
     closure = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
   });
-  assert kubernetesPackageServices;
+  assert lib.abilities.interfaceSelectorMatches descriptorAgnosticSelector testInterface;
+  assert !(lib.abilities.interfaceSelectorMatches mismatchedDescriptorSelector testInterface);
+  assert fails (normalizeBounded [true false null true false]);
+  assert fails (normalizeBounded {oversized-member-name = true;});
+  assert fails (normalizeBounded "0123456789abcdefg");
+    mkCheck {
+      pname = "aos-ability-authoring-checks";
+      buildDeps = [authoringConformance];
+    };
+
+  package-services = assert kubernetesPackageServices;
   assert upgradeTransitionFixture;
   assert k3sControllerTerminal;
   assert attestationVerifierService;
@@ -675,13 +703,17 @@ in
   assert systemdPackagedUnit;
   assert systemdServiceRealization;
   assert systemdQualificationChecks;
-  assert utilLinuxGetty;
+    mkCheck {pname = "aos-ability-package-service-checks";};
+
+  provider-realization = assert utilLinuxGetty;
   assert systemdIdentityRealization;
   assert systemdNativeResources;
   assert aosControlPlane;
   assert systemdReadiness;
   assert systemdStageMilestones;
-  assert initrdSecurityServices;
+    mkCheck {pname = "aos-ability-provider-realization-checks";};
+
+  native-resources = assert initrdSecurityServices;
   assert initrdBootSubstrate;
   assert kernelPlatformSelection;
   assert baseKernelNative;
@@ -693,7 +725,9 @@ in
   assert securityAuditNative;
   assert securityEbpfLsmNative;
   assert securityEbpfNetworkNative;
-  assert securityPolkitNative;
+    mkCheck {pname = "aos-ability-native-resource-checks";};
+
+  system-selection = assert securityPolkitNative;
   assert securitySelinuxNative;
   assert securitySshNative;
   assert systemdManagerWatchdog;
@@ -723,7 +757,9 @@ in
   assert selectedChronyAbilities.requests ? "chrony:chrony-configuration";
   assert !unbundledPackageModuleSystem.config.postgresql.enable;
   assert !(builtins.elem pkgs.postgresql unbundledPackageModuleSystem.config.environment.systemPackages);
-  assert dockerService;
+    mkCheck {pname = "aos-ability-system-selection-checks";};
+
+  system-packages = assert dockerService;
   assert tailscaleService;
   assert packageOptionProvenance;
   assert nftablesFirewall;
@@ -749,23 +785,5 @@ in
   assert blockStorage;
   assert baseFilesystemsNative;
   assert packageQualification;
-  assert lib.abilities.interfaceSelectorMatches descriptorAgnosticSelector testInterface;
-  assert !(lib.abilities.interfaceSelectorMatches mismatchedDescriptorSelector testInterface);
-  assert fails (normalizeBounded [true false null true false]);
-  assert fails (normalizeBounded {oversized-member-name = true;});
-  assert fails (normalizeBounded "0123456789abcdefg");
-    pkgs.mkDerivation {
-      pname = "aos-ability-authoring-checks";
-      version = "0";
-      src = null;
-      phases = [
-        {
-          name = "check";
-          script = ''
-            mkdir -p "$out"
-            echo PASS > "$out/result"
-          '';
-        }
-      ];
-      buildDeps = [authoringConformance];
-    }
+    mkCheck {pname = "aos-ability-system-package-checks";};
+}

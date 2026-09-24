@@ -1710,19 +1710,34 @@ in {
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };
-    abilities = import ./tests/abilities {
+    ability-suites = import ./tests/abilities {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;
     };
+    abilities = pkgs.mkDerivation {
+      pname = "aos-ability-checks";
+      version = "0";
+      src = null;
+      buildDeps = builtins.attrValues ability-suites;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
+    };
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
-    # Keep the routine eval attr small. The complete suite is exposed below
-    # as independent derivations so separate evaluators can run concurrently.
+    # Keep routine evaluation bounded; the complete ability integration checks
+    # are independent suites below and remain in the full eval layer.
     eval = pkgs.mkDerivation {
       pname = "aos-eval-core-checks";
       version = "0";
       src = null;
       buildDeps = [
-        abilities
+        ability-suites.authoring
         package-maintenance
       ];
       phases = [
@@ -1739,6 +1754,11 @@ in {
       {
         core = eval;
         config-manifest = config-manifest;
+        abilities-package-services = ability-suites.package-services;
+        abilities-provider-realization = ability-suites.provider-realization;
+        abilities-native-resources = ability-suites.native-resources;
+        abilities-system-selection = ability-suites.system-selection;
+        abilities-system-packages = ability-suites.system-packages;
       }
       // configProvenanceChecks.suites
       // builtins.removeAttrs renderedEvalSuites ["rendered-system"];

@@ -28,6 +28,7 @@
   sourceStageFixedPoint = abilities:
     import ./source-stage-fixed-point.nix {
       inherit abilities guaranteeIdentity normalizeRequirement;
+      inherit (packageOutputSelectors) normalizePackageOutputSelectors;
     };
   packageAbilitiesFromProjection = projection: {
     inherit (projection) guarantees interfaces;
