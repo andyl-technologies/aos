@@ -139,7 +139,7 @@ pub trait StorageRpcRuntime {
     where
         F: FnMut() -> Result<aos_sandbox_core::RawPairedClockSample, StorageAdmissionError>;
 
-    /// Encodes the complete current physically validated workspace inventory.
+    /// Encodes the complete current physical and lifecycle inventory.
     ///
     /// # Errors
     ///
@@ -239,7 +239,7 @@ impl StorageRpcRuntime for StorageBrokerRuntime {
         activation_deadline_boottime_nanoseconds: u64,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<Vec<u8>, StorageRuntimeError> {
-        Self::inventory_resources(
+        Self::complete_lifecycle_inventory_resources(
             self,
             activation_deadline_boottime_nanoseconds,
             worker_cutoff_boottime_nanoseconds,

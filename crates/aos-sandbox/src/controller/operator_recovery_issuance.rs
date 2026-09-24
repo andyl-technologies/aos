@@ -62,7 +62,9 @@ const ISSUANCE_COMMIT_DOMAIN_V2: &[u8] = b"aos.sandbox.operator-storage-repair-i
 const CURRENT_HEAD_DOMAIN_V2: &[u8] = b"aos.sandbox.operator-storage-repair-current-head.v2\0";
 const ISSUANCE_BYTES_V2: usize = 184 + OPERATOR_RECOVERY_EFFECT_INTENT_BYTES;
 
+mod before;
 mod receipt;
+mod terminal;
 mod transport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

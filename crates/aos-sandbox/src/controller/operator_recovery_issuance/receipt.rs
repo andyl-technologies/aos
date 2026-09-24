@@ -16,7 +16,9 @@
 //! signed-receipt[328]
 //! ```
 
-use aos_proto::aos::sandbox::local::v1::RepairStorageWorkspacePinRequest;
+use aos_proto::aos::sandbox::local::v1::{
+    InventoryStorageResourcesResponse, RepairStorageWorkspacePinRequest,
+};
 use aos_sandbox_core::OperationId;
 use aos_sandbox_core::operator_recovery_effect::{
     OperatorRecoveryEffectIntentV1, verify_operator_recovery_effect_intent_v1,
@@ -31,7 +33,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, decode_storage_resource_inventory_response};
 use buffa::Message as _;
 use ed25519_dalek::VerifyingKey;
+use sha2::{Digest as _, Sha256};
 
+use super::before::{self, StoredBeforeV1};
 use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     StorageRepairIssuanceV2, hash, issuance_key_v2,
@@ -203,6 +207,7 @@ where
         owner: &ProtectedStorageRepairReceiptVerifierV2,
         operation_id: OperationId,
         storage_request_body: &[u8],
+        before: &AuthenticatedBrokerMethodOutcomeV1,
         after: &AuthenticatedBrokerMethodOutcomeV1,
         signed_evidence: &[u8],
         signed_receipt: &[u8],
@@ -239,10 +244,17 @@ where
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
 
+        let retained_before = before::read(journal, &issued, intent.effect_id)?;
+        retained_before.matches_outcome(before)?;
+        let before_body = authenticated_after_body(before)?;
         let after_body = authenticated_after_body(after)?;
         validate_physical_after(
             &intent,
             storage_request_body,
+            before,
+            before_body,
+            &retained_before,
+            after,
             after_body,
             signed_evidence,
             signed_receipt,
@@ -286,6 +298,10 @@ fn authenticated_after_body(
 fn validate_physical_after(
     intent: &OperatorRecoveryEffectIntentV1,
     storage_request_body: &[u8],
+    before: &AuthenticatedBrokerMethodOutcomeV1,
+    before_body: &[u8],
+    retained_before: &StoredBeforeV1,
+    after: &AuthenticatedBrokerMethodOutcomeV1,
     after_body: &[u8],
     signed_evidence: &[u8],
     signed_receipt: &[u8],
@@ -322,8 +338,27 @@ fn validate_physical_after(
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
+    let before_inventory =
+        decode_storage_resource_inventory_response(before_body, MAXIMUM_RESPONSE_BYTES)
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     let inventory = decode_storage_resource_inventory_response(after_body, MAXIMUM_RESPONSE_BYTES)
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if before.request().session_binding() != retained_before.session_binding()
+        || after.request().session_binding() != retained_before.session_binding()
+        || after.request().client_sequence() <= retained_before.client_sequence()
+        || after.broker_sequence() <= retained_before.broker_sequence()
+        || inventory.catalog_generation() < before_inventory.catalog_generation()
+        || before_inventory
+            .workspaces()
+            .iter()
+            .any(|workspace| workspace.workspace_handle().as_slice() == request.storage_handle)
+        || before_inventory
+            .operator_repair_commits()
+            .iter()
+            .any(|commit| commit.operation_id() == &intent.recovery_operation_id)
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
     let mut matching = inventory
         .workspaces()
         .iter()
@@ -354,7 +389,22 @@ fn validate_physical_after(
         terminal_digest,
     )
     .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-    let expected_after = hash(AFTER_DOMAIN, &[after_body]);
+    let expected_after = hash(AFTER_DOMAIN, &[&core_storage_inventory(after_body)?]);
+    let mut matching_commits = inventory
+        .operator_repair_commits()
+        .iter()
+        .filter(|commit| commit.operation_id() == &intent.recovery_operation_id);
+    let commit = matching_commits
+        .next()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let request_digest: [u8; 32] = Sha256::digest(storage_request_body).into();
+    if matching_commits.next().is_some()
+        || commit.workspace_handle().as_slice() != request.storage_handle
+        || commit.request_digest() != &request_digest
+        || commit.effect_commit_digest() != &evidence.effect_commit_digest
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
     let expected_terminal = hash(
         TERMINAL_DOMAIN,
         &[
@@ -376,10 +426,29 @@ fn validate_physical_after(
                 &[&evidence.absence_probe_digest, b"dataset-exact/pin-absent"],
             )
         || evidence.before_catalog_generation > inventory.catalog_generation()
+        || evidence.before_catalog_generation != retained_before.catalog_generation()
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     Ok(())
+}
+
+fn core_storage_inventory(signed_body: &[u8]) -> Result<Vec<u8>, OperatorRecoveryIssuanceErrorV1> {
+    let mut inventory = InventoryStorageResourcesResponse::decode_from_slice(signed_body)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if inventory.encode_to_vec() != signed_body {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    // The installed service adds guest-root publication proof after the
+    // runtime's owner receipt readback. Remove only that optional extension;
+    // all physical workspace, catalog, and Repair commit rows remain exact.
+    for workspace in &mut inventory.workspaces {
+        workspace.guest_root_publication_proof.clear();
+    }
+    let core = inventory.encode_to_vec();
+    decode_storage_resource_inventory_response(&core, MAXIMUM_RESPONSE_BYTES)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    Ok(core)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

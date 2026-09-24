@@ -22,7 +22,8 @@ use aos_proto::aos::sandbox::local::v1::{
     InventoryStorageRequest, InventoryStorageResourcesResponse, RecoverStorageInventoryRequestV1,
     RecoverStorageInventoryResponseV1, StorageAtomicSnapshotCheckpoint,
     StorageInventoryRecoveryDispositionV1, StorageLifecycleInventoryRecord,
-    StorageLifecycleTransitionRecord, StorageWorkspaceInventoryRecord,
+    StorageLifecycleTransitionRecord, StorageOperatorRepairCommitRecordV1,
+    StorageWorkspaceInventoryRecord,
 };
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion};
@@ -47,6 +48,7 @@ pub struct ValidatedStorageInventory {
     journal_sequence: u64,
     catalog_generation: u64,
     workspaces: Vec<ValidatedStorageWorkspace>,
+    operator_repair_commits: Vec<ValidatedStorageOperatorRepairCommitV1>,
 }
 
 impl ValidatedStorageInventory {
@@ -78,6 +80,47 @@ impl ValidatedStorageInventory {
     #[must_use]
     pub fn workspaces(&self) -> &[ValidatedStorageWorkspace] {
         &self.workspaces
+    }
+
+    /// Returns independently broker-authenticated durable Repair commits.
+    #[must_use]
+    pub fn operator_repair_commits(&self) -> &[ValidatedStorageOperatorRepairCommitV1] {
+        &self.operator_repair_commits
+    }
+}
+
+/// Binds one satisfied Repair attempt to its exact request and durable record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedStorageOperatorRepairCommitV1 {
+    operation_id: [u8; 16],
+    workspace_handle: [u8; 32],
+    request_digest: [u8; 32],
+    effect_commit_digest: [u8; 32],
+}
+
+impl ValidatedStorageOperatorRepairCommitV1 {
+    /// Returns the unique Repair operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> &[u8; 16] {
+        &self.operation_id
+    }
+
+    /// Returns the exact repaired workspace handle.
+    #[must_use]
+    pub const fn workspace_handle(&self) -> &[u8; 32] {
+        &self.workspace_handle
+    }
+
+    /// Returns SHA-256 of the exact authorized Storage request body.
+    #[must_use]
+    pub const fn request_digest(&self) -> &[u8; 32] {
+        &self.request_digest
+    }
+
+    /// Returns the domain-separated digest of the durable attempt record.
+    #[must_use]
+    pub const fn effect_commit_digest(&self) -> &[u8; 32] {
+        &self.effect_commit_digest
     }
 }
 
@@ -411,6 +454,7 @@ pub fn decode_storage_resource_inventory_response(
         exact_nonzero::<16>(&response.broker_instance_id, "broker_instance_id")?;
     let workspaces = validate_workspaces(&response.workspaces, kernel_boot_id)?;
     validate_lifecycle_inventory(&response)?;
+    let operator_repair_commits = validate_operator_repair_commits(&response)?;
 
     Ok(ValidatedStorageInventory {
         kernel_boot_id,
@@ -418,7 +462,58 @@ pub fn decode_storage_resource_inventory_response(
         journal_sequence: response.journal_sequence,
         catalog_generation: response.catalog_generation,
         workspaces,
+        operator_repair_commits,
     })
+}
+
+fn validate_operator_repair_commits(
+    response: &InventoryStorageResourcesResponse,
+) -> Result<Vec<ValidatedStorageOperatorRepairCommitV1>, ProtocolValidationError> {
+    if response.operator_repair_commits.len() > MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS {
+        return Err(ProtocolValidationError::TooManyEntries {
+            field: "storage operator repair commits",
+            maximum: MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS,
+        });
+    }
+    if !response.operator_repair_commits.is_empty() && response.lifecycle_source_version != 3 {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage operator repair commit source",
+        ));
+    }
+    if !response
+        .operator_repair_commits
+        .windows(2)
+        .all(|pair| pair[0].operation_id < pair[1].operation_id)
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "storage operator repair commit order",
+        ));
+    }
+
+    response
+        .operator_repair_commits
+        .iter()
+        .map(validate_operator_repair_commit)
+        .collect()
+}
+
+fn validate_operator_repair_commit(
+    record: &StorageOperatorRepairCommitRecordV1,
+) -> Result<ValidatedStorageOperatorRepairCommitV1, ProtocolValidationError> {
+    let validated = ValidatedStorageOperatorRepairCommitV1 {
+        operation_id: exact_nonzero::<16>(&record.operation_id, "operator repair operation")?,
+        workspace_handle: exact_nonzero::<32>(
+            &record.workspace_handle,
+            "operator repair workspace",
+        )?,
+        request_digest: exact_nonzero::<32>(&record.request_digest, "operator repair request")?,
+        effect_commit_digest: exact_nonzero::<32>(
+            &record.effect_commit_digest,
+            "operator repair durable attempt",
+        )?,
+    };
+    reject_unknown(&record.__buffa_unknown_fields)?;
+    Ok(validated)
 }
 
 fn validate_lifecycle_inventory(
@@ -977,6 +1072,46 @@ mod tests {
         );
 
         response.lifecycle_source_version = 0;
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
+        );
+    }
+
+    #[test]
+    fn repair_commit_readback_requires_v3_source_and_strict_operation_order() {
+        let mut response =
+            InventoryStorageResourcesResponse::decode_from_slice(&response(Vec::new())).unwrap();
+        let commit = StorageOperatorRepairCommitRecordV1 {
+            operation_id: vec![1; 16],
+            workspace_handle: vec![2; 32],
+            request_digest: vec![3; 32],
+            effect_commit_digest: vec![4; 32],
+            ..Default::default()
+        };
+        response.operator_repair_commits.push(commit.clone());
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
+        );
+
+        response.lifecycle_source = vec![5; 32];
+        response.lifecycle_source_version = 3;
+        response.lifecycle_catalog_head = vec![6; 32];
+        response.lifecycle_catalog_generation = 11;
+        let decoded =
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).unwrap();
+        assert_eq!(
+            decoded.operator_repair_commits()[0].effect_commit_digest(),
+            &[4; 32]
+        );
+
+        response.operator_repair_commits.push(commit);
+        assert!(
+            decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
+        );
+        response.operator_repair_commits.pop();
+        response.operator_repair_commits[0]
+            .effect_commit_digest
+            .fill(0);
         assert!(
             decode_storage_resource_inventory_response(&response.encode_to_vec(), 65_536).is_err()
         );

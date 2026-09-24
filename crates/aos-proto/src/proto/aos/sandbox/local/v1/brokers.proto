@@ -686,6 +686,16 @@ message StorageAtomicSnapshotCheckpoint {
   bytes post_catalog_head = 10; // Exactly 32 bytes.
 }
 
+// Read-only digest of a durably satisfied workspace-pin Repair attempt.
+// These rows are independently authenticated by the ordinary broker session;
+// the operator sidecar receipt alone cannot supply terminal commit currentness.
+message StorageOperatorRepairCommitRecordV1 {
+  bytes operation_id = 1; // Exactly 16 bytes, strict operation order.
+  bytes workspace_handle = 2; // Exactly 32 bytes.
+  bytes request_digest = 3; // SHA-256 of the exact Storage request body, 32 bytes.
+  bytes effect_commit_digest = 4; // Domain-separated durable attempt-record digest, 32 bytes.
+}
+
 message InventoryStorageResourcesResponse {
   bytes kernel_boot_id = 1; // Current Linux boot ID, exactly 16 bytes.
   uint64 journal_sequence = 2; // Nonzero next-frame durable boundary.
@@ -699,6 +709,7 @@ message InventoryStorageResourcesResponse {
   bytes lifecycle_catalog_head = 10; // V3 protected physical head digest, 32 bytes.
   uint64 lifecycle_catalog_generation = 11; // V3 protected physical head generation.
   repeated StorageAtomicSnapshotCheckpoint atomic_snapshot_checkpoints = 12; // Protected committed groups, strict operation order.
+  repeated StorageOperatorRepairCommitRecordV1 operator_repair_commits = 13; // Satisfied durable attempts, strict operation order.
 }
 
 service StorageBroker {

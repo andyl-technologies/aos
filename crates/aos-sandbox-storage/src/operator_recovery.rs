@@ -55,7 +55,7 @@ const REQUEST_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-request.v1\0
 const FENCE_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-fence.v1\0";
 const BEFORE_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-before.v1\0";
 const AFTER_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-after.v1\0";
-const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-commit.v1\0";
+pub(crate) const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-commit.v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-terminal.v1\0";
 const TX_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-transaction.v2\0";
 

@@ -126,3 +126,9 @@ bytes observation_digest = 2;
 bool observation_required = 3;
 rpc ApplyAtomicSnapshot(ApplyAtomicStorageSnapshotRequest)
 returns (AtomicStorageSnapshotResponse);
+message StorageOperatorRepairCommitRecordV1 {
+bytes operation_id = 1;
+bytes workspace_handle = 2;
+bytes request_digest = 3;
+bytes effect_commit_digest = 4;
+repeated StorageOperatorRepairCommitRecordV1 operator_repair_commits = 13;

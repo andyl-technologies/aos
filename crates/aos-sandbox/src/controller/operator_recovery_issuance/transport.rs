@@ -26,6 +26,7 @@ use buffa::Message as _;
 use rand::{TryRngCore as _, rngs::OsRng};
 use rustix::event::{PollFd, PollFlags, poll};
 
+use super::before;
 use super::receipt::ProtectedStorageRepairReceiptVerifierV2;
 use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
@@ -82,6 +83,7 @@ where
             signer,
             operation_id,
             storage_request_body,
+            mode,
         )?;
         validate_effect_envelope(mode, authorized_envelope, storage_request_body)?;
 
@@ -120,6 +122,7 @@ where
             signer,
             operation_id,
             storage_request_body,
+            mode,
         )?;
         if current != signed_intent {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
@@ -138,6 +141,7 @@ fn read_current_issuance(
     signer: &ProtectedOperatorRecoverySignerV1,
     operation_id: OperationId,
     storage_request_body: &[u8],
+    mode: OperatorStorageRepairModeV2,
 ) -> Result<[u8; OPERATOR_RECOVERY_EFFECT_INTENT_BYTES], OperatorRecoveryIssuanceErrorV1> {
     journal
         .ensure_protected_authority()
@@ -165,6 +169,9 @@ fn read_current_issuance(
         || hash(REQUEST_DOMAIN, &[storage_request_body]) != intent.effect_id
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    if mode == OperatorStorageRepairModeV2::Effect {
+        before::read(journal, &issued, intent.effect_id)?;
     }
     Ok(issued.signed_intent)
 }

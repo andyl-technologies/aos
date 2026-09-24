@@ -1391,6 +1391,41 @@ impl StorageAdmissionCoordinator {
         Ok(Some((repair, attempt, record)))
     }
 
+    /// Lists only authenticated, durably satisfied Repair attempts for inventory readback.
+    pub(crate) fn operator_recovery_satisfied_workspace_pin_commits(
+        &self,
+    ) -> Result<Vec<([u8; 16], [u8; 32], [u8; 32], [u8; 32])>, ZfsHelperError> {
+        let intents = self.transactions.workspace_pin_repair_intents()?;
+        if intents.len() > aos_sandbox_protocol::MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS {
+            return Err(ZfsHelperError::Authority);
+        }
+        let mut commits = Vec::with_capacity(intents.len());
+        for intent in intents {
+            let operation_id = intent.repair_operation_id();
+            let Some((repair, _, attempt_record)) =
+                self.operator_recovery_satisfied_workspace_pin(operation_id)?
+            else {
+                continue;
+            };
+            let effect_commit_digest: [u8; 32] = Sha256::new()
+                .chain_update(crate::operator_recovery::COMMIT_DOMAIN)
+                .chain_update(&attempt_record)
+                .finalize()
+                .into();
+            commits.push((
+                operation_id,
+                repair.workspace_handle(),
+                *repair.request_digest().as_bytes(),
+                effect_commit_digest,
+            ));
+        }
+        commits.sort_unstable_by_key(|commit| commit.0);
+        if !commits.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+            return Err(ZfsHelperError::Authority);
+        }
+        Ok(commits)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn plan_workspace_pin_repair_admission_observation(
         &self,
@@ -12241,6 +12276,24 @@ mod tests {
             &initial_attempt,
             repaired_pin,
         );
+        let commits = broker
+            .operator_recovery_satisfied_workspace_pin_commits()
+            .unwrap();
+        let commit = commits
+            .iter()
+            .find(|commit| commit.0 == [81; 16])
+            .expect("satisfied Repair must have durable inventory readback");
+        let (_, _, attempt_record) = broker
+            .operator_recovery_satisfied_workspace_pin([81; 16])
+            .unwrap()
+            .expect("satisfied Repair attempt");
+        let expected_commit: [u8; 32] = Sha256::new()
+            .chain_update(crate::operator_recovery::COMMIT_DOMAIN)
+            .chain_update(&attempt_record)
+            .finalize()
+            .into();
+        assert_eq!(commit.1, workspace_handle);
+        assert_eq!(commit.3, expected_commit);
 
         let plan = broker.workspace_catalog_plan().unwrap();
         assert_eq!(plan.rows().len(), 1);

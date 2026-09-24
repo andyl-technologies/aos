@@ -16,7 +16,9 @@ use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 
-use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
+use aos_proto::aos::sandbox::local::v1::{
+    ApplyStorageRequest, InventoryStorageResourcesResponse, StorageOperatorRepairCommitRecordV1,
+};
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec, UnmappableIdentityPolicy};
 use aos_sandbox_core::{
@@ -1239,13 +1241,13 @@ impl StorageBrokerRuntime {
         publication
     }
 
-    /// Encodes the additive complete lifecycle inventory for dormant composition.
+    /// Encodes the complete lifecycle inventory for authenticated broker readback.
     ///
-    /// This method is not used by the installed Storage service. It first runs
-    /// the existing physical workspace observation, then rereads the protected
-    /// resolver journal and appends all five lifecycle object families before
-    /// the caller submits the exact body to broker-session signing.
-    pub(crate) fn dormant_lifecycle_inventory_resources(
+    /// It first runs the existing physical workspace observation, then rereads
+    /// the protected resolver journal and appends all five lifecycle object
+    /// families before the caller submits the exact body to broker-session
+    /// signing.
+    pub(crate) fn complete_lifecycle_inventory_resources(
         &mut self,
         activation_deadline_boottime_nanoseconds: u64,
         worker_cutoff_boottime_nanoseconds: u64,
@@ -1362,6 +1364,35 @@ impl StorageBrokerRuntime {
             }
         };
         let (validated, inventory) = activated.into_inventory();
+        let commits = match self
+            .coordinator
+            .operator_recovery_satisfied_workspace_pin_commits()
+        {
+            Ok(commits) => commits,
+            Err(_) => return Err((Some(validated), StorageRuntimeError::Recovery)),
+        };
+        let mut response = match InventoryStorageResourcesResponse::decode_from_slice(&inventory) {
+            Ok(response) => response,
+            Err(_) => return Err((Some(validated), StorageRuntimeError::Recovery)),
+        };
+        response.operator_repair_commits = commits
+            .into_iter()
+            .map(
+                |(operation_id, workspace_handle, request_digest, effect_commit_digest)| {
+                    StorageOperatorRepairCommitRecordV1 {
+                        operation_id: operation_id.to_vec(),
+                        workspace_handle: workspace_handle.to_vec(),
+                        request_digest: request_digest.to_vec(),
+                        effect_commit_digest: effect_commit_digest.to_vec(),
+                        ..Default::default()
+                    }
+                },
+            )
+            .collect();
+        let inventory = response.encode_to_vec();
+        if decode_storage_resource_inventory_response(&inventory, MAXIMUM_RESPONSE_BYTES).is_err() {
+            return Err((Some(validated), StorageRuntimeError::Recovery));
+        }
         Ok((validated, inventory))
     }
 
@@ -1564,7 +1595,7 @@ impl StorageBrokerRuntime {
         let cutoff = now
             .checked_add(9_000_000_000)
             .ok_or(StorageRuntimeError::Recovery)?;
-        let inventory = self.inventory_resources(deadline, cutoff)?;
+        let inventory = self.complete_lifecycle_inventory_resources(deadline, cutoff)?;
         match owner.complete(effect_id, &self.coordinator, &inventory) {
             Ok(receipt) => Ok(Some(receipt)),
             Err(crate::operator_recovery::StorageOperatorRecoveryErrorV1::Pending) => Ok(None),

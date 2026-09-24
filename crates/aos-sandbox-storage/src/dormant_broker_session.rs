@@ -256,7 +256,7 @@ impl DormantStorageApplyCompositionV1 {
         activation_deadline_boottime_nanoseconds: u64,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<Vec<u8>, StorageRuntimeError> {
-        let inventory = self.runtime.dormant_lifecycle_inventory_resources(
+        let inventory = self.runtime.complete_lifecycle_inventory_resources(
             activation_deadline_boottime_nanoseconds,
             worker_cutoff_boottime_nanoseconds,
         )?;
