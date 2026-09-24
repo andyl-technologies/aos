@@ -14,8 +14,9 @@ use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceRequest, ApplyDestinationSlotRequest, ApplyMountRequest, Audience,
     BrokerDescriptorDisposition, BrokerDescriptorDispositionEntry, BrokerDescriptorEntry,
     BrokerDescriptorRole, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
-    BrokerResponseEnvelope, HostCatalogPublicationStatus, PublishHostCatalogResponse,
-    QueryRuntimeEffectRequest, ReleaseMountSourceAcquisitionRequest, RequestHeader,
+    BrokerResponseEnvelope, HostCatalogPublicationStatus, InventoryRuntimeResponse,
+    PublishHostCatalogResponse, QueryRuntimeEffectRequest, ReleaseMountSourceAcquisitionRequest,
+    RequestHeader,
 };
 use aos_sandbox::attachment_source::{
     AttachmentSourceAttemptKindV1, DurableCurrentAttachmentSourceDispatchV1,
@@ -749,7 +750,7 @@ impl ProtectedBrokerDomainResponseV1 {
         request: &AuthenticatedBrokerMethodRequestV1,
         body: Vec<u8>,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        if body.is_empty() {
+        if body.is_empty() && !is_canonical_empty_host_inventory(request.method(), &body) {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         Ok(Self {
@@ -758,6 +759,50 @@ impl ProtectedBrokerDomainResponseV1 {
             signed_request_digest: request.signed_request_digest(),
             body,
         })
+    }
+}
+
+fn is_canonical_empty_host_inventory(method: BrokerMethod, body: &[u8]) -> bool {
+    if method != BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME || !body.is_empty() {
+        return false;
+    }
+
+    // A zero-row protobuf inventory has no encoded fields. Verify the exact
+    // canonical message before allowing it through the protected wrapper;
+    // method-specific outcome validation still runs before terminal commit.
+    let Ok(inventory) = InventoryRuntimeResponse::decode_from_slice(body) else {
+        return false;
+    };
+    inventory.runtimes.is_empty()
+        && inventory.__buffa_unknown_fields.is_empty()
+        && inventory.encode_to_vec() == body
+}
+
+#[cfg(test)]
+mod empty_host_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_zero_row_host_inventory_is_admissible() {
+        let canonical = InventoryRuntimeResponse::default().encode_to_vec();
+
+        assert!(canonical.is_empty());
+        assert!(is_canonical_empty_host_inventory(
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            &canonical
+        ));
+    }
+
+    #[test]
+    fn empty_other_method_and_noncanonical_host_body_remain_closed() {
+        assert!(!is_canonical_empty_host_inventory(
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
+            &[]
+        ));
+        assert!(!is_canonical_empty_host_inventory(
+            BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
+            &[0x08, 0x00]
+        ));
     }
 }
 
