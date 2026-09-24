@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "7d54d41a29a330656b2fe62c16b8359ed8297c6341df1de6f45bb1e7abc92a31";
+  sha256 = "d02d3ebd9b7d44ab08dbccf23223ca3fd4a1ddd2c6f6988495ee6562d053f375";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -34,9 +34,13 @@
     "Service CPU stop and unplug events while the RR thread waits for a main-loop"
     "handoff or its poll priming. This lets synchronous VM stop complete without"
     "advancing guest instructions or admitting another deterministic RUN interval."
+    ""
+    "Reopen pinned fdset-backed native sources through their live descriptors"
+    "while freezing and restoring. Launch adoption can retire the fdset namespace"
+    "without losing the validated file identity."
   ];
-  commit = "081dd3b4c690931130fabdf76eb02a147d99ef25";
-  tree = "4a4df1abc19bc366bdabced21c6e288b2ee84a16";
+  commit = "daf18ae5d6d2e642b52eebc91e4fa9b541f99749";
+  tree = "e01660b264cef25855d5a8277bd2f2c0cc73ab5b";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -45,7 +49,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "c502c8d9e2c860c09cc4f90ba9508eb94fd49c27ae42a041d2b6322342bd2957";
+  bundleSha256 = "0ba5dde2596b03d1591077c511a02606512b24575af374fd32ebaca63411dfc3";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
