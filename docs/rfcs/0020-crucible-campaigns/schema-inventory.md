@@ -18,6 +18,18 @@ its on-wire magic may use a shorter or older spelling. For example,
 | `crucible`, `crucible-device`, `crucible-qemu` | Campaign execution payloads, exact continuation and device snapshots, QMP commands, and hot-fork responses. |
 | `pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch` | QEMU-side block, fault VMState, RAM checkpoint/restore, and hot-fork protocol versions; matching host-side shared-memory and QMP records are listed above. |
 
+The untagged-writer review found these independently versioned contracts:
+
+| Format | Source evidence | Registry entry |
+| --- | --- | --- |
+| Durable production lifecycle state | `crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Production network adapter continuation | `crucible-api::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 9` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
+| Pending network output | `crucible::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 1`. | `crucible.execution.backend-network-output` |
+| Fault adapter continuation | `crucible::model::fault_signal::adapter_runtime` independently encodes and decodes opaque JSON checkpoint bytes, with `ADAPTER_CHECKPOINT_VERSION = 2`. | `crucible.execution.fault-adapter-checkpoint` |
+| QEMU fuzz corpus index and descriptor | `crucible-cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json` and immutable descriptor objects, each with `CORPUS_SCHEMA = 1`. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor` |
+| Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
+| Crucible-owned QEMU migration sections | The QEMU patch declares 20 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
+
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
 
@@ -34,8 +46,11 @@ rows. They do not create an additional wire or durable schema:
 - `crucible.test.*` and inline test fixture strings are local test inputs,
   never published format tags.
 - Standard 9P, virtio, QMP, and QEMU migration versions are owned by their
-  upstream protocols. The registry owns only Crucible additions to those
-  transports.
+  upstream protocols. The registry owns Crucible-added QEMU migration
+  sections; fields within each section share its version.
+- The lifecycle manifest and journal are fields of `run-state.json`, and the
+  campaign runtime identity is a hash of the emitted configuration. Neither
+  is a separately decoded format.
 - `crucible-cas::cas::campaign_codec` also emits
   `crucible.campaign-replay-input.v1` as replay-hash input; it is never stored
   as a standalone record. Its provenance and lineage material likewise feeds
@@ -50,8 +65,10 @@ rows. They do not create an additional wire or durable schema:
 The current `crucible.cli.*.vN` source-tag review found the store-repair report
 missing from the registry; its row is now present. The other unmatched CLI tags
 are `crucible.cli.test.*` fixtures and the registered choice-object alias noted
-above. This inventory does not prove exhaustive source closure: the review has
-not covered every serialization and output path that constructs a format
-without a literal version tag, so T-CAM-0.3 remains open.
+above. This inventory does not prove exhaustive source closure. Generic
+`write_all`, serde, QMP, and Nix-generated guest output paths have not all been
+matched to registry rows or classified as nested fields. Three newer
+simulation-only QEMU VMState subsections also await review after their QEMU
+patch is integrated. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.

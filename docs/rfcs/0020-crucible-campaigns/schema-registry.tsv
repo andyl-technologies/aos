@@ -156,6 +156,8 @@ crucible.qemu.vm-snapshot	4	crucible-qemu::realization	device-state	gate:content
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.scheduler-continuation	3	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.production-exact-closure	9	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
+crucible.production-network-adapter-checkpoint	9	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.production-run-state	2	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-operational-continuity
 crucible.executor.production-checkpoint-object	5	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-index	1	crucible-daemon::exact_checkpoint_store	exact-manifest	gate:content-address,gate:exact-closure-streaming
 crucible.executor.checkpoint-choice-closure	1	crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure	observation	gate:typed-choice,gate:campaign-replay,gate:exact-closure-streaming
@@ -172,6 +174,7 @@ crucible.campaign.debug-session-response	1	crucible-daemon::campaign_debug_contr
 crucible.campaign.debug-session-inventory	1	crucible-daemon::campaign_debug_inventory	operational-record	gate:campaign-component-contract
 crucible.campaign.transfer-journal	1	crucible-daemon::campaign_transfer	operational-record	gate:campaign-store-composition
 crucible.campaign-local-policy	1	crucible-daemon::campaign_policy	deployment-config	gate:campaign-component-contract
+aos.crucible.campaign-runtime	1	modules::services::crucible-campaign	deployment-config	gate:license-boundary
 crucible.campaign-component-authorities	1	crucible-daemon::campaign_bootstrap	deployment-secret	gate:campaign-component-contract
 crucible.campaign-import	1	crucible-cli::campaign_import	deployment-config	gate:campaign-component-contract
 crucible.campaign-manual-flight-manifest	1	crucible-harness::campaign_gates	manual-evidence	gate:campaign-operator-acceptance,gate:campaign-dogfood
@@ -223,6 +226,8 @@ crucible.campaign.query-campaign-request-attempts-request	2	crucible-campaign::c
 crucible.campaign.query-campaign-request-attempts-response	2	crucible-campaign::campaign_service::request_attempts	component-message	gate:campaign-component-contract
 crucible.campaign.state-identity	1	crucible-daemon::campaign_bootstrap	administrative-record	gate:campaign-component-contract
 crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoint	checkpoint	gate:campaign-replay
+crucible.execution.backend-network-output	1	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
+crucible.execution.fault-adapter-checkpoint	2	crucible::model::fault_signal::adapter_runtime	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.finding-minimization-policy	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-replay
 crucible.execution.host-assertion-continuation	1	crucible::trigger::assertions	checkpoint	gate:campaign-replay
 crucible.execution.host-fault-action-state	3	crucible::model::fault_signal::host_action_sink::checkpoint_codec	checkpoint	gate:campaign-replay
@@ -278,6 +283,10 @@ crucible.cli.store-incomplete-pack-cleanup	1	crucible-cli::cli::campaign::mainte
 crucible.cli.store-repair	1	crucible-cli::cli::store_repair	cli-output	gate:campaign-store-composition
 crucible.cli.store-status	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
 crucible.cli.store-verify	1	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
+
+# Current QEMU fuzz durable corpus records
+crucible.cli.live-fuzz-corpus-index	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	administrative-record	gate:campaign-replay
+crucible.cli.live-fuzz-corpus-descriptor	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	physical-record	gate:campaign-replay
 
 # Current campaign content-store records
 crucible.campaign-corpus	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
@@ -358,3 +367,25 @@ crucible.qemu.node-continuation	7	crucible-qemu::checkpoint	device-state	gate:ex
 crucible.qemu.production-fault-runtime	6	crucible-qemu::production_fault_runtime::checkpoint_codec	device-state	gate:exact-closure-streaming
 crucible.qemu.selectable-reply-status	1	qemu-patch::selectable-reply-status	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.virtio-accelerator-config	1	qemu-patch::virtio-accelerator	process-protocol-message	gate:abi-conformance
+
+# Crucible-owned QEMU migration sections and subsections
+crucible.qemu.vmstate.block-crucible-shmem	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.ich9-pm-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.piix4-pm-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.virtio-blk-dropped-requests	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.apic-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.apic-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.arm-gic-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.arm-gicv3-cpu-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.arm-gicv3-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.i8259-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.mc146818rtc-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.pl031-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.hpet-timer-crucible-clock	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.hpet-crucible-clock	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.i8254-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.virtio-crucible-accelerator	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.virtio-crucible-queue-signal	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.virtio-crucible-queue-signals	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.cpu-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
