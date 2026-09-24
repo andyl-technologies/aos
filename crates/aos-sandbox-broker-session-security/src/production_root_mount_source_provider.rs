@@ -16,6 +16,7 @@ use aos_sandbox_source_provider_security::{
 };
 
 use crate::ProductionBrokerSessionActivationErrorV1;
+use crate::production_activation::remaining_duration;
 
 const FIXED_PROVIDER_SOCKET: &str = "/run/aos/source-provider/control.sock";
 
@@ -50,10 +51,10 @@ pub fn connect_authenticated_fixed_source_provider(
     let mut owner = RootMountSourceProviderOwnerV1::open_fixed(socket)?;
 
     loop {
-        let remaining = remaining_boottime_nanoseconds(deadline_boottime_nanoseconds)?;
+        let remaining = remaining_duration(deadline_boottime_nanoseconds)?;
         match owner.advance_handshake()? {
             RootMountSourceProviderHandshakeStatusV1::Current => {
-                remaining_boottime_nanoseconds(deadline_boottime_nanoseconds)?;
+                remaining_duration(deadline_boottime_nanoseconds)?;
                 return Ok(owner);
             }
             RootMountSourceProviderHandshakeStatusV1::Pending => {
@@ -61,23 +62,4 @@ pub fn connect_authenticated_fixed_source_provider(
             }
         }
     }
-}
-
-fn remaining_boottime_nanoseconds(
-    deadline: u64,
-) -> Result<u64, ProductionBrokerSessionActivationErrorV1> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds =
-        u64::try_from(now.tv_sec).map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    let nanoseconds =
-        u64::try_from(now.tv_nsec).map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    let now = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or(ProductionBrokerSessionActivationErrorV1::Kernel)?;
-
-    deadline
-        .checked_sub(now)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(ProductionBrokerSessionActivationErrorV1::Deadline)
 }

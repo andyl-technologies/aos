@@ -365,7 +365,7 @@ fn environment_u32(name: &'static str) -> Result<u32, ProductionBrokerSessionAct
         })
 }
 
-fn remaining_duration(
+pub(crate) fn remaining_duration(
     deadline_boottime_nanoseconds: u64,
 ) -> Result<u64, ProductionBrokerSessionActivationErrorV1> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);

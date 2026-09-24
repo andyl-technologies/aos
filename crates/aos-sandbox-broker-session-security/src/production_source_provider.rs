@@ -23,7 +23,9 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
 
 use crate::ProductionBrokerSessionActivationErrorV1;
-use crate::production_activation::{activation_names, validate_activation_process};
+use crate::production_activation::{
+    activation_names, remaining_duration, validate_activation_process,
+};
 
 const LISTENER_NAME: &str = "aos-source-provider";
 const LISTENER_PATH: &str = "/run/aos/source-provider/control.sock";
@@ -149,7 +151,7 @@ impl ProductionSourceProviderIngressV1 {
     > {
         let (mut owner, report) = self.accept_pending_owner(deadline_boottime_nanoseconds)?;
         loop {
-            let remaining = remaining_boottime_nanoseconds(deadline_boottime_nanoseconds)?;
+            let remaining = remaining_duration(deadline_boottime_nanoseconds)?;
             match owner.advance_handshake()? {
                 FixedProviderOwnerStatusV1::Ready => return Ok((owner, report)),
                 FixedProviderOwnerStatusV1::HandshakePending => {
@@ -175,7 +177,7 @@ impl ProductionSourceProviderIngressV1 {
         &self,
         deadline: u64,
     ) -> Result<(), ProductionSourceProviderIngressErrorV1> {
-        let remaining = remaining_boottime_nanoseconds(deadline)?;
+        let remaining = remaining_duration(deadline)?;
         let timeout = Timespec {
             tv_sec: i64::try_from(remaining / 1_000_000_000)
                 .map_err(|_| ProductionBrokerSessionActivationErrorV1::Deadline)?,
@@ -203,24 +205,6 @@ fn validate_listener_names(
         ));
     }
     Ok(())
-}
-
-fn remaining_boottime_nanoseconds(
-    deadline: u64,
-) -> Result<u64, ProductionBrokerSessionActivationErrorV1> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds =
-        u64::try_from(now.tv_sec).map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    let nanoseconds =
-        u64::try_from(now.tv_nsec).map_err(|_| ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    let now = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or(ProductionBrokerSessionActivationErrorV1::Kernel)?;
-    deadline
-        .checked_sub(now)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(ProductionBrokerSessionActivationErrorV1::Deadline)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
