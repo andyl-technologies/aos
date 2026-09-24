@@ -49,28 +49,33 @@ impl ProviderHeldSnapshotCatalogClaimV1 {
 impl FixedProviderOwnerV1 {
     /// Inspects a native row under the exact current protected catalog head.
     ///
-    /// The fixed owner authenticates the signed publication against its live
-    /// session and protected namespace-41 journal, then checks the canonical
-    /// `AOSPCZ01` bytes and row against that head. The result carries no
-    /// authority to Acquire: a fresh, independently authenticated Storage
-    /// GUID-and-hold receipt is still required, and no such receipt consumer
+    /// The fixed owner authenticates the signed publication against the exact
+    /// holder's live session and protected namespace-41 journal, then checks
+    /// the canonical `AOSPCZ01` bytes and row against that head. The result
+    /// carries no authority to Acquire: a fresh, independently authenticated
+    /// Storage GUID-and-hold receipt is still required, and no such consumer
     /// is available here.
     ///
     /// # Errors
     ///
-    /// Rejects unavailable custody/session, an invalid or stale publication,
-    /// a malformed or mismatched catalog, an absent binding, or changed journal.
+    /// Rejects unavailable custody or the named holder's session, an invalid
+    /// or stale publication, a malformed or mismatched catalog, an absent
+    /// binding, or changed journal.
     pub fn inspect_current_held_snapshot_catalog_claim(
         &mut self,
         canonical_catalog_publication: &[u8],
         canonical_held_snapshot_catalog: &[u8],
+        holder_authority_id: [u8; 16],
         binding_digest: ObjectDigest,
     ) -> Result<ProviderHeldSnapshotCatalogClaimV1, ProviderLedgerError> {
         self.with_ledger(|ledger| {
             let snapshot = ledger.journal.snapshot()?;
-            let session = ledger.current_sessions.values_mut().next().ok_or(
-                ProviderLedgerError::InvalidTransition("missing live Provider session"),
-            )?;
+            let session = ledger
+                .current_sessions
+                .get_mut(&holder_authority_id)
+                .ok_or(ProviderLedgerError::InvalidTransition(
+                    "missing holder Provider session",
+                ))?;
             let configuration = session.session.revalidated_provider_configuration()?;
             let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
                 &configuration,

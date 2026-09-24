@@ -221,8 +221,9 @@ impl ProviderHeldSnapshotCatalogV1 {
     /// Resolves one row against a caller-supplied catalog head.
     ///
     /// This check cannot establish that the head is protected or current. The
-    /// present production owner accepts only `AOSPCM01`, so this result cannot
-    /// authorize a backend effect or a SourceRoot response.
+    /// fixed Provider owner can inspect an `AOSPCZ01` row under a protected
+    /// publication, but neither selection can authorize a backend effect or
+    /// SourceRoot response without independent Storage evidence.
     ///
     /// # Errors
     ///
