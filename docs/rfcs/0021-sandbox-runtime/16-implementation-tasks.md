@@ -8413,6 +8413,27 @@ Mount lifecycle and BPF-LSM package provide no such enforcement or readback.
 SourceProvider production ingress remains inert and LocalLive advertisement
 and readiness remain closed.
 
+### Native held-snapshot SourceProvider selection (source-only, closed)
+
+The separate canonical `AOSPCZ01` row format binds one logical source to a
+specific Provider resource and ZFS storage handle, version, pool/dataset/
+snapshot GUIDs, durable hold identity, root policy, and read-only content
+digest. Its native-only digest domain and magic cannot be decoded as the
+current LocalLive-only `AOSPCM01` manifest. It is an inert selection claim:
+no protected publication, Provider owner, Storage transport, or production
+backend consumes it.
+
+A positive held-snapshot SourceRoot still requires Storage to hold and
+reobserve the exact snapshot GUID and hold under its protected catalog lock,
+establish the read-only mounted root and descriptor identity, sign the exact
+Provider acquisition statement with the independently pinned ZFS-hold role,
+and retain durable descriptor-delivery and replay custody. Provider must bind
+that output to a current protected native selection and attempt before its
+existing backend verifier can complete Acquire. The current ZFS transaction
+contract explicitly leaves GUID-conditioned hold inventory and reconciliation
+to a future helper; neither a catalog claim nor this new format substitutes
+for that physical producer. Production positive Acquire remains closed.
+
 ### LocalLive enforcement design and unresolved kernel boundary
 
 The pinned Linux source is 7.2.3 (`pkgs/kernel/_source.nix`). Its per-mount

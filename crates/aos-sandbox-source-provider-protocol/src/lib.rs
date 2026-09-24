@@ -31,6 +31,7 @@ pub mod catalog_currentness;
 pub mod catalog_manifest;
 pub mod codec;
 pub mod crypto;
+pub mod held_snapshot_catalog;
 pub mod model;
 pub mod normalized_intent;
 pub mod proof;
@@ -75,6 +76,9 @@ pub use crypto::{
     source_provider_session_binding_v1, verify_export_lease, verify_hello, verify_inventory,
     verify_provider_receipt, verify_provider_receipt_and_lease, verify_release_receipt,
     verify_request, verify_response_status,
+};
+pub use held_snapshot_catalog::{
+    MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
 };
 pub use model::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V1, ACQUIRE_SOURCE_REQUEST_VERSION_V2,
