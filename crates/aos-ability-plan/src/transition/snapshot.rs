@@ -48,7 +48,7 @@ pub struct TransitionEvaluation {
     pub entry: LocalKey,
     /// Retains the canonical scoped before-and-after transition context.
     pub input: AbilityValue,
-    /// Retains the exact returned value or bounded adapter failure.
+    /// Retains the exact returned value, skipped call, or bounded adapter failure.
     pub result: TransitionEvaluationResult,
 }
 
@@ -61,6 +61,8 @@ pub enum TransitionEvaluationResult {
         /// Carries the exact returned value before fragment decoding.
         value: AbilityValue,
     },
+    /// The source fixed point had no fragment for this selected call.
+    Skipped,
     /// The evaluator rejected the selected implementation.
     Failed {
         /// Carries the bounded deterministic adapter message.
@@ -438,7 +440,10 @@ impl TransitionSnapshot {
             ));
         }
         if self.evaluations.iter().any(|evaluation| {
-            matches!(evaluation.result, TransitionEvaluationResult::Failed { .. })
+            matches!(
+                evaluation.result,
+                TransitionEvaluationResult::Failed { .. } | TransitionEvaluationResult::Skipped
+            )
         }) {
             return Err(TransitionSnapshotError::InvalidLinkage(
                 "successful transition snapshot retains a failed evaluation",
@@ -471,7 +476,8 @@ impl TransitionSnapshot {
             .iter()
             .any(|evaluation| match &evaluation.result {
                 TransitionEvaluationResult::Failed { message } => message.len() > maximum_string,
-                TransitionEvaluationResult::Returned { .. } => false,
+                TransitionEvaluationResult::Returned { .. }
+                | TransitionEvaluationResult::Skipped => false,
             })
         {
             return Err(TransitionSnapshotError::InvalidLinkage(
@@ -538,6 +544,9 @@ impl CompositionEvaluator for TransitionTranscriptEvaluator<'_> {
             TransitionEvaluationResult::Failed { message } => {
                 Err(EvaluationError::new(message.clone()))
             }
+            TransitionEvaluationResult::Skipped => Err(EvaluationError::new(
+                "ordinary transition replay cannot skip a selected call",
+            )),
         }
     }
 }

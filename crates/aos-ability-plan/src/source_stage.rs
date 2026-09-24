@@ -614,9 +614,9 @@ pub enum SourceStageBundleError {
     /// The instantiated graph still has unresolved deployment obligations.
     #[error("source stage runtime plan is not executable")]
     PlanNotExecutable,
-    /// Fresh pure transition construction failed against the observed binding.
-    #[error("source stage runtime transition failed: {0}")]
-    RuntimeTransition(#[source] TransitionError),
+    /// Pure transition construction or transcript replay failed.
+    #[error("source stage transition failed: {0}")]
+    Transition(#[source] TransitionError),
     /// A claimed authority, binding plan, or effect plan identity differs.
     #[error("source stage bundle identity linkage is inconsistent")]
     IdentityMismatch,
@@ -636,28 +636,6 @@ struct SourceAuthorityMaterial<'a> {
 }
 
 impl SourceStageBundle {
-    /// Constructs a canonical bundle from one already checked source plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the fixed point differs from the checked binding
-    /// graph, transition provenance is incomplete, or encoding exceeds bounds.
-    pub fn from_checked(
-        static_contract: SourceStageStaticContract,
-        fixed_point: SourceStageFixedPoint,
-        plan: &CheckedEffectPlan,
-        evaluations: Vec<TransitionEvaluation>,
-    ) -> Result<Self, SourceStageBundleError> {
-        Self::from_parts(
-            static_contract,
-            fixed_point,
-            plan.binding_plan(),
-            plan.document(),
-            plan.interfaces(),
-            evaluations,
-        )
-    }
-
     /// Constructs a canonical bundle from one validated offline template.
     ///
     /// # Errors
@@ -840,10 +818,17 @@ impl SourceStageBundle {
         }
 
         let (context, binding) = self.validate_binding()?;
-        let plan = context
-            .validate_effect_plan(self.effect_document.clone(), binding)
-            .map_err(SourceStageBundleError::Validation)?;
-        if plan.id() != self.effect_plan {
+        let rebuilt = TransitionPlanner::new(&context)
+            .verify_source_transcript(
+                self.authority,
+                &binding,
+                &self.fixed_point,
+                &self.transition.evaluations,
+                self.effect_plan,
+            )
+            .map_err(SourceStageBundleError::Transition)?;
+        let plan = rebuilt.checked_effect().clone();
+        if plan.document() != &self.effect_document {
             return Err(SourceStageBundleError::IdentityMismatch);
         }
 
@@ -874,10 +859,17 @@ impl SourceStageBundle {
         }
 
         let (context, binding) = self.validate_binding()?;
-        let template = context
-            .validate_effect_template(self.effect_document.clone(), binding)
-            .map_err(SourceStageBundleError::Validation)?;
-        if template.id() != self.effect_plan {
+        let rebuilt = TransitionPlanner::new(&context)
+            .verify_source_template_transcript(
+                self.authority,
+                &binding,
+                &self.fixed_point,
+                &self.transition.evaluations,
+                self.effect_plan,
+            )
+            .map_err(SourceStageBundleError::Transition)?;
+        let template = rebuilt.effect_template().clone();
+        if template.document() != &self.effect_document {
             return Err(SourceStageBundleError::IdentityMismatch);
         }
 
@@ -954,7 +946,7 @@ impl SourceStageBundle {
 
         let transition = TransitionPlanner::new(&context)
             .plan_source(self.authority, &binding, &self.fixed_point, evaluator)
-            .map_err(SourceStageBundleError::RuntimeTransition)?;
+            .map_err(SourceStageBundleError::Transition)?;
         if !transition.checked_effect().is_executable() {
             return Err(SourceStageBundleError::PlanNotExecutable);
         }
@@ -1322,10 +1314,7 @@ fn source_stage_limits() -> JsonLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{
-        EmptyTransitionEvaluator, verified_planning_transition_fixture,
-        verified_planning_transition_plan,
-    };
+    use crate::test_support::{EmptyTransitionEvaluator, verified_planning_transition_fixture};
 
     #[test]
     fn published_resource_reference_accepts_checked_provider_output() {
@@ -1398,7 +1387,7 @@ mod tests {
     }
 
     fn bundle() -> SourceStageBundle {
-        let (planning, transition) = verified_planning_transition_plan();
+        let (context, planning, transition) = verified_planning_transition_fixture();
         let plan = transition.checked_effect();
         let binding = plan.binding_plan();
         let mut instance_names = binding
@@ -1595,29 +1584,43 @@ mod tests {
             })
             .collect();
 
-        SourceStageBundle::from_checked(
-            SourceStageStaticContract {
-                identity:
-                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-initrd-contract/contract.json"
-                        .to_string(),
-                sha256: Sha256Digest::separated("aos.test.contract/v1", b"contract"),
-            },
-            SourceStageFixedPoint {
-                environment: binding.environment().environment.clone(),
-                instances,
-                instance_identities,
-                requests,
-                requirements,
-                composition_requests: BTreeMap::new(),
-                composition_requirements: BTreeMap::new(),
-                bindings,
-                composition_outputs: BTreeMap::new(),
-                composition_pending_requests: BTreeMap::new(),
-                resolved_resources,
-                execution_observer: None,
-            },
-            plan,
-            transition.snapshot().evaluations().to_vec(),
+        let static_contract = SourceStageStaticContract {
+            identity: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-initrd-contract/contract.json"
+                .to_string(),
+            sha256: Sha256Digest::separated("aos.test.contract/v1", b"contract"),
+        };
+        let fixed_point = SourceStageFixedPoint {
+            environment: binding.environment().environment.clone(),
+            instances,
+            instance_identities,
+            requests,
+            requirements,
+            composition_requests: BTreeMap::new(),
+            composition_requirements: BTreeMap::new(),
+            bindings,
+            composition_outputs: BTreeMap::new(),
+            composition_pending_requests: BTreeMap::new(),
+            resolved_resources,
+            execution_observer: None,
+        };
+        let interfaces = plan.interfaces().values().cloned().collect::<Vec<_>>();
+        let authority =
+            SourceStageBundle::authority_for(&static_contract, &fixed_point, binding, &interfaces)
+                .expect("source stage fixture authority");
+        let source_transition = TransitionPlanner::new(&context)
+            .plan_source_template(
+                authority,
+                binding,
+                &fixed_point,
+                &mut EmptyTransitionEvaluator,
+            )
+            .expect("source stage fixture transition");
+
+        SourceStageBundle::from_template(
+            static_contract,
+            fixed_point,
+            source_transition.effect_template(),
+            source_transition.evaluations().to_vec(),
         )
         .expect("source stage fixture must validate")
     }
@@ -1657,6 +1660,16 @@ mod tests {
         assert_eq!(validated.bundle(), &original);
         assert_eq!(validated.digest(), original.digest().unwrap());
         assert_eq!(reconstructed, original);
+
+        let mut changed_transcript = original;
+        changed_transcript.transition.evaluations[0].entry =
+            LocalKey::new("wrong-transition").expect("test key");
+        assert!(matches!(
+            changed_transcript.check_template(None),
+            Err(SourceStageBundleError::Transition(
+                TransitionError::Transcript(_)
+            ))
+        ));
     }
 
     #[test]
@@ -1813,12 +1826,13 @@ mod tests {
     fn direct_source_transition_uses_checked_bindings_without_policy_resolution() {
         let (context, planning, _) = verified_planning_transition_fixture();
         let authority = Sha256Digest::separated("aos.test.source-authority/v1", b"source");
+        let fixed_point = bundle();
 
         let transition = crate::TransitionPlanner::new(&context)
             .plan_source(
                 authority,
                 planning.checked_binding(),
-                bundle().fixed_point(),
+                fixed_point.fixed_point(),
                 &mut EmptyTransitionEvaluator,
             )
             .expect("direct source transition");
@@ -1826,10 +1840,19 @@ mod tests {
             .plan_source_template(
                 authority,
                 planning.checked_binding(),
-                bundle().fixed_point(),
+                fixed_point.fixed_point(),
                 &mut EmptyTransitionEvaluator,
             )
             .expect("offline source transition template");
+        let replayed = crate::TransitionPlanner::new(&context)
+            .verify_source_transcript(
+                authority,
+                planning.checked_binding(),
+                fixed_point.fixed_point(),
+                transition.evaluations(),
+                transition.checked_effect().id(),
+            )
+            .expect("source transcript replay");
 
         assert_eq!(
             transition.checked_effect().binding_plan().id(),
@@ -1846,6 +1869,12 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(template.evaluations(), transition.evaluations());
+        assert!(!transition.evaluations().is_empty());
+        assert_eq!(
+            replayed.checked_effect().document(),
+            transition.checked_effect().document()
+        );
+        assert_eq!(replayed.evaluations(), transition.evaluations());
         assert!(transition.evaluations().iter().all(|evaluation| {
             evaluation
                 .input
@@ -1853,5 +1882,90 @@ mod tests {
                 .get("desired_planning")
                 .is_some_and(|value| value == &serde_json::json!(authority))
         }));
+
+        let mut changed_call = transition.evaluations().to_vec();
+        changed_call[0].entry = LocalKey::new("wrong-transition").expect("test key");
+        assert!(matches!(
+            crate::TransitionPlanner::new(&context).verify_source_transcript(
+                authority,
+                planning.checked_binding(),
+                fixed_point.fixed_point(),
+                &changed_call,
+                transition.checked_effect().id(),
+            ),
+            Err(TransitionError::Transcript(_))
+        ));
+    }
+
+    #[test]
+    fn source_transition_transcript_retains_skipped_calls() {
+        struct SkippingSourceEvaluator;
+
+        impl CompositionEvaluator for SkippingSourceEvaluator {
+            fn evaluate(
+                &mut self,
+                _implementation: &aos_ability_model::ProviderImplementationReference,
+                _module: &aos_ability_model::ModuleLocator,
+                _entry: &LocalKey,
+                _input: &AbilityValue,
+            ) -> Result<AbilityValue, crate::EvaluationError> {
+                Err(crate::EvaluationError::new(
+                    "source evaluation must use the batch",
+                ))
+            }
+
+            fn evaluate_source_batch(
+                &mut self,
+                requests: &[crate::SourceEvaluationRequest],
+            ) -> Result<
+                Vec<Result<Option<AbilityValue>, crate::EvaluationError>>,
+                crate::EvaluationError,
+            > {
+                Ok(requests.iter().map(|_| Ok(None)).collect())
+            }
+        }
+
+        let (context, planning, _) = verified_planning_transition_fixture();
+        let authority = Sha256Digest::separated("aos.test.source-authority/v1", b"skipped");
+        let fixed_point = bundle();
+        let transition = crate::TransitionPlanner::new(&context)
+            .plan_source(
+                authority,
+                planning.checked_binding(),
+                fixed_point.fixed_point(),
+                &mut SkippingSourceEvaluator,
+            )
+            .expect("source transition with skipped calls");
+
+        assert!(!transition.evaluations().is_empty());
+        assert!(
+            transition
+                .evaluations()
+                .iter()
+                .all(|evaluation| matches!(evaluation.result, TransitionEvaluationResult::Skipped))
+        );
+
+        let replayed = crate::TransitionPlanner::new(&context)
+            .verify_source_transcript(
+                authority,
+                planning.checked_binding(),
+                fixed_point.fixed_point(),
+                transition.evaluations(),
+                transition.checked_effect().id(),
+            )
+            .expect("replay skipped source calls");
+        assert_eq!(replayed.evaluations(), transition.evaluations());
+
+        let incomplete = &transition.evaluations()[..transition.evaluations().len() - 1];
+        assert!(matches!(
+            crate::TransitionPlanner::new(&context).verify_source_transcript(
+                authority,
+                planning.checked_binding(),
+                fixed_point.fixed_point(),
+                incomplete,
+                transition.checked_effect().id(),
+            ),
+            Err(TransitionError::Transcript(_))
+        ));
     }
 }
