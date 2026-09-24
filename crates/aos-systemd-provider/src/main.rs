@@ -19,6 +19,7 @@ mod network_configuration;
 mod qualification_observer;
 mod readiness;
 mod render;
+mod root_observation;
 mod semantic;
 mod service;
 mod static_assemble;
@@ -185,6 +186,15 @@ async fn run() -> Result<()> {
     }
     let bytes = read_input()?;
     match arguments[2].to_str() {
+        Some("observe-root") => {
+            let request: aos_provider_protocol::RootObservationRequest = decode_canonical(&bytes)?;
+            let role = HandlerRole::from_handler(request.implementation.handler.as_ref())?;
+            let timeout = deadline(request.control.attempt_remaining_millis);
+            let result = tokio::time::timeout(timeout, root_observation::observe(role, request))
+                .await
+                .context("root observation deadline expired")??;
+            write_output(&result)
+        }
         Some("admit") => {
             let request: AdmissionRequest = decode_canonical(&bytes)?;
             let role =
