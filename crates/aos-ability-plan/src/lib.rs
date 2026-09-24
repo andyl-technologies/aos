@@ -32,9 +32,9 @@ pub use snapshot::{
     PlanningSnapshotError, ResolutionSnapshot, VerifiedPlanningSnapshot,
 };
 pub use source_stage::{
-    CheckedSourceStageAdmission, CheckedSourceStageBundle, SOURCE_STAGE_ADMISSION_SCHEMA,
-    SOURCE_STAGE_BUNDLE_MAX_BYTES, SOURCE_STAGE_BUNDLE_SCHEMA, SourceStageAdmission,
-    SourceStageAdmissionError, SourceStageBinding, SourceStageBundle, SourceStageBundleError,
+    CheckedSourceStageAdmission, SOURCE_STAGE_ADMISSION_SCHEMA, SOURCE_STAGE_BUNDLE_MAX_BYTES,
+    SOURCE_STAGE_BUNDLE_SCHEMA, SourceStageAdmission, SourceStageAdmissionError,
+    SourceStageBinding, SourceStageBundle, SourceStageBundleError,
     SourceStageCompositionRequirement, SourceStageDeclarationProvenance,
     SourceStageExecutionObserver, SourceStageFixedPoint, SourceStageImplementation,
     SourceStageInstance, SourceStageOutput, SourceStageRequest, SourceStageRequirementReference,

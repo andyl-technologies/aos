@@ -213,6 +213,7 @@
     arguments,
     dependencies,
     logging ? null,
+    environment ? null,
   }:
     {
       inherit consumerInstance;
@@ -241,6 +242,7 @@
         timeout_millis = 90000;
       };
     }
+    // lib.optionalAttrs (environment != null) {inherit environment;}
     // lib.optionalAttrs (logging != null) {inherit logging;};
 
   stageInputPathType = lib.abilities.types.record {
@@ -282,6 +284,14 @@
   initrdController = handoffService {
     key = "aos-ability-initrd-controller";
     description = "Execute and release initrd-stage ability ownership";
+    environment = {
+      variables = {
+        AOS_NIX_INSTANTIATE = "/bin/nix-instantiate";
+        AOS_PRLIMIT = "/bin/prlimit";
+        AOS_ABILITY_EVALUATOR_CACHE = "/run/aos/ability-evaluator";
+      };
+      search_path = [];
+    };
     arguments =
       [
         "__ability-stage-run"

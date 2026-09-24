@@ -53,6 +53,7 @@
   loadModules,
   initrdUnits,
   initrdRuntimeRoots,
+  initrdEvaluationLib,
   initrdNetworkDir ? null,
   renderedUnits,
   handoff,
@@ -83,6 +84,7 @@
     jq
     kmod
     less
+    nix
     systemd
     util-linux
     zstd
@@ -129,6 +131,16 @@
   # rather than as an absolute store path. Keep it conservative — the
   # store paths work anywhere.
   initrdBinaries = [
+    {
+      pkg = nix;
+      bin = "nix-instantiate";
+      src = "bin";
+    }
+    {
+      pkg = util-linux;
+      bin = "prlimit";
+      src = "bin";
+    }
     {
       pkg = bash;
       bin = "bash";
@@ -878,8 +890,19 @@
                  root/nix/store/*-coreutils-8.32 \
                  root/nix/store/*-bash-4.2 \
                  root/nix/store/*-linux-headers-2.6.* \
-                 root/nix/store/*-linux-*-dev \
-                 root/nix/store/*-source
+                 root/nix/store/*-linux-*-dev
+
+          # The frozen initrd module evaluator retains authenticated package
+          # source roots. Its imports must survive the runtime-closure trim.
+          test -f root${initrdEvaluationLib}/default.nix
+          for module_root in root${initrdEvaluationLib}/initrd-authenticated-roots/*; do
+            [ -L "$module_root" ] || continue
+            target=$(readlink "$module_root")
+            test -e "root$target" || {
+              echo "initrd-builder: frozen evaluator root $target was pruned" >&2
+              exit 1
+            }
+          done
           ${lib.optionalString (!keepBinutils) ''
             rm -rf root/nix/store/*-binutils-2.41*
           ''}

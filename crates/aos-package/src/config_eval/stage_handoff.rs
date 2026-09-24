@@ -282,6 +282,7 @@ struct StageCheckpoint {
     static_ability_contract_identity: String,
     static_ability_contract_sha256: Sha256Digest,
     source_stage_bundle_sha256: Sha256Digest,
+    source_stage_admission_sha256: Sha256Digest,
     execution_sha256: Sha256Digest,
     journal_head: Sha256Digest,
     status: CheckpointStatus,
@@ -334,6 +335,7 @@ enum StageEvent {
         static_ability_contract_identity: String,
         static_ability_contract_sha256: Sha256Digest,
         source_stage_bundle_sha256: Sha256Digest,
+        source_stage_admission_sha256: Sha256Digest,
     },
     SourceCompleted {
         schema: String,
@@ -402,7 +404,7 @@ impl JournalPayload for StageEvent {
 #[serde(deny_unknown_fields)]
 pub(crate) struct StageExecutionEvidence {
     plan: PlanId,
-    bundle: Sha256Digest,
+    admission: Sha256Digest,
     terminal: TerminalResult,
     retained_resources: Vec<StageRetainedResource>,
 }
@@ -517,6 +519,8 @@ struct ValidatedRelease {
     checkpoint_bytes: Vec<u8>,
     contract_digest: Sha256Digest,
     journal_path: PathBuf,
+    admission_path: PathBuf,
+    admitted_plan: aos_ability_plan::CheckedSourceStageAdmission,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -538,7 +542,7 @@ fn selected_transaction_storage(
     let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
     ensure!(
         checked
-            .plan()
+            .template()
             .binding_plan()
             .environment()
             .environment
@@ -575,7 +579,7 @@ fn selected_transaction_storage(
     );
 
     let matching_bindings = checked
-        .plan()
+        .template()
         .binding_plan()
         .bindings()
         .iter()
@@ -685,7 +689,7 @@ fn run_initrd_stage_with(
     source_stage_bundle_bytes: &[u8],
 ) -> Result<()> {
     validate_boot_id(boot_id)?;
-    super::static_packages::verified_initrd_packages(contract_bytes)
+    let packages = super::static_packages::verified_initrd_packages(contract_bytes)
         .context("authenticating initrd static ability contract")?;
     let contract_digest = sha256_digest(contract_bytes);
 
@@ -696,6 +700,15 @@ fn run_initrd_stage_with(
         .context("selected transaction-storage path is not UTF-8")?
         .to_string();
     let source_stage_bundle_sha256 = sha256_digest(source_stage_bundle_bytes);
+    let transaction_dir = prepare_transaction_directory(&transaction_storage.root, &transaction)?;
+    let admitted = super::source_stage_admission::load_or_admit_source_stage(
+        source_stage_bundle_bytes,
+        &packages,
+        static_contract_identity,
+        boot_id,
+        &transaction_dir,
+    )?;
+    let source_stage_admission_sha256 = admitted.record_digest;
     let prepared = StageEvent::Prepared {
         schema: JOURNAL_EVENT_SCHEMA.to_string(),
         source_stage: ExecutionStage::Initrd,
@@ -708,8 +721,8 @@ fn run_initrd_stage_with(
         static_ability_contract_identity: static_contract_identity.to_string(),
         static_ability_contract_sha256: contract_digest,
         source_stage_bundle_sha256,
+        source_stage_admission_sha256,
     };
-    let transaction_dir = prepare_transaction_directory(&transaction_storage.root, &transaction)?;
     let journal_path = transaction_dir.join(JOURNAL_FILE);
     let opened = FileJournal::<StageEvent>::open(&journal_path, stage_journal_limits())
         .context("opening initrd stage handoff journal")?;
@@ -724,8 +737,8 @@ fn run_initrd_stage_with(
                 &transaction,
                 || {
                     execute_source_initrd_stage(
-                        source_stage_bundle_bytes,
-                        contract_bytes,
+                        &admitted,
+                        &packages,
                         &transaction_storage.root,
                         transaction.clone(),
                     )
@@ -742,8 +755,8 @@ fn run_initrd_stage_with(
                 &transaction,
                 || {
                     execute_source_initrd_stage(
-                        source_stage_bundle_bytes,
-                        contract_bytes,
+                        &admitted,
+                        &packages,
                         &transaction_storage.root,
                         transaction.clone(),
                     )
@@ -758,9 +771,7 @@ fn run_initrd_stage_with(
                 Some(second.body()),
                 &transaction,
                 || bail!("settled initrd stage attempted to invoke handlers again"),
-                |execution| {
-                    validate_source_initrd_stage_evidence(source_stage_bundle_bytes, execution)
-                },
+                |execution| validate_source_initrd_stage_evidence(&admitted.checked, execution),
             )?;
             (second.digest(), completed)
         }
@@ -769,9 +780,7 @@ fn run_initrd_stage_with(
                 Some(second.body()),
                 &transaction,
                 || bail!("received initrd stage attempted to invoke handlers again"),
-                |execution| {
-                    validate_source_initrd_stage_evidence(source_stage_bundle_bytes, execution)
-                },
+                |execution| validate_source_initrd_stage_evidence(&admitted.checked, execution),
             )?;
             bail!("initrd stage journal ownership was already received by the host")
         }
@@ -796,6 +805,7 @@ fn run_initrd_stage_with(
         static_ability_contract_identity: static_contract_identity.to_string(),
         static_ability_contract_sha256: contract_digest,
         source_stage_bundle_sha256,
+        source_stage_admission_sha256,
         execution_sha256: completed.execution_digest()?,
         journal_head: released_head,
         status: CheckpointStatus::OwnershipReleased,
@@ -844,10 +854,9 @@ where
 }
 
 fn validate_source_initrd_stage_evidence(
-    source_stage_bundle_bytes: &[u8],
+    checked: &aos_ability_plan::CheckedSourceStageAdmission,
     execution: &StageExecutionEvidence,
 ) -> Result<()> {
-    let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
     ensure!(
         checked
             .plan()
@@ -859,8 +868,8 @@ fn validate_source_initrd_stage_evidence(
         "source ability stage does not select the initrd environment"
     );
     ensure!(
-        execution.plan == checked.plan().id() && execution.bundle == checked.digest(),
-        "retained initrd execution differs from the checked source bundle"
+        execution.plan == checked.plan().id() && execution.admission == checked.digest(),
+        "retained initrd execution differs from the admitted source plan"
     );
     for retained in &execution.retained_resources {
         ensure!(
@@ -888,12 +897,12 @@ fn validate_source_initrd_stage_evidence(
 }
 
 fn execute_source_initrd_stage(
-    source_stage_bundle_bytes: &[u8],
-    contract_bytes: &[u8],
+    admitted: &super::source_stage_admission::AdmittedSourceStage,
+    packages: &crate::package_contract::VerifiedPackageContractSet,
     transaction_root: &Path,
     transaction: TransactionId,
 ) -> Result<StageExecutionEvidence> {
-    let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
+    let checked = &admitted.checked;
     ensure!(
         checked
             .plan()
@@ -906,21 +915,19 @@ fn execute_source_initrd_stage(
     );
 
     let supported_features = super::native_activation::supported_native_ability_features()?;
-    let packages = super::static_packages::verified_initrd_packages(contract_bytes)
-        .context("authenticating initrd handler packages")?;
     let dispatcher =
-        super::handler_dispatch::HandlerDispatcher::for_static_plan(checked.plan(), &packages)
+        super::handler_dispatch::HandlerDispatcher::for_static_plan(checked.plan(), packages)
             .context("constructing initrd handler dispatcher")?;
-    let stage_directory = transaction_root
-        .join("ability-stage-runtime")
-        .join("initrd");
+    let stage_directory = super::transaction_store::source_stage_directory(transaction_root);
     let mut session = super::transaction_store::AbilityTransactionSession::open_source_stage(
         checked.plan(),
         transaction.clone(),
         JournalLimits::default(),
         stage_directory,
         supported_features.clone(),
-        checked.bundle().clone(),
+        admitted.template.clone(),
+        checked.admission().clone(),
+        admitted.environment.clone(),
         packages.clone(),
     )
     .context("opening durable initrd ability transaction")?;
@@ -929,7 +936,7 @@ fn execute_source_initrd_stage(
     let cancellation = super::cancellation::AbilityCancellationGuard::install()
         .context("installing initrd ability cancellation listeners")?;
     let mut observer = super::execution_observer::AbilityExecutionBoundaryObserver::load(
-        checked.bundle().fixed_point().execution_observer.as_ref(),
+        admitted.template.fixed_point().execution_observer.as_ref(),
     )
     .context("opening initrd execution observation channel")?;
     let terminal = dispatcher.run_static_to_terminal(
@@ -961,7 +968,7 @@ fn execute_source_initrd_stage(
     });
     let evidence = StageExecutionEvidence {
         plan: checked.plan().id(),
-        bundle: checked.digest(),
+        admission: checked.digest(),
         terminal,
         retained_resources,
     };
@@ -1004,6 +1011,7 @@ fn receive_initrd_stage_with(
         &release.checkpoint_bytes,
         release.contract_digest,
         &image,
+        &release.admitted_plan,
     )?;
     if ownership == JournalOwnership::Received {
         return retain_host_handoff_evidence(image_profile, &release);
@@ -1037,6 +1045,21 @@ fn retain_host_handoff_evidence(image_profile: &Path, release: &ValidatedRelease
     )?;
     let destination =
         prepare_transaction_directory(image_profile, &release.checkpoint.transaction)?;
+    let admission_bytes = read_trusted_file(
+        &release.admission_path,
+        super::source_stage_admission::ADMISSION_RECORD_MAX_BYTES,
+        "released source-stage admission",
+    )?;
+    ensure!(
+        sha256_digest(&admission_bytes) == release.checkpoint.source_stage_admission_sha256,
+        "released source-stage admission differs from the checkpoint"
+    );
+    super::transaction_store::publish_named_immutable_bounded(
+        &destination.join(super::source_stage_admission::ADMISSION_RECORD_FILE),
+        &admission_bytes,
+        super::source_stage_admission::ADMISSION_RECORD_MAX_BYTES as usize,
+    )
+    .context("retaining admitted source plan with the current image")?;
     let retained_journal = destination.join(JOURNAL_FILE);
     publish_atomic(&retained_journal, &journal_bytes)
         .context("retaining received initrd stage journal with the current image")?;
@@ -1101,6 +1124,7 @@ fn read_journal_ownership(
         &release.checkpoint_bytes,
         release.contract_digest,
         image,
+        &release.admitted_plan,
     )
 }
 
@@ -1150,13 +1174,53 @@ fn load_validated_release(
     );
 
     let transaction_root = Path::new(&checkpoint.transaction_root);
-    let journal_path = existing_transaction_directory(transaction_root, &checkpoint.transaction)?
-        .join(JOURNAL_FILE);
+    let transaction_dir =
+        existing_transaction_directory(transaction_root, &checkpoint.transaction)?;
+    let journal_path = transaction_dir.join(JOURNAL_FILE);
+    let admission_path = transaction_dir.join(super::source_stage_admission::ADMISSION_RECORD_FILE);
+    let admitted_plan = super::source_stage_admission::validate_retained_source_stage(
+        source_stage_bundle_bytes,
+        boot_id,
+        &admission_path,
+        checkpoint.source_stage_admission_sha256,
+    )?;
+    let stage_transaction = super::transaction_store::source_stage_transaction_directory(
+        transaction_root,
+        &checkpoint.transaction,
+    );
+    let stage_transactions = stage_transaction
+        .parent()
+        .context("initrd transaction has no parent directory")?;
+    let stage_directory = stage_transactions
+        .parent()
+        .context("initrd transaction root has no parent directory")?;
+    for directory in [
+        stage_directory,
+        stage_transactions,
+        stage_transaction.as_path(),
+    ] {
+        ensure_private_directory(directory, false)?;
+    }
+    let plan_path = super::transaction_store::source_stage_plan_bundle_path(
+        transaction_root,
+        &checkpoint.transaction,
+    );
+    let retained_plan = read_trusted_file(
+        &plan_path,
+        super::source_stage_admission::ADMISSION_RECORD_MAX_BYTES,
+        "retained initrd execution plan",
+    )?;
+    ensure!(
+        retained_plan == admitted_plan.admission().canonical_bytes()?,
+        "retained initrd execution plan differs from the committed admission"
+    );
     Ok(ValidatedRelease {
         checkpoint,
         checkpoint_bytes,
         contract_digest,
         journal_path,
+        admission_path,
+        admitted_plan,
     })
 }
 
@@ -1166,6 +1230,7 @@ fn validate_journal_sequence(
     checkpoint_bytes: &[u8],
     contract_digest: Sha256Digest,
     image: &ImageIdentity,
+    admitted_plan: &aos_ability_plan::CheckedSourceStageAdmission,
 ) -> Result<JournalOwnership> {
     match records {
         [first, second] => {
@@ -1173,7 +1238,7 @@ fn validate_journal_sequence(
                 second.digest() == checkpoint.journal_head,
                 "released journal head differs from the stage checkpoint"
             );
-            validate_source_records(first.body(), second.body(), checkpoint)?;
+            validate_source_records(first.body(), second.body(), checkpoint, admitted_plan)?;
             Ok(JournalOwnership::Released)
         }
         [first, second, third] => {
@@ -1189,6 +1254,7 @@ fn validate_journal_sequence(
                 checkpoint_bytes,
                 contract_digest,
                 image,
+                admitted_plan,
             )?;
             Ok(JournalOwnership::Received)
         }
@@ -1211,6 +1277,7 @@ fn validate_source_records(
     prepared: &StageEvent,
     source_completed: &StageEvent,
     checkpoint: &StageCheckpoint,
+    admitted_plan: &aos_ability_plan::CheckedSourceStageAdmission,
 ) -> Result<()> {
     let StageEvent::Prepared {
         source_stage,
@@ -1223,6 +1290,7 @@ fn validate_source_records(
         static_ability_contract_identity,
         static_ability_contract_sha256,
         source_stage_bundle_sha256,
+        source_stage_admission_sha256,
         ..
     } = prepared
     else {
@@ -1238,7 +1306,8 @@ fn validate_source_records(
             && image == &checkpoint.image
             && static_ability_contract_identity == &checkpoint.static_ability_contract_identity
             && *static_ability_contract_sha256 == checkpoint.static_ability_contract_sha256
-            && *source_stage_bundle_sha256 == checkpoint.source_stage_bundle_sha256,
+            && *source_stage_bundle_sha256 == checkpoint.source_stage_bundle_sha256
+            && *source_stage_admission_sha256 == checkpoint.source_stage_admission_sha256,
         "initrd stage journal preparation differs from the released checkpoint"
     );
     let StageEvent::SourceCompleted {
@@ -1254,7 +1323,7 @@ fn validate_source_records(
             && canonical_value_digest(execution)? == checkpoint.execution_sha256,
         "initrd stage completion differs from the released checkpoint"
     );
-    execution.validate()?;
+    validate_source_initrd_stage_evidence(admitted_plan, execution)?;
     execution.authorized_input_artifact()?;
     Ok(())
 }
@@ -1267,8 +1336,9 @@ fn validate_received_record(
     checkpoint_bytes: &[u8],
     contract_digest: Sha256Digest,
     image: &ImageIdentity,
+    admitted_plan: &aos_ability_plan::CheckedSourceStageAdmission,
 ) -> Result<()> {
-    validate_source_records(prepared, source_completed, checkpoint)?;
+    validate_source_records(prepared, source_completed, checkpoint, admitted_plan)?;
     let StageEvent::HostReceived {
         transaction,
         checkpoint_sha256,
@@ -1365,7 +1435,7 @@ fn ensure_private_directory(path: &Path, create: bool) -> Result<()> {
     Ok(())
 }
 
-fn read_trusted_file(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>> {
+pub(super) fn read_trusted_file(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>> {
     let input = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -1555,7 +1625,7 @@ mod tests {
         ))?;
         let evidence = StageExecutionEvidence {
             plan: PlanId(sha256_digest(b"storage-plan")),
-            bundle: sha256_digest(b"storage-bundle"),
+            admission: sha256_digest(b"storage-bundle"),
             terminal: TerminalResult::Succeeded,
             retained_resources: vec![StageRetainedResource {
                 operation: OperationId {
@@ -1625,7 +1695,7 @@ mod tests {
         };
         let evidence = StageExecutionEvidence {
             plan,
-            bundle: sha256_digest(b"bundle"),
+            admission: sha256_digest(b"bundle"),
             terminal: TerminalResult::Succeeded,
             retained_resources: vec![first.clone(), second],
         };
@@ -1655,7 +1725,7 @@ mod tests {
         let transaction = transaction_for_boot("01234567-89ab-cdef-0123-456789abcdef")?;
         let execution = StageExecutionEvidence {
             plan: PlanId(sha256_digest(b"plan")),
-            bundle: sha256_digest(b"bundle"),
+            admission: sha256_digest(b"bundle"),
             terminal: TerminalResult::Succeeded,
             retained_resources: Vec::new(),
         };

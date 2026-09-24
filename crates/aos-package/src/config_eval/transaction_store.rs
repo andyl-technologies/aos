@@ -19,10 +19,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use aos_ability_model::{
-    AbilityValue, ArtifactReference, ExecutionStage, RequiredFeature, ScopedOperationKey,
-    TransactionId,
+    AbilityValue, ArtifactReference, EnvironmentDocument, ExecutionStage, RequiredFeature,
+    ScopedOperationKey, TransactionId,
 };
-use aos_ability_plan::{SourceStageBundle, TransitionReconciliation};
+use aos_ability_plan::{SourceStageAdmission, SourceStageBundle, TransitionReconciliation};
 use aos_ability_runtime::adapter::{
     CancellationToken, MonotonicClock, PlanRetentionReceipt, RootRetentionReceipt, TrustedAdapter,
     TrustedPlanStore, TrustedResourceCatalog, TrustedRootStore,
@@ -50,12 +50,38 @@ use super::transaction_verification::{AbilityArtifactVerifier, NativeAbilityArti
 const TRANSACTION_ROOT: &str = "ability-transactions";
 const PLAN_BUNDLE_FILE: &str = "plan-bundle.json";
 const EXECUTION_JOURNAL_FILE: &str = "execution.journal";
+
 const TERMINAL_MARKER_FILE: &str = "terminal.json";
 const TERMINAL_MARKER_SCHEMA: &str = "aos.ability.transaction-terminal/v1";
 const TERMINAL_MARKER_MAX_BYTES: usize = 64 * 1024;
 const PLAN_EVIDENCE_SCHEMA: &str = "aos.ability.plan-retention/v1";
 const ROOT_EVIDENCE_SCHEMA: &str = "aos.ability.root-retention/v1";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Locates the durable initrd execution directory selected by stage handoff.
+pub(super) fn source_stage_directory(transaction_root: &Path) -> PathBuf {
+    transaction_root
+        .join("ability-stage-runtime")
+        .join("initrd")
+}
+
+/// Locates the exact admitted plan retained by an initrd transaction.
+pub(super) fn source_stage_transaction_directory(
+    transaction_root: &Path,
+    transaction: &TransactionId,
+) -> PathBuf {
+    source_stage_directory(transaction_root)
+        .join(TRANSACTION_ROOT)
+        .join(transaction.0.as_str())
+}
+
+/// Locates the exact admitted plan retained by an initrd transaction.
+pub(super) fn source_stage_plan_bundle_path(
+    transaction_root: &Path,
+    transaction: &TransactionId,
+) -> PathBuf {
+    source_stage_transaction_directory(transaction_root, transaction).join(PLAN_BUNDLE_FILE)
+}
 
 /// Reports why a config generation could not retain or reload ability state.
 #[derive(Debug)]
@@ -181,7 +207,11 @@ struct GenerationTransactionStore<Verifier> {
 #[derive(Clone)]
 enum RetainedPlanAuthority {
     Policy(ReloadablePlanBundle),
-    Source(SourceStageBundle),
+    Source {
+        template: SourceStageBundle,
+        admission: SourceStageAdmission,
+        current_environment: EnvironmentDocument,
+    },
 }
 
 /// Owns one native execution transaction and the global switch lock that guards it.
@@ -457,9 +487,9 @@ impl<'plan> AbilityTransactionSession<'plan> {
 
     /// Opens a source-composed stage transaction beneath a durable image root.
     ///
-    /// The retained authority is the source bundle emitted by the completed
-    /// module fixed point. Recovery validates that same bundle directly and
-    /// never reconstructs a policy-backed planning snapshot.
+    /// The retained authority is the admitted source plan. Recovery replays
+    /// its exact template and constructor transcript against a freshly
+    /// observed matching provider environment.
     ///
     /// # Errors
     ///
@@ -471,7 +501,9 @@ impl<'plan> AbilityTransactionSession<'plan> {
         limits: JournalLimits,
         stage_directory: impl Into<PathBuf>,
         supported_features: BTreeSet<RequiredFeature>,
-        bundle: SourceStageBundle,
+        template: SourceStageBundle,
+        admission: SourceStageAdmission,
+        current_environment: EnvironmentDocument,
         packages: VerifiedPackageContractSet,
     ) -> Result<Self, GenerationTransactionStoreError> {
         let generation = stage_directory.into();
@@ -491,7 +523,11 @@ impl<'plan> AbilityTransactionSession<'plan> {
             transaction,
             limits,
             supported_features,
-            RetainedPlanAuthority::Source(bundle),
+            RetainedPlanAuthority::Source {
+                template,
+                admission,
+                current_environment,
+            },
             packages,
             paths,
         )
@@ -1045,10 +1081,10 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
                 RetainedPlanAuthority::Policy(bundle) => bundle
                     .canonical_bytes()
                     .map_err(GenerationTransactionStoreError::Bundle)?,
-                RetainedPlanAuthority::Source(bundle) => {
-                    bundle.canonical_bytes().map_err(|error| {
+                RetainedPlanAuthority::Source { admission, .. } => {
+                    admission.canonical_bytes().map_err(|error| {
                         GenerationTransactionStoreError::Conflict(format!(
-                            "source stage authority cannot be encoded: {error}"
+                            "source stage admission cannot be encoded: {error}"
                         ))
                     })?
                 }
@@ -1067,12 +1103,23 @@ impl<Verifier> GenerationTransactionStore<Verifier> {
                     .map_err(GenerationTransactionStoreError::Bundle)?;
                 (checked, digest)
             }
-            RetainedPlanAuthority::Source(_) => {
-                let checked = SourceStageBundle::decode(&bytes)
-                    .and_then(|bundle| bundle.check(None))
+            RetainedPlanAuthority::Source {
+                template,
+                admission,
+                current_environment,
+            } => {
+                let expected_digest = admission.digest().map_err(|error| {
+                    GenerationTransactionStoreError::Conflict(format!(
+                        "source stage admission has no canonical digest: {error}"
+                    ))
+                })?;
+                let checked = SourceStageAdmission::decode(&bytes)
+                    .and_then(|retained| {
+                        retained.check(template, current_environment.clone(), Some(expected_digest))
+                    })
                     .map_err(|error| {
                         GenerationTransactionStoreError::Conflict(format!(
-                            "source stage authority is invalid: {error}"
+                            "source stage admission is invalid: {error}"
                         ))
                     })?;
                 let digest = checked.digest();
@@ -1230,6 +1277,20 @@ fn publish_named_immutable(
     path: &Path,
     contents: &[u8],
 ) -> Result<(), GenerationTransactionStoreError> {
+    publish_named_immutable_bounded(path, contents, PLAN_BUNDLE_MAX_BYTES)
+}
+
+pub(super) fn publish_named_immutable_bounded(
+    path: &Path,
+    contents: &[u8],
+    max_bytes: usize,
+) -> Result<(), GenerationTransactionStoreError> {
+    if contents.len() > max_bytes {
+        return Err(GenerationTransactionStoreError::Conflict(format!(
+            "immutable ability file {} exceeds its byte limit",
+            path.display()
+        )));
+    }
     let parent = path.parent().ok_or_else(|| {
         GenerationTransactionStoreError::Conflict(format!(
             "plan bundle path {} has no parent",
@@ -1239,7 +1300,7 @@ fn publish_named_immutable(
     create_private_directory(parent)?;
 
     if path.is_file() {
-        return compare_existing(path, contents);
+        return compare_existing_bounded(path, contents, max_bytes);
     }
 
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1271,7 +1332,7 @@ fn publish_named_immutable(
     match std::fs::hard_link(&temporary, path) {
         Ok(()) => {}
         Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
-            compare_existing(path, contents)?;
+            compare_existing_bounded(path, contents, max_bytes)?;
         }
         Err(source) => {
             let _ = std::fs::remove_file(&temporary);
@@ -1283,8 +1344,12 @@ fn publish_named_immutable(
     sync_directory(parent)
 }
 
-fn compare_existing(path: &Path, expected: &[u8]) -> Result<(), GenerationTransactionStoreError> {
-    let existing = read_file(path)?;
+fn compare_existing_bounded(
+    path: &Path,
+    expected: &[u8],
+    max_bytes: usize,
+) -> Result<(), GenerationTransactionStoreError> {
+    let existing = read_regular_file(path, max_bytes, "immutable ability file")?;
     if existing == expected {
         Ok(())
     } else {
@@ -1499,5 +1564,17 @@ mod tests {
         assert!(validate_generation_name("42").is_err());
         assert!(validate_generation_name("gen-").is_err());
         assert!(validate_generation_name("gen-4a").is_err());
+    }
+
+    #[test]
+    fn retained_admission_file_cannot_be_replaced() {
+        let directory = tempfile::tempdir().expect("private transaction directory");
+        let path = directory.path().join("source-admission.json");
+
+        publish_named_immutable_bounded(&path, b"first", 128).expect("first admission is retained");
+        publish_named_immutable_bounded(&path, b"first", 128)
+            .expect("same admission may be replayed");
+        assert!(publish_named_immutable_bounded(&path, b"second", 128).is_err());
+        assert_eq!(std::fs::read(&path).expect("retained admission"), b"first");
     }
 }
