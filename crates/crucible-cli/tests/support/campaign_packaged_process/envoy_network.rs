@@ -534,6 +534,8 @@ fn wait_for_public_attempt(
     timeout: Duration,
 ) -> Result<Value, Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
+    let mut last_status = None;
+    let mut last_explanation = None;
     let explanation = wait_for_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
@@ -542,6 +544,7 @@ fn wait_for_public_attempt(
             .into());
         }
         let head = campaign_status(fixture)?;
+        last_status = Some(head.clone());
         // This empty-frontier campaign can only admit discovery first. Wait
         // for its execution basis before requesting the snapshot explanation.
         if !initial_discovery_admitted(&head)? {
@@ -552,11 +555,82 @@ fn wait_for_public_attempt(
         else {
             return Ok(None);
         };
+        last_explanation = Some(explanation.clone());
         Ok((!explanation["observation"].is_null()).then_some(explanation))
     })?;
     explanation.ok_or_else(|| {
-        format!("attempt {attempt} has no public observation within {timeout:?}").into()
+        let diagnostics = initial_discovery_timeout_diagnostics(
+            fixture,
+            service,
+            attempt,
+            last_status.as_ref(),
+            last_explanation.as_ref(),
+        );
+        format!("attempt {attempt} has no public observation within {timeout:?}; {diagnostics}")
+            .into()
     })
+}
+
+fn initial_discovery_timeout_diagnostics(
+    fixture: &FlightFixture,
+    service: &CampaignServiceChild,
+    attempt: AttemptId,
+    status: Option<&Value>,
+    explanation: Option<&Value>,
+) -> String {
+    let public_status = status.map(|head| {
+        serde_json::json!({
+            "snapshot": head["snapshot"],
+            "state": head["state"],
+            "admitted_attempts": head["semantic"]["admitted_attempts"],
+            "operational": head["operational"],
+        })
+    });
+    let public_attempt = explanation.map(|report| {
+        serde_json::json!({
+            "phase": report["runtime"]["phase"],
+            "admission_ordinal": report["admission"]["admission_ordinal"],
+            "observation_present": !report["observation"].is_null(),
+        })
+    });
+    let ledger = match guest_choice::attempt_states(fixture) {
+        Ok(states) => format!(
+            "count={}, target={:?}",
+            states.len(),
+            states
+                .iter()
+                .find(|(key, _)| key.attempt() == attempt)
+                .map(|(_, state)| state)
+        ),
+        Err(error) => format!("unavailable({error})"),
+    };
+    let qemu_processes = descendant_process_commands(service.child.id())
+        .map(|processes| {
+            processes
+                .into_iter()
+                .filter(|(_, arguments)| {
+                    arguments
+                        .first()
+                        .is_some_and(|binary| binary.contains("qemu-system"))
+                })
+                .map(|(pid, _)| pid)
+                .take(8)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let stderr = service.stderr_tail();
+    let stderr_tail = stderr
+        .chars()
+        .rev()
+        .take(2_048)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+
+    format!(
+        "public_status={public_status:?}; public_attempt={public_attempt:?}; ledger={ledger}; qemu_pids={qemu_processes:?}; service_stderr_tail={stderr_tail:?}"
+    )
 }
 
 fn wait_for_request_attempt(
