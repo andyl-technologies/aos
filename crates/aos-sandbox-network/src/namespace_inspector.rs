@@ -59,6 +59,7 @@ use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 mod launch_contract;
 mod manager_query;
 mod production;
+mod response_receiver;
 mod runtime;
 mod store;
 
@@ -1536,6 +1537,96 @@ mod tests {
             NetworkNamespaceInspectionResponseV1::decode(&response.encode()).unwrap(),
             response
         );
+    }
+
+    #[test]
+    fn response_receiver_retains_socket_subject_and_type_checked_namespace() {
+        use std::os::fd::AsFd as _;
+
+        use aos_sandbox_linux::pidfd::NamespaceFd;
+        use aos_sandbox_linux::seqpacket::SeqpacketSocket;
+        use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+
+        use super::response_receiver::{InspectorResponseReceiveErrorV1, receive_candidate};
+
+        let expected = pending(1);
+        let mut catalog = InspectorExpectedAttemptCatalogV1::default();
+        catalog.record_from_admission(&expected).unwrap();
+        let mut response = authorize(&expected, &catalog, &mut SpentLedger::default())
+            .unwrap()
+            .respond(&mut Clock::fixed([7; 16], 15), process(300), namespace(3))
+            .unwrap();
+        let current_namespace = NamespaceFd::current_network().unwrap();
+        response.namespace = current_namespace.identity();
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        sender
+            .send_with_descriptors(&response.encode(), &[current_namespace.as_fd()])
+            .unwrap();
+        let candidate = receive_candidate(receiver).unwrap();
+        assert_eq!(candidate.response, response);
+        assert_eq!(candidate.namespace.identity(), current_namespace.identity());
+        assert_eq!(
+            candidate.record_subject.credentials().pid().get(),
+            std::process::id()
+        );
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let mut wrong_role = response.encode();
+        wrong_role[11] = 1;
+        sender
+            .send_with_descriptors(&wrong_role, &[current_namespace.as_fd()])
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Response(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let mut wrong_namespace = response;
+        wrong_namespace.namespace.inode += 1;
+        sender
+            .send_with_descriptors(&wrong_namespace.encode(), &[current_namespace.as_fd()])
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::NamespaceMismatch)
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let ordinary_file = std::fs::File::open("/dev/null").unwrap();
+        sender
+            .send_with_descriptors(&response.encode(), &[ordinary_file.as_fd()])
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Namespace(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        sender.send(&response.encode()).unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Transport(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        sender
+            .send_with_descriptors(
+                &response.encode(),
+                &[current_namespace.as_fd(), current_namespace.as_fd()],
+            )
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Transport(_))
+        ));
     }
 
     #[test]

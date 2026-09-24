@@ -7541,9 +7541,17 @@ identity, checks boot/deadline before and after requerying the same inspector
 pidfd and kernel-nominated record subject through `AOSNIBQ3`. A changed
 invocation or unit payload fails the requery. Focused model tests cover nonce
 and digest substitution, deadline expiry, and replay; the broker readback tests
-cover changed invocation. No broker-side socket receiver, protected expected-record
-publisher, authenticated activation owner, or lifecycle handoff calls this
-gate, so it is not an effect proof or production response consumer.
+cover changed invocation. A source-only broker receive precursor now binds one
+response to its exact connected socket, retains the kernel-nominated SCM
+subject, decodes the existing FD role, and accepts only a matching type-checked
+Network namespace descriptor. It can pass that candidate to the staged PID 1
+gate only with a separately retained inspector pidfd. Tests reject substituted
+role, namespace identity, descriptor type, and descriptor count.
+
+No production broker inspector-socket session, authenticated activation owner,
+validated `READY` token publisher, or crash-custody handoff invokes these
+pieces. The expected-attempt publisher exists but is not linked to a broker
+admission transaction. This is not an effect proof or production response consumer.
 
 A PID 1 path/property readback does not independently prove the in-memory unit
 definition was parsed from the pinned fragment, so deployment must also
