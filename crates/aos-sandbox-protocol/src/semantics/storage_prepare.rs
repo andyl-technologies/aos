@@ -30,7 +30,9 @@
 //! part of these bytes. Canonical meaning remains distinct from admission and
 //! independent authority verification.
 
-use aos_proto::aos::sandbox::local::v1::{PrepareStorageCatalogRequest, StorageAction};
+use aos_proto::aos::sandbox::local::v1::{
+    AssignmentFence, Audience, PrepareStorageCatalogRequest, RequestHeader, StorageAction,
+};
 use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTarget, BrokerVerb, ObjectDigest,
     OperationId, ProtocolId,
@@ -474,6 +476,67 @@ impl ProtectedStorageCreatePreparationV1 {
         self.commitment
     }
 
+    /// Returns the protected assignment committed by the Create preparation.
+    #[must_use]
+    pub const fn assignment(&self) -> BrokerAssignment {
+        self.assignment
+    }
+
+    /// Returns the exact public Create operation committed by preparation.
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId {
+        self.operation_id
+    }
+
+    /// Encodes the exact deadline-free signed-publication request body.
+    ///
+    /// The session owner injects only its bounded deadline. This body is not
+    /// executable authority without a matching signed plan and current lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoragePreparationSemanticsError`] for a reserved request ID.
+    pub fn deadline_free_request_body(
+        &self,
+        request_id: [u8; 16],
+    ) -> Result<Vec<u8>, StoragePreparationSemanticsError> {
+        if request_id == [0; 16] {
+            return Err(StoragePreparationSemanticsError::InvalidActionShape);
+        }
+        let request = PrepareStorageCatalogRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 0,
+                request_id: request_id.to_vec(),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 0,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: self.assignment.sandbox().as_bytes().to_vec(),
+                incarnation_id: self.assignment.incarnation().as_bytes().to_vec(),
+                assignment_epoch: self.assignment.epoch().get(),
+                desired_generation: self.assignment.desired_generation().get(),
+                assignment_digest: self.assignment.digest().as_bytes().to_vec(),
+                ..Default::default()
+            })
+            .into(),
+            action: StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into(),
+            operation_id: self.operation_id.as_bytes().to_vec(),
+            requested_quota_bytes: self.quota_bytes,
+            requested_reservation_bytes: self.reservation_bytes,
+            inventory_generation: self.inventory.generation(),
+            inventory_digest: self.inventory.digest().as_bytes().to_vec(),
+            expected_catalog_generation: self.expected_head.generation(),
+            expected_catalog_digest: self.expected_head.digest().as_bytes().to_vec(),
+            preparation_expires_boottime_nanoseconds: self.expires_boottime_nanoseconds,
+            ..Default::default()
+        };
+        Ok(request.encode_to_vec())
+    }
+
     /// Checks the complete broker-decoded meaning against protected inputs.
     #[must_use]
     pub fn matches_decoded(&self, decoded: &CanonicalStoragePreparationSemanticsV1) -> bool {
@@ -821,6 +884,13 @@ mod tests {
         )
         .unwrap();
         let decoded = decode(&request).unwrap();
+        let template = protected.deadline_free_request_body([1; 16]).unwrap();
+        let mut session_request =
+            PrepareStorageCatalogRequest::decode_from_slice(&template).unwrap();
+        session_request
+            .header
+            .get_or_insert_default()
+            .deadline_boottime_nanoseconds = 200;
 
         assert!(protected.matches_decoded(&decoded));
         assert_eq!(protected.canonical_bytes(), decoded.canonical_bytes());
@@ -828,6 +898,7 @@ mod tests {
             protected.argument_commitment(),
             decoded.argument_commitment()
         );
+        assert_eq!(session_request.encode_to_vec(), request.encode_to_vec());
 
         request.expected_catalog_digest = vec![15; 32];
         assert!(!protected.matches_decoded(&decode(&request).unwrap()));
