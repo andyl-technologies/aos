@@ -171,6 +171,10 @@ pub enum BrokerVerb {
     StorageAtomicSnapshot,
     /// Populates and physically publishes one pinned guest workspace root.
     StoragePopulateGuestRoot,
+    /// Reserves one exact accepted execution-output capture attempt.
+    StorageReserveExecutionCapture,
+    /// Reads one exact prior execution-output capture attempt without reissuing it.
+    StorageQueryExecutionCapture,
     /// Prepares assignment networking and mints its network handle.
     NetworkPrepare,
     /// Arms the ownership-lease gate for an existing network.
@@ -241,6 +245,8 @@ impl BrokerVerb {
             43 => Ok(Self::StoragePopulateGuestRoot),
             44 => Ok(Self::HostReserveExecutionOutput),
             45 => Ok(Self::HostQueryExecutionOutput),
+            46 => Ok(Self::StorageReserveExecutionCapture),
+            47 => Ok(Self::StorageQueryExecutionCapture),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -294,6 +300,8 @@ impl BrokerVerb {
             Self::StoragePopulateGuestRoot => 43,
             Self::HostReserveExecutionOutput => 44,
             Self::HostQueryExecutionOutput => 45,
+            Self::StorageReserveExecutionCapture => 46,
+            Self::StorageQueryExecutionCapture => 47,
         }
     }
 
@@ -338,7 +346,9 @@ impl BrokerVerb {
             | Self::StoragePrepareCatalog
             | Self::StorageRepairWorkspacePin
             | Self::StorageAtomicSnapshot
-            | Self::StoragePopulateGuestRoot => BrokerAudience::Storage,
+            | Self::StoragePopulateGuestRoot
+            | Self::StorageReserveExecutionCapture
+            | Self::StorageQueryExecutionCapture => BrokerAudience::Storage,
             Self::NetworkPrepare
             | Self::NetworkArmLease
             | Self::NetworkRenewLease
@@ -370,6 +380,8 @@ impl BrokerVerb {
             | Self::StoragePrepareCatalog
             | Self::StorageAtomicSnapshot
             | Self::StoragePopulateGuestRoot
+            | Self::StorageReserveExecutionCapture
+            | Self::StorageQueryExecutionCapture
             | Self::NetworkPrepare
             | Self::NetworkInventory
             | Self::GuardianArm => BrokerGrantTargetShape::Assignment,
@@ -1531,6 +1543,8 @@ mod tests {
             (43, BrokerVerb::StoragePopulateGuestRoot),
             (44, BrokerVerb::HostReserveExecutionOutput),
             (45, BrokerVerb::HostQueryExecutionOutput),
+            (46, BrokerVerb::StorageReserveExecutionCapture),
+            (47, BrokerVerb::StorageQueryExecutionCapture),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1539,7 +1553,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(46),
+            BrokerVerb::from_code(48),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1663,6 +1677,8 @@ mod tests {
             BrokerVerb::StorageCreateWorkspace,
             BrokerVerb::StorageInventory,
             BrokerVerb::StoragePrepareCatalog,
+            BrokerVerb::StorageReserveExecutionCapture,
+            BrokerVerb::StorageQueryExecutionCapture,
             BrokerVerb::NetworkPrepare,
             BrokerVerb::NetworkInventory,
             BrokerVerb::GuardianArm,

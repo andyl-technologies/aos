@@ -22,8 +22,9 @@ use aos_proto::aos::sandbox::local::v1::{
     StorageExecutionCaptureAttemptStatusV1, StorageExecutionCaptureAttemptV1,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, DesiredGeneration, ExecutionId,
-    IncarnationId, ObjectDigest, OperationId, ProtocolId, ProtocolVersion, SandboxId,
+    AssignmentEpoch, BrokerArgumentCommitment, BrokerAssignment, BrokerGrant, BrokerGrantTarget,
+    BrokerVerb, DesiredGeneration, ExecutionId, IncarnationId, ObjectDigest, OperationId,
+    ProtocolId, ProtocolVersion, SandboxId,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -54,6 +55,17 @@ pub enum StorageCaptureGrantMethodV1 {
     Reserve,
     /// A fresh read-only query of that original request.
     Query,
+}
+
+impl StorageCaptureGrantMethodV1 {
+    /// Returns the exact Storage-audience signed-plan verb for this method.
+    #[must_use]
+    pub const fn broker_verb(self) -> BrokerVerb {
+        match self {
+            Self::Reserve => BrokerVerb::StorageReserveExecutionCapture,
+            Self::Query => BrokerVerb::StorageQueryExecutionCapture,
+        }
+    }
 }
 
 /// Retains the checksum-verified, complete Controller settlement preimage.
@@ -334,6 +346,30 @@ impl StorageCaptureGrantSourceV1 {
         bytes.extend_from_slice(&request_id);
         bytes.extend_from_slice(&self.bytes);
         Ok(BrokerArgumentCommitment::for_canonical_bytes(&bytes))
+    }
+
+    /// Builds the exact nonauthorizing Storage grant semantics for one request.
+    ///
+    /// The Controller must still prove current protected and physical sources
+    /// before signing a plan, and Storage must verify that plan separately.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or mismatched method-specific request identifier.
+    pub fn broker_grant(
+        &self,
+        method: StorageCaptureGrantMethodV1,
+        request_id: [u8; 16],
+    ) -> Result<BrokerGrant, ProtocolValidationError> {
+        let commitment = self.argument_commitment(method, request_id)?;
+        BrokerGrant::new(
+            method.broker_verb(),
+            BrokerGrantTarget::Assignment,
+            commitment,
+            MAXIMUM_REQUEST_BODY_BYTES as u32,
+            0,
+        )
+        .map_err(|_| invalid("Storage capture plan grant"))
     }
 
     /// Returns the exact response locator for the original source.
@@ -748,6 +784,14 @@ mod tests {
         let bytes = source_bytes();
         let source = StorageCaptureGrantSourceV1::from_canonical_bytes(&bytes).unwrap();
         assert_eq!(
+            StorageCaptureGrantMethodV1::Reserve.broker_verb(),
+            BrokerVerb::StorageReserveExecutionCapture
+        );
+        assert_eq!(
+            StorageCaptureGrantMethodV1::Query.broker_verb(),
+            BrokerVerb::StorageQueryExecutionCapture
+        );
+        assert_eq!(
             source.settlement().execution(),
             ExecutionId::from_bytes([1; 16])
         );
@@ -755,6 +799,24 @@ mod tests {
         assert_eq!(source.output_limits(), (100, 60, 40));
         assert_eq!(source.space_policy(), (200, 20, 30));
         assert_eq!(source.original_host_request_id(), [10; 16]);
+        let reserve_grant = source
+            .broker_grant(StorageCaptureGrantMethodV1::Reserve, [17; 16])
+            .unwrap();
+        let query_grant = source
+            .broker_grant(StorageCaptureGrantMethodV1::Query, [18; 16])
+            .unwrap();
+        assert_eq!(
+            reserve_grant.verb(),
+            BrokerVerb::StorageReserveExecutionCapture
+        );
+        assert_eq!(query_grant.verb(), BrokerVerb::StorageQueryExecutionCapture);
+        assert_eq!(reserve_grant.target(), BrokerGrantTarget::Assignment);
+        assert_eq!(reserve_grant.maximum_request_bytes(), 4 * 1_024);
+        assert_eq!(reserve_grant.maximum_descriptors(), 0);
+        assert_ne!(
+            reserve_grant.argument_commitment(),
+            query_grant.argument_commitment()
+        );
         assert_eq!(
             source.settlement().record_digest().as_bytes(),
             &bytes[184..216]
