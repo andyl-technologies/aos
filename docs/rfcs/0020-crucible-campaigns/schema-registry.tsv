@@ -313,6 +313,7 @@ crucible.frontier-node	1	crucible-cas::cas	physical-record	gate:campaign-store-c
 crucible.reduction-fingerprint	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
 
 # Crucible guest, control, and shared-memory process protocols
+crucible.api.rpc	6	crucible-api::rpc_abi	process-protocol-message	gate:abi-conformance
 crucible.app-random.branch-plan	1	crucible-protocol::app_random_branch_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.control.frame	3	crucible-protocol::control	process-protocol-message	gate:abi-conformance
 crucible.debug-gateway.frame	1	crucible-protocol::debug_gateway	process-protocol-message	gate:abi-conformance
