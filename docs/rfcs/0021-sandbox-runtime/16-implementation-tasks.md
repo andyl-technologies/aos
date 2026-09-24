@@ -7446,10 +7446,8 @@ revalidation, and requires its own running executable to match the broker
 entry. The two external credentials must be supplied together through the
 broker unit's `LoadCredential`; no private key or credential bytes enter the
 Nix store. This is a credential-consumption and declared-file pinning contract,
-not an independently produced complete ELF closure. The signer/provisioner
-must still supply a reviewed `PT_INTERP`/`DT_NEEDED` resolver that emits and
-signs the exhaustive inventory. Until that exists, the V2 signature is only
-an assertion of completeness by the external signer, not proof of it.
+not by itself an independently derived complete ELF closure. The signed list
+alone is an assertion of completeness by the external signer, not proof of it.
 
 The broker now has a source-level direct PID 1 query transaction separate from
 the inspector-self helper. It opens and retains a private-manager stream whose
@@ -7479,17 +7477,32 @@ argv from its caller. A V3 credential without the complete V2 pair fails
 closed. The external signer/provisioner must create this credential; neither
 signer key nor credential bytes are placed in the Nix store.
 
+The broker now independently derives each V3 service executable's ELF64
+`PT_INTERP` and transitive `DT_NEEDED` graph from its retained V2 files. It
+rejects unsupported dynamic loader tags, non-store or ambiguous encoded
+search paths, absent dependencies, and any loader/library whose canonical
+physical path and device/inode do not match an already pinned V2 member. It
+also rejects nested same-name library copies that glibc hardware-capability
+searching might prefer. It does not create a second allowlist. V3 startup
+checks both service roots; each broker PID 1 query revalidates and rederives
+the selected graph before and
+after the manager transaction, alongside the existing file hashes and unit
+fragment checks. This proves only the declared ELF load graph under the
+supported, fixed search-path model. It does not cover runtime `dlopen`,
+loader environment or preload overrides, or a post-query `execve`; those need
+unit and MAC enforcement before the result can become authority.
+
 This transaction still has no production inspector-response consumer or
 worker effect-boundary invocation. A PID 1 path/property readback does not
 independently prove the in-memory unit definition was parsed from the pinned
 fragment, so deployment must also control unit reload/replacement under an
-enforcing MAC policy. The transaction likewise does not establish complete
-executable-loader-library closure against an independently produced signer
-inventory or exclude a post-query executable replacement. Consequently the
-existing direct READY-time and later namespace-currentness checks remain
+enforcing MAC policy. The transaction likewise does not exclude a post-query
+executable replacement or prove the signed inventory's independent external
+provisioning. Consequently the existing direct READY-time and later
+namespace-currentness checks remain
 intact and fail closed, the inspector module remains evaluation-blocked, and
 Network Apply remains closed. The next deployable slice must connect a fresh
-query to each response/effect boundary, prove exhaustive closure and MAC
+query to each response/effect boundary, prove loader environment and MAC
 constraints, and qualify the protected system in a positive VM.
 
 Deployment must authenticate the physical inspector, broker, worker, helper,

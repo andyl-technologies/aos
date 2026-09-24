@@ -5,9 +5,10 @@
 //! physical file, and binds its own running executable to the broker entry.
 //! The `manager_query_helper` member names the broker-side PID 1 helper; the
 //! inspector-self query helper remains a separate V1-pinned executable.
-//! The signer must independently establish that the list includes the full
-//! `PT_INTERP` and `DT_NEEDED` graph. A signed list alone does not prove that
-//! completeness or replace a fresh, broker-owned PID 1 unit observation.
+//! With the V3 launch credential, the broker derives the `PT_INTERP` and
+//! transitive `DT_NEEDED` graph from pinned ELF files and requires every
+//! resolved loader/library to appear in the same signed inventory. This does
+//! not replace a fresh PID 1 observation or MAC control of loader inputs.
 //!
 //! ```text
 //! inspector-deployment-verifier-v2: AOSNIK02 | generation:u64 |
@@ -43,6 +44,7 @@ const MAXIMUM_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_TOTAL_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_MEMBERS: usize = 128;
 
+mod elf_closure;
 mod launch_policy;
 pub use launch_policy::ProtectedServiceLaunchV3;
 
@@ -123,7 +125,8 @@ impl ProtectedInspectorDeploymentV2 {
     /// # Errors
     ///
     /// Rejects a half-installed pair, unsafe credential metadata, invalid
-    /// signature or generation, malformed inventory, or any mismatched member.
+    /// signature or generation, malformed inventory, a V3 ELF-closure gap, or
+    /// any mismatched member.
     pub fn load_optional(directory: &Path) -> Result<Option<Self>, InspectorDeploymentErrorV2> {
         let key_path = directory.join(KEY_NAME);
         let contract_path = directory.join(CONTRACT_NAME);
@@ -180,6 +183,10 @@ impl ProtectedInspectorDeploymentV2 {
             launch_policy,
         };
         deployment.revalidate()?;
+        if deployment.launch_policy.is_some() {
+            deployment.verify_service_elf_closure(true)?;
+            deployment.verify_service_elf_closure(false)?;
+        }
         Ok(Some(deployment))
     }
 
@@ -244,18 +251,28 @@ impl ProtectedInspectorDeploymentV2 {
     ///
     /// # Errors
     ///
-    /// Rejects a missing policy or any changed physical or observed fragment
-    /// path, inode, mode, length, or content.
+    /// Rejects a missing policy, an incomplete or ambiguous ELF load graph,
+    /// or any changed physical member or unit-fragment path, inode, metadata,
+    /// or content.
     pub fn service_launch(
         &self,
         inspector: bool,
     ) -> Result<ProtectedServiceLaunchV3<'_>, InspectorDeploymentErrorV2> {
-        self.revalidate()?;
         let policy = self
             .launch_policy
             .as_ref()
             .ok_or(InspectorDeploymentErrorV2::Invalid)?;
+        self.verify_service_elf_closure(inspector)?;
         Ok(policy.service(inspector))
+    }
+
+    fn verify_service_elf_closure(
+        &self,
+        inspector: bool,
+    ) -> Result<(), InspectorDeploymentErrorV2> {
+        self.revalidate()?;
+        elf_closure::verify_service(&self.members, inspector)?;
+        self.revalidate()
     }
 }
 
