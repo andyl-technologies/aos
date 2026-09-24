@@ -241,19 +241,8 @@ impl ControllerHostPublication {
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
-        if self.pending.is_some()
-            || self.authority_effects.has_pending()
-            || self.attach_gate.has_pending()
-            || self.poisoned
-        {
-            return Err(EffectFailure::Retryable(
-                "Host session has retained non-execution work".to_owned(),
-            ));
-        }
-        let session = self.session.as_mut().ok_or_else(|| {
-            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
-        })?;
-        self.execution_effects.query(session, intent, authorization)
+        let (exchange, session) = self.execution_exchange()?;
+        exchange.query(session, intent, authorization)
     }
 
     /// Applies or resumes one exact source-bound execution effect through Host.
@@ -262,6 +251,19 @@ impl ControllerHostPublication {
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<ControllerExecutionCompletionV1, EffectFailure> {
+        let (exchange, session) = self.execution_exchange()?;
+        exchange.apply(session, intent, authorization)
+    }
+
+    fn execution_exchange(
+        &mut self,
+    ) -> Result<
+        (
+            &mut ControllerExecutionExchangeV1,
+            &mut DormantAuthenticatedBrokerSessionV1,
+        ),
+        EffectFailure,
+    > {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.attach_gate.has_pending()
@@ -274,7 +276,7 @@ impl ControllerHostPublication {
         let session = self.session.as_mut().ok_or_else(|| {
             EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
         })?;
-        self.execution_effects.apply(session, intent, authorization)
+        Ok((&mut self.execution_effects, session))
     }
 
     /// Applies one exact lifecycle runtime effect with adjacent Host inventory.
