@@ -16,6 +16,8 @@
 //! protected-journal seams. [`publisher_roots`] owns
 //! the portable root registry and retains live root custody only on Linux,
 //! without activating it.
+//! [`execution_output_reservation`] owns accepted-Create-derived, protected
+//! pre-Host output-byte claims while execution authorization remains closed.
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
@@ -53,6 +55,8 @@ pub mod dispatch;
 pub mod environment;
 #[cfg(target_os = "linux")]
 pub mod execution_parent_resource;
+#[cfg(target_os = "linux")]
+pub mod execution_output_reservation;
 pub mod filesystem_view_state;
 pub mod git;
 #[cfg(target_os = "linux")]
