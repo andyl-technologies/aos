@@ -470,43 +470,6 @@ pub(crate) fn authenticate_production_exact_checkpoint_replay_oracle_promotion(
     Ok(evidence_id)
 }
 
-/// Acquires the process-local publication claim after durable proof validation.
-///
-/// # Errors
-///
-/// Returns a replay-oracle readiness error if the matching live claim is absent,
-/// or any error from the complete raw-to-promoted relationship validator.
-pub(crate) fn acquire_production_exact_checkpoint_replay_oracle_promotion<'a>(
-    checkpoints: &'a ExactCheckpointStore,
-    raw: ExactCheckpointId,
-    promoted: ExactCheckpointId,
-    source: &ScenarioDefForm,
-    cancellation: &ExecutionCancellation,
-) -> Result<
-    crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
-    ProductionAttemptCheckpointRestoreError,
-> {
-    let evidence_id = authenticate_production_exact_checkpoint_replay_oracle_promotion(
-        checkpoints,
-        raw,
-        promoted,
-        source,
-        cancellation,
-    )?;
-    checkpoints
-        .acquire_live_replay_promotion(promoted, evidence_id)
-        .map_err(
-            |_| ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
-                checkpoint: promoted,
-            },
-        )?
-        .ok_or(
-            ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
-                checkpoint: promoted,
-            },
-        )
-}
-
 /// Prepares one attempt-bound production replay-oracle root without writes.
 ///
 /// The installed closure must come from `raw`. `matches` must contain exactly
