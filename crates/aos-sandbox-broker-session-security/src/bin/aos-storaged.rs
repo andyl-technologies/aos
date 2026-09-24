@@ -10,11 +10,16 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use aos_sandbox_broker_session_security::{
-    ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
-    production_deadline_after,
+    DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1,
+    ProductionBrokerSessionActivationV1, production_deadline_after,
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_storage::activation::take_systemd_listeners;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
+use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1;
+use aos_sandbox_storage::peer::{
+    ControllerPeerVerifier, HostRootExportPeerVerifier, ProviderLiveExportPeerVerifier,
+};
 use aos_sandbox_storage::{
     DormantStorageApplyCompositionV1, StorageIdentityPoolV1, StoragePrepareReadiness,
     StorageRuntimeError, StorageServiceError, SystemdZfsExecutor,
@@ -25,6 +30,9 @@ const STATE_ROOT: &str = "/var/lib/aos/sandbox-storage";
 const ZFS_WORKER_SOCKET: &str = "/run/aos/sandbox-zfs-worker/control.sock";
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+const CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
+const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
+const SOURCE_PROVIDER_CGROUP: &str = "aos.slice/aos-control.slice/aos-source-providerd.service";
 
 fn main() -> ExitCode {
     match run() {
@@ -44,10 +52,13 @@ fn run() -> Result<(), StorageServiceError> {
     }
     let arguments = arguments()?;
 
-    // SAFETY: this is the single-threaded entrypoint before any other
-    // descriptor operation. PID 1 exclusively transfers the fixed FD 3.
-    let mut activation = unsafe { ProductionBrokerSessionActivationV1::adopt_storage() }
-        .map_err(production_error)?;
+    // Claim the complete systemd table before any inherited slot can be
+    // reused. The broker session owns only its fixed control listener.
+    let (control_listener, mut export_listener, mut live_export_listener, mut operator_listener) =
+        take_systemd_listeners()?;
+    let mut activation =
+        ProductionBrokerSessionActivationV1::adopt_storage_listener(control_listener)
+            .map_err(production_error)?;
     let identity_pool =
         StorageIdentityPoolV1::new(arguments.identity_pool_start, arguments.identity_pool_size)
             .map_err(StorageRuntimeError::WorkspaceCatalog)?;
@@ -65,6 +76,16 @@ fn run() -> Result<(), StorageServiceError> {
         executor,
     )?
     .with_guest_root_template(guest_root_template);
+    if live_export_listener.is_some() {
+        storage = storage.with_private_live_export_cold_audit(Path::new(STATE_ROOT))?;
+    }
+    let (operator_credentials, mut operator_owner) = if operator_listener.is_some() {
+        let credentials = StorageOperatorRecoveryCredentialsV1::load()?;
+        let owner = credentials.open_owner(Path::new(STATE_ROOT))?;
+        (Some(credentials), Some(owner))
+    } else {
+        (None, None)
+    };
     if let Some(diagnostic) = prepare_readiness_diagnostic(storage.runtime().prepare_readiness()) {
         eprintln!("aos-storaged: {diagnostic}");
     }
@@ -73,33 +94,154 @@ fn run() -> Result<(), StorageServiceError> {
     // installed, authenticates, and exits from a mutation-free health request.
     storage.probe_guest_root_publisher()?;
 
+    let mut active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
     loop {
         if !storage.runtime().is_inventory_ready() {
             return Err(StorageRuntimeError::Recovery.into());
         }
-        let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
-            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-        let mut session = match activation.accept_authenticated(accept_deadline) {
-            Ok(session) => session,
-            Err(ProductionBrokerSessionActivationErrorV1::Deadline) => continue,
-            Err(error) => return Err(production_error(error)),
-        };
-        loop {
-            if !storage.runtime().is_inventory_ready() {
-                return Err(StorageRuntimeError::Recovery.into());
-            }
-            let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
+
+        let mut ready = Vec::with_capacity(4);
+        if let Some(session) = active_session.as_ref() {
+            let session_fd = session
+                .as_fd()
                 .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-            match session.serve_production_storage_request(&mut storage, request_deadline) {
-                Ok(retained) => session = retained,
-                Err(error) => {
-                    // Only a failed exchange consumes the connection. Successful
-                    // requests retain the protected sequence owner for the next
-                    // inventory or effect on this authenticated session.
-                    eprintln!("aos-storaged: authenticated request failed: {error}");
-                    break;
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                session_fd,
+                rustix::event::PollFlags::IN,
+            ));
+        } else {
+            let listener_fd = activation.storage_listener_fd().map_err(production_error)?;
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                listener_fd,
+                rustix::event::PollFlags::IN,
+            ));
+        }
+        ready.push(rustix::event::PollFd::from_borrowed_fd(
+            export_listener.as_fd(),
+            rustix::event::PollFlags::IN,
+        ));
+        let live_export_index = live_export_listener.as_ref().map(|listener| {
+            let index = ready.len();
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+            index
+        });
+        let operator_index = operator_listener.as_ref().map(|listener| {
+            let index = ready.len();
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+            index
+        });
+        match rustix::event::poll(&mut ready, None) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+        let broker_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
+        let broker_disconnected = ready[0]
+            .revents()
+            .intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR);
+        let export_ready = ready[1].revents().contains(rustix::event::PollFlags::IN);
+        let live_export_ready = live_export_index
+            .and_then(|index| ready.get(index))
+            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+        let operator_ready = operator_index
+            .and_then(|index| ready.get(index))
+            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+        drop(ready);
+        if !broker_ready
+            && !broker_disconnected
+            && !export_ready
+            && !live_export_ready
+            && !operator_ready
+        {
+            return Err(StorageServiceError::Activation(
+                "activated Storage endpoint reported invalid readiness".to_owned(),
+            ));
+        }
+
+        if broker_disconnected && active_session.is_none() {
+            return Err(StorageServiceError::Activation(
+                "protected Storage broker listener was retired".to_owned(),
+            ));
+        }
+        if broker_ready {
+            if let Some(session) = active_session.take() {
+                let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
+                    .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                match session.serve_production_storage_request(&mut storage, request_deadline) {
+                    Ok(retained) => active_session = Some(retained),
+                    Err(error) => eprintln!("aos-storaged: authenticated request failed: {error}"),
+                }
+            } else {
+                let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
+                    .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                match activation.accept_authenticated(accept_deadline) {
+                    Ok(session) => active_session = Some(session),
+                    Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
+                    Err(error) => return Err(production_error(error)),
                 }
             }
+        } else if broker_disconnected {
+            // A retired child is local to that session; a retired listener is fatal.
+            active_session = None;
+        }
+        if export_ready {
+            let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
+            if let Ok(host_cgroup) = host_cgroup {
+                let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
+                storage.serve_root_export_once(&mut export_listener, &verifier)?;
+            } else {
+                export_listener.validate_current()?;
+                let _ = export_listener.accept_descriptor_subject();
+            }
+        }
+        if live_export_ready {
+            let listener = live_export_listener.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("live-export listener disappeared".to_owned())
+            })?;
+            let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
+            if let Ok(provider_cgroup) = provider_cgroup {
+                let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
+                storage.serve_live_export_request_once(
+                    listener,
+                    &verifier,
+                    &arguments.authority_directory,
+                    Path::new(STATE_ROOT),
+                )?;
+            } else {
+                listener.validate_current()?;
+                let _ = listener.accept();
+            }
+        }
+        if operator_ready {
+            let listener = operator_listener.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("operator Repair listener disappeared".to_owned())
+            })?;
+            let credentials = operator_credentials.as_ref().ok_or_else(|| {
+                StorageServiceError::Activation(
+                    "operator Repair credentials disappeared".to_owned(),
+                )
+            })?;
+            let owner = operator_owner.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("operator Repair owner disappeared".to_owned())
+            })?;
+            credentials.recheck()?;
+            let controller_cgroup = open_cgroup_root()?.resolve(Path::new(CONTROLLER_CGROUP));
+            if let Ok(controller_cgroup) = controller_cgroup {
+                let verifier =
+                    ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
+                storage.serve_operator_repair_once(listener, &verifier, owner)?;
+            } else {
+                // A queued stale child cannot create Controller authority.
+                listener.validate_current()?;
+                let _ = listener.accept();
+            }
+            credentials.recheck()?;
         }
     }
 }

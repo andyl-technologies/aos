@@ -11,7 +11,7 @@ mod host;
 pub use host::{ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1};
 
 use std::collections::BTreeMap;
-use std::os::fd::OwnedFd;
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerErrorV1;
@@ -129,6 +129,47 @@ impl ProductionBrokerSessionActivationV1 {
                 ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
             )])
         }
+    }
+
+    /// Adopts Storage's fixed broker listener after its complete socket table is claimed.
+    ///
+    /// The Storage daemon must first classify every systemd descriptor,
+    /// including root-export and operator sidecar listeners. This constructor
+    /// transfers only the broker-session listener into authenticated custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any listener outside the fixed Storage broker socket path.
+    pub fn adopt_storage_listener(
+        listener: RecordSubjectListener,
+    ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
+        let endpoint = ProtectedBrokerSessionFixedEndpointV1::StorageBroker;
+        listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
+        Ok(Self {
+            listeners: vec![FixedListenerV1 { endpoint, listener }],
+        })
+    }
+
+    /// Borrows only the fixed Storage listener for a multi-socket event loop.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Storage activation or a retired listener.
+    pub fn storage_listener_fd(
+        &self,
+    ) -> Result<BorrowedFd<'_>, ProductionBrokerSessionActivationErrorV1> {
+        let [fixed] = self.listeners.as_slice() else {
+            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                "Storage activation does not own exactly one broker listener",
+            ));
+        };
+        if fixed.endpoint != ProtectedBrokerSessionFixedEndpointV1::StorageBroker {
+            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                "activation endpoint is not Storage",
+            ));
+        }
+        fixed.listener.validate_current()?;
+        Ok(fixed.listener.as_fd())
     }
 
     /// Adopts the sole fixed Mount listener.

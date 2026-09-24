@@ -12,6 +12,7 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_protocol::semantics::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -22,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 use crate::guest_root_inventory::{
     ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
 };
+use crate::live_export_clone::StorageLiveExportCloneLedgerV1;
 use crate::pin_worker::boottime_now_nanoseconds;
 use crate::{
     StorageAdmissionError, StorageAdmissionOutcome, StorageBrokerRuntime, StorageIdentityPoolV1,
@@ -172,6 +174,7 @@ pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
 pub struct DormantStorageApplyCompositionV1 {
     runtime: StorageBrokerRuntime,
     guest_root_template: Option<ProtectedGuestRootTemplateV1>,
+    _private_live_export_clones: Option<StorageLiveExportCloneLedgerV1>,
 }
 
 impl DormantStorageApplyCompositionV1 {
@@ -203,6 +206,7 @@ impl DormantStorageApplyCompositionV1 {
         Ok(Self {
             runtime,
             guest_root_template: None,
+            _private_live_export_clones: None,
         })
     }
 
@@ -212,6 +216,7 @@ impl DormantStorageApplyCompositionV1 {
         Self {
             runtime,
             guest_root_template: None,
+            _private_live_export_clones: None,
         }
     }
 
@@ -220,6 +225,80 @@ impl DormantStorageApplyCompositionV1 {
     pub fn with_guest_root_template(mut self, template: ProtectedGuestRootTemplateV1) -> Self {
         self.guest_root_template = Some(template);
         self
+    }
+
+    /// Audits private Provider clone history before accepting live-export requests.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe journal custody or an interrupted private clone lifecycle.
+    pub fn with_private_live_export_cold_audit(
+        mut self,
+        state_directory: &Path,
+    ) -> Result<Self, crate::service::StorageServiceError> {
+        let ledger = StorageLiveExportCloneLedgerV1::open_root_owned(state_directory)
+            .map_err(|error| crate::service::StorageServiceError::Activation(error.to_string()))?;
+        self._private_live_export_clones = Some(ledger);
+        Ok(self)
+    }
+
+    /// Serves one Controller-signed operator Repair packet on its separate socket.
+    ///
+    /// # Errors
+    ///
+    /// Rejects retired activation or protected state requiring process reopen.
+    pub fn serve_operator_repair_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ControllerPeerVerifier,
+        owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+    ) -> Result<crate::service::StorageConnectionOutcome, crate::service::StorageServiceError> {
+        crate::operator_repair_transport::serve_operator_repair_once(
+            listener,
+            &mut self.runtime,
+            verifier,
+            owner,
+        )
+    }
+
+    /// Serves one Host-only detached-root request against the retained runtime.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed activation, retired Host cgroup, or protected state requiring reopen.
+    pub fn serve_root_export_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::HostRootExportPeerVerifier,
+    ) -> Result<crate::root_export::RootExportOutcome, crate::service::StorageServiceError> {
+        let template = self.guest_root_template.as_ref().ok_or_else(|| {
+            crate::service::StorageServiceError::Activation(
+                "guest root template is absent".to_owned(),
+            )
+        })?;
+        crate::root_export::serve_root_export_once(listener, &mut self.runtime, verifier, template)
+    }
+
+    /// Inspects one authenticated Provider plan without granting an export.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed activation, retired Provider cgroup, or protected state requiring reopen.
+    pub fn serve_live_export_request_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        authority_directory: &Path,
+        state_directory: &Path,
+    ) -> Result<crate::StorageLiveExportTransportOutcomeV1, crate::service::StorageServiceError>
+    {
+        crate::live_export_transport::serve_live_export_request_once(
+            listener,
+            &mut self.runtime,
+            verifier,
+            authority_directory,
+            state_directory,
+        )
     }
 
     /// Returns the retained runtime for explicit recovery coordination.
