@@ -2063,6 +2063,44 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         })
     }
 
+    /// Issues a fresh signed Storage Inventory after the Repair proof is sealed.
+    ///
+    /// The Controller reserves the authenticated session's actual request ID
+    /// before send. This query remains nonterminal until its exact packet,
+    /// latest physical state, and public-ledger CAS are checked together.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsealed or stale proof, owner rotation, an ambiguous broker
+    /// exchange, or an incomplete/noncurrent signed Inventory response.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    pub(crate) fn current_operator_repair_terminal_inventory<C, E>(
+        &mut self,
+        controller: &mut NodeController<C, E>,
+        operation_id: OperationId,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            LifecycleAuthenticatedStorageInventoryV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    >
+    where
+        C: ActivatedOperationCompiler,
+        E: SingleNodeEffectExecutor,
+    {
+        self.challenged_operator_repair_inventory_observation(|request_id| {
+            controller
+                .reserve_operator_storage_repair_terminal_inventory_challenge_v1(
+                    operation_id,
+                    request_id,
+                )
+                .map_err(|_| {
+                    BrokerSessionSecurityError::manifest("operator Repair terminal challenge")
+                })
+        })
+    }
+
     /// Recovers only the pending signed Inventory exchange for one retained challenge.
     ///
     /// Cold process restart has no in-memory exchange to resume: the caller

@@ -14,9 +14,16 @@
 //! fresh-request-id[16] | fresh-packet-digest[32] | checksum[32]
 //! ```
 
-use aos_sandbox_core::operator_recovery_effect::verify_operator_recovery_effect_intent_v1;
+use aos_proto::aos::sandbox::local::v1::RepairStorageWorkspacePinRequest;
+use aos_sandbox_core::operator_recovery_effect::{
+    OperatorRecoveryEffectIntentV1, verify_operator_recovery_effect_intent_v1,
+};
 use aos_sandbox_core::{OperationId, ProjectId};
-use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
+};
+use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, decode_storage_resource_inventory_response};
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::super::receipt::{
@@ -24,8 +31,8 @@ use super::super::receipt::{
     verified_retained_repair_receipt_v3,
 };
 use super::super::{
-    OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1, StorageRepairIssuanceV2,
-    hash, issuance_key_v2,
+    FENCE_DOMAIN, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
+    REQUEST_DOMAIN, StorageRepairIssuanceV2, hash, issuance_key_v2,
 };
 use super::StoredProofV2;
 use crate::controller::recovery_current_key;
@@ -67,6 +74,8 @@ impl BoundRepairLedgerReceiptV1 {
     pub(super) fn from_verified_rows(
         proof: &StoredProofV2,
         owner: &VerifiedRetainedRepairReceiptV3,
+        intent: &OperatorRecoveryEffectIntentV1,
+        storage_request_body: &[u8],
         sandbox_id: [u8; 16],
         predecessor_projection: &[u8],
         successor_projection: &PublicProjectionPlanV1,
@@ -76,12 +85,14 @@ impl BoundRepairLedgerReceiptV1 {
         let inventory = LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(fresh)
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         if proof.signed_pair_digest != owner.signed_pair_digest
-            || proof.operation_id == [0; 16]
-            || sandbox_id == [0; 16]
+            || proof.operation_id != intent.recovery_operation_id
+            || proof.effect_id != intent.effect_id
+            || sandbox_id != intent.target_id
             || inventory.source_version() != 3
         {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
+        verify_fresh_physical_target(owner, intent, storage_request_body, fresh)?;
         let record = Self {
             operation_id: proof.operation_id,
             sandbox_id,
@@ -246,6 +257,88 @@ impl BoundRepairLedgerReceiptV1 {
     }
 }
 
+fn verify_fresh_physical_target(
+    owner: &VerifiedRetainedRepairReceiptV3,
+    intent: &OperatorRecoveryEffectIntentV1,
+    storage_request_body: &[u8],
+    fresh: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = fresh.result() else {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    };
+    verify_fresh_physical_target_body(owner, intent, storage_request_body, exact_body)
+}
+
+fn verify_fresh_physical_target_body(
+    owner: &VerifiedRetainedRepairReceiptV3,
+    intent: &OperatorRecoveryEffectIntentV1,
+    storage_request_body: &[u8],
+    exact_body: &[u8],
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    let request = RepairStorageWorkspacePinRequest::decode_from_slice(storage_request_body)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let fence = request
+        .fence
+        .as_option()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let fence_digest = hash(
+        FENCE_DOMAIN,
+        &[
+            &fence.sandbox_id,
+            &fence.incarnation_id,
+            &fence.assignment_epoch.to_be_bytes(),
+            &fence.desired_generation.to_be_bytes(),
+            &fence.assignment_digest,
+        ],
+    );
+    if request.encode_to_vec() != storage_request_body
+        || hash(REQUEST_DOMAIN, &[storage_request_body]) != intent.effect_id
+        || request.operation_id.as_slice() != intent.recovery_operation_id
+        || request.storage_handle.len() != 32
+        || fence.sandbox_id.as_slice() != intent.target_id
+        || fence.desired_generation != intent.current_generation
+        || fence_digest != intent.current_fence_digest
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    let inventory = decode_storage_resource_inventory_response(exact_body, MAXIMUM_RESPONSE_BYTES)
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let mut matching_workspaces = inventory
+        .workspaces()
+        .iter()
+        .filter(|workspace| workspace.workspace_handle().as_slice() == request.storage_handle);
+    let workspace = matching_workspaces
+        .next()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if matching_workspaces.next().is_some()
+        || workspace.fence().sandbox_id().as_slice() != fence.sandbox_id
+        || workspace.fence().incarnation_id().as_slice() != fence.incarnation_id
+        || workspace.fence().assignment_epoch() != fence.assignment_epoch
+        || workspace.fence().desired_generation() != fence.desired_generation
+        || workspace.fence().assignment_digest().as_slice() != fence.assignment_digest
+        || *workspace.resource_digest() != owner.resulting_physical_version
+        || inventory.catalog_generation() < owner.owner_catalog_generation
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    let request_digest: [u8; 32] = Sha256::digest(storage_request_body).into();
+    let mut matching_commits = inventory
+        .operator_repair_commits()
+        .iter()
+        .filter(|commit| commit.operation_id() == &intent.recovery_operation_id);
+    let commit = matching_commits
+        .next()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if matching_commits.next().is_some()
+        || commit.workspace_handle().as_slice() != request.storage_handle
+        || commit.request_digest() != &request_digest
+        || commit.effect_commit_digest() != &owner.effect_commit_digest
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    Ok(())
+}
+
 fn exact<const N: usize>(bytes: Option<&[u8]>) -> Result<[u8; N], OperatorRecoveryIssuanceErrorV1> {
     bytes
         .and_then(|bytes| bytes.try_into().ok())
@@ -254,6 +347,14 @@ fn exact<const N: usize>(bytes: Option<&[u8]>) -> Result<[u8; N], OperatorRecove
 
 #[cfg(test)]
 mod tests {
+    use aos_proto::aos::sandbox::local::v1::{
+        AssignmentFence, Descriptor, InventoryStorageResourcesResponse,
+        StorageOperatorRepairCommitRecordV1, StorageWorkspaceInventoryRecord,
+    };
+    use aos_sandbox_core::operator_recovery_effect::{
+        OperatorRecoveryEffectActionV1, OperatorRecoveryEffectTargetV1,
+    };
+
     use super::*;
 
     fn sample() -> BoundRepairLedgerReceiptV1 {
@@ -289,5 +390,123 @@ mod tests {
         let mut no_fresh_query = sample();
         no_fresh_query.fresh_request_id = [0; 16];
         assert!(BoundRepairLedgerReceiptV1::decode(&no_fresh_query.encode()).is_err());
+    }
+
+    #[test]
+    fn fresh_target_requires_exact_owner_version_fence_and_durable_commit() {
+        let fence = AssignmentFence {
+            sandbox_id: vec![2; 16],
+            incarnation_id: vec![3; 16],
+            assignment_epoch: 4,
+            desired_generation: 7,
+            assignment_digest: vec![8; 32],
+            ..Default::default()
+        };
+        let request = RepairStorageWorkspacePinRequest {
+            operation_id: vec![1; 16],
+            storage_handle: vec![6; 32],
+            fence: Some(fence.clone()).into(),
+            ..Default::default()
+        };
+        let request_body = request.encode_to_vec();
+        let request_digest: [u8; 32] = Sha256::digest(&request_body).into();
+        let intent = OperatorRecoveryEffectIntentV1 {
+            recovery_operation_id: [1; 16],
+            target_id: [2; 16],
+            action: OperatorRecoveryEffectActionV1::Repair,
+            target_kind: OperatorRecoveryEffectTargetV1::Sandbox,
+            principal_id: [3; 16],
+            project_id: [4; 16],
+            capability_id: [5; 16],
+            expected_version_digest: [6; 32],
+            evidence_digest: [7; 32],
+            request_digest: [8; 32],
+            authorization_digest: [9; 32],
+            current_fence_digest: hash(
+                FENCE_DOMAIN,
+                &[
+                    &fence.sandbox_id,
+                    &fence.incarnation_id,
+                    &fence.assignment_epoch.to_be_bytes(),
+                    &fence.desired_generation.to_be_bytes(),
+                    &fence.assignment_digest,
+                ],
+            ),
+            effect_id: hash(REQUEST_DOMAIN, &[&request_body]),
+            attempt: 1,
+            current_generation: 7,
+        };
+        let owner = VerifiedRetainedRepairReceiptV3 {
+            record_digest: [10; 32],
+            signed_pair_digest: [11; 32],
+            resulting_physical_version: [12; 32],
+            effect_commit_digest: [13; 32],
+            owner_catalog_generation: 16,
+            owner_id: [14; 16],
+            owner_key_generation: 18,
+        };
+        let workspace = StorageWorkspaceInventoryRecord {
+            workspace_handle: vec![6; 32],
+            fence: Some(fence).into(),
+            root_image: Some(Descriptor {
+                media_type: "application/vnd.aos.sandbox.view.v1+cbor".to_owned(),
+                sha256: vec![15; 32],
+                encoded_size: 4,
+                ..Default::default()
+            })
+            .into(),
+            resource_kernel_boot_id: vec![19; 16],
+            root_device: 20,
+            root_inode: 21,
+            dataset_guid: 22,
+            creation_operation_id: vec![23; 16],
+            uid_range_start: 65_536,
+            uid_range_size: 65_536,
+            resource_digest: vec![12; 32],
+            ..Default::default()
+        };
+        let commit = StorageOperatorRepairCommitRecordV1 {
+            operation_id: vec![1; 16],
+            workspace_handle: vec![6; 32],
+            request_digest: request_digest.to_vec(),
+            effect_commit_digest: vec![13; 32],
+            ..Default::default()
+        };
+        let mut inventory = InventoryStorageResourcesResponse {
+            kernel_boot_id: vec![19; 16],
+            broker_instance_id: vec![24; 16],
+            journal_sequence: 25,
+            catalog_generation: 16,
+            workspaces: vec![workspace],
+            operator_repair_commits: vec![commit],
+            lifecycle_source: vec![26; 32],
+            lifecycle_source_version: 3,
+            lifecycle_catalog_head: vec![27; 32],
+            lifecycle_catalog_generation: 16,
+            ..Default::default()
+        };
+
+        let check = |inventory: &InventoryStorageResourcesResponse,
+                     owner: &VerifiedRetainedRepairReceiptV3| {
+            verify_fresh_physical_target_body(
+                owner,
+                &intent,
+                &request_body,
+                &inventory.encode_to_vec(),
+            )
+        };
+        assert_eq!(check(&inventory, &owner), Ok(()));
+
+        inventory.workspaces[0].resource_digest = vec![28; 32];
+        assert!(check(&inventory, &owner).is_err());
+        inventory.workspaces[0].resource_digest = vec![12; 32];
+        inventory.operator_repair_commits[0].effect_commit_digest = vec![29; 32];
+        assert!(check(&inventory, &owner).is_err());
+        inventory.operator_repair_commits[0].effect_commit_digest = vec![13; 32];
+        inventory.catalog_generation = 15;
+        assert!(check(&inventory, &owner).is_err());
+        inventory.catalog_generation = 16;
+        inventory.operator_repair_commits.clear();
+        assert!(check(&inventory, &owner).is_err());
     }
 }

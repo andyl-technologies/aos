@@ -665,6 +665,8 @@ pub(super) struct VerifiedRetainedRepairReceiptV3 {
     pub(super) record_digest: [u8; 32],
     pub(super) signed_pair_digest: [u8; 32],
     pub(super) resulting_physical_version: [u8; 32],
+    pub(super) effect_commit_digest: [u8; 32],
+    pub(super) owner_catalog_generation: u64,
     pub(super) owner_id: [u8; 16],
     pub(super) owner_key_generation: u64,
 }
@@ -728,6 +730,8 @@ fn verified_retained_repair_receipt_with_pin_v3(
             &[&retained.signed_evidence, &retained.signed_receipt],
         ),
         resulting_physical_version: signed_result.resulting_version,
+        effect_commit_digest: signed_result.effect_commit_digest,
+        owner_catalog_generation: signed_result.owner_generation,
         owner_id: retained.owner_id,
         owner_key_generation: retained.owner_key_generation,
     })
@@ -933,6 +937,8 @@ mod tests {
         let verified =
             verified_retained_repair_receipt_with_pin_v3(&journal, &intent, &pin).unwrap();
         assert_eq!(verified.resulting_physical_version, [13; 32]);
+        assert_eq!(verified.effect_commit_digest, [19; 32]);
+        assert_eq!(verified.owner_catalog_generation, 16);
         assert_eq!(verified.owner_key_generation, 18);
         assert_eq!(
             reserve_receipt(&mut journal, &intent, &first.0, &first.1, &pin),

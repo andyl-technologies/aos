@@ -3,6 +3,7 @@
 //! A broker-signed historical inventory cannot answer a controller-generated
 //! request ID that was durably committed only after issuance. Until a proof is
 //! sealed, a cold retry replaces the challenge and invalidates earlier reads.
+//! A separate terminal challenge is reserved only after that proof is sealed.
 //!
 //! ```text
 //! storage-repair-query-v1/<stage:u8>/<operation-id[16]>:
@@ -18,7 +19,10 @@ use aos_sandbox_core::operator_recovery_effect_v2::{
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
 use super::before;
-use super::receipt::ProtectedStorageRepairReceiptVerifierV2;
+use super::receipt::{
+    ProtectedStorageRepairReceiptVerifierV2, verified_retained_repair_receipt_v3,
+};
+use super::terminal;
 use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     StorageRepairIssuanceV2, hash, issuance_key_v2,
@@ -40,6 +44,7 @@ const PROOF_PREFIX: &[u8] = b"storage-repair-proof-v2/";
 pub(super) enum ProbeStageV1 {
     Before = 1,
     After = 2,
+    Terminal = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +80,7 @@ impl StoredProbeChallengeV1 {
         let stage = match bytes[8] {
             1 => ProbeStageV1::Before,
             2 => ProbeStageV1::After,
+            3 => ProbeStageV1::Terminal,
             _ => return Err(OperatorRecoveryIssuanceErrorV1::Binding),
         };
         let record = Self {
@@ -90,7 +96,7 @@ impl StoredProbeChallengeV1 {
             || record.current_head_digest == [0; 32]
             || record.request_id == [0; 16]
             || (stage == ProbeStageV1::Before && record.signed_pair_digest != [0; 32])
-            || (stage == ProbeStageV1::After && record.signed_pair_digest == [0; 32])
+            || (stage != ProbeStageV1::Before && record.signed_pair_digest == [0; 32])
             || record.encode().as_slice() != bytes
         {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
@@ -103,6 +109,10 @@ impl StoredProbeChallengeV1 {
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
         self.matches_request_id(outcome.request().request_id())
+    }
+
+    pub(super) const fn request_id(self) -> [u8; 16] {
+        self.request_id
     }
 
     fn matches_request_id(
@@ -200,6 +210,65 @@ where
             pair_digest,
             request_id,
         )
+    }
+
+    /// Reserves a new live Inventory request only after the exact owner proof is sealed.
+    ///
+    /// A cold retry replaces the prior terminal challenge while the protected
+    /// predecessor is still current. No public success is implied by the query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or changed proof, owner-key rotation, stale head, zero
+    /// request ID, or uncertain protected challenge persistence.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    pub(crate) fn reserve_storage_repair_terminal_query_v1(
+        &mut self,
+        signer: &ProtectedOperatorRecoverySignerV1,
+        owner: &ProtectedStorageRepairReceiptVerifierV2,
+        operation_id: OperationId,
+        request_id: [u8; 16],
+    ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
+        owner.recheck()?;
+        let journal = self.reconciler.journal_mut();
+        let (issued, effect_id) = current_issuance(journal, signer, operation_id)?;
+        let intent =
+            verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
+                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let owner_facts = verified_retained_repair_receipt_v3(journal, &intent, owner)?;
+        terminal::read_sealed_proof_v2(
+            journal,
+            &issued,
+            effect_id,
+            owner_facts.signed_pair_digest,
+        )?;
+        let before_request =
+            read(journal, &issued, effect_id, ProbeStageV1::Before, [0; 32])?.request_id();
+        let after_request = read(
+            journal,
+            &issued,
+            effect_id,
+            ProbeStageV1::After,
+            owner_facts.signed_pair_digest,
+        )?
+        .request_id();
+        if request_id == before_request || request_id == after_request {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let reserved = reserve(
+            journal,
+            ProbeStageV1::Terminal,
+            &issued,
+            effect_id,
+            owner_facts.signed_pair_digest,
+            request_id,
+        )?;
+        signer
+            .credential
+            .recheck()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+        owner.recheck()?;
+        Ok(reserved)
     }
 }
 
@@ -530,5 +599,80 @@ mod tests {
             .request_id,
             second
         );
+    }
+
+    #[test]
+    fn terminal_challenge_cold_retry_invalidates_old_request_and_owner_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "operator-terminal-query.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let (issued, effect_id) = sample();
+        let pair_digest = [11; 32];
+
+        let first = reserve(
+            &mut journal,
+            ProbeStageV1::Terminal,
+            &issued,
+            effect_id,
+            pair_digest,
+            [21; 16],
+        )
+        .unwrap();
+        let second = reserve(
+            &mut journal,
+            ProbeStageV1::Terminal,
+            &issued,
+            effect_id,
+            pair_digest,
+            [22; 16],
+        )
+        .unwrap();
+        assert_ne!(first, second);
+        assert!(
+            read(
+                &mut journal,
+                &issued,
+                effect_id,
+                ProbeStageV1::After,
+                pair_digest
+            )
+            .is_err()
+        );
+        assert!(
+            read(
+                &mut journal,
+                &issued,
+                effect_id,
+                ProbeStageV1::Terminal,
+                [12; 32]
+            )
+            .is_err()
+        );
+
+        drop(journal);
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "operator-terminal-query.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let retained = read(
+            &mut reopened,
+            &issued,
+            effect_id,
+            ProbeStageV1::Terminal,
+            pair_digest,
+        )
+        .unwrap();
+        assert!(retained.matches_request_id(first).is_err());
+        assert_eq!(retained.matches_request_id(second), Ok(()));
     }
 }

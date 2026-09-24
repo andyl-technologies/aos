@@ -246,6 +246,32 @@ fn reserve(
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)
 }
 
+/// Rechecks the retained proof identity before a new post-proof live query.
+pub(super) fn read_sealed_proof_v2(
+    journal: &mut Journal,
+    issued: &StorageRepairIssuanceV2,
+    effect_id: [u8; 32],
+    signed_pair_digest: [u8; 32],
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let key = [PREFIX, issued.operation_id.as_slice()].concat();
+    let proof = StoredProofV2::decode(
+        journal
+            .get(RecordNamespace::OperatorRecovery, &key)
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+    )?;
+    if proof.operation_id != issued.operation_id
+        || proof.effect_id != effect_id
+        || proof.current_head_digest != issued.current_head_digest
+        || proof.signed_pair_digest != signed_pair_digest
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
+    Ok(())
+}
+
 fn array<const N: usize>(
     bytes: &[u8],
     offset: usize,
@@ -313,7 +339,37 @@ mod tests {
         journal.commit(&initial).unwrap();
         let head = hash(CURRENT_HEAD_DOMAIN_V2, &[b"current-a"]);
         let proof = sample(head);
+        let issued = StorageRepairIssuanceV2 {
+            operation_id: proof.operation_id,
+            public_request_digest: [11; 32],
+            current_head_digest: head,
+            inventory_commitment: [12; 32],
+            inventory_head: [13; 32],
+            inventory_generation: 14,
+            controller_key_id: [15; 16],
+            controller_key_generation: 16,
+            signed_intent: [17; super::super::OPERATOR_RECOVERY_EFFECT_INTENT_BYTES],
+        };
+        assert!(
+            read_sealed_proof_v2(
+                &mut journal,
+                &issued,
+                proof.effect_id,
+                proof.signed_pair_digest
+            )
+            .is_err()
+        );
         assert_eq!(reserve(&mut journal, &proof, &current_key, head), Ok(()));
+        assert_eq!(
+            read_sealed_proof_v2(
+                &mut journal,
+                &issued,
+                proof.effect_id,
+                proof.signed_pair_digest
+            ),
+            Ok(())
+        );
+        assert!(read_sealed_proof_v2(&mut journal, &issued, proof.effect_id, [19; 32]).is_err());
         assert_eq!(reserve(&mut journal, &proof, &current_key, head), Ok(()));
         let mut changed = proof;
         changed.signed_pair_digest = [9; 32];
@@ -331,6 +387,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reserve(&mut reopened, &proof, &current_key, head), Ok(()));
+        assert_eq!(
+            read_sealed_proof_v2(
+                &mut reopened,
+                &issued,
+                proof.effect_id,
+                proof.signed_pair_digest
+            ),
+            Ok(())
+        );
         let successor = JournalTransaction::new(
             [10; 16],
             vec![JournalRecord::put(

@@ -342,6 +342,39 @@ where
             .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)
     }
 
+    /// Durably reserves a fresh broker request after the V2 Repair proof is sealed.
+    ///
+    /// The fixed Controller and Storage roles are reopened for every attempt.
+    /// Cold retry must reserve a new session-selected ID before sending and
+    /// thereby invalidates a historical signed Inventory packet. This does
+    /// not advance the protected head or complete a public operation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or changed proof, rotated role credentials, stale
+    /// current head, or uncertain protected challenge persistence.
+    pub fn reserve_operator_storage_repair_terminal_inventory_challenge_v1(
+        &mut self,
+        operation_id: OperationId,
+        request_id: [u8; 16],
+    ) -> Result<(), InvalidObservationClientAdapter> {
+        let (signer, owner) = protected_query_roles()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let retained = self
+            .reserve_storage_repair_terminal_query_v1(&signer, &owner, operation_id, request_id)
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if retained != request_id {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        signer
+            .credential
+            .recheck()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        owner
+            .recheck()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)
+    }
+
     /// Reserves a version-2 Storage repair intent under an accepted public operation.
     ///
     /// The public compiler still rejects Repair. When that compiler gains a
