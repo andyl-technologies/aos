@@ -135,10 +135,10 @@ pub(super) fn run(
     let primary = primary.map_err(|error| {
         let trace = trace.map_or_else(String::new, |trace| match trace {
             Ok(trace) => format!(
-                "; retained_scheduler_liveness_trace_tail_begin\n{trace}\n\
-                 retained_scheduler_liveness_trace_tail_end"
+                "; retained_qmp_monitor_trace_tail_begin\n{trace}\n\
+                 retained_qmp_monitor_trace_tail_end"
             ),
-            Err(error) => format!("; retained_scheduler_liveness_trace_tail_error={error}"),
+            Err(error) => format!("; retained_qmp_monitor_trace_tail_error={error}"),
         });
         format!(
             "{error}{trace}; \

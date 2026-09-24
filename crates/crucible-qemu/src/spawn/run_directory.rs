@@ -367,7 +367,7 @@ impl QemuPreparedRunDirectory {
         )
     }
 
-    /// Retains the authenticated tail of an oversized scheduler-liveness trace.
+    /// Retains the authenticated tail of an oversized QMP monitor trace.
     ///
     /// Unlike [`Self::retain_runtime_determinism_trace_after_reap`], this
     /// diagnostic reads only the final fixed byte window and then retains at
@@ -394,7 +394,7 @@ impl QemuPreparedRunDirectory {
         trace
             .seek(SeekFrom::Start(start))
             .map_err(|source| QemuSpawnError::Io {
-                operation: "seek scheduler-liveness trace tail",
+                operation: "seek QMP monitor trace tail",
                 source,
             })?;
         let mut bytes = Vec::new();
@@ -402,7 +402,7 @@ impl QemuPreparedRunDirectory {
             .take(MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES)
             .read_to_end(&mut bytes)
             .map_err(|source| QemuSpawnError::Io {
-                operation: "read scheduler-liveness trace tail",
+                operation: "read QMP monitor trace tail",
                 source,
             })?;
         if u64::try_from(bytes.len()) != Ok(trace_bytes - start) {
