@@ -147,7 +147,7 @@ impl ControllerHostOutputExchangeV1 {
                         BrokerSessionSecurityError::manifest("protected Host output reserve issuer")
                     })?;
                     let body = ReserveHostExecutionOutputRequestV1 {
-                        header: Some(request_header(coordinates)).into(),
+                        header: Some(coordinates.request_header()).into(),
                         canonical_source: signed.source().canonical_bytes().to_vec(),
                         ..Default::default()
                     }
@@ -312,20 +312,6 @@ fn committed_digests_match_original(
     original_semantics: ObjectDigest,
 ) -> bool {
     observed_plan == Some(original_plan) && observed_semantics == Some(original_semantics)
-}
-
-fn request_header(
-    coordinates: DormantBrokerRequestCoordinatesV1,
-) -> aos_proto::aos::sandbox::local::v1::RequestHeader {
-    aos_proto::aos::sandbox::local::v1::RequestHeader {
-        protocol_major: u32::from(coordinates.protocol_version().major()),
-        protocol_minor: u32::from(coordinates.protocol_version().minor()),
-        request_id: coordinates.request_id().to_vec(),
-        audience: coordinates.audience().into(),
-        deadline_boottime_nanoseconds: coordinates.deadline_boottime_nanoseconds(),
-        maximum_response_bytes: coordinates.maximum_response_bytes(),
-        ..Default::default()
-    }
 }
 
 fn retryable(message: &'static str) -> EffectFailure {

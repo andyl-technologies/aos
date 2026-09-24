@@ -365,6 +365,19 @@ impl DormantBrokerRequestCoordinatesV1 {
     pub const fn audience(self) -> Audience {
         self.audience
     }
+
+    /// Builds the canonical request header from protected session coordinates.
+    pub(crate) fn request_header(self) -> RequestHeader {
+        RequestHeader {
+            protocol_major: u32::from(self.protocol_version.major()),
+            protocol_minor: u32::from(self.protocol_version.minor()),
+            request_id: self.request_id.to_vec(),
+            audience: self.audience.into(),
+            deadline_boottime_nanoseconds: self.deadline_boottime_nanoseconds,
+            maximum_response_bytes: self.maximum_response_bytes,
+            ..Default::default()
+        }
+    }
 }
 
 /// Retains one protected, durably reserved request before atomic transport.
