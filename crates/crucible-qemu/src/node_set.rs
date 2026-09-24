@@ -543,7 +543,7 @@ mod campaign_marker_parking_tests {
         let stopped_at = Icount { retired: 42 };
 
         assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, &[event.clone()]),
+            campaign_marker_parked_at(&node, stopped_at, std::slice::from_ref(&event)),
             Ok(Some(QemuParkedCampaignMarker {
                 marker: "fault.transport.ready".to_owned(),
                 marker_icount: marker_at,
