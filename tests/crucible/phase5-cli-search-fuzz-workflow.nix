@@ -10,14 +10,64 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
   fuzzGuest = import ./phase5-cli-fuzz-guest.nix {inherit pkgs;};
-  searchFixture = builtins.path {
-    path = ./fixtures/live-qemu-search.scenario.toml;
-    name = "live-qemu-search.scenario.toml";
+  liveFixtures = pkgs.mkDerivation {
+    pname = "crucible-phase5-cli-search-fuzz-live-fixtures";
+    version = "0";
+    src = crucibleSrc;
+    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          set -eu
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          set -eu
+          export CARGO_HOME="$TMPDIR/cargo"
+          export CARGO_TARGET_DIR="$TMPDIR/phase5-live-fixtures-target"
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          mkdir -p "$CARGO_HOME" .cargo
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+              > .cargo/config.toml
+          fi
+        '';
+      }
+      {
+        name = "materialize-live-fixtures";
+        script = ''
+          set -eu
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          cd crates
+          cargo test --frozen --offline -p crucible \
+            --example phase5_live_asset_fixture -- --test-threads=1
+          cargo run --frozen --offline -p crucible \
+            --example phase5_live_asset_fixture -- \
+            ${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version} \
+            ${fuzzGuest}/fuzz-guest.elf \
+            ${pkgs.crucible-fixtures}/share/crucible/fixtures/root/aos-minimal-root.ext4 \
+            ${networkInitramfs}/initrd.img \
+            "$out"
+        '';
+      }
+    ];
   };
-  fuzzFixture = builtins.path {
-    path = ./fixtures/live-qemu-fuzz.family.toml;
-    name = "live-qemu-fuzz.family.toml";
-  };
+  searchFixture = "${liveFixtures}/search.scenario.toml";
+  fuzzFixture = "${liveFixtures}/fuzz.family.toml";
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -1194,10 +1244,9 @@ in
       memory = 2048;
       rootfsDeps = [
         deployment
-        fuzzFixture
+        liveFixtures
         fuzzGuest
         networkInitramfs
-        searchFixture
         pkgs.coreutils
         pkgs.crucible
         pkgs.e2fsprogs
