@@ -1386,6 +1386,7 @@ fn drive_modeled_attempt_inner(
             },
         ));
     }
+    let mut resumed_progress_reported = false;
     lifecycle
         .set_attempt_stop_frontier(None)
         .map_err(classify_scheduler_error)?;
@@ -1682,6 +1683,39 @@ fn drive_modeled_attempt_inner(
             {
                 outcome.discovered_choices.push(discovery);
             }
+        }
+
+        // This diagnostic is emitted only from a scheduler-owned marker in a
+        // completed quantum. The campaign fixture uses it to avoid requesting
+        // another checkpoint before an exact-restored guest has run at all.
+        if !resumed_progress_reported
+            && context.resume_checkpoint().is_some()
+            && replay_target.is_none()
+            && let Some(basis) = context.runtime_basis()
+            && let Some((marker, retired_icount)) =
+                outcome
+                    .event_log_entries
+                    .iter()
+                    .find_map(|entry| match entry.payload() {
+                        SchedulerEventLogPayload::Observable(
+                            ObservableEventPayload::GuestMarker {
+                                marker,
+                                retired_icount,
+                                ..
+                            },
+                        ) => Some((marker, retired_icount)),
+                        _ => None,
+                    })
+        {
+            eprintln!(
+                "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 attempt={:?} execution={:?} quanta={} marker={} icount={}",
+                basis.key().attempt(),
+                basis.execution(),
+                completed_quanta,
+                marker.name,
+                retired_icount.retired,
+            );
+            resumed_progress_reported = true;
         }
 
         check_cancellation(context)?;
