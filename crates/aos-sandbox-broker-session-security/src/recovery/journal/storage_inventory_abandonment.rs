@@ -522,4 +522,49 @@ mod tests {
             assert!(StorageInventoryAbandonmentV1::decode(&[5; 16], &tampered).is_err());
         }
     }
+
+    #[test]
+    fn fresh_inventory_after_control_requires_exact_abandonment_marker() {
+        let marker = StorageInventoryAbandonmentV1 {
+            endpoint: BrokerSessionDurableEndpointV1::Broker,
+            group_request_id: [3; 16],
+            inventory_request_id: [5; 16],
+            group_request_digest: [7; 32],
+            inventory_request_digest: [9; 32],
+            client_original_head: [11; 32],
+            broker_original_head: [13; 32],
+            client_archive_digest: [0; 32],
+            broker_archive_digest: [15; 32],
+            broker_marker_digest: [0; 32],
+            signed_control_history: None,
+        };
+        let allowed = |record| {
+            super::super::exact_storage_inventory_abandonment_marker(
+                record,
+                BrokerSessionDurableEndpointV1::Broker,
+                [3; 16],
+                [7; 32],
+                [9; 32],
+                [11; 32],
+            )
+        };
+        assert!(!allowed(None));
+        assert!(allowed(Some(&marker)));
+        assert!(!super::super::exact_storage_inventory_abandonment_marker(
+            Some(&marker),
+            BrokerSessionDurableEndpointV1::Client,
+            [3; 16],
+            [7; 32],
+            [9; 32],
+            [11; 32],
+        ));
+        assert!(!super::super::exact_storage_inventory_abandonment_marker(
+            Some(&marker),
+            BrokerSessionDurableEndpointV1::Broker,
+            [3; 16],
+            [7; 32],
+            [10; 32],
+            [11; 32],
+        ));
+    }
 }
