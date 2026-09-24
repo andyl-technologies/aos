@@ -152,6 +152,12 @@ impl GuestAgentLaunchRecordV1 {
         &self.features
     }
 
+    /// Returns the guest package identity sealed into this launch record.
+    #[must_use]
+    pub const fn package_binding(&self) -> ObjectDigest {
+        self.package_binding
+    }
+
     /// Encodes the canonical 258-byte `AOSAGP01` sealed-memfd payload.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
@@ -908,6 +914,7 @@ mod tests {
             launch.verifying_key_bytes()
         );
         assert_eq!(decoded.package_binding, ObjectDigest::from_bytes([11; 32]));
+        assert_eq!(launch.package_binding(), decoded.package_binding);
 
         let mut malformed = bytes;
         malformed[193] |= 0x80;

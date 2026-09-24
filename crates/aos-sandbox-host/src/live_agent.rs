@@ -51,6 +51,7 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::attach_route::{HostOpenSshStaticTrustV1, OpenSshGateAgentExchangeV1};
+use crate::plan::PreparedLaunch;
 
 const PROVISIONING_BYTES: usize = 258;
 const RETRY_INTERVAL: Duration = Duration::from_millis(2);
@@ -351,7 +352,7 @@ impl HostAgentGuestLaunchDescriptorsV1 {
     ///
     /// Rejects changed protected currentness, a bound unit, or descriptor
     /// duplication failure before a launch transaction may be committed.
-    pub fn bind_unit_spec(
+    pub(crate) fn bind_unit_spec(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         assignment: &ValidatedAssignmentFence,
@@ -378,6 +379,7 @@ impl HostAgentGuestLaunchDescriptorsV1 {
 pub struct HostAgentLaunchHandoffV1 {
     pending: HostAgentPendingSessionV1,
     guest: HostAgentGuestLaunchDescriptorsV1,
+    package_binding: ObjectDigest,
 }
 
 impl HostAgentLaunchHandoffV1 {
@@ -434,14 +436,45 @@ impl HostAgentLaunchHandoffV1 {
             features: record.features().clone(),
         };
         claim.revalidate()?;
-        Ok(Self { pending, guest })
+        Ok(Self {
+            pending,
+            guest,
+            package_binding: record.package_binding(),
+        })
     }
 
-    /// Splits the still-private Host endpoint from three guest descriptors.
-    #[must_use]
-    pub fn into_parts(self) -> (HostAgentPendingSessionV1, HostAgentGuestLaunchDescriptorsV1) {
+    /// Pins the sealed guest descriptors into the exact unbound payload spec.
+    ///
+    /// The package identity must be the Storage-authenticated guest root
+    /// publication, and the updated spec digest becomes the durable payload
+    /// snapshot before Guardian can authorize a launch. The returned Host
+    /// endpoint must stay alive through the later guest handshake.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent or different guest package publication, changed
+    /// protected runtime currentness, assignment mismatch, or FD pin failure.
+    pub fn bind_prepared_launch(
+        self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        assignment: &ValidatedAssignmentFence,
+        prepared: PreparedLaunch,
+    ) -> Result<(PreparedLaunch, HostAgentPendingSessionV1), HostAgentLiveErrorV1> {
+        if !matches_guest_package_binding(prepared.guest_package_binding(), self.package_binding) {
+            return Err(HostAgentLiveErrorV1::Binding);
+        }
+        let (pending, guest) = self.into_parts();
+        let prepared = prepared.with_guest_agent_descriptors(claim, assignment, &guest)?;
+        Ok((prepared, pending))
+    }
+
+    fn into_parts(self) -> (HostAgentPendingSessionV1, HostAgentGuestLaunchDescriptorsV1) {
         (self.pending, self.guest)
     }
+}
+
+fn matches_guest_package_binding(published: Option<[u8; 32]>, provisioned: ObjectDigest) -> bool {
+    published == Some(*provisioned.as_bytes())
 }
 
 fn matches_assignment(
@@ -1014,5 +1047,14 @@ mod tests {
         assert!(decode_seed_credential(&wrong_checksum).is_err());
 
         assert!(decode_seed_credential(&credential([0; 32])).is_err());
+    }
+
+    #[test]
+    fn guest_handoff_requires_the_storage_authenticated_package_binding() {
+        let provisioned = ObjectDigest::from_bytes([7; 32]);
+
+        assert!(!matches_guest_package_binding(None, provisioned));
+        assert!(!matches_guest_package_binding(Some([8; 32]), provisioned));
+        assert!(matches_guest_package_binding(Some([7; 32]), provisioned));
     }
 }

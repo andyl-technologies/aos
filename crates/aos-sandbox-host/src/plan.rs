@@ -334,6 +334,7 @@ pub struct PreparedLaunch {
     spec: SandboxUnitSpec,
     pins: LaunchPins,
     snapshot: PayloadLaunchSnapshot,
+    guest_package_binding: Option<[u8; 32]>,
 }
 
 /// Stores the fixed executable and timeout used for Guardian starts.
@@ -449,6 +450,23 @@ impl PreparedLaunch {
     #[must_use]
     pub const fn spec(&self) -> &SandboxUnitSpec {
         &self.spec
+    }
+
+    pub(crate) const fn guest_package_binding(&self) -> Option<[u8; 32]> {
+        self.guest_package_binding
+    }
+
+    pub(crate) fn with_guest_agent_descriptors(
+        mut self,
+        claim: &aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1<'_>,
+        assignment: &ValidatedAssignmentFence,
+        guest: &crate::live_agent::HostAgentGuestLaunchDescriptorsV1,
+    ) -> std::result::Result<Self, crate::live_agent::HostAgentLiveErrorV1> {
+        self.spec = guest.bind_unit_spec(claim, assignment, self.spec)?;
+        // The descriptor role is a launch-semantic input. Update the durable
+        // snapshot before Guardian binds and commits this payload attempt.
+        self.snapshot.spec_semantic_digest = self.spec.semantic_digest_v1();
+        Ok(self)
     }
 
     pub(crate) fn into_parts(self) -> (SandboxUnitSpec, LaunchPins) {
@@ -635,6 +653,9 @@ impl NspawnConfig {
         self.revalidate()?;
         validate_backend_features(plan)?;
         let workspace = resolved.workspace;
+        let guest_package_binding = workspace
+            .guest_root_publication()
+            .map(|proof| proof.package_binding);
         let network = resolved.network;
         let attachment_anchor = resolved.attachment_anchor;
         let root_identity =
@@ -773,6 +794,7 @@ impl NspawnConfig {
         Ok(PreparedLaunch {
             spec,
             snapshot,
+            guest_package_binding,
             pins: LaunchPins {
                 executable: Arc::clone(self.readiness.executable_pin_arc()),
                 workspace: workspace.pin,
