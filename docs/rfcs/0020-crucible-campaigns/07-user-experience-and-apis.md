@@ -457,10 +457,18 @@ reproduction artifact. It rejects a mismatched finding, dependency kind,
 configuration artifact, or reproduction fingerprint before reporting the
 stable signature, causal identities, occurrence projection, modeled stop,
 evidence-set IDs, replay configuration, and payload profile.
-`explain-attempt` performs one separately authorized proof-bearing read and
-reports the immutable attempt start and path, execution-basis cause and ordinal,
-branch selection and proposal provenance when present, plus a proved canonical
-completion or proved absence. `rankings --snapshot SNAPSHOT --step STEP` follows
+`explain-attempt` first authenticates the immutable attempt start and path,
+execution-basis cause and ordinal, branch selection and proposal provenance
+when present, plus a canonical completion or proved absence. For a completed
+attempt, it then reads the observation-linked measurement event leaf and any
+resolved-effect leaf through separately authorized, 1 MiB trace chunks. The
+client verifies the complete content ID before decoding either leaf. Its
+`crucible.cli.campaign-attempt-explanation.v3` JSON includes a bounded
+`effect_evidence` object with schema
+`crucible.cli.campaign-attempt-effect-evidence.v1`: up to 4096 applied network
+records and 4096 guest semantic marker identities, total counts, truncation
+flags, and the trace IDs. The projection omits packet bytes and guest marker
+details. `rankings --snapshot SNAPSHOT --step STEP` follows
 the accepted planner step's authenticated parent chain and renders a globally
 best-first view of every PUCT candidate served by those bounded retained
 requests. `--pages` is limited to 64 and the client stops after 128 MiB of

@@ -6,6 +6,10 @@ use super::object::{
 };
 use super::*;
 
+#[path = "explain/effect_evidence.rs"]
+mod effect_evidence;
+use effect_evidence::{CampaignAttemptEffectEvidence, load_and_project_attempt_effect_evidence};
+
 use crucible_campaign::{
     AttemptAdmissionRole, AttemptId, AttemptStart, CampaignChoiceObject, CampaignChoiceObjectKind,
     CampaignFindingObject, CampaignFindingObjectKind, ChoiceOpportunity,
@@ -19,7 +23,7 @@ const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanat
 const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-finding-explanation.v1";
 const CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA: &str =
-    "crucible.cli.campaign-attempt-explanation.v2";
+    "crucible.cli.campaign-attempt-explanation.v3";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {
@@ -153,6 +157,8 @@ pub(super) struct CampaignAttemptExplanationReport {
     planner: Option<CampaignExplainedPlannerDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
     observation: Option<CampaignExplainedObservation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effect_evidence: Option<CampaignAttemptEffectEvidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -550,13 +556,17 @@ where
             "invalid campaign attempt explanation identity: {error}"
         ))
     })?;
-    let request =
-        ExplainCampaignAttemptRequest::new(principal, campaign.clone(), snapshot, attempt_id)
-            .map_err(|error| {
-                usage_error(format!(
-                    "invalid campaign attempt explanation query: {error}"
-                ))
-            })?;
+    let request = ExplainCampaignAttemptRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        attempt_id,
+    )
+    .map_err(|error| {
+        usage_error(format!(
+            "invalid campaign attempt explanation query: {error}"
+        ))
+    })?;
     let response = client.explain_campaign_attempt(&request).map_err(|error| {
         backend_error(format!(
             "campaign attempt explanation query failed: {error}"
@@ -619,6 +629,19 @@ where
         .observation()
         .map(explained_observation)
         .transpose()?;
+    let effect_evidence = response
+        .observation()
+        .map(|observation| {
+            load_and_project_attempt_effect_evidence(
+                client,
+                &principal,
+                &campaign,
+                snapshot,
+                attempt_id,
+                observation,
+            )
+        })
+        .transpose()?;
 
     Ok(CampaignAttemptExplanationReport {
         schema: CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA,
@@ -655,6 +678,7 @@ where
         proposal: proposal_body,
         planner,
         observation,
+        effect_evidence,
     })
 }
 
