@@ -35,6 +35,12 @@ mod catalog_transition;
 mod clone_identity;
 mod dormant_broker_session;
 #[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
+    reason = "capture writer awaits exclusive ZFS mount custody and signed Controller grant"
+)]
+mod execution_capture_writer;
+#[cfg(target_os = "linux")]
 pub mod execution_output;
 mod guest_root_attempt;
 pub mod guest_root_inventory;

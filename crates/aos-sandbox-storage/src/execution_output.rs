@@ -980,6 +980,9 @@ fn transaction_id(purpose: &[u8], location: &[u8], commitment: &[u8]) -> [u8; 16
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{File, OpenOptions};
+    use std::os::unix::fs::OpenOptionsExt as _;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -988,6 +991,9 @@ mod tests {
     };
     use crate::catalog_transition::execution_capture::tests::{
         deleted_fixture, fixture as capture_fixture,
+    };
+    use crate::execution_capture_writer::{
+        CaptureStreamV1, CaptureWriteErrorV1, DetachedCaptureWriterV1,
     };
     use aos_sandbox_core::OperationId;
 
@@ -1015,6 +1021,16 @@ mod tests {
     ) -> Result<ExecutionOutputLedgerV1, ExecutionOutputLedgerErrorV1> {
         let (journal, _) = Journal::open(path, JournalLimits::default())?;
         ExecutionOutputLedgerV1::from_journal(journal, capacity, key())
+    }
+
+    fn private_output_file(path: &Path) -> File {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap()
     }
 
     fn grant(
@@ -1291,6 +1307,120 @@ mod tests {
                 .err(),
             Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
         );
+    }
+
+    #[test]
+    fn capture_writer_records_exact_synced_prefixes_and_eofs() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 10).unwrap();
+        let mut claim = record(1, 10);
+        claim.maximum_stdout_bytes = 6;
+        claim.maximum_stderr_bytes = 4;
+        let digest = ledger.reserve_record(claim).unwrap();
+        drop(ledger);
+
+        let ledger = open(&path, 10).unwrap();
+        let retained = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], digest)
+            .unwrap();
+        let stdout_path = directory.path().join("stdout");
+        let stderr_path = directory.path().join("stderr");
+        let stdout = private_output_file(&stdout_path);
+        let stderr = private_output_file(&stderr_path);
+        let mut writer = DetachedCaptureWriterV1::new(&retained, stdout, stderr).unwrap();
+
+        writer.write_chunk(CaptureStreamV1::Stdout, b"abc").unwrap();
+        writer.write_chunk(CaptureStreamV1::Stderr, b"xy").unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stdout, b"defgh")
+            .unwrap();
+        writer.write_chunk(CaptureStreamV1::Stderr, b"z").unwrap();
+        writer.finish_stream(CaptureStreamV1::Stdout).unwrap();
+        writer.finish_stream(CaptureStreamV1::Stderr).unwrap();
+        let result = writer.finish().unwrap();
+
+        assert_eq!(std::fs::read(stdout_path).unwrap(), b"abcdef");
+        assert_eq!(std::fs::read(stderr_path).unwrap(), b"xyz");
+        assert_eq!(result.record_digest, digest);
+        assert_eq!(result.stdout.maximum_bytes, 6);
+        assert_eq!(result.stdout.captured_bytes, 6);
+        assert!(result.stdout.truncated);
+        assert_eq!(result.stderr.maximum_bytes, 4);
+        assert_eq!(result.stderr.captured_bytes, 3);
+        assert!(!result.stderr.truncated);
+        assert_eq!(
+            &result.stdout.content_digest.as_bytes()[..],
+            &Sha256::digest(b"abcdef")[..]
+        );
+        assert_eq!(
+            &result.stderr.content_digest.as_bytes()[..],
+            &Sha256::digest(b"xyz")[..]
+        );
+        assert!(result.stdout_eof && result.stderr_eof && result.synced_readback);
+        assert_ne!(result.result_digest.as_bytes(), &[0; 32]);
+    }
+
+    #[test]
+    fn capture_writer_rejects_missing_eof_aliasing_and_changed_content() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 4).unwrap();
+        let mut claim = record(1, 4);
+        claim.maximum_stdout_bytes = 4;
+        claim.maximum_stderr_bytes = 0;
+        let digest = ledger.reserve_record(claim).unwrap();
+        let retained = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], digest)
+            .unwrap();
+
+        let same_path = directory.path().join("same");
+        let same = private_output_file(&same_path);
+        assert!(matches!(
+            DetachedCaptureWriterV1::new(&retained, same.try_clone().unwrap(), same),
+            Err(CaptureWriteErrorV1::InvalidBacking)
+        ));
+
+        let stdout_path = directory.path().join("stdout");
+        let stderr_path = directory.path().join("stderr");
+        let stdout = private_output_file(&stdout_path);
+        let stderr = private_output_file(&stderr_path);
+        let mut writer = DetachedCaptureWriterV1::new(&retained, stdout, stderr).unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stdout, b"abcd")
+            .unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stderr, b"discard")
+            .unwrap();
+        writer.finish_stream(CaptureStreamV1::Stdout).unwrap();
+        assert!(matches!(
+            writer.finish(),
+            Err(CaptureWriteErrorV1::Incomplete)
+        ));
+
+        let stdout = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(&stdout_path)
+            .unwrap();
+        let stderr = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(&stderr_path)
+            .unwrap();
+        let mut writer = DetachedCaptureWriterV1::new(&retained, stdout, stderr).unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stdout, b"abcd")
+            .unwrap();
+        writer.finish_stream(CaptureStreamV1::Stdout).unwrap();
+        writer.finish_stream(CaptureStreamV1::Stderr).unwrap();
+        std::fs::write(&stdout_path, b"abXd").unwrap();
+        assert!(matches!(
+            writer.finish(),
+            Err(CaptureWriteErrorV1::BackingMismatch)
+        ));
     }
 
     #[test]
