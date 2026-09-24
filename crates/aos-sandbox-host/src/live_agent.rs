@@ -6,6 +6,8 @@
 //! handshake and bounded stop-and-wait exchanges. It never discovers an
 //! inherited descriptor, reconnects to a path, or activates nspawn.
 
+pub mod argument_readback;
+
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{BorrowedFd, OwnedFd};

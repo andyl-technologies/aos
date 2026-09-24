@@ -1047,6 +1047,12 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         &self.agent_peer
     }
 
+    /// Returns the runtime-profile commitment authenticated by the fixed plan catalog.
+    #[must_use]
+    pub const fn runtime_profile_commitment(&self) -> ObjectDigest {
+        self.protected_plan.runtime_profile()
+    }
+
     /// Borrows fixed Host lifecycle/deadline verification authority.
     #[must_use]
     pub const fn host_verifier(&self) -> &ProtectedRuntimeHostVerifierV1 {
