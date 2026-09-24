@@ -67,7 +67,7 @@ pub fn admit_fixed_controller_hold_pin_v1(
     )
 }
 
-fn admit_controller_hold_pin_in_journal_v1(
+pub(super) fn admit_controller_hold_pin_in_journal_v1(
     journal: &mut Journal,
     credential: Option<&[u8]>,
     deployment_generation: u64,

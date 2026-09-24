@@ -387,6 +387,30 @@ fn sign_fields(
     Ok(bytes)
 }
 
+#[cfg(test)]
+pub(super) fn sign_test_controller_hold_readback_v1(
+    held: ControllerPolicyHoldV1,
+    controller_uid: u32,
+    challenge: ControllerHoldReadbackChallengeV1,
+    signer_generation: u64,
+    key: &SigningKey,
+) -> Result<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1], ControllerHoldReadbackErrorV1> {
+    sign_fields(
+        VerifiedControllerHoldReadbackV1 {
+            controller_uid,
+            journal_sequence: 7,
+            operation: held.operation(),
+            sandbox: held.sandbox(),
+            source: held.source(),
+            binding: held.binding(),
+            epoch: held.epoch(),
+        },
+        challenge,
+        signer_generation,
+        key,
+    )
+}
+
 fn signature_preimage(body: &[u8]) -> Vec<u8> {
     let mut preimage = Vec::with_capacity(SIGNATURE_DOMAIN.len() + body.len());
     preimage.extend_from_slice(SIGNATURE_DOMAIN);

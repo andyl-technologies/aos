@@ -15,6 +15,7 @@ mod compiler;
 mod controller_adapter;
 mod controller_hold_pin;
 mod controller_hold_readback;
+mod controller_readback_session;
 mod deployment_head;
 mod model;
 mod namespace;
@@ -63,6 +64,10 @@ pub use controller_hold_readback::{
     ControllerHoldReadbackErrorV1, PinnedControllerHoldSignerV1, VerifiedControllerHoldReadbackV1,
     encode_controller_hold_signer_credential_v1, sign_fixed_controller_hold_readback_v1,
     verify_controller_hold_readback_v1,
+};
+pub use controller_readback_session::{
+    ClosedControllerReadbackSessionErrorV1, ClosedControllerRootChallengeV1,
+    ClosedControllerRootObservationV1, with_fixed_closed_controller_readback_session_v1,
 };
 pub use deployment_head::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,

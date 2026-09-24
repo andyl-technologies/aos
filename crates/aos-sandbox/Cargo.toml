@@ -23,7 +23,7 @@ buffa.workspace = true
 connectrpc.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 futures.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
