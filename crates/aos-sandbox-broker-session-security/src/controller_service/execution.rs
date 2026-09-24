@@ -903,6 +903,13 @@ impl ControllerExecutionExchangeV1 {
         kind: ExecutionAuthorizationKindV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        // Create has no protected producer for its canonical specification yet.
+        // An in-memory specification cannot be reconstructed after reconnect.
+        if intent.action == ControllerExecutionActionV1::Authorize {
+            return Err(EffectFailure::Retryable(
+                "execution authorization requires protected specification custody".to_owned(),
+            ));
+        }
         if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
