@@ -29,7 +29,7 @@ in {
       description = "The package containing the independent policy authority executable.";
     };
 
-    credentials = lib.mapAttrs (_: _:
+    credentials = lib.mapAttrs (option: _:
       lib.mkOption {
         type = lib.types.nullOr lib.serviceTypes.credentialName;
         default = null;
