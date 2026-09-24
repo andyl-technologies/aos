@@ -95,7 +95,7 @@
         else merged // {${name} = right.${name};})
       left
       (builtins.attrNames right)
-    else fail "${context} has conflicting contributions";
+    else fail "${context} has conflicting declarations";
 
   mergeMaps = context: maps:
     builtins.foldl' (merged: values:
