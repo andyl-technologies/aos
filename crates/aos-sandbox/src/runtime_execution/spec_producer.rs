@@ -19,7 +19,8 @@ use aos_sandbox_core::{
     ExecutionResourceAdmissionV1, ExecutionResourceRequestV1, ExecutionResourceRequestValueV1,
     ExecutionResourceSublimitV1, ExecutionResourceSublimitValueV1, ExecutionSpecV1,
     ExecutionTerminalModeV1, ExecutionTimeoutV1, InvalidExecutionSpec, ObjectDigest, OperationId,
-    PathName, RawPairedClockSample, RelativePath,
+    PathName, PrincipalId, RawPairedClockSample, RelativePath, encode_execution_spec_v1,
+    execution_spec_digest_v1,
 };
 use aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES;
 use sha2::{Digest as _, Sha256};
@@ -28,10 +29,13 @@ use ssh_key::PublicKey;
 use super::{
     AuthenticatedRuntimeArgumentReadbackV1, DormantRuntimeExecutionClaimV1,
     DormantRuntimeExecutionOwnerErrorV1, ExecutionJournalRecoveryTokenV1,
-    ProtectedAcceptedExecutionOutputV2,
 };
 use crate::Journal;
 use crate::cli_model::DormantSandboxRequestKindV1;
+use crate::controller_execution_argument_receipt::{
+    AuthenticatedControllerHostArgumentObservationV1, ControllerExecutionArgumentReceiptErrorV1,
+    revalidate_current_controller_host_argument_observation_v1,
+};
 use crate::controller_execution_output_settlement::{
     ControllerExecutionOutputSettlementErrorV1, read_current_controller_output_settlement_v1,
 };
@@ -40,9 +44,14 @@ use crate::controller_service::public_projection::{
     PublicProjectionStoreV1,
 };
 use crate::create_holder_proof::{self, CreateHolderProofErrorV1};
-use crate::environment::{EnvironmentExecutionErrorV1, EnvironmentProtectedJournalOwnerV1};
+use crate::environment::{
+    EnvironmentExecutionErrorV1, EnvironmentExecutionSourceV1, EnvironmentProtectedJournalOwnerV1,
+};
 use crate::execution_guest_identity::{
     ExecutionGuestIdentityReadbackErrorV1, read_execution_guest_identity_v1,
+};
+use crate::execution_output_reservation::{
+    DurableExecutionOutputReservationV1, ExecutionOutputReservationErrorV1, accepted_claim,
 };
 use crate::execution_parent_resource::{
     ExecutionParentResourceSourceErrorV1, ExecutionParentResourceSourceV1,
@@ -95,12 +104,77 @@ pub enum ProtectedExecutionSpecProducerErrorV1 {
     /// The authenticated original Host output reservation is absent or stale.
     #[error(transparent)]
     HostOutput(#[from] ControllerExecutionOutputSettlementErrorV1),
+    /// The signed Host argument receipt is missing or changed.
+    #[error(transparent)]
+    HostArgument(#[from] ControllerExecutionArgumentReceiptErrorV1),
+    /// The accepted output claim cannot be reconstructed from current Create.
+    #[error(transparent)]
+    OutputClaim(#[from] ExecutionOutputReservationErrorV1),
     /// A canonical specification field or derived envelope is invalid.
     #[error(transparent)]
     Specification(#[from] InvalidExecutionSpec),
     /// The protected execution admission failed or requires recovery.
     #[error(transparent)]
     Admission(#[from] AdmissionCommitError),
+}
+
+/// Holds canonical execution bytes derived from current Controller sources.
+///
+/// This preview has no durable spec custody, physical Storage admission, or
+/// Host effect authority. A future producer must revalidate every owner under
+/// a held cross-process cut before appending the immutable specification.
+pub struct ControllerExecutionSpecPreviewV1 {
+    specification: ExecutionSpecV1,
+    canonical_bytes: Vec<u8>,
+    digest: ObjectDigest,
+    accepted_request_digest: ObjectDigest,
+    output_claim_digest: ObjectDigest,
+    output_settlement_digest: ObjectDigest,
+    argument_receipt_digest: ObjectDigest,
+}
+
+impl ControllerExecutionSpecPreviewV1 {
+    /// Borrows the complete canonical specification model.
+    #[must_use]
+    pub const fn specification(&self) -> &ExecutionSpecV1 {
+        &self.specification
+    }
+
+    /// Borrows exact canonical bytes for a future sealed descriptor transfer.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Returns the canonical execution-specification commitment.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+
+    /// Returns the accepted Create request commitment.
+    #[must_use]
+    pub const fn accepted_request_digest(&self) -> ObjectDigest {
+        self.accepted_request_digest
+    }
+
+    /// Returns the exact AOSEOR02 output claim commitment.
+    #[must_use]
+    pub const fn output_claim_digest(&self) -> ObjectDigest {
+        self.output_claim_digest
+    }
+
+    /// Returns the Controller's protected AOSCIS01 settlement commitment.
+    #[must_use]
+    pub const fn output_settlement_digest(&self) -> ObjectDigest {
+        self.output_settlement_digest
+    }
+
+    /// Returns the Controller's protected AOSCAF01 receipt commitment.
+    #[must_use]
+    pub const fn argument_receipt_digest(&self) -> ObjectDigest {
+        self.argument_receipt_digest
+    }
 }
 
 /// Joins protected Create, environment, policy, and live runtime evidence.
@@ -143,6 +217,212 @@ where
         return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
     }
 
+    let source = read_controller_spec_inputs(
+        controller,
+        environment_owner,
+        parent,
+        execution,
+        create_operation,
+    )?;
+    let output =
+        claim.read_protected_accepted_output_v2(controller, create_operation, execution, parent)?;
+    let host_output = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
+    if host_output.claim_digest() != output.reservation().record_digest() {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
+    claim.revalidate_fresh_runtime_argument_readback_v1(argument_readback)?;
+    let specification = build_specification(
+        &source,
+        parent,
+        output.reservation(),
+        argument_readback.evidence(),
+        execution,
+        create_operation,
+    )?;
+    read_execution_guest_identity_v1(controller, assignment, &specification)?;
+
+    // Every independent owner remains exclusively held through this final
+    // readback and the immutable spec admission append below.
+    environment_owner.revalidate_execution_source(&source.environment)?;
+    assignment.recheck(controller, clock)?;
+    revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
+    let current_output =
+        claim.read_protected_accepted_output_v2(controller, create_operation, execution, parent)?;
+    claim.revalidate_fresh_runtime_argument_readback_v1(argument_readback)?;
+    if current_output.reservation() != output.reservation()
+        || current_output.currentness() != output.currentness()
+    {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
+    let current_host_output = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
+    if current_host_output.record_digest() != host_output.record_digest()
+        || current_host_output.claim_digest() != current_output.reservation().record_digest()
+    {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
+    let idempotency = AdmissionIdempotencyV1::new(
+        BackendOperationIdV1::new(*create_operation.as_bytes())
+            .map_err(|_| ProtectedExecutionSpecProducerErrorV1::NotCurrent)?,
+        source.accepted_request_digest,
+    )?;
+    let draft =
+        ExecutionAdmissionDraftV1::new(&specification, idempotency, output.currentness().clone())?;
+    // The Host transfer is a sealed content descriptor, not a 64 KiB inline
+    // broker body. Keep the durable canonical bytes within that exact bound.
+    if !spec_fits_host_descriptor(draft.specification_bytes().len()) {
+        return Err(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand);
+    }
+    admit_execution(claim, draft).map_err(Into::into)
+}
+
+/// Prepares canonical bytes from cross-process Host evidence and Controller sources.
+///
+/// This deliberately does not append spec admission or send a Host Apply. The
+/// Host argument receipt is fresh only for this handoff; AOSEOR02 settlement
+/// is checked against the exact accepted Create claim, while physical Storage
+/// and a live Host handoff remain independent, unavailable authorities.
+///
+/// # Errors
+///
+/// Rejects stale accepted Create, assignment, environment, parent policy,
+/// Host output settlement, guest credential policy, or argument evidence. It
+/// also rejects a canonical spec beyond the sealed Host descriptor limit.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_controller_execution_spec_preview_v1<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    argument_observation: &AuthenticatedControllerHostArgumentObservationV1,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    clock: &mut T,
+) -> Result<ControllerExecutionSpecPreviewV1, ProtectedExecutionSpecProducerErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    if argument_observation.execution() != execution
+        || argument_observation.create_operation() != create_operation
+        || assignment.binding().manifest() != parent.assignment()
+    {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
+    assignment.recheck(controller, clock)?;
+    revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
+    revalidate_current_controller_host_argument_observation_v1(
+        controller,
+        assignment,
+        environment_owner,
+        parent,
+        argument_observation,
+        clock,
+    )?;
+
+    let source = read_controller_spec_inputs(
+        controller,
+        environment_owner,
+        parent,
+        execution,
+        create_operation,
+    )?;
+    let output = accepted_claim(controller, create_operation, execution, parent)?.record;
+    let host_output = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
+    if host_output.claim_digest() != output.record_digest() {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
+
+    let specification = build_specification(
+        &source,
+        parent,
+        &output,
+        argument_observation.evidence(),
+        execution,
+        create_operation,
+    )?;
+    read_execution_guest_identity_v1(controller, assignment, &specification)?;
+
+    // These owners are held while the exact spec bytes are derived. A later
+    // durable admission still needs a physical-Storage/Host effect cut.
+    environment_owner.revalidate_execution_source(&source.environment)?;
+    revalidate_current_controller_host_argument_observation_v1(
+        controller,
+        assignment,
+        environment_owner,
+        parent,
+        argument_observation,
+        clock,
+    )?;
+    revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
+    let current_output = accepted_claim(controller, create_operation, execution, parent)?.record;
+    let current_host_output = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
+    if current_output != output
+        || current_host_output.record_digest() != host_output.record_digest()
+        || current_host_output.claim_digest() != current_output.record_digest()
+    {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
+
+    let canonical_bytes = encode_execution_spec_v1(&specification);
+    if !spec_fits_host_descriptor(canonical_bytes.len()) {
+        return Err(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand);
+    }
+    let digest = execution_spec_digest_v1(&specification);
+    assignment.recheck(controller, clock)?;
+    Ok(ControllerExecutionSpecPreviewV1 {
+        specification,
+        canonical_bytes,
+        digest,
+        accepted_request_digest: source.accepted_request_digest,
+        output_claim_digest: output.record_digest(),
+        output_settlement_digest: host_output.record_digest(),
+        argument_receipt_digest: argument_observation.record_digest(),
+    })
+}
+
+struct ControllerSpecSourceInputsV1 {
+    command: Command,
+    client_public_key: Vec<u8>,
+    environment: EnvironmentExecutionSourceV1,
+    credentials: ExecutionCredentialsV1,
+    principal: PrincipalId,
+    accepted_request_digest: ObjectDigest,
+}
+
+fn read_controller_spec_inputs(
+    controller: &mut Journal,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    execution: ExecutionId,
+    create_operation: OperationId,
+) -> Result<ControllerSpecSourceInputsV1, ProtectedExecutionSpecProducerErrorV1> {
     let accepted = accepted_create_execution_effect_from_journal_v1(controller, create_operation)?
         .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
     let DormantSandboxRequestKindV1::Exec(request) = accepted.validated_request()? else {
@@ -176,20 +456,6 @@ where
     if environment.descriptor() != parent.assignment().manifest().environment() {
         return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
     }
-    let output =
-        claim.read_protected_accepted_output_v2(controller, create_operation, execution, parent)?;
-    let host_output = read_current_controller_output_settlement_v1(
-        controller,
-        assignment,
-        execution,
-        create_operation,
-        clock,
-    )?
-    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
-    if host_output.claim_digest() != output.reservation().record_digest() {
-        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
-    }
-    claim.revalidate_fresh_runtime_argument_readback_v1(argument_readback)?;
     let retained = sandbox_spec_state::get(controller, parent.specification_descriptor())?
         .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
     if retained.record_digest() != parent.specification_record_digest() {
@@ -204,16 +470,37 @@ where
         policy.primary_group_id(),
         policy.supplementary_group_ids().to_vec(),
     )?;
-    let specification = ExecutionSpecV1::new(
+    Ok(ControllerSpecSourceInputsV1 {
+        command: command.clone(),
+        client_public_key: request.client_public_key.clone(),
+        environment,
+        credentials,
+        principal: accepted.caller(),
+        accepted_request_digest: ObjectDigest::from_bytes(
+            Sha256::digest(accepted.canonical_request()).into(),
+        ),
+    })
+}
+
+fn build_specification(
+    source: &ControllerSpecSourceInputsV1,
+    parent: &ExecutionParentResourceSourceV1,
+    output: &DurableExecutionOutputReservationV1,
+    argument_limit: &aos_sandbox_core::ExecutionRuntimeArgumentLimitV1,
+    execution: ExecutionId,
+    create_operation: OperationId,
+) -> Result<ExecutionSpecV1, ProtectedExecutionSpecProducerErrorV1> {
+    let command = &source.command;
+    Ok(ExecutionSpecV1::new(
         execution,
-        argument_readback.evidence().target().clone(),
-        environment.descriptor().clone(),
-        environment.environment().clone(),
-        environment.generation(),
-        execution_command(command, credentials)?,
-        argument_readback.evidence().clone(),
-        execution_resources(parent, &output)?,
-        execution_io(command, &request.client_public_key, &output)?,
+        argument_limit.target().clone(),
+        source.environment.descriptor().clone(),
+        source.environment.environment().clone(),
+        source.environment.generation(),
+        execution_command(command, source.credentials.clone())?,
+        argument_limit.clone(),
+        execution_resources(parent, output)?,
+        execution_io(command, &source.client_public_key, output)?,
         ExecutionTimeoutV1::new(
             command
                 .execution_timeout
@@ -221,52 +508,9 @@ where
                 .ok_or(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand)?
                 .nanoseconds,
         )?,
-        accepted.caller(),
+        source.principal,
         AuditId::from_bytes(*create_operation.as_bytes()),
-    )?;
-    read_execution_guest_identity_v1(controller, assignment, &specification)?;
-
-    // Every independent owner remains exclusively held through this final
-    // readback and the immutable spec admission append below.
-    environment_owner.revalidate_execution_source(&environment)?;
-    assignment.recheck(controller, clock)?;
-    revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
-    let current_output =
-        claim.read_protected_accepted_output_v2(controller, create_operation, execution, parent)?;
-    claim.revalidate_fresh_runtime_argument_readback_v1(argument_readback)?;
-    if current_output.reservation() != output.reservation()
-        || current_output.currentness() != output.currentness()
-    {
-        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
-    }
-    let current_host_output = read_current_controller_output_settlement_v1(
-        controller,
-        assignment,
-        execution,
-        create_operation,
-        clock,
-    )?
-    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
-    if current_host_output.record_digest() != host_output.record_digest()
-        || current_host_output.claim_digest() != current_output.reservation().record_digest()
-    {
-        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
-    }
-    let request_digest =
-        ObjectDigest::from_bytes(Sha256::digest(accepted.canonical_request()).into());
-    let idempotency = AdmissionIdempotencyV1::new(
-        BackendOperationIdV1::new(*create_operation.as_bytes())
-            .map_err(|_| ProtectedExecutionSpecProducerErrorV1::NotCurrent)?,
-        request_digest,
-    )?;
-    let draft =
-        ExecutionAdmissionDraftV1::new(&specification, idempotency, output.currentness().clone())?;
-    // The Host transfer is a sealed content descriptor, not a 64 KiB inline
-    // broker body. Keep the durable canonical bytes within that exact bound.
-    if !spec_fits_host_descriptor(draft.specification_bytes().len()) {
-        return Err(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand);
-    }
-    admit_execution(claim, draft).map_err(Into::into)
+    )?)
 }
 
 fn spec_fits_host_descriptor(encoded_bytes: usize) -> bool {
@@ -306,7 +550,7 @@ fn execution_command(
 fn execution_io(
     public: &Command,
     client_public_key: &[u8],
-    output: &ProtectedAcceptedExecutionOutputV2,
+    output: &DurableExecutionOutputReservationV1,
 ) -> Result<ExecutionIoV1, ProtectedExecutionSpecProducerErrorV1> {
     let mode = public
         .io_mode
@@ -345,7 +589,7 @@ fn execution_io(
         let stderr = public
             .maximum_stderr_bytes
             .ok_or(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand)?;
-        if aggregate != output.reservation().output().admitted_bytes()
+        if aggregate != output.output().admitted_bytes()
             || stdout != output.maximum_stdout_bytes()
             || stderr != output.maximum_stderr_bytes()
         {
@@ -368,6 +612,7 @@ fn execution_io(
         ExecutionTerminalModeV1::None
     };
     if public.detached_capture_bytes != 0
+        || output.output().admitted_bytes() != 0
         || output.maximum_stdout_bytes() != 0
         || output.maximum_stderr_bytes() != 0
     {
@@ -403,7 +648,7 @@ fn execution_io(
 
 fn execution_resources(
     parent: &ExecutionParentResourceSourceV1,
-    output: &ProtectedAcceptedExecutionOutputV2,
+    output: &DurableExecutionOutputReservationV1,
 ) -> Result<ExecutionResourceAdmissionV1, ProtectedExecutionSpecProducerErrorV1> {
     let (requested, admitted) = inherited_child_limits(parent.profile())?;
     ExecutionResourceAdmissionV1::new(
@@ -411,7 +656,7 @@ fn execution_resources(
         admitted,
         parent.profile().clone(),
         parent.profile_commitment(),
-        output.reservation().output().clone(),
+        output.output().clone(),
     )
     .map_err(Into::into)
 }
