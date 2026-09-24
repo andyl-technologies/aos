@@ -244,10 +244,17 @@
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
+
+          crucible-envoy-network-smoke = import ./tests/crucible/_envoy-network-smoke.nix {
+            pkgs = aos.pkgs;
+          };
           apm = aos.pkgs.aos.apm;
           apr = aos.pkgs.aos.apr;
           all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
+            pkgs = aos.pkgs;
+          };
+          crucible-envoy-network-guest = import ./tests/crucible/_envoy-network-guest.nix {
             pkgs = aos.pkgs;
           };
         }
