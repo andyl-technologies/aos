@@ -20,14 +20,13 @@ use aos_sandbox_host::phase0_probe::{Phase0ProbeObservationV2, SignedPhase0Probe
 use aos_sandbox_host::phase0_probe::{
     verified_packaged_hostd_digest, verified_packaged_inspector_digest,
 };
-use aos_sandbox_host::plan::VerifiedLiveSelinuxPolicyV1;
+use aos_sandbox_host::plan::{VerifiedLiveSelinuxPolicyV1, verified_packaged_nspawn_digest};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_systemd::{OwnedValue, SystemdClient};
 use ed25519_dalek::SigningKey;
-use rustix::fs::{FileType, Mode, OFlags, fstat, open};
-use sha2::{Digest as _, Sha256};
+use rustix::fs::{Mode, OFlags, open};
 use zeroize::Zeroizing;
 
 const TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
@@ -35,7 +34,6 @@ const RESULT_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
 const RESULT_FILE: &str = "probe-v2";
 const SIGNING_SEED_CREDENTIAL: &str = "phase0-probe-signing-seed-v1";
 const PUBLIC_KEY_CREDENTIAL: &str = "phase0-probe-public-key-v1";
-const MAXIMUM_NSPAWN_BYTES: u64 = 256 * 1024 * 1024;
 
 fn main() -> ExitCode {
     match run() {
@@ -78,7 +76,8 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
     let boot_id = KernelBootId::current()
         .map(KernelBootId::into_bytes)
         .map_err(|error| error.to_string())?;
-    let nspawn_sha256 = hash_packaged_nspawn(nspawn_path)?;
+    let nspawn_sha256 =
+        verified_packaged_nspawn_digest(nspawn_path).map_err(|error| error.to_string())?;
     let hostd_sha256 =
         verified_packaged_hostd_digest(Path::new(hostd_path)).map_err(|error| error.to_string())?;
     let inspector_path = env::current_exe().map_err(|error| error.to_string())?;
@@ -207,51 +206,6 @@ fn open_cgroup_root() -> Result<OwnedFd, String> {
         Mode::empty(),
     )
     .map_err(|error| error.to_string())
-}
-
-fn hash_packaged_nspawn(path: &str) -> Result<[u8; 32], String> {
-    if !path.starts_with("/nix/store/") || !path.ends_with("/bin/systemd-nspawn") {
-        return Err("nspawn is not the fixed packaged executable".to_owned());
-    }
-    let descriptor = open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| error.to_string())?;
-    let stat = fstat(&descriptor).map_err(|error| error.to_string())?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-        || stat.st_uid != 0
-        || stat.st_mode & 0o022 != 0
-        || stat.st_mode & 0o111 == 0
-        || stat.st_size <= 0
-        || u64::try_from(stat.st_size).unwrap_or(u64::MAX) > MAXIMUM_NSPAWN_BYTES
-    {
-        return Err("nspawn package has invalid protected metadata".to_owned());
-    }
-    let mut file = File::from(descriptor);
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut total = 0u64;
-    loop {
-        let amount = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if amount == 0 {
-            break;
-        }
-        total = total
-            .checked_add(amount as u64)
-            .ok_or_else(|| "nspawn package is oversized".to_owned())?;
-        if total > MAXIMUM_NSPAWN_BYTES {
-            return Err("nspawn package is oversized".to_owned());
-        }
-        digest.update(&buffer[..amount]);
-    }
-    if total != stat.st_size as u64
-        || file.metadata().map_err(|error| error.to_string())?.len() != stat.st_size as u64
-    {
-        return Err("nspawn package changed during measurement".to_owned());
-    }
-    Ok(digest.finalize().into())
 }
 
 fn read_id_map(pid: NonZeroU32, name: &str) -> Result<(u32, u32), String> {

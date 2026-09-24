@@ -37,7 +37,18 @@ const MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES: usize = 256 * 1024;
 const EXECUTABLE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
-pub(super) fn verified_packaged_nspawn_digest(path: &str) -> Result<[u8; 32]> {
+/// Measures the fixed packaged nspawn executable against its policy artifact.
+///
+/// The descriptor hash is surrounded by complete metadata snapshots, so a
+/// same-size replacement during measurement cannot satisfy this check.
+/// This package check does not attest a running payload or its filter.
+///
+/// # Errors
+///
+/// Rejects a foreign path, malformed artifact, invalid executable, metadata
+/// drift during hashing, or a digest different from the package declaration.
+pub fn verified_packaged_nspawn_digest(path: &str) -> Result<[u8; 32]> {
+    validate_fixed_nspawn_path(path)?;
     let declared = read_backend_policy_artifact(path)?.nspawn_digest;
     let pin = super::open_executable_pin(path)?;
     let (_, actual) = snapshot_and_hash_executable(pin.as_fd())?;
@@ -1067,8 +1078,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use std::io::{Seek as _, SeekFrom};
+    use std::os::unix::fs::FileExt as _;
     use std::os::unix::fs::symlink;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use aos_systemd::{
         SandboxDescriptorPath, SandboxNspawnCommand, SandboxResolvedPaths, SandboxResources,
@@ -1489,6 +1501,34 @@ mod tests {
         });
 
         assert!(grown);
+        assert!(matches!(
+            result,
+            Err(HostError::State(message))
+                if message
+                    == "backend readiness executable metadata changed while being hashed"
+        ));
+    }
+
+    #[test]
+    fn executable_hash_rejects_same_size_write_after_first_chunk() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(u64::try_from(EXECUTABLE_HASH_BUFFER_BYTES + 1).unwrap())
+            .unwrap();
+        let mut changed = false;
+
+        let result = snapshot_and_hash_executable_with_progress(file.as_fd(), |_| {
+            if !changed {
+                file.write_all_at(&[0xa5], 0).unwrap();
+                file.set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(42)),
+                )
+                .unwrap();
+                changed = true;
+            }
+        });
+
+        assert!(changed);
         assert!(matches!(
             result,
             Err(HostError::State(message))

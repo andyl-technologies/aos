@@ -56,6 +56,7 @@ pub use deployment::verify_optional_backend_deployment_v1;
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedPackagedRuntimeV1,
+    verified_packaged_nspawn_digest,
 };
 pub use selinux_policy::VerifiedLiveSelinuxPolicyV1;
 
