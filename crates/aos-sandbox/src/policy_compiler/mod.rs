@@ -24,6 +24,7 @@ mod protected_journal;
 mod protected_owner;
 mod public_create_source;
 mod resources;
+mod root_challenge_record;
 mod source_hold_readback;
 
 pub use advisory::{

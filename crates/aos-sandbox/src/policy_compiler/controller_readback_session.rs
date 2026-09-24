@@ -17,10 +17,7 @@ use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::PinnedCacheOwnerReadbackSignerV1;
-use crate::journal::{
-    ControllerPolicyHoldV1, Journal, JournalError, JournalRecord, JournalTransaction,
-    RecordNamespace,
-};
+use crate::journal::{ControllerPolicyHoldV1, Journal, JournalError, RecordNamespace};
 
 use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
@@ -35,13 +32,15 @@ use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
+use super::root_challenge_record::{RECORD_BYTES, RootChallengeRecordCodec};
 
 const CHALLENGE_KEY: &[u8] = b"\0aos-policy-controller-hold-challenge-v1\0";
 const MAGIC: &[u8; 8] = b"AOSCTH01";
 const CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-root-cut.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-challenge-record.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-challenge-transaction.v1\0";
-const RECORD_BYTES: usize = 96;
+const CODEC: RootChallengeRecordCodec =
+    RootChallengeRecordCodec::new(MAGIC, RECORD_DOMAIN, TRANSACTION_DOMAIN, CHALLENGE_KEY);
 
 /// Reports a rejected root/Controller hold readback session.
 #[derive(Debug, thiserror::Error)]
@@ -234,7 +233,9 @@ fn with_closed_controller_readback_session_in_journal_v1(
             }
         }
 
-        let (prior_epoch, prior_nonce) = read_prior_challenge(authority.get(CHALLENGE_KEY)?)?;
+        let (prior_epoch, prior_nonce) = CODEC
+            .read_prior(authority.get(CHALLENGE_KEY)?)
+            .ok_or(ClosedControllerReadbackSessionErrorV1::Stale)?;
         let epoch = prior_epoch
             .checked_add(1)
             .ok_or(ClosedControllerReadbackSessionErrorV1::Stale)?;
@@ -254,21 +255,8 @@ fn with_closed_controller_readback_session_in_journal_v1(
             epoch,
         );
         let readback = ControllerHoldReadbackChallengeV1::new(nonce, cut)?;
-        let record = encode_challenge_record(epoch, readback);
-        let digest = Sha256::new()
-            .chain_update(TRANSACTION_DOMAIN)
-            .chain_update(record)
-            .finalize();
-        let mut transaction_id = [0_u8; 16];
-        transaction_id.copy_from_slice(&digest[..16]);
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::DesiredState,
-                CHALLENGE_KEY.to_vec(),
-                record.to_vec(),
-            )],
-        )?;
+        let record = CODEC.encode(epoch, readback.nonce(), readback.cut());
+        let transaction = CODEC.transaction(record)?;
         authority.commit(&transaction)?;
         if authority.get(CHALLENGE_KEY)? != Some(record.as_slice()) {
             return Err(ClosedControllerReadbackSessionErrorV1::Stale);
@@ -337,53 +325,6 @@ fn receipt_matches_hold(
         && receipt.epoch() == expected.epoch()
 }
 
-fn read_prior_challenge(
-    record: Option<&[u8]>,
-) -> Result<(u64, [u8; 16]), ClosedControllerReadbackSessionErrorV1> {
-    let Some(record) = record else {
-        return Ok((0, [0; 16]));
-    };
-    if record.len() != RECORD_BYTES || record[..8] != MAGIC[..] {
-        return Err(ClosedControllerReadbackSessionErrorV1::Stale);
-    }
-    let checksum = Sha256::new()
-        .chain_update(RECORD_DOMAIN)
-        .chain_update(&record[..64])
-        .finalize();
-    if record[64..] != checksum[..] || record[16..32] == [0; 16] || record[32..64] == [0; 32] {
-        return Err(ClosedControllerReadbackSessionErrorV1::Stale);
-    }
-    let epoch = u64::from_be_bytes(
-        record[8..16]
-            .try_into()
-            .map_err(|_| ClosedControllerReadbackSessionErrorV1::Stale)?,
-    );
-    if epoch == 0 {
-        return Err(ClosedControllerReadbackSessionErrorV1::Stale);
-    }
-    let nonce = record[16..32]
-        .try_into()
-        .map_err(|_| ClosedControllerReadbackSessionErrorV1::Stale)?;
-    Ok((epoch, nonce))
-}
-
-fn encode_challenge_record(
-    epoch: u64,
-    challenge: ControllerHoldReadbackChallengeV1,
-) -> [u8; RECORD_BYTES] {
-    let mut record = [0_u8; RECORD_BYTES];
-    record[..8].copy_from_slice(MAGIC);
-    record[8..16].copy_from_slice(&epoch.to_be_bytes());
-    record[16..32].copy_from_slice(&challenge.nonce());
-    record[32..64].copy_from_slice(challenge.cut().as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(RECORD_DOMAIN)
-        .chain_update(&record[..64])
-        .finalize();
-    record[64..].copy_from_slice(&checksum);
-    record
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -394,7 +335,7 @@ mod tests {
 
     use super::*;
     use crate::cache_residency::encode_cache_owner_readback_signer_credential_v1;
-    use crate::journal::JournalLimits;
+    use crate::journal::{JournalLimits, JournalRecord, JournalTransaction};
     use crate::policy_compiler::cache_readback_pin::admit_cache_readback_pin_in_journal_v1;
     use crate::policy_compiler::controller_hold_pin::admit_controller_hold_pin_in_journal_v1;
     use crate::policy_compiler::controller_hold_readback::{
@@ -545,7 +486,11 @@ mod tests {
         let first = fixture
             .run(&pin, held, [11; 16], |challenge| {
                 assert_eq!(challenge.epoch(), 1);
-                let committed = encode_challenge_record(challenge.epoch(), challenge.readback());
+                let committed = CODEC.encode(
+                    challenge.epoch(),
+                    challenge.readback().nonce(),
+                    challenge.readback().cut(),
+                );
                 let journal_bytes = fs::read(&root_path).expect("persisted root journal");
                 assert!(
                     journal_bytes
