@@ -53,6 +53,7 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+aos-sandbox = { path = "../aos-sandbox", features = ["test-fixtures"] }
 tempfile.workspace = true
 
 [lints]

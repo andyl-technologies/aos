@@ -46,7 +46,10 @@ mod capture_attempt;
     reason = "method-41 candidate awaits pinned Storage BSA verification and signed response"
 )]
 mod capture_candidate;
+mod held_readback;
 mod physical_observation;
+
+pub use held_readback::HeldExecutionOutputReadbackV1;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -188,7 +191,7 @@ struct RetainedOutputRecord {
 /// barrier. This snapshot neither reserves physical backing nor permits a Host
 /// effect; its journal sequence must remain fixed through a later handoff.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProtectedRetainedOutputV1 {
+pub struct ProtectedRetainedOutputV1 {
     execution: [u8; 16],
     create: [u8; 16],
     assignment_digest: ObjectDigest,
@@ -201,38 +204,48 @@ pub(crate) struct ProtectedRetainedOutputV1 {
 }
 
 impl ProtectedRetainedOutputV1 {
+    /// Returns the exact execution whose output remains retained.
+    pub const fn execution(&self) -> [u8; 16] {
+        self.execution
+    }
+
+    /// Returns the accepted Create operation bound to this row.
+    pub const fn create_operation(&self) -> [u8; 16] {
+        self.create
+    }
+
     /// Returns the assignment retained by Storage.
-    pub(crate) const fn assignment_digest(&self) -> ObjectDigest {
+    pub const fn assignment_digest(&self) -> ObjectDigest {
         self.assignment_digest
     }
 
     /// Returns the accepted v2 output-claim digest.
-    pub(crate) const fn claim_digest(&self) -> ObjectDigest {
+    pub const fn claim_digest(&self) -> ObjectDigest {
         self.claim_digest
     }
 
     /// Returns the exact AOSEOR03 record digest.
-    pub(crate) const fn record_digest(&self) -> ObjectDigest {
+    pub const fn record_digest(&self) -> ObjectDigest {
         self.record_digest
     }
 
     /// Returns the reserved logical byte count.
-    pub(crate) const fn admitted_bytes(&self) -> u64 {
+    pub const fn admitted_bytes(&self) -> u64 {
         self.admitted_bytes
     }
 
     /// Returns the retained stdout ceiling.
-    pub(crate) const fn maximum_stdout_bytes(&self) -> u64 {
+    pub const fn maximum_stdout_bytes(&self) -> u64 {
         self.maximum_stdout_bytes
     }
 
     /// Returns the retained stderr ceiling.
-    pub(crate) const fn maximum_stderr_bytes(&self) -> u64 {
+    pub const fn maximum_stderr_bytes(&self) -> u64 {
         self.maximum_stderr_bytes
     }
 
     /// Returns the Storage journal sequence observed with the row.
-    pub(crate) const fn journal_sequence(&self) -> u64 {
+    pub const fn journal_sequence(&self) -> u64 {
         self.journal_sequence
     }
 

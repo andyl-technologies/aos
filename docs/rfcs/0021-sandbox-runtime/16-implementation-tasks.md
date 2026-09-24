@@ -8899,3 +8899,16 @@ writer cut. There is no production Source signer transport or private-key
 custody, all-owner CAS, crash-safe release/recovery composition, or Q04
 request admission. The daemon's early Q04 gate remains closed; these bytes
 cannot authorize public Create, publication, or effects.
+
+### Execution Observe child and Storage writer readback
+
+The Controller's existing AOSCOB01 reservation now recovers a deterministic,
+inert Observe child plan and rejects any preexisting Operation, Effect, or
+idempotency claim on that identity. It writes no child ledger entry and cannot
+dispatch Observe. Storage can now hold an exact AOSEOR03 output row, including
+zero-byte Stream and PTY claims, through a borrowed exclusive writer and
+recheck its head and journal/lock names. This readback is local to Storage;
+it neither proves the original protected directory path nor joins Controller,
+environment, Host, physical ZFS, or an effect handoff. Create and Observe stay
+closed pending the ordered all-owner barrier, versioned large-spec handoff,
+and durable reconciler child Operation/Effect adoption protocol.

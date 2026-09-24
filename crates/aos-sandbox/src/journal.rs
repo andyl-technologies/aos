@@ -1580,6 +1580,21 @@ impl Journal {
         Ok(())
     }
 
+    /// Checks that a protected writer still owns its named journal and lock.
+    ///
+    /// This checks names inside the retained protected directory. It does not
+    /// re-resolve that directory's original path or establish another owner's
+    /// currentness; callers needing a fixed path must separately check it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unprotected or poisoned journal, a replaced journal or lock
+    /// name, and any protected file-boundary failure.
+    pub fn validate_held_protected_names(&self) -> Result<(), JournalError> {
+        self.ensure_protected_authority()?;
+        self.require_protected_names_current()
+    }
+
     /// Returns the currently materialized value for a logical key.
     ///
     /// This diagnostic view remains readable after an ambiguous I/O failure.
