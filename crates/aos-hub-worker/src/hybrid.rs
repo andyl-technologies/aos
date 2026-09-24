@@ -64,7 +64,13 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
         version: 1,
         deployment_id: env.var("HUB_DEPLOYMENT_ID")?.to_string(),
         binding_kind: "deployment_r2".into(),
-        operations: vec!["head".into(), "list_page".into(), "inspect_sha256".into()],
+        operations: vec![
+            "head".into(),
+            "list_page".into(),
+            "inspect_sha256".into(),
+            "inspect_git_object".into(),
+            "inspect_metadata".into(),
+        ],
         max_result_bytes: MAX_RESULT_BYTES,
         max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
     };
@@ -101,6 +107,12 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         aos_hub_core::storage_work::StorageWorkOperation::Head { .. } => "head",
         aos_hub_core::storage_work::StorageWorkOperation::ListPage { .. } => "list_page",
         aos_hub_core::storage_work::StorageWorkOperation::InspectSha256 { .. } => "inspect_sha256",
+        aos_hub_core::storage_work::StorageWorkOperation::InspectGitObject { .. } => {
+            "inspect_git_object"
+        }
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMetadata { .. } => {
+            "inspect_metadata"
+        }
     };
 
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;

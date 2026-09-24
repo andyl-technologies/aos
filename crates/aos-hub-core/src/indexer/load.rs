@@ -121,6 +121,23 @@ impl<'a> ObjectReader<'a> {
             return Ok(decoded);
         }
 
+        if self.fetch.storage_local_git_inspection() {
+            let decoded = self
+                .fetch
+                .inspect_git_object(oid)
+                .await?
+                .with_context(|| format!("Git object {oid} is missing from the surface"))?;
+            anyhow::ensure!(
+                object::hash_object(decoded.0, &decoded.1) == oid,
+                "storage-local Git projection does not match {oid}"
+            );
+            self.cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+                .insert(oid, decoded.clone());
+            return Ok(decoded);
+        }
+
         self.load_bundle(oid).await?;
         if let Some(decoded) = self.cached(oid)? {
             return Ok(decoded);
@@ -227,6 +244,9 @@ impl<'a> ObjectReader<'a> {
     /// Returns an error when a shard transport fails. Missing or invalid
     /// optional bundles retain canonical loose-object fallback.
     pub(crate) async fn preload_bundles(&self) -> Result<()> {
+        if self.fetch.storage_local_git_inspection() {
+            return Ok(());
+        }
         if self.load_aggregate_bundle().await? {
             return Ok(());
         }
@@ -1043,6 +1063,54 @@ mod bundle_tests {
     struct AggregateBundleFetch {
         bytes: Vec<u8>,
         reads: AtomicUsize,
+    }
+
+    struct RemoteObjectFetch {
+        content: Vec<u8>,
+        reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for RemoteObjectFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("remote Git inspection must not fetch {path} into Native")
+        }
+
+        fn storage_local_git_inspection(&self) -> bool {
+            true
+        }
+
+        async fn inspect_git_object(&self, _oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some((ObjectKind::Blob, self.content.clone())))
+        }
+
+        fn describe(&self) -> String {
+            "remote-Git-inspection".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_local_object_inspection_skips_bundle_preload_and_rehashes_result() {
+        let content = b"selected Git content".to_vec();
+        let oid = object::hash_object(ObjectKind::Blob, &content);
+        let fetch = RemoteObjectFetch {
+            content: content.clone(),
+            reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader.preload_bundles().await.unwrap();
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(reader.read(oid).await.unwrap(), (ObjectKind::Blob, content));
+        assert_eq!(reader.read(oid).await.unwrap().0, ObjectKind::Blob);
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+
+        let corrupted = RemoteObjectFetch {
+            content: b"wrong object".to_vec(),
+            reads: AtomicUsize::new(0),
+        };
+        assert!(ObjectReader::new(&corrupted).read(oid).await.is_err());
     }
 
     #[async_trait::async_trait]

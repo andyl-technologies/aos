@@ -17,11 +17,14 @@ use aos_hub_core::fetch::{
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_RESULT_BYTES,
+    MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
+use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures_util::StreamExt as _;
 
 /// Authenticated Native-to-Worker executor client.
@@ -207,12 +210,18 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
             && capabilities.binding_kind == "deployment_r2"
             && capabilities.max_result_bytes == MAX_RESULT_BYTES
             && capabilities.max_verify_source_bytes == MAX_VERIFY_SOURCE_BYTES
-            && ["head", "list_page", "inspect_sha256"]
+            && [
+                "head",
+                "list_page",
+                "inspect_sha256",
+                "inspect_git_object",
+                "inspect_metadata"
+            ]
+            .iter()
+            .all(|required| capabilities
+                .operations
                 .iter()
-                .all(|required| capabilities
-                    .operations
-                    .iter()
-                    .any(|actual| actual == required)),
+                .any(|actual| actual == required)),
         "hybrid storage Worker protocol, deployment, or R2 binding mismatch"
     );
     Ok(())
@@ -229,12 +238,20 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
     );
     match (&plan.operation, &result.outcome) {
         (
-            StorageWorkOperation::Head { .. } | StorageWorkOperation::InspectSha256 { .. },
+            StorageWorkOperation::Head { .. }
+            | StorageWorkOperation::InspectSha256 { .. }
+            | StorageWorkOperation::InspectMetadata { .. },
             StorageWorkOutcome::NotFound,
         ) => {
             anyhow::ensure!(
                 result.source_bytes == 0,
                 "missing object reported source bytes"
+            );
+        }
+        (StorageWorkOperation::InspectGitObject { .. }, StorageWorkOutcome::NotFound) => {
+            anyhow::ensure!(
+                result.source_bytes <= object_bundle::MAX_BUNDLE_BYTES as u64,
+                "missing Git object reported excessive source bytes"
             );
         }
         (StorageWorkOperation::Head { path }, StorageWorkOutcome::Head { object }) => {
@@ -287,6 +304,71 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 "storage Worker verification result does not match the selected object"
             );
         }
+        (
+            StorageWorkOperation::InspectGitObject { oid },
+            StorageWorkOutcome::GitObject {
+                source,
+                oid: returned_oid,
+                object_kind,
+                content_base64,
+            },
+        ) => {
+            let oid_value = object::Oid::from_hex(oid)?;
+            let shard_path = object_bundle::shard_path(&oid[..2])?;
+            let loose_path = oid_value.loose_path();
+            let is_shard = source.key == plan.object_key(&shard_path)?;
+            let is_loose = source.key == plan.object_key(&loose_path)?;
+            let source_limit = if is_shard {
+                object_bundle::MAX_BUNDLE_BYTES as u64
+            } else {
+                object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+            };
+            aos_hub_core::surface_write::strong_if_match_etag(&source.etag)?;
+            anyhow::ensure!(
+                returned_oid == oid
+                    && (is_shard || is_loose)
+                    && (if is_shard {
+                        result.source_bytes == source.size
+                    } else {
+                        result.source_bytes >= source.size
+                            && result.source_bytes
+                                <= source.size + object_bundle::MAX_BUNDLE_BYTES as u64
+                    })
+                    && source.size <= source_limit,
+                "storage Worker Git result names another source or object"
+            );
+            let content = base64::engine::general_purpose::STANDARD
+                .decode(content_base64)
+                .context("decoding Worker Git object content")?;
+            anyhow::ensure!(
+                content.len() <= MAX_GIT_INSPECTION_CONTENT_BYTES
+                    && object::hash_object(object::ObjectKind::parse(object_kind)?, &content)
+                        == oid_value,
+                "storage Worker Git projection does not match the requested OID"
+            );
+        }
+        (
+            StorageWorkOperation::InspectMetadata { path },
+            StorageWorkOutcome::Metadata {
+                source,
+                content_base64,
+            },
+        ) => {
+            aos_hub_core::surface_write::strong_if_match_etag(&source.etag)?;
+            anyhow::ensure!(
+                source.key == plan.object_key(path)?
+                    && source.size <= MAX_METADATA_BYTES as u64
+                    && result.source_bytes == source.size,
+                "storage Worker metadata result names another or oversized object"
+            );
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(content_base64)
+                .context("decoding Worker metadata document")?;
+            anyhow::ensure!(
+                bytes.len() as u64 == source.size,
+                "storage Worker metadata body does not match its source size"
+            );
+        }
         _ => bail!("storage Worker returned the wrong result kind"),
     }
     Ok(())
@@ -308,6 +390,14 @@ impl HybridSurfaceProvider {
 
 #[async_trait]
 impl SurfaceProvider for HybridSurfaceProvider {
+    fn storage_local_git_inspection(&self) -> bool {
+        true
+    }
+
+    fn storage_local_sha256(&self) -> bool {
+        true
+    }
+
     async fn placement_fetcher(
         &self,
         placement: &SurfacePlacementRecord,
@@ -386,8 +476,63 @@ impl SurfaceFetch for HybridSurfaceFetch {
         format!("hybrid Worker placement {}", self.placement.id)
     }
 
-    async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
-        bail!("hybrid object bodies require a typed Worker inspection plan")
+    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        anyhow::ensure!(
+            aos_hub_core::storage_work::admitted_metadata_path(path),
+            "hybrid object bodies require a typed Worker inspection plan"
+        );
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::InspectMetadata { path: path.into() },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.execute(&plan).await?;
+        match result.outcome {
+            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::Metadata { content_base64, .. } => Ok(Some(
+                base64::engine::general_purpose::STANDARD
+                    .decode(content_base64)
+                    .context("decoding metadata from storage Worker")?,
+            )),
+            _ => bail!("storage Worker returned an unexpected metadata result"),
+        }
+    }
+
+    fn storage_local_git_inspection(&self) -> bool {
+        true
+    }
+
+    fn storage_local_sha256(&self) -> bool {
+        true
+    }
+
+    async fn inspect_git_object(
+        &self,
+        oid: object::Oid,
+    ) -> Result<Option<(object::ObjectKind, Vec<u8>)>> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::InspectGitObject { oid: oid.to_hex() },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.execute(&plan).await?;
+        match result.outcome {
+            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::GitObject {
+                object_kind,
+                content_base64,
+                ..
+            } => {
+                let kind = object::ObjectKind::parse(&object_kind)?;
+                let content = base64::engine::general_purpose::STANDARD
+                    .decode(content_base64)
+                    .context("decoding Git projection from storage Worker")?;
+                Ok(Some((kind, content)))
+            }
+            _ => bail!("storage Worker returned an unexpected Git inspection result"),
+        }
     }
 
     async fn fetch_stream(
@@ -540,7 +685,13 @@ mod tests {
             version: 1,
             deployment_id: "deployment-1".into(),
             binding_kind: "deployment_r2".into(),
-            operations: vec!["head".into(), "list_page".into(), "inspect_sha256".into()],
+            operations: vec![
+                "head".into(),
+                "list_page".into(),
+                "inspect_sha256".into(),
+                "inspect_git_object".into(),
+                "inspect_metadata".into(),
+            ],
             max_result_bytes: MAX_RESULT_BYTES,
             max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
         };
@@ -589,6 +740,98 @@ mod tests {
         result.placement_resource_version -= 1;
         if let StorageWorkOutcome::Head { object } = &mut result.outcome {
             object.key = "another/HEAD".into();
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
+    fn git_projection_is_rehashed_and_scoped_to_one_source() {
+        let content = b"selected git content";
+        let oid = object::hash_object(object::ObjectKind::Blob, content).to_hex();
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry/".into(),
+            operation: StorageWorkOperation::InspectGitObject { oid: oid.clone() },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 128,
+            outcome: StorageWorkOutcome::GitObject {
+                source: StorageObjectIdentity {
+                    key: format!(
+                        "registry/{}",
+                        object::Oid::from_hex(&oid).unwrap().loose_path()
+                    ),
+                    size: 128,
+                    etag: "\"strong-etag\"".into(),
+                },
+                oid,
+                object_kind: "blob".into(),
+                content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+        if let StorageWorkOutcome::GitObject { content_base64, .. } = &mut result.outcome {
+            *content_base64 = base64::engine::general_purpose::STANDARD.encode(b"wrong");
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
+    fn metadata_projection_requires_the_selected_object_and_exact_size() {
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry/".into(),
+            operation: StorageWorkOperation::InspectMetadata {
+                path: "HEAD".into(),
+            },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 3,
+            outcome: StorageWorkOutcome::Metadata {
+                source: StorageObjectIdentity {
+                    key: "registry/HEAD".into(),
+                    size: 3,
+                    etag: "\"strong-etag\"".into(),
+                },
+                content_base64: base64::engine::general_purpose::STANDARD.encode(b"abc"),
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+        if let StorageWorkOutcome::Metadata { source, .. } = &mut result.outcome {
+            source.key = "registry/other".into();
+        }
+        assert!(validate_result(&plan, &result).is_err());
+        if let StorageWorkOutcome::Metadata { source, .. } = &mut result.outcome {
+            source.key = "registry/HEAD".into();
+            source.size = 4;
         }
         assert!(validate_result(&plan, &result).is_err());
     }

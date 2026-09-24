@@ -23,6 +23,10 @@ pub const MAX_PLAN_BYTES: usize = 16 * 1024;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// Maximum full-object verification size in the first streaming R2 executor.
 pub const MAX_VERIFY_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Maximum decoded Git object content returned by one storage-local inspection.
+pub const MAX_GIT_INSPECTION_CONTENT_BYTES: usize = 128 * 1024;
+/// Maximum signed registry metadata returned across the cloud boundary.
+pub const MAX_METADATA_BYTES: usize = 128 * 1024;
 
 /// Exact storage executor features required by the first hybrid protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +74,16 @@ pub enum StorageWorkOperation {
         expected_sha256: Option<String>,
         /// Maximum source bytes the executor may read.
         max_source_bytes: u64,
+    },
+    /// Extracts one Git object from its fixed shard or canonical loose path.
+    InspectGitObject {
+        /// Lowercase SHA-256 Git object identifier.
+        oid: String,
+    },
+    /// Reads one bounded signed registry metadata document beside storage.
+    InspectMetadata {
+        /// Surface-relative metadata path from the closed admitted set.
+        path: String,
     },
 }
 
@@ -136,6 +150,24 @@ pub enum StorageWorkOutcome {
         object: StorageObjectIdentity,
         /// SHA-256 of the bytes read by the executor.
         sha256: String,
+    },
+    /// One decoded and hash-checked Git object extracted beside storage.
+    GitObject {
+        /// Source bundle shard or loose object snapshot.
+        source: StorageObjectIdentity,
+        /// Requested Git object identifier.
+        oid: String,
+        /// Git object kind (`commit`, `tree`, `tag`, or `blob`).
+        object_kind: String,
+        /// Standard-base64 decoded Git object content.
+        content_base64: String,
+    },
+    /// One bounded registry metadata document observed on an exact R2 snapshot.
+    Metadata {
+        /// Source object identity.
+        source: StorageObjectIdentity,
+        /// Standard-base64 exact document bytes.
+        content_base64: String,
     },
 }
 
@@ -331,6 +363,20 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::InspectGitObject { oid } => {
+                if oid.len() != 64
+                    || !oid
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::InspectMetadata { path } => {
+                if !valid_relative_path(path, false) || !admitted_metadata_path(path) {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
         }
         Ok(())
     }
@@ -346,6 +392,14 @@ impl StorageWorkPlan {
         }
         Ok(crate::keymap::r2_key(&self.placement_prefix, relative))
     }
+}
+
+/// Reports whether a path can cross the hybrid boundary as bounded metadata.
+#[must_use]
+pub fn admitted_metadata_path(path: &str) -> bool {
+    matches!(path, "HEAD" | "info/refs" | "objects/info/packs")
+        || path.starts_with("channels/")
+        || path.starts_with("releases/")
 }
 
 fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
@@ -427,6 +481,39 @@ mod tests {
     fn selector_cannot_escape_its_placement() {
         for invalid in ["/absolute", "../sibling", "a/../b", "a//b", "a%2fb", "a\\b"] {
             assert!(!valid_relative_path(invalid, false), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn git_inspection_requires_a_canonical_sha256_oid() {
+        let mut work = plan(100);
+        work.operation = StorageWorkOperation::InspectGitObject {
+            oid: "a".repeat(64),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+        work.operation = StorageWorkOperation::InspectGitObject {
+            oid: "A".repeat(64),
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn metadata_inspection_excludes_bulk_object_paths() {
+        let mut work = plan(100);
+        for path in ["HEAD", "info/refs", "channels/stable/00"] {
+            work.operation = StorageWorkOperation::InspectMetadata { path: path.into() };
+            assert!(work.validate("deployment-1", 101).is_ok(), "{path}");
+        }
+        for path in ["nar/large.nar", "images/disk.qcow2", "objects/ab/1234"] {
+            work.operation = StorageWorkOperation::InspectMetadata { path: path.into() };
+            assert_eq!(
+                work.validate("deployment-1", 101),
+                Err(StorageWorkError::InvalidPlan),
+                "{path}"
+            );
         }
     }
 }

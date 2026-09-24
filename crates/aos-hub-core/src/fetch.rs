@@ -282,6 +282,39 @@ pub trait SurfaceFetch: BackendBounds {
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
 
+    /// Whether Git objects are decoded beside storage through a typed query.
+    ///
+    /// Indexers use this to skip eager bundle hydration in hybrid mode. Local
+    /// adapters retain their existing bundle preload and loose-object path.
+    fn storage_local_git_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether bounded SHA-256 verification runs beside object storage.
+    ///
+    /// The image indexer uses this to avoid transferring signed image bodies
+    /// to the control-plane runtime.
+    fn storage_local_sha256(&self) -> bool {
+        false
+    }
+
+    /// Reads one verified Git object through a storage-local inspection port.
+    ///
+    /// Only providers returning `true` from
+    /// [`storage_local_git_inspection`](Self::storage_local_git_inspection)
+    /// may implement this path. The caller rehashes the decoded content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported inspection, transport failure, or an
+    /// invalid Git object projection.
+    async fn inspect_git_object(
+        &self,
+        _oid: aos_registry_surface::object::Oid,
+    ) -> Result<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>> {
+        bail!("this surface does not support storage-local Git inspection")
+    }
+
     /// Stream one surface path, optionally just the inclusive byte `range`.
     ///
     /// The streaming counterpart of [`fetch`](Self::fetch) and the single read
@@ -629,6 +662,16 @@ pub trait OriginFetch: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceProvider: BackendBounds {
+    /// Whether readers from this provider support storage-local Git inspection.
+    fn storage_local_git_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether readers from this provider verify SHA-256 beside object storage.
+    fn storage_local_sha256(&self) -> bool {
+        false
+    }
+
     /// Opens a reader rooted at one explicit physical placement.
     ///
     /// Selection remains in shared topology logic; adapters only translate the

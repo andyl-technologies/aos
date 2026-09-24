@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 use worker::Bucket;
 
@@ -35,11 +36,12 @@ use aos_hub_core::storage_credential::{
 };
 use aos_hub_core::storage_work::{
     StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult,
+    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
 };
+use aos_registry_surface::{object, object_bundle};
 
 use crate::consoleports::WorkerEgressClient;
 use crate::frozen_surface_access::{
@@ -151,8 +153,133 @@ pub(crate) async fn execute_r2_storage_work(
                 size,
             )
         }
+        StorageWorkOperation::InspectGitObject { oid } => {
+            let oid_value = object::Oid::from_hex(oid)?;
+            let shard = &oid[..2];
+            let shard_path = object_bundle::shard_path(shard)?;
+            let bundled =
+                read_bounded_source(&fetcher, plan, &shard_path, object_bundle::MAX_BUNDLE_BYTES)
+                    .await?;
+            let bundle_bytes = bundled.as_ref().map_or(0, |(_, source)| source.size);
+            let selected = bundled.as_ref().and_then(|(bytes, _)| {
+                match object_bundle::decode(shard, bytes) {
+                    Ok(entries) => entries.into_iter().find(|(entry, _)| *entry == oid_value),
+                    Err(error) => {
+                        tracing::warn!(%shard_path, error = %format!("{error:#}"), "ignoring invalid Git bundle shard");
+                        None
+                    }
+                }
+            });
+            let (loose, source) = match selected {
+                Some((_, loose)) => {
+                    let source = bundled
+                        .as_ref()
+                        .map(|(_, source)| source.clone())
+                        .context("selected Git bundle source disappeared")?;
+                    (loose, source)
+                }
+                None => {
+                    let path = oid_value.loose_path();
+                    let Some((loose, source)) = read_bounded_source(
+                        &fetcher,
+                        plan,
+                        &path,
+                        object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize,
+                    )
+                    .await?
+                    else {
+                        return Ok(storage_work_result(
+                            plan,
+                            StorageWorkOutcome::NotFound,
+                            bundle_bytes,
+                        ));
+                    };
+                    (loose, source)
+                }
+            };
+            let (kind, content) = object::decode_loose(&loose, Some(oid_value))?;
+            anyhow::ensure!(
+                content.len() <= MAX_GIT_INSPECTION_CONTENT_BYTES,
+                "Git object projection exceeds the semantic response limit"
+            );
+            let source_bytes = if source.key == plan.object_key(&shard_path)? {
+                bundle_bytes
+            } else {
+                bundle_bytes
+                    .checked_add(source.size)
+                    .context("Git inspection source byte count overflowed")?
+            };
+            (
+                StorageWorkOutcome::GitObject {
+                    source,
+                    oid: oid.clone(),
+                    object_kind: kind.as_str().into(),
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectMetadata { path } => {
+            let Some((bytes, source)) =
+                read_bounded_source(&fetcher, plan, path, MAX_METADATA_BYTES).await?
+            else {
+                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
+            };
+            let source_bytes = source.size;
+            (
+                StorageWorkOutcome::Metadata {
+                    source,
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                source_bytes,
+            )
+        }
     };
     Ok(storage_work_result(plan, outcome, source_bytes))
+}
+
+async fn read_bounded_source(
+    fetcher: &R2SurfaceFetch,
+    plan: &StorageWorkPlan,
+    path: &str,
+    maximum: usize,
+) -> Result<Option<(Vec<u8>, StorageObjectIdentity)>> {
+    use futures_util::TryStreamExt as _;
+
+    let Some(read) = fetcher.fetch_stream(path, None).await? else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        read.total <= maximum as u64,
+        "storage source exceeds its byte limit"
+    );
+    let etag = read
+        .strong_etag
+        .context("storage source has no strong R2 ETag")?;
+    let expected = read.total;
+    let mut bytes = Vec::new();
+    let mut stream = read.body.into_data_stream();
+    while let Some(chunk) = stream.try_next().await? {
+        let next = bytes
+            .len()
+            .checked_add(chunk.len())
+            .context("storage source size overflow")?;
+        anyhow::ensure!(
+            next <= maximum && next as u64 <= expected,
+            "storage source exceeded its declared size"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    anyhow::ensure!(
+        bytes.len() as u64 == expected,
+        "storage source ended before its declared size"
+    );
+    let source = StorageObjectIdentity {
+        key: plan.object_key(path)?,
+        size: expected,
+        etag,
+    };
+    Ok(Some((bytes, source)))
 }
 
 fn storage_object_identity(key: String, head: R2HeadObject) -> StorageObjectIdentity {

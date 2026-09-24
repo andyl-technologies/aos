@@ -19,9 +19,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use aos_registry_surface::object::{ObjectKind, Oid};
 
 use crate::db::{Database, PlacementReadRequirement, SurfacePlacementRecord, SurfaceTarget};
-use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
+use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
 
 /// Placement-planned reader for callers that need a reusable [`SurfaceFetch`].
 ///
@@ -100,6 +101,89 @@ impl SurfaceFetch for TopologySurfaceFetch {
             PlacementReadOutcome::Found(read) => Ok(Some(read.value)),
             PlacementReadOutcome::NotFound => Ok(None),
         }
+    }
+
+    fn storage_local_git_inspection(&self) -> bool {
+        self.provider.storage_local_git_inspection()
+    }
+
+    fn storage_local_sha256(&self) -> bool {
+        self.provider.storage_local_sha256()
+    }
+
+    async fn inspect_git_object(&self, oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
+        let path = oid.loose_path();
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(&path))
+            .await?;
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let fetch = match self.provider.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match fetch.inspect_git_object(oid).await {
+                Ok(Some(decoded)) => return Ok(Some(decoded)),
+                Ok(None) => continue,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(error) = last_retryable {
+            return Err(error).context("all readable Git placements failed inspection");
+        }
+        if plan.miss_is_inconsistent {
+            return Err(terminal_read_error(format!(
+                "authoritative Git object '{oid}' is missing from every readable placement"
+            )));
+        }
+        Ok(None)
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(path))
+            .await?;
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let fetch = match self.provider.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match fetch.inventory_evidence_bounded(path, maximum_bytes).await {
+                Ok(Some(evidence)) => return Ok(Some(evidence)),
+                Ok(None) => continue,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(error) = last_retryable {
+            return Err(error).context("all readable storage placements failed verification");
+        }
+        if plan.miss_is_inconsistent {
+            return Err(terminal_read_error(format!(
+                "authoritative object '{path}' is missing from every readable placement"
+            )));
+        }
+        Ok(None)
     }
 
     async fn fetch_stream(
