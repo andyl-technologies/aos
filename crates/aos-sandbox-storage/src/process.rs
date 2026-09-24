@@ -1907,13 +1907,12 @@ mod tests {
                     Ok(HeldSnapshotPhysicalObservationV1::Matched { pool_guid, digest })
                         if pool_guid == expected_pool_guid && digest.as_bytes() != &[0; 32]
                 )),
-                "wrong-pool" | "wrong-snapshot" | "wrong-hold" | "missing-hold" => {
+                "wrong-pool" | "wrong-snapshot" | "wrong-hold" | "missing-hold" | "gone" => {
                     assert_eq!(
                         observation.unwrap(),
                         HeldSnapshotPhysicalObservationV1::Mismatch
                     );
                 }
-                "gone" => assert!(observation.is_err()),
                 _ => panic!("unknown held-snapshot VM case"),
             }
             return;

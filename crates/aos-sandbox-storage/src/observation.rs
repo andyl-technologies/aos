@@ -1224,6 +1224,24 @@ mod tests {
     }
 
     #[test]
+    fn held_snapshot_plan_reports_missing_snapshot_under_live_parent_as_mismatch() {
+        let (snapshot, hold_id) = held_snapshot();
+        let plan = ZfsObservationPlan::held_snapshot(&snapshot, hold_id).unwrap();
+        let mut evaluation = plan.evaluation();
+
+        let source = b"tank/aos/project\tfilesystem\t15\n\
+                       tank/aos/project/workspace\tfilesystem\t23\n"
+            .to_vec();
+        let missing_snapshot = b"tank/aos/project/workspace\tfilesystem\t23\n".to_vec();
+
+        assert!(evaluation.accept(source).unwrap().is_none());
+        assert_eq!(
+            evaluation.accept(missing_snapshot).unwrap().unwrap().state,
+            ZfsObservationState::Mismatch,
+        );
+    }
+
+    #[test]
     fn plans_compile_only_closed_machine_queries() {
         let transaction = transaction();
         let preconditions = ZfsObservationPlan::preconditions(&transaction).unwrap();
