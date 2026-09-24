@@ -105,7 +105,7 @@ in {
     zfsHoldSigningKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Separately provisioned root-owned AOSZHK01 Storage ZFS hold receipt key. Issuance remains closed until physical readback and durable attempt admission are connected.";
+      description = "Separately provisioned root-only AOSZHK01 Storage ZFS hold receipt key source outside the Nix store. Issuance remains closed until physical readback and durable attempt admission are connected.";
     };
 
     identityPoolStart = lib.mkOption {
@@ -149,6 +149,12 @@ in {
         {
           assertion = cfg.zfsHoldSigningKey == null || lib.hasPrefix "/" cfg.zfsHoldSigningKey;
           message = "aos.sandbox.storageBroker.zfsHoldSigningKey must be null or absolute";
+        }
+        {
+          assertion =
+            cfg.zfsHoldSigningKey == null
+            || (cfg.zfsHoldSigningKey != "/nix/store" && !lib.hasPrefix "/nix/store/" cfg.zfsHoldSigningKey);
+          message = "aos.sandbox.storageBroker.zfsHoldSigningKey must be provisioned outside the Nix store";
         }
         {
           assertion = lib.hasPrefix "/" cfg.bootstrapDirectory;
