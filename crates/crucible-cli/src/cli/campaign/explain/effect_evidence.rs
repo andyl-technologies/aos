@@ -23,7 +23,6 @@ const MAX_PROJECTED_ITEMS: usize = 4096;
 ///
 /// Returns an error when a chunk is unauthorized, mismatched, incomplete,
 /// noncanonical, or outside the bounded trace and event-log contracts.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn load_and_project_attempt_effect_evidence<S>(
     client: &CampaignClient<S>,
     principal: &CampaignPrincipal,
@@ -347,7 +346,6 @@ fn network_effect_kind(specification: &NetworkEffectSpecification) -> &'static s
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn download_attempt_trace<S>(
     client: &CampaignClient<S>,
     principal: &CampaignPrincipal,
