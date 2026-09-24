@@ -1851,6 +1851,15 @@ execution incarnation. After restart, an admitted resume remains bound to the
 same checkpoint and cannot degrade to an ordinary execution from the attempt's
 starting configuration.
 
+The current execution-basis digest is
+`H("crucible.campaign.submit-attempt-execution-basis.v4", lineage,
+attempt, resources, retention, start mode, retention-policy disposition)`. A
+required retention-policy disposition contributes its immutable admission and
+policy IDs. The request still carries the source snapshot: the attempt worker
+authenticates its admission membership when loading the timeout policy, and
+finding retention authenticates it again. A later campaign head does not change
+a paused execution's basis. A different admission or policy remains incompatible.
+
 The decoder rejects every request version other than V6 before admission.
 
 `CancelAttemptExecution` is the idempotent mutation for the same exact

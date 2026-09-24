@@ -94,9 +94,18 @@ fn attempt_execution_basis_digest_with_retention_policy(
     resources.encode(&mut encoder);
     retention.encode(&mut encoder);
     start_mode.encode(&mut encoder);
-    policy.encode(&mut encoder);
+    // The source snapshot proves the admission at validation time, but later
+    // campaign heads must not change the identity of a paused execution.
+    match policy {
+        AttemptRetentionPolicyDisposition::Disabled => 0_u8.encode(&mut encoder),
+        AttemptRetentionPolicyDisposition::Required(basis) => {
+            1_u8.encode(&mut encoder);
+            basis.admission().encode(&mut encoder);
+            basis.policy().encode(&mut encoder);
+        }
+    }
     CampaignHash::derive(
-        "crucible.campaign.submit-attempt-execution-basis.v3",
+        "crucible.campaign.submit-attempt-execution-basis.v4",
         &encoder.finish(),
     )
 }
@@ -415,6 +424,7 @@ impl Canonical for ExecutionRetentionIntent {
 /// `snapshot` authenticates the accounting root that selected `admission` as
 /// this attempt's execution basis. Executors recheck that exact membership;
 /// loading another stored admission for the same attempt is insufficient.
+/// The snapshot is a proof anchor, not part of the stable execution-basis digest.
 ///
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttemptRetentionPolicyBasis {

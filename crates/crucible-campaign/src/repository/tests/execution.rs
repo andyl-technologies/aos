@@ -209,6 +209,7 @@ struct CancellableExecutor {
 
 struct PausedResumeExecutor {
     prior_execution: ExecutionId,
+    prior_execution_basis: CampaignHash,
     checkpoint: ExactCheckpointId,
     resumed_execution: ExecutionId,
     submit_requests: Vec<SubmitAttemptRequest>,
@@ -223,14 +224,17 @@ impl ExecutorService for PausedResumeExecutor {
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
         self.submit_requests.push(request.clone());
-        SubmitAttemptResponse::new(
-            request,
+        let disposition = if request.execution_basis_digest() == self.prior_execution_basis {
             SubmitAttemptDisposition::AlreadyPaused {
                 execution: self.prior_execution,
                 checkpoint: self.checkpoint,
-            },
-        )
-        .map_err(|_| "response encoding")
+            }
+        } else {
+            SubmitAttemptDisposition::Rejected {
+                reason: ExecutorRejection::Incompatible,
+            }
+        };
+        SubmitAttemptResponse::new(request, disposition).map_err(|_| "response encoding")
     }
 }
 
@@ -250,6 +254,9 @@ impl ExecutorResumeService for PausedResumeExecutor {
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
         self.resume_requests.push(request.clone());
+        if request.prior_execution_basis_digest() != self.prior_execution_basis {
+            return Err("resume execution basis changed");
+        }
         ResumeAttemptExecutionResponse::new(
             request,
             ResumeAttemptExecutionDisposition::Accepted {
@@ -323,5 +330,6 @@ mod admission;
 mod driver;
 mod expansion;
 mod publication;
+mod resume_basis_tests;
 mod triage_replay_storage;
 mod validation;

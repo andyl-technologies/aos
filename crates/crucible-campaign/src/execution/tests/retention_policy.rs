@@ -75,4 +75,50 @@ pub(super) fn assert_retention_policy_materialized_start(
         decoded_policy_resume.execution_basis_digest(),
         policy_assignment.execution_basis_digest()
     );
+
+    let basis_digest = policy_assignment.execution_basis_digest();
+    let other_snapshot = CampaignSnapshotId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignSnapshot,
+        3,
+        b"later-campaign-head",
+    ))
+    .expect("later snapshot");
+    let same_admission = AttemptRetentionPolicyBasis::new(
+        other_snapshot,
+        policy_basis.admission(),
+        policy_basis.policy(),
+    );
+    let changed_admission = AttemptRetentionPolicyBasis::new(
+        other_snapshot,
+        AttemptAdmissionId::from_content_id(ContentId::for_bytes(
+            ObjectKind::CampaignFact,
+            3,
+            b"different-admission",
+        ))
+        .expect("different admission"),
+        policy_basis.policy(),
+    );
+    let changed_policy = AttemptRetentionPolicyBasis::new(
+        other_snapshot,
+        policy_basis.admission(),
+        CampaignPolicyId::from_content_id(ContentId::for_bytes(
+            ObjectKind::Policy,
+            5,
+            b"different-policy",
+        ))
+        .expect("different policy"),
+    );
+    let digest_for = |basis| {
+        attempt_execution_basis_digest_with_retention_policy(
+            assignment.lineage(),
+            assignment.attempt(),
+            assignment.resources(),
+            assignment.retention(),
+            AttemptStartMode::Execute,
+            crate::AttemptRetentionPolicyDisposition::Required(basis),
+        )
+    };
+    assert_eq!(basis_digest, digest_for(same_admission));
+    assert_ne!(basis_digest, digest_for(changed_admission));
+    assert_ne!(basis_digest, digest_for(changed_policy));
 }
