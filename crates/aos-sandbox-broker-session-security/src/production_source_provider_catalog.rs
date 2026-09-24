@@ -177,7 +177,7 @@ fn valid_credential(stat: &Stat, maximum_bytes: usize) -> bool {
         && matches!(stat.st_mode & 0o7777, 0o400 | 0o600)
 }
 
-fn same_stable_metadata(before: &Stat, after: &Stat) -> bool {
+pub(crate) fn same_stable_metadata(before: &Stat, after: &Stat) -> bool {
     before.st_dev == after.st_dev
         && before.st_ino == after.st_ino
         && before.st_mode == after.st_mode

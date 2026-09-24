@@ -26,6 +26,7 @@ use crate::ProductionBrokerSessionActivationErrorV1;
 use crate::production_activation::{
     activation_names, remaining_duration, validate_activation_process,
 };
+use crate::production_source_provider_catalog::same_stable_metadata;
 
 const LISTENER_NAME: &str = "aos-source-provider";
 const LISTENER_PATH: &str = "/run/aos/source-provider/control.sock";
@@ -264,33 +265,19 @@ fn validate_listener_names(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CatalogMetadata {
-    device: u64,
-    inode: u64,
     size: i64,
     mode: u32,
     uid: u32,
-    gid: u32,
     links: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: u64,
-    changed_seconds: i64,
-    changed_nanoseconds: u64,
 }
 
 impl CatalogMetadata {
     const fn capture(stat: &Stat) -> Self {
         Self {
-            device: stat.st_dev,
-            inode: stat.st_ino,
             size: stat.st_size,
             mode: stat.st_mode,
             uid: stat.st_uid,
-            gid: stat.st_gid,
             links: stat.st_nlink,
-            modified_seconds: stat.st_mtime,
-            modified_nanoseconds: stat.st_mtime_nsec,
-            changed_seconds: stat.st_ctime,
-            changed_nanoseconds: stat.st_ctime_nsec,
         }
     }
 }
@@ -373,7 +360,7 @@ fn read_protected_catalog_file(
     }
     let after = fstat(file.as_fd())
         .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication recheck"))?;
-    if CatalogMetadata::capture(&before) != CatalogMetadata::capture(&after) {
+    if !same_stable_metadata(&before, &after) {
         return Err(ProductionSourceProviderIngressErrorV1::Catalog(
             "publication changed while being read",
         ));
@@ -419,17 +406,10 @@ mod tests {
     #[test]
     fn catalog_locator_rejects_unprotected_metadata() {
         let protected = CatalogMetadata {
-            device: 1,
-            inode: 1,
             size: CATALOG_PUBLICATION_BYTES as i64,
             mode: 0o100600,
             uid: 0,
-            gid: 0,
             links: 1,
-            modified_seconds: 0,
-            modified_nanoseconds: 0,
-            changed_seconds: 0,
-            changed_nanoseconds: 0,
         };
         assert!(valid_catalog_metadata(protected, CATALOG_PUBLICATION_BYTES));
         assert!(!valid_catalog_metadata(
