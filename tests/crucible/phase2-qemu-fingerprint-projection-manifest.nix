@@ -142,22 +142,25 @@ in
                 }
             }
 
+            # Pin the exact current ordered registry for each admitted launch.
+            # A schema or VMState change requires comparing live QMP rows before
+            # refreshing these digests.
             query_manifest q35-machine 37 \
-              a173e8741163a778267684594cb36588d1b6ab819eb2d38b5afcc5280ec801a2 \
+              aaed485b647708698c925c9084891abe46b9958f85b56f8057efabcd53f38c3e \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel tcg -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1
 
             query_manifest aarch64-machine 16 \
-              7f83b287019f3219aa034156476424986b117312b4f7657737bbb2d8d3968110 \
+              eae78ac9196a112bb3bc646fbe4f7806b6651f6e888c755a5486a07a13c6d7bb \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel tcg -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1
 
             query_manifest q35-production-fault 38 \
-              1c02e01f44e979d1b594aab560d554d8aa2150ed59a7b069b3c5ded6201e50ee \
+              716305da24004b0104918d95895908e999ed1111d58c86abdb0d84ab0d83cacb \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -166,7 +169,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-fault-smp4 47 \
-              12b081e8113d3b1d05a945749bd1e465000c1a4d18eeabc1793f2f52373cec29 \
+              885e9d500165787be73a108c416e81f4170d6a6f34c8d3a8538c5b218014753b \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -smp 4 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -175,7 +178,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-fault 17 \
-              7fec38bfabd6fb68715889883ab531f1021a7e41242f8a4b8deefb00ef77e7ca \
+              44f981e197b621f80d6f4adb428b94d0a61078fae283f99cc2a42d6470da8290 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -184,7 +187,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-fault-smp4 23 \
-              0ca30c9c9e5af3f1f7f4d161a75aaa5939a138a5733482fa58d6620a53bc3a1b \
+              e8ed8529347f281a6718a3c9b48accfdb74026e15d4b960f5f847a7f3290a12b \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 -smp 4 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -193,7 +196,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-9p 39 \
-              fc2a3fe1d2c28eb9404cb7dc8b9691c84266c310453f7b43c4648a539677f0f0 \
+              3bcb3d977ea3a56e6119fc41183c3079291d46f728ae3c767ad5ad40166bccb1 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -204,7 +207,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-network 39 \
-              e1fed6eaeae98106d5921159e4f2f021d9bb5a3ba1ee9448d58e64131611f35c \
+              fcea33f81e5d89421cb5bcc277b8f37c827939fafdd6c078646901a133b4b175 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -215,7 +218,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-accelerator 39 \
-              3243fea1f3bfc42dc44a5f3720c676bd8c4e8671ef9e70665eb9d073ccf0e789 \
+              a13664a2389d5329fe61ce6c3adfc9688c5e24c20e241f3088e2c46da079b7da \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -225,7 +228,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-debug-channel 39 \
-              cc7c0e8533a4b9a7e3511122af8372f5831fec09c63a0170a590bd9962e37389 \
+              182f215979518dc50df35a32e2fc4eaa9379e506c86678a4012ac1c2283b0fa7 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -237,7 +240,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-shmem 40 \
-              fa462c9c3a664287928d8bce78d547cce585be244e9c63ea51783a97e76e5ad9 \
+              80be084aca739adecf1634eb699e2a0f821e7d041e9fa9fed059fcb5a688608a \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -248,7 +251,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-shmem 19 \
-              64be6eb1e2ac1dda99a25192cc31b7d18225f8e12dd0ef970baf37c6169e7ebb \
+              589bb9c08d8f8d326ab010e7ff524ce21864a54e6048d93b5cd06e674bf9f8f3 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -259,7 +262,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-root-block 39 \
-              337725dadc760cf000b8104495b0860de22b08ce297a3bfa2a14ca6e712376aa \
+              f7e641455a2e9e7ddc2fd5e8ca9ae1145618402bf9b70461fd748e79352c59e1 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -270,7 +273,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest q35-production-console 39 \
-              474885bbf0d3f808e034fac7c64b2b54a550b935a1430d1a9c8e818f2cf04f85 \
+              510dd3aa46335d0cde8413a0565cbb7e867dbb033c4b9b97dead4de7a52600be \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -279,7 +282,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-root-block 18 \
-              128382475b65585a3c343bfcc5509c3409bf45b151b552ace37a218bb5ff0e1a \
+              10c02ba3c18409f4a27fa3ee875a948ebe53e8aec984d7349a78d34ce555b673 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -290,7 +293,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-9p 18 \
-              8706242da98248b787a81e4c94cfc079067f1a29384d34d407485f1b300d134c \
+              9668d9f9c69084ad8ec839ed6c8e4465fe2c77453d981dca5f56c94b8c6fb67d \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -301,7 +304,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-network 18 \
-              14776dbdfbf9e0f099696bf550ea0f1346392523eba587226bcc518d594e816d \
+              6b65483a3644f8cc95495e76f34d33aa591ede699115383fcc18bd73853793ea \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -312,7 +315,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-accelerator 18 \
-              97ae08dac50565b6751924668d159b60e502a853159a6574b0e4324d4322b63e \
+              c6a629359bdcbf1be0dd60a94e3bab4d6ee04cb757f55a81563fbbb65ac5ae52 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -322,7 +325,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-debug-channel 18 \
-              88d71c78b4320eac3f6b52a3493f22bd9f1320bed31a7713891341c813047847 \
+              ad422368d253ef7a664825ee2244aeb68bb46febbe7d262466c0c5ee4eca8e5a \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -334,7 +337,7 @@ in
               -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-console 17 \
-              7fec38bfabd6fb68715889883ab531f1021a7e41242f8a4b8deefb00ef77e7ca \
+              44f981e197b621f80d6f4adb428b94d0a61078fae283f99cc2a42d6470da8290 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -347,7 +350,7 @@ in
             # Word splitting is deliberate: every token above is one canonical
             # QEMU argv element and contains no whitespace.
             query_manifest q35-production-all-combined 46 \
-              248ecab792dc0a3ac41357cfcec5bb02a72ee28b28e674231c7acfce2e77452b \
+              8714b7496ed5577a3952ec7e9461b873afdd60036e919f492e48ad331938c5de \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -355,7 +358,7 @@ in
               $common_all_devices -plugin ./fault-manifest-plugin.so
 
             query_manifest aarch64-production-all-combined 24 \
-              1caa8dbb684ed3635994e24b928f5a14463d778830b387beb57d621828687421 \
+              20298038469471f62511c26ad7e992e6da604191f5e75c5d6453710513786e24 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -390,7 +393,7 @@ in
             ! jq -e -s '
               any(.[]; .return.sections? == 37 and
                 .return.digest? ==
-                  "a173e8741163a778267684594cb36588d1b6ab819eb2d38b5afcc5280ec801a2")
+                  "aaed485b647708698c925c9084891abe46b9958f85b56f8057efabcd53f38c3e")
             ' "$out/q35-missing-rng.json" > /dev/null
 
             {
@@ -411,17 +414,17 @@ in
             gate=gate:qemu-fingerprint-projection-manifest
             schema_version=4
             q35_machine_sections=37
-            q35_machine_digest=a173e8741163a778267684594cb36588d1b6ab819eb2d38b5afcc5280ec801a2
+            q35_machine_digest=aaed485b647708698c925c9084891abe46b9958f85b56f8057efabcd53f38c3e
             aarch64_machine_sections=16
-            aarch64_machine_digest=7f83b287019f3219aa034156476424986b117312b4f7657737bbb2d8d3968110
+            aarch64_machine_digest=eae78ac9196a112bb3bc646fbe4f7806b6651f6e888c755a5486a07a13c6d7bb
             q35_production_fault_sections=38
-            q35_production_fault_digest=1c02e01f44e979d1b594aab560d554d8aa2150ed59a7b069b3c5ded6201e50ee
+            q35_production_fault_digest=716305da24004b0104918d95895908e999ed1111d58c86abdb0d84ab0d83cacb
             q35_production_fault_smp4_sections=47
-            q35_production_fault_smp4_digest=12b081e8113d3b1d05a945749bd1e465000c1a4d18eeabc1793f2f52373cec29
+            q35_production_fault_smp4_digest=885e9d500165787be73a108c416e81f4170d6a6f34c8d3a8538c5b218014753b
             aarch64_production_fault_sections=17
-            aarch64_production_fault_digest=7fec38bfabd6fb68715889883ab531f1021a7e41242f8a4b8deefb00ef77e7ca
+            aarch64_production_fault_digest=44f981e197b621f80d6f4adb428b94d0a61078fae283f99cc2a42d6470da8290
             aarch64_production_fault_smp4_sections=23
-            aarch64_production_fault_smp4_digest=0ca30c9c9e5af3f1f7f4d161a75aaa5939a138a5733482fa58d6620a53bc3a1b
+            aarch64_production_fault_smp4_digest=e8ed8529347f281a6718a3c9b48accfdb74026e15d4b960f5f847a7f3290a12b
             q35_production_9p_sections=39
             q35_production_network_sections=39
             q35_production_accelerator_sections=39
@@ -436,9 +439,9 @@ in
             aarch64_production_accelerator_sections=18
             aarch64_production_debug_channel_sections=18
             q35_production_all_combined_sections=46
-            q35_production_all_combined_digest=248ecab792dc0a3ac41357cfcec5bb02a72ee28b28e674231c7acfce2e77452b
+            q35_production_all_combined_digest=8714b7496ed5577a3952ec7e9461b873afdd60036e919f492e48ad331938c5de
             aarch64_production_all_combined_sections=24
-            aarch64_production_all_combined_digest=1caa8dbb684ed3635994e24b928f5a14463d778830b387beb57d621828687421
+            aarch64_production_all_combined_digest=20298038469471f62511c26ad7e992e6da604191f5e75c5d6453710513786e24
             missing_expected_device_changes_manifest=true
             unexpected_unowned_device_fails_closed=true
             fixed_pci_address_collision_rejected=true
