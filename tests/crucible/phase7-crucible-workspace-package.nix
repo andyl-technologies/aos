@@ -12,7 +12,7 @@
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
   phaseTemplates = import ../../stdenv/phases.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-rjEGWRDoHbBs/Tw4nTXrdWxviNd1rzX3ztNprM3idp8=";
+  expectedCargoDepsHash = "sha256-dlbYYX7nrJb18fOKEI3H6jwwlNYqW62FrRNEN1nt8Ic=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
