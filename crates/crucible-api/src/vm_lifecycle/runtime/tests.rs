@@ -126,6 +126,7 @@ fn checkpoint_selectable_plan(continuation: SelectablePlanContinuation) -> Selec
 
 struct FailingFinishLauncher {
     finish_calls: Arc<std::sync::atomic::AtomicUsize>,
+    fail_boundary: bool,
 }
 
 struct RecordingNodeLease {
@@ -169,7 +170,11 @@ impl ProductionVmNodeLauncher for FailingFinishLauncher {
     }
 
     fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
-        Ok(())
+        if self.fail_boundary {
+            Err(loop_factory_error("test post-reservation boundary failure"))
+        } else {
+            Ok(())
+        }
     }
 
     fn launch_fresh(
@@ -1418,6 +1423,164 @@ fn promoted_signal_branch(
         .unwrap_or_else(|error| panic!("promoted signal fixture should resolve: {error}"))
 }
 
+fn production_queued_broadcast_lifecycle() -> ProductionVmLifecycleLoop {
+    let base = crucible::crash_restart_scenario()
+        .unwrap_or_else(|error| panic!("test World should build: {error}"))
+        .scenario;
+    let nodes = base.world().vm_nodes().into_iter().cloned().collect();
+    let db0 = NodeId {
+        name: String::from("db-0"),
+    };
+    let loss = crucible::LinkLossProbability::from_millionths(250_000)
+        .unwrap_or_else(|error| panic!("loss probability should build: {error}"));
+    let links = ["db-1", "db-2"]
+        .into_iter()
+        .map(|name| {
+            crucible::LinkDef::with_transport(
+                db0.clone(),
+                NodeId {
+                    name: name.to_owned(),
+                },
+                crucible::MIN_LINK_LATENCY,
+                SimDuration::default(),
+                loss,
+                None,
+            )
+            .unwrap_or_else(|error| panic!("lossy test link should build: {error}"))
+        })
+        .collect();
+    let world = World::from_nodes_and_links(nodes, links)
+        .unwrap_or_else(|error| panic!("broadcast World should build: {error}"));
+    let source = ScenarioDefForm::from_components(
+        &world,
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        Seed::from_u64(19),
+    )
+    .unwrap_or_else(|error| panic!("broadcast scenario should build: {error}"));
+    let mut lifecycle = production_loop_without_backends(&source);
+    lifecycle.initial_lifecycle_observations_pending = false;
+    lifecycle.set_live_network_choice_pause(true);
+
+    let mut payload = vec![0_u8; 60];
+    payload[..6].copy_from_slice(&[0xff; 6]);
+    lifecycle
+        .inner
+        .network_transaction_parts_mut()
+        .3
+        .push(crucible::BackendNetworkOutput {
+            source: db0,
+            destination: NodeId {
+                name: String::from("net-router"),
+            },
+            emit_icount: Icount { retired: 0 },
+            sequence: 0,
+            payload,
+            route: None,
+            fault_continuation: Default::default(),
+        });
+    lifecycle
+}
+
+#[test]
+fn production_queued_broadcast_reserves_before_a_backend_run() {
+    let mut lifecycle = production_queued_broadcast_lifecycle();
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let outcome = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("queued broadcast should reserve: {error}"));
+
+    let choice = lifecycle
+        .live_network_preselection()
+        .unwrap_or_else(|| panic!("queued broadcast choice"));
+    assert!(outcome.advanced_node.is_none());
+    assert_eq!(outcome.configuration, parent);
+    assert_eq!(outcome.discovered_choices, vec![choice.discovery.clone()]);
+    assert!(
+        !outcome
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::Selection(_)))
+    );
+
+    // A signal discovery produced earlier at this boundary must precede the
+    // World-link discovery and survive default settlement exactly once.
+    let signal_choice = crucible::model::BindingSearchChoice {
+        id: crucible::model::SearchChoiceId::from_content_hash(ContentHash::from_bytes(
+            b"queued-signal-prefix",
+        )),
+        candidates_digest: ContentHash::from_bytes(b"queued-signal-candidates"),
+        candidate_count: 2,
+        candidate_semantics: crucible::model::BindingSearchCandidateSemantics::Outcome,
+        selected_index: None,
+        overridden: false,
+    };
+    let signal = crucible::SignalFaultSelectable::from_binding_choice(
+        &parent,
+        outcome.frontier,
+        &signal_choice,
+    )
+    .unwrap_or_else(|error| panic!("signal prefix should normalize: {error}"))
+    .discovery()
+    .unwrap_or_else(|error| panic!("signal prefix should publish: {error}"));
+    lifecycle
+        .pending_live_network_prefix
+        .as_mut()
+        .unwrap_or_else(|| panic!("queued choice carries its production prefix"))
+        .discoveries
+        .push(signal.clone());
+
+    let settled = lifecycle
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| panic!("queued default settlement: {error}"));
+    assert_eq!(settled.discovered_choices.len(), 3);
+    assert_eq!(settled.discovered_choices[0], signal);
+    assert_eq!(
+        settled
+            .discovered_choices
+            .iter()
+            .filter(|discovery| **discovery == signal)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn production_failed_boundary_cannot_publish_a_queued_reservation() {
+    let mut lifecycle = production_queued_broadcast_lifecycle();
+    lifecycle.node_launcher = Box::new(FailingFinishLauncher {
+        finish_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        fail_boundary: true,
+    });
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let error = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        })
+        .err()
+        .unwrap_or_else(|| panic!("post-reservation boundary must fail"));
+    assert!(
+        error
+            .to_string()
+            .contains("post-reservation boundary failure")
+    );
+
+    let choice = lifecycle
+        .live_network_preselection()
+        .unwrap_or_else(|| panic!("unpublished choice remains quarantined"));
+    assert_eq!(lifecycle.inner.loop_impl().configuration(), &parent);
+    assert!(lifecycle.settle_live_network_preselection().is_err());
+    assert!(
+        lifecycle
+            .handoff_live_network_preselection(&choice)
+            .is_err()
+    );
+}
+
 #[test]
 fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
     let source = finite_signal_replay_scenario();
@@ -1562,6 +1725,7 @@ fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
         finish_calls: Arc::clone(&finish_calls),
+        fail_boundary: false,
     });
 
     let error = QuantumLoop::shutdown(&mut lifecycle)

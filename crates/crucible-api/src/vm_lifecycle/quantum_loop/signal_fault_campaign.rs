@@ -20,14 +20,13 @@ impl ProductionVmLifecycleLoop {
     ///
     /// Returns [`SchedulerError`] if the reservation or its causal suffix is invalid.
     pub fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
-        let (decisions, appends, first_frontier) = self
-            .pending_live_network_prefix
-            .take()
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
+        let prefix = self.pending_live_network_prefix.take().ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
                 message: String::from("live-network preselection has no production prefix"),
-            })?;
+            }
+        })?;
         let outcome = self.inner.settle_live_network_preselection()?;
-        self.finish_quantum_after_backend(outcome, decisions, appends, first_frontier)
+        self.finish_quantum_after_backend(outcome, prefix)
     }
 
     /// Hands an exact unresolved choice to the campaign observation owner.

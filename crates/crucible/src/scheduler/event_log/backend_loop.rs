@@ -7,7 +7,7 @@ mod admission;
 mod settlement;
 use admission::{BackendBoundaryEvidence, BackendOutcomeAdmission, complete_backend_outcome_on};
 mod preselection;
-use preselection::BackendPendingPreselection;
+use preselection::{BackendPendingPreselection, append_to_outcome};
 pub use settlement::BackendNetworkSettlement;
 
 /// Intercepts committed live-backend network outputs before link resolution.
@@ -262,6 +262,13 @@ where
                 message: String::from("backend continuation is poisoned"),
             });
         }
+        if self.preselection.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "queued network release cannot cross an unresolved preselection",
+                ),
+            });
+        }
         let pending_before = self.pending_network_outputs.clone();
         match self.settle_pending_network_outputs_at_current_frontier_inner() {
             Ok(settlement) => Ok(settlement),
@@ -325,12 +332,31 @@ where
             .drain(committed..)
             .map(|(_at, output)| output)
             .collect();
-        let mut network_outputs = timed_network_outputs
+        let network_outputs = timed_network_outputs
             .into_iter()
             .map(|(_at, output)| output)
             .collect::<Vec<_>>();
+        let batches = if self.pause_before_live_network_choice {
+            network_outputs
+                .into_iter()
+                .map(|output| self.loop_impl.backend_network_routes(output))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .map(|output| vec![output])
+                .collect()
+        } else {
+            vec![network_outputs]
+        };
+        let mut batches = batches.into_iter();
         let mut appends = Vec::new();
-        if !network_outputs.is_empty() {
+        let mut decisions = Vec::new();
+        let mut discoveries = Vec::new();
+        let mut configuration = None;
+        while let Some(mut network_outputs) = batches.next() {
+            if network_outputs.is_empty() {
+                continue;
+            }
             appends.extend(self.network_output_interceptor.intercept_network_outputs(
                 &mut self.loop_impl,
                 &mut self.backend,
@@ -338,20 +364,107 @@ where
                 &mut self.pending_network_outputs,
                 &mut network_outputs,
             )?);
-        }
-        let (decisions, configuration) = if network_outputs.is_empty() {
-            (Vec::new(), None)
-        } else {
-            let (decisions, _discoveries, configuration, append) = self
-                .loop_impl
-                .append_backend_network_outputs(network_outputs)?;
+            if network_outputs.is_empty() {
+                continue;
+            }
+            let routes_are_exact = if self.pause_before_live_network_choice {
+                network_outputs.iter().try_fold(true, |exact, output| {
+                    self.loop_impl
+                        .backend_network_route_count(output)
+                        .map(|count| exact && count == 1)
+                })?
+            } else {
+                false
+            };
+            if self.pause_before_live_network_choice && !routes_are_exact {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "queued live network choice pause requires an exact directed World route",
+                    ),
+                });
+            }
+            let admission = if self.pause_before_live_network_choice {
+                self.loop_impl
+                    .append_backend_network_outputs_until_choice(network_outputs)?
+            } else {
+                let (decisions, discoveries, configuration, append) = self
+                    .loop_impl
+                    .append_backend_network_outputs(network_outputs)?;
+                BackendNetworkAdmission::Settled {
+                    decisions,
+                    discoveries,
+                    configuration,
+                    append,
+                }
+            };
+            let (recorded, discovered, advanced, append, pending) = match admission {
+                BackendNetworkAdmission::Settled {
+                    decisions,
+                    discoveries,
+                    configuration,
+                    append,
+                } => (decisions, discoveries, configuration, append, None),
+                BackendNetworkAdmission::Preselection {
+                    decisions,
+                    discoveries,
+                    configuration,
+                    append,
+                    reservation,
+                    remaining,
+                } => (
+                    decisions,
+                    discoveries,
+                    configuration,
+                    append,
+                    Some((*reservation, remaining)),
+                ),
+            };
+            decisions.extend(recorded);
+            discoveries.extend(discovered);
+            configuration = Some(advanced.clone());
             appends.push(append);
-            (decisions, Some(configuration))
-        };
+            if let Some((choice, remaining_outputs)) = pending {
+                let mut outcome = QuantumOutcome {
+                    configuration: advanced,
+                    frontier,
+                    advanced_node: None,
+                    resolved_events: Vec::new(),
+                    decisions: decisions.clone(),
+                    discovered_choices: discoveries,
+                    event_log_entries: Vec::new(),
+                    event_log_segment_bytes: Vec::new(),
+                    event_log_segment_text: String::new(),
+                    event_log_segment_hash: None,
+                    event_log_offset: EventLogOffset::default(),
+                    scheduler_quiescence: None,
+                };
+                for append in &appends {
+                    append_to_outcome(&mut outcome, append.clone());
+                }
+                self.preselection = Some(BackendPendingPreselection {
+                    choice,
+                    remaining_outputs,
+                    remaining_unintercepted_outputs: batches.flatten().collect(),
+                    pending_network_outputs: std::mem::take(&mut self.pending_network_outputs),
+                    pending_observations: std::mem::take(&mut self.pending_observations),
+                    rng_evidence: Vec::new(),
+                    observations: Vec::new(),
+                    outcome: outcome.clone(),
+                    handed_off: false,
+                });
+                return Ok(BackendNetworkSettlement {
+                    decisions,
+                    configuration,
+                    appends,
+                    reservation: Some(outcome),
+                });
+            }
+        }
         Ok(BackendNetworkSettlement {
             decisions,
             configuration,
             appends,
+            reservation: None,
         })
     }
 }
@@ -624,7 +737,7 @@ where
             network_outputs: self.backend.drain_network_outputs()?,
             observations: self.backend.drain_observable_events()?,
         };
-        complete_backend_outcome_on(
+        let completed = complete_backend_outcome_on(
             BackendOutcomeAdmission {
                 loop_impl: &mut self.loop_impl,
                 backend: &mut self.backend,
@@ -636,7 +749,8 @@ where
             },
             outcome,
             evidence,
-        )
+        );
+        completed.map_err(|error| self.poison_continuation(error))
     }
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {

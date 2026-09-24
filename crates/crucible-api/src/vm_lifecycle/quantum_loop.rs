@@ -29,6 +29,13 @@ use debug_policy::private_gateway_listener_request;
 use debug_policy::trusted_debug_listener;
 use host_concurrent::merge_host_concurrent_outcomes;
 pub(super) const MAX_PRODUCTION_QEMU_HOST_WORKERS: usize = 64;
+
+pub(super) struct PendingLiveNetworkPrefix {
+    decisions: Vec<Decision>,
+    appends: Vec<SchedulerEventLogAppend>,
+    pub(super) discoveries: Vec<crucible::campaign::ChoiceDiscovery>,
+    signal_fault_frontier_start: usize,
+}
 pub(in crate::vm_lifecycle) use lifecycle::map_journal_limit;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
@@ -66,10 +73,50 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 pre_quantum_appends.push(fault_append);
             }
             pre_quantum_appends.extend(self.settle_trigger_graph()?);
-            let (mut pre_quantum_decisions, settled_configuration, network_appends) = self
+            let network_settlement = self
                 .inner
-                .settle_pending_network_outputs_at_current_frontier()?
-                .into_parts();
+                .settle_pending_network_outputs_at_current_frontier()?;
+            let reserved_network_outcome = network_settlement.reservation().cloned();
+            let (mut pre_quantum_decisions, settled_configuration, network_appends) =
+                network_settlement.into_parts();
+            if let Some(mut outcome) = reserved_network_outcome {
+                if settled_configuration.as_ref() != Some(&outcome.configuration)
+                    || pre_quantum_decisions != outcome.decisions
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "queued network reservation disagrees with its settled prefix",
+                        ),
+                    });
+                }
+                let pending_search_choices = self
+                    .fault_runtime
+                    .lock()
+                    .map_err(|_| SchedulerError::BoundaryViolation {
+                        message: String::from("production fault runtime lock is poisoned"),
+                    })?
+                    .drain_search_choices();
+                self.inner
+                    .loop_impl_mut()
+                    .record_pending_signal_fault_search_frontiers(pending_search_choices)?;
+                let mut discoveries = self
+                    .signal_fault_campaign_discoveries_at_current_boundary_since(
+                        signal_fault_frontier_start,
+                    )?;
+                outcome
+                    .discovered_choices
+                    .splice(0..0, discoveries.iter().cloned());
+                self.pending_live_network_prefix = Some(PendingLiveNetworkPrefix {
+                    decisions: Vec::new(),
+                    appends: pre_quantum_appends.clone(),
+                    discoveries: std::mem::take(&mut discoveries),
+                    signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
+                });
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                outcome.scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
+                self.capture_debug_runtime_evidence()?;
+                return Ok(outcome);
+            }
             pre_quantum_appends.extend(network_appends);
             if let Some(configuration) = settled_configuration {
                 request.configuration = configuration;
@@ -362,11 +409,12 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             )?;
             let mut outcome = merge_host_concurrent_outcomes(concurrent.outcomes)?;
             if self.inner.live_network_preselection().is_some() {
-                self.pending_live_network_prefix = Some((
-                    pre_quantum_decisions.clone(),
-                    pre_quantum_appends.clone(),
+                self.pending_live_network_prefix = Some(PendingLiveNetworkPrefix {
+                    decisions: pre_quantum_decisions.clone(),
+                    appends: pre_quantum_appends.clone(),
+                    discoveries: Vec::new(),
                     signal_fault_frontier_start,
-                ));
+                });
                 pre_quantum_decisions.extend(std::mem::take(&mut outcome.decisions));
                 outcome.decisions = pre_quantum_decisions;
                 prepend_event_log_appends(&mut outcome, pre_quantum_appends);
@@ -375,12 +423,21 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             }
             self.finish_quantum_after_backend(
                 outcome,
-                pre_quantum_decisions,
-                pre_quantum_appends,
-                signal_fault_frontier_start,
+                PendingLiveNetworkPrefix {
+                    decisions: pre_quantum_decisions,
+                    appends: pre_quantum_appends,
+                    discoveries: Vec::new(),
+                    signal_fault_frontier_start,
+                },
             )
         })();
         let boundary = self.node_launcher.check_operational_boundary();
+        if (operation.is_err() || boundary.is_err())
+            && self.inner.live_network_preselection().is_some()
+        {
+            self.inner.abort_live_network_preselection();
+            self.pending_live_network_prefix.take();
+        }
         combine_attempt_quantum_boundary(operation, boundary)
     }
 

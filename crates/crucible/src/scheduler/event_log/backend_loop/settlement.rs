@@ -8,9 +8,16 @@ pub struct BackendNetworkSettlement {
     pub(super) decisions: Vec<Decision>,
     pub(super) configuration: Option<Configuration>,
     pub(super) appends: Vec<SchedulerEventLogAppend>,
+    pub(super) reservation: Option<QuantumOutcome>,
 }
 
 impl BackendNetworkSettlement {
+    /// Returns the exact unselected choice boundary, when queued release paused.
+    #[must_use]
+    pub const fn reservation(&self) -> Option<&QuantumOutcome> {
+        self.reservation.as_ref()
+    }
+
     /// Consumes the settlement into decisions, the latest configuration, and appends.
     #[must_use]
     pub fn into_parts(

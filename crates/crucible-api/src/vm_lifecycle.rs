@@ -1065,7 +1065,7 @@ pub struct ProductionVmLifecycleLoop {
     continuation_branches: VecDeque<ProductionVmBranchConfig>,
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
     promote_signal_fault_campaign_choices: bool,
-    pending_live_network_prefix: Option<(Vec<Decision>, Vec<SchedulerEventLogAppend>, usize)>,
+    pending_live_network_prefix: Option<quantum_loop::PendingLiveNetworkPrefix>,
     launch_configs: BTreeMap<NodeId, QemuLiveNodeStepGateConfig>,
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,

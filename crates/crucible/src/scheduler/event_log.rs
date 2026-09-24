@@ -122,6 +122,23 @@ pub trait QuantumLoop {
         Ok(0)
     }
 
+    /// Expands one physical emission into its canonical directed World routes.
+    ///
+    /// The backend loop presents each route separately to an interceptor while
+    /// pausing for a choice, so effects on a later route cannot cross an
+    /// unresolved choice on an earlier route. Pure loops retain their opaque
+    /// emission and continue to decline route-specific preselection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the emission cannot be routed exactly.
+    fn backend_network_routes(
+        &self,
+        output: BackendNetworkOutput,
+    ) -> Result<Vec<BackendNetworkOutput>, SchedulerError> {
+        Ok(vec![output])
+    }
+
     /// Projects a backend observation's physical counter onto scheduler time.
     ///
     /// Backends whose counters share the scheduler origin use the identity
