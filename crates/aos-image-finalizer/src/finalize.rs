@@ -23,6 +23,10 @@ use crate::tools::PinnedTool;
 use crate::verity::{VerityOutputV1, bind_root_hash, build_verity};
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+// Cross-target EROFS construction runs through QEMU user emulation on x86 hosts.
+const MKFS_EROFS_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+
 const MODULE_SIGNATURE_OVERHEAD_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Reconstructed module-bearing inputs ready for verity and UKI construction.
@@ -78,7 +82,8 @@ pub async fn prepare_filesystems(
     let veritysetup_spec = verified_tool(assembly, "veritysetup", &mut resolve_owner_nar_hash)?;
 
     let fsck_erofs = PinnedTool::from_verified(fsck_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
-    let mkfs_erofs = PinnedTool::from_verified(mkfs_erofs_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
+    let mkfs_erofs =
+        PinnedTool::from_verified(mkfs_erofs_spec, work.to_path_buf(), MKFS_EROFS_TIMEOUT)?;
     let zstd = PinnedTool::from_verified(zstd_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let openssl = PinnedTool::from_verified(openssl_spec, work.to_path_buf(), TOOL_TIMEOUT)?;
     let veritysetup =
