@@ -84,7 +84,8 @@ pub use model::{
 };
 pub use owner::{
     FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderAcquireReopenV1,
-    FixedProviderCatalogProgressV1, FixedProviderHistoricalOutcomeV1, FixedProviderOpenReportV1,
+    FixedProviderAuthenticatedSourceRequestV1, FixedProviderCatalogProgressV1,
+    FixedProviderHistoricalOutcomeV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
     FixedProviderOwnerStatusV1, FixedProviderOwnerV1, FixedProviderRequestReadbackV1,
     ProtectedProviderMountRetryAuthorityV1,
 };

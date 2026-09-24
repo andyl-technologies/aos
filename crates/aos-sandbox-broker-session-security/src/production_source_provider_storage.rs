@@ -13,6 +13,12 @@ use aos_sandbox_linux::seqpacket::bounded::{BoundedRecordError, boottime, receiv
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketSocket,
 };
+use aos_sandbox_source_provider::{
+    AcquirePlanV1, ActiveAcquisitionSnapshotV1, BackendObservationChallengeV1,
+    RawAcquireObservationV1, RawBackendAcquisitionV1, RawBackendReleaseV1, RawReleaseObservationV1,
+    RawReopenObservationV1, ReleasePlanV1, SourceProviderBackendTransportErrorV1,
+    SourceProviderBackendTransportV1,
+};
 use aos_sandbox_source_provider_protocol::{
     SignedStorageLiveExportRequestV1, StorageLiveExportTransportRequestV1,
     StorageLiveExportUnavailableV1,
@@ -51,6 +57,61 @@ pub enum ProductionSourceProviderStorageErrorV1 {
 pub enum ProductionSourceProviderStorageOutcomeV1 {
     /// Storage inspected a request but granted no export or descriptor.
     Unavailable,
+}
+
+/// Adapts only authenticated Storage readback to the dormant Provider backend.
+///
+/// Every descriptor-bearing or mutating backend method remains unavailable.
+/// The sole successful call means Storage returned explicit unavailability.
+#[derive(Debug, Default)]
+pub struct ProductionSourceProviderStorageReadbackV1;
+
+impl SourceProviderBackendTransportV1 for ProductionSourceProviderStorageReadbackV1 {
+    fn inspect_storage_live_export_request(
+        &mut self,
+        signed_plan: &SignedStorageLiveExportRequestV1,
+    ) -> Result<(), SourceProviderBackendTransportErrorV1> {
+        inspect_signed_storage_export_plan(signed_plan.clone())
+            .map(|ProductionSourceProviderStorageOutcomeV1::Unavailable| ())
+            .map_err(|_| SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
+    fn observe_acquire(
+        &mut self,
+        _plan: &AcquirePlanV1,
+        _challenge: &BackendObservationChallengeV1,
+    ) -> Result<RawAcquireObservationV1, SourceProviderBackendTransportErrorV1> {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
+    fn execute_acquire(
+        &mut self,
+        _plan: &AcquirePlanV1,
+    ) -> Result<RawBackendAcquisitionV1, SourceProviderBackendTransportErrorV1> {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
+    fn reopen_active(
+        &mut self,
+        _acquisition: &ActiveAcquisitionSnapshotV1,
+    ) -> Result<RawReopenObservationV1, SourceProviderBackendTransportErrorV1> {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
+    fn observe_release(
+        &mut self,
+        _plan: &ReleasePlanV1,
+        _challenge: &BackendObservationChallengeV1,
+    ) -> Result<RawReleaseObservationV1, SourceProviderBackendTransportErrorV1> {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
+    fn execute_release(
+        &mut self,
+        _plan: &ReleasePlanV1,
+    ) -> Result<RawBackendReleaseV1, SourceProviderBackendTransportErrorV1> {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

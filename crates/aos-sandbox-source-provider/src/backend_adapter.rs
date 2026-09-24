@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedSourceProviderRequestV1, SourceProviderDescriptorRole, SourceProviderProofV1,
-    SourceResourceV1,
+    SignedSourceProviderRequestV1, SignedStorageLiveExportRequestV1, SourceProviderDescriptorRole,
+    SourceProviderProofV1, SourceResourceV1,
 };
 
 use crate::backend_verifier::{
@@ -190,6 +190,18 @@ pub enum RawReopenObservationV1 {
 /// signatures independently, so implementing this trait never grants a way to
 /// declare evidence verified.
 pub trait SourceProviderBackendTransportV1 {
+    /// Sends an already signed plan only to nonauthorizing Storage readback.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable by default or when authenticated inspection fails.
+    fn inspect_storage_live_export_request(
+        &mut self,
+        _signed_plan: &SignedStorageLiveExportRequestV1,
+    ) -> Result<(), SourceProviderBackendTransportErrorV1> {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
     /// Reads whether an Acquire plan has already been applied.
     ///
     /// # Errors
@@ -358,6 +370,15 @@ impl<'transport, Transport: SourceProviderBackendTransportV1 + ?Sized>
 impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackendV1
     for FixedSourceProviderBackendV1<'_, Transport>
 {
+    fn inspect_storage_live_export_request(
+        &mut self,
+        signed_plan: &SignedStorageLiveExportRequestV1,
+    ) -> Result<(), ProviderLedgerError> {
+        self.transport
+            .inspect_storage_live_export_request(signed_plan)
+            .map_err(map_transport_error)
+    }
+
     fn observe_acquire(
         &mut self,
         plan: &AcquirePlanV1,
@@ -778,6 +799,7 @@ impl core::fmt::Debug for FixedProviderBackendRequestOutcomeV1 {
 pub struct FixedProviderBackendSessionV1<'owner, Transport: ?Sized> {
     owner: &'owner mut FixedProviderOwnerV1,
     transport: &'owner mut Transport,
+    current_catalog: Option<(&'owner [u8], &'owner [u8])>,
 }
 
 impl FixedProviderOwnerV1 {
@@ -790,6 +812,28 @@ impl FixedProviderOwnerV1 {
         FixedProviderBackendSessionV1 {
             owner: self,
             transport,
+            current_catalog: None,
+        }
+    }
+
+    /// Borrows a current publication and manifest for pre-effect LocalLive inspection.
+    ///
+    /// The bytes are not authority until each reservation independently
+    /// verifies them against live custody and the protected Provider journal.
+    #[must_use]
+    pub fn backend_session_with_catalog<
+        'owner,
+        Transport: SourceProviderBackendTransportV1 + ?Sized,
+    >(
+        &'owner mut self,
+        transport: &'owner mut Transport,
+        canonical_catalog_publication: &'owner [u8],
+        canonical_manifest: &'owner [u8],
+    ) -> FixedProviderBackendSessionV1<'owner, Transport> {
+        FixedProviderBackendSessionV1 {
+            owner: self,
+            transport,
+            current_catalog: Some((canonical_catalog_publication, canonical_manifest)),
         }
     }
 }
@@ -797,6 +841,29 @@ impl FixedProviderOwnerV1 {
 impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     FixedProviderBackendSessionV1<'_, Transport>
 {
+    /// Admits one source packet previously received by the fixed live owner.
+    ///
+    /// The packet brand has no public constructor. Recovery and retry work
+    /// retain priority; this path never accepts caller-assembled request bytes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects pending recovery, stale carrier custody, failed reservation,
+    /// Storage inspection, or protected completion.
+    pub fn execute_authenticated_source_request(
+        &mut self,
+        request: crate::FixedProviderAuthenticatedSourceRequestV1,
+    ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
+        if !self.owner.pending_backend_recovery.is_empty()
+            || self.owner.priority_mount_retry_digest.is_some()
+            || self.owner.priority_mount_retry_rearm_digest.is_some()
+        {
+            return Err(ProviderLedgerError::RuntimePoisoned);
+        }
+        let signed = request.into_signed();
+        self.execute_request(&signed, &[])
+    }
+
     fn retain_backend_recovery(
         &mut self,
         recovery: FixedProviderBackendRecoveryV1,
@@ -939,15 +1006,21 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
         let verifier = self.owner.backend_verifier();
         let transport = &mut *self.transport;
+        let current_catalog = self.current_catalog;
         let prepared = self.owner.with_ledger(move |ledger| {
             let mut backend = FixedSourceProviderBackendV1::new(transport, verifier);
-            let disposition = ledger.verify_and_admit_request(signed_request, descriptor_roles)?;
+            let disposition = ledger.verify_and_admit_request_with_catalog(
+                signed_request,
+                descriptor_roles,
+                current_catalog,
+            )?;
             execute_disposition(
                 ledger,
                 disposition,
                 &mut backend,
                 signed_request,
                 descriptor_roles,
+                current_catalog,
             )
         })?;
         match prepared {
@@ -1176,6 +1249,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
                 &mut backend,
                 signed_request,
                 descriptor_roles,
+                None,
             )
         })
     }
@@ -1326,6 +1400,7 @@ fn execute_disposition(
     backend: &mut impl SourceProviderBackendV1,
     signed_request: &SignedSourceProviderRequestV1,
     descriptor_roles: &[SourceProviderDescriptorRole],
+    current_catalog: Option<(&[u8], &[u8])>,
 ) -> Result<PreparedFixedProviderBackendOutcomeV1, ProviderLedgerError> {
     match disposition {
         ProviderAdmissionDispositionV1::Cached(cached) => ledger
@@ -1363,6 +1438,21 @@ fn execute_disposition(
                 quarantined: false,
             }),
         ),
+        ProviderAdmissionDispositionV1::Acquire(permit) if permit.plan().kernel_coupled() => {
+            let (publication, manifest) =
+                current_catalog.ok_or(ProviderLedgerError::Unavailable)?;
+            let signed =
+                ledger.sign_current_storage_export_request(&permit, publication, manifest)?;
+            // Storage's only current reply is descriptor-free Unavailable. An
+            // inspection failure cannot promote the request to an effect.
+            let _ = backend.inspect_storage_live_export_request(&signed);
+            ledger
+                .complete_acquire_disposition(
+                    permit,
+                    aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
+                )
+                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
         ProviderAdmissionDispositionV1::Acquire(permit) => ledger
             .execute_acquire(permit, backend)
             .map(PreparedFixedProviderBackendOutcomeV1::Reply),

@@ -1263,6 +1263,31 @@ fn decode_acquisition_body(
         && lease_history.is_empty()
         && release_effect_id.is_none()
         && signed_lease.is_empty();
+    // A kernel-coupled attempt may durably select a Provider row before any
+    // Storage or kernel effect. It still has no proof, lease, or descriptor.
+    let selected_reserved_shape = lease_id.is_none()
+        && lease_digest.is_none()
+        && lease_attempt_digest.is_none()
+        && lease_issue_generation == 0
+        && intent.kernel_coupled()
+        && resource_namespace_digest.as_bytes() != &[0; 32]
+        && resource_id != [0; 32]
+        && resource_generation > 0
+        && resource_digest.as_bytes() != &[0; 32]
+        && catalog_generation > 0
+        && catalog_digest.as_bytes() != &[0; 32]
+        && selection_generation > 0
+        && selection_digest.as_bytes() != &[0; 32]
+        && proof_class == 0
+        && proof_digest.as_bytes() == &[0; 32]
+        && resource_commitment.as_bytes() == &[0; 32]
+        && backend_id != [0; 32]
+        && backend_evidence.is_none()
+        && reopen_identity.is_none()
+        && source_root.is_none()
+        && lease_history.is_empty()
+        && release_effect_id.is_none()
+        && signed_lease.is_empty();
     let released_compact_shape = lease_id.is_some()
         && lease_digest.is_some()
         && lease_attempt_digest.is_some()
@@ -1287,12 +1312,13 @@ fn decode_acquisition_body(
         && signed_lease.is_empty();
     match state {
         ProviderAcquisitionStateV1::Applying | ProviderAcquisitionStateV1::Pending
-            if reserved_shape => {}
+            if reserved_shape || selected_reserved_shape => {}
         ProviderAcquisitionStateV1::Active if active_shape && release_effect_id.is_none() => {}
         ProviderAcquisitionStateV1::Releasing if active_shape && release_effect_id.is_some() => {}
         ProviderAcquisitionStateV1::Released
             if (active_shape && release_effect_id.is_some()) || released_compact_shape => {}
-        ProviderAcquisitionStateV1::Faulted if reserved_shape || active_shape => {}
+        ProviderAcquisitionStateV1::Faulted
+            if reserved_shape || selected_reserved_shape || active_shape => {}
         _ => return Err(LedgerFormatErrorV1::Corrupt("acquisition state shape")),
     }
     if active_shape {

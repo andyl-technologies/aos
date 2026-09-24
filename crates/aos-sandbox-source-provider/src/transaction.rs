@@ -279,6 +279,15 @@ impl ProviderLedgerV1<'_> {
         signed_request: &SignedSourceProviderRequestV1,
         descriptor_roles: &[SourceProviderDescriptorRole],
     ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
+        self.verify_and_admit_request_with_catalog(signed_request, descriptor_roles, None)
+    }
+
+    pub(crate) fn verify_and_admit_request_with_catalog(
+        &mut self,
+        signed_request: &SignedSourceProviderRequestV1,
+        descriptor_roles: &[SourceProviderDescriptorRole],
+        current_catalog: Option<(&[u8], &[u8])>,
+    ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
         self.ensure_open()?;
         let expectation = request_sequence_expectation(self, signed_request)?;
         let holder_id = signed_request.signer().authority_id();
@@ -298,9 +307,12 @@ impl ProviderLedgerV1<'_> {
                     VerifiedProviderRequestV1::Inventory(_) => SourceProviderMethod::Inventory,
                 };
                 match method {
-                    SourceProviderMethod::Acquire => {
-                        crate::acquire::reserve_acquire(self, &mut installed.session, current)
-                    }
+                    SourceProviderMethod::Acquire => crate::acquire::reserve_acquire(
+                        self,
+                        &mut installed.session,
+                        current,
+                        current_catalog,
+                    ),
                     SourceProviderMethod::Release => {
                         crate::release::reserve_release(self, &mut installed.session, current)
                     }

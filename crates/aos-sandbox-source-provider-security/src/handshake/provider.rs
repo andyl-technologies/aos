@@ -6,10 +6,11 @@ use aos_sandbox_source_provider_protocol::{
     ProviderRequestVerificationContextV1, SignedCatalogCurrentnessV1, SignedSourceExportLeaseV1,
     SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1,
     SignedSourceProviderRequestV1, SignedSourceProviderStatusV1, SignedSourceReleaseReceiptV1,
-    SourceExportLeaseV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
-    SourceProviderHelloV1, SourceProviderIngressSessionV1, SourceProviderInventoryV1,
-    SourceProviderMessageV1, SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
-    SourceProviderResponseStatusV1, SourceProviderStatus, SourceReleaseReceiptV1,
+    SignedStorageLiveExportRequestV1, SourceExportLeaseV1, SourceProviderAuthorityV1,
+    SourceProviderDescriptorRole, SourceProviderHelloV1, SourceProviderIngressSessionV1,
+    SourceProviderInventoryV1, SourceProviderMessageV1, SourceProviderMethod,
+    SourceProviderPeerRole, SourceProviderReceiptV1, SourceProviderResponseStatusV1,
+    SourceProviderStatus, SourceReleaseReceiptV1, StorageLiveExportRequestV1,
     decode_acquire_response, decode_inventory_response, decode_message, decode_release_response,
     digest_signed_export_lease, digest_signed_hello, empty_descriptor_set_commitment_v1,
     encode_acquire_response, encode_inventory_response, encode_message, encode_release_response,
@@ -34,6 +35,8 @@ const FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY: &str = "/var/lib/aos/source-provid
 mod completion;
 #[path = "provider/session.rs"]
 mod session;
+#[path = "provider/storage_export.rs"]
+mod storage_export;
 
 pub(super) struct AwaitingRootMountHelloV1 {
     custody: ProtectedProviderCustodyV1,

@@ -6,6 +6,7 @@ pub(crate) fn reserve_acquire(
     ledger: &mut ProviderLedgerV1<'_>,
     security_session: &mut CurrentProviderIngressSessionV1,
     current_request: aos_sandbox_source_provider_security::CurrentProviderRequestV1,
+    current_catalog: Option<(&[u8], &[u8])>,
 ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
     let provider_execution_identity = current_request.provider_execution_identity();
     let verified = match current_request.verified() {
@@ -87,11 +88,37 @@ pub(crate) fn reserve_acquire(
         }
     };
     let normalized_intent = normalized_intent(&verified)?;
-    // No independent protected kernel grant owner can authorize a live export.
-    // Reject before creating an Applying record or invoking backend effects.
-    if normalized_intent.kernel_coupled() {
-        return Err(ProviderLedgerError::Unavailable);
-    }
+    let selected_live_resource = if normalized_intent.kernel_coupled() {
+        let (canonical_publication, canonical_manifest) =
+            current_catalog.ok_or(ProviderLedgerError::Unavailable)?;
+        let configuration = security_session.revalidated_provider_configuration()?;
+        let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
+            &configuration,
+            canonical_publication,
+        )?;
+        let journal_snapshot = ledger.journal.snapshot()?;
+        let current = security_session.authorize_fixed_current_catalog_publication_v1(
+            &ledger.journal,
+            journal_snapshot,
+            publication,
+        )?;
+        let selected = current.select_manifest_row(
+            &ledger.journal,
+            canonical_manifest,
+            normalized_intent.binding_digest(),
+        )?;
+        let row = selected.selected();
+        if !selected.is_current(&ledger.journal)
+            || row.0.resource_namespace_digest() != projection.resource_namespace_digest()
+            || row.0.catalog_generation() != ledger.recovered.catalog.catalog_generation
+            || row.0.catalog_digest() != ledger.recovered.catalog.catalog_digest
+        {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        Some((row.0.clone(), row.1))
+    } else {
+        None
+    };
     let acquisition_key_value = AcquisitionKeyV1 {
         provider_id: projection.provider_authority().authority_id(),
         holder_id: projection.root_mount_authority().authority_id(),
@@ -235,13 +262,27 @@ pub(crate) fn reserve_acquire(
         lease_digest: None,
         lease_history: Vec::new(),
         resource_namespace_digest: projection.resource_namespace_digest(),
-        resource_id: [0; 32],
-        resource_generation: 0,
-        resource_digest: ObjectDigest::from_bytes([0; 32]),
+        resource_id: selected_live_resource
+            .as_ref()
+            .map_or([0; 32], |(resource, _)| resource.resource_id()),
+        resource_generation: selected_live_resource
+            .as_ref()
+            .map_or(0, |(resource, _)| resource.resource_generation()),
+        resource_digest: selected_live_resource
+            .as_ref()
+            .map_or(ObjectDigest::from_bytes([0; 32]), |(resource, _)| {
+                resource.resource_digest()
+            }),
         catalog_generation: ledger.recovered.catalog.catalog_generation,
         catalog_digest: ledger.recovered.catalog.catalog_digest,
-        selection_generation: 0,
-        selection_digest: ObjectDigest::from_bytes([0; 32]),
+        selection_generation: selected_live_resource
+            .as_ref()
+            .map_or(0, |(resource, _)| resource.selection_generation()),
+        selection_digest: selected_live_resource
+            .as_ref()
+            .map_or(ObjectDigest::from_bytes([0; 32]), |(resource, _)| {
+                resource.selection_digest()
+            }),
         proof_class: 0,
         proof_digest: ObjectDigest::from_bytes([0; 32]),
         resource_commitment: ObjectDigest::from_bytes([0; 32]),

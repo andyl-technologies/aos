@@ -205,7 +205,7 @@ pub use production_source_provider_catalog::{
 };
 pub use production_source_provider_storage::{
     ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,
-    inspect_signed_storage_export_plan,
+    ProductionSourceProviderStorageReadbackV1, inspect_signed_storage_export_plan,
 };
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,

@@ -1,4 +1,4 @@
-##! modules/sandbox/source-provider.nix — protected catalog-currentness ingress
+##! modules/sandbox/source-provider.nix — protected catalog and closed source ingress
 {
   config,
   lib,
@@ -8,13 +8,13 @@
   cfg = config.aos.sandbox.sourceProvider;
 in {
   options.aos.sandbox.sourceProvider = {
-    enable = lib.mkEnableOption "the authenticated catalog-currentness SourceProvider ingress";
+    enable = lib.mkEnableOption "the authenticated SourceProvider catalog and closed source ingress";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.aos-source-providerd;
       defaultText = "pkgs.aos-source-providerd";
-      description = "The separate SourceProvider service executable; it does not dispatch backend effects.";
+      description = "The separate SourceProvider service executable; LocalLive can inspect Storage but cannot dispatch backend effects.";
     };
 
     credentials.catalogPublication = lib.mkOption {
@@ -60,7 +60,7 @@ in {
     };
 
     systemd.services.aos-source-providerd = {
-      description = "AOS authenticated catalog-currentness SourceProvider";
+      description = "AOS authenticated catalog and closed LocalLive SourceProvider";
       requires = ["aos-source-providerd.socket"];
       after = ["aos-source-providerd.socket" "local-fs.target"];
       unitConfig = {

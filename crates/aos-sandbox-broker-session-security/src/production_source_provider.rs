@@ -1,9 +1,10 @@
-//! Fixed SourceProvider activation and catalog-currentness ingress.
+//! Fixed SourceProvider activation, catalog, and closed source ingress.
 //!
 //! The production listener admits only one named systemd descriptor at one
 //! pathname. Each accepted child retains kernel record subjects and enters the
 //! existing fixed provider owner, which must finish its protected handshake
-//! before signing a current-head response. Backend effects remain closed.
+//! before signing a current-head response or inspecting a selected LocalLive
+//! plan through Storage. Backend effects remain closed.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -15,8 +16,8 @@ use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_source_provider::{
-    FixedProviderCatalogProgressV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
-    FixedProviderOwnerV1, ProviderLedgerError,
+    FixedProviderCatalogProgressV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
+    FixedProviderOwnerStatusV1, FixedProviderOwnerV1, ProviderLedgerError,
 };
 use aos_sandbox_source_provider_protocol::ProviderCatalogManifestV1;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -185,6 +186,26 @@ impl ProductionSourceProviderIngressV1 {
         let publication = read_protected_catalog_publication()?;
         owner
             .advance_catalog_currentness(&publication)
+            .map_err(Into::into)
+    }
+
+    /// Advances catalog control or receives one closed LocalLive Acquire.
+    ///
+    /// The fixed owner brands a source request only after the retained
+    /// authenticated carrier receives its exact descriptor-free packet.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a retired listener, changed publication, invalid query or
+    /// source frame, or lost protected session custody.
+    pub fn advance_authenticated_ingress(
+        &self,
+        owner: &mut FixedProviderOwnerV1,
+    ) -> Result<FixedProviderIngressProgressV1, ProductionSourceProviderIngressErrorV1> {
+        self.listener.validate_current()?;
+        let publication = read_protected_catalog_publication()?;
+        owner
+            .advance_authenticated_ingress(&publication)
             .map_err(Into::into)
     }
 

@@ -1,9 +1,9 @@
-//! Runs the systemd-activated SourceProvider catalog-currentness boundary.
+//! Runs the systemd-activated SourceProvider catalog and closed source boundary.
 //!
 //! Startup installs a signed catalog locator from a named systemd credential.
-//! The service retains the fixed authenticated owner and answers only fresh
-//! catalog-currentness challenges. It deliberately does not dispatch backend
-//! or source effect requests.
+//! The service retains the fixed authenticated owner and answers fresh catalog
+//! challenges. A selected LocalLive Acquire may reach authenticated Storage
+//! readback, but no backend effect, lease, descriptor, or success response.
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -11,10 +11,12 @@ use std::time::Duration;
 use aos_sandbox_broker_session_security::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerSessionActivationErrorV1,
     ProductionSourceProviderCatalogInstallErrorV1, ProductionSourceProviderIngressErrorV1,
-    ProductionSourceProviderIngressV1, install_fixed_source_provider_catalog_credential,
-    production_deadline_after,
+    ProductionSourceProviderIngressV1, ProductionSourceProviderStorageReadbackV1,
+    install_fixed_source_provider_catalog_credential, production_deadline_after,
 };
-use aos_sandbox_source_provider::FixedProviderCatalogProgressV1;
+use aos_sandbox_source_provider::{
+    FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1, ProviderLedgerError,
+};
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -30,6 +32,8 @@ enum SourceProviderDaemonErrorV1 {
     Deadline(#[from] ProductionBrokerDeadlineErrorV1),
     #[error("ingress failed: {0}")]
     Ingress(#[from] ProductionSourceProviderIngressErrorV1),
+    #[error("SourceProvider protected source request failed: {0}")]
+    Source(#[from] ProviderLedgerError),
 }
 
 fn main() -> ExitCode {
@@ -50,12 +54,12 @@ fn run() -> Result<(), SourceProviderDaemonErrorV1> {
             install_fixed_source_provider_catalog_credential()?;
             Ok(())
         }
-        (None, None) => serve_catalog_currentness(),
+        (None, None) => serve_authenticated_ingress(),
         _ => Err(SourceProviderDaemonErrorV1::Arguments),
     }
 }
 
-fn serve_catalog_currentness() -> Result<(), SourceProviderDaemonErrorV1> {
+fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(SourceProviderDaemonErrorV1::Identity);
     }
@@ -67,11 +71,32 @@ fn serve_catalog_currentness() -> Result<(), SourceProviderDaemonErrorV1> {
         let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
         match ingress.accept_authenticated_owner(deadline) {
             Ok((mut owner, _report)) => loop {
-                match ingress.advance_catalog_currentness(&mut owner)? {
-                    FixedProviderCatalogProgressV1::Pending => {
+                match ingress.advance_authenticated_ingress(&mut owner)? {
+                    FixedProviderIngressProgressV1::Pending => {
                         std::thread::sleep(Duration::from_millis(2));
                     }
-                    FixedProviderCatalogProgressV1::Replied => {}
+                    FixedProviderIngressProgressV1::CatalogReplied => {}
+                    FixedProviderIngressProgressV1::Source(request) => {
+                        let (publication, manifest) = ingress.read_current_catalog_manifest()?;
+                        let mut storage = ProductionSourceProviderStorageReadbackV1;
+                        let mut session = owner.backend_session_with_catalog(
+                            &mut storage,
+                            &publication,
+                            &manifest,
+                        );
+                        match session.execute_authenticated_source_request(request)? {
+                            FixedProviderBackendRequestOutcomeV1::Reply(reply)
+                            | FixedProviderBackendRequestOutcomeV1::CachedRecovery {
+                                reply, ..
+                            } => {
+                                session.send_reply(reply)?;
+                            }
+                            FixedProviderBackendRequestOutcomeV1::RecoveryPending
+                            | FixedProviderBackendRequestOutcomeV1::Released { .. } => {
+                                return Err(ProviderLedgerError::Unavailable.into());
+                            }
+                        }
+                    }
                 }
             },
             Err(ProductionSourceProviderIngressErrorV1::Activation(

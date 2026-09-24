@@ -9,8 +9,8 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use aos_sandbox::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SourceProviderProofV1, SourceResourceV1, SourceRootObservationV1,
-    source_root_descriptor_commitment_v1,
+    SignedStorageLiveExportRequestV1, SourceProviderProofV1, SourceResourceV1,
+    SourceRootObservationV1, source_root_descriptor_commitment_v1,
 };
 use rustix::fs::{FileType, OFlags};
 use rustix::io::FdFlags;
@@ -999,6 +999,22 @@ pub enum ReopenObservationV1 {
 /// sealed through [`DurableAcquireEffectPermitV1::seal_execution`] or
 /// [`DurableReleaseEffectPermitV1::seal_execution`].
 pub trait SourceProviderBackendV1: sealed::SealedBackendV1 {
+    /// Submits a signed LocalLive plan for nonauthorizing Storage inspection.
+    ///
+    /// The default is closed; no successful export or descriptor can flow
+    /// through this method, including when the inspection itself succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable unless an authenticated readback-only transport is
+    /// installed, or when that transport cannot classify the exact request.
+    fn inspect_storage_live_export_request(
+        &mut self,
+        _signed_plan: &SignedStorageLiveExportRequestV1,
+    ) -> Result<(), crate::ProviderLedgerError> {
+        Err(crate::ProviderLedgerError::Unavailable)
+    }
+
     /// Observes whether an acquisition reservation was already applied.
     ///
     /// # Errors

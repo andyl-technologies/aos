@@ -12,7 +12,10 @@ use std::sync::Arc;
 use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
-use aos_sandbox_source_provider_protocol::{CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1};
+use aos_sandbox_source_provider_protocol::{
+    CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1,
+    SourceProviderMethod, decode_acquire_request,
+};
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
 };
@@ -55,6 +58,37 @@ pub enum FixedProviderCatalogProgressV1 {
     Pending,
     /// One exact current-head response was sent to Root Mount.
     Replied,
+}
+
+/// Retains a source-method packet received from the live authenticated carrier.
+///
+/// The private field prevents callers from substituting arbitrary request
+/// bytes before the fixed reducer performs full signature and sequence checks.
+pub struct FixedProviderAuthenticatedSourceRequestV1 {
+    signed: SignedSourceProviderRequestV1,
+}
+
+impl core::fmt::Debug for FixedProviderAuthenticatedSourceRequestV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("FixedProviderAuthenticatedSourceRequestV1([retained packet])")
+    }
+}
+
+impl FixedProviderAuthenticatedSourceRequestV1 {
+    pub(crate) fn into_signed(self) -> SignedSourceProviderRequestV1 {
+        self.signed
+    }
+}
+
+/// Classifies one retained packet without admitting a source effect.
+#[derive(Debug)]
+pub enum FixedProviderIngressProgressV1 {
+    /// The nonblocking carrier has no complete packet or pending send capacity.
+    Pending,
+    /// An exact protected catalog-currentness response was sent.
+    CatalogReplied,
+    /// A kernel-coupled Acquire awaits protected reservation and readback.
+    Source(FixedProviderAuthenticatedSourceRequestV1),
 }
 
 /// Reports exact protected replay performed by the fixed provider owner.
@@ -1309,6 +1343,101 @@ impl FixedProviderOwnerV1 {
             return Ok(FixedProviderCatalogProgressV1::Pending);
         }
 
+        let query = self.with_ledger(|ledger| {
+            let installed = ledger.current_sessions.values_mut().next().ok_or(
+                ProviderLedgerError::InvalidTransition(
+                    "fixed provider owner has no live ingress session",
+                ),
+            )?;
+            installed
+                .session
+                .receive_current_catalog_query()
+                .map_err(Into::into)
+        })?;
+        let Some(query) = query else {
+            return Ok(FixedProviderCatalogProgressV1::Pending);
+        };
+        self.prepare_catalog_currentness_query(canonical_catalog_publication, query)
+    }
+
+    /// Advances one catalog query or a kernel-coupled Acquire packet.
+    ///
+    /// The exact source packet is received from live carrier custody and is
+    /// branded before leaving this owner. Its signature and durable sequence
+    /// are still verified by the reservation reducer; all other source
+    /// methods remain closed in the production service.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed frames, source methods other than kernel-coupled
+    /// Acquire, stale currentness state, or changed peer/journal custody.
+    pub fn advance_authenticated_ingress(
+        &mut self,
+        canonical_catalog_publication: &[u8],
+    ) -> Result<FixedProviderIngressProgressV1, ProviderLedgerError> {
+        if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
+            return Err(ProviderLedgerError::Corrupt(
+                "canonical catalog publication length",
+            ));
+        }
+        if self.pending_catalog_currentness.is_some() {
+            return self
+                .advance_catalog_currentness(canonical_catalog_publication)
+                .map(|progress| match progress {
+                    FixedProviderCatalogProgressV1::Pending => {
+                        FixedProviderIngressProgressV1::Pending
+                    }
+                    FixedProviderCatalogProgressV1::Replied => {
+                        FixedProviderIngressProgressV1::CatalogReplied
+                    }
+                });
+        }
+        let packet = self.with_ledger(|ledger| {
+            let installed = ledger.current_sessions.values_mut().next().ok_or(
+                ProviderLedgerError::InvalidTransition(
+                    "fixed provider owner has no live ingress session",
+                ),
+            )?;
+            installed
+                .session
+                .receive_current_request_packet()
+                .map_err(Into::into)
+        })?;
+        let Some(packet) = packet else {
+            return Ok(FixedProviderIngressProgressV1::Pending);
+        };
+        if let Ok(query) = CatalogCurrentnessQueryV1::from_canonical_bytes(&packet) {
+            return self
+                .prepare_catalog_currentness_query(canonical_catalog_publication, query)
+                .map(|progress| match progress {
+                    FixedProviderCatalogProgressV1::Pending => {
+                        FixedProviderIngressProgressV1::Pending
+                    }
+                    FixedProviderCatalogProgressV1::Replied => {
+                        FixedProviderIngressProgressV1::CatalogReplied
+                    }
+                });
+        }
+        if packet.starts_with(b"AOSSPC01") {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&packet)
+            .map_err(|_| ProviderLedgerError::Equivocation)?;
+        let request = decode_acquire_request(signed.subject())
+            .map_err(|_| ProviderLedgerError::Unavailable)?;
+        if signed.method() != SourceProviderMethod::Acquire || !request.kernel_coupled() {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        Ok(FixedProviderIngressProgressV1::Source(
+            FixedProviderAuthenticatedSourceRequestV1 { signed },
+        ))
+    }
+
+    fn prepare_catalog_currentness_query(
+        &mut self,
+        canonical_catalog_publication: &[u8],
+        query: CatalogCurrentnessQueryV1,
+    ) -> Result<FixedProviderCatalogProgressV1, ProviderLedgerError> {
         let last_sequence = self.last_catalog_sequence;
         let last_minimum = self.last_catalog_minimum;
         let pending = self.with_ledger(|ledger| {
@@ -1317,9 +1446,6 @@ impl FixedProviderOwnerV1 {
                     "fixed provider owner has no live ingress session",
                 ),
             )?;
-            let Some(query) = installed.session.receive_current_catalog_query()? else {
-                return Ok(None);
-            };
             validate_catalog_query_progress(&query, last_sequence, last_minimum)?;
 
             let snapshot = ledger.journal.snapshot()?;
@@ -1343,15 +1469,12 @@ impl FixedProviderOwnerV1 {
                 &query,
                 publication_digest,
             )?;
-            Ok(Some(PendingCatalogCurrentnessV1 {
+            Ok(PendingCatalogCurrentnessV1 {
                 query,
                 response,
                 current_catalog,
-            }))
+            })
         })?;
-        let Some(pending) = pending else {
-            return Ok(FixedProviderCatalogProgressV1::Pending);
-        };
 
         self.last_catalog_sequence = pending.query.sequence();
         self.last_catalog_minimum = Some(pending.query.minimum());
