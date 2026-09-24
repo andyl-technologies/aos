@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long, global = true, env = "HUB_DATABASE_URL")]
     database_url: Option<String>,
 
+    /// File containing the native database URL, for service credentials.
+    #[arg(long, global = true, env = "HUB_DATABASE_URL_FILE")]
+    database_url_file: Option<PathBuf>,
+
     /// Database target. The hard-cutover CLI admits only the native `local`
     /// database; Worker administration uses the typed Hub API.
     #[arg(long, global = true, default_value = "local")]
@@ -579,7 +583,16 @@ impl WorkerArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber_init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if let Some(path) = cli.database_url_file.as_ref() {
+        anyhow::ensure!(
+            cli.database_url.is_none(),
+            "configure either HUB_DATABASE_URL or HUB_DATABASE_URL_FILE"
+        );
+        let database_url = std::fs::read_to_string(path)
+            .with_context(|| format!("reading database URL from {}", path.display()))?;
+        cli.database_url = Some(database_url.trim_end_matches(['\r', '\n']).to_owned());
+    }
 
     match cli.command {
         Command::Serve {
