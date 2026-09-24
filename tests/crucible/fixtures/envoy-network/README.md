@@ -41,6 +41,12 @@ the transport boundary. The guest image does not inject host-side faults.
 The guest-to-guest readiness channel uses A's port 9090 on the modeled fabric.
 Every VM emits `fault.transport.ready` after local readiness: east checks nginx,
 B and C check their Envoy route, and west confirms the full A-B-C-east path.
+After the host releases that boundary and replies with the atomic recovery
+tuple, router A makes a bounded direct request to B before changing its route.
+That request traverses A-B and B-C, giving a selected primary-link fault a
+real packet on which to apply; `fault.transport.primary-probed` marks the
+completed attempt. The same sequence uses `fault.followup.primary-probed` for
+the second response.
 West announces convergence before emitting its marker; B, C, and east
 acknowledge the boundary to A before their markers, and A emits last. This
 ordering lets each VM park at its marker without interrupting the convergence
