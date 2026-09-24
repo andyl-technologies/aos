@@ -1,4 +1,4 @@
-From d665cb0ff80ac26bf485fb6f113ee7d23298dca8 Mon Sep 17 00:00:00 2001
+From d2bbb0513dec17ff6f709461ba71ea0522db0365 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -36,6 +36,9 @@ without losing the validated file identity.
 Allow the retained RCU barrier owner to perform accounted reporting reads
 until fork transaction sealing. Keep callback and registry admission closed,
 and reject fork while any owner read remains active.
+
+Report bounded source restoration and release failures through the
+versioned template QMP failure stage and detail.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -32379,10 +32382,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..1f7dd96d4becb3d757bbc5589b5df6f6b18b7c6e 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8ddfde3f13f663fc2620f49bc1f486bb465d082c 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6006 @@
+@@ -14,53 +14,6015 @@
   */
  
  #include "qemu/osdep.h"
@@ -35860,9 +35863,18 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..1f7dd96d4becb3d757bbc5589b5df6f6
 +            qemu_block_backend_hot_fork_barrier_inventory_destroy(&inventory);
 +            if (crucible_hot_fork_template_sources) {
 +                if (!qemu_block_hot_fork_source_set_restore(
-+                        crucible_hot_fork_template_sources, &local_err) ||
-+                    !qemu_block_hot_fork_source_set_free(
 +                        crucible_hot_fork_template_sources, &local_err)) {
++                    crucible_hot_fork_template_record_failure(
++                        CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_RESTORE,
++                        local_err);
++                    error_free(local_err);
++                    break;
++                }
++                if (!qemu_block_hot_fork_source_set_free(
++                        crucible_hot_fork_template_sources, &local_err)) {
++                    crucible_hot_fork_template_record_failure(
++                        CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_FREE,
++                        local_err);
 +                    error_free(local_err);
 +                    break;
 +                }
@@ -36304,7 +36316,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..1f7dd96d4becb3d757bbc5589b5df6f6
 +    uint64_t acknowledged = crucible_hot_fork_template_acknowledged_proofs(
 +        plugin_barrier, rcu_barrier, async_worker_barrier, block_barrier);
 +
-+    report->schema_version = 28;
++    report->schema_version = 29;
 +    report->generation = crucible_hot_fork_template_generation;
 +    report->outcome = outcome;
 +    report->failure_stage = crucible_hot_fork_template_failure_stage;
@@ -38405,7 +38417,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..1f7dd96d4becb3d757bbc5589b5df6f6
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6021,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6030,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -38429,7 +38441,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..1f7dd96d4becb3d757bbc5589b5df6f6
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6085,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6094,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -78276,10 +78288,10 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..df48f3d96bb8091bf8639329642b0fdde7a76a07 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff360907894090b8a 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -132,6 +132,2724 @@
+@@ -132,6 +132,2729 @@
  { 'command': 'query-status', 'returns': 'StatusInfo',
    'allow-preconfig': true }
  
@@ -79185,10 +79197,11 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..df48f3d96bb8091bf8639329642b0fdd
 +##
 +# @CrucibleHotForkTemplateFailureStage:
 +#
-+# First native acquisition step that failed in this transaction.
-+# The value survives rollback until a new preparation begins.
++# Most recent native preparation or rollback step that failed in this
++# transaction.  The value survives rollback until a new preparation
++# begins.
 +#
-+# @none: no acquisition step failed
++# @none: no preparation or rollback step failed
 +#
 +# @block-hold: native block barrier hold failed
 +#
@@ -79210,13 +79223,17 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..df48f3d96bb8091bf8639329642b0fdd
 +#
 +# @plugin-hold: plugin barrier hold failed
 +#
++# @source-restore: native source restoration failed
++#
++# @source-free: restored native source release failed
++#
 +# Since: 11.1.1 (Crucible downstream extension)
 +##
 +{ 'enum': 'CrucibleHotForkTemplateFailureStage',
 +  'data': [ 'none', 'block-hold', 'block-owner', 'source-snapshot',
 +            'source-capture', 'source-release', 'source-freeze',
 +            'block-rehold', 'frozen-snapshot', 'native-pools',
-+            'plugin-hold' ] }
++            'plugin-hold', 'source-restore', 'source-free' ] }
 +
 +##
 +# @CrucibleHotForkTemplateResourceStageState:
@@ -79426,18 +79443,18 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..df48f3d96bb8091bf8639329642b0fdd
 +# basis.  The caller must explicitly abort to roll the retained
 +# barriers back.
 +#
-+# @schema-version: transaction contract version, currently 28
++# @schema-version: transaction contract version, currently 29
 +#
 +# @generation: positive process-local transaction generation after the
 +#     first successful prepare, or zero before any transaction
 +#
 +# @outcome: exact result of the requested coordinator operation
 +#
-+# @failure-stage: first native acquisition step that failed, retained
-+#     across rollback until a new preparation begins
++# @failure-stage: most recent native preparation or rollback step that
++#     failed, retained until a new preparation begins
 +#
 +# @failure-detail: QEMU error detail bounded to 255 bytes, or empty
-+#     when no acquisition failure occurred
++#     when no preparation or rollback failure occurred
 +#
 +# @transaction-active: whether QEMU still owns acquired barrier state
 +#

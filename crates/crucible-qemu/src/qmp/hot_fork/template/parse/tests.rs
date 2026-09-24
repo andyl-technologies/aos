@@ -11,9 +11,21 @@ use serde_json::json;
 #[test]
 fn failure_diagnostic_rejects_unknown_or_unbounded_values() {
     let mut report = prepared_report();
+    report["failure-stage"] = json!("source-restore");
+    report["failure-detail"] = json!("Failed to get write lock");
+    assert!(parse_hot_fork_template_state(&report).is_ok());
+
+    report["failure-stage"] = json!("source-free");
+    report["failure-detail"] = json!("source release failed");
+    assert!(parse_hot_fork_template_state(&report).is_ok());
+
     report["failure-stage"] = json!("source-freeze");
     report["failure-detail"] = json!("native source denied permission change");
     assert!(parse_hot_fork_template_state(&report).is_ok());
+
+    report["schema-version"] = json!(28);
+    assert!(parse_hot_fork_template_state(&report).is_err());
+    report["schema-version"] = json!(29);
 
     report["failure-stage"] = json!("unknown-stage");
     assert!(parse_hot_fork_template_state(&report).is_err());

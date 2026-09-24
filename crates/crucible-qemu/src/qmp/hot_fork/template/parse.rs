@@ -3,7 +3,7 @@
 //! The versioned envelope records withheld proofs explicitly:
 //!
 //! ```text
-//! { "schema-version": 28, "generation": N, "outcome": "draining",
+//! { "schema-version": 29, "generation": N, "outcome": "draining",
 //!   "acknowledged-proofs": A, "missing-proofs": M, ... }
 //! ```
 //!
@@ -88,6 +88,8 @@ pub(crate) fn parse_hot_fork_template_state(
         Some("frozen-snapshot") => QmpHotForkTemplateFailureStage::FrozenSnapshot,
         Some("native-pools") => QmpHotForkTemplateFailureStage::NativePools,
         Some("plugin-hold") => QmpHotForkTemplateFailureStage::PluginHold,
+        Some("source-restore") => QmpHotForkTemplateFailureStage::SourceRestore,
+        Some("source-free") => QmpHotForkTemplateFailureStage::SourceFree,
         _ => return Err(malformed()),
     };
     let failure_detail = object

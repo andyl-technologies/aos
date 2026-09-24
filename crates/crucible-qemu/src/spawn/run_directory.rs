@@ -1132,6 +1132,22 @@ pub(super) fn open_prepared_root_overlay(
 }
 
 impl QemuPreparedRunDirectory {
+    pub(super) fn open_vmstate_for_launch(&self) -> Result<OwnedFd, QemuSpawnError> {
+        let file = open_prepared_vmstate(&self.directory, &self.path)?;
+        let metadata = fstat(&file).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect guarded VMState launch descriptor",
+            source: source.into(),
+        })?;
+        if !self.vmstate_identity.matches(&metadata)
+            || FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        {
+            return Err(QemuSpawnError::PreparedDeviceStateChanged {
+                path: self.path.join(crate::DEFAULT_VMSTATE_FILE_NAME),
+            });
+        }
+        Ok(file)
+    }
+
     pub(super) fn open_direct_root_overlay_for_launch(
         &self,
     ) -> Result<Option<(OwnedFd, OwnedFd)>, QemuSpawnError> {
