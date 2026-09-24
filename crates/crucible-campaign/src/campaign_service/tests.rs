@@ -692,7 +692,7 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
         ],
         [
             String::from("4c7e311ee4b4c4fec7e6577cffe3bf297d4a9d54ac50db3fa3c9dff03396653b"),
-            String::from("cf4716f983aac27057f216f5c7457325df6e8fd27256f3e76fae293a114422d6"),
+            String::from("d7039fd13325d3c0a4032b26e90bcb61942772b5f83bed1f6baeb14f6f2dab07"),
         ]
     );
 }

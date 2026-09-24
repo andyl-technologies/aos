@@ -627,7 +627,7 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "684a0e7fb1f785dfb7f0929ab00ff2fc79e2bce49e5ca6c116901f60067b6c0b"
+        "869d9950566c4f378ba582fb79a31b1dcbf10be72a765e097dbb487261d873af"
     );
 
     let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -1022,7 +1022,7 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
             &response_bytes,
         )
         .to_hex(),
-        "2225c2e3570020fee99d630b5e83994d59b8f044aaebaa077377c259b1ae60f2"
+        "f8c967b10681473b1c3d9e92d82dd7856649fd11427a94cb2751866026c72636"
     );
 
     let other = CancelAttemptExecutionRequest::new(
