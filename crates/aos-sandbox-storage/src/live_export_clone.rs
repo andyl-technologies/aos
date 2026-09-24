@@ -2,16 +2,20 @@
 //!
 //! ```text
 //! key   = provider-authority-id[16] | generation:u64be | plan-id[16]
-//! value = AOSSLM01 | version:u16be=1 | state:u8 | reserved[5]=0 |
+//! value = AOSSLM02 | version:u16be=2 | state:u8 | reserved[5]=0 |
 //!         request-readback-digest[32] | boot-id[16] |
-//!         clone-mount-id:u64be | root-device:u64be | root-inode:u64be
+//!         clone-mount-id:u64be | root-device:u64be | root-inode:u64be |
+//!         holder-cgroup-id:u64be=0 | grant-epoch:u64be=0
 //! ```
 //!
-//! No clone FD leaves Storage. The worker has terminated before construction,
-//! so process death closes Storage's sole remaining clone reference. An active
-//! record found after cold restart is uncertain and cannot be reused; it does
-//! not resurrect an FD or imply a kernel grant. Closing first and journaling
-//! second deliberately leaves uncertainty, not an unsafe false release.
+//! The journal lives under Storage's protected writable state root, not its
+//! immutable authority directory. No clone FD leaves Storage. The worker has
+//! terminated before construction, so process death closes Storage's sole
+//! remaining clone reference. An active record found after cold restart is
+//! uncertain and cannot be reused; it does not resurrect an FD or imply a
+//! kernel grant. The v2 record rejects the v1 direct active-to-closed
+//! transition. Its zero holder/epoch fields state that this private clone has
+//! never been handed to a grant owner.
 
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
@@ -28,13 +32,15 @@ use sha2::{Digest as _, Sha256};
 use crate::live_export_request_readback::StorageLiveExportReadbackV1;
 
 const JOURNAL_FILE: &str = "storage-live-export-clones.journal";
-const MAGIC: &[u8; 8] = b"AOSSLM01";
-const VERSION: u16 = 1;
+const MAGIC: &[u8; 8] = b"AOSSLM02";
+const VERSION: u16 = 2;
 const KEY_BYTES: usize = 40;
-const VALUE_BYTES: usize = 88;
+const VALUE_BYTES: usize = 104;
 const ACTIVE: u8 = 1;
-const CLOSED: u8 = 2;
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-clone.v1\0";
+const STOPPING: u8 = 2;
+const CLOSED: u8 = 3;
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-clone.v2\0";
+const LOCAL_CLOSURE_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-local-closure.v2\0";
 
 /// Reports unsafe clone custody, replay, or physical identity.
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +61,19 @@ pub(crate) struct StorageLiveExportCloneV1 {
     mount: OwnedFd,
     key: [u8; KEY_BYTES],
     value: [u8; VALUE_BYTES],
+}
+
+/// Commits only local FD closure, never a holder or KernelExportGrant release.
+#[must_use]
+pub(crate) struct StoragePrivateCloneClosureV2 {
+    digest: ObjectDigest,
+}
+
+impl StoragePrivateCloneClosureV2 {
+    /// Returns the durable local-closure commitment for diagnostics.
+    pub(crate) const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
 }
 
 impl StorageLiveExportCloneV1 {
@@ -143,19 +162,31 @@ impl StorageLiveExportCloneV1 {
         Ok(())
     }
 
-    /// Drops the sole Storage FD before recording local closure.
+    /// Stops the private clone, drops Storage's FD, then records local closure.
     ///
-    /// This does not claim terminal KernelExportGrant release. If the journal
-    /// commit fails, cold recovery sees an uncertain active record and closes.
+    /// The worker has already quiesced, and no clone FD can leave this type.
+    /// The stop transition is durable before dropping the descriptor. A crash
+    /// before the final commit leaves an active/stopping record that cold
+    /// startup rejects. This cannot prove release of an escaped FD or mmap,
+    /// and no grant-aware handoff is reachable from this API.
     pub(crate) fn revoke_local(
         self,
         ledger: &mut StorageLiveExportCloneLedgerV1,
-    ) -> Result<(), StorageLiveExportCloneErrorV1> {
+    ) -> Result<StoragePrivateCloneClosureV2, StorageLiveExportCloneErrorV1> {
+        self.validate_current()?;
+
         let key = self.key;
+        let mut stopping = self.value;
+        stopping[10] = STOPPING;
+        ledger.record_transition(key, stopping, ACTIVE, STOPPING)?;
+
         let mut closed = self.value;
         closed[10] = CLOSED;
         drop(self);
-        ledger.record_closed(key, closed)
+        ledger.record_transition(key, closed, STOPPING, CLOSED)?;
+        Ok(StoragePrivateCloneClosureV2 {
+            digest: local_closure_digest(key, closed),
+        })
     }
 }
 
@@ -190,15 +221,17 @@ impl StorageLiveExportCloneLedgerV1 {
         Ok(())
     }
 
-    fn record_closed(
+    fn record_transition(
         &mut self,
         key: [u8; KEY_BYTES],
         value: [u8; VALUE_BYTES],
+        previous_state: u8,
+        next_state: u8,
     ) -> Result<(), StorageLiveExportCloneErrorV1> {
         let mut authority = self
             .journal
             .claim_protected_authority(RecordNamespace::AuthorityPublication)?;
-        ensure_active_matches(authority.get(&key)?, &value)?;
+        ensure_transition_matches(authority.get(&key)?, &value, previous_state, next_state)?;
         authority.commit(&transaction(key, value)?)?;
         if authority.get(&key)? != Some(value.as_slice()) {
             return Err(StorageLiveExportCloneErrorV1::Uncertain);
@@ -214,17 +247,23 @@ fn ensure_new(previous: Option<&[u8]>) -> Result<(), StorageLiveExportCloneError
     Ok(())
 }
 
-fn ensure_active_matches(
+fn ensure_transition_matches(
     previous: Option<&[u8]>,
-    closed: &[u8; VALUE_BYTES],
+    next: &[u8; VALUE_BYTES],
+    previous_state: u8,
+    next_state: u8,
 ) -> Result<(), StorageLiveExportCloneErrorV1> {
     let current = previous.ok_or(StorageLiveExportCloneErrorV1::Uncertain)?;
     if !canonical_record(current)
-        || !canonical_record(closed)
-        || current[10] != ACTIVE
-        || closed[10] != CLOSED
-        || current[..10] != closed[..10]
-        || current[11..] != closed[11..]
+        || !canonical_record(next)
+        || !matches!(
+            (previous_state, next_state),
+            (ACTIVE, STOPPING) | (STOPPING, CLOSED)
+        )
+        || current[10] != previous_state
+        || next[10] != next_state
+        || current[..10] != next[..10]
+        || current[11..] != next[11..]
     {
         return Err(StorageLiveExportCloneErrorV1::Uncertain);
     }
@@ -235,13 +274,14 @@ fn canonical_record(value: &[u8]) -> bool {
     value.len() == VALUE_BYTES
         && &value[..8] == MAGIC
         && value[8..10] == VERSION.to_be_bytes()
-        && matches!(value[10], ACTIVE | CLOSED)
+        && matches!(value[10], ACTIVE | STOPPING | CLOSED)
         && value[11..16] == [0; 5]
         && value[16..48] != [0; 32]
         && value[48..64] != [0; 16]
         && value[64..72] != [0; 8]
         && value[72..80] != [0; 8]
         && value[80..88] != [0; 8]
+        && value[88..104] == [0; 16]
 }
 
 fn replay_key(
@@ -289,7 +329,7 @@ fn record_value(
         || mount_id == 0
         || device == 0
         || inode == 0
-        || !matches!(state, ACTIVE | CLOSED)
+        || !matches!(state, ACTIVE | STOPPING | CLOSED)
     {
         return Err(StorageLiveExportCloneErrorV1::Uncertain);
     }
@@ -303,6 +343,15 @@ fn record_value(
     value[72..80].copy_from_slice(&device.to_be_bytes());
     value[80..88].copy_from_slice(&inode.to_be_bytes());
     Ok(value)
+}
+
+fn local_closure_digest(key: [u8; KEY_BYTES], closed: [u8; VALUE_BYTES]) -> ObjectDigest {
+    let hash = Sha256::new()
+        .chain_update(LOCAL_CLOSURE_DOMAIN)
+        .chain_update(key)
+        .chain_update(closed)
+        .finalize();
+    ObjectDigest::from_bytes(hash.into())
 }
 
 fn transaction(
@@ -355,7 +404,7 @@ mod tests {
         assert_eq!(&value[11..16], &[0; 5]);
         assert!(canonical_record(&value));
 
-        for (index, changed) in [(0, 0), (9, 2), (10, 3), (11, 1)] {
+        for (index, changed) in [(0, 0), (9, 3), (10, 4), (11, 1)] {
             let mut tampered = value;
             tampered[index] = changed;
             assert!(!canonical_record(&tampered), "changed byte {index}");
@@ -363,6 +412,14 @@ mod tests {
         let mut zero_digest = value;
         zero_digest[16..48].fill(0);
         assert!(!canonical_record(&zero_digest));
+        let mut forged_holder = value;
+        forged_holder[88] = 1;
+        assert!(!canonical_record(&forged_holder));
+        let mut old_version = value;
+        old_version[..8].copy_from_slice(b"AOSSLM01");
+        old_version[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(!canonical_record(&old_version));
+        assert!(!canonical_record(&old_version[..88]));
         assert!(!canonical_record(&value[..VALUE_BYTES - 1]));
     }
 
@@ -390,20 +447,32 @@ mod tests {
             ensure_cold_records_closed(reopened.records(RecordNamespace::AuthorityPublication))
                 .is_err()
         );
+        let mut stopping = active;
+        stopping[10] = STOPPING;
+        assert!(ensure_transition_matches(recovered, &stopping, ACTIVE, STOPPING).is_ok());
+        let mut forged = stopping;
+        forged[64] ^= 1;
+        assert!(ensure_transition_matches(recovered, &forged, ACTIVE, STOPPING).is_err());
         let mut closed = active;
         closed[10] = CLOSED;
-        assert!(ensure_active_matches(recovered, &closed).is_ok());
+        assert!(ensure_transition_matches(recovered, &closed, ACTIVE, CLOSED).is_err());
 
-        closed[64] ^= 1;
-        assert!(ensure_active_matches(recovered, &closed).is_err());
-
-        let mut properly_closed = active;
-        properly_closed[10] = CLOSED;
         drop(reopened);
         let mut writable = Journal::open(&path, journal_limits()).unwrap().0;
         writable
-            .commit(&transaction(key, properly_closed).unwrap())
+            .commit(&transaction(key, stopping).unwrap())
             .unwrap();
+        drop(writable);
+        let stopped = Journal::open(&path, journal_limits()).unwrap().0;
+        let recovered_stopping = stopped.get(RecordNamespace::AuthorityPublication, &key);
+        assert!(ensure_transition_matches(recovered_stopping, &closed, STOPPING, CLOSED).is_ok());
+        assert!(
+            ensure_cold_records_closed(stopped.records(RecordNamespace::AuthorityPublication))
+                .is_err()
+        );
+        drop(stopped);
+        let mut writable = Journal::open(&path, journal_limits()).unwrap().0;
+        writable.commit(&transaction(key, closed).unwrap()).unwrap();
         drop(writable);
         let recovered_closed = Journal::open(&path, journal_limits()).unwrap().0;
         assert!(
@@ -412,5 +481,6 @@ mod tests {
             )
             .is_ok()
         );
+        assert_ne!(local_closure_digest(key, closed).as_bytes(), &[0; 32]);
     }
 }

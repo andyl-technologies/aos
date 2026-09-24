@@ -51,6 +51,7 @@ pub fn serve_live_export_request_once(
     runtime: &mut StorageBrokerRuntime,
     verifier: &ProviderLiveExportPeerVerifier,
     authority_directory: &Path,
+    state_directory: &Path,
 ) -> Result<StorageLiveExportTransportOutcomeV1, StorageServiceError> {
     if runtime.requires_reopen() {
         return Err(StorageRuntimeError::ReopenRequired.into());
@@ -89,11 +90,13 @@ pub fn serve_live_export_request_once(
 
     // One request per accepted channel keeps transport sequence state exact.
     // The protected replay journal below fences retries across connections.
-    let readback_owner =
-        match StorageLiveExportRequestReadbackOwnerV1::open_root_owned(authority_directory) {
-            Ok(owner) => owner,
-            Err(_) => return Ok(StorageLiveExportTransportOutcomeV1::Rejected),
-        };
+    let readback_owner = match StorageLiveExportRequestReadbackOwnerV1::open_root_owned(
+        authority_directory,
+        state_directory,
+    ) {
+        Ok(owner) => owner,
+        Err(_) => return Ok(StorageLiveExportTransportOutcomeV1::Rejected),
+    };
     let readback_deadline = boottime()?
         .checked_add(READBACK_NANOSECONDS)
         .ok_or(StorageServiceError::Clock)?;
@@ -112,7 +115,10 @@ pub fn serve_live_export_request_once(
     // This is only a replay fence for a physically inspected, signed plan.
     // KernelExportGrant, read-only clone, and terminal revocation authority
     // do not exist yet; the response below remains descriptor-free Unavailable.
-    let mut replay = match StorageLiveExportReplayLedgerV1::open_root_owned(authority_directory) {
+    let mut replay = match StorageLiveExportReplayLedgerV1::open_root_owned(
+        authority_directory,
+        state_directory,
+    ) {
         Ok(replay) => replay,
         Err(_) => return Err(StorageRuntimeError::ReopenRequired.into()),
     };
@@ -123,7 +129,11 @@ pub fn serve_live_export_request_once(
         ) => {
             return Ok(StorageLiveExportTransportOutcomeV1::Rejected);
         }
-        Err(StorageLiveExportReplayErrorV1::Journal(_)) => {
+        Err(
+            StorageLiveExportReplayErrorV1::Journal(_)
+            | StorageLiveExportReplayErrorV1::AuthorityCustody
+            | StorageLiveExportReplayErrorV1::LegacyAuthorityHistory,
+        ) => {
             return Err(StorageRuntimeError::ReopenRequired.into());
         }
     }

@@ -146,17 +146,19 @@ pub(crate) struct StorageLiveExportRequestReadbackOwnerV1 {
 }
 
 impl StorageLiveExportRequestReadbackOwnerV1 {
-    /// Opens both root-owned inputs before accepting signed request bytes.
+    /// Opens root-owned trust/catalog input and protected writable journal.
     ///
     /// # Errors
     ///
     /// Returns trust or catalog errors for missing, unsafe, stale, or
     /// noncanonical protected inputs.
     pub(crate) fn open_root_owned(
-        directory: &Path,
+        authority_directory: &Path,
+        state_directory: &Path,
     ) -> Result<Self, StorageLiveExportReadbackErrorV1> {
-        let trust = StorageLiveExportRequestTrustV1::open_root_owned(directory)?;
-        let catalog = StorageLiveExportCatalogV1::open_root_owned(directory)?;
+        let trust = StorageLiveExportRequestTrustV1::open_root_owned(authority_directory)?;
+        let catalog =
+            StorageLiveExportCatalogV1::open_root_owned(authority_directory, state_directory)?;
         Ok(Self { trust, catalog })
     }
 

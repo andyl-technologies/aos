@@ -11,8 +11,11 @@
 //! lease or effect state: it fences exact retries across process death while
 //! independent kernel clone/grant authority is still absent. A replay must
 //! repeat both the signed plan and the physical observation; changed current
-//! state fails closed instead of silently replacing the recorded origin.
+//! state fails closed instead of silently replacing the recorded origin. The
+//! journal is written only under Storage's protected state root; historical
+//! authority-side history must be explicitly migrated, not ignored.
 
+use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox::{
@@ -21,6 +24,7 @@ use aos_sandbox::{
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
+use crate::live_export_key::{open_protected_directory, reject_legacy_authority_journal};
 use crate::live_export_request_readback::StorageLiveExportReadbackV1;
 
 const JOURNAL_FILE: &str = "storage-live-export-plan-replay.journal";
@@ -42,6 +46,12 @@ pub(crate) enum StorageLiveExportReplayErrorV1 {
     /// The protected journal could not be opened, replayed, or committed.
     #[error("Storage live-export replay journal failed: {0}")]
     Journal(#[from] JournalError),
+    /// The immutable authority directory could not be safely pinned.
+    #[error("Storage live-export authority custody is unsafe")]
+    AuthorityCustody,
+    /// A historical journal still exists under immutable authority custody.
+    #[error("Storage live-export legacy replay history requires explicit migration")]
+    LegacyAuthorityHistory,
 }
 
 /// Classifies one exact protected replay without authorizing an export.
@@ -59,7 +69,7 @@ pub(crate) struct StorageLiveExportReplayLedgerV1 {
 }
 
 impl StorageLiveExportReplayLedgerV1 {
-    /// Reopens exact replay state under Storage's root-owned authority directory.
+    /// Reopens replay state under Storage's protected writable state root.
     ///
     /// Recovery accepts only the journal's validated durable prefix. A partial
     /// trailing frame can be retried with the same identity and signed bytes;
@@ -67,12 +77,18 @@ impl StorageLiveExportReplayLedgerV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageLiveExportReplayErrorV1::Journal`] when protected
-    /// custody, locking, replay, or configured bounds fail closed.
+    /// Returns a closed error for unsafe authority custody, legacy history,
+    /// or protected state-journal locking, replay, and bounds failures.
     pub(crate) fn open_root_owned(
-        directory: &Path,
+        authority_directory: &Path,
+        state_directory: &Path,
     ) -> Result<Self, StorageLiveExportReplayErrorV1> {
-        let journal = Journal::open_protected_at(directory, JOURNAL_FILE, journal_limits())?.0;
+        let authority = open_protected_directory(authority_directory, 0)
+            .map_err(|_| StorageLiveExportReplayErrorV1::AuthorityCustody)?;
+        reject_legacy_authority_journal(authority.as_fd(), JOURNAL_FILE)
+            .map_err(|_| StorageLiveExportReplayErrorV1::LegacyAuthorityHistory)?;
+        let journal =
+            Journal::open_protected_at(state_directory, JOURNAL_FILE, journal_limits())?.0;
         Ok(Self { journal })
     }
 

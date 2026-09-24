@@ -74,6 +74,9 @@ fn run() -> Result<(), StorageServiceError> {
         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
     let mut service =
         StorageService::new(runtime, verifier).with_guest_root_template(guest_root_template);
+    if live_export_listener.is_some() {
+        service = service.with_private_live_export_cold_audit(Path::new(STATE_ROOT))?;
+    }
     let (operator_credentials, mut operator_owner) = if operator_listener.is_some() {
         let credentials = StorageOperatorRecoveryCredentialsV1::load()?;
         let owner = credentials.open_owner(Path::new(STATE_ROOT))?;
@@ -155,6 +158,7 @@ fn run() -> Result<(), StorageServiceError> {
                     provider_listener,
                     &provider_verifier,
                     &arguments.authority_directory,
+                    Path::new(STATE_ROOT),
                 )?;
             } else {
                 // The disabled Provider service has no live execution to trust.

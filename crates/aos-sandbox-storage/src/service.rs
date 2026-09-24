@@ -38,6 +38,7 @@ use crate::broker::{StorageBrokerError, advertised_storage_methods};
 use crate::guest_root_inventory::{
     ProtectedGuestRootTemplateV1, attach_guest_root_publication_readback_v1,
 };
+use crate::live_export_clone::StorageLiveExportCloneLedgerV1;
 use crate::peer::ControllerPeerVerifier;
 use crate::runtime::{
     StorageApplyReadiness, StorageBrokerRuntime, StorageRuntimeError,
@@ -318,6 +319,7 @@ pub struct StorageService<R> {
     runtime: R,
     verifier: ControllerPeerVerifier,
     guest_root_template: Option<ProtectedGuestRootTemplateV1>,
+    _private_live_export_clones: Option<StorageLiveExportCloneLedgerV1>,
 }
 
 impl<R: StorageRpcRuntime> StorageService<R> {
@@ -328,6 +330,7 @@ impl<R: StorageRpcRuntime> StorageService<R> {
             runtime,
             verifier,
             guest_root_template: None,
+            _private_live_export_clones: None,
         }
     }
 
@@ -339,6 +342,27 @@ impl<R: StorageRpcRuntime> StorageService<R> {
     pub fn with_guest_root_template(mut self, template: ProtectedGuestRootTemplateV1) -> Self {
         self.guest_root_template = Some(template);
         self
+    }
+
+    /// Audits private clone lifecycle history before accepting LocalLive plans.
+    ///
+    /// The runtime has already acquired its exclusive transaction lock and
+    /// quiesced recovered pin workers. An active or stopping clone record
+    /// still fails startup: process death closes Storage's private FD, but no
+    /// grant-aware terminal release can be inferred from that fact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an activation error for unsafe journal custody, malformed
+    /// history, or any interrupted private clone lifecycle.
+    pub fn with_private_live_export_cold_audit(
+        mut self,
+        state_directory: &std::path::Path,
+    ) -> Result<Self, StorageServiceError> {
+        let ledger = StorageLiveExportCloneLedgerV1::open_root_owned(state_directory)
+            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+        self._private_live_export_clones = Some(ledger);
+        Ok(self)
     }
 
     /// Accepts, authenticates, serves, replies, and closes one connection.
@@ -871,12 +895,14 @@ impl StorageService<StorageBrokerRuntime> {
         listener: &mut RecordSubjectListener,
         verifier: &crate::peer::ProviderLiveExportPeerVerifier,
         authority_directory: &std::path::Path,
+        state_directory: &std::path::Path,
     ) -> Result<crate::StorageLiveExportTransportOutcomeV1, StorageServiceError> {
         crate::live_export_transport::serve_live_export_request_once(
             listener,
             &mut self.runtime,
             verifier,
             authority_directory,
+            state_directory,
         )
     }
 

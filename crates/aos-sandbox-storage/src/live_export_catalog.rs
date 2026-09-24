@@ -12,8 +12,10 @@
 //!
 //! This is a read-only custody slice, not an export publisher. Only a root
 //! controlled file can supply a row, and exact current-file readback is
-//! required before selecting it. A protected journal retains the generation
-//! floor and terminal tombstones across restart. This module still does not
+//! required before selecting it. Its mutable protected journal lives under
+//! Storage's state root and retains the generation floor and terminal
+//! tombstones across restart. A legacy journal under read-only authority
+//! custody blocks opening until explicitly migrated. This module still does not
 //! issue leases or advertise LocalLive: an authenticated export-publication
 //! writer and consumer admission are absent.
 
@@ -28,7 +30,9 @@ use aos_sandbox_source_provider_protocol::storage_live_export_lease::StorageLive
 use rustix::fs::{FileType, Mode, OFlags};
 use sha2::{Digest as _, Sha256};
 
-use crate::live_export_key::{open_protected_directory, same_stable_file_metadata};
+use crate::live_export_key::{
+    open_protected_directory, reject_legacy_authority_journal, same_stable_file_metadata,
+};
 use crate::live_export_origin::StorageLiveExportOriginV1;
 
 const CATALOG_FILE: &str = "storage-live-export-catalog-v1";
@@ -100,27 +104,31 @@ impl StorageLiveExportCatalogV1 {
     /// Returns [`StorageLiveExportCatalogErrorV1`] for an unsafe path or an
     /// absent, changed, malformed, or unbounded publication file.
     pub(crate) fn open_root_owned(
-        directory: &Path,
+        authority_directory: &Path,
+        state_directory: &Path,
     ) -> Result<Self, StorageLiveExportCatalogErrorV1> {
-        Self::open_with_owner(directory, 0)
+        Self::open_with_owner(authority_directory, state_directory, 0)
     }
 
     fn open_with_owner(
-        directory: &Path,
+        authority_directory: &Path,
+        state_directory: &Path,
         expected_owner: u32,
     ) -> Result<Self, StorageLiveExportCatalogErrorV1> {
-        let directory_path = directory.to_path_buf();
-        let directory = open_protected_directory(directory, expected_owner)
+        let directory_path = authority_directory.to_path_buf();
+        let directory = open_protected_directory(authority_directory, expected_owner)
+            .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
+        reject_legacy_authority_journal(directory.as_fd(), JOURNAL_FILE)
             .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
         let directory_identity =
             rustix::fs::fstat(&directory).map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
         let (bytes, file_device, file_inode) = read_catalog(&directory, expected_owner)?;
         let parsed = parse_catalog(&bytes)?;
         let mut journal = if expected_owner == 0 {
-            Journal::open_protected_at(&directory_path, JOURNAL_FILE, journal_limits())
+            Journal::open_protected_at(state_directory, JOURNAL_FILE, journal_limits())
         } else {
             Journal::open_protected_at_for_uid(
-                &directory_path,
+                state_directory,
                 JOURNAL_FILE,
                 journal_limits(),
                 expected_owner,
@@ -190,6 +198,8 @@ impl StorageLiveExportCatalogV1 {
         if (identity.st_dev, identity.st_ino) != (self.directory_device, self.directory_inode) {
             return Err(StorageLiveExportCatalogErrorV1::Custody);
         }
+        reject_legacy_authority_journal(self.directory.as_fd(), JOURNAL_FILE)
+            .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
         let (bytes, device, inode) = read_catalog(&self.directory, self.expected_owner)?;
         if (device, inode) != (self.file_device, self.file_inode) || bytes != self.bytes {
             return Err(StorageLiveExportCatalogErrorV1::Custody);

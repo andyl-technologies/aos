@@ -14,7 +14,7 @@
 //! signature from this key alone never authorizes LocalLive acquisition.
 
 use std::fs::File;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -180,6 +180,31 @@ pub(crate) fn open_protected_directory(
     Err(StorageLiveExportKeyErrorV1::Custody)
 }
 
+/// Refuses to forget a pre-relocation mutable journal in read-only trust custody.
+pub(crate) fn reject_legacy_authority_journal(
+    directory: BorrowedFd<'_>,
+    filename: &str,
+) -> Result<(), StorageLiveExportKeyErrorV1> {
+    if filename.is_empty()
+        || filename.len() > 255
+        || Path::new(filename).components().count() != 1
+        || !Path::new(filename)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(StorageLiveExportKeyErrorV1::Custody);
+    }
+    match rustix::fs::openat(
+        directory,
+        filename,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Ok(_) | Err(_) => Err(StorageLiveExportKeyErrorV1::Custody),
+    }
+}
+
 fn read_key_record(
     directory: &OwnedFd,
     expected_owner: u32,
@@ -292,6 +317,27 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
+
+    #[test]
+    fn legacy_journal_guard_rejects_existing_file_or_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = rustix::fs::open(
+            directory.path(),
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let filename = "old-live-export.journal";
+        assert!(reject_legacy_authority_journal(root.as_fd(), filename).is_ok());
+        assert!(reject_legacy_authority_journal(root.as_fd(), "../old").is_err());
+
+        fs::write(directory.path().join(filename), b"old history").unwrap();
+        assert!(reject_legacy_authority_journal(root.as_fd(), filename).is_err());
+        fs::remove_file(directory.path().join(filename)).unwrap();
+
+        std::os::unix::fs::symlink("other", directory.path().join(filename)).unwrap();
+        assert!(reject_legacy_authority_journal(root.as_fd(), filename).is_err());
+    }
 
     fn canonical_record() -> [u8; KEY_BYTES] {
         let seed = [7; 32];
