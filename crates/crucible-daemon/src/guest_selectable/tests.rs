@@ -1,6 +1,6 @@
 //! Guest selectable semantic-resolution regressions.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::{
@@ -8,7 +8,8 @@ use crucible::{
     ScenarioSelectables, Seed, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_campaign::{
-    BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceDomain, ChoiceSource, ChoiceValue,
+    BooleanDomain, CampaignHash, ChoiceClassContext, ChoiceDomain, ChoiceGroup,
+    ChoiceGroupApplication, ChoiceGroupDomain, ChoiceSource, ChoiceTuple, ChoiceValue,
     ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue, ScenarioDefId,
     SelectableDeclaration, Selection, SelectionOrigin,
 };
@@ -259,33 +260,68 @@ fn atomic_guest_group_crosses_registration_discovery_and_one_reply() -> Result<(
     }
 
     let (base, node) = fixture()?;
-    let (group, default, member_ids) = build_guest_group(
-        &node.name,
-        "envoy.recovery",
-        1,
-        vec![
-            (
-                String::from("recovery.fast_reroute"),
-                ChoiceDomain::Boolean(BooleanDomain::new(1)?),
-                ChoiceValue::Boolean(true),
-            ),
-            (
-                String::from("recovery.retry_limit"),
-                ChoiceDomain::Integer(IntegerDomain::new(
-                    1,
-                    IntegerRepresentation::Unsigned64,
-                    IntegerValue::Unsigned(0),
-                    IntegerValue::Unsigned(12),
-                    1,
-                    Some(String::from("count")),
-                    ExactRational::new(1, 1)?,
-                    Vec::new(),
-                )?),
-                ChoiceValue::Integer(IntegerValue::Unsigned(3)),
-            ),
-        ],
-        BTreeSet::new(),
+    let members = vec![
+        (
+            String::from("recovery.fast_reroute"),
+            ChoiceDomain::Boolean(BooleanDomain::new(1)?),
+            ChoiceValue::Boolean(true),
+        ),
+        (
+            String::from("recovery.retry_limit"),
+            ChoiceDomain::Integer(IntegerDomain::new(
+                1,
+                IntegerRepresentation::Unsigned64,
+                IntegerValue::Unsigned(0),
+                IntegerValue::Unsigned(12),
+                1,
+                Some(String::from("count")),
+                ExactRational::new(1, 1)?,
+                Vec::new(),
+            )?),
+            ChoiceValue::Integer(IntegerValue::Unsigned(3)),
+        ),
+    ];
+    let mut declarations = BTreeMap::new();
+    let mut domains = BTreeMap::new();
+    let mut defaults = BTreeMap::new();
+    for (name, domain, value) in &members {
+        let declaration = SelectableDeclaration::new(
+            name.clone(),
+            ChoiceSource::Guest {
+                node: node.name.clone(),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            },
+            domain.clone(),
+            value.clone(),
+            ChoiceClassContext::new(BTreeSet::new())?,
+            BTreeSet::new(),
+            true,
+        )?;
+        let id = declaration.id()?;
+        declarations.insert(id, declaration);
+        domains.insert(id, domain.clone());
+        defaults.insert(id, value.clone());
+    }
+    let group = ChoiceGroup::new(
+        &declarations,
+        ChoiceGroupDomain::Cartesian {
+            members: domains,
+            constraints: BTreeSet::new(),
+        },
+        ChoiceGroupApplication::new("envoy.recovery", 1)?,
     )?;
+    let default = ChoiceValue::Group(group.select(ChoiceTuple::new(defaults))?);
+    let guest_members = members
+        .iter()
+        .map(|(name, domain, value)| {
+            Ok((
+                name.clone(),
+                crucible_protocol::ChoiceDomain::from_canonical_bytes(&domain.canonical_bytes())?,
+                crucible_protocol::ChoiceValue::from_canonical_bytes(&value.canonical_bytes())?,
+            ))
+        })
+        .collect::<Result<Vec<_>, crucible_protocol::ChoiceCodecError>>()?;
+    let guest_group = build_guest_group(&node.name, "envoy.recovery", 1, guest_members)?;
     let group_domain = ChoiceDomain::Group(Box::new(group.clone()));
     let declaration = SelectableDeclaration::new(
         "recovery.response",
@@ -312,7 +348,7 @@ fn atomic_guest_group_crosses_registration_discovery_and_one_reply() -> Result<(
     )?
     .with_selectables(selectables)?;
 
-    let registration = build_group_registration(1, "recovery.response", &group, &default)?;
+    let registration = build_group_registration(1, "recovery.response", &guest_group)?;
     let registration = crucible_protocol::SelectableRegister::decode(&registration.encode()?)?;
     assert_eq!(registration.domain(), group_domain.canonical_bytes());
     assert_eq!(registration.default_value(), default.canonical_bytes());
@@ -329,12 +365,15 @@ fn atomic_guest_group_crosses_registration_discovery_and_one_reply() -> Result<(
         SelectionOrigin::Default,
     )?;
     let reply = selected_guest_reply(&pending, &discovery, &selection)?;
-    let result = request_group_selection(&request, &group, &mut DeliverReply(reply.encode()?))?;
-    let values = result.value().tuple().values();
+    let result =
+        request_group_selection(&request, &guest_group, &mut DeliverReply(reply.encode()?))?;
+    let values = result.values();
     assert_eq!(values.len(), 2);
     assert_eq!(
-        values.get(&member_ids["recovery.retry_limit"]),
-        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(3)))
+        values.get("recovery.retry_limit"),
+        Some(&crucible_protocol::ChoiceValue::Integer(
+            crucible_protocol::IntegerValue::Unsigned(3)
+        ))
     );
     assert_eq!(result.exchange().reply(), &reply);
     Ok(())

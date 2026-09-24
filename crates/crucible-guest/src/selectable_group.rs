@@ -1,35 +1,33 @@
 //! CLI for one atomic guest group registration or choice request.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error;
+use std::collections::BTreeMap;
 
-use crucible_campaign::{
-    AlternativeId, BooleanDomain, ChoiceDomain, ChoiceGroup, ChoiceValue, DiscreteAlternative,
-    DiscreteDomain, ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue,
-    SelectableId,
-};
 use crucible_guest::group::{build_group_registration, build_guest_group, request_group_selection};
 use crucible_guest::{
     GuestEmitterError, InstructionDoorbellTransport, SelectionRequest, emit_selectable_registration,
 };
+use crucible_protocol::{
+    AlternativeId, BooleanDomain, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+    ExactRational, GuestChoiceGroup, IntegerDomain, IntegerRepresentation, IntegerValue,
+};
 
 struct GroupSpec {
-    group: ChoiceGroup,
-    default: ChoiceValue,
-    member_ids: BTreeMap<String, SelectableId>,
+    group: GuestChoiceGroup,
+    member_names: Vec<String>,
 }
 
-pub(super) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(args: &[String]) -> Result<Vec<String>, GuestEmitterError> {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(usage("selectable group requires register-group or choose-group").into());
+        return Err(usage(
+            "selectable group requires register-group or choose-group",
+        ));
     };
     let is_request = verb == "choose-group";
     let minimum = if is_request { 7 } else { 6 };
     if rest.len() < minimum {
         return Err(usage(
             "group requires <sequence> <id> [instance] <node> <adapter> <version> <member-spec>...",
-        )
-        .into());
+        ));
     }
     let sequence = rest[0]
         .parse::<u64>()
@@ -47,22 +45,26 @@ pub(super) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut transport = InstructionDoorbellTransport::native()?;
 
     if let Some(instance) = instance {
-        let request = SelectionRequest::new(sequence, name, instance, None, 4096)?;
-        let selection = request_group_selection(&request, &spec.group, &mut transport)?;
-        for (member, id) in &spec.member_ids {
+        let request = SelectionRequest::new(sequence, name, instance, None, 4096)
+            .map_err(|error| usage(format!("invalid selection request: {error}")))?;
+        let selection = request_group_selection(&request, &spec.group, &mut transport)
+            .map_err(|error| transport_error(format!("group selection failed: {error}")))?;
+        let mut lines = Vec::new();
+        for member in &spec.member_names {
             let value = selection
-                .value()
-                .tuple()
                 .values()
-                .get(id)
+                .get(member)
                 .ok_or_else(|| usage("selected group tuple omitted a member"))?;
-            println!("{member}={}", display_group_value(value));
+            lines.push(format!("{member}={}", display_group_value(value)));
         }
+        Ok(lines)
     } else {
-        let registration = build_group_registration(sequence, name, &spec.group, &spec.default)?;
-        emit_selectable_registration(&registration, &mut transport)?;
+        let registration = build_group_registration(sequence, name, &spec.group)
+            .map_err(|error| usage(format!("group registration failed: {error}")))?;
+        emit_selectable_registration(&registration, &mut transport)
+            .map_err(|error| transport_error(format!("group registration failed: {error}")))?;
+        Ok(Vec::new())
     }
-    Ok(())
 }
 
 fn parse_group(
@@ -77,18 +79,13 @@ fn parse_group(
         .collect::<Result<Vec<_>, _>>()?;
     let names = members
         .iter()
-        .map(|(name, _, _)| name)
-        .collect::<std::collections::BTreeSet<_>>();
-    if names.len() != members.len() {
-        return Err(usage("group member names must be unique"));
-    }
-    let (group, default, member_ids) =
-        build_guest_group(node, adapter, version, members, BTreeSet::new())
-            .map_err(|error| usage(format!("invalid group: {error}")))?;
+        .map(|(name, _, _)| name.clone())
+        .collect::<Vec<_>>();
+    let group = build_guest_group(node, adapter, version, members)
+        .map_err(|error| usage(format!("invalid group: {error}")))?;
     Ok(GroupSpec {
         group,
-        default,
-        member_ids,
+        member_names: names,
     })
 }
 
@@ -161,7 +158,6 @@ fn display_group_value(value: &ChoiceValue) -> String {
         ChoiceValue::Discrete(value) => format!("discrete:{}", value.to_hex()),
         ChoiceValue::Integer(IntegerValue::Signed(value)) => format!("i64:{value}"),
         ChoiceValue::Integer(IntegerValue::Unsigned(value)) => format!("u64:{value}"),
-        ChoiceValue::Group(_) => String::from("invalid-nested-group"),
     }
 }
 
@@ -181,6 +177,12 @@ fn parse_u64(field: &str, value: &str) -> Result<u64, GuestEmitterError> {
 
 fn usage(message: impl Into<String>) -> GuestEmitterError {
     GuestEmitterError::Usage {
+        message: message.into(),
+    }
+}
+
+fn transport_error(message: impl Into<String>) -> GuestEmitterError {
+    GuestEmitterError::Transport {
         message: message.into(),
     }
 }

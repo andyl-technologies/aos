@@ -214,21 +214,28 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
         .map(|declaration| {
             (
                 declaration.name().to_owned(),
-                declaration.domain().clone(),
-                declaration.default().clone(),
+                crucible_protocol::ChoiceDomain::from_canonical_bytes(
+                    &declaration.domain().canonical_bytes(),
+                )
+                .expect("portable member domain"),
+                crucible_protocol::ChoiceValue::from_canonical_bytes(
+                    &declaration.default().canonical_bytes(),
+                )
+                .expect("portable member default"),
             )
         })
         .collect();
-    let (guest_group, guest_default, _) = crucible_guest::group::build_guest_group(
-        "router-a",
-        "envoy.recovery",
-        1,
-        guest_members,
-        BTreeSet::new(),
-    )
-    .expect("guest group matches campaign declaration");
-    assert_eq!(&guest_group, group.as_ref());
-    assert_eq!(&guest_default, response.default());
+    let guest_group =
+        crucible_guest::group::build_guest_group("router-a", "envoy.recovery", 1, guest_members)
+            .expect("guest group matches campaign declaration");
+    assert_eq!(
+        guest_group.domain_bytes(),
+        response.domain().canonical_bytes()
+    );
+    assert_eq!(
+        guest_group.default_bytes(),
+        response.default().canonical_bytes()
+    );
 
     let registration = crucible_protocol::SelectableRegister::new(
         1,

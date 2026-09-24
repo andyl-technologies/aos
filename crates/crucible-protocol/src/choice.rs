@@ -11,9 +11,12 @@ use std::str;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
+mod group;
+
+pub use group::GuestChoiceGroup;
+
 // The group-capable campaign codec uses v2 even for scalar domains. The L1
-// scalar helper must emit the same envelope; group tuples use the campaign
-// codec at the guest application boundary.
+// scalar and group helpers emit the same envelope at the guest boundary.
 const CHOICE_DOMAIN_SCHEMA_VERSION: u32 = 2;
 const MAX_CHOICE_DOMAIN_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DISCRETE_ALTERNATIVES: usize = 4096;
