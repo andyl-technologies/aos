@@ -256,11 +256,13 @@ must not be group- or world-writable, and the key must have no group or other
 permissions. The client requires TLS 1.3, HTTP/2, the configured server
 identity, and its client certificate.
 
-An authorized public operation read additionally requires
-`sandbox-capability-id` in the same directory. It is an exact canonical
-lowercase hyphenated UUID with no trailing newline, stored as a user-owned,
-single-link mode-0600 regular file. The value is sent as the
-`aos-capability-id` lookup header; it is not bearer authority. For example,
+An authorized public operation read requires `sandbox-capability-id` and
+`sandbox-capability-handle` in the same directory. The ID is an exact canonical
+lowercase hyphenated UUID with no trailing newline; the handle is exactly 64
+lowercase hexadecimal characters with no trailing newline. Both are user-owned,
+single-link mode-0600 regular files. The ID is sent as the `aos-capability-id`
+lookup header, while the separate holder handle is sent as
+`aos-capability-handle`. The ID alone does not authorize a call. For example,
 where the operation argument is its 16-byte lowercase hexadecimal identity:
 
 ```text
@@ -275,3 +277,14 @@ Without `--public-api`, the same `get --resource operation` command uses the
 root-only diagnostic socket and does not load a capability credential. These
 options select the registered public endpoint; they do not turn an admitted
 but unfinished effect path into a completed operation.
+
+The other `aos sandbox` read, mutation, and watch commands also require both
+protected capability files and `--public-api`. Mutations that create an
+operation return it by default. Where `--wait-timeout-ns` is available, a
+bounded wait reports a terminal operation or refreshes the affected resource
+through the public API. An `attach-exec` request additionally loads the
+execution-specific private key from the credential directory and uses the
+separately authorized OpenSSH data route. The command parser and public-client
+dispatch cover these routes. Deployed endpoint qualification of each route,
+operation waits, watch output, and the OpenSSH data path remains open in
+`SBX-CLI-01`.

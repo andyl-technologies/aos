@@ -1,4 +1,4 @@
-//! Fully typed parser grammar for the dormant RFC-0021 sandbox surface.
+//! Fully typed parser grammar for the RFC-0021 public sandbox surface.
 
 use std::path::PathBuf;
 use std::str::FromStr;
