@@ -5,7 +5,7 @@
 //! or policy-publication path consumes it.
 //!
 //! ```text
-//! AOSCOR01 | version:u16 | reserved:u16 | signer-generation:u64 |
+//! AOSCRB01 | version:u16 | reserved:u16 | signer-generation:u64 |
 //! root-nonce:16 | held-cut:32 | root-dev:u64 | root-inode:u64 |
 //! root-uid:u32 | root-mode:u32 | lock-dev:u64 | lock-inode:u64 |
 //! manifest-generation:u64 | manifest-digest:32 | limits-digest:32 |
@@ -22,7 +22,7 @@ use thiserror::Error;
 
 use super::effect_owner::{CacheOwnerErrorV1, CacheOwnerLimitsV1};
 
-const MAGIC: &[u8; 8] = b"AOSCOR01";
+const MAGIC: &[u8; 8] = b"AOSCRB01";
 const VERSION: u16 = 1;
 const BODY_BYTES: usize = 180;
 const RECEIPT_BYTES: usize = BODY_BYTES + 64;
@@ -98,6 +98,12 @@ impl PinnedCacheOwnerReadbackSignerV1 {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Returns the role-specific public key for protected root pin admission.
+    #[must_use]
+    pub const fn verifying_key(&self) -> &VerifyingKey {
+        &self.key
     }
 }
 
@@ -445,6 +451,13 @@ mod tests {
         let mut wrong_role = credential;
         wrong_role[..8].copy_from_slice(b"AOSPPK01");
         assert!(PinnedCacheOwnerReadbackSignerV1::decode(&wrong_role).is_err());
+
+        let mut old_magic = packet;
+        old_magic[..8].copy_from_slice(b"AOSCOR01");
+        assert!(matches!(
+            verify_closed_cache_owner_readback_v1(&old_magic, &pinned, challenge(), 811),
+            Err(CacheOwnerReadbackErrorV1::Stale)
+        ));
     }
 
     #[test]

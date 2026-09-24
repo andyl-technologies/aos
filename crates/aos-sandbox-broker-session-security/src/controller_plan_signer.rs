@@ -49,6 +49,13 @@ pub(crate) enum ControllerBrokerPlanSignerError {
 }
 
 impl ControllerBrokerPlanSignerV1 {
+    /// Returns the broker-plan public key for separate-purpose key isolation.
+    pub(crate) fn verifying_key_bytes(&self) -> [u8; 32] {
+        SigningKey::from_bytes(&self.seed)
+            .verifying_key()
+            .to_bytes()
+    }
+
     /// Loads the independent public plan-verification anchor for attachment effects.
     ///
     /// The revocation scope is a separate protected Host authority credential,

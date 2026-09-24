@@ -139,7 +139,7 @@ pub fn admit_fixed_policy_signer_pins_v1(
     )
 }
 
-fn admit_policy_signer_pins_in_journal_v1(
+pub(super) fn admit_policy_signer_pins_in_journal_v1(
     journal: &mut Journal,
     deployment_generation: u64,
     deployment_key: &VerifyingKey,

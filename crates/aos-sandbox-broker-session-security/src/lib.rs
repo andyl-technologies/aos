@@ -51,6 +51,7 @@ mod cache_public_pin;
 mod cache_source_membership;
 mod controller_authority_effect;
 mod controller_attach_credentials;
+mod controller_cache_readback_credential;
 mod controller_guest_root_credentials;
 mod controller_attach_exchange;
 mod controller_argument_exchange;

@@ -86,8 +86,13 @@ FDs, but cannot independently reopen or stat the current `.owner.lock` and
 the sender. Root therefore cannot prove the passed lock and manifest are the
 current named files, or replay them against independently current Cache limits.
 No Cache evidence escrow or new policy socket version is admitted on this
-basis. A future receiver needs protected name/currentness access and held
-Controller/source heads without reversing the owner lock order.
+basis. RFC-0021 §17 now also permits a distinct Cache-only signer to attest
+named currentness while holding the physical owner flock. That delegated
+route still needs a root-created challenge, independently current protected
+heads and quota envelope, and a recoverable all-owner CAS/handoff without
+reversing the owner lock order. The Cache owner shares the Controller UID;
+its signer cannot claim stronger process isolation. Public Create remains
+closed.
 
 V1 signed project and deployment layers force cache-domain and revocation
 inputs to `inherit`. The protected `AOSPPH02`/`AOSPPL02` project source adds an

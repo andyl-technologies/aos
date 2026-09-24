@@ -66,6 +66,7 @@ use rustix::net::{
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
+use crate::controller_cache_readback_credential::validate_process_cache_readback_credentials_v1;
 use crate::controller_guest_root_credentials::load_guest_root_template_pins_optional;
 use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
@@ -2144,6 +2145,12 @@ impl ProductionEffectExecutor {
     ) -> Result<Self, ControllerRuntimeError> {
         let broker_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
             .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
+        validate_process_cache_readback_credentials_v1(
+            broker_plan_signer
+                .as_ref()
+                .map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+        )
+        .map_err(|_| ControllerRuntimeError::InvalidCacheReadbackCredential)?;
         let (mut source_domains, _) =
             ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
@@ -5564,6 +5571,9 @@ pub enum ControllerRuntimeError {
     /// The optional cache Replay credential is unsafe or malformed.
     #[error("protected controller cache Replay bundle is invalid")]
     InvalidCacheReplayBundle,
+    /// The optional Cache readback seed and role pin are unsafe or inconsistent.
+    #[error("protected Controller Cache readback credentials are invalid")]
+    InvalidCacheReadbackCredential,
     /// Protected cache Replay source import failed.
     #[error("protected controller cache Replay source failed: {0}")]
     CacheReplaySource(aos_sandbox::cache_residency::CacheReplayControllerBootstrapErrorV1),

@@ -54,6 +54,10 @@
   cacheReplayCredentials =
     lib.optional (cfg.credentials.cacheReplayBundle != null)
     "cache-replay-bundle:/run/credentials/@system/${cfg.credentials.cacheReplayBundle}";
+  cacheReadbackCredentials = lib.optionals (cfg.credentials.cacheOwnerReadbackSigningKey != null && cfg.credentials.cacheOwnerReadbackPublicKey != null) [
+    "cache-owner-readback-signing-key:/run/credentials/@system/${cfg.credentials.cacheOwnerReadbackSigningKey}"
+    "cache-owner-readback-public-key:/run/credentials/@system/${cfg.credentials.cacheOwnerReadbackPublicKey}"
+  ];
   guestRootTemplateCredentials = [
     "guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"
     "guest-root-tree-digest-v1:${pkgs.aos-sandbox-guest-root-template}/root-tree-digest"
@@ -173,6 +177,16 @@ in {
           default = null;
           description = "Optional protected canonical cache Replay bundle; required for clean cache bootstrap unless the controller source journal was provisioned earlier.";
         };
+        cacheOwnerReadbackSigningKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional separate-purpose 32-byte Cache owner readback signing seed; no Create publication consumes it.";
+        };
+        cacheOwnerReadbackPublicKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional matching 80-byte AOSCPK01 Cache readback pin for local seed verification.";
+        };
         publisherServiceScope = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
@@ -230,6 +244,20 @@ in {
         {
           assertion = cfg.credentials.nodeId != null;
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
+        }
+        {
+          assertion =
+            (cfg.credentials.cacheOwnerReadbackSigningKey == null)
+            == (cfg.credentials.cacheOwnerReadbackPublicKey == null);
+          message = "Cache owner readback signing seed and role-specific public pin must be provisioned together";
+        }
+        {
+          assertion =
+            cfg.credentials.cacheOwnerReadbackSigningKey == null
+            || (config.aos.sandbox.policyAuthority.enable
+              && config.aos.sandbox.policyAuthority.credentials.cacheOwnerReadbackPublicKey
+              == cfg.credentials.cacheOwnerReadbackPublicKey);
+          message = "Cache owner readback requires the policy authority to load the same fixed public pin credential";
         }
         {
           assertion = (cfg.credentials.operatorRecoveryControllerKey == null) == (cfg.credentials.operatorRecoveryStorageOwnerPublicKey == null);
@@ -407,6 +435,7 @@ in {
         LoadCredential =
           nodeCredentials
           ++ cacheReplayCredentials
+          ++ cacheReadbackCredentials
           ++ guestRootTemplateCredentials
           ++ brokerPlanCredentials
           ++ mountPlanCredentials

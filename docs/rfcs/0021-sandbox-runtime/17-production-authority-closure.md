@@ -40,6 +40,19 @@ are untrusted historical evidence. They cannot authorize publication or
 effects, and an owner encountering one must fail closed until explicit
 migration or reissuance under the new fence.
 
+For the DAC-protected physical Cache names, root may instead consume a
+separately provisioned Cache-only signed currentness readback from the physical
+owner. This delegation is limited to named Cache root, lock, and manifest
+currentness; it does not delegate Controller, source-domain, cache-domain,
+revocation, compiler, or root publication authority. Root must pin the Cache
+signer independently, create a fresh challenge under its writer, and verify
+the response while the physical Cache flock and all other owners remain held
+in canonical order through the root compare-and-swap and recoverable effect
+handoff. The receipt must bind exact named identities, durable head, current
+quota envelope, revocation, and the all-owner cut. A signature or persisted
+pin alone never opens Create. The current Cache owner shares the Controller
+UID, so this is delegated same-UID trust, not process isolation.
+
 ## Execution admission and observation
 
 `CreateExecution` admission commits the accepted command, holder-proven public

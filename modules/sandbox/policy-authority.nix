@@ -22,7 +22,10 @@
     projectHeadPacketV2 = "project-head-v2.packet";
     projectLayerV2 = "project-layer-v2.json";
   };
-  credentialFiles = requiredCredentials // projectCredentials;
+  cacheCredentials = {
+    cacheOwnerReadbackPublicKey = "cache-owner-readback-public-key";
+  };
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials;
 in {
   options.aos.sandbox.policyAuthority = {
     enable = lib.mkEnableOption "the root-owned signed deployment policy input authority";
@@ -43,6 +46,8 @@ in {
             "Externally provisioned 80-byte AOSPDK01 deployment signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
           else if option == "projectPublicKey" then
             "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "cacheOwnerReadbackPublicKey" then
+            "Optional 80-byte AOSCPK01 Cache-only signer pin. Root persists exact replay but does not accept Cache readbacks or publish Create."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2" then
             "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
           else

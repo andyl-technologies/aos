@@ -19,11 +19,11 @@ use std::{
 
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    PolicyDeploymentInputsV1, admit_fixed_policy_deployment_head_v1,
-    admit_fixed_policy_signer_pins_v1, decode_policy_deployment_sources_v1,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    verify_signed_project_policy_source_v2, with_fixed_current_policy_head_lease_v1,
-    with_fixed_explicit_closed_policy_binding_session_v2,
+    PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
+    with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
@@ -159,6 +159,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         &inputs,
         deployment_signer.verifying_key(),
         now_unix_seconds,
+    )?;
+    let cache_pin = read_optional_cache_pin(root)?;
+    admit_fixed_cache_readback_pin_v1(
+        cache_pin.as_deref(),
+        deployment_signer.generation(),
+        deployment_signer.verifying_key(),
+        project_signer.generation(),
+        project_signer.verifying_key(),
     )?;
 
     let socket_path = Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2);
@@ -608,6 +616,14 @@ fn read_bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+fn read_optional_cache_pin(root: &Path) -> io::Result<Option<Vec<u8>>> {
+    match read_bounded(&root.join("cache-owner-readback-public-key"), 80) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn read_optional_explicit_project(root: &Path) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {

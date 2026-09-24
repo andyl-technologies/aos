@@ -10,6 +10,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use aos_sandbox::cache_residency::encode_cache_owner_readback_signer_credential_v1;
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PolicySignerRoleV1, encode_policy_signer_credential_v1,
 };
@@ -63,7 +64,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "public key length").into());
     }
     let verifying_key = VerifyingKey::from_bytes(&key_bytes)?;
-    let credential = encode_policy_signer_credential_v1(role, generation, &verifying_key)?;
+    let credential = encode_pin(role, generation, &verifying_key)?;
 
     let mut output = OpenOptions::new()
         .write(true)
@@ -80,10 +81,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_role(value: &str) -> Option<PolicySignerRoleV1> {
+fn encode_pin(
+    role: PinRole,
+    generation: u64,
+    verifying_key: &VerifyingKey,
+) -> Result<[u8; 80], Box<dyn std::error::Error>> {
+    Ok(match role {
+        PinRole::Policy(role) => {
+            encode_policy_signer_credential_v1(role, generation, verifying_key)?
+        }
+        PinRole::Cache => {
+            encode_cache_owner_readback_signer_credential_v1(generation, verifying_key)?
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PinRole {
+    Policy(PolicySignerRoleV1),
+    Cache,
+}
+
+fn parse_role(value: &str) -> Option<PinRole> {
     match value {
-        "deployment" => Some(PolicySignerRoleV1::Deployment),
-        "project" => Some(PolicySignerRoleV1::Project),
+        "deployment" => Some(PinRole::Policy(PolicySignerRoleV1::Deployment)),
+        "project" => Some(PinRole::Policy(PolicySignerRoleV1::Project)),
+        "cache" => Some(PinRole::Cache),
         _ => None,
     }
 }
@@ -91,21 +114,39 @@ fn parse_role(value: &str) -> Option<PolicySignerRoleV1> {
 fn usage() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "usage: aos-sandbox-policy-key-pin deployment|project GENERATION PUBLIC_KEY_32B CREDENTIAL_OUT",
+        "usage: aos-sandbox-policy-key-pin deployment|project|cache GENERATION PUBLIC_KEY_32B CREDENTIAL_OUT",
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
+    use aos_sandbox_broker_session_security::policy_signer_credential::PinnedPolicySignerV1;
+    use ed25519_dalek::SigningKey;
+
     use super::*;
 
     #[test]
     fn role_parser_rejects_unscoped_signers() {
         assert_eq!(
             parse_role("deployment"),
-            Some(PolicySignerRoleV1::Deployment)
+            Some(PinRole::Policy(PolicySignerRoleV1::Deployment))
         );
-        assert_eq!(parse_role("project"), Some(PolicySignerRoleV1::Project));
+        assert_eq!(
+            parse_role("project"),
+            Some(PinRole::Policy(PolicySignerRoleV1::Project))
+        );
+        assert_eq!(parse_role("cache"), Some(PinRole::Cache));
         assert_eq!(parse_role("root"), None);
+    }
+
+    #[test]
+    fn cache_pin_cli_encoder_is_role_distinct() {
+        let key = SigningKey::from_bytes(&[13; 32]).verifying_key();
+        let credential = encode_pin(PinRole::Cache, 7, &key).expect("Cache pin");
+        let cache = PinnedCacheOwnerReadbackSignerV1::decode(&credential).expect("Cache role");
+        assert_eq!(cache.generation(), 7);
+        assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &credential).is_err());
+        assert!(PinnedPolicySignerV1::decode(PolicySignerRoleV1::Deployment, &credential).is_err());
     }
 }
