@@ -66,6 +66,25 @@ struct BackendBoundaryEvidence {
     observations: Vec<ObservableEvent>,
 }
 
+fn observation_kind(payload: &ObservableEventPayload) -> &'static str {
+    match payload {
+        ObservableEventPayload::NetworkDelivered { .. } => "network-delivered",
+        ObservableEventPayload::ConsoleOutput { .. } => "console-output",
+        ObservableEventPayload::CoverageBlock { .. } => "coverage-block",
+        ObservableEventPayload::CoverageMarker { .. } => "coverage-marker",
+        ObservableEventPayload::AssertionProximity { .. } => "assertion-proximity",
+        ObservableEventPayload::MemorySample { .. } => "memory-sample",
+        ObservableEventPayload::IoCompletion { .. } => "io-completion",
+        ObservableEventPayload::NodeState { .. } => "node-state",
+        ObservableEventPayload::AssertionStateChanged { .. } => "assertion-state-changed",
+        ObservableEventPayload::AssertionEvaluated { .. } => "assertion-evaluated",
+        ObservableEventPayload::GuestMarker { .. } => "guest-marker",
+        ObservableEventPayload::GuestMeasurement { .. } => "guest-measurement",
+        ObservableEventPayload::GuestSemanticMarker { .. } => "guest-semantic-marker",
+        ObservableEventPayload::GuestAssertionMarker { .. } => "guest-assertion-marker",
+    }
+}
+
 impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
     /// Builds an adapter from an authoritative quantum loop and backend.
     #[must_use]
@@ -942,18 +961,18 @@ where
                 .pending_observations
                 .drain(..committed)
                 .collect::<Vec<_>>();
-            if !self.pending_observations.is_empty() {
-                let first = self
-                    .pending_observations
-                    .iter()
-                    .map(ObservableEvent::at)
-                    .min_by_key(|at| at.ticks)
-                    .unwrap_or_default();
+            if let Some(first) = self.pending_observations.first() {
+                let source = first
+                    .backend_node()
+                    .map(|node| node.name.as_str())
+                    .unwrap_or("scheduler");
                 Err(BackendError::Rejected {
                     message: format!(
-                        "{} live-backend observations remain uncommitted at shutdown; first timestamp is {}",
+                        "{} live-backend observations remain uncommitted at shutdown; first timestamp is {} (kind {}, source `{source}`, committed frontier {})",
                         self.pending_observations.len(),
-                        first.ticks
+                        first.at().ticks,
+                        observation_kind(first.payload()),
+                        self.committed_frontier.ticks,
                     ),
                 })
             } else if observations.is_empty() {
