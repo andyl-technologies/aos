@@ -20,7 +20,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::CacheResidencyProtectedOwnerV1;
+use crate::cache_residency::release_fixed_closed_policy_cache_hold_after_root_readback_v1;
 use crate::journal::{
     CachePolicyHoldV1, ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction,
     ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace, SourceDomainPolicyHoldV1,
@@ -1060,22 +1060,26 @@ fn release_source_hold_against_root_authority(
 
 /// Releases an exact protected Cache freeze during privileged offline recovery.
 ///
-/// The Cache owner retains its state and manifest locks, then its hold lock,
-/// before opening root custody. Root must show that the proposal did not
-/// commit at this epoch, or that its exact inert hold was durably retired.
+/// The release-only Cache verifier retains its clock, manifest, and state
+/// locks, then its hold lock, before opening root custody. It checks complete
+/// immutable history even after Replay authority expires; it cannot mint a
+/// live Cache owner or authorize normal mutation. Root must show that the
+/// proposal did not commit at this epoch, or that its exact inert hold was
+/// durably retired.
 /// No current daemon has both writable Cache custody and root journal access;
 /// this helper is not a live Q04 recovery exchange. It does not release
-/// Controller or source-domain custody or authorize an effect.
+/// Controller or source-domain custody or authorize an effect. `owner_uid`
+/// must be deployment-pinned by the privileged offline caller.
 ///
 /// # Errors
 ///
-/// Rejects stale Cache quota/domain/head, a different root binding or epoch,
-/// unresolved root custody, or an ambiguous durable release.
+/// Rejects a root UID, stale Cache quota/domain/head, a different root binding
+/// or epoch, unresolved root custody, or an ambiguous durable release.
 pub fn release_fixed_closed_policy_cache_hold_v1(
-    cache: &mut CacheResidencyProtectedOwnerV1,
+    owner_uid: u32,
     expected: CachePolicyHoldV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
-    cache.release_closed_policy_hold_after_root_readback_v1(expected, || {
+    release_fixed_closed_policy_cache_hold_after_root_readback_v1(owner_uid, expected, || {
         let (mut root, _) = Journal::open_protected_at(
             Path::new(PROTECTED_POLICY_ROOT),
             POLICY_AUTHORITY_JOURNAL,

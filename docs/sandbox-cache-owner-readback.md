@@ -64,6 +64,10 @@ creates a genesis record before any Cache journal history, and an absent hold
 journal alongside existing history fails closed. An exact offline root readback
 can retire the hold only when the proposal never committed at that epoch or its
 matching inert root hold was durably released.
+Offline retirement replays the immutable Cache partition and quota under the
+clock, authority, and state locks, comparing the exact held head before root
+readback. It can do so after the historical Replay scope expires, but it does
+not renew that scope or make normal Cache mutation/currentness valid again.
 
 This remains a split-authority cut. The Controller-owned Cache writer can
 release its hold, but cannot read root custody; cap-empty policy-authorityd can

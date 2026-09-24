@@ -555,6 +555,80 @@ impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV
 }
 
 impl CacheResidencyReplayValidatorV1 {
+    /// Builds a historical replay verifier only for exact closed-hold retirement.
+    ///
+    /// Expiry cannot erase immutable Cache history. Unlike the live authority
+    /// constructor, this does not produce a protected owner or effect session;
+    /// callers must retain the journal locks and consume the replay locally.
+    fn for_closed_policy_historical_replay(
+        journal: &mut Journal,
+        owner_scope: ObjectDigest,
+        maximum_record_bytes: usize,
+        evidence: Vec<CacheResidencyReplayPartitionEvidenceV1>,
+        limits: CacheRecoveryLimitsV1,
+    ) -> Result<Self, CacheResidencyProtectedJournalErrorV1> {
+        if owner_scope.as_bytes() == &[0; 32] || evidence.is_empty() {
+            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+        }
+        let limits = limits
+            .validate()
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .map_err(ProtectedDomainJournalErrorV1::from)?;
+        let owner = CacheAuthorityOwner::new(&authority, owner_scope, maximum_record_bytes)
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let mut partitions = BTreeMap::new();
+        for item in evidence {
+            if item.purpose != CacheAuthorityPurposeV1::Replay
+                || item.scope.partition() != item.partition.digest()
+                || item.record_key.is_empty()
+            {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            let capability = owner
+                .verify_current_record(item.purpose, item.scope, &item.record_key)
+                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+            CacheRecoveryInventoryV1::from_authority_session(
+                item.partition,
+                &item.typed_checkpoint,
+                item.prior_typed_checkpoint.as_deref(),
+                item.floor,
+                std::iter::empty(),
+                limits,
+                item.scope,
+                capability.record_digest(),
+            )
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+            let session = CacheResidencyAuthoritySessionPartitionV1 {
+                scope: item.scope,
+                record_digest: capability.record_digest(),
+                evidence: item,
+            };
+            if partitions
+                .insert(session.evidence.partition.digest(), session)
+                .is_some()
+            {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+        }
+        let effect_observations = authority
+            .records()
+            .map_err(ProtectedDomainJournalErrorV1::from)?
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX))
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        Self::new(
+            Arc::new(CacheResidencyAuthoritySessionV1 {
+                owner_scope,
+                partitions,
+                effect_observations,
+            }),
+            limits,
+        )
+    }
+
     /// Constructs the sole core-owned replay callback from protected evidence.
     ///
     /// # Errors
@@ -650,6 +724,30 @@ impl CacheResidencyReplayValidatorV1 {
             evidence,
         )
     }
+}
+
+/// Replays immutable Cache history without exporting expired Replay authority.
+///
+/// This function never returns the historical validator or a journal claim;
+/// its caller may compare the resulting inventory only for exact hold release.
+pub(crate) fn replay_closed_policy_historical_inventories(
+    authority_journal: &mut Journal,
+    state_journal: &mut Journal,
+    owner_scope: ObjectDigest,
+    maximum_record_bytes: usize,
+    evidence: Vec<CacheResidencyReplayPartitionEvidenceV1>,
+    limits: CacheRecoveryLimitsV1,
+) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
+    let validator = CacheResidencyReplayValidatorV1::for_closed_policy_historical_replay(
+        authority_journal,
+        owner_scope,
+        maximum_record_bytes,
+        evidence,
+        limits,
+    )?;
+    let projection =
+        CacheResidencyProtectedJournalV1::claim(state_journal, validator.clone())?.replay()?;
+    reconstruct_cache_history(projection.records(), &validator)
 }
 
 impl ProtectedDomainSchemaV1 for CacheResidencyProtectedJournalSchemaV1 {

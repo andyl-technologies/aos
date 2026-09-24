@@ -126,6 +126,7 @@ pub(crate) use protected_journal::{
 pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
 pub(crate) use protected_owner::{
     CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
+    release_fixed_closed_policy_cache_hold_after_root_readback_v1,
 };
 pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,

@@ -29,6 +29,7 @@ use super::protected_journal::{
     CacheResidencyCurrentTimeAuthorityV1, CacheResidencyReplayPartitionEvidenceV1,
     ProtectedCacheResidencyReplayAuthorityV1, decode_partition_descriptor,
     encode_partition_descriptor, reconstruct_cache_history,
+    replay_closed_policy_historical_inventories,
 };
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
@@ -82,7 +83,15 @@ fn open_cache_journal(
 ) -> Result<(Journal, RecoveryReport), crate::journal::JournalError> {
     reject_legacy_cache_journals()?;
     Journal::initialize_cache_policy_hold_at(root, owner_uid)?;
-    let (mut journal, report) = Journal::open_protected_at_for_uid(root, name, limits, owner_uid)?;
+    #[cfg(test)]
+    let opened = if root == Path::new(PROTECTED_CACHE_ROOT) {
+        Journal::open_protected_at_for_uid(root, name, limits, owner_uid)
+    } else {
+        Journal::open_protected_at_uid(root, name, limits, owner_uid)
+    };
+    #[cfg(not(test))]
+    let opened = Journal::open_protected_at_for_uid(root, name, limits, owner_uid);
+    let (mut journal, report) = opened?;
     if matches!(name, CACHE_STATE_JOURNAL | CACHE_AUTHORITY_JOURNAL) {
         journal.enable_cache_policy_hold_gate(root, owner_uid)?;
     }
@@ -174,6 +183,47 @@ fn unique_project_physical_cache_head(
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
     Ok(head)
+}
+
+fn select_project_physical_cache_head(
+    project: ProjectId,
+    inventories: Vec<CacheRecoveryInventoryV1>,
+) -> Result<CurrentProjectPhysicalCacheHeadV1, CacheResidencyProtectedJournalErrorV1> {
+    let mut candidates = Vec::new();
+    for inventory in inventories {
+        let partition = inventory.global.node_quota.partition;
+        let disclosure = partition.disclosure();
+        if disclosure.kind() != CacheDomainKind::Project
+            || disclosure.domain_id().as_bytes() != project.as_bytes()
+        {
+            continue;
+        }
+        if inventory.authority_poisoned
+            || inventory.global.poison.is_some()
+            || !inventory.work.is_empty()
+            || inventory
+                .global
+                .project_quotas
+                .iter()
+                .filter(|quota| quota.project == project && quota.partition == partition)
+                .count()
+                != 1
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+
+        let head = project_physical_cache_head_digest(
+            project,
+            partition,
+            inventory.protected_replay_binding(),
+        );
+        candidates.push(CurrentProjectPhysicalCacheHeadV1 {
+            project,
+            partition,
+            head,
+        });
+    }
+    unique_project_physical_cache_head(candidates)
 }
 
 fn project_physical_cache_head_digest(
@@ -1058,41 +1108,7 @@ impl CacheResidencyProtectedOwnerV1 {
         }
 
         self.with_reconstructed_partitions(|inventories| {
-            let mut candidates = Vec::new();
-            for inventory in inventories {
-                let partition = inventory.global.node_quota.partition;
-                let disclosure = partition.disclosure();
-                if disclosure.kind() != CacheDomainKind::Project
-                    || disclosure.domain_id().as_bytes() != project.as_bytes()
-                {
-                    continue;
-                }
-                if inventory.authority_poisoned
-                    || inventory.global.poison.is_some()
-                    || !inventory.work.is_empty()
-                    || inventory
-                        .global
-                        .project_quotas
-                        .iter()
-                        .filter(|quota| quota.project == project && quota.partition == partition)
-                        .count()
-                        != 1
-                {
-                    return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-                }
-
-                let head = project_physical_cache_head_digest(
-                    project,
-                    partition,
-                    inventory.protected_replay_binding(),
-                );
-                candidates.push(CurrentProjectPhysicalCacheHeadV1 {
-                    project,
-                    partition,
-                    head,
-                });
-            }
-            let selected = unique_project_physical_cache_head(candidates)?;
+            let selected = select_project_physical_cache_head(project, inventories)?;
             Ok(action(selected))
         })
     }
@@ -1149,35 +1165,6 @@ impl CacheResidencyProtectedOwnerV1 {
             Path::new(PROTECTED_CACHE_ROOT),
             self.owner_uid,
         )?)
-    }
-
-    /// Retires an exact Cache freeze only while an independent root check runs.
-    ///
-    /// The caller's root check executes after this owner retains all Cache
-    /// writer locks and the hold-journal lock. A lost or uncertain root reply
-    /// leaves the hold durable for cold recovery.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a different protected Cache head, missing held custody, failed
-    /// root readback, or failed durable release.
-    pub(crate) fn release_closed_policy_hold_after_root_readback_v1(
-        &mut self,
-        expected: CachePolicyHoldV1,
-        verify_root: impl FnOnce() -> Result<(), CacheResidencyProtectedJournalErrorV1>,
-    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-        let current = self.while_current_project_physical_cache(expected.project(), |head| head)?;
-        if current.partition().digest() != expected.partition()
-            || current.head() != expected.cache_head()
-        {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-        }
-        Journal::release_cache_policy_hold_if_at(
-            Path::new(PROTECTED_CACHE_ROOT),
-            self.owner_uid,
-            expected,
-            verify_root,
-        )
     }
 
     // Keep selection inside the protected claim so its errors retain priority
@@ -2006,6 +1993,97 @@ impl CacheResidencyProtectedOwnerV1 {
     }
 }
 
+/// Retires one closed Cache hold using immutable historical replay only.
+///
+/// This one-shot path retains clock, authority, and state writer locks before
+/// taking the hold lock and checking root. It does not construct a live Cache
+/// owner, renew expired Replay authority, or expose a mutation capability.
+/// `owner_uid` must come from the offline deployment identity, not a request.
+///
+/// # Errors
+///
+/// Rejects malformed or mismatched Cache history, missing held custody, failed
+/// root readback, or failed durable release.
+pub(crate) fn release_fixed_closed_policy_cache_hold_after_root_readback_v1(
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    verify_root: impl FnOnce() -> Result<(), CacheResidencyProtectedJournalErrorV1>,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    if owner_uid == 0 {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    reject_legacy_cache_journals()?;
+    release_closed_policy_cache_hold_at(
+        Path::new(PROTECTED_CACHE_ROOT),
+        owner_uid,
+        expected,
+        verify_root,
+    )
+}
+
+fn release_closed_policy_cache_hold_at(
+    root: &Path,
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    verify_root: impl FnOnce() -> Result<(), CacheResidencyProtectedJournalErrorV1>,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    // The clock lock is retained for the ordinary owner's lock order, but
+    // wall-clock expiry is deliberately not promoted into release authority.
+    let (mut clock, _) = open_cache_journal(
+        root,
+        CACHE_CLOCK_JOURNAL,
+        cache_clock_journal_limits(),
+        owner_uid,
+    )?;
+    {
+        let clock_authority = clock.claim_protected_authority(RecordNamespace::DesiredState)?;
+        let mut records = clock_authority.records()?;
+        let Some((key, value)) = records.next() else {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        };
+        let floor = decode_cache_clock_floor(value)?;
+        if key != CACHE_CLOCK_KEY
+            || floor.owner_scope != cache_owner_scope()
+            || records.next().is_some()
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+    }
+    let (mut authority, _) = open_cache_journal(
+        root,
+        CACHE_AUTHORITY_JOURNAL,
+        cache_authority_journal_limits(),
+        owner_uid,
+    )?;
+    let evidence = recover_cache_replay_evidence(
+        &mut authority,
+        cache_owner_scope(),
+        CacheRecoveryLimitsV1::default(),
+    )?;
+    let (mut state, _) = open_cache_journal(
+        root,
+        CACHE_STATE_JOURNAL,
+        cache_state_journal_limits(),
+        owner_uid,
+    )?;
+    let inventories = replay_closed_policy_historical_inventories(
+        &mut authority,
+        &mut state,
+        cache_owner_scope(),
+        MAXIMUM_AUTHORITY_RECORD_BYTES,
+        evidence,
+        CacheRecoveryLimitsV1::default(),
+    )?;
+    let current = select_project_physical_cache_head(expected.project(), inventories)?;
+    if current.partition().digest() != expected.partition()
+        || current.head() != expected.cache_head()
+    {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+
+    Journal::release_cache_policy_hold_if_at(root, owner_uid, expected, verify_root)
+}
+
 fn cache_controller_successors(
     records: Vec<CacheResidencyControllerRecordV1<'_>>,
     validator: &CacheResidencyReplayValidatorV1,
@@ -2535,13 +2613,188 @@ fn read_array<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 
     use aos_sandbox_core::CacheDomainId;
     use aos_sandbox_core::model::CacheDomain;
 
     use super::*;
-    use crate::cache_residency::{CacheNodeIdV1, ProtectedBackingIdentityV1};
+    use crate::cache_residency::{
+        BackingIsolationV1, CacheIsolationPolicyV1, CacheNodeIdV1, NodeCacheQuotaV1,
+        ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,
+        encode_cache_replay_genesis_manifest_v1,
+    };
+
+    struct ExpiredReplayTime;
+
+    impl CacheResidencyCurrentTimeAuthorityV1 for ExpiredReplayTime {
+        fn current_unix_seconds(&self) -> Result<u64, CacheResidencyProtectedJournalErrorV1> {
+            Ok(2)
+        }
+    }
+
+    fn expired_cache_hold_fixture() -> (tempfile::TempDir, u32, CachePolicyHoldV1) {
+        let directory = tempfile::tempdir().expect("protected Cache fixture");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private Cache directory");
+        let uid = fs::metadata(directory.path())
+            .expect("Cache metadata")
+            .uid();
+        let project = ProjectId::from_bytes([1; 16]);
+        let node = CacheNodeIdV1::from_bytes([2; 16]).expect("node");
+        let backing = ProtectedBackingIdentityV1::new(
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .expect("backing");
+        let domain = CacheDomain::new(
+            CacheDomainKind::Project,
+            CacheDomainId::from_bytes(*project.as_bytes()),
+        );
+        let isolation = CacheIsolationPolicyV1 {
+            backing: BackingIsolationV1::SeparateFilesystemOrDataset,
+            residency: ResidencyEnforcementV1::HardIsolatedResidency,
+            reflink_or_clone: false,
+            block_deduplication: false,
+            shared_page_cache: false,
+            fetch_coalescing: false,
+            strict: true,
+            revision: 1,
+        };
+        let partition =
+            PhysicalPartitionId::from_policy(node, backing, domain, isolation).expect("partition");
+        let node_quota = NodeCacheQuotaV1 {
+            partition,
+            maximum_physical_bytes: 1024 * 1024,
+            maximum_resident_objects: 16,
+            maximum_logical_pins: 16,
+            maximum_source_retentions: 16,
+            maximum_kernel_references: 16,
+            maximum_backing_registrations: 16,
+            recovery_reserve_bytes: 4096,
+            high_water_bytes: 768 * 1024,
+            low_water_bytes: 512 * 1024,
+        };
+        let project_quota = ProjectCacheQuotaV1 {
+            project,
+            partition,
+            maximum_charged_bytes: 1024 * 1024,
+            maximum_logical_pins: 16,
+            maximum_source_retentions: 16,
+            maximum_kernel_references: 16,
+            maximum_backing_registrations: 16,
+        };
+        let manifest =
+            encode_cache_replay_genesis_manifest_v1(partition, node_quota, vec![project_quota], 1)
+                .expect("expired canonical manifest");
+        let evidence = decode_cache_replay_manifest(&manifest, CacheRecoveryLimitsV1::default())
+            .expect("decoded Replay evidence");
+
+        let (mut clock, _) = open_cache_journal(
+            directory.path(),
+            CACHE_CLOCK_JOURNAL,
+            cache_clock_journal_limits(),
+            uid,
+        )
+        .expect("clock journal");
+        clock
+            .commit(
+                &JournalTransaction::new(
+                    [7; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        CACHE_CLOCK_KEY.to_vec(),
+                        encode_cache_clock_floor(CacheClockFloorV1 {
+                            owner_scope: cache_owner_scope(),
+                            revision: 1,
+                            observed_unix_seconds: 1,
+                            predecessor_unix_seconds: 0,
+                        }),
+                    )],
+                )
+                .expect("clock transaction"),
+            )
+            .expect("clock floor");
+        drop(clock);
+
+        let (mut authority, _) = open_cache_journal(
+            directory.path(),
+            CACHE_AUTHORITY_JOURNAL,
+            cache_authority_journal_limits(),
+            uid,
+        )
+        .expect("authority journal");
+        let canonical = {
+            let claimed = authority
+                .claim_protected_authority(RecordNamespace::DesiredState)
+                .expect("protected authority");
+            CacheAuthorityOwner::new(
+                &claimed,
+                cache_owner_scope(),
+                MAXIMUM_AUTHORITY_RECORD_BYTES,
+            )
+            .expect("Replay authority")
+            .canonical_record(CacheAuthorityPurposeV1::Replay, evidence.scope)
+        };
+        let mut manifest_key = CACHE_MANIFEST_KEY_PREFIX.to_vec();
+        manifest_key.extend_from_slice(partition.digest().as_bytes());
+        authority
+            .commit(
+                &JournalTransaction::new(
+                    [8; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            evidence.record_key.clone(),
+                            canonical.to_vec(),
+                        ),
+                        JournalRecord::put(RecordNamespace::DesiredState, manifest_key, manifest),
+                    ],
+                )
+                .expect("authority transaction"),
+            )
+            .expect("Replay authority and manifest");
+        let recovered = recover_cache_replay_evidence(
+            &mut authority,
+            cache_owner_scope(),
+            CacheRecoveryLimitsV1::default(),
+        )
+        .expect("recovered manifest");
+        let (mut state, _) = open_cache_journal(
+            directory.path(),
+            CACHE_STATE_JOURNAL,
+            cache_state_journal_limits(),
+            uid,
+        )
+        .expect("state journal");
+        let inventories = replay_closed_policy_historical_inventories(
+            &mut authority,
+            &mut state,
+            cache_owner_scope(),
+            MAXIMUM_AUTHORITY_RECORD_BYTES,
+            recovered,
+            CacheRecoveryLimitsV1::default(),
+        )
+        .expect("historical typed replay");
+        let current =
+            select_project_physical_cache_head(project, inventories).expect("project Cache head");
+        drop(state);
+        drop(authority);
+
+        let hold = CachePolicyHoldV1::new(
+            project,
+            current.partition().digest(),
+            current.head(),
+            ObjectDigest::from_bytes([9; 32]),
+            5,
+        )
+        .expect("closed Cache hold");
+        Journal::acquire_cache_policy_hold_at(directory.path(), uid, hold)
+            .expect("durable Cache hold");
+        (directory, uid, hold)
+    }
 
     #[test]
     fn legacy_journal_names_fail_closed_before_new_store_creation() {
@@ -2607,5 +2860,103 @@ mod tests {
             current
         );
         assert!(unique_project_physical_cache_head([current, current]).is_err());
+    }
+
+    #[test]
+    fn expired_replay_cannot_block_exact_closed_cache_hold_retirement() {
+        let (directory, uid, hold) = expired_cache_hold_fixture();
+        let (mut authority, _) = open_cache_journal(
+            directory.path(),
+            CACHE_AUTHORITY_JOURNAL,
+            cache_authority_journal_limits(),
+            uid,
+        )
+        .expect("expired authority journal");
+        let evidence = recover_cache_replay_evidence(
+            &mut authority,
+            cache_owner_scope(),
+            CacheRecoveryLimitsV1::default(),
+        )
+        .expect("expired manifest remains authentic");
+        assert!(
+            CacheResidencyReplayValidatorV1::from_protected_authority(
+                authority,
+                cache_owner_scope(),
+                MAXIMUM_AUTHORITY_RECORD_BYTES,
+                evidence,
+                CacheRecoveryLimitsV1::default(),
+                Arc::new(ExpiredReplayTime),
+            )
+            .is_err()
+        );
+
+        let wrong = CachePolicyHoldV1::new(
+            hold.project(),
+            hold.partition(),
+            ObjectDigest::from_bytes([10; 32]),
+            hold.binding(),
+            hold.epoch(),
+        )
+        .expect("mismatched head");
+        assert!(
+            release_closed_policy_cache_hold_at(directory.path(), uid, wrong, || Ok(())).is_err()
+        );
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid).expect("retained hold"),
+            Some(hold)
+        );
+
+        let wrong_partition = CachePolicyHoldV1::new(
+            hold.project(),
+            ObjectDigest::from_bytes([11; 32]),
+            hold.cache_head(),
+            hold.binding(),
+            hold.epoch(),
+        )
+        .expect("mismatched partition");
+        assert!(
+            release_closed_policy_cache_hold_at(directory.path(), uid, wrong_partition, || Ok(()))
+                .is_err()
+        );
+
+        assert!(
+            release_closed_policy_cache_hold_at(directory.path(), uid, hold, || {
+                Err(ProtectedDomainJournalErrorV1::StaleAuthority.into())
+            })
+            .is_err()
+        );
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid).expect("retained hold"),
+            Some(hold)
+        );
+
+        release_closed_policy_cache_hold_at(directory.path(), uid, hold, || {
+            assert!(matches!(
+                Journal::open_protected_at_uid(
+                    directory.path(),
+                    CACHE_STATE_JOURNAL,
+                    cache_state_journal_limits(),
+                    uid,
+                ),
+                Err(crate::journal::JournalError::AlreadyLocked)
+            ));
+            assert!(matches!(
+                Journal::open_protected_at_uid(
+                    directory.path(),
+                    CACHE_AUTHORITY_JOURNAL,
+                    cache_authority_journal_limits(),
+                    uid,
+                ),
+                Err(crate::journal::JournalError::AlreadyLocked)
+            ));
+            Ok(())
+        })
+        .expect("exact offline release after Replay expiry");
+        assert!(
+            !Journal::read_cache_policy_hold_at(directory.path(), uid)
+                .expect("released hold")
+                .expect("hold record")
+                .is_held()
+        );
     }
 }
