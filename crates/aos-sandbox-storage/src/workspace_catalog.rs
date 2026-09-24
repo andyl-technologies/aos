@@ -59,6 +59,7 @@ use std::path::Path;
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Descriptor, InventoryStorageResourcesResponse, StorageWorkspaceInventoryRecord,
 };
+use aos_sandbox::journal::canonical_map;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec};
 use aos_sandbox_core::{
@@ -1733,20 +1734,6 @@ impl WorkspaceRecordV1 {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct HeadEnvelopeV1 {
-    version: u16,
-    head: CatalogHeadV1,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct RecordEnvelopeV1 {
-    version: u16,
-    record: WorkspaceRecordV1,
-}
-
 fn initialize_head(
     journal: &mut Journal,
     identity_pool: StorageIdentityPoolV1,
@@ -1768,48 +1755,26 @@ fn initialize_head(
 }
 
 fn encode_head(head: &CatalogHeadV1) -> Result<Vec<u8>, StorageWorkspaceCatalogError> {
-    serde_json::to_vec(&HeadEnvelopeV1 {
-        version: RECORD_FORMAT_VERSION,
-        head: head.clone(),
-    })
-    .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)
+    canonical_map::encode_head(head, RECORD_FORMAT_VERSION)
+        .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)
 }
 
 fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, StorageWorkspaceCatalogError> {
-    if bytes.is_empty() || bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(StorageWorkspaceCatalogError::CorruptRecord);
-    }
-    let envelope: HeadEnvelopeV1 =
-        serde_json::from_slice(bytes).map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)?;
-    if envelope.version != RECORD_FORMAT_VERSION || encode_head(&envelope.head)? != bytes {
-        return Err(StorageWorkspaceCatalogError::CorruptRecord);
-    }
-    Ok(envelope.head)
+    canonical_map::decode_head(bytes, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+        .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)
 }
 
 fn encode_record(record: &WorkspaceRecordV1) -> Result<Vec<u8>, StorageWorkspaceCatalogError> {
-    let bytes = serde_json::to_vec(&RecordEnvelopeV1 {
-        version: RECORD_FORMAT_VERSION,
-        record: record.clone(),
-    })
-    .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)?;
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(StorageWorkspaceCatalogError::CorruptRecord);
-    }
-    Ok(bytes)
+    canonical_map::encode_record(record, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+        .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)
 }
 
 fn decode_record(bytes: &[u8]) -> Result<WorkspaceRecordV1, StorageWorkspaceCatalogError> {
-    if bytes.is_empty() || bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(StorageWorkspaceCatalogError::CorruptRecord);
-    }
-    let envelope: RecordEnvelopeV1 =
-        serde_json::from_slice(bytes).map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)?;
-    if envelope.version != RECORD_FORMAT_VERSION || encode_record(&envelope.record)? != bytes {
-        return Err(StorageWorkspaceCatalogError::CorruptRecord);
-    }
-    envelope.record.validate()?;
-    Ok(envelope.record)
+    let record: WorkspaceRecordV1 =
+        canonical_map::decode_record(bytes, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+            .map_err(|_| StorageWorkspaceCatalogError::CorruptRecord)?;
+    record.validate()?;
+    Ok(record)
 }
 
 fn validate_record_set(
@@ -1879,16 +1844,11 @@ fn validate_identity_range(
 }
 
 fn record_key(handle: &[u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(RECORD_KEY_PREFIX.len() + handle.len());
-    key.extend_from_slice(RECORD_KEY_PREFIX);
-    key.extend_from_slice(handle);
-    key
+    canonical_map::record_key(RECORD_KEY_PREFIX, handle)
 }
 
 fn decode_record_key(key: &[u8]) -> Result<[u8; 32], StorageWorkspaceCatalogError> {
-    key.strip_prefix(RECORD_KEY_PREFIX)
-        .and_then(|bytes| bytes.try_into().ok())
-        .filter(|handle: &[u8; 32]| *handle != [0; 32])
+    canonical_map::decode_record_key(RECORD_KEY_PREFIX, key)
         .ok_or(StorageWorkspaceCatalogError::CorruptRecord)
 }
 
@@ -1910,18 +1870,7 @@ fn genesis_transaction_id(identity_pool: StorageIdentityPoolV1) -> [u8; 16] {
 }
 
 fn transaction_digest(parts: &[&[u8]]) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(TRANSACTION_DOMAIN);
-    for part in parts {
-        digest.update(part);
-    }
-    let digest: [u8; 32] = digest.finalize().into();
-    let mut transaction_id = [0; 16];
-    transaction_id.copy_from_slice(&digest[..16]);
-    if transaction_id == [0; 16] {
-        transaction_id[15] = 1;
-    }
-    transaction_id
+    canonical_map::transaction_digest(TRANSACTION_DOMAIN, parts)
 }
 
 fn broker_instance_id() -> Result<[u8; 16], StorageWorkspaceCatalogError> {
@@ -2506,10 +2455,11 @@ mod tests {
         let mut catalog = fixture.open([81; 16]).unwrap();
         catalog.publish(fixture.publication(1, [81; 16])).unwrap();
         let record = catalog.records[&[1; 32]].clone();
-        let unknown = serde_json::to_vec(&RecordEnvelopeV1 { version: 2, record }).unwrap();
+        let canonical = String::from_utf8(encode_record(&record).unwrap()).unwrap();
+        let unknown = canonical.replacen("\"version\":1", "\"version\":2", 1);
 
         assert!(matches!(
-            decode_record(&unknown),
+            decode_record(unknown.as_bytes()),
             Err(StorageWorkspaceCatalogError::CorruptRecord)
         ));
     }

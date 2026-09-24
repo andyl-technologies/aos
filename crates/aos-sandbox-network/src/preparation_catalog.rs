@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use aos_sandbox::journal::canonical_map;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{NetworkKind, NetworkProfile, SandboxSpec};
 use aos_sandbox_core::{
@@ -728,13 +729,6 @@ struct CatalogHeadV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct VersionedHeadV1 {
-    version: u16,
-    head: CatalogHeadV1,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 struct AssignmentWire {
     sandbox_id: [u8; 16],
     incarnation_id: [u8; 16],
@@ -805,13 +799,6 @@ struct PreparationRecordV1 {
     endpoints: Vec<EndpointWire>,
     resolution_digest: [u8; 32],
     reservation_digest: [u8; 32],
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct VersionedRecordV1 {
-    version: u16,
-    record: PreparationRecordV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1417,51 +1404,31 @@ fn publish_head(
 }
 
 fn encode_head(head: &CatalogHeadV1) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
-    serde_json::to_vec(&VersionedHeadV1 {
-        version: RECORD_FORMAT_VERSION,
-        head: head.clone(),
-    })
-    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
+    canonical_map::encode_head(head, RECORD_FORMAT_VERSION)
+        .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
 }
 
 fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkPreparationCatalogError> {
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
+    let head: CatalogHeadV1 =
+        canonical_map::decode_head(bytes, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+    if head.node == [0; 16] || head.generation == 0 || head.digest == [0; 32] {
         return Err(NetworkPreparationCatalogError::CorruptRecord);
     }
-    let value: VersionedHeadV1 =
-        serde_json::from_slice(bytes).map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
-    if value.version != RECORD_FORMAT_VERSION || encode_head(&value.head)? != bytes {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    if value.head.node == [0; 16] || value.head.generation == 0 || value.head.digest == [0; 32] {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    Ok(value.head)
+    Ok(head)
 }
 
 fn encode_record(record: &PreparationRecordV1) -> Result<Vec<u8>, NetworkPreparationCatalogError> {
-    let bytes = serde_json::to_vec(&VersionedRecordV1 {
-        version: RECORD_FORMAT_VERSION,
-        record: record.clone(),
-    })
-    .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    Ok(bytes)
+    canonical_map::encode_record(record, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+        .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)
 }
 
 fn decode_record(bytes: &[u8]) -> Result<PreparationRecordV1, NetworkPreparationCatalogError> {
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    let value: VersionedRecordV1 =
-        serde_json::from_slice(bytes).map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
-    if value.version != RECORD_FORMAT_VERSION || encode_record(&value.record)? != bytes {
-        return Err(NetworkPreparationCatalogError::CorruptRecord);
-    }
-    value.record.validate()?;
-    Ok(value.record)
+    let record: PreparationRecordV1 =
+        canonical_map::decode_record(bytes, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+            .map_err(|_| NetworkPreparationCatalogError::CorruptRecord)?;
+    record.validate()?;
+    Ok(record)
 }
 
 fn encode_allocation_record(
@@ -1496,30 +1463,20 @@ fn decode_allocation_record(
 }
 
 fn record_key(handle: &[u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(RECORD_KEY_PREFIX.len() + handle.len());
-    key.extend_from_slice(RECORD_KEY_PREFIX);
-    key.extend_from_slice(handle);
-    key
+    canonical_map::record_key(RECORD_KEY_PREFIX, handle)
 }
 
 fn decode_record_key(key: &[u8]) -> Result<[u8; 32], NetworkPreparationCatalogError> {
-    key.strip_prefix(RECORD_KEY_PREFIX)
-        .and_then(|suffix| suffix.try_into().ok())
-        .filter(|handle| handle != &[0; 32])
+    canonical_map::decode_record_key(RECORD_KEY_PREFIX, key)
         .ok_or(NetworkPreparationCatalogError::CorruptRecord)
 }
 
 fn allocation_key(handle: &[u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(ALLOCATION_KEY_PREFIX.len() + handle.len());
-    key.extend_from_slice(ALLOCATION_KEY_PREFIX);
-    key.extend_from_slice(handle);
-    key
+    canonical_map::record_key(ALLOCATION_KEY_PREFIX, handle)
 }
 
 fn decode_allocation_key(key: &[u8]) -> Result<[u8; 32], NetworkPreparationCatalogError> {
-    key.strip_prefix(ALLOCATION_KEY_PREFIX)
-        .and_then(|suffix| suffix.try_into().ok())
-        .filter(|handle| handle != &[0; 32])
+    canonical_map::decode_record_key(ALLOCATION_KEY_PREFIX, key)
         .ok_or(NetworkPreparationCatalogError::CorruptRecord)
 }
 

@@ -26,6 +26,7 @@ use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, BrokerError, BrokerErrorCode, InventoryNetworkResourcesResponse,
     InventoryNetworksResponse, NetworkNamespaceInventoryRecord, NetworkResult, NetworkState,
 };
+use aos_sandbox::journal::canonical_map;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use aos_sandbox_linux::boot::KernelBootId;
@@ -1056,20 +1057,6 @@ impl NamespaceRecordV1 {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct HeadEnvelopeV1 {
-    version: u16,
-    head: CatalogHeadV1,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct RecordEnvelopeV1 {
-    version: u16,
-    record: NamespaceRecordV1,
-}
-
 fn initialize_head(journal: &mut Journal) -> Result<u64, NetworkNamespaceCatalogError> {
     let head = CatalogHeadV1 { generation: 1 };
     let transaction = JournalTransaction::new(
@@ -1085,48 +1072,26 @@ fn initialize_head(journal: &mut Journal) -> Result<u64, NetworkNamespaceCatalog
 }
 
 fn encode_head(head: &CatalogHeadV1) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
-    serde_json::to_vec(&HeadEnvelopeV1 {
-        version: HEAD_FORMAT_VERSION,
-        head: head.clone(),
-    })
-    .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)
+    canonical_map::encode_head(head, HEAD_FORMAT_VERSION)
+        .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)
 }
 
 fn decode_head(bytes: &[u8]) -> Result<CatalogHeadV1, NetworkNamespaceCatalogError> {
-    if bytes.is_empty() || bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkNamespaceCatalogError::CorruptRecord);
-    }
-    let envelope: HeadEnvelopeV1 =
-        serde_json::from_slice(bytes).map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
-    if envelope.version != HEAD_FORMAT_VERSION || encode_head(&envelope.head)? != bytes {
-        return Err(NetworkNamespaceCatalogError::CorruptRecord);
-    }
-    Ok(envelope.head)
+    canonical_map::decode_head(bytes, HEAD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+        .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)
 }
 
 fn encode_record(record: &NamespaceRecordV1) -> Result<Vec<u8>, NetworkNamespaceCatalogError> {
-    let bytes = serde_json::to_vec(&RecordEnvelopeV1 {
-        version: RECORD_FORMAT_VERSION,
-        record: record.clone(),
-    })
-    .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
-    if bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkNamespaceCatalogError::CorruptRecord);
-    }
-    Ok(bytes)
+    canonical_map::encode_record(record, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+        .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)
 }
 
 fn decode_record(bytes: &[u8]) -> Result<NamespaceRecordV1, NetworkNamespaceCatalogError> {
-    if bytes.is_empty() || bytes.len() > MAXIMUM_RECORD_BYTES {
-        return Err(NetworkNamespaceCatalogError::CorruptRecord);
-    }
-    let envelope: RecordEnvelopeV1 =
-        serde_json::from_slice(bytes).map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
-    if envelope.version != RECORD_FORMAT_VERSION || encode_record(&envelope.record)? != bytes {
-        return Err(NetworkNamespaceCatalogError::CorruptRecord);
-    }
-    envelope.record.validate()?;
-    Ok(envelope.record)
+    let record: NamespaceRecordV1 =
+        canonical_map::decode_record(bytes, RECORD_FORMAT_VERSION, MAXIMUM_RECORD_BYTES)
+            .map_err(|_| NetworkNamespaceCatalogError::CorruptRecord)?;
+    record.validate()?;
+    Ok(record)
 }
 
 fn validate_record_set(
@@ -1159,16 +1124,11 @@ fn validate_record_set(
 }
 
 fn record_key(handle: &[u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(RECORD_KEY_PREFIX.len() + handle.len());
-    key.extend_from_slice(RECORD_KEY_PREFIX);
-    key.extend_from_slice(handle);
-    key
+    canonical_map::record_key(RECORD_KEY_PREFIX, handle)
 }
 
 fn decode_record_key(key: &[u8]) -> Result<[u8; 32], NetworkNamespaceCatalogError> {
-    key.strip_prefix(RECORD_KEY_PREFIX)
-        .and_then(|bytes| bytes.try_into().ok())
-        .filter(|handle: &[u8; 32]| *handle != [0; 32])
+    canonical_map::decode_record_key(RECORD_KEY_PREFIX, key)
         .ok_or(NetworkNamespaceCatalogError::CorruptRecord)
 }
 
@@ -1187,18 +1147,7 @@ fn genesis_transaction_id() -> [u8; 16] {
 }
 
 fn transaction_digest(parts: &[&[u8]]) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(TRANSACTION_DOMAIN);
-    for part in parts {
-        digest.update(part);
-    }
-    let digest: [u8; 32] = digest.finalize().into();
-    let mut transaction_id = [0; 16];
-    transaction_id.copy_from_slice(&digest[..16]);
-    if transaction_id == [0; 16] {
-        transaction_id[15] = 1;
-    }
-    transaction_id
+    canonical_map::transaction_digest(TRANSACTION_DOMAIN, parts)
 }
 
 fn broker_instance_id() -> Result<[u8; 16], NetworkNamespaceCatalogError> {

@@ -32,6 +32,7 @@ use rustix::fs::{
 };
 use sha2::{Digest, Sha256};
 
+pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
