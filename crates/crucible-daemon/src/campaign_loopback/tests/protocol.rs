@@ -512,6 +512,13 @@ impl CampaignService for WrongGetService {
         unreachable!("test service only handles GetCampaign")
     }
 
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
     fn get_campaign_graph_object(
         &self,
         _request: &GetCampaignGraphObjectRequest,
@@ -830,6 +837,10 @@ fn diagnostic_routing_covers_every_current_request_kind() {
         (
             EXPLAIN_CAMPAIGN_ATTEMPT_REQUEST_KIND,
             CampaignServiceOperation::ExplainCampaignAttempt,
+        ),
+        (
+            GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND,
+            CampaignServiceOperation::GetCampaignTraceChunk,
         ),
         (
             GET_CAMPAIGN_PLANNER_RANKINGS_REQUEST_KIND,

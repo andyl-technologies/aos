@@ -198,6 +198,13 @@ impl CampaignService for FixedCampaignService {
         unreachable!("fixed service has no attempt explanations")
     }
 
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        unreachable!("fixed service has no attempt traces")
+    }
+
     fn get_campaign_graph_object(
         &self,
         request: &GetCampaignGraphObjectRequest,

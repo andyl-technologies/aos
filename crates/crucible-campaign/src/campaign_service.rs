@@ -31,6 +31,7 @@ mod ranking;
 mod report;
 mod repository;
 mod status;
+mod trace;
 mod watch;
 
 pub use create::{
@@ -80,6 +81,10 @@ pub use status::{
     CampaignOperationalStatusProvider, CampaignSemanticStatus, CampaignStatusSummary,
     CampaignWorldStatus, GetCampaignStatusRequest, GetCampaignStatusResponse,
     MAX_CAMPAIGN_STATUS_CONTINUATION_BYTES, MAX_CAMPAIGN_STATUS_CONTINUATIONS,
+};
+pub use trace::{
+    CampaignTraceKind, GetCampaignTraceChunkRequest, GetCampaignTraceChunkResponse,
+    MAX_CAMPAIGN_TRACE_BYTES, MAX_CAMPAIGN_TRACE_CHUNK_BYTES,
 };
 pub use watch::{WatchCampaignRequest, WatchCampaignResponse};
 
@@ -206,6 +211,8 @@ pub enum CampaignServiceOperation {
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
     ExplainCampaignAttempt,
+    /// Read a bounded trace range owned by an authenticated attempt observation.
+    GetCampaignTraceChunk,
     /// Read one accepted planner step and its proof-bearing PUCT rankings.
     GetCampaignPlannerRankings,
     /// Read one exact branch-request body named by the authenticated frontier.
@@ -593,6 +600,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this request's exact snapshot.
     pub fn validate_for_explain_campaign_attempt(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact observation-linked trace read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a mutation-only failure or a stale
+    /// failure naming a different snapshot.
+    pub fn validate_for_get_campaign_trace_chunk(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1874,6 +1894,17 @@ pub trait CampaignService {
         request: &ExplainCampaignAttemptRequest,
     ) -> Result<ExplainCampaignAttemptResponse, Self::Error>;
 
+    /// Returns one authenticated, bounded observation-linked trace range.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure on authorization, stale
+    /// snapshot, missing attempt or trace, corrupt evidence, or invalid range.
+    fn get_campaign_trace_chunk(
+        &self,
+        request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error>;
+
     /// Returns one owner-authenticated planner step and its retained ranking basis.
     ///
     /// # Errors
@@ -2518,6 +2549,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_explain_campaign_attempt(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Reads one authenticated trace chunk and validates its owner and range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] for a service failure or a response
+    /// disagreeing with the request, snapshot, attempt, observation, or leaf.
+    pub fn get_campaign_trace_chunk(
+        &self,
+        request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, CampaignClientError> {
+        let response = match self.service.get_campaign_trace_chunk(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_get_campaign_trace_chunk(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }

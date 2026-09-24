@@ -95,6 +95,13 @@ impl CampaignService for WrongGetService {
         unreachable!("test service only handles GetCampaign")
     }
 
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
     fn get_campaign_planner_rankings(
         &self,
         _request: &GetCampaignPlannerRankingsRequest,
@@ -282,6 +289,13 @@ impl CampaignService for FixedFailureService {
         Err(self.0)
     }
 
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
+        Err(self.0)
+    }
+
     fn get_campaign_planner_rankings(
         &self,
         _request: &GetCampaignPlannerRankingsRequest,
@@ -437,6 +451,13 @@ impl CampaignService for WrongApplyService {
         &self,
         _request: &ExplainCampaignAttemptRequest,
     ) -> Result<ExplainCampaignAttemptResponse, Self::Error> {
+        unreachable!("test service only handles ApplyCampaignCommand")
+    }
+
+    fn get_campaign_trace_chunk(
+        &self,
+        _request: &GetCampaignTraceChunkRequest,
+    ) -> Result<GetCampaignTraceChunkResponse, Self::Error> {
         unreachable!("test service only handles ApplyCampaignCommand")
     }
 

@@ -7,6 +7,158 @@ use crucible_cas::content_store::{
 };
 
 #[test]
+fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
+    let (repository, lineage, policy) = fixture();
+    let campaign = "authenticated-trace-chunks";
+    let (_, admitted, base) =
+        admitted_observation_fixture(&repository, &lineage, &policy, campaign);
+    let trace_bytes = b"authenticated event log".to_vec();
+    let trace = ContentId::for_bytes(ObjectKind::Trace, 2, &trace_bytes);
+    repository
+        .blobs
+        .put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes.clone()))
+        .expect("trace leaf");
+    let effect_bytes = b"resolved effects".to_vec();
+    let effect = ContentId::for_bytes(ObjectKind::Trace, 1, &effect_bytes);
+    repository
+        .blobs
+        .put_if_absent(effect, &BlobHandle::from_bytes(effect_bytes.clone()))
+        .expect("resolved effect trace leaf");
+    let measurements = MeasurementSet::test_evaluation(b"observed trace", BTreeSet::from([trace]))
+        .expect("measurement set");
+    let measurements = repository
+        .publish_measurement_set(&measurements)
+        .expect("published measurement set");
+    let observation = Observation::new(
+        base.attempt(),
+        Observation::outcome(
+            base.child(),
+            base.child_content(),
+            base.path(),
+            base.stop().clone(),
+            measurements,
+            base.properties(),
+            base.coverage(),
+        ),
+        base.discovered_choices().clone(),
+    )
+    .expect("observation")
+    .with_resolved_effect_trace(effect)
+    .expect("resolved effect trace attachment");
+    let published = repository
+        .publish_observation(campaign, admitted.new_snapshot, &observation)
+        .expect("published observation");
+    let client = crate::CampaignClient::new(RepositoryCampaignService::new(
+        &repository,
+        AllowCampaignQueries,
+    ));
+    let request = |snapshot, offset, limit| {
+        crate::GetCampaignTraceChunkRequest::new(
+            CampaignPrincipal::new("operator:trace-reader").expect("principal"),
+            CampaignName::new(campaign).expect("campaign"),
+            snapshot,
+            observation.attempt(),
+            crate::CampaignTraceKind::MeasurementEventLog,
+            offset,
+            limit,
+        )
+        .expect("trace request")
+    };
+
+    let first_request = request(published.new_snapshot, 0, 7);
+    let first = client
+        .get_campaign_trace_chunk(&first_request)
+        .expect("authenticated first chunk");
+    assert_eq!(first.trace(), trace);
+    assert_eq!(first.total_bytes(), trace_bytes.len() as u64);
+    assert_eq!(first.chunk(), &trace_bytes[..7]);
+    assert_eq!(
+        first.observation().id().expect("observation id"),
+        published.observation
+    );
+
+    let remainder = client
+        .get_campaign_trace_chunk(&request(published.new_snapshot, 7, 1024))
+        .expect("authenticated remainder");
+    assert_eq!(remainder.chunk(), &trace_bytes[7..]);
+
+    let effect_request = crate::GetCampaignTraceChunkRequest::new(
+        first_request.principal().clone(),
+        first_request.campaign().clone(),
+        published.new_snapshot,
+        observation.attempt(),
+        crate::CampaignTraceKind::ResolvedEffect,
+        0,
+        1024,
+    )
+    .expect("resolved effect request");
+    let resolved_effect = client
+        .get_campaign_trace_chunk(&effect_request)
+        .expect("authenticated resolved effect trace");
+    assert_eq!(resolved_effect.trace(), effect);
+    assert_eq!(resolved_effect.chunk(), effect_bytes);
+
+    struct DenyTrace;
+
+    impl CampaignPrincipalAuthorizer for DenyTrace {
+        fn authorize(
+            &self,
+            _principal: &CampaignPrincipal,
+            _operation: CampaignServiceOperation,
+            _campaign: &CampaignName,
+            _request_digest: CampaignHash,
+        ) -> Result<(), CampaignAuthorizationError> {
+            Err(CampaignAuthorizationError::Unauthorized)
+        }
+    }
+
+    let denied = crate::CampaignClient::new(RepositoryCampaignService::new(&repository, DenyTrace));
+    assert!(matches!(
+        denied.get_campaign_trace_chunk(&first_request),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    let unrelated_attempt = crate::AttemptId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        9,
+        b"unrelated-attempt",
+    ))
+    .expect("unrelated attempt ID");
+    let unrelated_request = crate::GetCampaignTraceChunkRequest::new(
+        first_request.principal().clone(),
+        first_request.campaign().clone(),
+        published.new_snapshot,
+        unrelated_attempt,
+        crate::CampaignTraceKind::MeasurementEventLog,
+        0,
+        7,
+    )
+    .expect("unrelated attempt request");
+    assert!(matches!(
+        client.get_campaign_trace_chunk(&unrelated_request),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::InvalidRequest
+        ))
+    ));
+    assert!(matches!(
+        client.get_campaign_trace_chunk(&request(admitted.new_snapshot, 0, 7)),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::Stale { .. }
+        ))
+    ));
+    assert!(
+        client
+            .get_campaign_trace_chunk(&request(
+                published.new_snapshot,
+                trace_bytes.len() as u64 + 1,
+                7
+            ))
+            .is_err()
+    );
+}
+
+#[test]
 fn forged_assertion_boundary_fails_closed_at_executor_publication() {
     let (repository, lineage, policy, _) = counted_fixture();
     let name = "forged-assertion-boundary";

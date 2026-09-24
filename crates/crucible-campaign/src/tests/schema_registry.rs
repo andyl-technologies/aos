@@ -207,6 +207,8 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         "crucible.campaign.get-campaign-finding-object-response",
         "crucible.campaign.explain-campaign-attempt-request",
         "crucible.campaign.explain-campaign-attempt-response",
+        "crucible.campaign.get-campaign-trace-chunk-request",
+        "crucible.campaign.get-campaign-trace-chunk-response",
         "crucible.campaign.get-campaign-planner-rankings-request",
         "crucible.campaign.get-campaign-planner-rankings-response",
         "crucible.campaign.get-campaign-graph-object-request",
