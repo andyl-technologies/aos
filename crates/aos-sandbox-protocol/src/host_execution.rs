@@ -142,22 +142,15 @@ pub fn host_execution_spec_content_fields_v1(
     {
         return Err(ProtocolValidationError::InvalidField("spec content"));
     }
-    let digest: [u8; 32] = Sha256::digest(content).into();
-    let bytes = content.len() as u64;
-    let attempt_commitment = spec_attempt_commitment_v1(
-        request_id,
-        operation_id,
-        execution_id,
-        source_commitment,
-        action,
-        bytes,
-        digest,
-    );
-    Ok(HostExecutionSpecContentFieldsV1 {
-        bytes,
-        digest,
-        attempt_commitment,
-    })
+    Ok(
+        HostExecutionSpecContentFieldsV1::for_grant(content).bind_attempt(
+            request_id,
+            operation_id,
+            execution_id,
+            source_commitment,
+            action,
+        ),
+    )
 }
 
 fn spec_attempt_commitment_v1(
@@ -682,6 +675,53 @@ mod content_tests {
         assert_ne!(
             original.attempt_commitment(),
             fields([5; 16], b"specification").attempt_commitment()
+        );
+    }
+
+    #[test]
+    fn validated_content_fields_reuse_the_exact_stable_grant_binding() {
+        let content = b"canonical specification";
+        let execution = ExecutionId::from_bytes([3; 16]);
+        let source = ObjectDigest::from_bytes([4; 32]);
+        let actual = host_execution_spec_content_fields_v1(
+            [1; 16],
+            [2; 16],
+            execution,
+            source,
+            EffectOperationV1::AuthorizeExecution,
+            content,
+        )
+        .unwrap();
+        let expected = HostExecutionSpecContentFieldsV1::for_grant(content).bind_attempt(
+            [1; 16],
+            [2; 16],
+            execution,
+            source,
+            EffectOperationV1::AuthorizeExecution,
+        );
+
+        assert_eq!(actual, expected);
+        assert!(
+            host_execution_spec_content_fields_v1(
+                [1; 16],
+                [2; 16],
+                execution,
+                source,
+                EffectOperationV1::AuthorizeExecution,
+                b"",
+            )
+            .is_err()
+        );
+        assert!(
+            host_execution_spec_content_fields_v1(
+                [1; 16],
+                [2; 16],
+                execution,
+                source,
+                EffectOperationV1::Observe,
+                content,
+            )
+            .is_err()
         );
     }
 
