@@ -901,6 +901,11 @@ campaign = "*"
 principal = "{PRINCIPAL}"
 operation = "explain-campaign-attempt"
 campaign = "*"
+
+[[grants]]
+principal = "{PRINCIPAL}"
+operation = "get-campaign-trace-chunk"
+campaign = "*"
 "#,
                 metadata.uid(),
                 metadata.gid(),
