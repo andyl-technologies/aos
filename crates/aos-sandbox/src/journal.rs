@@ -227,6 +227,8 @@ pub enum RecordNamespace {
     StorageExecutionOutput = 62,
     /// Controller-owned one-shot accepted-Create source before cross-owner grants.
     ControllerExecutionPreissue = 63,
+    /// Controller-owned immutable original Host execution-output reserve attempt.
+    ControllerExecutionOutputAttempt = 64,
 }
 
 impl RecordNamespace {
@@ -295,6 +297,7 @@ impl RecordNamespace {
             61 => Ok(Self::PublicCapabilityBootstrap),
             62 => Ok(Self::StorageExecutionOutput),
             63 => Ok(Self::ControllerExecutionPreissue),
+            64 => Ok(Self::ControllerExecutionOutputAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

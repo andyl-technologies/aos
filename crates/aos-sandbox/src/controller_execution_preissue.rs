@@ -39,8 +39,13 @@ use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::sandbox_spec_state::{self, SandboxSpecStateError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+mod attempt;
 mod reserve_source;
 
+pub use attempt::{
+    ControllerExecutionOutputAttemptErrorV1, ControllerExecutionOutputAttemptV1,
+    load_controller_execution_output_attempt_v1, retain_controller_execution_output_attempt_v1,
+};
 pub use reserve_source::{
     ControllerExecutionReserveSourceV1, EXECUTION_RESERVE_SOURCE_BYTES_V1,
     prepare_execution_reserve_source_v1,

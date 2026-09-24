@@ -8,8 +8,9 @@
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerAuthorizationArtifactsV1};
 use aos_sandbox::controller_execution_preissue::{
-    ControllerExecutionPreissueV1, ControllerExecutionReserveSourceV1,
-    prepare_execution_reserve_source_v1, revalidate_accepted_execution_preissue_v1,
+    ControllerExecutionOutputAttemptV1, ControllerExecutionPreissueV1,
+    ControllerExecutionReserveSourceV1, prepare_execution_reserve_source_v1,
+    retain_controller_execution_output_attempt_v1, revalidate_accepted_execution_preissue_v1,
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
@@ -28,6 +29,7 @@ use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 /// Retains a signed method-35 plan beside the exact source it authenticates.
 pub(crate) struct SignedExecutionOutputReserveV1 {
     source: ControllerExecutionReserveSourceV1,
+    attempt: ControllerExecutionOutputAttemptV1,
     authorization: BrokerAuthorizationArtifactsV1,
     request_id: [u8; 16],
 }
@@ -36,6 +38,11 @@ impl SignedExecutionOutputReserveV1 {
     /// Borrows the exact Controller-derived reserve carrier.
     pub(crate) const fn source(&self) -> &ControllerExecutionReserveSourceV1 {
         &self.source
+    }
+
+    /// Borrows the immutable original request locator for cold Query36.
+    pub(crate) const fn attempt(&self) -> &ControllerExecutionOutputAttemptV1 {
+        &self.attempt
     }
 
     /// Borrows the signed Host plan and current ownership lease.
@@ -139,6 +146,11 @@ where
         .map_err(|_| retryable("protected Controller clock is unavailable"))?;
     if fresh_clock.host_boot_id() != preissue.host_boot_id()
         || fresh_clock.boottime_nanoseconds() >= preissue.deadline_boottime_nanoseconds()
+        || !request_deadline_is_live(
+            coordinates.deadline_boottime_nanoseconds(),
+            preissue.deadline_boottime_nanoseconds(),
+            fresh_clock.boottime_nanoseconds(),
+        )
     {
         return Err(retryable(
             "execution reserve preissue expired before signing",
@@ -192,8 +204,17 @@ where
         clock,
     )
     .map_err(|_| retryable("execution reserve source changed before handoff"))?;
+    let attempt = retain_controller_execution_output_attempt_v1(
+        controller,
+        &source,
+        &signed,
+        coordinates.request_id(),
+        coordinates.deadline_boottime_nanoseconds(),
+    )
+    .map_err(|_| retryable("original Host output reserve attempt needs cold Query36"))?;
     Ok(SignedExecutionOutputReserveV1 {
         source,
+        attempt,
         authorization: BrokerAuthorizationArtifactsV1 {
             broker_plan: signed.canonical_plan().to_vec(),
             broker_plan_signature: signed.canonical_signature().to_vec(),
@@ -207,4 +228,26 @@ where
 
 fn retryable(message: &'static str) -> EffectFailure {
     EffectFailure::Retryable(message.to_owned())
+}
+
+fn request_deadline_is_live(
+    request_deadline: u64,
+    preissue_deadline: u64,
+    current_boottime: u64,
+) -> bool {
+    current_boottime < request_deadline && request_deadline <= preissue_deadline
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_deadline_is_live;
+
+    #[test]
+    fn reserve_deadline_must_be_future_and_within_preissue() {
+        assert!(request_deadline_is_live(99, 100, 98));
+        assert!(request_deadline_is_live(100, 100, 99));
+        assert!(!request_deadline_is_live(99, 100, 99));
+        assert!(!request_deadline_is_live(100, 100, 100));
+        assert!(!request_deadline_is_live(101, 100, 99));
+    }
 }

@@ -394,12 +394,12 @@ fn carrier_digest(bytes: &[u8]) -> ObjectDigest {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use aos_sandbox_core::{ExecutionId, OperationId};
 
     use super::*;
 
-    fn fixture() -> ControllerExecutionReserveSourceV1 {
+    pub(crate) fn fixture() -> ControllerExecutionReserveSourceV1 {
         let mut preissue = ControllerExecutionPreissueV1 {
             execution: ExecutionId::from_bytes([1; 16]),
             create_operation: OperationId::from_bytes([2; 16]),
