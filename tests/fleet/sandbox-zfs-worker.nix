@@ -614,6 +614,22 @@ in {
         f"{ZFS} holds -H aosproof/aos/project/workspace@revision-1 "
         "| grep -F 'aos:abababababababababababababababab'"
     )
+    pool_guid = int(real.succeed(f"{ZPOOL} list -H -p -o guid aosproof").strip())
+    assert pool_guid > 0
+
+    def run_held(variant, nonce):
+        run_real(
+            f"held:{root_guid}:{ancestor_guid}:{workspace_guid}:"
+            f"{snapshot_guid}:{pool_guid}:{variant}:{nonce}"
+        )
+
+    # Every case crosses the real one-shot worker and waits for its cgroup to
+    # drain. The successful path runs both pool probes around the exact hold.
+    run_held("matched", 11)
+    run_held("matched", 12)
+    run_held("wrong-pool", 13)
+    run_held("wrong-snapshot", 14)
+    run_held("wrong-hold", 15)
 
     run_real(
         f"clone:{root_guid}:{ancestor_guid}:{workspace_guid}:{snapshot_guid}:1"
@@ -643,10 +659,12 @@ in {
     assert real.succeed(
         f"{ZFS} holds -H aosproof/aos/project/workspace@revision-1"
     ).strip() == ""
+    run_held("missing-hold", 16)
     run_real(
         f"destroy-snapshot:{root_guid}:{ancestor_guid}:{workspace_guid}:{snapshot_guid}:1"
     )
     real.fail(f"{ZFS} list -Ht snapshot aosproof/aos/project/workspace@revision-1")
+    run_held("gone", 17)
     run_real(
         f"destroy-workspace:{root_guid}:{ancestor_guid}:{workspace_guid}:1:1"
     )

@@ -1492,6 +1492,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use aos_sandbox_core::ObjectDigest;
+    use aos_sandbox_protocol::semantics::CatalogBindingV1;
 
     use super::*;
 
@@ -1864,6 +1865,59 @@ mod tests {
             ResolvedSnapshot::from_catalog(workspace.clone().unwrap(), "revision-1", guid, [4; 32])
                 .unwrap()
         });
+        if action == "held" {
+            let variant = *fields.get(6).unwrap();
+            let expected_pool_guid = fields.get(5).unwrap().parse::<u64>().unwrap();
+            let nonce_byte = fields.get(7).unwrap().parse::<u8>().unwrap();
+            let selected_snapshot = match variant {
+                "wrong-snapshot" => ResolvedSnapshot::from_catalog(
+                    workspace.clone().unwrap(),
+                    "revision-1",
+                    snapshot_guid.unwrap().checked_add(1).unwrap_or(1),
+                    [4; 32],
+                )
+                .unwrap(),
+                _ => snapshot.unwrap(),
+            };
+            let selected_hold = if variant == "wrong-hold" {
+                HoldId::from_bytes([0xcd; 16]).unwrap()
+            } else {
+                HoldId::from_bytes([0xab; 16]).unwrap()
+            };
+            let binding = HeldSnapshotWorkerBindingV1 {
+                pool_guid: if variant == "wrong-pool" {
+                    expected_pool_guid.checked_add(1).unwrap_or(1)
+                } else {
+                    expected_pool_guid
+                },
+                catalog: CatalogBindingV1::from_publisher(17, ObjectDigest::from_bytes([8; 32]))
+                    .unwrap(),
+                authority_sequence: 23,
+                nonce: [nonce_byte; 16],
+            };
+            let observation = executor.observe_held_snapshot(
+                &contract,
+                &selected_snapshot,
+                selected_hold,
+                binding,
+            );
+            match variant {
+                "matched" => assert!(matches!(
+                    observation,
+                    Ok(HeldSnapshotPhysicalObservationV1::Matched { pool_guid, digest })
+                        if pool_guid == expected_pool_guid && digest.as_bytes() != &[0; 32]
+                )),
+                "wrong-pool" | "wrong-snapshot" | "wrong-hold" | "missing-hold" => {
+                    assert_eq!(
+                        observation.unwrap(),
+                        HeldSnapshotPhysicalObservationV1::Mismatch
+                    );
+                }
+                "gone" => assert!(observation.is_err()),
+                _ => panic!("unknown held-snapshot VM case"),
+            }
+            return;
+        }
         let clone_guid = fields.get(5).map(|value| value.parse().unwrap());
         let clone = clone_guid.map(|guid| {
             ResolvedDataset::from_catalog(
