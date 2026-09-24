@@ -144,6 +144,35 @@ impl QemuAttemptExecutionEvidence {
         append_event_entries(&mut snapshot, entries)
     }
 
+    pub(super) fn record_preselection_settlement(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SchedulerError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        let start = snapshot.latest_quantum_start_events.ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("preselection settlement has no recorded quantum"),
+            }
+        })?;
+        let start = usize::try_from(start).map_err(|_| SchedulerError::BoundaryViolation {
+            message: String::from("preselection quantum offset exceeds host address space"),
+        })?;
+        let recorded = snapshot.event_log_entries.get(start..).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("preselection quantum offset exceeds recorded evidence"),
+            }
+        })?;
+        let suffix =
+            entries
+                .strip_prefix(recorded)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "preselection settlement changed recorded quantum evidence",
+                    ),
+                })?;
+        append_event_entries(&mut snapshot, suffix)
+    }
+
     pub(super) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
         snapshot.semantic_stop_events = Some(snapshot.event_log_entries.len() as u64);
@@ -433,6 +462,41 @@ mod tests {
         assert_eq!(snapshot.quanta(), 7);
         assert_eq!(snapshot.frontier(), frontier);
         assert_eq!(snapshot.event_log_entries(), &[quantum_entry, reply_entry]);
+    }
+
+    #[test]
+    fn settled_preselection_records_only_its_authenticated_suffix() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let prefix =
+            SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "preselection-prefix");
+        let suffix =
+            SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "preselection-suffix");
+        evidence
+            .record(7, frontier, std::slice::from_ref(&prefix))
+            .expect("record reserved boundary");
+
+        evidence
+            .record_preselection_settlement(&[prefix.clone(), suffix.clone()])
+            .expect("append settlement suffix");
+        let snapshot = evidence.snapshot().expect("settled evidence");
+        assert_eq!(snapshot.event_log_entries(), &[prefix.clone(), suffix]);
+
+        let error = evidence
+            .record_preselection_settlement(&[])
+            .expect_err("settlement cannot replace reserved evidence");
+        assert!(
+            error
+                .to_string()
+                .contains("changed recorded quantum evidence")
+        );
+        assert_eq!(
+            evidence
+                .snapshot()
+                .expect("unchanged evidence")
+                .event_log_entries(),
+            snapshot.event_log_entries()
+        );
     }
 
     #[test]

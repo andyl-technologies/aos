@@ -42,6 +42,35 @@ use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptL
 
 mod network_boundary;
 
+#[test]
+fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
+    let payload = crucible_protocol::WhiteboxMarkerPayload::SemanticMarker(
+        crucible_protocol::WhiteboxSemanticMarkerBody {
+            marker: String::from("network.converged"),
+            instance: String::from("instance-1"),
+            details: Vec::new(),
+        },
+    );
+    let event = crucible::observable_event_from_whitebox_marker_payload(
+        Icount { retired: 41 },
+        node("traffic-west"),
+        &payload,
+    )
+    .expect("guest semantic marker must project to an observation");
+    let marker = crucible::test_support::condition_observation_entry_for_test(0, &event);
+    assert!(west_convergence_marker_seen(&[marker]));
+
+    let other_node = SchedulerEventLogEntry::guest_semantic_marker_observation(
+        0,
+        Icount { retired: 41 },
+        node("router-a"),
+        String::from("network.converged"),
+        String::from("instance-1"),
+        Vec::new(),
+    );
+    assert!(!west_convergence_marker_seen(&[other_node]));
+}
+
 fn prepared_semantic_observation(product: AttemptExecutionProduct) -> ObservationCandidate {
     let AttemptExecutionProduct::PreparedSemantic(result) = product else {
         panic!("modeled driver must return a prepared semantic result")

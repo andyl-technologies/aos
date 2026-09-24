@@ -26,7 +26,9 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
         arch: VmArchitecture::X86_64,
         memory_mib: 512,
         cmdline: if boot.is_some() {
-            format!("root=/dev/vda rw init=/init console=ttyS0 network.role={name}")
+            format!(
+                "root=/dev/vda rw init=/init console=ttyS0 network.role={name} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1"
+            )
         } else {
             format!("console=ttyS0 quiet network.role={role} network.fixture=worked-recovery")
         },

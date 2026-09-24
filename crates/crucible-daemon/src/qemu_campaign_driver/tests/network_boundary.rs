@@ -2,6 +2,20 @@
 
 use super::*;
 
+#[test]
+fn same_named_network_scenario_without_boot_capability_stays_serial() {
+    let scenario = network_choice_scenario(&[
+        "router-a",
+        "router-b",
+        "router-c",
+        "traffic-east",
+        "traffic-west",
+    ]);
+    let input = input_for_scenario(scenario, StopCondition::NextChoice);
+
+    assert!(!envoy_choice_free_boot_eligible(&input));
+}
+
 struct NetworkBoundaryLifecycle {
     parked: BTreeMap<NodeId, QemuParkedCampaignMarker>,
     released: Vec<NodeId>,

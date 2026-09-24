@@ -987,6 +987,8 @@ struct ControlledLifecycleBoundary {
     requested_fingerprint_nodes: Mutex<Vec<NodeId>>,
     fail_fingerprint_sample: AtomicBool,
     fail_effect_trace: AtomicBool,
+    live_network_choice_pause: AtomicBool,
+    choice_free_parallel_boot: AtomicBool,
 }
 
 impl ControlledLifecycleBoundary {
@@ -1053,6 +1055,18 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         _frontier: Option<crucible::VirtualTime>,
     ) -> Result<(), SchedulerError> {
         Ok(())
+    }
+
+    fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        self.boundary
+            .live_network_choice_pause
+            .store(enabled, Ordering::Release);
+    }
+
+    fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        self.boundary
+            .choice_free_parallel_boot
+            .store(enabled, Ordering::Release);
     }
 
     fn drive_quantum(
@@ -1194,13 +1208,14 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
         ExecutionCheckpointRequest::default(),
         crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
     );
-    let mut factory = PackagedStatusLifecycleFactory {
+    let factory = PackagedStatusLifecycleFactory {
         inner: ControlledLifecycleFactory {
             boundary: Arc::clone(&boundary),
             fail_shutdown: false,
         },
         lifecycles: PackagedWorldLifecycleTracker::new(),
     };
+    let (mut factory, _evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let mut lifecycle = factory
         .start_fresh_lifecycle(
             &scenario,
@@ -1210,6 +1225,11 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
             &context,
         )
         .expect("start delegated lifecycle");
+
+    lifecycle.set_live_network_choice_pause(true);
+    lifecycle.set_choice_free_parallel_boot(true);
+    assert!(boundary.live_network_choice_pause.load(Ordering::Acquire));
+    assert!(boundary.choice_free_parallel_boot.load(Ordering::Acquire));
 
     let requested_node = NodeId {
         name: String::from("requested-node"),

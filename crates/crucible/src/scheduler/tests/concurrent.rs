@@ -4,47 +4,77 @@ use super::*;
 use crate::AdvanceOutcome;
 use crate::BackendEffect;
 
-struct FailingConcurrentBackend(MockSimulationBackend);
+struct TestConcurrentBackend {
+    inner: MockSimulationBackend,
+    fail: bool,
+    run_sizes: Vec<usize>,
+}
 
-impl SimulationBackend for FailingConcurrentBackend {
-    fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
-        self.0.step_to(ceiling)
-    }
-
-    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
-        self.0.apply(effect, at)
-    }
-
-    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
-        self.0.snapshot()
-    }
-
-    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
-        self.0.restore(snapshot)
-    }
-
-    fn now(&self) -> VirtualTime {
-        self.0.now()
-    }
-
-    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
-        self.0.fingerprint(node)
-    }
-
-    fn shutdown(&mut self) -> Result<(), BackendError> {
-        self.0.shutdown()
+impl TestConcurrentBackend {
+    fn new(fail: bool) -> Self {
+        Self {
+            inner: MockSimulationBackend::new(),
+            fail,
+            run_sizes: Vec::new(),
+        }
     }
 }
 
-impl ConcurrentSimulationBackend for FailingConcurrentBackend {
+impl SimulationBackend for TestConcurrentBackend {
+    fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+        self.inner.step_to(ceiling)
+    }
+
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+        self.inner.apply(effect, at)
+    }
+
+    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+        self.inner.snapshot()
+    }
+
+    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+        self.inner.restore(snapshot)
+    }
+
+    fn now(&self) -> VirtualTime {
+        self.inner.now()
+    }
+
+    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+        self.inner.fingerprint(node)
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        self.inner.shutdown()
+    }
+}
+
+impl ConcurrentSimulationBackend for TestConcurrentBackend {
     fn execute_concurrent_runs(
         &mut self,
-        _runs: Vec<ConcurrentBackendRun>,
+        runs: Vec<ConcurrentBackendRun>,
         _max_host_workers: usize,
     ) -> Result<Vec<ConcurrentBackendRunOutcome>, BackendError> {
-        Err(BackendError::Rejected {
-            message: String::from("injected host worker failure"),
-        })
+        self.run_sizes.push(runs.len());
+        if self.fail {
+            return Err(BackendError::Rejected {
+                message: String::from("injected host worker failure"),
+            });
+        }
+        Ok(runs
+            .into_iter()
+            .map(|run| ConcurrentBackendRunOutcome {
+                node: run.node,
+                step: StepObservation::from_advance_outcome(
+                    run.ceiling,
+                    AdvanceOutcome::ReachedHorizon,
+                ),
+                rng_evidence: Vec::new(),
+                network_outputs: Vec::new(),
+                observations: Vec::new(),
+            })
+            .collect())
     }
 }
 
@@ -141,6 +171,90 @@ fn choice_pause_prepares_only_the_first_canonical_run_before_backend_execution()
 }
 
 #[test]
+fn choice_free_boot_batches_five_peers_then_returns_to_serial_pause() {
+    let nodes = [
+        "router-a",
+        "router-b",
+        "router-c",
+        "traffic-east",
+        "traffic-west",
+    ]
+    .into_iter()
+    .map(|name| {
+        test_scenario_node(
+            name,
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )
+    })
+    .collect::<Vec<_>>();
+    let scheduler = test_scheduler(nodes, Vec::new());
+    let configuration = scheduler.configuration().clone();
+    let mut post_marker =
+        BackendQuantumLoop::new(scheduler.clone(), TestConcurrentBackend::new(false));
+
+    let mut serial = BackendQuantumLoop::new(scheduler.clone(), TestConcurrentBackend::new(false));
+    serial.set_live_network_choice_pause(true);
+    for _ in 0..5 {
+        serial
+            .drive_concurrent_quantum(
+                QuantumRequest {
+                    configuration: configuration.clone(),
+                    control: Vec::new(),
+                },
+                5,
+            )
+            .expect("serial choice pause");
+    }
+
+    let mut parallel = BackendQuantumLoop::new(scheduler, TestConcurrentBackend::new(false));
+    parallel.set_live_network_choice_pause(true);
+    parallel.set_choice_free_parallel_boot(true);
+    let boot = parallel
+        .drive_concurrent_quantum(
+            QuantumRequest {
+                configuration: configuration.clone(),
+                control: Vec::new(),
+            },
+            5,
+        )
+        .expect("choice-free boot batch");
+
+    assert_eq!(boot.run_set.candidates.len(), 5);
+    assert_eq!(serial.backend().run_sizes, vec![1; 5]);
+    assert_eq!(parallel.backend().run_sizes, vec![5]);
+    assert_eq!(
+        parallel.loop_impl().configuration(),
+        serial.loop_impl().configuration()
+    );
+    assert_eq!(
+        parallel.loop_impl().event_log_offset(),
+        serial.loop_impl().event_log_offset()
+    );
+    assert_eq!(
+        parallel.loop_impl().event_log().retained_entries(),
+        serial.loop_impl().event_log().retained_entries()
+    );
+
+    // The owner disables boot batching when it consumes the west marker.
+    post_marker.set_live_network_choice_pause(true);
+    post_marker.set_choice_free_parallel_boot(true);
+    post_marker.set_choice_free_parallel_boot(false);
+    post_marker
+        .drive_concurrent_quantum(
+            QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            },
+            5,
+        )
+        .expect("post-marker choice pause");
+    assert_eq!(post_marker.backend().run_sizes, vec![1]);
+}
+
+#[test]
 fn concurrent_backend_rejects_zero_workers_before_preparation() {
     let scheduler = test_scheduler(
         vec![test_scenario_node(
@@ -159,10 +273,7 @@ fn concurrent_backend_rejects_zero_workers_before_preparation() {
         configuration: before_configuration.clone(),
         control: Vec::new(),
     };
-    let mut adapter = BackendQuantumLoop::new(
-        scheduler,
-        FailingConcurrentBackend(MockSimulationBackend::new()),
-    );
+    let mut adapter = BackendQuantumLoop::new(scheduler, TestConcurrentBackend::new(true));
 
     let error = adapter
         .drive_concurrent_quantum(request, 0)
@@ -193,10 +304,7 @@ fn concurrent_backend_failure_leaves_scheduler_uncommitted() {
     let before_configuration = scheduler.configuration().clone();
     let before_quanta = scheduler.quanta();
     let before_offset = scheduler.event_log().offset();
-    let mut adapter = BackendQuantumLoop::new(
-        scheduler,
-        FailingConcurrentBackend(MockSimulationBackend::new()),
-    );
+    let mut adapter = BackendQuantumLoop::new(scheduler, TestConcurrentBackend::new(true));
 
     let error = adapter
         .drive_concurrent_quantum(

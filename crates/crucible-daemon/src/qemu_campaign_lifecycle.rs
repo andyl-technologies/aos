@@ -181,6 +181,9 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// Enables a one-RUN preselection pause for live-network choice attempts.
     fn set_live_network_choice_pause(&mut self, _enabled: bool) {}
 
+    /// Enables concurrent execution until the audited choice-free boot marker.
+    fn set_choice_free_parallel_boot(&mut self, _enabled: bool) {}
+
     /// Returns the exact unresolved network choice at this boundary.
     fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
         None
@@ -411,6 +414,10 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn set_live_network_choice_pause(&mut self, enabled: bool) {
         ProductionVmLifecycleLoop::set_live_network_choice_pause(self, enabled);
+    }
+
+    fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        ProductionVmLifecycleLoop::set_choice_free_parallel_boot(self, enabled);
     }
 
     fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
@@ -645,6 +652,11 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// Enables exact preselection pauses for the current choice-search attempt.
     pub fn set_live_network_choice_pause(&mut self, enabled: bool) {
         self.owner.set_live_network_choice_pause(enabled);
+    }
+
+    /// Enables concurrent execution through an audited choice-free boot epoch.
+    pub fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        self.owner.set_choice_free_parallel_boot(enabled);
     }
 
     /// Returns the exact unresolved live-network choice, if present.
