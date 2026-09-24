@@ -329,6 +329,102 @@ impl ProviderLedgerV1<'_> {
         }
         Ok(signed)
     }
+
+    /// Recreates only the original selected-row plan after a cold restart.
+    ///
+    /// The protected holder head must still name the original reserved attempt.
+    /// A fresh authenticated carrier supplies custody, never a replacement
+    /// Acquire request or a new attempt identity. No backend effect is granted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed row, holder head, signer, trust interval, or protected
+    /// attempt state before returning any signed bytes.
+    pub(crate) fn sign_recovered_storage_export_request(
+        &mut self,
+        acquisition_id: ObjectDigest,
+        canonical_catalog_publication: &[u8],
+        canonical_manifest: &[u8],
+    ) -> Result<
+        aos_sandbox_source_provider_protocol::SignedStorageLiveExportRequestV1,
+        ProviderLedgerError,
+    > {
+        let mut acquisitions = self
+            .recovered
+            .acquisitions
+            .values()
+            .filter(|record| record.acquisition_id == acquisition_id);
+        let acquisition = acquisitions
+            .next()
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        if acquisitions.next().is_some()
+            || acquisition.state != ProviderAcquisitionStateV1::Applying
+            || !acquisition.normalized_intent.kernel_coupled()
+            || acquisition.lease_id.is_some()
+            || acquisition.backend_evidence.is_some()
+            || acquisition.source_root.is_some()
+        {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let mut attempts = self
+            .recovered
+            .attempts
+            .values()
+            .filter(|record| record.attempt_digest == acquisition.current_attempt_digest);
+        let attempt = attempts.next().ok_or(ProviderLedgerError::Unavailable)?;
+        if attempts.next().is_some() {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        let holder_id = acquisition.holder.authority_id();
+        let holder_head = self
+            .recovered
+            .sessions
+            .get(&(acquisition.provider.authority_id(), holder_id))
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        if holder_head.pending_attempt_digest != Some(attempt.attempt_digest)
+            || holder_head.session_binding != attempt.session_binding
+            || holder_head.signers[1] != attempt.root_record_signer
+        {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let session = self
+            .current_sessions
+            .get_mut(&holder_id)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let configuration = session.session.revalidated_provider_configuration()?;
+        let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
+            &configuration,
+            canonical_catalog_publication,
+        )?;
+        let snapshot = self.journal.snapshot()?;
+        let current_catalog = session
+            .session
+            .authorize_fixed_current_catalog_publication_v1(&self.journal, snapshot, publication)?;
+        let selected = current_catalog.select_manifest_row(
+            &self.journal,
+            canonical_manifest,
+            acquisition.normalized_intent.binding_digest(),
+        )?;
+        let (current_provider, _) = current_catalog.projection().scope();
+        let basis = validate_selected_attempt(
+            acquisition,
+            attempt,
+            &selected,
+            current_provider,
+            holder_head.session_binding,
+            Some(holder_head.next_request_sequence),
+        )?;
+        let request = basis.to_storage_request()?;
+        let signed = session.session.sign_recovered_storage_export_request(
+            &self.journal,
+            &selected,
+            request,
+        )?;
+        if !selected.is_current(&self.journal) {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        Ok(signed)
+    }
 }
 
 fn validate_selected_attempt(
@@ -336,7 +432,7 @@ fn validate_selected_attempt(
     attempt: &AttemptRecordV1,
     selected: &ProtectedProviderCatalogSelectionV1<'_>,
     current_provider: &SourceProviderAuthorityV1,
-    current_session_binding: ObjectDigest,
+    expected_session_binding: ObjectDigest,
     next_request_sequence: Option<u64>,
 ) -> Result<ProviderStorageExportPlanBasisV1, ProviderLedgerError> {
     let (resource, storage_selector) = selected.selected();
@@ -362,7 +458,7 @@ fn validate_selected_attempt(
         && acquisition.current_attempt_digest == attempt.attempt_digest
         && acquisition.effect_attempt_digest == attempt.attempt_digest
         && current_attempt_sequence_matches(
-            current_session_binding,
+            expected_session_binding,
             next_request_sequence,
             attempt.session_binding,
             attempt.request_sequence,
@@ -404,17 +500,17 @@ fn validate_selected_attempt(
 }
 
 fn current_attempt_sequence_matches(
-    current_session_binding: ObjectDigest,
+    expected_session_binding: ObjectDigest,
     next_request_sequence: Option<u64>,
     retained_session_binding: ObjectDigest,
     retained_request_sequence: u64,
     signed_session_binding: ObjectDigest,
     signed_request_sequence: u64,
 ) -> bool {
-    retained_session_binding == current_session_binding
+    retained_session_binding == expected_session_binding
         && signed_session_binding == retained_session_binding
         && signed_request_sequence == retained_request_sequence
-        && next_request_sequence.is_some_and(|next| next > retained_request_sequence)
+        && next_request_sequence == retained_request_sequence.checked_add(1)
 }
 
 #[cfg(test)]
@@ -613,5 +709,62 @@ mod tests {
         )
         .unwrap();
         assert_ne!(signed_first.to_canonical_bytes(), fork.to_canonical_bytes());
+    }
+
+    #[test]
+    fn cold_restart_reuses_original_attempt_and_signer_without_interval_extension() {
+        let before_crash = replay_basis();
+        let original_request = before_crash.to_storage_request().unwrap();
+        let original_key = SigningKey::from_bytes(&[42; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [30; 16],
+            31,
+            digest(32),
+            [33; 16],
+            34,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &original_key,
+        )
+        .unwrap();
+        let original =
+            SignedStorageLiveExportRequestV1::sign(original_request, signer.clone(), &original_key)
+                .unwrap();
+
+        let recovered = replay_basis();
+        let recovered_key = SigningKey::from_bytes(&[42; 32]);
+        let retry = SignedStorageLiveExportRequestV1::sign(
+            recovered.to_storage_request().unwrap(),
+            signer.clone(),
+            &recovered_key,
+        )
+        .unwrap();
+        assert_eq!(original.to_canonical_bytes(), retry.to_canonical_bytes());
+        assert_eq!(original.digest(), retry.digest());
+
+        let rotated_key = SigningKey::from_bytes(&[43; 32]);
+        assert!(
+            SignedStorageLiveExportRequestV1::sign(
+                recovered.to_storage_request().unwrap(),
+                signer,
+                &rotated_key,
+            )
+            .is_err()
+        );
+        assert!(!current_attempt_sequence_matches(
+            digest(40),
+            Some(9),
+            digest(41),
+            8,
+            digest(41),
+            8,
+        ));
+        assert!(current_attempt_sequence_matches(
+            digest(41),
+            Some(9),
+            digest(41),
+            8,
+            digest(41),
+            8,
+        ));
     }
 }

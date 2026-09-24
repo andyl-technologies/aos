@@ -3,7 +3,8 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback, but no backend effect, lease, descriptor, or success response.
+//! readback. A cold selected reservation retries only its original signed
+//! plan; neither path grants a backend effect, lease, descriptor, or success.
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -70,35 +71,50 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
     loop {
         let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
         match ingress.accept_authenticated_owner(deadline) {
-            Ok((mut owner, _report)) => loop {
-                match ingress.advance_authenticated_ingress(&mut owner)? {
-                    FixedProviderIngressProgressV1::Pending => {
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    FixedProviderIngressProgressV1::CatalogReplied => {}
-                    FixedProviderIngressProgressV1::Source(request) => {
-                        let (publication, manifest) = ingress.read_current_catalog_manifest()?;
-                        let mut storage = ProductionSourceProviderStorageReadbackV1;
-                        let mut session = owner.backend_session_with_catalog(
-                            &mut storage,
-                            &publication,
-                            &manifest,
-                        );
-                        match session.execute_authenticated_source_request(request)? {
-                            FixedProviderBackendRequestOutcomeV1::Reply(reply)
-                            | FixedProviderBackendRequestOutcomeV1::CachedRecovery {
-                                reply, ..
-                            } => {
-                                session.send_reply(reply)?;
-                            }
-                            FixedProviderBackendRequestOutcomeV1::RecoveryPending
-                            | FixedProviderBackendRequestOutcomeV1::Released { .. } => {
-                                return Err(ProviderLedgerError::Unavailable.into());
+            Ok((mut owner, _report)) => {
+                let (publication, manifest) = ingress.read_current_catalog_manifest()?;
+                let mut storage = ProductionSourceProviderStorageReadbackV1;
+                let mut session =
+                    owner.backend_session_with_catalog(&mut storage, &publication, &manifest);
+                if session.retry_selected_storage_recovery()? {
+                    // The predecessor carrier died. Retain Applying for exact
+                    // recovery; never send an old-session response on this one.
+                    return Err(ProviderLedgerError::Unavailable.into());
+                }
+                drop(session);
+
+                loop {
+                    match ingress.advance_authenticated_ingress(&mut owner)? {
+                        FixedProviderIngressProgressV1::Pending => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        FixedProviderIngressProgressV1::CatalogReplied => {}
+                        FixedProviderIngressProgressV1::Source(request) => {
+                            let (publication, manifest) =
+                                ingress.read_current_catalog_manifest()?;
+                            let mut storage = ProductionSourceProviderStorageReadbackV1;
+                            let mut session = owner.backend_session_with_catalog(
+                                &mut storage,
+                                &publication,
+                                &manifest,
+                            );
+                            match session.execute_authenticated_source_request(request)? {
+                                FixedProviderBackendRequestOutcomeV1::Reply(reply)
+                                | FixedProviderBackendRequestOutcomeV1::CachedRecovery {
+                                    reply,
+                                    ..
+                                } => {
+                                    session.send_reply(reply)?;
+                                }
+                                FixedProviderBackendRequestOutcomeV1::RecoveryPending
+                                | FixedProviderBackendRequestOutcomeV1::Released { .. } => {
+                                    return Err(ProviderLedgerError::Unavailable.into());
+                                }
                             }
                         }
                     }
                 }
-            },
+            }
             Err(ProductionSourceProviderIngressErrorV1::Activation(
                 ProductionBrokerSessionActivationErrorV1::Deadline,
             )) => continue,

@@ -864,6 +864,48 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         self.execute_request(&signed, &[])
     }
 
+    /// Retries one cold selected-row reservation without a successor attempt.
+    ///
+    /// The original RootMount request and row are re-read from the protected
+    /// ledger. A deterministic signed plan may reach only authenticated
+    /// Storage readback; this method never observes or reissues backend work,
+    /// completes an Acquire, or clears the retained recovery barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable when the old attempt, current manifest, signer,
+    /// trust interval, or authenticated Storage readback cannot be proven.
+    pub fn retry_selected_storage_recovery(&mut self) -> Result<bool, ProviderLedgerError> {
+        let Some(recovery) = self.owner.pending_backend_recovery.first() else {
+            return Ok(false);
+        };
+        let ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, .. } = &recovery.work else {
+            return Ok(false);
+        };
+        let acquisition_id = *acquisition_id;
+        let selected = self.owner.with_ledger(|ledger| {
+            Ok(ledger.recovered.acquisitions.values().any(|record| {
+                record.acquisition_id == acquisition_id
+                    && record.normalized_intent.kernel_coupled()
+                    && record.resource_id != [0; 32]
+                    && record.lease_id.is_none()
+            }))
+        })?;
+        if !selected {
+            return Ok(false);
+        }
+        let (publication, manifest) = self
+            .current_catalog
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let signed = self.owner.with_ledger(|ledger| {
+            ledger.sign_recovered_storage_export_request(acquisition_id, publication, manifest)
+        })?;
+        self.transport
+            .inspect_storage_live_export_request(&signed)
+            .map_err(map_transport_error)?;
+        Ok(true)
+    }
+
     fn retain_backend_recovery(
         &mut self,
         recovery: FixedProviderBackendRecoveryV1,
