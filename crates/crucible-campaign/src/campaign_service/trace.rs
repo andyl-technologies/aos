@@ -181,6 +181,10 @@ impl Canonical for GetCampaignTraceChunkRequest {
 }
 
 /// One trace range with proof of the owning observation and attempt.
+///
+/// The proof binds the trace identity and range, not the bytes of an individual
+/// chunk. Readers authenticate those bytes after assembling the complete trace
+/// and checking its content ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetCampaignTraceChunkResponse {
     schema_version: u32,
@@ -250,7 +254,7 @@ impl GetCampaignTraceChunkResponse {
         self.offset
     }
 
-    /// Returns the bounded trace bytes.
+    /// Returns the bounded trace bytes, pending whole-trace content verification.
     #[must_use]
     pub fn chunk(&self) -> &[u8] {
         &self.chunk
@@ -264,6 +268,9 @@ impl GetCampaignTraceChunkResponse {
 
     /// Validates request binding, attempt and observation proofs, trace
     /// ownership, and exact range shape.
+    ///
+    /// This does not authenticate chunk bytes by itself. Callers must assemble
+    /// the complete trace and verify its content ID before using its contents.
     ///
     /// # Errors
     ///
