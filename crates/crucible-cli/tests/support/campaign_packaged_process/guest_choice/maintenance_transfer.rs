@@ -67,7 +67,8 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     let terminal_request = accepted_branch_request(&terminal)?;
     let active =
         wait_for_new_running_attempt(&source, &mut service, &known_attempts, &terminal_request)?;
-    let checkpoint = capture_checkpoint_after_progress(&source, active, &mut 0x83_u64, None)?;
+    let checkpoint =
+        capture_checkpoint_after_progress(&source, &service, active, &mut 0x83_u64, None)?;
     let paused_snapshot = json_string(&campaign_status(&source)?, "snapshot")?;
     service.stop()?;
 
@@ -76,12 +77,16 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     let mut restarted = start_packaged_service(&source, &authority)?;
     assert_eq!(campaign_status(&source)?["snapshot"], paused_snapshot);
     resume_campaign(&source, &"84".repeat(32))?;
-    assert_eq!(
-        wait_for_resumed_attempt(&source, active, checkpoint)?,
-        checkpoint
-    );
-    let advanced =
-        capture_checkpoint_after_progress(&source, active, &mut 0x85_u64, Some(checkpoint))?;
+    let (resumed, execution) = wait_for_resumed_attempt(&source, active, checkpoint)?;
+    assert_eq!(resumed, checkpoint);
+    wait_for_resumed_guest_progress(&restarted, active, execution)?;
+    let advanced = capture_checkpoint_after_progress(
+        &source,
+        &restarted,
+        active,
+        &mut 0x85_u64,
+        Some(checkpoint),
+    )?;
     assert_ne!(advanced, checkpoint);
 
     let before_pin = campaign_status(&source)?;
