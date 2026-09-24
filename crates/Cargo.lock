@@ -2313,6 +2313,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",
+ "hex",
  "libc",
  "rcgen",
  "rustix 1.1.4",

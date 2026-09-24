@@ -1831,6 +1831,27 @@ fn campaign_inputs_fail_before_transport_setup() {
         ChoiceValue::Discrete(alternative)
     );
 
+    for malformed in [
+        "group:",
+        "group:3",
+        "group:GG",
+        "group:AB",
+        "group:0001",
+        "group:0300",
+    ] {
+        assert!(
+            parse_campaign_choice_value(malformed).is_err(),
+            "accepted malformed group value: {malformed}"
+        );
+    }
+    assert!(
+        parse_campaign_choice_value(&format!(
+            "group:{}",
+            "00".repeat(MAX_CAMPAIGN_GROUP_VALUE_BYTES + 1)
+        ))
+        .is_err()
+    );
+
     let bad_watch = CampaignCommand::Watch(CampaignWatchArgs {
         name: "example".to_owned(),
         after: Some("not-a-snapshot".to_owned()),
@@ -1983,6 +2004,48 @@ fn campaign_inputs_fail_before_transport_setup() {
         }),
     });
     assert!(validate_campaign_command(&empty_budget).is_err());
+}
+
+#[test]
+fn campaign_group_value_label_round_trips_through_operator_input() {
+    let member_domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    let declaration = SelectableDeclaration::new(
+        "fault.enabled",
+        ChoiceSource::Workload {
+            producer: "fault-controller".to_owned(),
+        },
+        member_domain.clone(),
+        ChoiceValue::Boolean(false),
+        ChoiceClassContext::new(BTreeSet::from(["fault".to_owned()])).expect("choice class"),
+        BTreeSet::new(),
+        true,
+    )
+    .expect("group member declaration");
+    let member = declaration.id().expect("member ID");
+    let group = ChoiceGroup::new(
+        &BTreeMap::from([(member, declaration)]),
+        ChoiceGroupDomain::Cartesian {
+            members: BTreeMap::from([(member, member_domain)]),
+            constraints: BTreeSet::new(),
+        },
+        ChoiceGroupApplication::new("fault-controller", 1).expect("application"),
+    )
+    .expect("choice group");
+    let value = ChoiceValue::Group(
+        group
+            .select(ChoiceTuple::new(BTreeMap::from([(
+                member,
+                ChoiceValue::Boolean(true),
+            )])))
+            .expect("selected group tuple"),
+    );
+
+    let label = object::campaign_choice_value_label(&value);
+    assert!(label.starts_with("group:03"));
+    assert_eq!(
+        parse_campaign_choice_value(&label).expect("canonical group operator value"),
+        value
+    );
 }
 
 #[test]
