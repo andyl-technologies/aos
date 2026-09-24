@@ -13,6 +13,7 @@ use std::path::Path;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace, MountObservation};
+use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use rustix::fs::{FileType, Mode, OFlags};
@@ -719,6 +720,51 @@ pub(crate) fn open_workspace_slot(
         Err(rustix::io::Errno::NOENT) => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Clones only the physically observed present target into an unattached mount.
+pub(crate) fn clone_observed_workspace_root(
+    request: &WorkspaceCatalogObservationRequestV1,
+    pin_root: &ResolvedPath,
+) -> Result<DetachedMount, WorkspacePinObserverError> {
+    let proof = request
+        .root_export()
+        .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+    let target = request
+        .targets()
+        .iter()
+        .find(|target| target.workspace_handle() == proof.workspace_handle)
+        .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+    let WorkspaceCatalogObservationExpectationV1::Present {
+        mount_id,
+        root_device,
+        root_inode,
+    } = target.expectation()
+    else {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    };
+    let slot = open_workspace_slot(pin_root, &proof.workspace_handle)?
+        .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+    let before = rustix::fs::fstat(slot.as_fd())?;
+    if before.st_dev != root_device
+        || before.st_ino != root_inode
+        || MountId::from_fd(slot.as_fd())?.get() != mount_id
+    {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+
+    let detached = DetachedMount::clone_from(&slot, true)?;
+    let cloned_root = rustix::fs::fstat(detached.as_fd())?;
+    let after = rustix::fs::fstat(slot.as_fd())?;
+    if cloned_root.st_dev != root_device
+        || cloned_root.st_ino != root_inode
+        || after.st_dev != before.st_dev
+        || after.st_ino != before.st_ino
+        || MountId::from_fd(slot.as_fd())?.get() != mount_id
+    {
+        return Err(WorkspacePinObserverError::HostScopeMismatch);
+    }
+    Ok(detached)
 }
 
 fn controlled_directory(metadata: &rustix::fs::Stat) -> bool {

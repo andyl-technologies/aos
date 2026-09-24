@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read as _;
-use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ use aos_sandbox_core::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
+use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::mount::{FileSystemContext, MountAttributes, unmount_child};
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
@@ -32,17 +33,18 @@ use crate::authorization::StorageProtectedConfigurationV1;
 use crate::observation::ZfsObservationState;
 use crate::observation_protocol::{
     MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES, MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
-    ReceivedWorkspaceCatalogObservationRequest, WorkspaceCatalogObservationFrameEncoder,
-    WorkspaceCatalogObservationRequestAssembler, WorkspaceCatalogObservationRequestV1,
-    WorkspaceCatalogObservationResultV1, decode_request as decode_catalog_observation_request,
+    ReceivedWorkspaceCatalogObservationRequest, WorkspaceCatalogObservationExpectationV1,
+    WorkspaceCatalogObservationFrameEncoder, WorkspaceCatalogObservationRequestAssembler,
+    WorkspaceCatalogObservationRequestV1, WorkspaceCatalogObservationResultV1,
+    decode_request as decode_catalog_observation_request,
     decode_result as decode_catalog_observation_result,
     encode_result as encode_catalog_observation_result, is_catalog_observation_frame,
 };
 use crate::pin_observer::{
-    WorkspacePinHostCustody, WorkspacePinObserverError, current_catalog_custody_binding,
-    current_host_scope, observe_workspace_catalog_pin_pass, observe_workspace_pin,
-    observe_workspace_pin_repair, observe_workspace_pin_repair_admission, open_workspace_slot,
-    validate_host_scope,
+    WorkspacePinHostCustody, WorkspacePinObserverError, clone_observed_workspace_root,
+    current_catalog_custody_binding, current_host_scope, observe_workspace_catalog_pin_pass,
+    observe_workspace_pin, observe_workspace_pin_repair, observe_workspace_pin_repair_admission,
+    open_workspace_slot, validate_host_scope,
 };
 use crate::pin_worker::{
     AuthenticatedWorkspacePinWorkerRequestV1, MAXIMUM_PIN_WORKER_PACKET_BYTES,
@@ -250,7 +252,7 @@ impl SystemdWorkspacePinExecutor {
         request: &WorkspaceCatalogObservationRequestV1,
         custody: &WorkspacePinHostCustody,
         exchange_deadline: u64,
-    ) -> Result<WorkspaceCatalogObservationResultV1, ZfsWorkerError> {
+    ) -> Result<(WorkspaceCatalogObservationResultV1, Option<OwnedFd>), ZfsWorkerError> {
         let (mut socket, ready, worker_cgroup, population) =
             self.open_verified_worker(|| Ok(exchange_deadline))?;
         let exchange = exchange_catalog_observation_after_ready(
@@ -471,6 +473,13 @@ pub(crate) trait WorkspacePinRuntimeIo {
         request: &WorkspaceCatalogObservationRequestV1,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<FreshWorkspaceCatalogObservationV1, ZfsWorkerError>;
+
+    fn export_catalog_root(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<(FreshWorkspaceCatalogObservationV1, OwnedFd), ZfsWorkerError>;
 }
 
 /// Adapts borrowed systemd effect collaborators to the shared broker path in tests.
@@ -563,6 +572,17 @@ impl WorkspacePinRuntimeIo for BorrowedSystemdWorkspacePinEffectIo<'_> {
             "effect-only workspace-pin adapter cannot observe catalog",
         ))
     }
+
+    fn export_catalog_root(
+        &mut self,
+        _request_bytes: &[u8],
+        _request: &WorkspaceCatalogObservationRequestV1,
+        _worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<(FreshWorkspaceCatalogObservationV1, OwnedFd), ZfsWorkerError> {
+        Err(ZfsWorkerError::Protocol(
+            "effect-only workspace-pin adapter cannot export a root",
+        ))
+    }
 }
 
 /// Forwards runtime pin I/O to the retained production descriptors and systemd clients.
@@ -653,6 +673,20 @@ impl WorkspacePinRuntimeIo for SystemdWorkspacePinRuntimeIo {
             worker_cutoff_boottime_nanoseconds,
         )
     }
+
+    fn export_catalog_root(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<(FreshWorkspaceCatalogObservationV1, OwnedFd), ZfsWorkerError> {
+        self.observer.export_catalog_root(
+            request_bytes,
+            request,
+            &self.custody,
+            worker_cutoff_boottime_nanoseconds,
+        )
+    }
 }
 
 impl SystemdWorkspacePinObserver {
@@ -713,13 +747,41 @@ impl SystemdWorkspacePinObserver {
         custody: &WorkspacePinHostCustody,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<FreshWorkspaceCatalogObservationV1, ZfsWorkerError> {
-        let result = self.client.exchange_catalog_observation(
+        let (result, descriptor) = self.client.exchange_catalog_observation(
             request_bytes,
             request,
             custody,
             worker_cutoff_boottime_nanoseconds,
         )?;
+        if descriptor.is_some() {
+            return Err(ZfsWorkerError::Protocol(
+                "ordinary catalog observation returned a root descriptor",
+            ));
+        }
         Ok(FreshWorkspaceCatalogObservationV1::new(result))
+    }
+
+    /// Exports one detached root only after the complete physical catalog pass.
+    pub(crate) fn export_catalog_root(
+        &mut self,
+        request_bytes: &[u8],
+        request: &WorkspaceCatalogObservationRequestV1,
+        custody: &WorkspacePinHostCustody,
+        worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<(FreshWorkspaceCatalogObservationV1, OwnedFd), ZfsWorkerError> {
+        if request.root_export().is_none() {
+            return Err(ZfsWorkerError::Authority);
+        }
+        let (result, descriptor) = self.client.exchange_catalog_observation(
+            request_bytes,
+            request,
+            custody,
+            worker_cutoff_boottime_nanoseconds,
+        )?;
+        let descriptor = descriptor.ok_or(ZfsWorkerError::Protocol(
+            "catalog root export omitted the detached mount",
+        ))?;
+        Ok((FreshWorkspaceCatalogObservationV1::new(result), descriptor))
     }
 }
 
@@ -821,7 +883,7 @@ fn exchange_catalog_observation_after_ready(
     ready_subject: &KernelAuthorizedRecordSubject,
     worker_cgroup: &RetainedCgroupAnchor,
     exchange_deadline: u64,
-) -> Result<WorkspaceCatalogObservationResultV1, ZfsWorkerError> {
+) -> Result<(WorkspaceCatalogObservationResultV1, Option<OwnedFd>), ZfsWorkerError> {
     send_catalog_observation_request_before(
         socket,
         request_bytes,
@@ -831,19 +893,63 @@ fn exchange_catalog_observation_after_ready(
         ],
         exchange_deadline,
     )?;
-    let response = receive_packet_before(
-        socket,
-        MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
-        exchange_deadline,
-    )?;
+    let response = if request.root_export().is_some() {
+        receive_packet_with_descriptor_before(
+            socket,
+            MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
+            exchange_deadline,
+        )?
+    } else {
+        receive_packet_before(
+            socket,
+            MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
+            exchange_deadline,
+        )?
+    };
     verify_same_live_subject(ready_subject, response.subject())?;
     verify_exact_worker_subject(response.subject(), worker_cgroup)?;
-    let result = decode_catalog_observation_result(response.payload())?;
+    let (payload, _subject, descriptors) = response.into_parts();
+    let result = decode_catalog_observation_result(&payload)?;
     if !result.matches_request(request)? {
         return Err(ZfsWorkerError::Authority);
     }
+    let descriptor = match (request.root_export(), descriptors.len()) {
+        (None, 0) => None,
+        (Some(proof), 1) => {
+            let target = request
+                .targets()
+                .iter()
+                .find(|target| target.workspace_handle() == proof.workspace_handle)
+                .ok_or(ZfsWorkerError::Authority)?;
+            let WorkspaceCatalogObservationExpectationV1::Present {
+                root_device,
+                root_inode,
+                ..
+            } = target.expectation()
+            else {
+                return Err(ZfsWorkerError::Authority);
+            };
+            let descriptor = descriptors
+                .into_iter()
+                .next()
+                .ok_or(ZfsWorkerError::Authority)?;
+            let stat = rustix::fs::fstat(&descriptor)?;
+            if stat.st_dev != root_device
+                || stat.st_ino != root_inode
+                || MountId::from_fd(descriptor.as_fd())?.get() == 0
+            {
+                return Err(ZfsWorkerError::Authority);
+            }
+            Some(descriptor)
+        }
+        _ => {
+            return Err(ZfsWorkerError::Protocol(
+                "catalog root export descriptor role is invalid",
+            ));
+        }
+    };
     send_packet_before(socket, ACK, exchange_deadline)?;
-    Ok(result)
+    Ok((result, descriptor))
 }
 
 fn send_catalog_observation_request_before(
@@ -1432,11 +1538,21 @@ fn execute_catalog_observation_request(
     let result = WorkspaceCatalogObservationResultV1::matched(
         &request, zfs_before, pin_before, pin_after, zfs_after,
     )?;
-    send_packet_before(
-        socket,
-        &encode_catalog_observation_result(&result)?,
-        observation_deadline,
-    )?;
+    let encoded_result = encode_catalog_observation_result(&result)?;
+    if request.root_export().is_some() {
+        let detached =
+            clone_observed_workspace_root(&request, &pin_root).map_err(map_observer_error)?;
+        // The clone is never attached in this worker. Its only egress is the
+        // authenticated storaged subject on this exact one-shot channel.
+        send_packet_with_descriptor_before(
+            socket,
+            &encoded_result,
+            detached.as_fd(),
+            observation_deadline,
+        )?;
+    } else {
+        send_packet_before(socket, &encoded_result, observation_deadline)?;
+    }
     let acknowledgement = receive_packet_before(socket, ACK.len(), observation_deadline)?;
     verify_same_live_subject(&received.subject, acknowledgement.subject())?;
     verify_storaged_subject(acknowledgement.subject(), storaged_cgroup)?;
@@ -2265,6 +2381,25 @@ pub(crate) fn send_packet_before(
     }
 }
 
+fn send_packet_with_descriptor_before(
+    socket: &mut DescriptorSubjectSocket,
+    payload: &[u8],
+    descriptor: BorrowedFd<'_>,
+    deadline: u64,
+) -> Result<(), ZfsWorkerError> {
+    socket.provision_packet_capacity(payload.len())?;
+    loop {
+        ensure_before_deadline(deadline)?;
+        match socket.send_with_descriptors(payload, &[descriptor]) {
+            Ok(()) => return ensure_before_deadline(deadline),
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                wait_before(socket.as_fd()?, rustix::event::PollFlags::OUT, deadline)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 pub(crate) fn receive_packet_before(
     socket: &mut DescriptorSubjectSocket,
     maximum: usize,
@@ -2277,6 +2412,30 @@ pub(crate) fn receive_packet_before(
     loop {
         ensure_before_deadline(deadline)?;
         match socket.receive(maximum, 0) {
+            Ok(record) => {
+                ensure_before_deadline(deadline)?;
+                return Ok(record);
+            }
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                wait_before(socket.as_fd()?, rustix::event::PollFlags::IN, deadline)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn receive_packet_with_descriptor_before(
+    socket: &mut DescriptorSubjectSocket,
+    maximum: usize,
+    deadline: u64,
+) -> Result<
+    aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+    ZfsWorkerError,
+> {
+    socket.provision_packet_capacity(maximum)?;
+    loop {
+        ensure_before_deadline(deadline)?;
+        match socket.receive(maximum, 1) {
             Ok(record) => {
                 ensure_before_deadline(deadline)?;
                 return Ok(record);

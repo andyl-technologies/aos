@@ -10,6 +10,8 @@
 //! request = AOSZCAO1 | version:u16 | reserved:u16 | fixed-bindings
 //!           | root-count:u32 | object-count:u32 | target-count:u32
 //!           | roots | allowed-objects | targets
+//! version 2 appends one canonical AOSGRP01 proof selecting an exact present
+//! target for detached-root export; version 1 never carries a descriptor back.
 //! result  = AOSZCAR1 | version:u16 | reserved:u16 | request-digest
 //!           | nonce | deadline | custody | counts | five digests | matched:u8
 //! frame   = AOSZCFR1 | version:u16 | flags:u16 | transfer-digest
@@ -19,6 +21,9 @@
 use std::collections::BTreeSet;
 use std::os::fd::OwnedFd;
 
+use aos_sandbox_agent::guest_root_publication::{
+    CONCRETE_GUEST_FEATURE_MASK_V1, GuestRootPublicationProofV1,
+};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord;
@@ -32,6 +37,7 @@ const REQUEST_MAGIC: &[u8; 8] = b"AOSZCAO1";
 const RESULT_MAGIC: &[u8; 8] = b"AOSZCAR1";
 const FRAME_MAGIC: &[u8; 8] = b"AOSZCFR1";
 const WIRE_VERSION: u16 = 1;
+const ROOT_EXPORT_WIRE_VERSION: u16 = 2;
 const REQUEST_DIGEST_DOMAIN: &[u8] =
     b"aos.sandbox.storage.workspace-catalog-observation-request.v1\0";
 const PHYSICAL_PLAN_DIGEST_DOMAIN: &[u8] =
@@ -414,7 +420,7 @@ impl WorkspaceCatalogObservationBindingsV1 {
 }
 
 /// Owns one complete compact observation request.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorkspaceCatalogObservationRequestV1 {
     nonce: [u8; 32],
     deadline_boottime_nanoseconds: u64,
@@ -424,6 +430,7 @@ pub(crate) struct WorkspaceCatalogObservationRequestV1 {
     roots: Vec<WorkspaceCatalogObservationRootV1>,
     allowed_objects: Vec<WorkspaceCatalogObservationObjectV1>,
     targets: Vec<WorkspaceCatalogObservationTargetV1>,
+    root_export: Option<GuestRootPublicationProofV1>,
 }
 
 impl WorkspaceCatalogObservationRequestV1 {
@@ -446,6 +453,7 @@ impl WorkspaceCatalogObservationRequestV1 {
             roots,
             allowed_objects,
             targets,
+            root_export: None,
         };
         request.validate()?;
         Ok(request)
@@ -544,6 +552,24 @@ impl WorkspaceCatalogObservationRequestV1 {
             }
             prior_handle = Some(target.workspace_handle);
         }
+        if let Some(proof) = self.root_export {
+            let target = self
+                .targets
+                .iter()
+                .find(|target| target.workspace_handle == proof.workspace_handle)
+                .ok_or(protocol("root export is absent from the physical catalog"))?;
+            if target.creation_operation_id != proof.creation_operation
+                || target.dataset_guid != proof.dataset_guid
+                || !matches!(
+                    target.expectation,
+                    WorkspaceCatalogObservationExpectationV1::Present { .. }
+                )
+                || proof.feature_mask != CONCRETE_GUEST_FEATURE_MASK_V1
+                || proof.encode().is_err()
+            {
+                return Err(protocol("root export differs from the physical catalog"));
+            }
+        }
         if encode_request(self)?.len() > MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES {
             return Err(protocol("catalog observation request exceeds its ceiling"));
         }
@@ -580,6 +606,20 @@ impl WorkspaceCatalogObservationRequestV1 {
 
     pub(crate) fn targets(&self) -> &[WorkspaceCatalogObservationTargetV1] {
         &self.targets
+    }
+
+    /// Selects one published root from the already authenticated inventory.
+    pub(crate) fn with_root_export(
+        mut self,
+        proof: GuestRootPublicationProofV1,
+    ) -> Result<Self, ZfsWorkerError> {
+        self.root_export = Some(proof);
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub(crate) const fn root_export(&self) -> Option<GuestRootPublicationProofV1> {
+        self.root_export
     }
 
     pub(crate) fn digest(&self) -> Result<ObjectDigest, ZfsWorkerError> {
@@ -682,7 +722,12 @@ pub(crate) fn encode_request(
 ) -> Result<Vec<u8>, ZfsWorkerError> {
     let mut bytes = Vec::with_capacity(REQUEST_FIXED_BYTES);
     bytes.extend_from_slice(REQUEST_MAGIC);
-    bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    let version = if request.root_export.is_some() {
+        ROOT_EXPORT_WIRE_VERSION
+    } else {
+        WIRE_VERSION
+    };
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
     bytes.extend_from_slice(&request.nonce);
     bytes.extend_from_slice(&request.deadline_boottime_nanoseconds.to_be_bytes());
@@ -726,6 +771,13 @@ pub(crate) fn encode_request(
             }
         }
     }
+    if let Some(proof) = request.root_export {
+        bytes.extend_from_slice(
+            &proof
+                .encode()
+                .map_err(|_| protocol("root export proof is invalid"))?,
+        );
+    }
     if bytes.len() > MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES {
         return Err(protocol("catalog observation request exceeds its ceiling"));
     }
@@ -740,7 +792,11 @@ pub(crate) fn decode_request(
         return Err(protocol("catalog observation request length is invalid"));
     }
     let mut decoder = Decoder::new(bytes);
-    if decoder.take(8)? != REQUEST_MAGIC || decoder.u16()? != WIRE_VERSION || decoder.u16()? != 0 {
+    if decoder.take(8)? != REQUEST_MAGIC {
+        return Err(protocol("catalog observation request header is invalid"));
+    }
+    let version = decoder.u16()?;
+    if !matches!(version, WIRE_VERSION | ROOT_EXPORT_WIRE_VERSION) || decoder.u16()? != 0 {
         return Err(protocol("catalog observation request header is invalid"));
     }
     let nonce = decoder.array()?;
@@ -799,8 +855,16 @@ pub(crate) fn decode_request(
             expectation,
         )?);
     }
+    let root_export = if version == ROOT_EXPORT_WIRE_VERSION {
+        Some(
+            GuestRootPublicationProofV1::decode(decoder.take(266)?)
+                .map_err(|_| protocol("root export proof is invalid"))?,
+        )
+    } else {
+        None
+    };
     decoder.finish()?;
-    let request = WorkspaceCatalogObservationRequestV1::new(
+    let mut request = WorkspaceCatalogObservationRequestV1::new(
         nonce,
         deadline,
         bindings,
@@ -809,6 +873,9 @@ pub(crate) fn decode_request(
         allowed_objects,
         targets,
     )?;
+    if let Some(proof) = root_export {
+        request = request.with_root_export(proof)?;
+    }
     if request.physical_plan_digest != encoded_plan_digest || encode_request(&request)? != bytes {
         return Err(protocol("catalog observation request is not canonical"));
     }
@@ -1434,6 +1501,51 @@ mod tests {
         assert_eq!(result_bytes.len(), RESULT_BYTES);
         assert_eq!(decode_result(&result_bytes).unwrap(), result);
         assert!(result.matches_request(&present).unwrap());
+    }
+
+    #[test]
+    fn root_export_v2_binds_published_assignment_to_present_physical_target() {
+        let present = request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+        let proof = GuestRootPublicationProofV1 {
+            sandbox: [1; 16],
+            incarnation: [2; 16],
+            assignment_epoch: 3,
+            assignment_digest: [4; 32],
+            creation_operation: [21; 16],
+            workspace_handle: [20; 32],
+            dataset_guid: 22,
+            root_image_digest: [5; 32],
+            package_binding: [6; 32],
+            root_tree_digest: [7; 32],
+            feature_mask: CONCRETE_GUEST_FEATURE_MASK_V1,
+        };
+
+        let export = present.clone().with_root_export(proof).unwrap();
+        let encoded = encode_request(&export).unwrap();
+        assert_eq!(&encoded[8..10], &ROOT_EXPORT_WIRE_VERSION.to_be_bytes());
+        assert_eq!(decode_request(&encoded).unwrap(), export);
+        assert!(
+            present
+                .clone()
+                .with_root_export(GuestRootPublicationProofV1 {
+                    dataset_guid: 99,
+                    ..proof
+                })
+                .is_err()
+        );
+        assert!(
+            request(WorkspaceCatalogObservationExpectationV1::Absent)
+                .with_root_export(proof)
+                .is_err()
+        );
+
+        let mut downgraded = encoded;
+        downgraded[8..10].copy_from_slice(&WIRE_VERSION.to_be_bytes());
+        assert!(decode_request(&downgraded).is_err());
     }
 
     #[test]

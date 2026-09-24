@@ -958,6 +958,67 @@ impl StorageBrokerRuntime {
         }
     }
 
+    /// Retains one detached workspace mount only after fresh Storage inventory.
+    ///
+    /// The returned descriptor is not Host launch authority. A separate
+    /// authenticated Host handoff must recheck the same live assignment and
+    /// publication proof before transferring it onward.
+    pub(crate) fn export_guest_root_mount(
+        &mut self,
+        expected_proof: GuestRootPublicationProofV1,
+        template: &ProtectedGuestRootTemplateV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<OwnedFd, StorageRuntimeError> {
+        let now = boottime_now_nanoseconds()?;
+        let cutoff = guest_root_inventory_cutoff(now, deadline_boottime_nanoseconds)?;
+        let before = self.inventory_resources(deadline_boottime_nanoseconds, cutoff)?;
+        let before = attach_guest_root_publication_readback_v1(&before, template)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let before = decode_storage_resource_inventory_response(&before, MAXIMUM_RESPONSE_BYTES)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !before.workspaces().iter().any(|row| {
+            row.workspace_handle() == &expected_proof.workspace_handle
+                && row.guest_root_publication_proof() == Some(expected_proof)
+        }) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let validated = self
+            .workspaces
+            .as_ref()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let (plan, physical) = self.coordinator.workspace_catalog_activation_plan()?;
+        let physical = physical.ok_or(StorageRuntimeError::Recovery)?;
+        let request = self
+            .catalog_observation_request(
+                validated,
+                &plan,
+                &physical,
+                catalog_observation_nonce()?,
+                deadline_boottime_nanoseconds,
+            )?
+            .with_root_export(expected_proof)?;
+        let encoded = encode_request(&request)?;
+        let (_, mount) = self
+            .pin_io
+            .export_catalog_root(&encoded, &request, cutoff)?;
+
+        let now = boottime_now_nanoseconds()?;
+        let cutoff = guest_root_inventory_cutoff(now, deadline_boottime_nanoseconds)?;
+        let after = self.inventory_resources(deadline_boottime_nanoseconds, cutoff)?;
+        let after = attach_guest_root_publication_readback_v1(&after, template)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let after = decode_storage_resource_inventory_response(&after, MAXIMUM_RESPONSE_BYTES)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !after.workspaces().iter().any(|row| {
+            row.workspace_handle() == &expected_proof.workspace_handle
+                && row.guest_root_publication_proof() == Some(expected_proof)
+        }) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(mount)
+    }
+
     /// Publishes one populated guest root under a distinct durable signed effect.
     ///
     /// # Errors

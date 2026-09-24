@@ -499,7 +499,9 @@ in {
           "~fsmount"
           "~move_mount"
           "~mount_setattr"
-          "~open_tree"
+          # The observer may clone one verified workspace mount into an
+          # unattached descriptor; move_mount and mount mutation stay denied.
+          "open_tree"
           "~pivot_root"
           "~chroot"
           "~@reboot"

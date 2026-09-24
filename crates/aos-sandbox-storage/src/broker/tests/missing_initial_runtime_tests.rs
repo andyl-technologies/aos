@@ -240,6 +240,23 @@ impl crate::pin_worker_runtime::WorkspacePinRuntimeIo for ScriptedPinRuntimeIo {
         )?;
         Ok(crate::pin_worker_runtime::FreshWorkspaceCatalogObservationV1::new_for_test(result))
     }
+
+    fn export_catalog_root(
+        &mut self,
+        _request_bytes: &[u8],
+        _request: &crate::observation_protocol::WorkspaceCatalogObservationRequestV1,
+        _worker_cutoff_boottime_nanoseconds: u64,
+    ) -> Result<
+        (
+            crate::pin_worker_runtime::FreshWorkspaceCatalogObservationV1,
+            std::os::fd::OwnedFd,
+        ),
+        crate::ZfsWorkerError,
+    > {
+        Err(crate::ZfsWorkerError::Protocol(
+            "scripted pin runtime cannot export a detached root",
+        ))
+    }
 }
 
 struct StrictNoCallZfsBackend;
