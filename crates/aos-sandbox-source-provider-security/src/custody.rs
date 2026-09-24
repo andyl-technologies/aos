@@ -13,6 +13,56 @@ use crate::execution::RetainedSelfExecutionV1;
 use crate::manifest::{SourceProviderSecurityManifestV1, SourceProviderSecurityRoleV1};
 use crate::protected_files::{ProtectedSourceProviderFiles, RetainedSecret};
 
+pub(crate) const FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY: &str =
+    "/var/lib/aos/sandbox-mount/source-provider-authority";
+pub(crate) const FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY: &str =
+    "/var/lib/aos/source-provider/authority";
+
+/// Validates the externally provisioned RootMount role files before service activation.
+///
+/// This opens only RootMount's fixed tree and immediately drops its custody.
+/// The live owner repeats every check when it opens the authenticated carrier.
+/// No session, journal, source effect, or signing capability is returned.
+///
+/// # Errors
+///
+/// Rejects absent or changed files, unsafe metadata, wrong role or key
+/// material, inactive trust, process drift, or invalid protected time.
+pub fn validate_fixed_root_mount_authority_v1() -> Result<(), SourceProviderSecurityError> {
+    let mut custody =
+        ProtectedRootMountCustodyV1::load(Path::new(FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY))?;
+    crate::RevalidatedProviderConfigurationV1::capture_root_mount(
+        &mut custody,
+        current_unix_seconds()?,
+    )?;
+    Ok(())
+}
+
+/// Validates the externally provisioned Provider role files before service activation.
+///
+/// This opens only Provider's fixed tree and immediately drops its custody.
+/// The live owner repeats every check after accepting a connected carrier.
+/// No session, journal, source effect, or signing capability is returned.
+///
+/// # Errors
+///
+/// Rejects absent or changed files, unsafe metadata, wrong role or key
+/// material, inactive trust, process drift, or invalid protected time.
+pub fn validate_fixed_provider_authority_v1() -> Result<(), SourceProviderSecurityError> {
+    let mut custody =
+        ProtectedProviderCustodyV1::load(Path::new(FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY))?;
+    crate::RevalidatedProviderConfigurationV1::capture(&mut custody, current_unix_seconds()?)?;
+    Ok(())
+}
+
+fn current_unix_seconds() -> Result<i64, SourceProviderSecurityError> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
+    if now < 0 {
+        return Err(SourceProviderSecurityError::ExecutionChanged);
+    }
+    Ok(now)
+}
+
 pub(crate) struct ProtectedCustodyV1 {
     files: ProtectedSourceProviderFiles,
     execution: RetainedSelfExecutionV1,

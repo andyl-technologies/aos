@@ -20,17 +20,22 @@ use aos_sandbox_broker_session_security::{
 use aos_sandbox_source_provider::{
     FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1, ProviderLedgerError,
 };
+use aos_sandbox_source_provider_security::{
+    SourceProviderSecurityError, validate_fixed_provider_authority_v1,
+};
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 enum SourceProviderDaemonErrorV1 {
-    #[error("usage: aos-source-providerd [--install-catalog]")]
+    #[error("usage: aos-source-providerd [--install-catalog | --check-source-provider-authority]")]
     Arguments,
     #[error("catalog installation failed: {0}")]
     Catalog(#[from] ProductionSourceProviderCatalogInstallErrorV1),
     #[error("SourceProvider requires real and effective UID zero")]
     Identity,
+    #[error("SourceProvider protected authority failed: {0}")]
+    Authority(#[from] SourceProviderSecurityError),
     #[error("deadline failed: {0}")]
     Deadline(#[from] ProductionBrokerDeadlineErrorV1),
     #[error("ingress failed: {0}")]
@@ -55,6 +60,13 @@ fn run() -> Result<(), SourceProviderDaemonErrorV1> {
     match (arguments.next().as_deref(), arguments.next()) {
         (Some("--install-catalog"), None) => {
             install_fixed_source_provider_catalog_credential()?;
+            Ok(())
+        }
+        (Some("--check-source-provider-authority"), None) => {
+            if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
+                return Err(SourceProviderDaemonErrorV1::Identity);
+            }
+            validate_fixed_provider_authority_v1()?;
             Ok(())
         }
         (None, None) => serve_authenticated_ingress(),

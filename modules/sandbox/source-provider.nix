@@ -70,7 +70,10 @@ in {
       serviceConfig = {
         Type = "simple";
         Sockets = ["aos-source-providerd.socket"];
-        ExecStartPre = "${cfg.package}/bin/aos-source-providerd --install-catalog";
+        ExecStartPre = [
+          "${cfg.package}/bin/aos-source-providerd --check-source-provider-authority"
+          "${cfg.package}/bin/aos-source-providerd --install-catalog"
+        ];
         ExecStart = "${cfg.package}/bin/aos-source-providerd";
         LoadCredential = [
           "current-catalog-publication:/run/credentials/@system/${cfg.credentials.catalogPublication}"

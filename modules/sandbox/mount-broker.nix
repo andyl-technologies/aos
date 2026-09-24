@@ -139,7 +139,11 @@ in {
       serviceConfig = {
         Type = "simple";
         NotifyAccess = "main";
-        ExecStartPre = brokerSessionConfiguration.installCommands;
+        ExecStartPre =
+          brokerSessionConfiguration.installCommands
+          ++ lib.optionals cfg.sourceProviderSession.enable [
+            "${cfg.package}/bin/aos-sandbox-mountd --check-source-provider-authority"
+          ];
         # The service does not provision RootMount custody; the daemon checks
         # its fixed files, peer and signed hello before retaining the session.
         ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider"}";

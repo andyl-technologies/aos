@@ -24,16 +24,13 @@
       type = lib.types.nullOr lib.types.str;
       default = null;
     };
-    options.aos.sandbox.sourceProvider.enable = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-    };
   };
   mount = lib.evalModules {
     specialArgs = {inherit pkgs;};
     modules = [
       systemdOptions
       ../../modules/sandbox/mount-broker.nix
+      ../../modules/sandbox/source-provider.nix
       {aos.sandbox.mountBroker.enable = true;}
     ];
   };
@@ -45,10 +42,13 @@
   activeConfiguration = mount.extendModules {
     modules = [{
       aos.sandbox.sourceProvider.enable = true;
+      aos.sandbox.sourceProvider.credentials.catalogPublication = "source-provider-catalog-test";
+      aos.sandbox.sourceProvider.credentials.catalogManifest = "source-provider-manifest-test";
       aos.sandbox.mountBroker.sourceProviderSession.enable = true;
     }];
   };
   active = activeConfiguration.config.systemd.services.aos-sandbox-mountd;
+  activeProvider = activeConfiguration.config.systemd.services.aos-source-providerd;
   invalidConfiguration = mount.extendModules {
     modules = [{aos.sandbox.mountBroker.sourceProviderSession.enable = true;}];
   };
@@ -67,6 +67,15 @@ in
   assert lib.elem "aos-source-providerd.socket" active.requires;
   assert lib.elem "aos-source-providerd.socket" active.after;
   assert lib.hasSuffix " --source-provider" active.serviceConfig.ExecStart;
+  assert lib.elem "${activeConfiguration.config.aos.sandbox.mountBroker.package}/bin/aos-sandbox-mountd --check-source-provider-authority" active.serviceConfig.ExecStartPre;
+  assert activeProvider.serviceConfig.ExecStartPre == [
+    "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --check-source-provider-authority"
+    "${activeConfiguration.config.aos.sandbox.sourceProvider.package}/bin/aos-source-providerd --install-catalog"
+  ];
+  assert activeProvider.serviceConfig.LoadCredential == [
+    "current-catalog-publication:/run/credentials/@system/source-provider-catalog-test"
+    "current-catalog-manifest:/run/credentials/@system/source-provider-manifest-test"
+  ];
     pkgs.mkDerivation {
       pname = "sandbox-source-provider-activation-contract";
       version = "0";

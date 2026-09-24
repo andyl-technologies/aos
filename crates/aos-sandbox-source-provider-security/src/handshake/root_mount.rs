@@ -15,11 +15,8 @@ use aos_sandbox_source_provider_protocol::{
 use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
 use crate::SourceProviderSecurityError;
 use crate::carrier::{CarrierFailureV1, InertSourceProviderCarrierV1};
-use crate::custody::ProtectedRootMountCustodyV1;
+use crate::custody::{FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY, ProtectedRootMountCustodyV1};
 use crate::execution::ProcessExecutionEvidenceV1;
-
-const FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY: &str =
-    "/var/lib/aos/sandbox-mount/source-provider-authority";
 
 pub(super) struct RootMountHelloPreparedV1 {
     custody: ProtectedRootMountCustodyV1,

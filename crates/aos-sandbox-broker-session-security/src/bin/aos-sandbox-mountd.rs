@@ -30,6 +30,7 @@ use aos_sandbox_mount::worker::{DescriptorMountWorker, RetainedMountObservation}
 use aos_sandbox_mount::{DormantMountBrokerCompositionV1, MountError};
 use aos_sandbox_source_provider_security::{
     RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
+    validate_fixed_root_mount_authority_v1,
 };
 
 const EXPECTED_FD_NAME: &str = "aos-sandbox-mount";
@@ -46,7 +47,9 @@ enum MountDaemonErrorV1 {
     Identity,
     #[error("systemd authority credential directory is absent")]
     CredentialDirectory,
-    #[error("usage: aos-sandbox-mountd HELPER_PATH [--source-provider]")]
+    #[error(
+        "usage: aos-sandbox-mountd HELPER_PATH [--source-provider] | --check-source-provider-authority"
+    )]
     Arguments,
     #[error("RootMount SourceProvider connector failed: {0}")]
     SourceProvider(#[from] ProductionRootMountSourceProviderErrorV1),
@@ -77,6 +80,19 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         return Err(MountDaemonErrorV1::Identity);
     }
 
+    let arguments = env::args().collect::<Vec<_>>();
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--check-source-provider-authority")
+    {
+        if arguments.len() != 2 {
+            return Err(MountDaemonErrorV1::Arguments);
+        }
+        validate_fixed_root_mount_authority_v1()
+            .map_err(ProductionRootMountSourceProviderErrorV1::from)?;
+        return Ok(());
+    }
+
     // SAFETY: this is the single-threaded process entrypoint before any Rust
     // owner represents systemd's complete activation descriptor range.
     let retained = unsafe {
@@ -96,7 +112,7 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         MAXIMUM_RETAINED_MOUNTS,
     )?);
 
-    let (helper_executable, source_provider_enabled) = parse_arguments(env::args())?;
+    let (helper_executable, source_provider_enabled) = parse_arguments(arguments)?;
     let (mut journal, _) = Journal::open_protected_at(
         Path::new(STATE_ROOT),
         "mount.journal",

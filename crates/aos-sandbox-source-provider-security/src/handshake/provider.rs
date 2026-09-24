@@ -26,12 +26,10 @@ use super::{
 };
 use crate::SourceProviderSecurityError;
 use crate::carrier::{CarrierFailureV1, InertSourceProviderCarrierV1};
-use crate::custody::ProtectedProviderCustodyV1;
+use crate::custody::{FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY, ProtectedProviderCustodyV1};
 use crate::execution::ProcessExecutionEvidenceV1;
 
 const MAXIMUM_CURRENT_REQUEST_LIFETIME_SECONDS: i64 = 300;
-const FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY: &str = "/var/lib/aos/source-provider/authority";
-
 #[path = "provider/completion.rs"]
 mod completion;
 #[path = "provider/session.rs"]
