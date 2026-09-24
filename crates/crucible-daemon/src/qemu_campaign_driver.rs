@@ -959,6 +959,11 @@ pub trait QemuModeledAttemptLifecycle {
     }
 
     /// Authenticates a released park against the selected branch continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the lifecycle cannot authenticate the
+    /// release against its current scheduler state.
     fn campaign_marker_release_committed(
         &self,
         _node: &NodeId,
