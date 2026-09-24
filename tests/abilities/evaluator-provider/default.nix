@@ -37,10 +37,10 @@ let
       candidate = derivation {
         name = "aos-ability-forbidden-ifd";
         system = arguments.ifd_system;
-        builder = builtins.appendContext arguments.ifd_builder {
-          "${arguments.ifd_bash_store_path}" = {path = true;};
-        };
-        args = ["-c" "printf '{}' > \"$out\""];
+        builder = "builtin:buildenv";
+        derivations = "";
+        paths = "";
+        manifest = ".";
       };
     in
       if candidate.drvPath != arguments.ifd_derivation
