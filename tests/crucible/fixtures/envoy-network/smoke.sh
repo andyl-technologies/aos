@@ -22,7 +22,7 @@ trap stop_processes EXIT HUP INT TERM
 cat > "$work/nginx.conf" <<EOF
 worker_processes 1;
 pid $work/nginx.pid;
-error_log $work/nginx.log notice;
+error_log /proc/self/fd/2 notice;
 events { worker_connections 128; }
 http {
   access_log off;
@@ -41,7 +41,7 @@ http {
 }
 EOF
 
-nginx -p "$work/" -c "$work/nginx.conf" -e "$work/nginx.log" \
+nginx -p "$work/" -c "$work/nginx.conf" \
   -g 'daemon off; master_process off;' >"$work/east.log" 2>&1 &
 east_pid=$!
 
