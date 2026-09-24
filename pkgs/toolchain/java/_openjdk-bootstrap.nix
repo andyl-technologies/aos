@@ -97,7 +97,7 @@
   nativeMig =
     if isDarwinCross
     then
-      import ./_darwin-mig.nix {
+      import ../../darwin/_darwin-mig.nix {
         inherit fetchurl buildPackages;
       }
     else null;
