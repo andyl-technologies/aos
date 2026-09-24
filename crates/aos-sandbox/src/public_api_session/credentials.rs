@@ -26,9 +26,11 @@ const NAMES: [&str; 4] = [
 const ENTITLEMENT_NAME: &str = "public-api-entitlements";
 const ENTITLEMENT_KEY_NAME: &str = "public-api-entitlement-public-key";
 const OPERATOR_RECOVERY_KEY_NAME: &str = "operator-recovery-controller-key-v1";
+const OPERATOR_STORAGE_OWNER_KEY_NAME: &str = "operator-recovery-storage-owner-key-v1";
 
 /// Retains one fixed protected credential and rejects replacement before use.
 pub(crate) struct PinnedOperatorRecoveryKeyV1 {
+    name: &'static str,
     path: PathBuf,
     uid: u32,
     directory_identity: (u64, u64),
@@ -39,20 +41,33 @@ pub(crate) struct PinnedOperatorRecoveryKeyV1 {
 impl PinnedOperatorRecoveryKeyV1 {
     /// Opens the dedicated controller recovery key from systemd credentials.
     pub(crate) fn load() -> Result<Self, PublicApiSessionError> {
+        Self::load_named(OPERATOR_RECOVERY_KEY_NAME)
+    }
+
+    /// Opens the independently pinned Storage owner public key.
+    pub(crate) fn load_storage_owner_public() -> Result<Self, PublicApiSessionError> {
+        Self::load_named(OPERATOR_STORAGE_OWNER_KEY_NAME)
+    }
+
+    fn load_named(name: &'static str) -> Result<Self, PublicApiSessionError> {
         let path = std::env::var_os("CREDENTIALS_DIRECTORY")
             .map(PathBuf::from)
             .ok_or(PublicApiSessionError::Configuration)?;
-        Self::open(path)
+        Self::open_named(path, name)
     }
 
     fn open(path: PathBuf) -> Result<Self, PublicApiSessionError> {
+        Self::open_named(path, OPERATOR_RECOVERY_KEY_NAME)
+    }
+
+    fn open_named(path: PathBuf, name: &'static str) -> Result<Self, PublicApiSessionError> {
         let uid = rustix::process::geteuid().as_raw();
         let directory = open_directory(&path, uid)?;
         let stat =
             rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
-        let (bytes, file_identity) =
-            read_one_with_identity(&directory, OPERATOR_RECOVERY_KEY_NAME, uid)?;
+        let (bytes, file_identity) = read_one_with_identity(&directory, name, uid)?;
         let retained = Self {
+            name,
             path,
             uid,
             directory_identity: (stat.st_dev, stat.st_ino),
@@ -77,8 +92,7 @@ impl PinnedOperatorRecoveryKeyV1 {
         if (stat.st_dev, stat.st_ino) != self.directory_identity {
             return Err(PublicApiSessionError::Stale);
         }
-        let (bytes, identity) =
-            read_one_with_identity(&directory, OPERATOR_RECOVERY_KEY_NAME, self.uid)?;
+        let (bytes, identity) = read_one_with_identity(&directory, self.name, self.uid)?;
         if identity != self.file_identity || bytes != self.bytes {
             return Err(PublicApiSessionError::Stale);
         }
