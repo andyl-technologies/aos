@@ -11,6 +11,7 @@ use std::sync::Arc;
 use super::*;
 use crate::{
     ExactPinMaterializationSelection, ExecutionCancellation,
+    encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
     install_attempt_production_exact_checkpoint,
     prepare_attempt_production_replay_oracle_promotion,
 };
@@ -665,16 +666,25 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
     let configuration_id =
         ConfigurationId::from_hash(CampaignHash::from_bytes(configuration.id().bytes));
+    let encoded_scenario =
+        encode_crucible_scenario_artifact(&scenario_source).expect("supported scenario artifact");
     let scenario_artifact = source
-        .publish_scenario_artifact(scenario_id, 1, scenario_source.to_compact_binary())
+        .publish_scenario_artifact(
+            scenario_id,
+            encoded_scenario.payload_schema(),
+            encoded_scenario.payload().to_vec(),
+        )
         .expect("scenario artifact");
+    let encoded_configuration =
+        encode_crucible_configuration_artifact(&encoded_scenario, &configuration.schedule)
+            .expect("supported configuration artifact");
     let configuration_artifact = source
         .publish_configuration_artifact(
             scenario_id,
             scenario_artifact,
             configuration_id,
-            1,
-            configuration.schedule.to_compact_binary(),
+            encoded_configuration.payload_schema(),
+            encoded_configuration.payload().to_vec(),
         )
         .expect("configuration artifact");
     let lineage = CampaignLineage::new(
@@ -685,8 +695,8 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
         "crucible-import-test",
         "qemu-import-test",
         BTreeMap::from([("control".to_owned(), 1)]),
-        1,
-        1,
+        encoded_scenario.payload_schema(),
+        encoded_configuration.payload_schema(),
     )
     .expect("lineage");
     let policy = CampaignPolicy::new(
@@ -786,6 +796,14 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     source_pins
         .select(source_selection)
         .expect("select checkpoint");
+    source
+        .authenticated_closure_ids([pinned.new_snapshot.content_id()])
+        .expect("campaign snapshot closure");
+    assert!(
+        source
+            .authenticated_closure_ids([promoted_root.content_id()])
+            .is_err()
+    );
     let mut resolver = ExactPinCampaignArchiveCheckpointResolver::new(
         &source,
         &source_checkpoints,
@@ -850,8 +868,11 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
         )
         .expect("import without process-local promotion claim");
     }
+    let mut selection_fence = destination_pins
+        .acquire_exact_pin_retention_fence()
+        .expect("stable imported selection inventory");
     assert!(
-        destination_pins
+        selection_fence
             .selection(
                 &CampaignName::new("imported").expect("imported campaign"),
                 configuration_id,
@@ -859,6 +880,7 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
             .expect("imported selection")
             .is_some()
     );
+    drop(selection_fence);
     assert!(matches!(
         authenticate_archive_checkpoint(
             &destination,

@@ -11,6 +11,7 @@ use crucible_cas::content_store::{
 
 use super::*;
 use crate::archive::{build_inspection, inventory_digest};
+use crate::object_profile::profile_authenticated_exact_leaf;
 use crate::{
     ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
     CampaignArchiveCheckpointSelection, CampaignArchiveInspection, CampaignArchiveInventoryPage,
@@ -75,6 +76,7 @@ impl CampaignRepository {
         self.validate_complete_head(snapshot.content_id())?;
         let snapshot_record = self.read_snapshot(snapshot.content_id())?;
         let snapshot_closure = self.authenticated_closure_ids([snapshot.content_id()])?;
+        let mut exact_leaves = BTreeSet::new();
 
         let mut expected_exact_pins = BTreeSet::new();
         self.visit_pin_retention_roots_at(snapshot, &mut |pin| {
@@ -111,17 +113,18 @@ impl CampaignRepository {
         } else {
             self.authenticated_closure_ids(retained_roots.iter().copied())?
         };
-        self.reject_nested_archive_metadata(&retained_closure)?;
+        self.reject_nested_archive_metadata(&retained_closure, &BTreeSet::new())?;
         let mut represented = snapshot_closure.clone();
         represented.extend(retained_closure);
         if !checkpoint_selections.is_empty() {
-            represented.extend(
-                self.authenticated_closure_ids(
+            let (checkpoint_closure, checkpoint_exact_leaves) = self
+                .authenticated_closure_with_exact_leaves(
                     checkpoint_selections
                         .iter()
                         .map(|selection| selection.checkpoint().content_id()),
-                )?,
-            );
+                )?;
+            represented.extend(checkpoint_closure);
+            exact_leaves.extend(checkpoint_exact_leaves);
         }
         if represented.len() > MAX_ARCHIVE_INVENTORY_ENTRIES {
             return Err(integrity("campaign-archive-inventory-limit"));
@@ -136,7 +139,12 @@ impl CampaignRepository {
         let mut selected = Vec::new();
         let mut omitted = Vec::new();
         for id in represented {
-            let profile = profiler.derive_profile(id, &self.blobs.read(id, None)?)?;
+            let source = self.blobs.read(id, None)?;
+            let profile = if exact_leaves.contains(&id) {
+                profile_authenticated_exact_leaf(id, &source)?
+            } else {
+                profiler.derive_profile(id, &source)?
+            };
             let entry = ArchiveObjectEntry::from_profile(id, profile);
             if archive_policy_selects(policy, id, profile.retention_role(), &finding_closure) {
                 selected.push(entry);
@@ -308,10 +316,36 @@ impl CampaignRepository {
             return Err(integrity("campaign-archive-source-snapshot-is-undeclared"));
         }
 
+        let executable_closure = if matches!(
+            manifest.policy(),
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        ) {
+            let mut complete =
+                self.authenticated_closure_ids([manifest.source_snapshot().content_id()])?;
+            complete
+                .extend(self.authenticated_closure_ids(manifest.retained_roots().iter().copied())?);
+            let (checkpoints, exact_leaves) = self.authenticated_closure_with_exact_leaves(
+                manifest
+                    .checkpoint_selections()
+                    .iter()
+                    .map(|selection| selection.checkpoint().content_id()),
+            )?;
+            complete.extend(checkpoints);
+            Some((complete, exact_leaves))
+        } else {
+            None
+        };
+        let exact_leaves = executable_closure
+            .as_ref()
+            .map_or_else(BTreeSet::new, |(_, leaves)| leaves.clone());
         let profiler = CampaignObjectProfiler;
         let mut selected_children = BTreeMap::new();
         for entry in &selected {
-            let (profile, children) = self.authenticate_archive_object(entry.id(), &profiler)?;
+            let (profile, children) = self.authenticate_archive_object(
+                entry.id(),
+                &profiler,
+                exact_leaves.contains(&entry.id()),
+            )?;
             if !entry.matches_profile(profile) {
                 return Err(integrity(
                     "campaign-archive-selected-object-profile-mismatch",
@@ -324,7 +358,11 @@ impl CampaignRepository {
         }
         let mut omitted_inventory_verified = true;
         for entry in &omitted {
-            match self.authenticate_archive_object(entry.id(), &profiler) {
+            match self.authenticate_archive_object(
+                entry.id(),
+                &profiler,
+                exact_leaves.contains(&entry.id()),
+            ) {
                 Ok((profile, _)) if entry.matches_profile(profile) => {}
                 Ok(_) => {
                     return Err(integrity(
@@ -338,20 +376,8 @@ impl CampaignRepository {
             }
         }
         self.validate_archive_policy(&manifest, &selected, &omitted, &selected_children)?;
-        if matches!(
-            manifest.policy(),
-            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
-        ) {
-            let mut roots = vec![manifest.source_snapshot().content_id()];
-            roots.extend(
-                manifest
-                    .checkpoint_selections()
-                    .iter()
-                    .map(|selection| selection.checkpoint().content_id()),
-            );
-            roots.extend(manifest.retained_roots().iter().copied());
-            let complete = self.authenticated_closure_ids(roots)?;
-            self.reject_nested_archive_metadata(&complete)?;
+        if let Some((complete, exact_leaves)) = executable_closure {
+            self.reject_nested_archive_metadata(&complete, &exact_leaves)?;
             if complete != selected.iter().map(|entry| entry.id()).collect() || !omitted.is_empty()
             {
                 return Err(integrity(
@@ -539,16 +565,17 @@ impl CampaignRepository {
         let mut represented =
             self.authenticated_closure_ids([plan.manifest.source_snapshot().content_id()])?;
         represented.extend(
-            self.authenticated_closure_ids(
+            self.authenticated_closure_with_exact_leaves(
                 plan.manifest
                     .checkpoint_selections()
                     .iter()
                     .map(|selection| selection.checkpoint().content_id()),
-            )?,
+            )?
+            .0,
         );
         let retained_closure =
             self.authenticated_closure_ids(plan.manifest.retained_roots().iter().copied())?;
-        self.reject_nested_archive_metadata(&retained_closure)?;
+        self.reject_nested_archive_metadata(&retained_closure, &BTreeSet::new())?;
         represented.extend(retained_closure);
         let declared = plan
             .selected
@@ -568,9 +595,13 @@ impl CampaignRepository {
     fn reject_nested_archive_metadata(
         &self,
         closure: &BTreeSet<ContentId>,
+        exact_leaves: &BTreeSet<ContentId>,
     ) -> Result<(), CampaignRepositoryError> {
         for id in closure {
-            if !is_campaign_record_kind(id.kind()) || id.kind() == ObjectKind::MerkleNode {
+            if exact_leaves.contains(id)
+                || !is_campaign_record_kind(id.kind())
+                || id.kind() == ObjectKind::MerkleNode
+            {
                 continue;
             }
             let envelope = self.read_envelope(*id)?;
@@ -619,6 +650,7 @@ impl CampaignRepository {
         &self,
         id: ContentId,
         profiler: &CampaignObjectProfiler,
+        exact_leaf: bool,
     ) -> Result<
         (
             crucible_cas::content_store::ObjectProfile,
@@ -628,8 +660,13 @@ impl CampaignRepository {
     > {
         let authenticated = self.blobs.read(id, None)?;
         authenticated.copy_to(&mut io::sink())?;
-        let profile = profiler.derive_profile(id, &self.blobs.read(id, None)?)?;
-        let children = if is_archive_opaque_leaf(id.kind()) {
+        let source = self.blobs.read(id, None)?;
+        let profile = if exact_leaf {
+            profile_authenticated_exact_leaf(id, &source)?
+        } else {
+            profiler.derive_profile(id, &source)?
+        };
+        let children = if exact_leaf || is_archive_opaque_leaf(id.kind()) {
             BTreeSet::new()
         } else {
             let bytes = self.blobs.read(id, None)?.read_all(MAX_ENVELOPE_BYTES)?;
