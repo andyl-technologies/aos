@@ -13,7 +13,12 @@ use super::*;
 #[test]
 fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
     let (artifact, child, path, measurements, properties, coverage) = fixture_ids();
-    let attempt = stored_id!(AttemptId, ObjectKind::CampaignFact, 9, "trace-attempt");
+    let attempt = AttemptId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        9,
+        b"trace-attempt",
+    ))
+    .expect("attempt identity");
     let observation = Observation::new(
         attempt,
         Observation::outcome(
