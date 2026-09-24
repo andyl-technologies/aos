@@ -1,6 +1,97 @@
 //! Host-verified all-VM boundary for one atomic network fault choice.
 
 use super::*;
+use crucible::NetworkFaultSelectable;
+
+/// Adds a network choice already proven at the initial scheduler boundary.
+///
+/// # Errors
+///
+/// Returns an attempt failure if discovery or bounded retention fails.
+pub(super) fn discover_initial_network_fault_choice(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    input: &CrucibleAttemptExecution,
+    configuration: &Configuration,
+    entries: &[SchedulerEventLogEntry],
+    frontier: VirtualTime,
+    quiescence: Option<&SchedulerQuiescence>,
+    discoveries: &mut RetainedChoiceDiscoveries,
+) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    if input.attempt().stop().accepts_next_choice()
+        && let Some(discovery) = next_network_fault_discovery(
+            lifecycle,
+            input,
+            configuration,
+            entries,
+            &[],
+            frontier,
+            quiescence,
+        )
+        .map_err(AttemptWorkerFailure::Terminal)?
+    {
+        discoveries
+            .insert(discovery)
+            .map_err(AttemptWorkerFailure::Terminal)?;
+    }
+    Ok(())
+}
+
+/// Adds a new quantum's network discovery once, preserving retained order.
+///
+/// # Errors
+///
+/// Returns an attempt failure if the opportunity identity cannot be addressed.
+pub(super) fn append_new_network_fault_discovery(
+    discovery: ChoiceDiscovery,
+    retained: &RetainedChoiceDiscoveries,
+    outcome: &mut QuantumOutcome,
+) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    let opportunity_id = discovery.opportunity().id().map_err(|error| {
+        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Campaign(error))
+    })?;
+    if !retained.discoveries.contains_key(&opportunity_id)
+        && !outcome.discovered_choices.iter().any(|existing| {
+            existing
+                .opportunity()
+                .id()
+                .is_ok_and(|existing_id| existing_id == opportunity_id)
+        })
+    {
+        outcome.discovered_choices.push(discovery);
+    }
+    Ok(())
+}
+
+/// Admits a post-quantum network choice only after the serial boot boundary.
+///
+/// # Errors
+///
+/// Returns an attempt failure if the all-VM proof, boot boundary, or choice
+/// identity is invalid.
+pub(super) fn discover_quantum_network_fault_choice(
+    lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
+    input: &CrucibleAttemptExecution,
+    retained_entries: &[SchedulerEventLogEntry],
+    outcome: &mut QuantumOutcome,
+    was_parallel_boot: bool,
+    discoveries: &RetainedChoiceDiscoveries,
+) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    if let Some(discovery) = next_network_fault_discovery(
+        lifecycle,
+        input,
+        &outcome.configuration,
+        retained_entries,
+        &outcome.event_log_entries,
+        outcome.frontier,
+        outcome.scheduler_quiescence.as_ref(),
+    )
+    .map_err(AttemptWorkerFailure::Terminal)?
+    {
+        EnvoyParallelBoot::require_serial_network_boundary(was_parallel_boot)?;
+        append_new_network_fault_discovery(discovery, discoveries, outcome)?;
+    }
+    Ok(())
+}
 
 fn phase_marker(phase: NetworkFaultPhase) -> &'static str {
     match phase {
