@@ -89,6 +89,7 @@
   useCxx = spec.useCxx or false;
   cc = spec.cc or "${gcc}/bin/gcc";
   cxx = spec.cxx or "${gcc}/bin/g++";
+  ar = spec.ar or "${binutils}/bin/ar";
   # Older configure scripts restore CC from their cache after checking the
   # --with-binutils override. Pin the original command as well so compilation
   # cannot silently return to the compiler's construction-stage assembler.
@@ -102,7 +103,7 @@
       else []
     )
     ++ [
-      ''AR="${binutils}/bin/ar"''
+      ''AR="${ar}"''
       ''RANLIB="${binutils}/bin/ranlib"''
       ''CFLAGS="${cflags}"''
     ]
