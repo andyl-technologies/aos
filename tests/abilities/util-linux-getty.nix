@@ -63,8 +63,20 @@
   initrdVirtual = request initrdRequests "virtual-console-lifecycle";
   initrdVirtualDependencies = request initrdRequests "virtual-console-dependencies";
   initrdVirtualTerminal = request initrdRequests "virtual-console-terminal";
+  # Exercise real host and initrd selection without evaluating the fleet image.
   debugSystem = mkSystem {
-    modules = [../../systems/server-test.nix];
+    modules = [
+      ../../systems/_ability-providers.nix
+      ../../systems/_artifact-backend.nix
+      ../../systems/_kernel.nix
+      ../../systems/_system-manager.nix
+      {
+        aos.profiles.debug = {
+          enable = true;
+          autologin = true;
+        };
+      }
+    ];
     systemName = "debug-profile-getty";
   };
   debugConfig = debugSystem.config;
