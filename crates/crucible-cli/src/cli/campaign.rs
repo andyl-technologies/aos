@@ -110,6 +110,7 @@ const CAMPAIGN_RUNTIME_ATTACHMENT_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-runtime-attachment.v1";
 const MAX_CAMPAIGN_SELECTOR_SCAN_ITEMS: u32 = 4_096;
 const MAX_CAMPAIGN_SELECTOR_PREDICATES: usize = 16;
+const MAX_CAMPAIGN_GROUP_VALUE_BYTES: usize = 128 * 1024;
 const MAX_CAMPAIGN_PAGE_FOLLOW_PAGES: u32 = 256;
 const MAX_CAMPAIGN_PAGE_AGGREGATE_ENTRIES: usize = 65_536;
 const MAX_CAMPAIGN_PAGE_AGGREGATE_RESPONSE_BYTES: u64 = 128 * 1024 * 1024;
@@ -1643,7 +1644,7 @@ fn parse_campaign_choice_value(value: &str) -> Result<ChoiceValue, CliError> {
         _ => {
             let (kind, body) = value.split_once(':').ok_or_else(|| {
                 usage_error(
-                    "campaign branch value must be true, false, i64:N, u64:N, or discrete:ID",
+                    "campaign branch value must be true, false, i64:N, u64:N, discrete:ID, or group:HEX",
                 )
             })?;
             match kind {
@@ -1664,12 +1665,36 @@ fn parse_campaign_choice_value(value: &str) -> Result<ChoiceValue, CliError> {
                     .map_err(|error| {
                         usage_error(format!("invalid discrete branch value: {error}"))
                     }),
+                "group" => parse_campaign_group_value(body),
                 _ => Err(usage_error(
-                    "campaign branch value kind must be i64, u64, or discrete",
+                    "campaign branch value kind must be i64, u64, discrete, or group",
                 )),
             }
         }
     }
+}
+
+fn parse_campaign_group_value(body: &str) -> Result<ChoiceValue, CliError> {
+    if body.is_empty()
+        || body.len() > MAX_CAMPAIGN_GROUP_VALUE_BYTES * 2
+        || body.len() % 2 != 0
+        || !body
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(usage_error(
+            "group branch value must be bounded, even-length lowercase hexadecimal",
+        ));
+    }
+
+    let bytes = hex::decode(body)
+        .map_err(|error| usage_error(format!("invalid group branch value hex: {error}")))?;
+    let value = ChoiceValue::from_canonical_bytes(&bytes)
+        .map_err(|error| usage_error(format!("invalid canonical group branch value: {error}")))?;
+    if !matches!(value, ChoiceValue::Group(_)) {
+        return Err(usage_error("group branch value does not encode a group"));
+    }
+    Ok(value)
 }
 
 fn parse_campaign_stop_condition(value: &str) -> Result<StopCondition, CliError> {

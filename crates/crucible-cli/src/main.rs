@@ -1137,7 +1137,7 @@ struct CampaignBranchArgs {
     /// Maximum authenticated opportunities examined during selector resolution.
     #[arg(long, value_name = "COUNT", default_value_t = 256)]
     selector_scan_limit: u32,
-    /// Finite value: true, false, i64:N, u64:N, or discrete:ALTERNATIVE_ID.
+    /// Finite value: true, false, i64:N, u64:N, discrete:ID, or group:HEX.
     #[arg(
         long = "value",
         value_name = "VALUE",

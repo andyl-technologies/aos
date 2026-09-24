@@ -371,6 +371,7 @@ pub(super) const fn campaign_choice_domain_kind(domain: &ChoiceDomain) -> &'stat
         ChoiceDomain::Boolean(_) => "boolean",
         ChoiceDomain::Discrete(_) => "discrete",
         ChoiceDomain::Integer(_) => "integer",
+        ChoiceDomain::Group(_) => "group",
     }
 }
 
@@ -394,6 +395,7 @@ pub(super) fn campaign_choice_value_label(value: &ChoiceValue) -> String {
         ChoiceValue::Discrete(value) => format!("discrete:{value}"),
         ChoiceValue::Integer(IntegerValue::Signed(value)) => format!("i64:{value}"),
         ChoiceValue::Integer(IntegerValue::Unsigned(value)) => format!("u64:{value}"),
+        ChoiceValue::Group(_) => format!("group:{}", hex::encode(value.canonical_bytes())),
     }
 }
 
