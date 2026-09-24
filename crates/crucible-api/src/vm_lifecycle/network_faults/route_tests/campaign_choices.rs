@@ -86,25 +86,27 @@ fn selected_fault(
     )?)
 }
 
-fn topology() -> WorldFaultTopology {
-    let domain = |name: &str, segment: &str| WorldFaultDomain {
-        id: SignalId::parse(name).expect("test domain"),
-        targets: vec![WorldFaultTargetRef::NetworkSegment {
-            segment: SignalId::parse(segment).expect("test segment"),
-            direction: FaultDirection::AToB,
-        }],
+fn topology() -> Result<WorldFaultTopology, Box<dyn Error>> {
+    let domain = |name: &str, segment: &str| -> Result<WorldFaultDomain, Box<dyn Error>> {
+        Ok(WorldFaultDomain {
+            id: SignalId::parse(name)?,
+            targets: vec![WorldFaultTargetRef::NetworkSegment {
+                segment: SignalId::parse(segment)?,
+                direction: FaultDirection::AToB,
+            }],
+        })
     };
-    WorldFaultTopology {
+    Ok(WorldFaultTopology {
         fault_domains: vec![
-            domain("primary", "segment-primary"),
-            domain("backup", "segment-backup"),
+            domain("primary", "segment-primary")?,
+            domain("backup", "segment-backup")?,
         ],
         ..WorldFaultTopology::default()
-    }
+    })
 }
 
-fn frame(segment: &str) -> FaultOpportunity {
-    FaultOpportunity::new(
+fn frame(segment: &str) -> Result<FaultOpportunity, Box<dyn Error>> {
+    Ok(FaultOpportunity::new(
         ResolvedFaultTarget::NetworkSegment {
             segment: id(segment),
             direction: FaultDirection::AToB,
@@ -128,8 +130,7 @@ fn frame(segment: &str) -> FaultOpportunity {
             length_bytes: 64,
             payload_digest: ContentHash::from_bytes(b"frame"),
         },
-    )
-    .expect("test frame")
+    )?)
 }
 
 fn modeled_drop(
@@ -137,7 +138,7 @@ fn modeled_drop(
     topology: &WorldFaultTopology,
     segment: &str,
 ) -> Result<bool, Box<dyn Error>> {
-    let opportunity = frame(segment);
+    let opportunity = frame(segment)?;
     let actions = replay.actions_for_opportunity(topology, &opportunity)?;
     let mut payload = vec![0x45; 64];
     let mut effects = crucible::ResolvedNetworkFrameEffects::default();
@@ -161,7 +162,7 @@ fn modeled_drop(
 fn primary_and_backup_selections_change_modeled_frames_and_replay_exactly()
 -> Result<(), Box<dyn Error>> {
     let scenario = scenario()?;
-    let topology = topology();
+    let topology = topology()?;
     for (path, primary_drop, backup_drop) in [("primary", true, false), ("backup", false, true)] {
         let (selected, original_branches) = selected_loss(&scenario, path)?;
         assert!(
@@ -240,10 +241,10 @@ fn primary_and_backup_selections_change_modeled_frames_and_replay_exactly()
 #[test]
 fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), Box<dyn Error>> {
     let scenario = scenario()?;
-    let topology = topology();
+    let topology = topology()?;
     let replay = selected_fault(&scenario, "link_down", "primary")?;
-    let affected = replay.actions_for_opportunity(&topology, &frame("segment-primary"))?;
-    let unaffected = replay.actions_for_opportunity(&topology, &frame("segment-backup"))?;
+    let affected = replay.actions_for_opportunity(&topology, &frame("segment-primary")?)?;
+    let unaffected = replay.actions_for_opportunity(&topology, &frame("segment-backup")?)?;
 
     assert_eq!(affected.len(), 1);
     assert!(unaffected.is_empty());
@@ -262,7 +263,7 @@ fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), Box
     ));
     assert_eq!(
         replay.active_outages(&topology, 11_000)?,
-        vec![(frame("segment-primary").target().clone(), 1_010_000)]
+        vec![(frame("segment-primary")?.target().clone(), 1_010_000)]
     );
     assert!(replay.active_outages(&topology, 1_010_000)?.is_empty());
     Ok(())
@@ -273,9 +274,9 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
 -> Result<(), Box<dyn Error>> {
     let scenario = scenario()?;
     let (replay, _) = selected_loss(&scenario, "primary")?;
-    let opportunity = frame("segment-primary");
+    let opportunity = frame("segment-primary")?;
     let action = replay
-        .actions_for_opportunity(&topology(), &opportunity)?
+        .actions_for_opportunity(&topology()?, &opportunity)?
         .into_iter()
         .next()
         .ok_or("missing selected frame action")?;
@@ -308,7 +309,7 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
     };
     let combined = trace_with_campaign_network_records(
         Some(signal),
-        &[campaign.clone()],
+        std::slice::from_ref(&campaign),
         FaultResourceLimits::default(),
         FaultReplayMode::RecomputedCause,
     )?
