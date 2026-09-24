@@ -1,6 +1,9 @@
 //! Exact all-VM network phase boundary and discovery regressions.
 
 use super::*;
+use crucible::NetworkFaultSelectable;
+
+use super::super::network_fault_boundary::next_network_fault_discovery;
 
 #[test]
 fn same_named_network_scenario_without_boot_capability_stays_serial() {
@@ -13,7 +16,9 @@ fn same_named_network_scenario_without_boot_capability_stays_serial() {
     ]);
     let input = input_for_scenario(scenario, StopCondition::NextChoice);
 
-    assert!(!envoy_choice_free_boot_eligible(&input));
+    assert!(!super::super::envoy_boot::envoy_choice_free_boot_eligible(
+        &input
+    ));
 }
 
 struct NetworkBoundaryLifecycle {

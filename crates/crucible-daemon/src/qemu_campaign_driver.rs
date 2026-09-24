@@ -9,7 +9,6 @@
 //! campaign observation candidate.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use crucible::model::MeasurementTerminalState;
@@ -17,12 +16,11 @@ use crucible::{
     AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
     FailureClusterReportDivergence, FailureClusterReportFailure, FailurePropertyViolationRecord,
     FailureTimeoutBudgetKind, FailureTimeoutRecord, FingerprintSample, HostAssertionOutcomeKind,
-    NetworkFaultPhase, NetworkFaultSelectable, NodeId, NodeTemplate, ObservableEventPayload,
-    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, ReadyPoint, SchedulerError, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerOperationalFailureClass, SchedulerQuiescence, Seed,
-    SelectionDecision, VirtualTime, VmArchitecture, WhiteBoxPolicy, compare_event_log_determinism,
-    coverage_fingerprint_from_event_log, try_step,
+    NetworkFaultPhase, NodeId, ObservableEventPayload, OfflineAssertionCheckError,
+    OfflineAssertionChecker, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict,
+    SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime,
+    compare_event_log_determinism, coverage_fingerprint_from_event_log, try_step,
 };
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
@@ -59,118 +57,27 @@ use crate::{
     evaluate_crucible_observation_measurement_publication,
 };
 
+mod envoy_boot;
 mod event_log_retention;
 mod network_fault_boundary;
 #[path = "qemu_campaign_driver/observation_candidate.rs"]
 mod observation_candidate;
+mod resume_progress;
 mod selection_projection;
 mod stop_boundary;
 
+use envoy_boot::EnvoyParallelBoot;
 use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, append_quantum};
 
-fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) -> bool {
-    // The fixture-authored cmdline token opts this exact boot graph into the
-    // choice-free prefix proven by west convergence and positive link latency.
-    if !input.attempt().stop().accepts_next_choice()
-        || !input.signal_fault_replay().network_branches().is_empty()
-        || input.scenario().seed() != Seed::from_u64(802_750_664_550_812_378)
-    {
-        return false;
-    }
-
-    let world = input.scenario().world();
-    let roles = world
-        .vm_nodes()
-        .iter()
-        .filter(|node| {
-            node.cmdline
-                == format!(
-                    "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1",
-                    node.id.name
-                )
-                && node.icount_shift == 7
-                && node.arch == VmArchitecture::X86_64
-                && node.memory_mib == 512
-                && node.ready_point == ReadyPoint::AgentSignal
-                && node.white_box == WhiteBoxPolicy::Enabled
-                && node.smp_vcpus == NodeTemplate::DEFAULT_SMP_VCPUS
-                && node.kernel.is_some()
-                && node.root_image.is_some()
-                && node.initrd.is_none()
-        })
-        .map(|node| node.id.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let expected = BTreeSet::from([
-        "router-a",
-        "router-b",
-        "router-c",
-        "traffic-east",
-        "traffic-west",
-    ]);
-    let declaration = NetworkFaultSelectable::declaration().ok();
-    let expected_links = BTreeSet::from([
-        ("router-a", "traffic-west"),
-        ("router-a", "router-b"),
-        ("router-b", "router-c"),
-        ("router-a", "router-c"),
-        ("router-c", "traffic-east"),
-    ]);
-    let actual_links = world
-        .links()
-        .iter()
-        .filter(|link| {
-            link.latency().nanos == 10_000_000
-                && link.jitter().nanos == 100_000
-                && link.loss().millionths() == 0
-                && link.bandwidth_bps() == Some(10_000_000_000)
-        })
-        .map(|link| {
-            let (left, right) = link.endpoints();
-            (left.name.as_str(), right.name.as_str())
-        })
-        .collect::<BTreeSet<_>>();
-    let topology = world.fault_topology();
-
-    roles == expected
-        && world.nodes().len() == expected.len()
-        && world.links().len() == expected_links.len()
-        && actual_links == expected_links
-        && topology.fault_domains.len() == 2
-        && topology.network_interfaces.len() == 10
-        && topology.network_segments.len() == 5
-        && topology.network_paths.len() == 10
-        && input.scenario().selectables().declaration("fault.network") == declaration.as_ref()
-        && input
-            .scenario()
-            .selectables()
-            .declaration("recovery.response")
-            .is_some()
-}
-
-fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -> bool {
-    entries.iter().any(|entry| {
-        matches!(
-            entry.payload(),
-            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
-                node,
-                marker,
-                instance,
-                details,
-                ..
-            }) if node.name == "traffic-west"
-                && marker == "network.converged"
-                && instance == "instance-1"
-                && details.is_empty()
-        )
-    })
-}
-
-use network_fault_boundary::next_network_fault_discovery;
 #[cfg(test)]
 use network_fault_boundary::validate_network_fault_boundary;
+use network_fault_boundary::{
+    discover_initial_network_fault_choice, discover_quantum_network_fault_choice,
+};
 use observation_candidate::{
     build_observation_candidate, build_observation_candidate_with_supplemental,
 };
+use resume_progress::report_first_restored_guest_marker;
 use selection_projection::{
     has_unselected_discovery, is_next_choice_stop, produced_selections_after_start,
     validate_live_network_preselection,
@@ -1505,10 +1412,8 @@ fn drive_modeled_attempt_inner(
     lifecycle.set_live_network_choice_pause(
         input.attempt().stop().accepts_next_choice() && replay_target.is_none(),
     );
-    let mut parallel_boot = replay_target.is_none()
-        && envoy_choice_free_boot_eligible(input)
-        && !west_convergence_marker_seen(&event_log);
-    lifecycle.set_choice_free_parallel_boot(parallel_boot);
+    let mut parallel_boot =
+        EnvoyParallelBoot::arm(input, replay_target.is_none(), &event_log, lifecycle);
     let mut terminal_at = frontier;
     let mut discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)
         .map_err(AttemptWorkerFailure::Terminal)?;
@@ -1607,22 +1512,15 @@ fn drive_modeled_attempt_inner(
     }
 
     let initial_choice_count = discoveries.discoveries.len();
-    if input.attempt().stop().accepts_next_choice()
-        && let Some(discovery) = next_network_fault_discovery(
-            lifecycle,
-            input,
-            &configuration,
-            &event_log,
-            &[],
-            terminal_at,
-            terminal_quiescence.as_ref(),
-        )
-        .map_err(AttemptWorkerFailure::Terminal)?
-    {
-        discoveries
-            .insert(discovery)
-            .map_err(AttemptWorkerFailure::Terminal)?;
-    }
+    discover_initial_network_fault_choice(
+        lifecycle,
+        input,
+        &configuration,
+        &event_log,
+        terminal_at,
+        terminal_quiescence.as_ref(),
+        &mut discoveries,
+    )?;
     if replay_target.is_none()
         && input.attempt().stop().accepts_next_choice()
         && discoveries.discoveries.len() > initial_choice_count
@@ -1769,95 +1667,30 @@ fn drive_modeled_attempt_inner(
             ));
         }
         completed_quanta = next_completed_quanta;
-        let was_parallel_boot = parallel_boot;
-        if was_parallel_boot
-            && (!outcome.discovered_choices.is_empty()
-                || outcome.decisions.iter().any(|decision| {
-                    matches!(decision, Decision::Selection(_) | Decision::Override(_))
-                }))
-        {
-            return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshModeledDriverError::NetworkFaultBoundary {
-                    reason: "choice-free Envoy boot discovered a selection before its readiness marker",
-                },
-            ));
-        }
-        if parallel_boot && west_convergence_marker_seen(&outcome.event_log_entries) {
-            parallel_boot = false;
-            lifecycle.set_choice_free_parallel_boot(false);
-        }
+        let was_parallel_boot = parallel_boot.observe(lifecycle, &outcome)?;
         if outcome.configuration.def != scenario {
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshModeledDriverError::ScenarioMismatch,
             ));
         }
 
-        if let Some(discovery) = next_network_fault_discovery(
+        discover_quantum_network_fault_choice(
             lifecycle,
             input,
-            &outcome.configuration,
             &event_log,
-            &outcome.event_log_entries,
-            outcome.frontier,
-            outcome.scheduler_quiescence.as_ref(),
-        )
-        .map_err(AttemptWorkerFailure::Terminal)?
-        {
-            if was_parallel_boot {
-                return Err(AttemptWorkerFailure::Terminal(
-                    QemuFreshModeledDriverError::NetworkFaultBoundary {
-                        reason: "network fault choice preceded the serial Envoy readiness boundary",
-                    },
-                ));
-            }
-            let opportunity_id = discovery.opportunity().id().map_err(|error| {
-                AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Campaign(error))
-            })?;
-            if !discoveries.discoveries.contains_key(&opportunity_id)
-                && !outcome.discovered_choices.iter().any(|existing| {
-                    existing
-                        .opportunity()
-                        .id()
-                        .is_ok_and(|existing_id| existing_id == opportunity_id)
-                })
-            {
-                outcome.discovered_choices.push(discovery);
-            }
-        }
+            &mut outcome,
+            was_parallel_boot,
+            &discoveries,
+        )?;
 
-        // This diagnostic is emitted only from a scheduler-owned marker in a
-        // completed quantum. The campaign fixture uses it to avoid requesting
-        // another checkpoint before an exact-restored guest has run at all.
-        if !resumed_progress_reported
-            && context.resume_checkpoint().is_some()
-            && replay_target.is_none()
-            && let Some(basis) = context.runtime_basis()
-            && let Some((marker, retired_icount)) =
-                outcome
-                    .event_log_entries
-                    .iter()
-                    .find_map(|entry| match entry.payload() {
-                        SchedulerEventLogPayload::Observable(
-                            ObservableEventPayload::GuestMarker {
-                                marker,
-                                retired_icount,
-                                ..
-                            },
-                        ) => Some((marker, retired_icount)),
-                        _ => None,
-                    })
-        {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 attempt={:?} execution={:?} quanta={} marker={} icount={}",
-                basis.key().attempt(),
-                basis.execution(),
-                completed_quanta,
-                marker.name,
-                retired_icount.retired,
-            );
-            resumed_progress_reported = true;
-        }
+        // This notice requires a scheduler-owned marker in a completed quantum.
+        resumed_progress_reported = report_first_restored_guest_marker(
+            context,
+            replay_target.is_some(),
+            &outcome.event_log_entries,
+            completed_quanta,
+            resumed_progress_reported,
+        );
 
         check_cancellation(context)?;
         if let Some(choice) = lifecycle.live_network_preselection() {

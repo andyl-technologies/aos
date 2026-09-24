@@ -58,7 +58,7 @@ fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
     )
     .expect("guest semantic marker must project to an observation");
     let marker = crucible::test_support::condition_observation_entry_for_test(0, &event);
-    assert!(west_convergence_marker_seen(&[marker]));
+    assert!(super::envoy_boot::west_convergence_marker_seen(&[marker]));
 
     let other_node = SchedulerEventLogEntry::guest_semantic_marker_observation(
         0,
@@ -68,7 +68,9 @@ fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
         String::from("instance-1"),
         Vec::new(),
     );
-    assert!(!west_convergence_marker_seen(&[other_node]));
+    assert!(!super::envoy_boot::west_convergence_marker_seen(&[
+        other_node
+    ]));
 }
 
 fn prepared_semantic_observation(product: AttemptExecutionProduct) -> ObservationCandidate {
