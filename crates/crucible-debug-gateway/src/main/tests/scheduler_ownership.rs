@@ -1,6 +1,9 @@
 //! Scheduler ownership and run-control race regression tests.
 
 use super::*;
+use super::super::operator_relay::{
+    handle_operator_rsp_unit, restore_backend_after_operator_disconnect, serve_operator_connection,
+};
 
 fn read_test_rsp_payload(stream: &mut impl Read) -> Vec<u8> {
     let mut decoder = RspStreamDecoder::new();
