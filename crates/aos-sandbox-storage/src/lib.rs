@@ -47,6 +47,11 @@ mod helper;
 mod lifecycle_atomic_snapshot;
 mod lifecycle_inventory;
 mod live_export_catalog;
+#[allow(
+    dead_code,
+    reason = "private RO clone remains unreachable until independent grant authority is complete"
+)]
+mod live_export_clone;
 mod live_export_key;
 pub mod live_export_origin;
 #[allow(

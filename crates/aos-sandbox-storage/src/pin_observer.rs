@@ -1,11 +1,13 @@
 //! Descriptor-backed observation of protected workspace root pins.
 //!
-//! The observer owns no mutation primitive. A fixed single-threaded helper
+//! The observer owns no attached-mount mutation primitive. A fixed single-threaded helper
 //! enters the retained initial host mount namespace, reopens the fixed pin root,
 //! resolves the handle-derived slot from the retained root descriptor, and
 //! combines `fstat(2)`, `STATX_MNT_ID_UNIQUE`, `listmount(2)`, and
 //! `statmount(2)` evidence. ZFS dataset identity is supplied only as a typed
 //! result from the separate read-only ZFS observer.
+//! A separate LocalLive selection may atomically create an unattached
+//! read-only clone; that descriptor returns only to the Storage broker.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::ffi::OsStrExt as _;
@@ -13,7 +15,7 @@ use std::path::Path;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace, MountObservation};
-use aos_sandbox_linux::mount::DetachedMount;
+use aos_sandbox_linux::mount::{DetachedMount, MountAttributes};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use rustix::fs::{FileType, Mode, OFlags};
@@ -730,10 +732,30 @@ pub(crate) fn clone_observed_workspace_root(
     let proof = request
         .root_export()
         .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+    clone_observed_target(request, pin_root, proof.workspace_handle, false)
+}
+
+/// Clones a physically observed workspace with read-only attributes atomically.
+pub(crate) fn clone_observed_live_export_root(
+    request: &WorkspaceCatalogObservationRequestV1,
+    pin_root: &ResolvedPath,
+) -> Result<DetachedMount, WorkspacePinObserverError> {
+    let handle = request
+        .live_export()
+        .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
+    clone_observed_target(request, pin_root, handle, true)
+}
+
+fn clone_observed_target(
+    request: &WorkspaceCatalogObservationRequestV1,
+    pin_root: &ResolvedPath,
+    handle: [u8; 32],
+    read_only: bool,
+) -> Result<DetachedMount, WorkspacePinObserverError> {
     let target = request
         .targets()
         .iter()
-        .find(|target| target.workspace_handle() == proof.workspace_handle)
+        .find(|target| target.workspace_handle() == handle)
         .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
     let WorkspaceCatalogObservationExpectationV1::Present {
         mount_id,
@@ -743,7 +765,7 @@ pub(crate) fn clone_observed_workspace_root(
     else {
         return Err(WorkspacePinObserverError::HostScopeMismatch);
     };
-    let slot = open_workspace_slot(pin_root, &proof.workspace_handle)?
+    let slot = open_workspace_slot(pin_root, &handle)?
         .ok_or(WorkspacePinObserverError::HostScopeMismatch)?;
     let before = rustix::fs::fstat(slot.as_fd())?;
     if before.st_dev != root_device
@@ -753,7 +775,19 @@ pub(crate) fn clone_observed_workspace_root(
         return Err(WorkspacePinObserverError::HostScopeMismatch);
     }
 
-    let detached = DetachedMount::clone_from(&slot, true)?;
+    let detached = if read_only {
+        // A nonrecursive clone contains exactly the selected root mount.
+        // Detached submounts cannot be enumerated with listmount(2), and a
+        // grant keyed only by this root's unique ID must not miss children.
+        DetachedMount::clone_with_attributes(
+            &slot,
+            false,
+            MountAttributes::secure_read_only(),
+            None,
+        )?
+    } else {
+        DetachedMount::clone_from(&slot, true)?
+    };
     let cloned_root = rustix::fs::fstat(detached.as_fd())?;
     let after = rustix::fs::fstat(slot.as_fd())?;
     if cloned_root.st_dev != root_device
@@ -761,6 +795,12 @@ pub(crate) fn clone_observed_workspace_root(
         || after.st_dev != before.st_dev
         || after.st_ino != before.st_ino
         || MountId::from_fd(slot.as_fd())?.get() != mount_id
+        || (read_only
+            && !rustix::fs::fstatvfs(detached.as_fd())?.f_flag.contains(
+                rustix::fs::StatVfsMountFlags::RDONLY
+                    | rustix::fs::StatVfsMountFlags::NOSUID
+                    | rustix::fs::StatVfsMountFlags::NODEV,
+            ))
     {
         return Err(WorkspacePinObserverError::HostScopeMismatch);
     }

@@ -13,7 +13,7 @@
 //! not accept a caller-provided boolean as proof of completeness.
 
 use std::io::Read as _;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::ApplyStorageRequest;
@@ -24,6 +24,7 @@ use aos_sandbox_core::{
     RawPairedClockSample,
 };
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_protocol::semantics::storage::{CanonicalStorageSemanticsV1, StorageOperation};
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -31,6 +32,7 @@ use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
     decode_storage_resource_inventory_response,
 };
+use aos_sandbox_source_provider_protocol::StorageLiveExportSourceV1;
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -47,6 +49,7 @@ use crate::guest_root_worker::SystemdGuestRootPublisherClientV1;
 use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
+use crate::live_export_origin::StorageLiveExportOriginV1;
 use crate::observation_protocol::{
     WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationExpectationV1,
     WorkspaceCatalogObservationRequestV1, encode_request,
@@ -87,6 +90,22 @@ const GUEST_ROOT_PUBLISHER_SOCKET: &str = "/run/aos/sandbox-guest-root-publisher
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+
+fn live_export_origin_matches_source(
+    origin: &StorageLiveExportOriginV1,
+    source: StorageLiveExportSourceV1,
+) -> bool {
+    origin.source_assignment_digest() == source.source_assignment_digest()
+        && origin.owner() == (source.owner_sandbox(), source.source_incarnation())
+        && origin.workspace() == (source.workspace_id(), source.workspace_digest())
+        && origin.physical_identity()
+            == (
+                source.origin_boot_id(),
+                source.origin_device(),
+                source.origin_inode(),
+                source.origin_mount_id(),
+            )
+}
 
 pub(crate) fn guest_root_inventory_cutoff(
     now: u64,
@@ -1049,6 +1068,72 @@ impl StorageBrokerRuntime {
                 _ => None,
             })
             .ok_or(StorageRuntimeError::Recovery)
+    }
+
+    /// Obtains one private read-only clone from the authenticated pin observer.
+    ///
+    /// This is not an export or a grant. The worker is the only process with
+    /// mount privilege; the broker retains its returned FD and never sends it
+    /// to the Provider transport. Both physical observations must still name
+    /// the exact current Storage source selected by the protected catalog.
+    pub(crate) fn clone_live_export_mount(
+        &mut self,
+        source: StorageLiveExportSourceV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<OwnedFd, StorageRuntimeError> {
+        let before =
+            self.observe_live_export_origin(source.workspace_id(), deadline_boottime_nanoseconds)?;
+        if !live_export_origin_matches_source(&before, source) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let now = boottime_now_nanoseconds()?;
+        let cutoff = guest_root_inventory_cutoff(now, deadline_boottime_nanoseconds)?;
+        let validated = self
+            .workspaces
+            .as_ref()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let (plan, physical) = self.coordinator.workspace_catalog_activation_plan()?;
+        let physical = physical.ok_or(StorageRuntimeError::Recovery)?;
+        let request = self
+            .catalog_observation_request(
+                validated,
+                &plan,
+                &physical,
+                catalog_observation_nonce()?,
+                deadline_boottime_nanoseconds,
+            )?
+            .with_live_export(source.workspace_id())?;
+        let encoded = encode_request(&request)?;
+        let (_, mount) = self
+            .pin_io
+            .export_catalog_root(&encoded, &request, cutoff)?;
+
+        let cloned_stat = fstat(&mount).map_err(|_| StorageRuntimeError::Recovery)?;
+        let cloned_mount_id = MountId::from_fd(mount.as_fd())
+            .map_err(|_| StorageRuntimeError::Recovery)?
+            .get();
+        let mount_flags = rustix::fs::fstatvfs(&mount)
+            .map_err(|_| StorageRuntimeError::Recovery)?
+            .f_flag;
+        if cloned_stat.st_dev != source.origin_device()
+            || cloned_stat.st_ino != source.origin_inode()
+            || cloned_mount_id == source.origin_mount_id()
+            || !mount_flags.contains(
+                rustix::fs::StatVfsMountFlags::RDONLY
+                    | rustix::fs::StatVfsMountFlags::NOSUID
+                    | rustix::fs::StatVfsMountFlags::NODEV,
+            )
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
+        let after =
+            self.observe_live_export_origin(source.workspace_id(), deadline_boottime_nanoseconds)?;
+        if !live_export_origin_matches_source(&after, source) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(mount)
     }
 
     /// Publishes one populated guest root under a distinct durable signed effect.

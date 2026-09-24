@@ -41,10 +41,10 @@ use crate::observation_protocol::{
     encode_result as encode_catalog_observation_result, is_catalog_observation_frame,
 };
 use crate::pin_observer::{
-    WorkspacePinHostCustody, WorkspacePinObserverError, clone_observed_workspace_root,
-    current_catalog_custody_binding, current_host_scope, observe_workspace_catalog_pin_pass,
-    observe_workspace_pin, observe_workspace_pin_repair, observe_workspace_pin_repair_admission,
-    open_workspace_slot, validate_host_scope,
+    WorkspacePinHostCustody, WorkspacePinObserverError, clone_observed_live_export_root,
+    clone_observed_workspace_root, current_catalog_custody_binding, current_host_scope,
+    observe_workspace_catalog_pin_pass, observe_workspace_pin, observe_workspace_pin_repair,
+    observe_workspace_pin_repair_admission, open_workspace_slot, validate_host_scope,
 };
 use crate::pin_worker::{
     AuthenticatedWorkspacePinWorkerRequestV1, MAXIMUM_PIN_WORKER_PACKET_BYTES,
@@ -769,7 +769,7 @@ impl SystemdWorkspacePinObserver {
         custody: &WorkspacePinHostCustody,
         worker_cutoff_boottime_nanoseconds: u64,
     ) -> Result<(FreshWorkspaceCatalogObservationV1, OwnedFd), ZfsWorkerError> {
-        if request.root_export().is_none() {
+        if !request.exports_mount() {
             return Err(ZfsWorkerError::Authority);
         }
         let (result, descriptor) = self.client.exchange_catalog_observation(
@@ -893,7 +893,7 @@ fn exchange_catalog_observation_after_ready(
         ],
         exchange_deadline,
     )?;
-    let response = if request.root_export().is_some() {
+    let response = if request.exports_mount() {
         receive_packet_with_descriptor_before(
             socket,
             MAXIMUM_CATALOG_OBSERVATION_RESULT_BYTES,
@@ -913,13 +913,18 @@ fn exchange_catalog_observation_after_ready(
     if !result.matches_request(request)? {
         return Err(ZfsWorkerError::Authority);
     }
-    let descriptor = match (request.root_export(), descriptors.len()) {
-        (None, 0) => None,
-        (Some(proof), 1) => {
+    let descriptor = match (request.exports_mount(), descriptors.len()) {
+        (false, 0) => None,
+        (true, 1) => {
+            let handle = request
+                .root_export()
+                .map(|proof| proof.workspace_handle)
+                .or_else(|| request.live_export())
+                .ok_or(ZfsWorkerError::Authority)?;
             let target = request
                 .targets()
                 .iter()
-                .find(|target| target.workspace_handle() == proof.workspace_handle)
+                .find(|target| target.workspace_handle() == handle)
                 .ok_or(ZfsWorkerError::Authority)?;
             let WorkspaceCatalogObservationExpectationV1::Present {
                 root_device,
@@ -937,6 +942,12 @@ fn exchange_catalog_observation_after_ready(
             if stat.st_dev != root_device
                 || stat.st_ino != root_inode
                 || MountId::from_fd(descriptor.as_fd())?.get() == 0
+                || (request.live_export().is_some()
+                    && !rustix::fs::fstatvfs(&descriptor)?.f_flag.contains(
+                        rustix::fs::StatVfsMountFlags::RDONLY
+                            | rustix::fs::StatVfsMountFlags::NOSUID
+                            | rustix::fs::StatVfsMountFlags::NODEV,
+                    ))
             {
                 return Err(ZfsWorkerError::Authority);
             }
@@ -1539,9 +1550,24 @@ fn execute_catalog_observation_request(
         &request, zfs_before, pin_before, pin_after, zfs_after,
     )?;
     let encoded_result = encode_catalog_observation_result(&result)?;
-    if request.root_export().is_some() {
-        let detached =
-            clone_observed_workspace_root(&request, &pin_root).map_err(map_observer_error)?;
+    if request.exports_mount() {
+        let detached = if request.live_export().is_some() {
+            clone_observed_live_export_root(&request, &pin_root)
+        } else {
+            clone_observed_workspace_root(&request, &pin_root)
+        }
+        .map_err(map_observer_error)?;
+        if request.live_export().is_some() {
+            validate_catalog_custody(&request, &mount_namespace, &pin_root)?;
+            let pin_after_clone =
+                observe_workspace_catalog_pin_pass(&request, &mount_namespace, &pin_root)
+                    .map_err(map_observer_error)?;
+            let zfs_after_clone =
+                observe_workspace_catalog_zfs_for(contract, &request, observation_deadline)?;
+            if pin_after_clone != pin_after || zfs_after_clone != zfs_after {
+                return Err(ZfsWorkerError::Authority);
+            }
+        }
         // The clone is never attached in this worker. Its only egress is the
         // authenticated storaged subject on this exact one-shot channel.
         send_packet_with_descriptor_before(

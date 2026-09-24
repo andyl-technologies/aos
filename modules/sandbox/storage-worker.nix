@@ -500,8 +500,12 @@ in {
           "~move_mount"
           "~mount_setattr"
           # The observer may clone one verified workspace mount into an
-          # unattached descriptor; move_mount and mount mutation stay denied.
+          # unattached descriptor; attachment and separate mutation syscalls
+          # stay denied.
           "open_tree"
+          # The LocalLive variant applies read-only attributes before the
+          # cloned descriptor is published to the observer.
+          "open_tree_attr"
           "~pivot_root"
           "~chroot"
           "~@reboot"

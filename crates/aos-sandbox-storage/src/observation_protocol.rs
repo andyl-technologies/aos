@@ -12,6 +12,8 @@
 //!           | roots | allowed-objects | targets
 //! version 2 appends one canonical AOSGRP01 proof selecting an exact present
 //! target for detached-root export; version 1 never carries a descriptor back.
+//! version 3 appends one workspace handle selecting a detached read-only
+//! LocalLive clone. The two export variants are mutually exclusive.
 //! result  = AOSZCAR1 | version:u16 | reserved:u16 | request-digest
 //!           | nonce | deadline | custody | counts | five digests | matched:u8
 //! frame   = AOSZCFR1 | version:u16 | flags:u16 | transfer-digest
@@ -39,6 +41,7 @@ const RESULT_MAGIC: &[u8; 8] = b"AOSZCAR1";
 const FRAME_MAGIC: &[u8; 8] = b"AOSZCFR1";
 const WIRE_VERSION: u16 = 1;
 const ROOT_EXPORT_WIRE_VERSION: u16 = 2;
+const LIVE_EXPORT_WIRE_VERSION: u16 = 3;
 const REQUEST_DIGEST_DOMAIN: &[u8] =
     b"aos.sandbox.storage.workspace-catalog-observation-request.v1\0";
 const PHYSICAL_PLAN_DIGEST_DOMAIN: &[u8] =
@@ -438,6 +441,7 @@ pub(crate) struct WorkspaceCatalogObservationRequestV1 {
     allowed_objects: Vec<WorkspaceCatalogObservationObjectV1>,
     targets: Vec<WorkspaceCatalogObservationTargetV1>,
     root_export: Option<GuestRootPublicationProofV1>,
+    live_export: Option<[u8; 32]>,
 }
 
 impl WorkspaceCatalogObservationRequestV1 {
@@ -461,6 +465,7 @@ impl WorkspaceCatalogObservationRequestV1 {
             allowed_objects,
             targets,
             root_export: None,
+            live_export: None,
         };
         request.validate()?;
         Ok(request)
@@ -560,6 +565,9 @@ impl WorkspaceCatalogObservationRequestV1 {
             prior_handle = Some(target.workspace_handle);
         }
         if let Some(proof) = self.root_export {
+            if self.live_export.is_some() {
+                return Err(protocol("catalog export roles overlap"));
+            }
             let target = self
                 .targets
                 .iter()
@@ -575,6 +583,19 @@ impl WorkspaceCatalogObservationRequestV1 {
                 || proof.encode().is_err()
             {
                 return Err(protocol("root export differs from the physical catalog"));
+            }
+        }
+        if let Some(handle) = self.live_export {
+            if handle == [0; 32]
+                || !self.targets.iter().any(|target| {
+                    target.workspace_handle == handle
+                        && matches!(
+                            target.expectation,
+                            WorkspaceCatalogObservationExpectationV1::Present { .. }
+                        )
+                })
+            {
+                return Err(protocol("live export differs from the physical catalog"));
             }
         }
         if encode_request(self)?.len() > MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES {
@@ -627,6 +648,26 @@ impl WorkspaceCatalogObservationRequestV1 {
 
     pub(crate) const fn root_export(&self) -> Option<GuestRootPublicationProofV1> {
         self.root_export
+    }
+
+    /// Selects one physically present workspace for a read-only clone.
+    pub(crate) fn with_live_export(
+        mut self,
+        workspace_handle: [u8; 32],
+    ) -> Result<Self, ZfsWorkerError> {
+        self.live_export = Some(workspace_handle);
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Returns the optional LocalLive workspace selector.
+    pub(crate) const fn live_export(&self) -> Option<[u8; 32]> {
+        self.live_export
+    }
+
+    /// Reports whether this request returns exactly one mount descriptor.
+    pub(crate) const fn exports_mount(&self) -> bool {
+        self.root_export.is_some() || self.live_export.is_some()
     }
 
     pub(crate) fn digest(&self) -> Result<ObjectDigest, ZfsWorkerError> {
@@ -729,7 +770,9 @@ pub(crate) fn encode_request(
 ) -> Result<Vec<u8>, ZfsWorkerError> {
     let mut bytes = Vec::with_capacity(REQUEST_FIXED_BYTES);
     bytes.extend_from_slice(REQUEST_MAGIC);
-    let version = if request.root_export.is_some() {
+    let version = if request.live_export.is_some() {
+        LIVE_EXPORT_WIRE_VERSION
+    } else if request.root_export.is_some() {
         ROOT_EXPORT_WIRE_VERSION
     } else {
         WIRE_VERSION
@@ -758,6 +801,9 @@ pub(crate) fn encode_request(
                 .map_err(|_| protocol("root export proof is invalid"))?,
         );
     }
+    if let Some(handle) = request.live_export {
+        bytes.extend_from_slice(&handle);
+    }
     if bytes.len() > MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES {
         return Err(protocol("catalog observation request exceeds its ceiling"));
     }
@@ -776,7 +822,11 @@ pub(crate) fn decode_request(
         return Err(protocol("catalog observation request header is invalid"));
     }
     let version = decoder.u16()?;
-    if !matches!(version, WIRE_VERSION | ROOT_EXPORT_WIRE_VERSION) || decoder.u16()? != 0 {
+    if !matches!(
+        version,
+        WIRE_VERSION | ROOT_EXPORT_WIRE_VERSION | LIVE_EXPORT_WIRE_VERSION
+    ) || decoder.u16()? != 0
+    {
         return Err(protocol("catalog observation request header is invalid"));
     }
     let nonce = decoder.array()?;
@@ -843,6 +893,11 @@ pub(crate) fn decode_request(
     } else {
         None
     };
+    let live_export = if version == LIVE_EXPORT_WIRE_VERSION {
+        Some(decoder.array()?)
+    } else {
+        None
+    };
     decoder.finish()?;
     let mut request = WorkspaceCatalogObservationRequestV1::new(
         nonce,
@@ -855,6 +910,9 @@ pub(crate) fn decode_request(
     )?;
     if let Some(proof) = root_export {
         request = request.with_root_export(proof)?;
+    }
+    if let Some(handle) = live_export {
+        request = request.with_live_export(handle)?;
     }
     if request.physical_plan_digest != encoded_plan_digest || encode_request(&request)? != bytes {
         return Err(protocol("catalog observation request is not canonical"));
@@ -1439,6 +1497,30 @@ mod tests {
         assert_eq!(result_bytes.len(), RESULT_BYTES);
         assert_eq!(decode_result(&result_bytes).unwrap(), result);
         assert!(result.matches_request(&present).unwrap());
+    }
+
+    #[test]
+    fn live_export_v3_requires_present_target_and_rejects_older_wire_markers() {
+        let present = request(WorkspaceCatalogObservationExpectationV1::Present {
+            mount_id: 23,
+            root_device: 24,
+            root_inode: 25,
+        });
+        let selected = present.clone().with_live_export([20; 32]).unwrap();
+        let encoded = encode_request(&selected).unwrap();
+        assert_eq!(&encoded[8..10], &LIVE_EXPORT_WIRE_VERSION.to_be_bytes());
+        assert_eq!(&encoded[encoded.len() - 32..], &[20; 32]);
+        assert_eq!(decode_request(&encoded).unwrap(), selected);
+
+        let mut older = encoded.clone();
+        older[8..10].copy_from_slice(&WIRE_VERSION.to_be_bytes());
+        assert!(decode_request(&older).is_err());
+        older[8..10].copy_from_slice(&ROOT_EXPORT_WIRE_VERSION.to_be_bytes());
+        assert!(decode_request(&older).is_err());
+
+        let absent = request(WorkspaceCatalogObservationExpectationV1::Absent);
+        assert!(absent.with_live_export([20; 32]).is_err());
+        assert!(present.with_live_export([21; 32]).is_err());
     }
 
     #[test]

@@ -19,6 +19,9 @@ use aos_sandbox_source_provider_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::live_export_catalog::{StorageLiveExportCatalogErrorV1, StorageLiveExportCatalogV1};
+use crate::live_export_clone::{
+    StorageLiveExportCloneErrorV1, StorageLiveExportCloneLedgerV1, StorageLiveExportCloneV1,
+};
 use crate::live_export_origin::StorageLiveExportOriginV1;
 use crate::live_export_request_trust::{
     StorageLiveExportRequestTrustErrorV1, StorageLiveExportRequestTrustV1,
@@ -48,6 +51,9 @@ pub(crate) enum StorageLiveExportReadbackErrorV1 {
     /// The signed selector differs from the current protected export.
     #[error("Storage live-export selector differs from current publication")]
     Selector,
+    /// The private detached clone or its durable custody could not be verified.
+    #[error("Storage live-export clone failed: {0}")]
+    Clone(#[from] StorageLiveExportCloneErrorV1),
 }
 
 /// Holds one verified but non-authorizing Storage request readback.
@@ -212,6 +218,31 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
             source: final_source,
             _origin: after,
         })
+    }
+
+    /// Prepares one private RO clone while keeping all Provider responses closed.
+    ///
+    /// The signed request is re-inspected after the privileged, quiescent
+    /// worker returns. A changed catalog, origin, signer, or physical plan
+    /// drops the FD without recording authority. This method is deliberately
+    /// not called by the Provider ingress until an independent grant owner can
+    /// stop, drain, and delete every holder reference.
+    pub(crate) fn prepare_private_clone(
+        &self,
+        runtime: &mut StorageBrokerRuntime,
+        signed_request_bytes: &[u8],
+        deadline_boottime_nanoseconds: u64,
+        ledger: &mut StorageLiveExportCloneLedgerV1,
+    ) -> Result<StorageLiveExportCloneV1, StorageLiveExportReadbackErrorV1> {
+        let before = self.inspect(runtime, signed_request_bytes, deadline_boottime_nanoseconds)?;
+        let mount =
+            runtime.clone_live_export_mount(before.source(), deadline_boottime_nanoseconds)?;
+        let after = self.inspect(runtime, signed_request_bytes, deadline_boottime_nanoseconds)?;
+        if before.digest() != after.digest() || before.replay_identity() != after.replay_identity()
+        {
+            return Err(StorageLiveExportReadbackErrorV1::Selector);
+        }
+        StorageLiveExportCloneV1::retain(mount, &after, ledger).map_err(Into::into)
     }
 }
 
