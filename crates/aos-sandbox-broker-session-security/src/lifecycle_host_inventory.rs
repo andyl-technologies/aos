@@ -1,9 +1,10 @@
 //! Protected lifecycle inventory queries over live broker sessions.
 //!
 //! The concrete owners issue fresh Host, Storage, Mount, or Network inventory requests through
-//! the repository-owned authenticated post-handshake exchange. No callback,
-//! request identifier, sequence, packet, signer, or trust policy is supplied
-//! by the caller.
+//! the repository-owned authenticated post-handshake exchange. Ordinary
+//! callers supply no request identifier, sequence, packet, signer, or trust
+//! policy. The closed operator Repair path may durably reserve the session's
+//! own selected request identifier before that exact query is prepared.
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerMethod, BrokerRequestEnvelope, InventoryDestinationSlotsRequest,
@@ -47,13 +48,14 @@ use crate::recovery::{
     ProtectedPriorAtomicStorageHistoryV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
-    AuthenticatedStorageCreatePreparationV1, DormantAuthenticatedBrokerSessionV1,
-    DormantBrokerRequestCoordinatesV1, DormantBrokerRequestPreparationV1,
-    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
-    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerRequestV1,
-    DormantUnconfirmedBrokerRequestV1, ProtectedBrokerOutcomeCommitRecoveryV1,
-    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerOutcomeCurrentnessOwnerV1,
-    ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerSessionInitializationRecoveryV1,
+    AuthenticatedStorageCreatePreparationV1, BrokerSessionSecurityError,
+    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
+    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
+    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
+    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
+    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
+    ProtectedBrokerOutcomeCurrentnessOwnerV1, ProtectedBrokerRequestCommitRecoveryV1,
+    ProtectedBrokerSessionInitializationRecoveryV1,
 };
 
 #[derive(Clone, Copy)]
@@ -505,15 +507,26 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         method: LifecycleInventoryMethodV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        self.query_with_preparation(method, |session| {
+            session.prepare_authenticated_request(method.method(), |coordinates| {
+                method.envelope(coordinates)
+            })
+        })
+    }
+
+    fn query_with_preparation(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+        prepare: impl FnOnce(
+            &mut DormantAuthenticatedBrokerSessionV1,
+        )
+            -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError>,
+    ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
         if self.authority_effects.has_pending() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        let prepared = self
-            .session
-            .prepare_authenticated_request(method.method(), |coordinates| {
-                method.envelope(coordinates)
-            })
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+        let prepared =
+            prepare(&mut self.session).map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
         let method = method.method();
         let prepared = match prepared {
             DormantBrokerRequestPreparationV1::Prepared(prepared) => prepared,
@@ -763,6 +776,40 @@ impl DormantLifecycleInventorySessionV1 {
         }
         let progress = self.query(method)?;
         self.drive_complete(progress)
+    }
+
+    fn query_complete_with_challenge(
+        &mut self,
+        method: LifecycleInventoryMethodV1,
+        reserve: impl FnOnce([u8; 16]) -> Result<(), BrokerSessionSecurityError>,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        if self.pending.is_some() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let mut selected_request_id = None;
+        let progress = self.query_with_preparation(method, |session| {
+            session.prepare_authenticated_request_checked_fallible(
+                method.method(),
+                |coordinates| {
+                    let request_id = coordinates.request_id();
+                    reserve(request_id)?;
+                    selected_request_id = Some(request_id);
+                    Ok(method.envelope(coordinates))
+                },
+                |_| true,
+            )
+        })?;
+        let (outcome, currentness) = self.drive_complete(progress)?;
+        if selected_request_id != Some(outcome.request().request_id()) {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        Ok((outcome, currentness))
     }
 
     fn query_complete_or_resume_retained(
@@ -1898,6 +1945,75 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
         self.0.recheck(currentness)?;
         Ok(outcome)
+    }
+
+    /// Issues a signed physical Inventory query under a precommitted Repair challenge.
+    ///
+    /// The trusted Controller callback must durably reserve the authenticated
+    /// session's own request identifier before the broker request is written
+    /// or sent. A different
+    /// independently generated ID cannot satisfy the returned outcome. A
+    /// retained ambiguous exchange must be recovered before another challenge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a failed reservation callback, stale broker outcome, pending
+    /// exchange, or incomplete Storage inventory. This crate-private helper
+    /// is not an operator admission route by itself.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    pub(crate) fn challenged_operator_repair_inventory_observation(
+        &mut self,
+        reserve: impl FnOnce([u8; 16]) -> Result<(), BrokerSessionSecurityError>,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            LifecycleAuthenticatedStorageInventoryV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        let (outcome, currentness) = self
+            .0
+            .query_complete_with_challenge(LifecycleInventoryMethodV1::Storage, reserve)?;
+        let inventory =
+            LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
+        self.0.recheck(currentness)?;
+        Ok((outcome, inventory))
+    }
+
+    /// Recovers only the pending signed Inventory exchange for one retained challenge.
+    ///
+    /// Cold process restart has no in-memory exchange to resume: the caller
+    /// must durably replace its prior challenge before starting a new query.
+    /// A historical signed outcome with another ID never becomes current.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or different pending work, a mismatched request ID,
+    /// stale terminal currentness, or incomplete physical inventory.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    pub(crate) fn recover_challenged_operator_repair_inventory_observation(
+        &mut self,
+        expected_request_id: [u8; 16],
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            LifecycleAuthenticatedStorageInventoryV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        if expected_request_id == [0; 16] || self.0.pending.is_none() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let (outcome, currentness) = self
+            .0
+            .query_complete_or_resume_retained(LifecycleInventoryMethodV1::Storage)?;
+        if outcome.request().request_id() != expected_request_id {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let inventory =
+            LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
+        self.0.recheck(currentness)?;
+        Ok((outcome, inventory))
     }
 
     /// Applies or resumes one exact Storage authority effect on this session.

@@ -16,7 +16,6 @@ use aos_sandbox_core::operator_recovery_effect_v2::{
     OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
-use rand::{TryRngCore as _, rngs::OsRng};
 
 use super::before;
 use super::receipt::ProtectedStorageRepairReceiptVerifierV2;
@@ -122,7 +121,7 @@ where
     C: ActivatedOperationCompiler,
     E: SingleNodeEffectExecutor,
 {
-    /// Reserves a fresh request ID before the authenticated pre-effect query.
+    /// Reserves the authenticated session's selected ID before its pre-effect query.
     ///
     /// # Errors
     ///
@@ -133,6 +132,7 @@ where
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         operation_id: OperationId,
+        request_id: [u8; 16],
     ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
         let journal = self.reconciler.journal_mut();
         let (issued, effect_id) = current_issuance(journal, signer, operation_id)?;
@@ -147,10 +147,17 @@ where
         {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
-        reserve(journal, ProbeStageV1::Before, &issued, effect_id, [0; 32])
+        reserve(
+            journal,
+            ProbeStageV1::Before,
+            &issued,
+            effect_id,
+            [0; 32],
+            request_id,
+        )
     }
 
-    /// Reserves a new post-effect query ID after verifying the owner receipt.
+    /// Reserves the session-selected post-effect query ID after the owner receipt.
     ///
     /// Cold retries replace an unused challenge; a sealed proof forbids any
     /// replacement. The new outcome must answer this exact request ID.
@@ -167,6 +174,7 @@ where
         operation_id: OperationId,
         signed_evidence: &[u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
         signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
+        request_id: [u8; 16],
     ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
         let journal = self.reconciler.journal_mut();
         let (issued, effect_id) = current_issuance(journal, signer, operation_id)?;
@@ -190,6 +198,7 @@ where
             &issued,
             effect_id,
             pair_digest,
+            request_id,
         )
     }
 }
@@ -264,11 +273,8 @@ fn reserve(
     issued: &StorageRepairIssuanceV2,
     effect_id: [u8; 32],
     pair_digest: [u8; 32],
+    request_id: [u8; 16],
 ) -> Result<[u8; 16], OperatorRecoveryIssuanceErrorV1> {
-    let mut request_id = [0; 16];
-    OsRng
-        .try_fill_bytes(&mut request_id)
-        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     if request_id == [0; 16] {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
@@ -374,6 +380,70 @@ mod tests {
     }
 
     #[test]
+    fn challenged_inventory_rejects_an_independently_generated_request_id() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "operator-query.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let (issued, effect_id) = sample();
+        let session_selected = [41; 16];
+        let independently_generated = [42; 16];
+
+        assert_eq!(
+            reserve(
+                &mut journal,
+                ProbeStageV1::Before,
+                &issued,
+                effect_id,
+                [0; 32],
+                [0; 16],
+            ),
+            Err(OperatorRecoveryIssuanceErrorV1::Binding)
+        );
+        assert_eq!(
+            reserve(
+                &mut journal,
+                ProbeStageV1::Before,
+                &issued,
+                effect_id,
+                [0; 32],
+                session_selected,
+            ),
+            Ok(session_selected)
+        );
+        let retained = read(
+            &mut journal,
+            &issued,
+            effect_id,
+            ProbeStageV1::Before,
+            [0; 32],
+        )
+        .unwrap();
+        assert_eq!(retained.matches_request_id(session_selected), Ok(()));
+        assert_eq!(
+            retained.matches_request_id(independently_generated),
+            Err(OperatorRecoveryIssuanceErrorV1::Binding)
+        );
+        assert_eq!(
+            reserve(
+                &mut journal,
+                ProbeStageV1::Before,
+                &issued,
+                effect_id,
+                [0; 32],
+                session_selected,
+            ),
+            Err(OperatorRecoveryIssuanceErrorV1::Binding)
+        );
+    }
+
+    #[test]
     fn cold_retry_replaces_unsealed_challenge_and_rejects_old_pair() {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -392,6 +462,7 @@ mod tests {
             &issued,
             effect_id,
             [11; 32],
+            [21; 16],
         )
         .unwrap();
         assert_eq!(
@@ -400,7 +471,8 @@ mod tests {
                 ProbeStageV1::After,
                 &issued,
                 effect_id,
-                [12; 32]
+                [12; 32],
+                [22; 16],
             ),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
@@ -410,6 +482,7 @@ mod tests {
             &issued,
             effect_id,
             [11; 32],
+            [23; 16],
         )
         .unwrap();
         assert_ne!(first, second);
