@@ -12,9 +12,10 @@
 //!
 //! This is a read-only custody slice, not an export publisher. Only a root
 //! controlled file can supply a row, and exact current-file readback is
-//! required before selecting it. Until a separately authenticated writer and
-//! monotone revocation floor are present, this module does not issue leases or
-//! advertise LocalLive.
+//! required before selecting it. A protected journal retains the generation
+//! floor and terminal tombstones across restart. This module still does not
+//! issue leases or advertise LocalLive: an authenticated export-publication
+//! writer and consumer admission are absent.
 
 use std::fs::File;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -75,9 +76,9 @@ struct ParsedCatalogV1 {
 
 /// Retains the exact current root-owned export publication snapshot.
 ///
-/// The catalog alone cannot establish an authoritative generation floor after
-/// restart. A future protected publication journal must authenticate its
-/// writer and current revocation head before lease issuance is enabled.
+/// Its protected journal rejects rollback and tombstone resurrection on
+/// restart. A separate authenticated publisher must still supply each new
+/// export definition before lease issuance can be enabled.
 pub(crate) struct StorageLiveExportCatalogV1 {
     journal: Journal,
     directory: OwnedFd,
@@ -298,6 +299,10 @@ fn validate_transition(
             || current.owner_sandbox != prior.owner_sandbox
             || current.generation != next.generation
             || current.revocation_digest == prior.revocation_digest
+            || (!current.active
+                && (current.workspace_id != prior.workspace_id
+                    || current.assignment_digest != prior.assignment_digest
+                    || current.source_incarnation != prior.source_incarnation))
         {
             return Err(StorageLiveExportCatalogErrorV1::InvalidRecord);
         }
@@ -563,6 +568,11 @@ mod tests {
         assert!(validate_transition(&previous, &revoked).is_ok());
         assert!(validate_transition(&revoked, &previous).is_err());
         assert!(validate_transition(&previous, &previous).is_err());
+
+        let mut rewritten_origin = revoked_bytes.clone();
+        rewritten_origin[HEADER_BYTES + 56..HEADER_BYTES + 88].fill(8);
+        let rewritten_origin = parse_catalog(&rewritten_origin).unwrap();
+        assert!(validate_transition(&previous, &rewritten_origin).is_err());
 
         let mut revived_bytes = revoked_bytes.clone();
         revived_bytes[16..24].copy_from_slice(&5_u64.to_be_bytes());
