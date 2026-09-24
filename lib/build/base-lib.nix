@@ -327,6 +327,7 @@
       then throw "base-lib: frozen host authenticated root '${builtins.toString root}' has no retained store identity"
       else root)
     hostAuthenticatedRoots;
+  hostModuleRoots = lib.unique (builtins.map (record: record.configRoot) checkedHostPackageModules);
   hostStaticAbilityContract = realEval.config.system.build.staticAbilityContract;
   stageContractsDistinct =
     if builtins.toString hostStaticAbilityContract == builtins.toString initrdStaticAbilityContract
@@ -398,41 +399,54 @@
   moduleAbiFile = builtins.toFile "module-abi.nix" ''
     {aos.system.moduleAbi = ${toString moduleAbi};}
   '';
+
+  # Both image evaluation and source-stage transitions replay the same frozen
+  # module inputs. The smaller view does not retain the image artifact baseline.
+  copyEvaluationFiles = ''
+    mkdir -p "$out"
+
+    cp -rL --no-preserve=mode ${../../lib} "$out/lib"
+    cp -rL --no-preserve=mode ${../../modules} "$out/modules"
+    cp -rL --no-preserve=mode ${../../systems} "$out/systems"
+    cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
+
+    ${pkgs.sed}/bin/sed \
+      -e "s|@system@|${system}|g" \
+      -e "s|@abiHash@|${abiHash}|g" \
+      ${./base-lib-entry.nix} > "$out/default.nix"
+    cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
+    cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
+    cp ${hostPackageModulesFile} "$out/host-package-modules.json"
+    cp ${hostEvaluationInputsFile} "$out/host-evaluation-inputs.json"
+    cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
+    cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
+    cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
+    cp ${systemModulesFile} "$out/system-modules.nix"
+    cp ${moduleAbiFile} "$out/module-abi.nix"
+
+    mkdir -p "$out/initrd-authenticated-roots"
+    ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
+        ln -s ${root} "$out/initrd-authenticated-roots/${toString index}"
+      '')
+      checkedInitrdAuthenticatedRoots)}
+  '';
+
+  initrdEvaluation = pkgs.runCommand "aos-initrd-evaluation-${systemName}" {} ''
+    ${copyEvaluationFiles}
+    mkdir -p "$out/host-module-roots"
+    ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
+        ln -s ${root} "$out/host-module-roots/${toString index}"
+      '')
+      hostModuleRoots)}
+  '';
 in
   assert stageContractsDistinct;
     pkgs.runCommand "aos-base-lib-${systemName}" {
-      passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
+      passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash initrdEvaluation;};
       inherit imageManifest placeholderBaseLibDigest;
       passAsFile = ["imageManifest"];
     } ''
-      mkdir -p "$out"
-
-      # Bundle the source trees the on-host eval imports. `--no-preserve=mode` so
-      # the copied files are writable enough for the store (the originals are
-      # read-only store paths). Modules reference `../../pkgs/...` and
-      # `../../lib/...` path literals, so all four trees must be present even
-      # though no package is built.
-      cp -rL --no-preserve=mode ${../../lib} "$out/lib"
-      cp -rL --no-preserve=mode ${../../modules} "$out/modules"
-      cp -rL --no-preserve=mode ${../../systems} "$out/systems"
-      cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
-
-      ${pkgs.sed}/bin/sed \
-        -e "s|@system@|${system}|g" \
-        -e "s|@abiHash@|${abiHash}|g" \
-        ${./base-lib-entry.nix} > "$out/default.nix"
-      cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
-      cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
-      cp ${hostPackageModulesFile} "$out/host-package-modules.json"
-      cp ${hostEvaluationInputsFile} "$out/host-evaluation-inputs.json"
-      cp ${initrdPackageModulesFile} "$out/initrd-package-modules.json"
-      cp ${initrdProviderModulesFile} "$out/initrd-provider-modules.json"
-      cp ${initrdEvaluationInputsFile} "$out/initrd-evaluation-inputs.json"
-      mkdir -p "$out/initrd-authenticated-roots"
-      ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
-          ln -s ${root} "$out/initrd-authenticated-roots/${toString index}"
-        '')
-        checkedInitrdAuthenticatedRoots)}
+      ${copyEvaluationFiles}
       mkdir -p "$out/host-authenticated-roots"
       ${lib.concatStringsSep "\n" (lib.imap (index: root: ''
           ln -s ${root} "$out/host-authenticated-roots/${toString index}"
@@ -447,9 +461,6 @@ in
       ${pkgs.sed}/bin/sed \
         -e "s|sha256:$placeholderBaseLibDigest|sha256:$actual_base_lib_digest|g" \
         "$imageManifestPath" > "$out/image-manifest.json"
-      cp ${systemModulesFile} "$out/system-modules.nix"
-      cp ${moduleAbiFile} "$out/module-abi.nix"
-
       echo ${lib.escapeShellArg systemName} > "$out/system-name"
       echo ${lib.escapeShellArg abiHash} > "$out/abi-hash"
       echo ${toString moduleAbi} > "$out/module-abi"

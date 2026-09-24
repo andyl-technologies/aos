@@ -111,6 +111,14 @@
     kind = networkInterface.identity.name;
     lifetime = "persistent";
   };
+  unrelatedResource = {
+    resource = {
+      provider = resource.resource.provider;
+      key = "systemd-networkd";
+    };
+    kind = "aos.systemd.packaged-unit";
+    lifetime = "persistent";
+  };
   transition = abilities.implementations."systemd:network-configuration".transition;
   transitionOperation = kind: let
     method =
@@ -120,12 +128,18 @@
     fragment = transition {
       provider = resource.resource.provider;
       operation_scope = ["network-configuration"];
-      before.resources = [resource];
-      after.resources = [resource];
+      before.resources = [resource unrelatedResource];
+      after.resources = [resource unrelatedResource];
       changes = [
         {
           inherit kind;
           inherit (resource) resource;
+          current = null;
+          desired = null;
+        }
+        {
+          inherit kind;
+          inherit (unrelatedResource) resource;
           current = null;
           desired = null;
         }
@@ -163,7 +177,8 @@
       ];
     };
   in
-    builtins.head fragment.operations;
+    assert builtins.length fragment.operations == 1;
+      builtins.head fragment.operations;
   applyOperation = transitionOperation "create";
   removeOperation = transitionOperation "remove";
   networkdChild = builtins.head (builtins.filter (child: child.slot == "systemd-networkd") networkServiceChildren);

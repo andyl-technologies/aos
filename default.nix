@@ -331,6 +331,7 @@
         moduleSpecialArgs
         // {
           inherit initrdAbilityEvaluation initrdStaticContract;
+          initrdEvaluationLib = baseLib.passthru.initrdEvaluation;
           abilityResolution = {
             bindings = hostAbilityBindings;
             requests = hostAbilityRequests;
@@ -1705,7 +1706,7 @@ in {
     };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
-      aos = pkgs.aos;
+      aos = pkgs.aos.passthru.tests;
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;

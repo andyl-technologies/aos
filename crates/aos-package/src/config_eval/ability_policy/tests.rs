@@ -215,7 +215,7 @@ impl AuthorityFixture {
             supported_features: BTreeSet::new(),
             transaction_linked,
             sequence: 0,
-            max_age_millis: 100,
+            max_age_millis: 30_000,
             admission: None,
         }
     }

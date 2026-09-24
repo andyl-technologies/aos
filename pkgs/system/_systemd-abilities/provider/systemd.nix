@@ -42,6 +42,7 @@
   );
   managerWatchdogTransition = import ./_systemd-manager-watchdog-transition.nix {
     effectsInterface = managerWatchdogEffectsInterface;
+    resourceKind = managerWatchdogInterface.name;
     inherit (lib.abilities) transitionFragment;
   };
   networkConfiguration = lib.abilities.interfaces.networkConfiguration.interface;

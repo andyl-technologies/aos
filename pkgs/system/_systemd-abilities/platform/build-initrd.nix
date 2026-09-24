@@ -133,6 +133,10 @@
       };
       staticContract = checkedStaticContract;
       fixedPoint = "${sourceFixedPoint}/fixed-point.json";
+      baseLib =
+        if buildContext.initrdEvaluationLib == null
+        then throw "systemd initrd requires the frozen initrd evaluation library"
+        else builtins.toString buildContext.initrdEvaluationLib;
       artifactOutputs = sourceArtifactOutputs;
     };
   };

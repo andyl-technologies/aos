@@ -4,6 +4,7 @@
   resourceKind,
   transitionFragment,
 }: context: let
+  matchesResourceKind = import ./_systemd-transition-resource.nix resourceKind context;
   deadline = {
     attempt_timeout_millis = 300000;
     total_recovery_millis = 1200000;
@@ -11,6 +12,7 @@
   actionable = builtins.filter (change:
     change.resource.provider
     == context.provider
+    && matchesResourceKind change
     && builtins.elem change.kind [
       "create"
       "update"

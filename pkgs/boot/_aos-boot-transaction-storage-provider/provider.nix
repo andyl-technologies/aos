@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  packageName,
   ...
 }: let
   alias = "boot-transaction-storage-view";
@@ -9,7 +10,7 @@
   identity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration interface
   );
-  effects = config.aos.abilities.interfaces.boot-transaction-storage-view-effects;
+  effects = config.aos.abilities.interfaces."${packageName}:boot-transaction-storage-view-effects";
   effectsIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration effects
   );

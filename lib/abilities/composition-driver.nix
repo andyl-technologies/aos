@@ -129,22 +129,38 @@
             else ["parameters" "requirement" "scope" "slot"]
           )
           rawAuthored;
-        ownerRequest = authored.owner_request or null;
+        matchingResources =
+          if group ? resources
+          then builtins.filter (resource: resource.resource.key == authored.slot) group.resources
+          else [];
+        # A child for a resolved resource inherits its selected controller.
+        # Providers can override this when the relationship differs.
+        ownerRequest =
+          if rawAuthored ? owner_request
+          then authored.owner_request
+          else if builtins.length matchingResources == 1
+          then (builtins.head matchingResources).controller.binding.request
+          else if matchingResources == []
+          then null
+          else fail "child request '${localRequestKey}' has ambiguous resource ownership for slot '${authored.slot}'";
         ownerEntries =
           if ownerRequest == null
           then []
           else builtins.filter (entry: entry.binding.request == ownerRequest) group.entries;
+        # The provider authors the child; the parent request only delegates
+        # control of a resource it already owns.
+        providerAuthority = {
+          kind = "package";
+          package = implementationPackage group.implementationKey group.implementation;
+        };
         ownerAuthority =
           if ownerRequest == null
-          then {
-            kind = "package";
-            package = implementationPackage group.implementationKey group.implementation;
-          }
+          then providerAuthority
           else if !builtins.isString ownerRequest
           then fail "child request '${localRequestKey}' has a non-string parent request owner"
           else if builtins.length ownerEntries != 1
           then fail "child request '${localRequestKey}' delegates ownership to an absent or ambiguous parent request '${toString ownerRequest}'"
-          else (builtins.head ownerEntries).request.authority;
+          else providerAuthority;
         requirementKey = lib.abilities.compositionRequirementKey {
           implementation = group.implementationKey;
           alias = authored.requirement;
@@ -167,6 +183,7 @@
           localKey = localRequestKey;
           requirement = requirementKey;
           consumer = group.providerInstance;
+          inherit ownerRequest;
           inherit (authored) scope parameters;
         };
       }) (builtins.attrNames group.result.requests))

@@ -85,7 +85,8 @@
   projectRequest = name: request: requirement: {
     provenance = provenanceFor name request;
     inherit (request) consumer scope lifetime;
-    parameters = normalizeOwnedValue
+    parameters =
+      normalizeOwnedValue
       (declarationOwner request)
       (resolveRequestValue name request.lifetime [] request.parameters);
     inherit requirement;
@@ -102,10 +103,15 @@
     if !(builtins.hasAttr request.requirement abilities.compositionRequirements)
     then throw "source-stage request '${name}' references absent composition requirement '${request.requirement}'"
     else
-      projectRequest name request {
+      (projectRequest name request {
         kind = "composition";
         declaration = request.requirement;
-      };
+      })
+      // (
+        if request.ownerRequest == null
+        then {}
+        else {inherit (request) ownerRequest;}
+      );
   projectBinding = _: binding: {
     inherit (binding) request providerInstance slot;
     implementation = implementationReference "binding implementation" binding.implementation;

@@ -16,6 +16,7 @@
   pkgs,
   lib,
   provenance,
+  initrdEvaluationLib ? null,
   ...
 }: let
   selectedOutput = selector: let
@@ -58,6 +59,7 @@
         ;
       packageRuntime = pkgs.buildPackages.aos.packageRuntime;
     };
+    inherit initrdEvaluationLib;
     targetPlatform = {
       inherit (pkgs.stdenv.hostPlatform.constraints) os cpu abi features;
     };

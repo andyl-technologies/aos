@@ -348,7 +348,10 @@
   in
     lifecycleImplementation.compose {
       allResources = [selectedResource];
-      bindings.lifecycle.providerInstance = "systemd:manager";
+      bindings.lifecycle = {
+        providerInstance = "systemd:manager";
+        request = "consumer:lifecycle";
+      };
       planningOutputs = {};
       resources.main = selectedResource;
     };
@@ -565,6 +568,8 @@ in
   assert lifecycleImplementation.handlerDescriptor == null;
   assert builtins.isFunction lifecycleImplementation.transition;
   assert builtins.attrNames lifecycleImplementation.requirements == ["service-effects"];
+  assert effectsChild.declaration.ownerRequest == "consumer:lifecycle";
+  assert effectsRequest.ownerRequest == "consumer:lifecycle";
   assert builtins.length matchedOwnership.realizations.main.units == 4;
   assert builtins.length mismatchedOwnership.realizations.main.units == 4;
   assert templates "StateDirectory" matchedDirectoryService == ["example/nested"];
