@@ -5816,7 +5816,8 @@ mod tests {
                 ControllerCommand::ReadPublicProjection { .. } => {
                     panic!("root diagnostics must not enter public projection reads")
                 }
-                ControllerCommand::PlanPublicPolicy { .. }
+                ControllerCommand::BootstrapPublicCapability { .. }
+                | ControllerCommand::PlanPublicPolicy { .. }
                 | ControllerCommand::AdmitPublicOperatorRecovery { .. }
                 | ControllerCommand::AdmitPublicMutation { .. }
                 | ControllerCommand::AdmitPublicAttach { .. }
