@@ -33,7 +33,7 @@ use crate::execution_capture_writer::{
 };
 use crate::execution_output::ProtectedRetainedCaptureV1;
 use crate::pin_worker::boottime_now_nanoseconds;
-use crate::process::{PinnedExecutable, ZfsWorkerError, process_timeout};
+use crate::process::{PinnedCaptureZfsTools, ZfsWorkerError, process_timeout};
 
 const ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-create-attempt.v1\0";
 const WRITE_RESULT_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-detached-write.v1\0";
@@ -203,32 +203,16 @@ pub(crate) fn run_capture_create_for(
 }
 
 struct FixedCaptureCreateBackendV1<'a> {
-    zfs: &'a ZfsHelperContract,
-    zpool: ZfsHelperContract,
-    zfs_pin: PinnedExecutable,
-    zpool_pin: PinnedExecutable,
+    tools: PinnedCaptureZfsTools<'a>,
 }
 
 impl<'a> FixedCaptureCreateBackendV1<'a> {
     fn new(zfs: &'a ZfsHelperContract) -> Result<Self, ZfsWorkerError> {
-        if zfs
-            .executable()
-            .file_name()
-            .is_none_or(|name| name != "zfs")
-        {
-            return Err(ZfsWorkerError::Executable(
-                "capture create requires the fixed AOS zfs executable".to_owned(),
-            ));
-        }
-        let zpool = ZfsHelperContract::new(zfs.executable().with_file_name("zpool"))?;
-        let zfs_pin = PinnedExecutable::open(zfs)?;
-        let zpool_pin = PinnedExecutable::open(&zpool)?;
-        Ok(Self {
+        let tools = PinnedCaptureZfsTools::new(
             zfs,
-            zpool,
-            zfs_pin,
-            zpool_pin,
-        })
+            "capture create requires the fixed AOS zfs executable",
+        )?;
+        Ok(Self { tools })
     }
 
     fn remaining(
@@ -252,10 +236,7 @@ impl CaptureCreateBackendV1 for FixedCaptureCreateBackendV1<'_> {
     ) -> Result<[Vec<u8>; 2], ZfsWorkerError> {
         let mut outputs = Vec::with_capacity(2);
         for command in plan.commands() {
-            let (contract, pin) = match command.tool {
-                CaptureZfsToolV1::Zpool => (&self.zpool, &self.zpool_pin),
-                CaptureZfsToolV1::Zfs => (self.zfs, &self.zfs_pin),
-            };
+            let (contract, pin) = self.tools.for_tool(command.tool);
             pin.validate_current(contract)?;
             let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
             let output = run_fixed_process(FixedProcessRequest {
@@ -276,8 +257,7 @@ impl CaptureCreateBackendV1 for FixedCaptureCreateBackendV1<'_> {
                 _ => return Err(ZfsWorkerError::Protocol("capture preflight command failed")),
             }
         }
-        self.zfs_pin.validate_current(self.zfs)?;
-        self.zpool_pin.validate_current(&self.zpool)?;
+        self.tools.validate_current()?;
         outputs
             .try_into()
             .map_err(|_| ZfsWorkerError::Protocol("capture preflight is incomplete"))
@@ -288,18 +268,17 @@ impl CaptureCreateBackendV1 for FixedCaptureCreateBackendV1<'_> {
         authorized: &AuthorizedCaptureCreateAttemptV1,
         command: &CaptureZfsCreateCommandV1,
     ) -> Result<bool, ZfsWorkerError> {
-        self.zfs_pin.validate_current(self.zfs)?;
-        self.zpool_pin.validate_current(&self.zpool)?;
+        self.tools.validate_current()?;
+        let (zfs, _) = self.tools.for_tool(CaptureZfsToolV1::Zfs);
         let arguments: Vec<OsString> = command.arguments.iter().map(OsString::from).collect();
         let output = run_fixed_process(FixedProcessRequest {
-            executable: self.zfs.executable(),
+            executable: zfs.executable(),
             arguments: &arguments,
             timeout: Self::remaining(authorized)?,
             maximum_stdout_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
             maximum_stderr_bytes: MAXIMUM_MACHINE_OUTPUT_BYTES,
         })?;
-        self.zfs_pin.validate_current(self.zfs)?;
-        self.zpool_pin.validate_current(&self.zpool)?;
+        self.tools.validate_current()?;
         Ok(matches!(
             output,
             FixedProcessOutcome::Completed(output)
