@@ -1204,6 +1204,7 @@ in rec {
         "checks.crucible.phase7.gates.worldForkAtomicity" = phase7.gates.worldForkAtomicity;
         "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
         "checks.crucible.phase9.gates.campaignOperationalContinuity" = phase9.gates.campaignOperationalContinuity;
+        "checks.crucible.phase9.gates.campaignEnvoyNetworkVm" = phase9.gates.campaignEnvoyNetworkVm;
       };
     };
     gates = rec {
@@ -3057,6 +3058,9 @@ in rec {
       campaignFindingForkWriteVm = import ./phase9-campaign-finding-fork-write-vm.nix {
         inherit pkgs lib;
       };
+      campaignEnvoyNetworkVm = import ./phase9-campaign-envoy-network-vm.nix {
+        inherit pkgs lib;
+      };
       campaignOperationalContinuity = import ./phase9-campaign-operational-continuity.nix {
         inherit pkgs lib;
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;
@@ -3131,6 +3135,7 @@ in rec {
           campaignFindingExactVm
           campaignFindingSignalVm
           campaignFindingForkWriteVm
+          campaignEnvoyNetworkVm
         ];
         requiredClaims = [
           {
@@ -3329,6 +3334,15 @@ in rec {
               "finding_bundle_noncanonical_register_write=true"
               "finding_bundle_canonical_checkpoint_and_bundle_unchanged=true"
               "finding_bundle_fork_qemu_teardown=true"
+            ];
+          }
+          {
+            gate = "gate:campaign-envoy-network-five-vm";
+            result = campaignEnvoyNetworkVm;
+            requiredLines = [
+              "gate=gate:campaign-envoy-network-five-vm"
+              "envoy_five_node_failover_and_recovery_authenticated=true"
+              "evidence_retained=true"
             ];
           }
         ];
