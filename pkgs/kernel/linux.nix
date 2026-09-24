@@ -121,6 +121,7 @@ in
           patch -p1 < ${./linux-gawk-array-argument.patch}
           patch -p1 < ${./patches/0001-aos-no-setid-prctl-uapi.patch}
           patch -p1 < ${./patches/0002-aos-no-setid-vfs.patch}
+          patch -p1 < ${./patches/0003-aos-no-setid-io-workers.patch}
           "$CONFIG_SHELL" ${./check-no-setid-prctl.sh} include/uapi/linux/prctl.h
           "$CONFIG_SHELL" ${./check-no-setid-source.sh}
         '';
