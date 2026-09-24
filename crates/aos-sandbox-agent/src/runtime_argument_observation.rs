@@ -116,6 +116,18 @@ impl GuestRuntimeArgumentObserveRequestV1 {
         self.channel
     }
 
+    /// Borrows the exact registered runtime profile challenged by the Host.
+    #[must_use]
+    pub const fn profile(&self) -> &FeatureRef {
+        &self.profile
+    }
+
+    /// Returns the protected runtime-profile commitment in this challenge.
+    #[must_use]
+    pub const fn profile_commitment(&self) -> ObjectDigest {
+        self.profile_commitment
+    }
+
     /// Encodes the canonical bounded request sent on the Guest seqpacket channel.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
