@@ -1,8 +1,8 @@
-##! Native Mach Interface Generator for Darwin OpenJDK cross builds.
+##! Native Mach Interface Generator for Linux-hosted Darwin cross builds.
 ##!
 ##! MIG emits target C sources but is itself a Linux build-time executable.
-##! Keep it private to the Java bootstrap helpers so no native ELF enters a
-##! published Darwin SDK or target runtime closure.
+##! Keep it private to cross-build helpers so no native ELF enters a published
+##! Darwin SDK or target runtime closure.
 {
   fetchurl,
   buildPackages,
