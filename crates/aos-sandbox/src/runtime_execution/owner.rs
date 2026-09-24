@@ -105,6 +105,7 @@ use super::agent_store::{
 };
 use super::argument_observation::ArgumentObservationRecordV1;
 use super::evidence::JournalExecutionCompletionV1;
+use super::host_output_source::VerifiedHostOutputReserveSourceV1;
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
 use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1,
@@ -113,7 +114,7 @@ use super::route_record::{
 use super::store::{
     AuthenticatedJournalExecutionRecoveryV1 as JournalRecoveryV1, ExecutionJournalRecoveryTokenV1,
     JournalRuntimeExecutionError, JournalRuntimeExecutionStoreV1,
-    ProtectedExecutionAdmissionStateV1,
+    ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReservationV1,
 };
 
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
@@ -1510,6 +1511,55 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         self.validate_current()?;
         self.execution
             .reserve_accepted_output_v2(controller, create_operation, execution, parent)
+            .map_err(Into::into)
+    }
+
+    /// Commits one signed Controller source under the protected Host ledger.
+    ///
+    /// The Host broker must first durably admit the exact pending effect. The
+    /// accepted parent capacity is Controller-sourced through the signed
+    /// carrier; this provisional reservation does not prove physical backing.
+    /// An ambiguous append requires cold reopen and query, never redispatch.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host ownership, conflicting output custody, exhausted
+    /// capacity, or an outcome-unknown protected append.
+    pub fn reserve_host_output_v1(
+        &mut self,
+        verified: &VerifiedHostOutputReserveSourceV1,
+    ) -> Result<ProtectedHostOutputReservationV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .reserve_host_output_v1(verified)
+            .map_err(Into::into)
+    }
+
+    /// Reads one exact prior Host reservation after protected cold reopen.
+    ///
+    /// This method never appends a claim or renews a Controller preissue. A
+    /// foreign claim under the same execution ID conflicts rather than looking
+    /// absent, and historical receipts are not fresh execution authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host ownership, malformed custody, or a mismatched exact
+    /// original request/preissue/claim locator.
+    pub fn query_host_output_v1(
+        &self,
+        execution: ExecutionId,
+        preissue_digest: ObjectDigest,
+        claim_digest: ObjectDigest,
+        original_request_id: [u8; 16],
+    ) -> Result<Option<ProtectedHostOutputReservationV1>, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .query_host_output_v1(
+                execution,
+                preissue_digest,
+                claim_digest,
+                original_request_id,
+            )
             .map_err(Into::into)
     }
 

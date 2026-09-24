@@ -13,6 +13,7 @@ mod agent_store;
 mod argument_observation;
 mod evidence;
 mod guest_authority;
+mod host_output_source;
 mod outcome_record;
 mod owner;
 mod recovery;
@@ -54,6 +55,10 @@ pub use guest_authority::{
     dormant_guest_reserved_outcome_signing_message_v1,
     dormant_guest_reserved_readback_signing_message_v1,
 };
+pub use host_output_source::{
+    HostOutputReserveSourceErrorV1, VerifiedHostOutputReserveSourceV1,
+    verify_host_output_reserve_source_v1,
+};
 pub use owner::{
     AuthenticatedRecoveredHostAgentOutcomeV1, AuthenticatedRuntimeArgumentReadbackV1,
     CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
@@ -66,5 +71,5 @@ pub use recovery::AppliedExecutionRecoveryV1;
 pub use spec_producer::{ProtectedExecutionSpecProducerErrorV1, admit_accepted_execution_spec_v1};
 pub use store::{
     AuthenticatedJournalExecutionRecoveryV1, ExecutionJournalRecoveryTokenV1,
-    JournalRuntimeExecutionError,
+    JournalRuntimeExecutionError, ProtectedHostOutputReservationV1,
 };

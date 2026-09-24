@@ -47,14 +47,19 @@ use super::argument_observation::{ArgumentObservationRecordV1, KEY_PREFIX as ARG
 use super::evidence::{
     JournalExecutionCompletionV1, completion_observes_terminal_execution, validate_completion,
 };
+use super::host_output_source::VerifiedHostOutputReserveSourceV1;
 use super::outcome_record::HostAgentOutcomeRecordV1;
 use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key,
 };
 
 mod output_budget;
+mod output_correlation;
 
 use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
+use output_correlation::{
+    HostOutputCorrelationV1, KEY_PREFIX as HOST_OUTPUT_KEY_PREFIX, host_output_key,
+};
 
 const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
@@ -71,6 +76,100 @@ const OUTPUT_FORMAT_MAGIC: &[u8; 8] = b"AOSROV02";
 const TERMINAL_CAPACITY_RECORDS: u32 = 3;
 const TERMINAL_CAPACITY_BYTES: u64 = 16 * 1_048_576;
 const MAXIMUM_RUNTIME_EXECUTION_RECORDS: usize = 262_144;
+
+/// Authenticated readback of the exact Host AOSEOR02/AOSHOP01 atomic append.
+///
+/// This proves provisional budget custody only. It does not establish physical
+/// capture backing or authorize an execution effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectedHostOutputReservationV1 {
+    execution: ExecutionId,
+    create_operation: OperationId,
+    preissue_digest: ObjectDigest,
+    claim_digest: ObjectDigest,
+    carrier_digest: ObjectDigest,
+    original_request_id: [u8; 16],
+    assignment_digest: ObjectDigest,
+    host_boot_id: [u8; 16],
+    plan_digest: ObjectDigest,
+    semantic_request_digest: ObjectDigest,
+    correlation_digest: ObjectDigest,
+    original_journal_sequence: u64,
+}
+
+impl ProtectedHostOutputReservationV1 {
+    /// Returns the accepted execution named by the protected claim.
+    #[must_use]
+    pub const fn execution(self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the exact accepted Create operation.
+    #[must_use]
+    pub const fn create_operation(self) -> OperationId {
+        self.create_operation
+    }
+
+    /// Returns the Controller protected preissue record digest.
+    #[must_use]
+    pub const fn preissue_digest(self) -> ObjectDigest {
+        self.preissue_digest
+    }
+
+    /// Returns the raw AOSEOR02 claim digest.
+    #[must_use]
+    pub const fn claim_digest(self) -> ObjectDigest {
+        self.claim_digest
+    }
+
+    /// Returns the signed AOSCIR01 carrier digest.
+    #[must_use]
+    pub const fn carrier_digest(self) -> ObjectDigest {
+        self.carrier_digest
+    }
+
+    /// Returns the original authenticated reserve request identifier.
+    #[must_use]
+    pub const fn original_request_id(self) -> [u8; 16] {
+        self.original_request_id
+    }
+
+    /// Returns the current assignment digest pinned by the reservation.
+    #[must_use]
+    pub const fn assignment_digest(self) -> ObjectDigest {
+        self.assignment_digest
+    }
+
+    /// Returns the Host kernel boot identity pinned by the reservation.
+    #[must_use]
+    pub const fn host_boot_id(self) -> [u8; 16] {
+        self.host_boot_id
+    }
+
+    /// Returns the verified signed broker-plan digest.
+    #[must_use]
+    pub const fn plan_digest(self) -> ObjectDigest {
+        self.plan_digest
+    }
+
+    /// Returns the matched reserve-request semantic digest.
+    #[must_use]
+    pub const fn semantic_request_digest(self) -> ObjectDigest {
+        self.semantic_request_digest
+    }
+
+    /// Returns the protected AOSHOP01 record digest.
+    #[must_use]
+    pub const fn correlation_digest(self) -> ObjectDigest {
+        self.correlation_digest
+    }
+
+    /// Returns the original atomic append's protected journal sequence.
+    #[must_use]
+    pub const fn original_journal_sequence(self) -> u64 {
+        self.original_journal_sequence
+    }
+}
 
 /// Configures the initial protected assignment, probe, and resource ledger.
 ///
@@ -494,6 +593,184 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
                 },
             )),
         }
+    }
+
+    /// Appends one signed-source AOSEOR02 claim and its Host attempt correlation.
+    ///
+    /// The caller must first durably admit the matching Host broker effect.
+    /// Failure after the append is outcome-unknown: only cold protected query
+    /// may resolve it, and no new request ID may be generated for a retry.
+    ///
+    /// # Errors
+    ///
+    /// Rejects conflicting or corrupt protected custody, insufficient output
+    /// capacity, or an ambiguous journal commit.
+    pub(crate) fn reserve_host_output_v1(
+        &mut self,
+        verified: &VerifiedHostOutputReserveSourceV1,
+    ) -> Result<ProtectedHostOutputReservationV1, JournalRuntimeExecutionError> {
+        let source = verified.source();
+        let claim_bytes = source.canonical_output_claim();
+        let claim = decode_claim(claim_bytes)?;
+        let execution = source.preissue().execution();
+        let key = claim_key(execution);
+        let correlation_key = host_output_key(execution);
+
+        if let Some(existing) = self.authority.get(&correlation_key)? {
+            let correlation = HostOutputCorrelationV1::decode(existing)
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+            if self.authority.get(&key)? != Some(claim_bytes.as_slice())
+                || correlation.execution != execution
+                || correlation.create_operation != source.preissue().create_operation()
+                || correlation.original_request_id != verified.original_request_id()
+                || correlation.preissue_digest != source.preissue().record_digest()
+                || correlation.claim_digest != source.output_claim_digest()
+                || correlation.carrier_digest != source.carrier_digest()
+                || correlation.plan_digest != verified.plan_digest()
+                || correlation.semantic_request_digest != verified.semantic_request_digest()
+                || correlation.assignment_digest != verified.assignment_digest()
+                || correlation.host_boot_id != verified.host_boot_id()
+                || correlation.deadline_boottime_nanoseconds
+                    != source.preissue().deadline_boottime_nanoseconds()
+                || correlation.original_journal_sequence > self.authority.snapshot()?.sequence()
+            {
+                return Err(JournalRuntimeExecutionError::RecordConflict);
+            }
+            return host_output_receipt(correlation);
+        }
+        if self.authority.get(&key)?.is_some() {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        let format = output_format_bytes(self.store_binding);
+        let format_seen = match self.authority.get(OUTPUT_FORMAT_KEY)? {
+            Some(bytes) if bytes == format => true,
+            Some(_) => return Err(JournalRuntimeExecutionError::CorruptRecord),
+            None => false,
+        };
+        if !format_seen
+            && self.authority.records()?.any(|(record_key, _)| {
+                matches!(record_key, [ADMISSION_KEY_PREFIX, ..] if record_key.len() == 17)
+            })
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        let readback = replay_ledger(
+            self.authority
+                .records()?
+                .filter(|(record_key, _)| output_record_key(record_key)),
+            claim.assignment,
+            claim.parent_bytes,
+            &key,
+            claim_bytes,
+        )?;
+        if format_seen != readback.marker_seen || readback.replay {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        admit_next(readback.used, claim.requested_bytes, claim.parent_bytes)?;
+
+        let write_count = if format_seen { 2 } else { 4 };
+        let next_sequence =
+            predicted_commit_sequence(self.authority.snapshot()?.sequence(), write_count)?;
+        let correlation = HostOutputCorrelationV1 {
+            execution,
+            create_operation: source.preissue().create_operation(),
+            preissue_digest: source.preissue().record_digest(),
+            claim_digest: source.output_claim_digest(),
+            carrier_digest: source.carrier_digest(),
+            original_request_id: verified.original_request_id(),
+            assignment_digest: verified.assignment_digest(),
+            host_boot_id: verified.host_boot_id(),
+            plan_digest: verified.plan_digest(),
+            semantic_request_digest: verified.semantic_request_digest(),
+            deadline_boottime_nanoseconds: source.preissue().deadline_boottime_nanoseconds(),
+            original_journal_sequence: next_sequence,
+        };
+        let correlation_bytes = correlation
+            .encode()
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let mut writes = Vec::with_capacity(write_count);
+        if !format_seen {
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                OUTPUT_FORMAT_KEY.to_vec(),
+                format.to_vec(),
+            ));
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                OUTPUT_MARKER_KEY.to_vec(),
+                marker_bytes(claim.assignment, claim.parent_bytes).to_vec(),
+            ));
+        }
+        writes.push(JournalRecord::put(
+            RecordNamespace::Effect,
+            key,
+            claim_bytes.to_vec(),
+        ));
+        writes.push(JournalRecord::put(
+            RecordNamespace::Effect,
+            correlation_key,
+            correlation_bytes.to_vec(),
+        ));
+
+        let transaction = JournalTransaction::new(
+            transaction_id(b"host-output", source.carrier_digest()),
+            writes,
+        )?;
+        self.authority
+            .commit(&transaction)
+            .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)?;
+        let committed_sequence = self
+            .authority
+            .snapshot()
+            .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)?
+            .sequence();
+        if committed_sequence != next_sequence {
+            return Err(JournalRuntimeExecutionError::ObservationOutcomeUnknown);
+        }
+        host_output_receipt(correlation)
+            .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)
+    }
+
+    /// Reads one prior exact Host reservation without appending a new claim.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mismatched request/correlation or corrupt protected record.
+    pub(crate) fn query_host_output_v1(
+        &self,
+        execution: ExecutionId,
+        preissue_digest: ObjectDigest,
+        claim_digest: ObjectDigest,
+        original_request_id: [u8; 16],
+    ) -> Result<Option<ProtectedHostOutputReservationV1>, JournalRuntimeExecutionError> {
+        let correlation_key = host_output_key(execution);
+        let Some(bytes) = self.authority.get(&correlation_key)? else {
+            return match self.authority.get(&claim_key(execution))? {
+                Some(_) => Err(JournalRuntimeExecutionError::RecordConflict),
+                None => Ok(None),
+            };
+        };
+        let correlation = HostOutputCorrelationV1::decode(bytes)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let claim = self
+            .authority
+            .get(&claim_key(execution))?
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let retained = decode_claim(claim)?;
+        if correlation.execution != execution
+            || correlation.preissue_digest != preissue_digest
+            || correlation.claim_digest != claim_digest
+            || correlation.original_request_id != original_request_id
+            || retained.create_operation != *correlation.create_operation.as_bytes()
+            || retained.assignment != correlation.assignment_digest
+            || ObjectDigest::from_bytes(Sha256::digest(claim).into()) != claim_digest
+            || correlation.original_journal_sequence > self.authority.snapshot()?.sequence()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        host_output_receipt(correlation).map(Some)
     }
 
     /// Resolves an ambiguous v2 claim after this store has cold-reopened.
@@ -1678,6 +1955,7 @@ fn owned_key(key: &[u8]) -> bool {
         || matches!(key, [ROUTE_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [ARGUMENT_KEY_PREFIX, ..] if key.len() == 17)
+        || matches!(key, [HOST_OUTPUT_KEY_PREFIX, ..] if key.len() == 17)
 }
 
 fn output_record_key(key: &[u8]) -> bool {
@@ -1691,6 +1969,29 @@ fn output_format_bytes(store_binding: ObjectDigest) -> [u8; 40] {
     bytes
 }
 
+fn host_output_receipt(
+    correlation: HostOutputCorrelationV1,
+) -> Result<ProtectedHostOutputReservationV1, JournalRuntimeExecutionError> {
+    let bytes = correlation
+        .encode()
+        .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+    let correlation_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
+    Ok(ProtectedHostOutputReservationV1 {
+        execution: correlation.execution,
+        create_operation: correlation.create_operation,
+        preissue_digest: correlation.preissue_digest,
+        claim_digest: correlation.claim_digest,
+        carrier_digest: correlation.carrier_digest,
+        original_request_id: correlation.original_request_id,
+        assignment_digest: correlation.assignment_digest,
+        host_boot_id: correlation.host_boot_id,
+        plan_digest: correlation.plan_digest,
+        semantic_request_digest: correlation.semantic_request_digest,
+        correlation_digest,
+        original_journal_sequence: correlation.original_journal_sequence,
+    })
+}
+
 fn validate_runtime_execution_replay(
     authority: &ProtectedJournalAuthority<'_>,
     store_binding: ObjectDigest,
@@ -1701,6 +2002,7 @@ fn validate_runtime_execution_replay(
     let mut output_format_seen = false;
     let mut output_marker = None;
     let mut provisional_claims = BTreeMap::new();
+    let mut host_output_correlations = BTreeMap::new();
     let mut argument_observations = BTreeMap::new();
     let mut admission_state = None;
     let mut admissions = BTreeMap::new();
@@ -1759,6 +2061,18 @@ fn validate_runtime_execution_replay(
                 if retained.execution.as_slice() != suffix
                     || provisional_claims
                         .insert(key.to_vec(), value.to_vec())
+                        .is_some()
+                {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
+            Some(HOST_OUTPUT_KEY_PREFIX) if key.len() == 17 => {
+                let correlation = HostOutputCorrelationV1::decode(value)
+                    .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+                if correlation.execution.as_bytes() != suffix
+                    || correlation.original_journal_sequence > protected_sequence
+                    || host_output_correlations
+                        .insert(correlation.execution, correlation)
                         .is_some()
                 {
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -1894,6 +2208,18 @@ fn validate_runtime_execution_replay(
         )?;
     } else if output_marker.is_some() || !provisional_claims.is_empty() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
+    }
+    for (execution, correlation) in &host_output_correlations {
+        let claim_bytes = provisional_claims
+            .get(&claim_key(*execution))
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let claim = decode_claim(claim_bytes)?;
+        if claim.create_operation != *correlation.create_operation.as_bytes()
+            || claim.assignment != correlation.assignment_digest
+            || claim.record_digest != correlation.claim_digest
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
     }
     for (execution, record) in &argument_observations {
         let retained = provisional_claims
@@ -2683,6 +3009,7 @@ mod output_v2_tests {
         parent_bytes: u64,
         include_format: bool,
         include_marker: bool,
+        correlation: Option<HostOutputCorrelationV1>,
     ) -> Result<(), JournalRuntimeExecutionError> {
         let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
             .expect("test directory");
@@ -2731,6 +3058,23 @@ mod output_v2_tests {
                 claim(execution, requested, parent_bytes),
             ));
         }
+        let correlation = correlation.map(|mut record| {
+            record.original_journal_sequence = predicted_commit_sequence(
+                store
+                    .authority
+                    .snapshot()
+                    .expect("protected snapshot")
+                    .sequence(),
+                writes.len() + 1,
+            )
+            .expect("journal sequence");
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                host_output_key(record.execution),
+                record.encode().expect("correlation bytes").to_vec(),
+            ));
+            record
+        });
         let transaction = JournalTransaction::new([1; 16], writes).expect("v2 transaction");
         store
             .authority
@@ -2769,25 +3113,76 @@ mod output_v2_tests {
                 .load_accepted_output_v2(ExecutionId::from_bytes([99; 16]))?
                 .is_none()
         );
+        if let Some(correlation) = correlation {
+            let observed = store
+                .query_host_output_v1(
+                    correlation.execution,
+                    correlation.preissue_digest,
+                    correlation.claim_digest,
+                    correlation.original_request_id,
+                )?
+                .expect("protected Host correlation");
+            assert_eq!(
+                observed.original_journal_sequence(),
+                correlation.original_journal_sequence
+            );
+            assert_eq!(observed.claim_digest(), correlation.claim_digest);
+            assert!(
+                store
+                    .query_host_output_v1(
+                        correlation.execution,
+                        correlation.preissue_digest,
+                        correlation.claim_digest,
+                        [99; 16],
+                    )
+                    .is_err()
+            );
+        }
         Ok(())
     }
 
     #[test]
     fn cold_replay_accepts_zero_byte_provisional_claim() {
-        cold_replay(&[(1, 0)], 0, true, true).expect("zero-byte claim survives cold replay");
+        cold_replay(&[(1, 0)], 0, true, true, None).expect("zero-byte claim survives cold replay");
     }
 
     #[test]
     fn cold_replay_keeps_zero_and_nonzero_execution_claims_distinct() {
-        cold_replay(&[(1, 0), (2, 1)], 1, true, true)
+        cold_replay(&[(1, 0), (2, 1)], 1, true, true, None)
             .expect("distinct claims survive one assignment ledger");
     }
 
     #[test]
+    fn host_output_correlation_survives_cold_replay_and_rejects_foreign_attempt() {
+        let correlation = HostOutputCorrelationV1 {
+            execution: ExecutionId::from_bytes([1; 16]),
+            create_operation: OperationId::from_bytes([3; 16]),
+            preissue_digest: ObjectDigest::from_bytes([11; 32]),
+            claim_digest: ObjectDigest::from_bytes(Sha256::digest(claim(1, 4, 8)).into()),
+            carrier_digest: ObjectDigest::from_bytes([12; 32]),
+            original_request_id: [13; 16],
+            assignment_digest: ObjectDigest::from_bytes([5; 32]),
+            host_boot_id: [14; 16],
+            plan_digest: ObjectDigest::from_bytes([15; 32]),
+            semantic_request_digest: ObjectDigest::from_bytes([16; 32]),
+            deadline_boottime_nanoseconds: 17,
+            original_journal_sequence: 0,
+        };
+        cold_replay(&[(1, 4)], 8, true, true, Some(correlation))
+            .expect("atomic Host claim/correlation survives cold replay");
+
+        let foreign_claim = HostOutputCorrelationV1 {
+            claim_digest: ObjectDigest::from_bytes([99; 32]),
+            ..correlation
+        };
+        assert!(cold_replay(&[(1, 4)], 8, true, true, Some(foreign_claim)).is_err());
+    }
+
+    #[test]
     fn cold_replay_rejects_missing_marker_and_overcommit() {
-        assert!(cold_replay(&[(1, 0)], 0, true, false).is_err());
-        assert!(cold_replay(&[(1, 8), (2, 3)], 10, true, true).is_err());
-        assert!(cold_replay(&[(1, 0)], 0, false, true).is_err());
+        assert!(cold_replay(&[(1, 0)], 0, true, false, None).is_err());
+        assert!(cold_replay(&[(1, 8), (2, 3)], 10, true, true, None).is_err());
+        assert!(cold_replay(&[(1, 0)], 0, false, true, None).is_err());
     }
 
     #[test]

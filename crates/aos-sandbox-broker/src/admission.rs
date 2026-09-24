@@ -8,8 +8,8 @@
 use aos_sandbox::journal::RecordNamespace;
 use aos_sandbox_core::format::decode_signature;
 use aos_sandbox_core::{
-    BrokerArgumentCommitment, BrokerAssignment, BrokerAudience, BrokerGrantTarget,
-    BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, BrokerVerb,
+    BrokerAdmissionIntersection, BrokerArgumentCommitment, BrokerAssignment, BrokerAudience,
+    BrokerGrantTarget, BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, BrokerVerb,
     CLOCK_PAIR_TOLERANCE_NANOSECONDS, DecodeLimits, NodeId, ObjectDigest,
     OwnershipLeaseExpectation, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
     RawPairedClockSample, VerifiedOwnershipLease, intersect_broker_admission, negotiate_protocol,
@@ -338,6 +338,7 @@ impl BrokerAuthority {
             fence,
             effect,
             verified_lease,
+            intersection,
         })
     }
 
@@ -636,6 +637,8 @@ pub struct VerifiedBrokerAdmission {
     pub effect: BrokerEffectIntentV1,
     /// Fresh signature-verified lease used for the committed local fence.
     pub verified_lease: VerifiedOwnershipLease,
+    /// Exact signed-plan/current-lease match retained for protected effect owners.
+    pub intersection: BrokerAdmissionIntersection,
 }
 
 const fn artifact_limits(maximum_bytes: usize) -> DecodeLimits {
