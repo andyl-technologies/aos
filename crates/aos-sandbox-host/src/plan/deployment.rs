@@ -11,6 +11,8 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_systemd::SystemdClient;
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{Mode, OFlags, open};
@@ -20,13 +22,15 @@ use super::{
     BackendReadinessBlocker, ProtectedBackendReadinessEvidence, VerifiedLiveSelinuxPolicyV1,
 };
 use crate::phase0_probe::{
-    PHASE0_PROBE_RECORD_BYTES, SignedPhase0ProbeRecordV1, verified_packaged_hostd_digest,
+    PHASE0_PROBE_RECORD_BYTES, Phase0ProbeObservationV1, SignedPhase0ProbeRecordV1,
+    verified_packaged_hostd_digest,
 };
 use crate::{HostError, Result};
 
 const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
 const PROBE_RECORD: &str = "probe-v1";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
+const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
 
 /// Verifies every currently implemented, non-authorizing deployment check.
 ///
@@ -46,7 +50,7 @@ pub async fn verify_optional_backend_deployment_v1(
     nspawn_executable: &str,
     selinux_policy: &str,
 ) -> Result<()> {
-    let probe_digest = verify_optional_protected_phase0_probe(
+    let probe = verify_optional_protected_phase0_probe(
         credential_directory,
         nspawn_executable,
         selinux_policy,
@@ -69,11 +73,19 @@ pub async fn verify_optional_backend_deployment_v1(
         .verify_live_pid1_service(&readiness, &systemd)
         .await?;
     live_mac.revalidate(selinux_policy)?;
-    if probe_digest != Some(readiness.phase0_probe_claim()) {
+    let Some((probe_digest, observation)) = probe else {
+        return Err(HostError::State(
+            "protected phase-0 probe claim has no signed readback".to_owned(),
+        ));
+    };
+    if probe_digest != readiness.phase0_probe_claim() {
         return Err(HostError::State(
             "protected phase-0 probe claim differs from signed readback".to_owned(),
         ));
     }
+    verify_host_shifted_target_access(&systemd, observation).await?;
+    packaged.revalidate(&readiness)?;
+    live_mac.revalidate(selinux_policy)?;
 
     if readiness.runtime_blockers()
         != [
@@ -93,7 +105,7 @@ fn verify_optional_protected_phase0_probe(
     credential_directory: &Path,
     nspawn_executable: &str,
     selinux_policy: &str,
-) -> Result<Option<[u8; 32]>> {
+) -> Result<Option<([u8; 32], Phase0ProbeObservationV1)>> {
     let public_path = credential_directory.join(PROBE_PUBLIC_KEY);
     match public_path.symlink_metadata() {
         Ok(_) => {}
@@ -138,7 +150,151 @@ fn verify_optional_protected_phase0_probe(
         hostd_sha256,
         selinux_policy_sha256,
     )?;
-    Ok(Some(report.digest()))
+    Ok(Some((report.digest(), *report.observation())))
+}
+
+async fn verify_host_shifted_target_access(
+    systemd: &SystemdClient,
+    expected: Phase0ProbeObservationV1,
+) -> Result<()> {
+    verify_zero_capability_host_status()?;
+
+    let service = systemd
+        .observe_service_control_group(PROBE_TARGET_SERVICE)
+        .await
+        .map_err(|error| HostError::State(format!("shifted target readback failed: {error}")))?;
+    verify_shifted_service_pid(expected.target_pid, service.main_pid.get())?;
+
+    let target = PidFd::open(service.main_pid)
+        .map_err(|error| HostError::State(format!("shifted target pidfd failed: {error}")))?;
+    let before = target
+        .info()
+        .map_err(|error| HostError::State(format!("shifted target identity failed: {error}")))?;
+    verify_shifted_process_identity(
+        expected.target_pid,
+        before.pid(),
+        before.thread_group_id(),
+        before.parent_pid(),
+    )?;
+
+    let root = open(
+        "/sys/fs/cgroup",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| HostError::State(format!("cgroup root unavailable: {error}")))?;
+    let root = CgroupV2Root::from_owned(root)
+        .map_err(|error| HostError::State(format!("cgroup root invalid: {error}")))?;
+    let relative = service
+        .control_group
+        .strip_prefix('/')
+        .ok_or_else(|| HostError::State("shifted target cgroup is not absolute".to_owned()))?;
+    let anchor = root
+        .resolve(Path::new(relative))
+        .map_err(|error| HostError::State(format!("shifted cgroup unavailable: {error}")))?;
+    let membership = anchor
+        .verify_exact_membership(&target)
+        .map_err(|error| HostError::State(format!("shifted cgroup mismatch: {error}")))?;
+    if membership.cgroup_id() != Some(expected.cgroup_id) {
+        return Err(HostError::State(
+            "shifted target cgroup differs from the signed probe".to_owned(),
+        ));
+    }
+
+    for (kind, identity) in [
+        (NamespaceKind::User, expected.user),
+        (NamespaceKind::Mount, expected.mount),
+        (NamespaceKind::Network, expected.network),
+        (NamespaceKind::Pid, expected.pid),
+    ] {
+        let namespace = target.namespace(kind).map_err(|error| {
+            HostError::State(format!(
+                "zero-capability shifted pidfd access failed: {error}"
+            ))
+        })?;
+        if namespace.identity() != identity {
+            return Err(HostError::State(
+                "shifted namespace differs from the signed probe".to_owned(),
+            ));
+        }
+    }
+
+    let after = target
+        .info()
+        .map_err(|error| HostError::State(format!("shifted target recheck failed: {error}")))?;
+    if before != after
+        || anchor
+            .verify_exact_membership(&target)
+            .map_err(|error| HostError::State(format!("shifted cgroup recheck failed: {error}")))?
+            != membership
+        || !target
+            .is_alive()
+            .map_err(|error| HostError::State(format!("shifted target liveness failed: {error}")))?
+        || systemd
+            .observe_service_control_group(PROBE_TARGET_SERVICE)
+            .await
+            .map_err(|error| HostError::State(format!("shifted service recheck failed: {error}")))?
+            != service
+    {
+        return Err(HostError::State(
+            "shifted target changed during Host pidfd inspection".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_zero_capability_host_status() -> Result<()> {
+    let status = std::fs::read_to_string("/proc/self/status")
+        .map_err(|error| HostError::State(format!("Host status unavailable: {error}")))?;
+    verify_zero_capability_status(&status)
+}
+
+fn verify_shifted_service_pid(expected: u32, observed: u32) -> Result<()> {
+    if observed != expected {
+        return Err(HostError::State(
+            "shifted target PID differs from the signed probe".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_shifted_process_identity(
+    expected: u32,
+    observed_pid: u32,
+    observed_thread_group: u32,
+    observed_parent: u32,
+) -> Result<()> {
+    if observed_pid != expected || observed_thread_group != expected || observed_parent != 1 {
+        return Err(HostError::State(
+            "shifted target is not PID 1's pinned service leader".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_zero_capability_status(status: &str) -> Result<()> {
+    for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] {
+        if status_field(status, name) != Some("0000000000000000") {
+            return Err(HostError::State(format!(
+                "Host {name} is not zero during shifted-target inspection"
+            )));
+        }
+    }
+    if status_field(status, "NoNewPrivs") != Some("1")
+        || status_field(status, "Seccomp") != Some("2")
+    {
+        return Err(HostError::State(
+            "Host NNP or seccomp is absent during shifted-target inspection".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
+    status.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key == name).then(|| value.trim())
+    })
 }
 
 fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
@@ -176,4 +332,46 @@ fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        verify_shifted_process_identity, verify_shifted_service_pid, verify_zero_capability_status,
+    };
+
+    const ZERO_CAPABILITY_STATUS: &str = "\
+CapInh:\t0000000000000000\n\
+CapPrm:\t0000000000000000\n\
+CapEff:\t0000000000000000\n\
+CapBnd:\t0000000000000000\n\
+CapAmb:\t0000000000000000\n\
+NoNewPrivs:\t1\n\
+Seccomp:\t2\n";
+
+    #[test]
+    fn shifted_target_access_requires_zero_capabilities_and_active_hardening() {
+        assert!(verify_zero_capability_status(ZERO_CAPABILITY_STATUS).is_ok());
+
+        for changed in [
+            ZERO_CAPABILITY_STATUS
+                .replace("CapEff:\t0000000000000000", "CapEff:\t0000000000000001"),
+            ZERO_CAPABILITY_STATUS
+                .replace("CapBnd:\t0000000000000000", "CapBnd:\t0000000000000001"),
+            ZERO_CAPABILITY_STATUS.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+            ZERO_CAPABILITY_STATUS.replace("Seccomp:\t2", "Seccomp:\t0"),
+        ] {
+            assert!(verify_zero_capability_status(&changed).is_err());
+        }
+    }
+
+    #[test]
+    fn shifted_target_rejects_service_and_pidfd_identity_substitution() {
+        assert!(verify_shifted_service_pid(41, 41).is_ok());
+        assert!(verify_shifted_service_pid(41, 42).is_err());
+        assert!(verify_shifted_process_identity(41, 41, 41, 1).is_ok());
+        assert!(verify_shifted_process_identity(41, 42, 41, 1).is_err());
+        assert!(verify_shifted_process_identity(41, 41, 42, 1).is_err());
+        assert!(verify_shifted_process_identity(41, 41, 41, 2).is_err());
+    }
 }

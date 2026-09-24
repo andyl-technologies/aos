@@ -29,9 +29,11 @@ const READINESS_WATERMARK_NEXT: &str = "backend-readiness-watermark.next";
 const READINESS_WATERMARK_SCHEMA: &str = "aos.sandbox.host-backend-readiness-watermark.v1";
 const MAXIMUM_WATERMARK_BYTES: usize = 4096;
 const MAXIMUM_NSPAWN_EXECUTABLE_BYTES: i64 = 256 * 1024 * 1024;
-const BACKEND_POLICY_ARTIFACT: &str = "share/aos/backend-policy-artifact-v1";
-const BACKEND_POLICY_ARTIFACT_BYTES: usize = 9 + 65 * 3;
-const BACKEND_POLICY_MAGIC: &[u8; 9] = b"AOSBPA01\n";
+const BACKEND_POLICY_ARTIFACT: &str = "share/aos/backend-policy-artifact-v2";
+const BACKEND_POLICY_ARTIFACT_BYTES: usize = 9 + 65 * 4;
+const BACKEND_POLICY_MAGIC: &[u8; 9] = b"AOSBPA02\n";
+const PAYLOAD_FILTER_SOURCE: &str = "share/aos/nspawn-seccomp-source-v1";
+const MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES: usize = 256 * 1024;
 const EXECUTABLE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
@@ -131,7 +133,7 @@ pub struct VerifiedCompiledSupervisorProfileV1 {
     policy_digest: [u8; 32],
 }
 
-/// Proves the packaged policy and final binaries against live PID 1.
+/// Proves packaged policy, filter source, and final binaries against live PID 1.
 ///
 /// This is a partial phase-0 proof. It does not verify the installed unit
 /// property program, the protected probe result, or shifted-payload access,
@@ -141,6 +143,7 @@ pub struct VerifiedPackagedRuntimeV1 {
     pid1_snapshot: NspawnExecutableSnapshot,
     pid1_digest: [u8; 32],
     policy_digest: [u8; 32],
+    payload_filter_digest: [u8; 32],
 }
 
 impl VerifiedPackagedRuntimeV1 {
@@ -192,6 +195,7 @@ impl VerifiedPackagedRuntimeV1 {
             || current.pid1_snapshot != self.pid1_snapshot
             || current.pid1_digest != self.pid1_digest
             || current.policy_digest != self.policy_digest
+            || current.payload_filter_digest != self.payload_filter_digest
         {
             return Err(HostError::State(
                 "packaged backend proof changed after verification".to_owned(),
@@ -232,13 +236,14 @@ fn verify_host_service_hardening(values: &[OwnedValue]) -> Result<()> {
     Ok(())
 }
 
-struct BackendPolicyArtifactV1 {
+struct BackendPolicyArtifactV2 {
     pid1_digest: [u8; 32],
     nspawn_digest: [u8; 32],
     policy_digest: [u8; 32],
+    payload_filter_digest: [u8; 32],
 }
 
-fn read_backend_policy_artifact(nspawn_path: &str) -> Result<BackendPolicyArtifactV1> {
+fn read_backend_policy_artifact(nspawn_path: &str) -> Result<BackendPolicyArtifactV2> {
     let package_root = Path::new(nspawn_path)
         .parent()
         .and_then(Path::parent)
@@ -258,7 +263,7 @@ fn read_backend_policy_artifact(nspawn_path: &str) -> Result<BackendPolicyArtifa
     parse_backend_policy_artifact(&bytes)
 }
 
-fn parse_backend_policy_artifact(bytes: &[u8]) -> Result<BackendPolicyArtifactV1> {
+fn parse_backend_policy_artifact(bytes: &[u8]) -> Result<BackendPolicyArtifactV2> {
     if bytes.len() != BACKEND_POLICY_ARTIFACT_BYTES || !bytes.starts_with(BACKEND_POLICY_MAGIC) {
         return Err(HostError::State(
             "packaged backend policy artifact is malformed".to_owned(),
@@ -289,10 +294,11 @@ fn parse_backend_policy_artifact(bytes: &[u8]) -> Result<BackendPolicyArtifactV1
         Ok(*digest.as_bytes())
     };
 
-    Ok(BackendPolicyArtifactV1 {
+    Ok(BackendPolicyArtifactV2 {
         pid1_digest: digest(9)?,
         nspawn_digest: digest(74)?,
         policy_digest: digest(139)?,
+        payload_filter_digest: digest(204)?,
     })
 }
 
@@ -488,9 +494,10 @@ impl ProtectedBackendReadinessEvidence {
     ///
     /// The artifact is opened beside the exact Nix-store nspawn selected by
     /// the protected readiness credential. Its policy digest must equal the
-    /// sealed compiler projection, and its two binary digests must match the
-    /// retained nspawn pin and the current PID 1 executable. This check does
-    /// not authorize launch or discharge the remaining runtime blockers.
+    /// sealed compiler projection, its filter-source digest must match the
+    /// installed patched source and protected claim, and its binary digests
+    /// must match the retained nspawn pin and current PID 1 executable. The
+    /// source digest does not prove that a live payload has the filter loaded.
     ///
     /// # Errors
     ///
@@ -500,6 +507,26 @@ impl ProtectedBackendReadinessEvidence {
         let policy = PayloadRootContinuityPolicyV1::fixed();
         let compiler = self.verify_compiled_supervisor_profile(policy)?;
         let artifact = read_backend_policy_artifact(&self.binding.executable_path)?;
+        let package_root = Path::new(&self.binding.executable_path)
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| HostError::State("nspawn package root is invalid".to_owned()))?;
+        let source = open(
+            package_root.join(PAYLOAD_FILTER_SOURCE),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|error| HostError::State(format!("packaged payload filter is absent: {error}")))?;
+        let payload_filter_source = read_protected_descriptor(
+            source,
+            PAYLOAD_FILTER_SOURCE,
+            MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES,
+        )?;
+        let payload_filter_digest = verify_packaged_filter_source(
+            &payload_filter_source,
+            artifact.payload_filter_digest,
+            self.claims.payload_filter_digest,
+        )?;
         if artifact.nspawn_digest != self.binding.executable_sha256
             || artifact.policy_digest != compiler.policy_digest
         {
@@ -536,6 +563,7 @@ impl ProtectedBackendReadinessEvidence {
             pid1_snapshot,
             pid1_digest,
             policy_digest: compiler.policy_digest,
+            payload_filter_digest,
         })
     }
 
@@ -567,6 +595,20 @@ impl ProtectedBackendReadinessEvidence {
             policy_digest,
         })
     }
+}
+
+fn verify_packaged_filter_source(
+    source: &[u8],
+    packaged_digest: [u8; 32],
+    protected_claim: [u8; 32],
+) -> Result<[u8; 32]> {
+    let actual: [u8; 32] = Sha256::digest(source).into();
+    if actual == [0; 32] || actual != packaged_digest || actual != protected_claim {
+        return Err(HostError::State(
+            "packaged payload filter source differs from protected readiness".to_owned(),
+        ));
+    }
+    Ok(actual)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1038,7 +1080,7 @@ mod tests {
     #[test]
     fn packaged_policy_artifact_rejects_substitution_and_noncanonical_digests() {
         let mut bytes = Vec::from(BACKEND_POLICY_MAGIC.as_slice());
-        for byte in [b'a', b'b', b'c'] {
+        for byte in [b'a', b'b', b'c', b'd'] {
             bytes.extend(std::iter::repeat_n(byte, 64));
             bytes.push(b'\n');
         }
@@ -1046,14 +1088,31 @@ mod tests {
         assert_eq!(artifact.pid1_digest, [0xaa; 32]);
         assert_eq!(artifact.nspawn_digest, [0xbb; 32]);
         assert_eq!(artifact.policy_digest, [0xcc; 32]);
+        assert_eq!(artifact.payload_filter_digest, [0xdd; 32]);
 
+        bytes[7] = b'1';
+        assert!(parse_backend_policy_artifact(&bytes).is_err());
+        bytes[7] = b'2';
         bytes[75] = b'B';
         assert!(parse_backend_policy_artifact(&bytes).is_err());
         bytes[75] = b'b';
-        bytes[203] = b' ';
+        bytes[268] = b' ';
         assert!(parse_backend_policy_artifact(&bytes).is_err());
         bytes.pop();
         assert!(parse_backend_policy_artifact(&bytes).is_err());
+    }
+
+    #[test]
+    fn packaged_filter_source_must_match_artifact_and_protected_claim() {
+        let source = b"patched nspawn filter source";
+        let digest: [u8; 32] = Sha256::digest(source).into();
+        assert_eq!(
+            verify_packaged_filter_source(source, digest, digest).unwrap(),
+            digest
+        );
+        assert!(verify_packaged_filter_source(b"changed source", digest, digest).is_err());
+        assert!(verify_packaged_filter_source(source, [1; 32], digest).is_err());
+        assert!(verify_packaged_filter_source(source, digest, [2; 32]).is_err());
     }
 
     fn readiness_artifact(
