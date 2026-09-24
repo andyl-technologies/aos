@@ -221,15 +221,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error after consuming the session when durable Mount/source
+    /// Returns an error after consuming the session when durable Mount
     /// recovery, protected commit, or bounded response transport cannot finish.
-    #[allow(clippy::too_many_arguments)]
     pub fn complete_mount_request_event(
         self,
         event: ProductionBrokerRequestEventV1,
         mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-        source: Option<crate::ProductionMountSourceOwnersV1<'_>>,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let request = match event {
@@ -249,7 +247,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
             request,
             mount,
             catalog_scope,
-            source,
             deadline_boottime_nanoseconds,
         )
     }
@@ -405,20 +402,17 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error after consuming the session when domain or source
-    /// recovery, protected commit, or bounded response transport cannot finish
+    /// Returns an error after consuming the session when domain recovery,
+    /// protected commit, or bounded response transport cannot finish
     /// exactly. Reconnect and exact replay are then required.
-    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_mount_request_to_completion(
         mut self,
         request: DormantReceivedBrokerRequestV1,
         mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-        source: Option<crate::ProductionMountSourceOwnersV1<'_>>,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
-        let dispatched =
-            self.dispatch_mount_request_and_commit(request, mount, catalog_scope, source);
+        let dispatched = self.dispatch_mount_request_and_commit(request, mount, catalog_scope);
         self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
     }
 
@@ -576,21 +570,19 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Dispatches every Mount protocol method through its sealed production owners.
     ///
     /// The optional Host scope is consumed only by `PrepareCatalog`. Source
-    /// methods use the retained RootMount/provider graph and canonical catalog
-    /// publication; no caller-selected method can redirect those authorities.
+    /// methods remain closed until the separate provider service and Mount
+    /// journal owner can exchange authenticated protocol evidence.
     ///
     /// # Errors
     ///
     /// Returns move-only request or outcome custody when a required Host scope
     /// is absent, authorization artifacts do not match, protected currentness
     /// fails, a domain effect is ambiguous, or terminal commit is incomplete.
-    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_mount_request_and_commit(
         &mut self,
         request: DormantReceivedBrokerRequestV1,
         mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-        source: Option<crate::ProductionMountSourceOwnersV1<'_>>,
     ) -> Result<
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<ProductionMountBrokerDispatchErrorV1>,
@@ -627,32 +619,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(|failure| map_execution_failure(failure, Into::into))
             }
             BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
-            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
-                let Some(source) = source else {
-                    return Err(before_effect_currentness(request));
-                };
-                self.execute_mount_source_operation_and_commit(
-                    request,
-                    source.source_owner,
-                    source.root_session,
-                    source.provider,
-                    source.backend,
-                    source.canonical_catalog_publication,
-                )
-                .map_err(|failure| map_execution_failure(failure, Into::into))
-            }
-            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
-                let Some(source) = source else {
-                    return Err(before_effect_currentness(request));
-                };
-                self.execute_mount_source_inventory_and_commit(
-                    request,
-                    source.source_owner,
-                    source.root_session,
-                    source.provider,
-                    source.backend,
-                )
-                .map_err(|failure| map_execution_failure(failure, Into::into))
+            | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
+                // The remote provider has no attested physical class or
+                // cross-process catalog authority yet.
+                Err(before_effect_currentness(request))
             }
             _ => Err(before_effect_currentness(request)),
         }

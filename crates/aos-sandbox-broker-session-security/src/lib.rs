@@ -76,6 +76,7 @@ mod production_activation;
 mod production_dispatch;
 mod production_receive;
 mod production_response;
+mod production_root_mount_source_provider;
 mod production_service;
 mod production_source_provider_catalog;
 mod production_source_provider;
@@ -188,9 +189,12 @@ pub use production_receive::{
     ProductionHostBrokerRequestEventV1,
 };
 pub use production_response::ProductionBrokerResponseErrorV1;
+pub use production_root_mount_source_provider::{
+    ProductionRootMountSourceProviderErrorV1, connect_authenticated_fixed_source_provider,
+};
 pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
-    ProductionMountSourceOwnersV1, production_deadline_after,
+    production_deadline_after,
 };
 pub use production_source_provider::{
     ProductionSourceProviderIngressErrorV1, ProductionSourceProviderIngressV1,

@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 use std::env;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -90,9 +89,9 @@ fn run() -> Result<(), MountDaemonErrorV1> {
     )?);
 
     let helper_executable = helper_argument()?;
-    validate_private_root(Path::new(STATE_ROOT))?;
-    let (mut journal, _) = Journal::open(
-        Path::new(STATE_ROOT).join("mount.journal"),
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(STATE_ROOT),
+        "mount.journal",
         JournalLimits::default(),
     )?;
     let kernel_boot_id = KernelBootId::current()
@@ -135,7 +134,6 @@ fn run() -> Result<(), MountDaemonErrorV1> {
             let owners = ProductionMountBrokerOwnersV1 {
                 mount: &mut mount,
                 catalog_scope: None,
-                source: None,
             };
             match session.serve_production_mount_request(owners, request_deadline) {
                 Ok(retained) => session = retained,
@@ -159,20 +157,4 @@ fn helper_argument() -> Result<String, MountDaemonErrorV1> {
     }
 
     Ok(helper)
-}
-
-fn validate_private_root(path: &Path) -> Result<(), MountDaemonErrorV1> {
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|error| MountError::State(error.to_string()))?;
-    if !metadata.file_type().is_dir()
-        || metadata.uid() != 0
-        || metadata.permissions().mode() & 0o077 != 0
-    {
-        return Err(MountError::State(
-            "mount state root must be a private root-owned real directory".to_owned(),
-        )
-        .into());
-    }
-
-    Ok(())
 }

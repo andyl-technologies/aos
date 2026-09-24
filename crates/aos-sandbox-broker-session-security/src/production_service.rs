@@ -57,35 +57,12 @@ pub enum ProductionBrokerServiceErrorV1 {
     Response(#[from] ProductionBrokerResponseErrorV1),
 }
 
-/// Borrows the external SourceProvider graph used by Mount source methods.
-///
-/// RootMount and SourceProvider have independent protected process identities.
-/// A Mount daemon supplies this bundle only after a dedicated provider service
-/// has established those roles; its absence leaves source methods fail-closed
-/// without disabling descriptor-only Mount operations.
-pub struct ProductionMountSourceOwnersV1<'owners> {
-    /// The durable Mount source-acquisition owner.
-    pub source_owner:
-        &'owners mut aos_sandbox_mount::source_acquisition::FixedMountSourceAcquisitionOwnerV2,
-    /// The protected RootMount source-provider session owner.
-    pub root_session:
-        &'owners mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
-    /// The fixed source-provider state owner.
-    pub provider: &'owners mut aos_sandbox_source_provider::FixedProviderOwnerV1,
-    /// The physical source-provider backend transport.
-    pub backend: &'owners mut dyn aos_sandbox_source_provider::SourceProviderBackendTransportV1,
-    /// The canonical catalog publication bound to source acquisition.
-    pub canonical_catalog_publication: &'owners [u8],
-}
-
 /// Borrows the complete Mount-owned production composition for one request.
 pub struct ProductionMountBrokerOwnersV1<'owners> {
     /// The sealed Mount effect and inventory callsite.
     pub mount: &'owners mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
     /// The optional Host-sealed catalog scope for catalog preparation.
     pub catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
-    /// The external source graph, present only after its separate service is current.
-    pub source: Option<ProductionMountSourceOwnersV1<'owners>>,
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
@@ -155,7 +132,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// # Errors
     ///
     /// Returns an error after consuming the session when any receive,
-    /// admission, Mount/source effect, recovery, commit, or response step fails.
+    /// admission, Mount effect, recovery, commit, or response step fails.
     pub fn serve_production_mount_request(
         self,
         owners: ProductionMountBrokerOwnersV1<'_>,
@@ -167,7 +144,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 event,
                 owners.mount,
                 owners.catalog_scope,
-                owners.source,
                 deadline_boottime_nanoseconds,
             )
             .map_err(Into::into)
