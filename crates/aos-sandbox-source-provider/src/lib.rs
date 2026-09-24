@@ -26,6 +26,7 @@ mod backend_adapter;
 mod backend_verifier;
 mod configuration;
 mod error;
+mod held_snapshot_selection;
 mod inventory;
 mod limits;
 mod migration;
@@ -74,6 +75,7 @@ pub use backend_verifier::{
 };
 pub use configuration::VerifiedCatalogPublicationV1;
 pub use error::ProviderLedgerError;
+pub use held_snapshot_selection::ProviderHeldSnapshotCatalogClaimV1;
 pub use inventory::DurableInventoryPermitV1;
 pub use ledger::LedgerFormatErrorV1;
 pub use limits::ProviderLedgerLimits;

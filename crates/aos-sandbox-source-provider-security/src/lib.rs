@@ -44,8 +44,8 @@ pub mod trust_file;
 pub use carrier::ProviderSourceRootHandoffV1;
 pub use catalog::{
     CurrentCatalogPublicationProjectionV1, ProtectedCurrentCatalogPublicationV1,
-    ProtectedProviderCatalogSelectionV1, VerifiedCatalogPublicationV1, verify_catalog_publication,
-    verify_retained_catalog_publication,
+    ProtectedProviderCatalogSelectionV1, ProtectedProviderHeldSnapshotSelectionV1,
+    VerifiedCatalogPublicationV1, verify_catalog_publication, verify_retained_catalog_publication,
 };
 pub use configuration::{HistoricalProviderVerificationKeyV1, RevalidatedProviderConfigurationV1};
 pub use custody::{ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1};

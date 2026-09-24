@@ -16,9 +16,10 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    ProviderCatalogManifestV1, SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1,
-    SourceProviderKeyTrustStateV1, SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
-    SourceResourceV1, StorageLiveExportSelectorV1,
+    ProviderCatalogManifestV1, ProviderHeldSnapshotCatalogV1, SourceProviderAuthorityTrustStateV1,
+    SourceProviderAuthorityV1, SourceProviderKeyTrustStateV1, SourceProviderKeyUsageV1,
+    SourceProviderSigningKeyV1, SourceResourceV1, StorageLiveExportSelectorV1,
+    ZfsHeldSnapshotProofV1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -91,6 +92,23 @@ pub struct ProtectedProviderCatalogSelectionV1<'catalog> {
     resource: SourceResourceV1,
     storage_selector: StorageLiveExportSelectorV1,
     current_catalog: &'catalog ProtectedCurrentCatalogPublicationV1,
+}
+
+/// Retains a native snapshot row only while its catalog matches the protected head.
+///
+/// This is a catalog claim, not a physical Storage observation or an effect permit.
+/// A separate authenticated GUID-and-hold receipt is required before any use
+/// that could authorize a backend effect.
+pub struct ProtectedProviderHeldSnapshotSelectionV1<'catalog> {
+    resource: SourceResourceV1,
+    snapshot: ZfsHeldSnapshotProofV1,
+    current_catalog: &'catalog ProtectedCurrentCatalogPublicationV1,
+}
+
+impl core::fmt::Debug for ProtectedProviderHeldSnapshotSelectionV1<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProtectedProviderHeldSnapshotSelectionV1([protected catalog claim])")
+    }
 }
 
 impl core::fmt::Debug for ProtectedProviderCatalogSelectionV1<'_> {
@@ -607,6 +625,43 @@ impl ProtectedCurrentCatalogPublicationV1 {
         })
     }
 
+    /// Selects one native held-snapshot claim under this protected publication.
+    ///
+    /// The selected GUID and hold are asserted by the catalog publisher only.
+    /// This does not authenticate their physical existence or currentness in
+    /// Storage and cannot authorize a SourceRoot or backend effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale journal, malformed catalog, mismatched publication
+    /// head or namespace, or absent logical-binding row.
+    pub fn select_held_snapshot_row<'catalog>(
+        &'catalog self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        canonical_catalog: &[u8],
+        binding_digest: ObjectDigest,
+    ) -> Result<ProtectedProviderHeldSnapshotSelectionV1<'catalog>, SourceProviderSecurityError>
+    {
+        if !self.validate_current(journal) {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let (generation, digest) = self.projection.catalog_head();
+        let (_, namespace) = self.projection.scope();
+        let (resource, snapshot) = select_held_snapshot_under_head(
+            canonical_catalog,
+            generation,
+            digest,
+            namespace,
+            binding_digest,
+        )?;
+
+        Ok(ProtectedProviderHeldSnapshotSelectionV1 {
+            resource,
+            snapshot,
+            current_catalog: self,
+        })
+    }
+
     pub(crate) fn validate_current(
         &self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
@@ -630,6 +685,34 @@ impl ProtectedProviderCatalogSelectionV1<'_> {
     pub fn is_current(&self, journal: &aos_sandbox::ProtectedJournalAuthority<'_>) -> bool {
         self.current_catalog.validate_current(journal)
     }
+}
+
+impl ProtectedProviderHeldSnapshotSelectionV1<'_> {
+    /// Returns the catalog-asserted resource and held-snapshot identity.
+    #[must_use]
+    pub const fn selected(&self) -> (&SourceResourceV1, &ZfsHeldSnapshotProofV1) {
+        (&self.resource, &self.snapshot)
+    }
+
+    /// Rechecks that the same protected catalog head remains current.
+    #[must_use]
+    pub fn is_current(&self, journal: &aos_sandbox::ProtectedJournalAuthority<'_>) -> bool {
+        self.current_catalog.validate_current(journal)
+    }
+}
+
+fn select_held_snapshot_under_head(
+    canonical_catalog: &[u8],
+    generation: u64,
+    digest: ObjectDigest,
+    namespace: ObjectDigest,
+    binding_digest: ObjectDigest,
+) -> Result<(SourceResourceV1, ZfsHeldSnapshotProofV1), SourceProviderSecurityError> {
+    let catalog = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(canonical_catalog)
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    catalog
+        .select_under_head(generation, digest, namespace, binding_digest)
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)
 }
 
 pub(crate) fn configuration_matches_authority(
@@ -931,4 +1014,79 @@ fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, SourceProviderSecurityErro
 
 fn i64_at(bytes: &[u8], offset: usize) -> Result<i64, SourceProviderSecurityError> {
     Ok(i64::from_be_bytes(array(bytes, offset)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_source_provider_protocol::ProviderHeldSnapshotRowV1;
+
+    use super::*;
+
+    fn digest(byte: u8) -> ObjectDigest {
+        ObjectDigest::from_bytes([byte; 32])
+    }
+
+    fn held_snapshot_catalog() -> ProviderHeldSnapshotCatalogV1 {
+        let snapshot = ZfsHeldSnapshotProofV1::new(
+            [7; 32],
+            8,
+            9,
+            10,
+            11,
+            [12; 16],
+            13,
+            digest(14),
+            digest(15),
+            digest(16),
+        )
+        .unwrap();
+        let row = ProviderHeldSnapshotRowV1::new(
+            digest(1),
+            [2; 32],
+            3,
+            digest(4),
+            5,
+            digest(6),
+            snapshot,
+        )
+        .unwrap();
+
+        ProviderHeldSnapshotCatalogV1::new(17, digest(18), vec![row]).unwrap()
+    }
+
+    #[test]
+    fn native_row_requires_exact_published_head_and_binding() {
+        let catalog = held_snapshot_catalog();
+        let bytes = catalog.to_canonical_bytes();
+
+        let (resource, snapshot) =
+            select_held_snapshot_under_head(&bytes, 17, catalog.digest(), digest(18), digest(1))
+                .unwrap();
+        assert_eq!(resource.resource_id(), [2; 32]);
+        assert_eq!(snapshot.snapshot_guid(), 11);
+
+        for (generation, digest, namespace, binding) in [
+            (18, catalog.digest(), digest(18), digest(1)),
+            (17, digest(19), digest(18), digest(1)),
+            (17, catalog.digest(), digest(19), digest(1)),
+            (17, catalog.digest(), digest(18), digest(19)),
+        ] {
+            assert!(
+                select_held_snapshot_under_head(&bytes, generation, digest, namespace, binding,)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn native_row_rejects_malformed_catalog_bytes() {
+        let catalog = held_snapshot_catalog();
+        let mut bytes = catalog.to_canonical_bytes();
+        bytes[0..8].copy_from_slice(b"AOSPCM01");
+
+        assert!(
+            select_held_snapshot_under_head(&bytes, 17, catalog.digest(), digest(18), digest(1),)
+                .is_err()
+        );
+    }
 }

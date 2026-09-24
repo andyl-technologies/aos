@@ -1,9 +1,10 @@
 //! Canonical, nonauthorizing selection of a native held ZFS snapshot.
 //!
 //! `AOSPCM01` rows name only LocalLive exports. This separate format reserves
-//! an exact native snapshot selector without making it a current Provider
-//! catalog, a Storage hold observation, or a SourceRoot acquisition. No owner
-//! publishes or consumes this format for production admission yet.
+//! an exact native snapshot selector without making it a Storage hold
+//! observation or SourceRoot acquisition. The fixed Provider owner can inspect
+//! a row under its protected current publication, but no physical Storage
+//! receipt or production acquisition consumes this claim yet.
 //!
 //! ```text
 //! AOSPCZ01 | version:u16be=1 | reserved:u16be=0 |

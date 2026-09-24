@@ -8419,9 +8419,15 @@ The separate canonical `AOSPCZ01` row format binds one logical source to a
 specific Provider resource and ZFS storage handle, version, pool/dataset/
 snapshot GUIDs, durable hold identity, root policy, and read-only content
 digest. Its native-only digest domain and magic cannot be decoded as the
-current LocalLive-only `AOSPCM01` manifest. It is an inert selection claim:
-no protected publication, Provider owner, Storage transport, or production
-backend consumes it.
+current LocalLive-only `AOSPCM01` manifest. It remains a nonauthorizing
+selection claim: no Storage transport or production backend consumes it.
+
+The fixed SourceProvider owner now admits an inspection-only `AOSPCZ01`
+selection under the exact signed publication and current protected namespace-41
+catalog head. It returns only the catalog-asserted resource, GUID/hold proof,
+and publication commitment. This is not independent Storage evidence: the
+owner cannot authorize a native effect or positive Acquire without a fresh,
+authenticated Storage GUID-and-hold receipt tied to the selected attempt.
 
 A positive held-snapshot SourceRoot still requires Storage to hold and
 reobserve the exact snapshot GUID and hold under its protected catalog lock,
