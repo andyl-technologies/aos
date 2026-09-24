@@ -204,6 +204,9 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
         let events = capture_materialization_events(&service)?;
         assert_materialization_tier(&events, discovery_attempt.attempt(), "HotFork")?;
     }
+    let initial_boundary_events =
+        capture_guest_selectable_boundary_events(&fixture, &service, "pre-restart-service-stop")?;
+    require_guest_selectable_boundary_stage(&initial_boundary_events, "source-discovery")?;
     service.stop()?;
     attest_guest_choice_immutable_inputs("post-restart-replay", &immutable_inputs, &authority)?;
     require_empty_guest_choice_run_root("post-restart-replay")?;
@@ -258,11 +261,12 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
         None,
     )?;
     let checkpoint_text = checkpoint.to_string();
-    let mut boundary_events = capture_guest_selectable_boundary_events(
+    let selected_boundary_events = capture_guest_selectable_boundary_events(
         &fixture,
         &selected_service,
         "selected-service-stop",
     )?;
+    require_guest_selectable_boundary_stage(&selected_boundary_events, "replay")?;
     if hot_fork_flight {
         let events = capture_materialization_events(&selected_service)?;
         assert_materialization_tier(&events, terminal_attempt.attempt(), "ThinReplay")?;
@@ -297,13 +301,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     let resumed_explanation = wait_for_attempt_explanation(&fixture, terminal_attempt)?;
     assert_eq!(resumed_explanation["selection"]["value"], "u64:7");
 
-    boundary_events.extend(capture_guest_selectable_boundary_events(
-        &fixture,
-        &restarted,
-        "restarted-service-stop",
-    )?);
-    require_guest_selectable_boundary_stage(&boundary_events, "source-discovery")?;
-    require_guest_selectable_boundary_stage(&boundary_events, "replay")?;
+    capture_guest_selectable_boundary_events(&fixture, &restarted, "restarted-service-stop")?;
     if hot_fork_flight {
         let events = capture_materialization_events(&restarted)?;
         assert_materialization_tier(&events, terminal_attempt.attempt(), "ExactRestore")?;
