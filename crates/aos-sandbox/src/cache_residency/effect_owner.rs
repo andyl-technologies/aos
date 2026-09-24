@@ -23,6 +23,10 @@ use aos_sandbox_linux::path::BeneathRoot;
 use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
+use super::owner_readback::{
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
+    CacheOwnerReadbackFieldsV1, cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v1,
+};
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
     CurrentReadAuthorityV1, ImmutableAdmissionPlanV1, PhysicalPartitionId, SealProfileV1,
@@ -364,6 +368,41 @@ impl CacheOwnerHeldSnapshotV1<'_> {
     pub fn revalidate(&self) -> Result<(), CacheOwnerErrorV1> {
         self.owner
             .validate_held_snapshot(self.root_identity, self.lock_identity, self.current)
+    }
+
+    /// Signs one closed fixed-name readback while the owner retains its flock.
+    ///
+    /// The caller must obtain a distinct Cache-purpose seed from protected
+    /// deployment custody. The signing key and generation do not become
+    /// authority merely because this method was invoked. No production path
+    /// currently loads that seed or accepts the resulting statement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a lost flock, changed fixed names or durable head, malformed
+    /// owner envelope, or zero signer generation.
+    pub fn sign_closed_readback(
+        &self,
+        challenge: CacheOwnerReadbackChallengeV1,
+        signer_generation: u64,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V1], CacheOwnerReadbackErrorV1> {
+        self.revalidate()?;
+        let fields = CacheOwnerReadbackFieldsV1 {
+            root_device: self.root_identity.device,
+            root_inode: self.root_identity.inode,
+            root_uid: self.root_identity.uid,
+            root_mode: self.root_identity.mode,
+            lock_device: self.lock_identity.device,
+            lock_inode: self.lock_identity.inode,
+            manifest_generation: self.current.generation(),
+            manifest_digest: self.current.digest(),
+            limits_digest: cache_owner_limits_digest_v1(self.owner.limits)?,
+        };
+        let bytes =
+            sign_closed_cache_owner_readback_v1(fields, challenge, signer_generation, signing_key)?;
+        self.revalidate()?;
+        Ok(bytes)
     }
 }
 
