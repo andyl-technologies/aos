@@ -63,6 +63,7 @@ const CURRENT_HEAD_DOMAIN_V2: &[u8] = b"aos.sandbox.operator-storage-repair-curr
 const ISSUANCE_BYTES_V2: usize = 184 + OPERATOR_RECOVERY_EFFECT_INTENT_BYTES;
 
 mod before;
+mod probe_challenge;
 mod receipt;
 mod terminal;
 mod transport;

@@ -22,6 +22,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, decode_storage_resource_inventory_response};
 use buffa::Message as _;
 
+use super::probe_challenge::{self, ProbeStageV1};
 use super::{
     CURRENT_HEAD_DOMAIN_V2, FENCE_DOMAIN, OperatorRecoveryIssuanceErrorV1,
     ProtectedOperatorRecoverySignerV1, REQUEST_DOMAIN, StorageRepairIssuanceV2, hash,
@@ -188,6 +189,14 @@ where
         if hash(CURRENT_HEAD_DOMAIN_V2, &[current]) != issued.current_head_digest {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
+        probe_challenge::read(
+            journal,
+            &issued,
+            intent.effect_id,
+            ProbeStageV1::Before,
+            [0; 32],
+        )?
+        .matches_outcome(before)?;
         let request = RepairStorageWorkspacePinRequest::decode_from_slice(storage_request_body)
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let fence = request

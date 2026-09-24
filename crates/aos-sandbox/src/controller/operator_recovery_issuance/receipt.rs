@@ -36,6 +36,7 @@ use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
 use super::before::{self, StoredBeforeV1};
+use super::probe_challenge::{self, ProbeStageV1};
 use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
     StorageRepairIssuanceV2, hash, issuance_key_v2,
@@ -246,6 +247,18 @@ where
 
         let retained_before = before::read(journal, &issued, intent.effect_id)?;
         retained_before.matches_outcome(before)?;
+        let pair_digest = hash(
+            b"aos.sandbox.operator-storage-repair-signed-pair.v2\0",
+            &[signed_evidence, signed_receipt],
+        );
+        probe_challenge::read(
+            journal,
+            &issued,
+            intent.effect_id,
+            ProbeStageV1::After,
+            pair_digest,
+        )?
+        .matches_outcome(after)?;
         let before_body = authenticated_after_body(before)?;
         let after_body = authenticated_after_body(after)?;
         validate_physical_after(

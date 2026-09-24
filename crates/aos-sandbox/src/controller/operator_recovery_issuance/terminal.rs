@@ -20,6 +20,7 @@ use aos_sandbox_core::operator_recovery_effect_v2::{
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
 use super::before;
+use super::probe_challenge::{self, ProbeStageV1};
 use super::receipt::ProtectedStorageRepairReceiptVerifierV2;
 use super::{
     CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
@@ -158,6 +159,15 @@ where
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let retained_before = before::read(journal, &issued, intent.effect_id)?;
         retained_before.matches_outcome(before)?;
+        let pair_digest = hash(PAIR_DOMAIN, &[signed_evidence, signed_receipt]);
+        probe_challenge::read(
+            journal,
+            &issued,
+            intent.effect_id,
+            ProbeStageV1::After,
+            pair_digest,
+        )?
+        .matches_outcome(after)?;
         let current_key = recovery_current_key(intent.target_id);
         let current = journal
             .get(RecordNamespace::OperatorRecovery, &current_key)
@@ -172,7 +182,7 @@ where
             current_head_digest: issued.current_head_digest,
             before_packet_digest: retained_before.packet_digest(),
             after_packet_digest: hash(AFTER_DOMAIN, &[after.canonical_packet()]),
-            signed_pair_digest: hash(PAIR_DOMAIN, &[signed_evidence, signed_receipt]),
+            signed_pair_digest: pair_digest,
         };
         reserve(journal, &proof, &current_key, issued.current_head_digest)?;
         signer
