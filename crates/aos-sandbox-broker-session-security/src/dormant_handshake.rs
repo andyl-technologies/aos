@@ -5,6 +5,8 @@
 //! in [`crate::handshake`], and this facade registers no listener, route,
 //! service registration, background task, or broker effect.
 
+mod consumer_cgroup_terminal;
+
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
 

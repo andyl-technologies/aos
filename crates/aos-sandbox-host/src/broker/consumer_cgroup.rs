@@ -37,6 +37,16 @@ pub(crate) struct PreparedConsumerCgroupReply<'a> {
 }
 
 impl PreparedConsumerCgroupReply<'_> {
+    /// Releases the exact response and descriptor pair only after a final
+    /// physical, assignment, boot, and deadline observation.
+    pub(crate) fn into_checked_parts<T>(self, clock: &mut T) -> Result<(Vec<u8>, Vec<OwnedFd>)>
+    where
+        T: FnMut() -> Result<RawPairedClockSample>,
+    {
+        self.check_before_send(clock)?;
+        Ok((self.body, Vec::from(self.descriptors)))
+    }
+
     /// Rechecks the assignment, boot, deadline, and exact physical membership.
     ///
     /// # Errors

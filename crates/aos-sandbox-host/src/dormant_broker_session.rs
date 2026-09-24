@@ -13,6 +13,7 @@ use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::host_consumer_cgroup::decode_consumer_cgroup_request_v1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, decode_mount_scope_request,
@@ -288,6 +289,34 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         signed_request_digest: [u8; 32],
         session_binding: [u8; 32],
         artifacts: &'call ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<DormantHostBrokerObservationV1, DormantHostBrokerCallErrorV1>,
+                > + 'call,
+        >,
+    >;
+
+    /// Observes Storage's exact read-only consumer cgroup without a grant.
+    ///
+    /// The same call is safe for a protected terminal replay because it has
+    /// no effect; it still requires the original live deadline and a fresh
+    /// physical readback. Its sealed observation is not permission to send an FD.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed signed-session boot, body digest, request identity,
+    /// current assignment, scope handle, deadline, or physical membership.
+    #[allow(clippy::too_many_arguments)]
+    fn consume_authenticated_consumer_cgroup<'call>(
+        &'call mut self,
+        request_body: &'call [u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
         peer: PeerCredentials,
         policy: PeerPolicy,
         protocol_version: ProtocolVersion,
@@ -803,6 +832,77 @@ where
                     protocol_version,
                     protected_boot_id,
                 }),
+            })
+        })
+    }
+
+    fn consume_authenticated_consumer_cgroup<'call>(
+        &'call mut self,
+        request_body: &'call [u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<DormantHostBrokerObservationV1, DormantHostBrokerCallErrorV1>,
+                > + 'call,
+        >,
+    > {
+        Box::pin(async move {
+            if KernelBootId::current()
+                .map_err(|_| DormantHostBrokerCallErrorV1::StaleKernel)?
+                .into_bytes()
+                != protected_boot_id
+                || ObjectDigest::from_bytes(Sha256::digest(request_body).into())
+                    != request_body_digest
+            {
+                return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+            }
+
+            let last_boottime = &mut self.last_boottime_nanoseconds;
+            let mut clock = || {
+                let sample = crate::service::trusted_paired_clock_sample()?;
+                if sample.host_boot_id() != protected_boot_id
+                    || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+                {
+                    return Err(HostError::Fence(
+                        "broker-session kernel boot changed before consumer cgroup readback",
+                    ));
+                }
+                *last_boottime = Some(sample.boottime_nanoseconds());
+                Ok(sample)
+            };
+            let now = clock()?.boottime_nanoseconds();
+            let request = decode_consumer_cgroup_request_v1(request_body, peer, policy, now)?;
+            if request.header().request_id() != &request_id
+                || request.header().protocol_version() != protocol_version
+            {
+                return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+            }
+            let (response, descriptors) = self
+                .broker
+                .prepare_consumer_cgroup(&request, &mut clock)
+                .await?
+                .into_checked_parts(&mut clock)?;
+
+            let mut digest = Sha256::new();
+            digest.update(b"aos-sandbox-host-broker-observation-v1\0");
+            digest.update(
+                (BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP as i32).to_be_bytes(),
+            );
+            digest.update(request_id);
+            digest.update(request_body_digest.as_bytes());
+            digest.update(Sha256::digest(&response));
+            Ok(DormantHostBrokerObservationV1 {
+                request_id,
+                response,
+                commitment: ObjectDigest::from_bytes(digest.finalize().into()),
+                descriptors,
+                scope_replay_ticket: None,
             })
         })
     }

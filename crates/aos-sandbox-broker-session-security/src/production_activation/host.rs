@@ -257,7 +257,7 @@ fn verify_storage_connection_peer(
     Ok(())
 }
 
-fn verify_storage_session_peer(
+pub(crate) fn verify_storage_session_peer(
     session: &mut DormantAuthenticatedBrokerSessionV1,
 ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
     let descriptor = session

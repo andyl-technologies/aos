@@ -8,6 +8,7 @@
 
 mod host;
 
+pub(crate) use host::verify_storage_session_peer;
 pub use host::{ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1};
 
 use std::collections::BTreeMap;
