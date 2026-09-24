@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, HostAttachGateReadinessV1, HostExecutionCompletionStatusV1,
     HostExecutionOutcomeV1, HostExecutionOutputReservationStatusV1,
-    HostExecutionOutputReservationV1, HostExecutionPhaseV1,
+    HostExecutionOutputReservationV1, HostExecutionPhaseV1, ObserveHostExecutionArgumentResponseV1,
+    QueryHostExecutionArgumentResponseV1,
 };
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
@@ -31,6 +32,7 @@ use aos_sandbox_host::attach_route::{
 };
 use aos_sandbox_host::broker::HostAttachReadOnlyRequestV1;
 use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
+use aos_sandbox_host::live_agent::argument_attempt::HostArgumentAttemptErrorV1;
 use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::host_execution::{
@@ -71,6 +73,9 @@ pub enum HostExecutionHandoffErrorV1 {
     /// The authenticated guest session failed or requires protected recovery.
     #[error(transparent)]
     Agent(#[from] HostAgentLiveErrorV1),
+    /// One-shot Host Guest observation custody or historical query failed.
+    #[error(transparent)]
+    Argument(#[from] HostArgumentAttemptErrorV1),
     /// Protected OpenSSH route installation or signed readback failed.
     #[error(transparent)]
     AttachGate(#[from] HostOpenSshAttachRouteErrorV1),
@@ -361,6 +366,40 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             )?;
             let encoded = output_reservation_response(locator, receipt)?;
             claim.revalidate()?;
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
+        }
+        HostExecutionGrantRequestV1::ObserveArgument(_) => {
+            let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+            agent.validate_claim(&claim)?;
+            let deadline = agent_dispatch_deadline(deadline_boottime_nanoseconds)?;
+            let receipt = reservation.observe_argument_once(&claim, agent, deadline)?;
+            let encoded = ObserveHostExecutionArgumentResponseV1 {
+                canonical_receipt: receipt.canonical_bytes(),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            claim.revalidate()?;
+            agent.validate_claim(&claim)?;
+            if !reservation.matches(method, request_id, body, &claim) {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
+        }
+        HostExecutionGrantRequestV1::QueryArgument(_) => {
+            let receipt = reservation.query_argument_historical(&claim)?;
+            let encoded = QueryHostExecutionArgumentResponseV1 {
+                canonical_historical_receipt: receipt.canonical_bytes().to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            claim.revalidate()?;
+            if !reservation.matches(method, request_id, body, &claim) {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
             check_kernel_boot(protected_boot_id)?;
             host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
             return Ok(encoded);

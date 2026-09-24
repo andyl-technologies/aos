@@ -1105,6 +1105,8 @@ enum RequestOutcomeContextV1 {
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
     HostOutputReserve(crate::host_output::ValidatedHostOutputReserveRequestV1),
     HostOutputQuery(crate::host_output::ValidatedHostOutputQueryRequestV1),
+    HostArgumentObserve(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
+    HostArgumentQuery(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
     HostAttachReadiness,
     HostAttachRoute(crate::ValidatedHostAttachRouteQueryV1),
@@ -1563,16 +1565,18 @@ fn validate_request_semantics(
             )
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
-            crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
-                body, peer, policy, now,
-            )?;
-            RequestOutcomeContextV1::None
+            RequestOutcomeContextV1::HostArgumentObserve(
+                crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
+                    body, peer, policy, now,
+                )?,
+            )
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
-            crate::host_execution_argument::decode_host_execution_argument_query_request_v1(
-                body, peer, policy, now,
-            )?;
-            RequestOutcomeContextV1::None
+            RequestOutcomeContextV1::HostArgumentQuery(
+                crate::host_execution_argument::decode_host_execution_argument_query_request_v1(
+                    body, peer, policy, now,
+                )?,
+            )
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             crate::storage_capture_candidate::decode_storage_capture_candidate_request_v1(
@@ -1862,9 +1866,27 @@ fn validate_success_semantics(
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             }
         }
-        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
-        | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
+            let RequestOutcomeContextV1::HostArgumentObserve(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_argument::decode_host_execution_argument_observe_response_v1(
+                body,
+                original.canonical_attempt(),
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+            let RequestOutcomeContextV1::HostArgumentQuery(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_argument::decode_host_execution_argument_query_response_v1(
+                body,
+                original.canonical_attempt(),
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {

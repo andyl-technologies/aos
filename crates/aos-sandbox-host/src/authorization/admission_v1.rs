@@ -18,6 +18,7 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
 use aos_sandbox_protocol::semantics::CanonicalHostAttachGateSemanticsV1;
+use aos_sandbox_protocol::semantics::CanonicalHostExecutionArgumentSemanticsV1;
 use aos_sandbox_protocol::semantics::CanonicalHostExecutionSemanticsV1;
 use aos_sandbox_protocol::semantics::CanonicalHostOutputSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -258,6 +259,44 @@ impl HostAuthorityV1 {
         prior_fence: &[u8],
     ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
         self.authority.admit_host_output(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment,
+                request_id,
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
+    /// Verifies a method-37/38 Host argument grant against the shared fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign signer, verb, assignment, exact AOSCIA02 semantic,
+    /// current lease, deadline, or protected base-fence mismatch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_argument(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        semantics: CanonicalHostExecutionArgumentSemanticsV1,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.authority.admit_host_argument(
             artifacts,
             AdmissionRequest {
                 audience: BrokerAudience::Host,

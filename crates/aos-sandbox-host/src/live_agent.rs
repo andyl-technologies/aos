@@ -6,7 +6,7 @@
 //! handshake and bounded stop-and-wait exchanges. It never discovers an
 //! inherited descriptor, reconnects to a path, or activates nspawn.
 
-pub(crate) mod argument_attempt;
+pub mod argument_attempt;
 pub mod argument_readback;
 
 use std::fs::File;

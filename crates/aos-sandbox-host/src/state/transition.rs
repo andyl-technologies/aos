@@ -49,6 +49,8 @@ pub(crate) enum HostAction {
     QueryExecution,
     ReserveExecutionOutput,
     QueryExecutionOutput,
+    ObserveExecutionArgument,
+    QueryExecutionArgument,
     InstallAttachGate,
 }
 
@@ -62,6 +64,8 @@ impl HostAction {
                 | Self::InstallAttachGate
                 | Self::ReserveExecutionOutput
                 | Self::QueryExecutionOutput
+                | Self::ObserveExecutionArgument
+                | Self::QueryExecutionArgument
         )
     }
 
@@ -77,6 +81,8 @@ impl HostAction {
             8 => Some(Self::InstallAttachGate),
             9 => Some(Self::ReserveExecutionOutput),
             10 => Some(Self::QueryExecutionOutput),
+            11 => Some(Self::ObserveExecutionArgument),
+            12 => Some(Self::QueryExecutionArgument),
             _ => None,
         }
     }
@@ -93,6 +99,8 @@ impl HostAction {
             Self::InstallAttachGate => 8,
             Self::ReserveExecutionOutput => 9,
             Self::QueryExecutionOutput => 10,
+            Self::ObserveExecutionArgument => 11,
+            Self::QueryExecutionArgument => 12,
         }
     }
 }
@@ -133,7 +141,10 @@ impl DurableExecution {
             | HostAction::ApplyExecution
             | HostAction::QueryExecution
             | HostAction::InstallAttachGate => None,
-            HostAction::ReserveExecutionOutput | HostAction::QueryExecutionOutput => None,
+            HostAction::ReserveExecutionOutput
+            | HostAction::QueryExecutionOutput
+            | HostAction::ObserveExecutionArgument
+            | HostAction::QueryExecutionArgument => None,
         }
     }
 
@@ -1847,15 +1858,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_reservation_actions_use_the_shared_execution_fence() {
+    fn execution_handoff_actions_use_the_shared_execution_fence() {
         for action in [
             HostAction::ApplyExecution,
             HostAction::QueryExecution,
             HostAction::InstallAttachGate,
             HostAction::ReserveExecutionOutput,
             HostAction::QueryExecutionOutput,
+            HostAction::ObserveExecutionArgument,
+            HostAction::QueryExecutionArgument,
         ] {
             assert!(action.is_execution_handoff(), "action {action:?}");
+            assert_eq!(HostAction::from_code(action.code()), Some(action));
         }
 
         for action in [

@@ -6,7 +6,8 @@
 //! protected owners can authorize a live Guest observation.
 
 use aos_proto::aos::sandbox::local::v1::{
-    ObserveHostExecutionArgumentRequestV1, QueryHostExecutionArgumentRequestV1,
+    ObserveHostExecutionArgumentRequestV1, ObserveHostExecutionArgumentResponseV1,
+    QueryHostExecutionArgumentRequestV1, QueryHostExecutionArgumentResponseV1,
 };
 use aos_sandbox_core::ProtocolId;
 use buffa::Message as _;
@@ -18,9 +19,69 @@ use crate::{
 
 pub mod receipt;
 
+use receipt::{HostExecutionArgumentFreshReceiptV1, HostExecutionArgumentHistoricalReceiptV1};
+
 /// Exact canonical AOSCIA02 byte count.
 pub const HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1: usize = 336;
 const MAXIMUM_REQUEST_BODY_BYTES: usize = 2 * 1_024;
+const MAXIMUM_RESPONSE_BODY_BYTES: usize = 4 * 1_024;
+
+/// Decodes one fresh Host-attested observation bound to the exact original attempt.
+///
+/// # Errors
+///
+/// Rejects an oversized/noncanonical wrapper, invalid AOSHAR01, or a source
+/// that differs from the authenticated method-37 request.
+pub fn decode_host_execution_argument_observe_response_v1(
+    body: &[u8],
+    canonical_attempt: &[u8; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1],
+) -> Result<HostExecutionArgumentFreshReceiptV1, ProtocolValidationError> {
+    if body.len() > MAXIMUM_RESPONSE_BODY_BYTES {
+        return Err(ProtocolValidationError::ResponseTooLarge);
+    }
+    let response = ObserveHostExecutionArgumentResponseV1::decode_from_slice(body)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != body {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let receipt =
+        HostExecutionArgumentFreshReceiptV1::decode_canonical(&response.canonical_receipt)
+            .map_err(|_| ProtocolValidationError::InvalidField("canonical_receipt"))?;
+    if receipt.source() != canonical_attempt {
+        return Err(ProtocolValidationError::InvalidField("canonical_receipt"));
+    }
+    Ok(receipt)
+}
+
+/// Decodes a historical, digest-only Host argument observation reply.
+///
+/// # Errors
+///
+/// Rejects an oversized/noncanonical wrapper, invalid AOSHQR01, or a source
+/// that differs from the authenticated method-38 request.
+pub fn decode_host_execution_argument_query_response_v1(
+    body: &[u8],
+    canonical_attempt: &[u8; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1],
+) -> Result<HostExecutionArgumentHistoricalReceiptV1, ProtocolValidationError> {
+    if body.len() > MAXIMUM_RESPONSE_BODY_BYTES {
+        return Err(ProtocolValidationError::ResponseTooLarge);
+    }
+    let response = QueryHostExecutionArgumentResponseV1::decode_from_slice(body)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != body {
+        return Err(ProtocolValidationError::UnknownFields);
+    }
+    let receipt = HostExecutionArgumentHistoricalReceiptV1::decode_canonical(
+        &response.canonical_historical_receipt,
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField("canonical_historical_receipt"))?;
+    if receipt.source() != canonical_attempt {
+        return Err(ProtocolValidationError::InvalidField(
+            "canonical_historical_receipt",
+        ));
+    }
+    Ok(receipt)
+}
 
 /// Retains structurally checked, still nonauthorizing Controller attempt bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,9 +202,10 @@ fn validate_source(
 #[cfg(test)]
 mod tests {
     use aos_proto::aos::sandbox::local::v1::{
-        Audience, ObserveHostExecutionArgumentRequestV1, QueryHostExecutionArgumentRequestV1,
-        RequestHeader,
+        Audience, ObserveHostExecutionArgumentRequestV1, ObserveHostExecutionArgumentResponseV1,
+        QueryHostExecutionArgumentRequestV1, QueryHostExecutionArgumentResponseV1, RequestHeader,
     };
+    use aos_sandbox_core::ObjectDigest;
     use sha2::{Digest as _, Sha256};
 
     use super::*;
@@ -239,6 +301,50 @@ mod tests {
                 peer,
                 policy,
                 99,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn historical_response_echoes_exact_original_attempt() {
+        assert!(
+            receipt::MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1 + 8
+                <= MAXIMUM_RESPONSE_BODY_BYTES
+        );
+        let receipt = HostExecutionArgumentHistoricalReceiptV1::new(
+            source(),
+            receipt::HistoricalHostArgumentStatusV1::Absent,
+            ObjectDigest::from_bytes([0; 32]),
+            ObjectDigest::from_bytes([0; 32]),
+            ObjectDigest::from_bytes([0; 32]),
+            0,
+        )
+        .unwrap();
+        let response = QueryHostExecutionArgumentResponseV1 {
+            canonical_historical_receipt: receipt.canonical_bytes().to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_host_execution_argument_query_response_v1(&response.encode_to_vec(), &source())
+                .unwrap(),
+            receipt,
+        );
+
+        let mut foreign = source();
+        foreign[120] ^= 1;
+        assert!(
+            decode_host_execution_argument_query_response_v1(&response.encode_to_vec(), &foreign)
+                .is_err()
+        );
+        let invalid_fresh = ObserveHostExecutionArgumentResponseV1 {
+            canonical_receipt: receipt.canonical_bytes().to_vec(),
+            ..Default::default()
+        };
+        assert!(
+            decode_host_execution_argument_observe_response_v1(
+                &invalid_fresh.encode_to_vec(),
+                &source(),
             )
             .is_err()
         );

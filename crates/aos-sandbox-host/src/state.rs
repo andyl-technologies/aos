@@ -784,7 +784,9 @@ impl HostState {
             | HostAction::QueryExecution
             | HostAction::InstallAttachGate
             | HostAction::ReserveExecutionOutput
-            | HostAction::QueryExecutionOutput => return Ok(GuardianLineage::Shadowed),
+            | HostAction::QueryExecutionOutput
+            | HostAction::ObserveExecutionArgument
+            | HostAction::QueryExecutionArgument => return Ok(GuardianLineage::Shadowed),
             HostAction::Launch | HostAction::Freeze | HostAction::Thaw => {}
         }
 

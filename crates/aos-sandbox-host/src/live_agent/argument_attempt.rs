@@ -57,7 +57,7 @@ const MAXIMUM_RECORD_BYTES: usize =
 
 /// Reports a stale, ambiguous, or non-one-shot Host argument observation.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum HostArgumentAttemptErrorV1 {
+pub enum HostArgumentAttemptErrorV1 {
     /// The source, current Host owners, retained session, or packet differs.
     #[error("Host argument observation is not current or canonical")]
     Binding,
@@ -411,6 +411,12 @@ impl HostAgentLiveSessionV1 {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
         self.validate_claim(claim)?;
+        if claim
+            .has_unsettled_host_agent_route()
+            .map_err(HostAgentLiveErrorV1::from)?
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
         let output = claim
             .host_output_for_argument_v1(source)
             .map_err(HostAgentLiveErrorV1::from)?;
@@ -684,9 +690,13 @@ mod tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let uid = directory.path().metadata().unwrap().uid();
         let pending = pending();
-        let (journal, _) =
-            Journal::open_protected_at_for_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
-                .unwrap();
+        let (journal, _) = Journal::open_protected_at_for_uid(
+            directory.path(),
+            JOURNAL_NAME,
+            journal_limits(),
+            uid,
+        )
+        .unwrap();
         let mut owner = HostArgumentAttemptJournalV1 {
             journal,
             instance: [1; 16],
@@ -694,9 +704,13 @@ mod tests {
         let old_token = owner.begin(&pending).unwrap();
         drop(owner);
 
-        let (journal, _) =
-            Journal::open_protected_at_for_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
-                .unwrap();
+        let (journal, _) = Journal::open_protected_at_for_uid(
+            directory.path(),
+            JOURNAL_NAME,
+            journal_limits(),
+            uid,
+        )
+        .unwrap();
         let mut recovered = HostArgumentAttemptJournalV1 {
             journal,
             instance: [2; 16],
@@ -740,9 +754,13 @@ mod tests {
         let uid = directory.path().metadata().unwrap().uid();
         let pending = pending();
         let signed_packet = packet(&pending.canonical_request);
-        let (journal, _) =
-            Journal::open_protected_at_for_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
-                .unwrap();
+        let (journal, _) = Journal::open_protected_at_for_uid(
+            directory.path(),
+            JOURNAL_NAME,
+            journal_limits(),
+            uid,
+        )
+        .unwrap();
         let mut owner = HostArgumentAttemptJournalV1 {
             journal,
             instance: [3; 16],
@@ -753,9 +771,13 @@ mod tests {
         assert!(sequence > 0);
         drop(owner);
 
-        let (journal, _) =
-            Journal::open_protected_at_for_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
-                .unwrap();
+        let (journal, _) = Journal::open_protected_at_for_uid(
+            directory.path(),
+            JOURNAL_NAME,
+            journal_limits(),
+            uid,
+        )
+        .unwrap();
         let mut recovered = HostArgumentAttemptJournalV1 {
             journal,
             instance: [4; 16],

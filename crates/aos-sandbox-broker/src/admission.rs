@@ -191,6 +191,34 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Admits a one-shot Host argument observation or historical query grant.
+    ///
+    /// The caller must retain the exact current Host runtime and output
+    /// correlation before touching the Guest channel. Query is read-only and
+    /// cannot turn a historical packet into fresh execution authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a wrong domain or verb, stale plan/lease, semantic mismatch,
+    /// or a replaced shared Host base fence.
+    pub fn admit_host_argument(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host
+            || !matches!(
+                request.verb,
+                BrokerVerb::HostObserveExecutionArgument | BrokerVerb::HostQueryExecutionArgument
+            )
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+    }
+
     /// Admits a distinct Host ATTACH grant on the shared runtime lease.
     ///
     /// # Errors

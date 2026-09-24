@@ -9,11 +9,13 @@ mod runtime_pins;
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::time::Instant;
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, BrokerMethod, InventoryRuntimeResponse, QueryRuntimeEffectResponse,
     RuntimeAction, RuntimeEffectStatus, RuntimeObservation, RuntimeState,
 };
+use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, VerifiedHostOutputReserveSourceV1,
@@ -29,16 +31,26 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_protocol::host_execution_argument::receipt::{
+    HostExecutionArgumentFreshReceiptV1, HostExecutionArgumentHistoricalReceiptV1,
+    MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1,
+};
+use aos_sandbox_protocol::host_execution_argument::{
+    ValidatedHostExecutionArgumentRequestV1, decode_host_execution_argument_observe_request_v1,
+    decode_host_execution_argument_query_request_v1,
+};
 use aos_sandbox_protocol::host_output::{
     ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
     decode_host_output_query_request_v1, decode_host_output_reserve_request_v1,
 };
 use aos_sandbox_protocol::semantics::{
-    CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionSemanticsV1,
-    CanonicalHostOutputSemanticsV1, canonical_host_attach_gate_semantics_v1,
-    canonical_host_attach_readiness_semantics_v1, canonical_host_attach_route_query_semantics_v1,
-    canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
-    host_output_query_grant_v1, host_output_reserve_grant_v1,
+    CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionArgumentSemanticsV1,
+    CanonicalHostExecutionSemanticsV1, CanonicalHostOutputSemanticsV1,
+    canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
+    canonical_host_attach_route_query_semantics_v1, canonical_host_execution_apply_semantics_v1,
+    canonical_host_execution_query_semantics_v1, host_execution_argument_observe_grant_v1,
+    host_execution_argument_query_grant_v1, host_output_query_grant_v1,
+    host_output_reserve_grant_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
@@ -62,7 +74,10 @@ use sha2::{Digest as _, Sha256};
 use crate::attach_route::HostOpenSshAttachRouteOwnerV1;
 use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
-use crate::live_agent::{HostAgentLiveSessionV1, HostAgentPendingSessionV1};
+use crate::live_agent::argument_attempt::{
+    HostArgumentAttemptErrorV1, HostArgumentAttemptJournalV1,
+};
+use crate::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1, HostAgentPendingSessionV1};
 use crate::plan::{
     GuardianConfig, HostCatalog, NspawnConfig, PreparedLaunch, ResolvedLaunchResources,
 };
@@ -171,6 +186,7 @@ enum HostExactGrantSemanticsV1 {
     Execution(CanonicalHostExecutionSemanticsV1),
     AttachGate(CanonicalHostAttachGateSemanticsV1),
     Output(CanonicalHostOutputSemanticsV1),
+    Argument(CanonicalHostExecutionArgumentSemanticsV1),
 }
 
 impl HostExactGrantSemanticsV1 {
@@ -179,6 +195,7 @@ impl HostExactGrantSemanticsV1 {
             Self::Execution(semantics) => semantics.commitment(),
             Self::AttachGate(semantics) => semantics.commitment(),
             Self::Output(semantics) => semantics.commitment(),
+            Self::Argument(semantics) => semantics.commitment(),
         }
     }
 }
@@ -195,6 +212,10 @@ pub enum HostExecutionGrantRequestV1 {
     ReserveOutput(ValidatedHostOutputReserveRequestV1),
     /// Reads one prior original provisional output attempt without reserving.
     QueryOutput(ValidatedHostOutputQueryRequestV1),
+    /// Issues one original retained Guest runtime argument observation.
+    ObserveArgument(ValidatedHostExecutionArgumentRequestV1),
+    /// Reads historical custody for an original argument observation.
+    QueryArgument(ValidatedHostExecutionArgumentRequestV1),
 }
 
 impl HostExecutionGrantReservationV1 {
@@ -224,6 +245,12 @@ impl HostExecutionGrantReservationV1 {
             ) | (
                 HostExecutionGrantRequestV1::QueryOutput(_),
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            ) | (
+                HostExecutionGrantRequestV1::ObserveArgument(_),
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            ) | (
+                HostExecutionGrantRequestV1::QueryArgument(_),
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             )
         ) && self.request_id == request_id
             && self.request_body_digest.as_bytes() == Sha256::digest(body).as_slice()
@@ -248,6 +275,100 @@ impl HostExecutionGrantReservationV1 {
     #[must_use]
     pub const fn verified_output_source(&self) -> Option<&VerifiedHostOutputReserveSourceV1> {
         self.verified_output_source.as_ref()
+    }
+
+    /// Sends the original argument challenge under this matched, durable grant.
+    ///
+    /// The reservation retains the pinned plan and semantic digests; neither
+    /// can be supplied as a scalar by the broker-session caller. A replayed
+    /// method-37 request is rejected before this method can be reached.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-observe grant, stale Host claim/lease clock, missing
+    /// output correlation, repeated one-shot attempt, or invalid Guest proof.
+    pub fn observe_argument_once(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        agent: &mut HostAgentLiveSessionV1,
+        deadline: Instant,
+    ) -> std::result::Result<HostExecutionArgumentFreshReceiptV1, HostArgumentAttemptErrorV1> {
+        let HostExecutionGrantRequestV1::ObserveArgument(request) = &self.request else {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        };
+        if self.intersection.verb() != aos_sandbox_core::BrokerVerb::HostObserveExecutionArgument
+            || self.intersection.request_id() != &self.request_id
+            || self.effect.request_id() != &self.request_id
+            || self.intersection.host_boot_id() != &claim.host_verifier().boot_id()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(request.canonical_attempt())
+                .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        if source.request_id() != self.request_id
+            || source.assignment_digest() != self.assignment.digest()
+            || source.host_boot_id() != *self.intersection.host_boot_id()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
+        agent.observe_execution_argument_once(
+            claim,
+            &source,
+            self.intersection.plan_digest(),
+            self.intersection.request_digest(),
+            || {
+                let sample = crate::service::trusted_paired_clock_sample()
+                    .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+                if sample.host_boot_id() != *self.intersection.host_boot_id()
+                    || sample.boottime_nanoseconds()
+                        >= self.intersection.fail_stop_boottime_nanoseconds()
+                    || sample.wall_seconds() >= self.intersection.plan_expires_seconds()
+                    || sample.wall_seconds() >= self.intersection.authority_expires_seconds()
+                {
+                    return Err(HostArgumentAttemptErrorV1::Binding);
+                }
+                Ok(sample)
+            },
+            deadline,
+        )
+    }
+
+    /// Reads the original argument attempt as historical, digest-only custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-query grant, stale Host claim/output, foreign original
+    /// source, or unavailable protected attempt journal.
+    pub fn query_argument_historical(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> std::result::Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1>
+    {
+        let HostExecutionGrantRequestV1::QueryArgument(request) = &self.request else {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        };
+        if self.intersection.verb() != aos_sandbox_core::BrokerVerb::HostQueryExecutionArgument
+            || self.intersection.request_id() != &self.request_id
+            || self.effect.request_id() != &self.request_id
+            || self.intersection.host_boot_id() != &claim.host_verifier().boot_id()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(request.canonical_attempt())
+                .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        if source.assignment_digest() != self.assignment.digest()
+            || source.host_boot_id() != *self.intersection.host_boot_id()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
+        claim
+            .host_output_for_argument_v1(&source)
+            .map_err(HostAgentLiveErrorV1::from)?;
+        HostArgumentAttemptJournalV1::open()?.query_historical(&source)
     }
 }
 
@@ -644,6 +765,92 @@ where
                         HostExecutionGrantRequestV1::QueryOutput(request),
                     )
                 }
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence("Host argument descriptor is invalid"));
+                    }
+                    let request = decode_host_execution_argument_observe_request_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    // Reserve enough response budget for every canonical
+                    // signed Guest packet before the one-shot send can occur.
+                    if request.header().maximum_response_bytes()
+                        < (MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1 + 4) as u32
+                    {
+                        return Err(HostError::Fence(
+                            "Host argument response budget is too small",
+                        ));
+                    }
+                    let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                        request.canonical_attempt(),
+                    )
+                    .map_err(|_| HostError::Fence("Host argument source is invalid"))?;
+                    claim.host_output_for_argument_v1(&source).map_err(|_| {
+                        HostError::Fence("Host argument output correlation is not current")
+                    })?;
+                    if source.host_boot_id() != protected_boot_id
+                        || admission_clock.boottime_nanoseconds()
+                            >= source.deadline_boottime_nanoseconds()
+                    {
+                        return Err(HostError::Fence("Host argument source is stale"));
+                    }
+                    let semantics = host_execution_argument_observe_grant_v1(
+                        assignment,
+                        request_id,
+                        request.canonical_attempt(),
+                    )
+                    .map_err(|_| HostError::Fence("Host argument semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        *source.create_operation().as_bytes(),
+                        source.execution(),
+                        source.record_digest(),
+                        HostExactGrantSemanticsV1::Argument(semantics),
+                        HostAction::ObserveExecutionArgument,
+                        HostExecutionGrantRequestV1::ObserveArgument(request),
+                    )
+                }
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence(
+                            "Host argument query descriptor is invalid",
+                        ));
+                    }
+                    let request = decode_host_execution_argument_query_request_v1(
+                        request_body,
+                        peer,
+                        policy,
+                        admission_clock.boottime_nanoseconds(),
+                    )?;
+                    let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                        request.canonical_attempt(),
+                    )
+                    .map_err(|_| HostError::Fence("Host argument source is invalid"))?;
+                    claim.host_output_for_argument_v1(&source).map_err(|_| {
+                        HostError::Fence("Host argument output correlation is not current")
+                    })?;
+                    if source.host_boot_id() != protected_boot_id {
+                        return Err(HostError::Fence("Host argument source boot is stale"));
+                    }
+                    let semantics = host_execution_argument_query_grant_v1(
+                        assignment,
+                        request_id,
+                        request.canonical_attempt(),
+                    )
+                    .map_err(|_| HostError::Fence("Host argument query semantics are invalid"))?;
+                    (
+                        *request.header(),
+                        *source.create_operation().as_bytes(),
+                        source.execution(),
+                        source.record_digest(),
+                        HostExactGrantSemanticsV1::Argument(semantics),
+                        HostAction::QueryExecutionArgument,
+                        HostExecutionGrantRequestV1::QueryArgument(request),
+                    )
+                }
                 _ => return Err(HostError::Fence("Host execution method is invalid")),
             };
         if header.request_id() != &request_id {
@@ -653,6 +860,13 @@ where
             .state
             .runtime_witness_request_id(assignment.sandbox().as_bytes())
             .ok_or(HostError::Fence("Host runtime witness is absent"))?;
+        if action == HostAction::ObserveExecutionArgument
+            && self.state.effect(&request_id).is_some()
+        {
+            return Err(HostError::Fence(
+                "Host argument original request must use historical query after replay",
+            ));
+        }
         if self.state.effect(&request_id).is_some()
             && !self
                 .state
@@ -693,6 +907,16 @@ where
                 prior_fence,
             )?,
             HostExactGrantSemanticsV1::Output(semantics) => self.authority.admit_output(
+                artifacts,
+                assignment,
+                request_id,
+                request_body,
+                semantics,
+                header.deadline_boottime_nanoseconds(),
+                &admission_clock,
+                prior_fence,
+            )?,
+            HostExactGrantSemanticsV1::Argument(semantics) => self.authority.admit_argument(
                 artifacts,
                 assignment,
                 request_id,
