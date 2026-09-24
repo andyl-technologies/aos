@@ -535,61 +535,69 @@
         required_by = [initrdFilesystemsReadiness];
       };
   };
-  handoffInterface = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
-  handoffDeclaration = {
-    requirementTemplates.boot-preparation-handoff =
-      lib.abilities.interfaceSelector {
-        name = handoffInterface.name;
-        abi = 1;
-      }
-      // {
-        description = "Transfers exact successful initrd preparation evidence to the host stage.";
-        methods = handoffInterface.methods;
-        guarantees = [];
-        strength = "required";
-        fallback = null;
-      };
-  };
-  handoffRequest = {
-    requests.boot-preparation-handoff = {
-      requirement = "boot-preparation-handoff";
-      consumer = consumerInstance;
-      scope = ["initrd-to-host"];
-      parameters = {
-        source_stage = "initrd";
-        receiver_stage = "host";
-        completion = initrdFilesystemsReadiness;
-        preparations = handoffPreparationResources;
-        preserved_mounts = [
-          {
-            initrd_path = "/run";
-            host_path = "/run";
-          }
-          {
-            initrd_path = "/sysroot/etc";
-            host_path = "/etc";
-          }
-          {
-            initrd_path = "/sysroot/nix";
-            host_path = "/nix";
-          }
-          {
-            initrd_path = "/sysroot/var";
-            host_path = "/var";
-          }
-        ];
-        durable_state_roots = [
-          {
-            initrd_path = "/sysroot/var/lib/profiles/image";
-            host_path = "/var/lib/profiles/image";
-          }
-          {
-            initrd_path = "/sysroot/var/lib/profiles/system";
-            host_path = "/var/lib/profiles/system";
-          }
-        ];
-      };
+  handoffPathMapping = lib.abilities.types.record {
+    fields = {
+      initrd_path = lib.abilities.types.executionPath;
+      host_path = lib.abilities.types.executionPath;
     };
+  };
+  handoffPathMappings = lib.abilities.types.list {
+    element = handoffPathMapping;
+    maxItems = 16;
+    unique = true;
+    canonicalOrder = true;
+  };
+  handoffParametersType = lib.abilities.types.record {
+    fields = {
+      source_stage = lib.abilities.types.enum ["initrd"];
+      receiver_stage = lib.abilities.types.enum ["host"];
+      completion = lib.abilities.types.deferredResult lib.abilities.types.resourceReference;
+      preparations = lib.abilities.types.list {
+        element = lib.abilities.types.deferredResult lib.abilities.types.resourceReference;
+        maxItems = 64;
+        unique = true;
+        canonicalOrder = true;
+      };
+      preserved_mounts = handoffPathMappings;
+      durable_state_roots = handoffPathMappings;
+    };
+  };
+  # Values outside aos.abilities do not receive its local-name qualification.
+  handoffReference = reference:
+    reference // {request = "aos-boot-preparations:${reference.request}";};
+  handoffParameters = {
+    source_stage = "initrd";
+    receiver_stage = "host";
+    completion = handoffReference initrdFilesystemsReadiness;
+    preparations = builtins.map handoffReference handoffPreparationResources;
+    preserved_mounts = [
+      {
+        initrd_path = "/run";
+        host_path = "/run";
+      }
+      {
+        initrd_path = "/sysroot/etc";
+        host_path = "/etc";
+      }
+      {
+        initrd_path = "/sysroot/nix";
+        host_path = "/nix";
+      }
+      {
+        initrd_path = "/sysroot/var";
+        host_path = "/var";
+      }
+    ];
+    durable_state_roots = [
+      {
+        initrd_path = "/sysroot/var/lib/profiles/image";
+        host_path = "/var/lib/profiles/image";
+      }
+      {
+        initrd_path = "/sysroot/var/lib/profiles/system";
+        host_path = "/var/lib/profiles/system";
+      }
+    ];
   };
   substrateProducers = [
     initrdFilesystems
@@ -624,6 +632,13 @@
       })
       services);
 in {
+  options.aos.boot.handoffParameters = lib.mkOption {
+    type = lib.types.nullOr handoffParametersType;
+    default = null;
+    internal = true;
+    description = "Typed initrd-to-host journal handoff plan owned by the boot substrate.";
+  };
+
   options.aos.boot.substrateServices = {
     enable = lib.mkOption {
       type = lib.abilities.types.boolean;
@@ -689,7 +704,6 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.abilities = handoffDeclaration;
       aos.services =
         (serviceConfigsFor initrdStage baseServices)
         // (serviceConfigsFor (initrdStage && cfg.enable) substrateServices)
@@ -717,7 +731,7 @@ in {
       enabled = hostStage && cfg.handoffEnabled;
     })
     (lib.mkIf (initrdStage && cfg.handoffEnabled) {
-      aos.abilities = handoffRequest;
+      aos.boot.handoffParameters = handoffParameters;
     })
   ];
 }

@@ -374,8 +374,8 @@
 
   modulesLoadConf = lib.concatStringsSep "\n" loadModules;
 
-  completionUnit = handoff.resource.realization.completion_unit.unit_name;
-  requiredUnits = builtins.map (unit: unit.unit_name) handoff.resource.realization.required_units;
+  completionUnit = handoff.realization.completion_unit.unit_name;
+  requiredUnits = builtins.map (unit: unit.unit_name) handoff.realization.required_units;
   requiredUnitChecks =
     lib.concatMapStringsSep "\n" (unit: ''
       unit_path=root/etc/systemd/system/${unit}
@@ -967,14 +967,14 @@
                 load_modules:($loadModules | sort | unique),
                 masked_units:($maskedUnits | sort | unique),
                 handoff:{to_stage:"host",
-                  mechanism:$handoff.resource.realization.mechanism,
-                  completion_target:$handoff.resource.realization.completion_unit.unit_name,
-                  required_units:($handoff.resource.realization.required_units
+                  mechanism:$handoff.realization.mechanism,
+                  completion_target:$handoff.realization.completion_unit.unit_name,
+                  required_units:($handoff.realization.required_units
                     | map(.unit_name) | sort | unique),
-                  preserved_mounts:($handoff.resource.value.preserved_mounts
+                  preserved_mounts:($handoff.value.preserved_mounts
                     | unique_by([.initrd_path,.host_path])
                     | sort_by([.initrd_path,.host_path])),
-                  durable_state_roots:($handoff.resource.value.durable_state_roots
+                  durable_state_roots:($handoff.value.durable_state_roots
                     | unique_by([.initrd_path,.host_path])
                     | sort_by([.initrd_path,.host_path])),
                   transferable_handles:false,

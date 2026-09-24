@@ -17,6 +17,7 @@
           stage = "initrd";
         };
         aos.boot.substrateServices.enable = true;
+        aos.boot.substrateServices.handoffEnabled = true;
       }
     ];
     packageModules = [
@@ -50,6 +51,7 @@
   mountVar = request "aos-boot-preparations" "mount-var-dependencies";
   provisioningEffects =
     implementations."aos-storage-provisioning-provider:storage-provisioning-effects";
+  handoff = evaluated.config.aos.boot.handoffParameters;
 in
   assert lifecycleNames
   == [
@@ -88,4 +90,10 @@ in
   assert implementations."aos-metadata-provider:storage-provisioning-input-authorizer".handlerDescriptor.entryPoint
   == "bin/aos-metadata-policy-provider";
   assert (request "aos-boot-preparations" "initrd-stage").milestone
-  == milestones.initrdStageExecuted; true
+  == milestones.initrdStageExecuted;
+  assert handoff.completion
+  == (output "aos-boot-preparations" "initrd-filesystems" "resource");
+  assert builtins.elem
+  (output "aos-boot-preparations" "mount-var-lifecycle" "resource")
+  handoff.preparations;
+  assert !(requests ? "aos-boot-preparations:boot-preparation-handoff"); true
