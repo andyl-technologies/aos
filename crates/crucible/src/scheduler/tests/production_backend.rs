@@ -286,6 +286,7 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
 
 #[test]
 fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
+    #[derive(Clone)]
     struct BoundaryLoop {
         event_log: EventLog,
         frontiers: std::vec::IntoIter<VirtualTime>,
@@ -334,6 +335,7 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
         }
     }
 
+    #[derive(Clone)]
     struct ObservingBackend {
         inner: MockSimulationBackend,
         observations: Vec<ObservableEvent>,
@@ -408,6 +410,16 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
             .iter()
             .all(|entry| entry.at() != observation.at())
     );
+
+    let mut uncommitted = adapter.clone();
+    let diagnostic = uncommitted
+        .shutdown()
+        .expect_err("shutdown must reject an observation beyond the shared frontier")
+        .to_string();
+    assert!(diagnostic.contains("first timestamp is 10"));
+    assert!(diagnostic.contains("kind console-output"));
+    assert!(diagnostic.contains("source `vm-a`"));
+    assert!(diagnostic.contains("committed frontier 5"));
 
     let second = adapter
         .drive_quantum(QuantumRequest {
