@@ -105,6 +105,16 @@ fn reject_legacy_cache_journals() -> Result<(), crate::journal::JournalError> {
 }
 
 fn reject_legacy_cache_journals_at(root: &Path) -> Result<(), crate::journal::JournalError> {
+    // An alias to an empty new root would pass the name scan, then expose the
+    // newly created journals under the retired path. Inspect the root itself
+    // without following it before looking up any child names.
+    match fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err(crate::journal::JournalError::ProtectedBoundary),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(crate::journal::JournalError::Io(error)),
+    }
+
     for name in [
         CACHE_STATE_JOURNAL,
         CACHE_AUTHORITY_JOURNAL,
@@ -2836,6 +2846,36 @@ mod tests {
                 std::fs::remove_file(legacy).expect("remove fixture");
             }
         }
+    }
+
+    #[test]
+    fn legacy_journal_root_alias_fails_closed_before_new_store_creation() {
+        let parent = tempfile::tempdir().expect("protected parent");
+        let fresh = parent.path().join("cache-residency-journals");
+        std::fs::create_dir(&fresh).expect("new journal root");
+        let legacy = parent.path().join("cache-residency");
+
+        symlink(&fresh, &legacy).expect("old root alias to empty new root");
+        assert!(matches!(
+            reject_legacy_cache_journals_at(&legacy),
+            Err(crate::journal::JournalError::ProtectedBoundary)
+        ));
+        std::fs::remove_file(&legacy).expect("remove alias");
+
+        symlink(parent.path().join("missing"), &legacy).expect("dangling old root alias");
+        assert!(matches!(
+            reject_legacy_cache_journals_at(&legacy),
+            Err(crate::journal::JournalError::ProtectedBoundary)
+        ));
+        std::fs::remove_file(&legacy).expect("remove dangling alias");
+
+        std::fs::write(&legacy, b"not a journal directory").expect("old root file");
+        assert!(matches!(
+            reject_legacy_cache_journals_at(&legacy),
+            Err(crate::journal::JournalError::ProtectedBoundary)
+        ));
+        std::fs::remove_file(&legacy).expect("remove old root file");
+        assert!(reject_legacy_cache_journals_at(&legacy).is_ok());
     }
 
     #[test]

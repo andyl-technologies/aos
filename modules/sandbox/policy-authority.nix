@@ -57,6 +57,14 @@
 
     # Unexpected old-path journal names must never initialize the new view.
     legacy=/var/lib/aos/sandbox/cache-residency
+    # The parent was checked as root-owned, so the Controller cannot rename
+    # this root after the check. An alias to the empty new root is never safe.
+    if test -L "$legacy"; then
+      exit 1
+    fi
+    if test -e "$legacy"; then
+      test "$(${pkgs.coreutils}/bin/stat --format='%F' "$legacy")" = directory
+    fi
     for name in state.journal authority.journal clock.journal policy-hold.journal; do
       for suffix in "" .lock .compact.tmp; do
         if test -e "$legacy/$name$suffix" || test -L "$legacy/$name$suffix"; then
