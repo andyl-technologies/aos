@@ -57,6 +57,9 @@ mod transition;
 mod validation;
 mod wire;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use lifecycle::{CommittedSourceConsumptionV2, SourceConsumptionCommitV2};
 pub(crate) use outcome::{ConsumedProviderOutcomeV2, RecoveredProviderOutcomeConsumptionV2};
 pub(crate) use release::{ReservedReleaseProviderQueryV2, RetainedReleasePreparationFailureV2};
