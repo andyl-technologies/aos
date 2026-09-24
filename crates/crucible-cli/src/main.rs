@@ -363,7 +363,7 @@ enum CampaignCommand {
     GraphObject(CampaignGraphObjectArgs),
     /// Read one authenticated page of discovered choice opportunities.
     Choices(CampaignPageArgs),
-    /// Read authenticated attempts admitted for one branch request.
+    /// Read authenticated execution-basis attempts for one branch request.
     RequestAttempts(CampaignRequestAttemptsArgs),
     /// Inspect one declaration or domain named by an authenticated choice.
     ChoiceObject(CampaignChoiceObjectArgs),
@@ -1328,7 +1328,7 @@ struct CampaignRequestAttemptsArgs {
     /// Exact campaign snapshot that anchors the immutable page.
     #[arg(long, value_name = "SNAPSHOT", required = true)]
     snapshot: String,
-    /// Accepted branch request whose attempts are queried.
+    /// Accepted branch request whose execution-basis attempts are queried.
     #[arg(long, value_name = "REQUEST", required = true)]
     request: String,
     /// Exclusive attempt cursor returned by the preceding page.

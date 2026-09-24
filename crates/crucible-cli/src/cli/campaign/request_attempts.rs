@@ -1,4 +1,4 @@
-//! Authenticated, request-local attempt lookup for campaign operators.
+//! Authenticated, request-local execution-basis attempt lookup for operators.
 
 use super::*;
 use crucible_campaign::{

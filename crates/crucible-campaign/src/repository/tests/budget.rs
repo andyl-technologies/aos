@@ -81,19 +81,36 @@ fn budget_projection_counts_accepted_work_once_across_auxiliary_indexes() {
 }
 
 #[test]
-fn request_attempt_page_authenticates_admission_and_empty_tail() {
+fn request_attempt_page_authenticates_cursor_and_empty_tail() {
     let (repository, lineage, policy) = fixture();
     let (_, admitted, _) =
         admitted_observation_fixture(&repository, &lineage, &policy, "attempt-page");
-    let request_id = branch_request(
+    let request = branch_request(
         &repository,
         &lineage,
         lineage.genesis_content(),
         lineage.genesis(),
         "attempt-page",
-    )
-    .id()
-    .expect("request ID");
+    );
+    let request_id = request.id().expect("request ID");
+    let head = repository
+        .head("attempt-page")
+        .expect("head before second proposal");
+    let second_proposal = finite_proposal(&request, &policy, &head, ChoiceValue::Boolean(true), 2);
+    let issued = repository
+        .issue_proposal("attempt-page", head.snapshot_id(), &second_proposal)
+        .expect("issue second proposal");
+    let (selection, path, attempt) = branch_attempt(&repository, &request, &second_proposal);
+    let second = repository
+        .admit_proposal(
+            "attempt-page",
+            issued.new_snapshot,
+            issued.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit second attempt");
     let head = repository.head("attempt-page").expect("head");
     let snapshot = head.snapshot_id();
     let ledger = repository
@@ -114,8 +131,8 @@ fn request_attempt_page_authenticates_admission_and_empty_tail() {
         .scan_request_attempt_page(ledger, request_id, None, 1)
         .expect("indexed page");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].attempt(), admitted.attempt);
-    assert!(next.is_none());
+    let first_attempt = entries[0].attempt();
+    assert!(next.is_some());
     let response = crate::QueryCampaignRequestAttemptsResponse::new(
         &query,
         head.snapshot().clone(),
@@ -132,18 +149,48 @@ fn request_attempt_page_authenticates_admission_and_empty_tail() {
     .expect("canonical response");
     decoded.validate_for(&query).expect("authenticated page");
 
+    let second_query = crate::QueryCampaignRequestAttemptsRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        request_id,
+        next,
+        1,
+    )
+    .expect("second page query");
+    assert!(decoded.validate_for(&second_query).is_err());
+    let (entries, next, index_proof, page_proof) = repository
+        .scan_request_attempt_page(ledger, request_id, Some(first_attempt), 1)
+        .expect("second page");
+    assert_eq!(entries.len(), 1);
+    let last_attempt = entries[0].attempt();
+    assert_eq!(
+        BTreeSet::from([first_attempt, last_attempt]),
+        BTreeSet::from([admitted.attempt, second.attempt])
+    );
+    assert!(next.is_none());
+    crate::QueryCampaignRequestAttemptsResponse::new(
+        &second_query,
+        head.snapshot().clone(),
+        ledger,
+        entries,
+        next,
+        index_proof,
+        page_proof,
+    )
+    .expect("proved second page");
+
     let tail = crate::QueryCampaignRequestAttemptsRequest::new(
         principal,
         campaign,
         snapshot,
         request_id,
-        Some(admitted.attempt),
+        Some(last_attempt),
         1,
     )
     .expect("tail query");
-    assert!(decoded.validate_for(&tail).is_err());
     let (entries, next, index_proof, page_proof) = repository
-        .scan_request_attempt_page(ledger, request_id, Some(admitted.attempt), 1)
+        .scan_request_attempt_page(ledger, request_id, Some(last_attempt), 1)
         .expect("empty tail");
     assert!(entries.is_empty());
     assert!(next.is_none());
