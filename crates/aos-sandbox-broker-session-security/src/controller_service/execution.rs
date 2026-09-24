@@ -7,6 +7,8 @@
 //! admitted Create intent and needs its own protected operation identity.
 //! Controls can supersede the projection while an earlier effect is pending.
 
+mod observe_reservation;
+
 use aos_proto::aos::sandbox::local::v1::{
     ApplyHostExecutionRequestV1, BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry,
     BrokerDescriptorRole, BrokerMethod, BrokerRequestEnvelope, HostExecutionActionV1,
@@ -679,44 +681,6 @@ impl ControllerExecutionIntentV1 {
         })
     }
 
-    /// Derives a distinct Host Observe intent from an admitted Create intent.
-    ///
-    /// The caller must reserve and retain `observation_operation_id` under
-    /// protected custody before requesting the Host effect. A completed
-    /// Observe result is immutable, so each later observation needs a new ID.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a source without its exact Create specification or a repeated
-    /// Host operation identity.
-    #[allow(dead_code)]
-    pub(crate) fn observe_after_authorization(
-        &self,
-        observation_operation_id: OperationId,
-    ) -> Result<Self, EffectFailure> {
-        if self.action != ControllerExecutionActionV1::Authorize
-            || observation_operation_id == self.operation_id
-            || observation_operation_id.as_bytes() == &[0; 16]
-        {
-            return Err(EffectFailure::Permanent(
-                "execution Observe has no distinct admitted Create source".to_owned(),
-            ));
-        }
-        let specification = self.specification.as_ref().ok_or_else(|| {
-            EffectFailure::Permanent("execution Observe has no retained specification".to_owned())
-        })?;
-
-        Ok(Self {
-            operation_id: observation_operation_id,
-            projection_operation_id: self.projection_operation_id,
-            execution_id: self.execution_id,
-            action: ControllerExecutionActionV1::Observe,
-            specification: None,
-            observation_specification_digest: Some(execution_spec_digest_v1(specification)),
-            source_operation_commitment: self.source_operation_commitment,
-        })
-    }
-
     pub(crate) fn prepare_authorization(
         &self,
         kind: ExecutionAuthorizationKindV1,
@@ -725,6 +689,9 @@ impl ControllerExecutionIntentV1 {
         journal: &mut Journal,
         signer: Option<&ControllerBrokerPlanSignerV1>,
     ) -> Result<BrokerAuthorizationArtifactsV1, EffectFailure> {
+        if self.action == ControllerExecutionActionV1::Observe {
+            observe_reservation::require_current(journal, self)?;
+        }
         let signer = signer.ok_or_else(|| {
             EffectFailure::Retryable("Host execution plan signer is unavailable".to_owned())
         })?;

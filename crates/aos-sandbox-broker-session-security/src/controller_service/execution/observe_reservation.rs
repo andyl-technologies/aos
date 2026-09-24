@@ -1,0 +1,496 @@
+//! Durable, closed reservation of a Host Observe after authenticated Authorize.
+//!
+//! The AOSCOB01 record binds one distinct Observe operation to the retained
+//! Create specification and the exact Controller receipt derived from signed
+//! Host authorization evidence. It does not grant or dispatch the Observe.
+//!
+//! ```text
+//! AOSCOB01 || execution:16 || Create-operation:16 || Observe-operation:16
+//!          || spec-digest:32 || source-operation-commitment:32
+//!          || authorization-receipt:40 || record-digest:32
+//! ```
+
+use aos_proto::aos::sandbox::v1::ExecutionPhase;
+use aos_sandbox::{EffectFailure, Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
+use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, execution_spec_digest_v1};
+use sha2::{Digest as _, Sha256};
+
+use super::{
+    ControllerExecutionActionV1, ControllerExecutionCompletionV1, ControllerExecutionIntentV1,
+    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+    load_controller_execution_spec_attempt_v1,
+};
+
+const MAGIC: &[u8; 8] = b"AOSCOB01";
+const RECEIPT_MAGIC: &[u8; 8] = b"AOSEXE01";
+const RECEIPT_BYTES: usize = 40;
+const RECORD_BYTES: usize = 8 + 16 + 16 + 16 + 32 + 32 + RECEIPT_BYTES + 32;
+const OPERATION_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-operation.v1\0";
+const RECORD_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-reservation.v1\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-reservation-tx.v1\0";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ObserveReservation {
+    execution: ExecutionId,
+    create_operation: OperationId,
+    observe_operation: OperationId,
+    specification_digest: ObjectDigest,
+    source_operation_commitment: [u8; 32],
+    authorization_receipt: [u8; RECEIPT_BYTES],
+}
+
+impl ObserveReservation {
+    fn new(
+        execution: ExecutionId,
+        create_operation: OperationId,
+        specification_digest: ObjectDigest,
+        source_operation_commitment: [u8; 32],
+        authorization_receipt: &[u8],
+    ) -> Result<Self, EffectFailure> {
+        let receipt: [u8; RECEIPT_BYTES] = authorization_receipt.try_into().map_err(|_| {
+            EffectFailure::Permanent("Host authorization receipt has the wrong size".to_owned())
+        })?;
+        if receipt.get(..8) != Some(RECEIPT_MAGIC.as_slice())
+            || receipt[8..] == [0; 32]
+            || execution.as_bytes() == &[0; 16]
+            || create_operation.as_bytes() == &[0; 16]
+            || specification_digest.as_bytes() == &[0; 32]
+            || source_operation_commitment == [0; 32]
+        {
+            return Err(EffectFailure::Permanent(
+                "Host authorization receipt or Create binding is invalid".to_owned(),
+            ));
+        }
+
+        let digest: [u8; 32] = Sha256::new()
+            .chain_update(OPERATION_DOMAIN)
+            .chain_update(create_operation.as_bytes())
+            .chain_update(execution.as_bytes())
+            .chain_update(specification_digest.as_bytes())
+            .chain_update(source_operation_commitment)
+            .chain_update(receipt)
+            .finalize()
+            .into();
+        let operation: [u8; 16] = digest[..16].try_into().map_err(|_| {
+            EffectFailure::Permanent("Observe operation identity is invalid".to_owned())
+        })?;
+        if operation == [0; 16] || operation == *create_operation.as_bytes() {
+            return Err(EffectFailure::Permanent(
+                "Observe operation is not distinct from Create".to_owned(),
+            ));
+        }
+
+        Ok(Self {
+            execution,
+            create_operation,
+            observe_operation: OperationId::from_bytes(operation),
+            specification_digest,
+            source_operation_commitment,
+            authorization_receipt: receipt,
+        })
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(RECORD_BYTES);
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(self.execution.as_bytes());
+        bytes.extend_from_slice(self.create_operation.as_bytes());
+        bytes.extend_from_slice(self.observe_operation.as_bytes());
+        bytes.extend_from_slice(self.specification_digest.as_bytes());
+        bytes.extend_from_slice(&self.source_operation_commitment);
+        bytes.extend_from_slice(&self.authorization_receipt);
+        bytes.extend_from_slice(
+            &Sha256::new()
+                .chain_update(RECORD_DOMAIN)
+                .chain_update(&bytes)
+                .finalize(),
+        );
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, EffectFailure> {
+        if bytes.len() != RECORD_BYTES || bytes.get(..8) != Some(MAGIC.as_slice()) {
+            return Err(corrupt());
+        }
+        let checksum_at = RECORD_BYTES - 32;
+        let checksum = Sha256::new()
+            .chain_update(RECORD_DOMAIN)
+            .chain_update(&bytes[..checksum_at])
+            .finalize();
+        if bytes[checksum_at..] != checksum[..] {
+            return Err(corrupt());
+        }
+
+        let mut cursor = MAGIC.len();
+        let execution = ExecutionId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
+        let create_operation = OperationId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
+        let observe_operation = OperationId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
+        let specification_digest = ObjectDigest::from_bytes(read_array::<32>(bytes, &mut cursor)?);
+        let source_operation_commitment = read_array::<32>(bytes, &mut cursor)?;
+        let receipt = read_array::<RECEIPT_BYTES>(bytes, &mut cursor)?;
+        if cursor != checksum_at {
+            return Err(corrupt());
+        }
+        let reconstructed = Self::new(
+            execution,
+            create_operation,
+            specification_digest,
+            source_operation_commitment,
+            &receipt,
+        )?;
+        if reconstructed.observe_operation != observe_operation {
+            return Err(corrupt());
+        }
+        Ok(reconstructed)
+    }
+
+    fn matches_intent(&self, intent: &ControllerExecutionIntentV1) -> bool {
+        intent.action == ControllerExecutionActionV1::Observe
+            && intent.specification.is_none()
+            && self.create_operation == intent.projection_operation_id
+            && self.observe_operation == intent.operation_id
+            && Some(self.specification_digest) == intent.observation_specification_digest
+            && self.source_operation_commitment == intent.source_operation_commitment
+    }
+}
+
+fn read_array<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], EffectFailure> {
+    let end = (*cursor).checked_add(N).ok_or_else(corrupt)?;
+    let value = bytes
+        .get(*cursor..end)
+        .and_then(|value| value.try_into().ok())
+        .ok_or_else(corrupt)?;
+    *cursor = end;
+    Ok(value)
+}
+
+fn corrupt() -> EffectFailure {
+    EffectFailure::Permanent("protected execution Observe reservation is corrupt".to_owned())
+}
+
+fn load(
+    journal: &Journal,
+    execution: ExecutionId,
+) -> Result<Option<ObserveReservation>, EffectFailure> {
+    journal
+        .ensure_healthy()
+        .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+    journal
+        .get(
+            RecordNamespace::ControllerExecutionObserveReservation,
+            execution.as_bytes(),
+        )
+        .map(ObserveReservation::decode)
+        .transpose()?
+        .map(|record| {
+            if record.execution == execution {
+                Ok(record)
+            } else {
+                Err(corrupt())
+            }
+        })
+        .transpose()
+}
+
+fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(), EffectFailure> {
+    if let Some(existing) = load(journal, reservation.execution)? {
+        return if existing == *reservation {
+            Ok(())
+        } else {
+            Err(EffectFailure::Permanent(
+                "execution Observe reservation conflicts with retained authorization".to_owned(),
+            ))
+        };
+    }
+    if journal
+        .get(
+            RecordNamespace::Operation,
+            reservation.observe_operation.as_bytes(),
+        )
+        .is_some()
+    {
+        return Err(EffectFailure::Permanent(
+            "execution Observe operation identity already belongs to another operation".to_owned(),
+        ));
+    }
+
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(TRANSACTION_DOMAIN)
+        .chain_update(reservation.execution.as_bytes())
+        .chain_update(reservation.create_operation.as_bytes())
+        .finalize()
+        .into();
+    let transaction_id: [u8; 16] = digest[..16].try_into().map_err(|_| corrupt())?;
+    if transaction_id == [0; 16] {
+        return Err(corrupt());
+    }
+    let transaction = JournalTransaction::new(
+        transaction_id,
+        vec![JournalRecord::put(
+            RecordNamespace::ControllerExecutionObserveReservation,
+            reservation.execution.as_bytes().to_vec(),
+            reservation.encode(),
+        )],
+    )
+    .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
+    journal.commit(&transaction).map_err(|_| {
+        EffectFailure::Retryable(
+            "execution Observe reservation append is ambiguous; cold-reopen Controller custody"
+                .to_owned(),
+        )
+    })?;
+    Ok(())
+}
+
+pub(super) fn require_current(
+    journal: &Journal,
+    intent: &ControllerExecutionIntentV1,
+) -> Result<(), EffectFailure> {
+    let reservation =
+        load(journal, ExecutionId::from_bytes(intent.execution_id))?.ok_or_else(|| {
+            EffectFailure::Retryable("protected execution Observe reservation is absent".to_owned())
+        })?;
+    let retained = load_controller_execution_spec_attempt_v1(journal, reservation.execution)
+        .map_err(|error| EffectFailure::Retryable(error.to_string()))?
+        .ok_or_else(|| {
+            EffectFailure::Retryable("protected Create specification is absent".to_owned())
+        })?;
+    if !reservation.matches_intent(intent)
+        || retained.create_operation() != reservation.create_operation
+        || retained.specification_digest() != reservation.specification_digest
+    {
+        return Err(EffectFailure::Permanent(
+            "execution Observe differs from retained authorization".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+impl ControllerExecutionIntentV1 {
+    /// Reserves one distinct Observe identity after exact Host authorization.
+    ///
+    /// This stage is deliberately closed: it returns an intent but neither
+    /// dispatches the Host method nor authorizes a public phase transition.
+    /// The original Create specification and signed Host receipt must be
+    /// recovered byte-identically before a later caller can replay it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or changed Create custody, a non-Authorize completion,
+    /// conflicting retained identity, or ambiguous journal durability.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_observe_after_authorization(
+        &self,
+        journal: &mut Journal,
+        completion: &ControllerExecutionCompletionV1,
+    ) -> Result<Self, EffectFailure> {
+        if self.action != ControllerExecutionActionV1::Authorize
+            || self.operation_id != self.projection_operation_id
+            || completion.phase != BackendExecutionPhaseV1::Authorized
+            || completion.terminal.is_some()
+            || completion.observation_sequence == 0
+        {
+            return Err(EffectFailure::Permanent(
+                "execution Observe has no exact Host Authorize completion".to_owned(),
+            ));
+        }
+        let specification = self.specification.as_ref().ok_or_else(|| {
+            EffectFailure::Permanent(
+                "execution Observe has no retained Create specification".to_owned(),
+            )
+        })?;
+        let retained = load_controller_execution_spec_attempt_v1(
+            journal,
+            ExecutionId::from_bytes(self.execution_id),
+        )
+        .map_err(|error| EffectFailure::Retryable(error.to_string()))?
+        .ok_or_else(|| {
+            EffectFailure::Retryable("protected Create specification is absent".to_owned())
+        })?;
+        let specification_digest = execution_spec_digest_v1(specification);
+        if retained.create_operation() != self.operation_id
+            || retained.specification_digest() != specification_digest
+            || retained
+                .decoded_specification()
+                .map_err(|error| EffectFailure::Retryable(error.to_string()))?
+                != *specification
+        {
+            return Err(EffectFailure::Permanent(
+                "execution Observe differs from retained Create specification".to_owned(),
+            ));
+        }
+        let projection = PublicProjectionStoreV1::new(journal)
+            .get(PublicProjectionKindV1::Execution, self.execution_id)
+            .map_err(|error| EffectFailure::Retryable(error.to_string()))?
+            .ok_or_else(|| {
+                EffectFailure::Retryable("execution Create projection is absent".to_owned())
+            })?;
+        let PublicProjectionResourceV1::Execution(execution) = projection.resource() else {
+            return Err(corrupt());
+        };
+        if projection.operation() != self.projection_operation_id
+            || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_REQUESTED)
+        {
+            return Err(EffectFailure::Retryable(
+                "execution Create projection is no longer current".to_owned(),
+            ));
+        }
+
+        let reservation = ObserveReservation::new(
+            ExecutionId::from_bytes(self.execution_id),
+            self.operation_id,
+            specification_digest,
+            self.source_operation_commitment,
+            completion.receipt.as_bytes(),
+        )?;
+        retain(journal, &reservation)?;
+        let observe = Self {
+            operation_id: reservation.observe_operation,
+            projection_operation_id: self.projection_operation_id,
+            execution_id: self.execution_id,
+            action: ControllerExecutionActionV1::Observe,
+            specification: None,
+            observation_specification_digest: Some(specification_digest),
+            source_operation_commitment: self.source_operation_commitment,
+        };
+        require_current(journal, &observe)?;
+        Ok(observe)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox::{EffectReceipt, JournalLimits};
+    use aos_sandbox_core::{NodeId, ProjectId};
+    use aos_sandbox_protocol::host_execution::HostExecutionTerminalResultV1;
+
+    use super::*;
+
+    #[test]
+    fn reservation_replays_only_exact_authorization_receipt_after_cold_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("controller.journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let mut receipt = [3; RECEIPT_BYTES];
+        receipt[..8].copy_from_slice(RECEIPT_MAGIC);
+        let reservation = ObserveReservation::new(
+            ExecutionId::from_bytes([1; 16]),
+            OperationId::from_bytes([2; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            [5; 32],
+            &receipt,
+        )
+        .unwrap();
+        retain(&mut journal, &reservation).unwrap();
+
+        drop(journal);
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let durable_sequence = journal.snapshot_sequence();
+        assert_eq!(
+            load(&journal, reservation.execution).unwrap(),
+            Some(reservation.clone())
+        );
+        retain(&mut journal, &reservation).unwrap();
+        assert_eq!(journal.snapshot_sequence(), durable_sequence);
+
+        let intent = ControllerExecutionIntentV1 {
+            operation_id: reservation.observe_operation,
+            projection_operation_id: reservation.create_operation,
+            execution_id: *reservation.execution.as_bytes(),
+            action: ControllerExecutionActionV1::Observe,
+            specification: None,
+            observation_specification_digest: Some(reservation.specification_digest),
+            source_operation_commitment: reservation.source_operation_commitment,
+        };
+        assert!(reservation.matches_intent(&intent));
+        assert!(matches!(
+            require_current(&journal, &intent),
+            Err(EffectFailure::Retryable(_))
+        ));
+        let substituted = ControllerExecutionIntentV1 {
+            operation_id: OperationId::from_bytes([9; 16]),
+            ..intent
+        };
+        assert!(!reservation.matches_intent(&substituted));
+
+        receipt[39] ^= 1;
+        let changed = ObserveReservation::new(
+            reservation.execution,
+            reservation.create_operation,
+            reservation.specification_digest,
+            reservation.source_operation_commitment,
+            &receipt,
+        )
+        .unwrap();
+        assert_ne!(changed.observe_operation, reservation.observe_operation);
+        assert!(matches!(
+            retain(&mut journal, &changed),
+            Err(EffectFailure::Permanent(_))
+        ));
+        assert_eq!(journal.snapshot_sequence(), durable_sequence);
+    }
+
+    #[test]
+    fn reservation_rejects_untyped_or_zero_authorization_receipt() {
+        let execution = ExecutionId::from_bytes([1; 16]);
+        let create = OperationId::from_bytes([2; 16]);
+        let spec = ObjectDigest::from_bytes([3; 32]);
+        assert!(ObserveReservation::new(execution, create, spec, [4; 32], &[5; 40]).is_err());
+        let mut zero = [0; RECEIPT_BYTES];
+        zero[..8].copy_from_slice(RECEIPT_MAGIC);
+        assert!(ObserveReservation::new(execution, create, spec, [4; 32], &zero).is_err());
+    }
+
+    #[test]
+    fn terminal_observe_completion_cannot_be_used_as_authorization() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("controller.journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let original_sequence = journal.snapshot_sequence();
+        let authorize = ControllerExecutionIntentV1 {
+            operation_id: OperationId::from_bytes([1; 16]),
+            projection_operation_id: OperationId::from_bytes([1; 16]),
+            execution_id: [2; 16],
+            action: ControllerExecutionActionV1::Authorize,
+            specification: None,
+            observation_specification_digest: None,
+            source_operation_commitment: [3; 32],
+        };
+        let mut receipt = [4; RECEIPT_BYTES];
+        receipt[..8].copy_from_slice(RECEIPT_MAGIC);
+        let observe_completion = ControllerExecutionCompletionV1 {
+            receipt: EffectReceipt::new(receipt.to_vec()).unwrap(),
+            phase: BackendExecutionPhaseV1::Exited,
+            observation_sequence: 2,
+            terminal: Some(HostExecutionTerminalResultV1::Exited(0)),
+        };
+
+        assert!(matches!(
+            authorize.reserve_observe_after_authorization(&mut journal, &observe_completion),
+            Err(EffectFailure::Permanent(_))
+        ));
+        assert_eq!(journal.snapshot_sequence(), original_sequence);
+        assert!(
+            load(&journal, ExecutionId::from_bytes([2; 16]))
+                .unwrap()
+                .is_none()
+        );
+
+        let unreserved = ControllerExecutionIntentV1 {
+            action: ControllerExecutionActionV1::Observe,
+            observation_specification_digest: Some(ObjectDigest::from_bytes([5; 32])),
+            ..authorize
+        };
+        assert!(matches!(
+            unreserved.prepare_authorization(
+                super::super::ExecutionAuthorizationKindV1::Apply,
+                ProjectId::from_bytes([6; 16]),
+                NodeId::from_bytes([7; 16]),
+                &mut journal,
+                None,
+            ),
+            Err(EffectFailure::Retryable(_))
+        ));
+    }
+}

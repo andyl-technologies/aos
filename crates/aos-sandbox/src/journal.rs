@@ -249,6 +249,8 @@ pub enum RecordNamespace {
     ControllerPolicyHold = 69,
     /// Source-domain-wide frozen ancestry during a closed root policy CAS.
     SourceDomainPolicyHold = 70,
+    /// Controller reservation for one authenticated execution Observe operation.
+    ControllerExecutionObserveReservation = 71,
 }
 
 impl RecordNamespace {
@@ -324,6 +326,7 @@ impl RecordNamespace {
             68 => Ok(Self::ControllerExecutionSpecAttempt),
             69 => Ok(Self::ControllerPolicyHold),
             70 => Ok(Self::SourceDomainPolicyHold),
+            71 => Ok(Self::ControllerExecutionObserveReservation),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -4049,6 +4052,7 @@ mod tests {
             RecordNamespace::ControllerExecutionSpecAttempt,
             RecordNamespace::ControllerPolicyHold,
             RecordNamespace::SourceDomainPolicyHold,
+            RecordNamespace::ControllerExecutionObserveReservation,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;

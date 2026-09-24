@@ -109,6 +109,17 @@ supply a portable termination kind or exact process status, so public
 This projection rule does not activate Create, Host launch, Observe scheduling,
 public `RUNNING`, or the attach route.
 
+An authenticated Host Authorize completion can reserve the first Host Observe
+operation under protected Controller custody. The AOSCOB01 record binds its
+distinct deterministic operation ID to the original AOSCSI01 Create spec,
+source-operation commitment, and exact `AOSEXE01` authorization receipt. An
+ambiguous append must cold-reopen; replay must match that record before a Host
+Observe grant.
+The reservation is not an Observe completion or dispatch authority. Production
+Controller operation dispatch still has no already-authorized Observe caller;
+the Create cross-owner handoff and durable effect replay must be completed
+before the reservation can be consumed.
+
 ## Opaque capability handles
 
 Capability UID remains the public resource identity and a non-authorizing
