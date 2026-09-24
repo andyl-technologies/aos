@@ -192,7 +192,9 @@ compiler results.
 Inside builds, `AOS_SHARED_BUILD_CACHE` names the stable `/aos-build-cache`
 mount; `GOCACHE`, `SCCACHE_SERVER_UDS`, and `AOS_BAZEL_DISK_CACHE` select their
 backend paths. The host directory never enters a package derivation hash.
-The shared `mkDerivation` wrapper covers common GCC and C++ compiler calls;
+The shared `mkDerivation` wrapper covers common GCC and C++ compiler calls,
+plus Clang calls by name when a package provides Clang. CMake's C/C++ compiler
+launcher also covers compiler paths selected explicitly by a project.
 `mkCargoPackage` sends rustc through sccache, `mkGoPackage` uses the shared Go
 compilation cache, and `mkBazelPackage` uses Bazel's disk action cache. Rust
 compiler stages after 1.74, Go stages after 1.4, LLVM packages, and OpenJDK
