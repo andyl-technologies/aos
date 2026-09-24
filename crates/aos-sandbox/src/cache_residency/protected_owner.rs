@@ -934,6 +934,17 @@ impl CacheResidencyProtectedOwnerV1 {
     pub fn reconstructed_partitions(
         &mut self,
     ) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
+        self.with_reconstructed_partitions(Ok)
+    }
+
+    // Keep selection inside the protected claim so its errors retain priority
+    // over the final currentness refresh.
+    fn with_reconstructed_partitions<R>(
+        &mut self,
+        select: impl FnOnce(
+            Vec<CacheRecoveryInventoryV1>,
+        ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
         let authority = Arc::clone(&self.authority);
         authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
             let journal = self
@@ -943,8 +954,9 @@ impl CacheResidencyProtectedOwnerV1 {
             let projection =
                 CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
             let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+            let selected = select(inventories)?;
             refresh()?;
-            Ok(inventories)
+            Ok(selected)
         })
     }
 
@@ -965,15 +977,7 @@ impl CacheResidencyProtectedOwnerV1 {
         view: ViewId,
         attachment: Option<AttachmentId>,
     ) -> Result<Option<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
-        let authority = Arc::clone(&self.authority);
-        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
-            let journal = self
-                .state_journal
-                .as_mut()
-                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            let projection =
-                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+        self.with_reconstructed_partitions(|inventories| {
             let mut pin = None;
             for inventory in inventories {
                 for payload in inventory.reconstructed {
@@ -999,7 +1003,6 @@ impl CacheResidencyProtectedOwnerV1 {
                     }
                 }
             }
-            refresh()?;
             Ok(pin)
         })
     }

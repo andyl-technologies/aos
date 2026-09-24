@@ -1,20 +1,17 @@
 //! Partition-independent lookup of retained public logical cache pins.
 
-use std::sync::Arc;
-
 use aos_sandbox_core::{AttachmentId, ObjectDescriptor, OperationId, ProjectId, ViewId};
 
 use super::{
     CacheAuthorityPurposeV1, CachePinV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1,
     CacheResidencyAuthorityRequestV1, CacheResidencyCommitOutcomeV1,
-    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalV1,
-    CacheResidencyProtectedOwnerV1, PhysicalPartitionId, ProtectedDomainJournalErrorV1,
-    ValidatedCacheResidencyPostcommitV1,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1, PhysicalPartitionId,
+    ProtectedDomainJournalErrorV1, ValidatedCacheResidencyPostcommitV1,
 };
 use crate::cache_residency::{
     CachePinId, CachePinKindV1, CachePinLedgerV1, CatalogPresenceV1,
     ValidatedPublicLogicalPinAcquisitionV1,
-    protected_journal::{LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS, reconstruct_cache_history},
+    protected_journal::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS,
 };
 use crate::production_operation_compiler::RecheckedCacheConsumerV1;
 use crate::production_operation_compiler::recheck_cache_consumer_projection_v1;
@@ -206,19 +203,11 @@ impl CacheResidencyProtectedOwnerV1 {
         &mut self,
         partition: PhysicalPartitionId,
     ) -> Result<CacheRecoveryInventoryV1, CacheResidencyProtectedJournalErrorV1> {
-        let authority = Arc::clone(&self.authority);
-        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
-            let journal = self
-                .state_journal
-                .as_mut()
-                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            let projection =
-                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let inventory = reconstruct_cache_history(projection.records(), &validator)?
+        self.with_reconstructed_partitions(|inventories| {
+            let inventory = inventories
                 .into_iter()
                 .find(|inventory| inventory.global.node_quota.partition == partition)
                 .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-            refresh()?;
             Ok(inventory)
         })
     }
@@ -242,15 +231,7 @@ impl CacheResidencyProtectedOwnerV1 {
         view: ViewId,
         attachment: Option<AttachmentId>,
     ) -> Result<Vec<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
-        let authority = Arc::clone(&self.authority);
-        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
-            let journal = self
-                .state_journal
-                .as_mut()
-                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            let projection =
-                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+        self.with_reconstructed_partitions(|inventories| {
             let mut retained = Vec::new();
             for inventory in inventories {
                 let mut partition_pin = None;
@@ -277,7 +258,6 @@ impl CacheResidencyProtectedOwnerV1 {
                     retained.push(pin);
                 }
             }
-            refresh()?;
             Ok(retained)
         })
     }
@@ -299,15 +279,7 @@ impl CacheResidencyProtectedOwnerV1 {
         view: ViewId,
         attachment: Option<AttachmentId>,
     ) -> Result<Vec<CachePinV1>, CacheResidencyProtectedJournalErrorV1> {
-        let authority = Arc::clone(&self.authority);
-        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
-            let journal = self
-                .state_journal
-                .as_mut()
-                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            let projection =
-                CacheResidencyProtectedJournalV1::claim(journal, validator.clone())?.replay()?;
-            let inventories = reconstruct_cache_history(projection.records(), &validator)?;
+        self.with_reconstructed_partitions(|inventories| {
             let mut released = Vec::new();
             for inventory in inventories {
                 for payload in inventory.reconstructed {
@@ -330,7 +302,6 @@ impl CacheResidencyProtectedOwnerV1 {
                     }
                 }
             }
-            refresh()?;
             Ok(released)
         })
     }
