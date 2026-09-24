@@ -551,64 +551,21 @@ fn decode_receipt(
     project_verifying_key: &VerifyingKey,
     now_unix_seconds: i64,
 ) -> io::Result<PolicyAuthorityHeadReceiptV2> {
-    if receipt.len() > MAXIMUM_RECEIPT_BYTES
-        || receipt.get(..8) != Some(POLICY_HEAD_RECEIPT_MAGIC_V2)
-        || receipt.get(8..24) != Some(nonce.as_slice())
-    {
-        return Err(invalid_receipt());
-    }
-    let packet = receipt
-        .get(24..24 + PACKET_BYTES)
-        .ok_or_else(invalid_receipt)?;
-    let mut position = 24 + PACKET_BYTES;
-    let mut inputs = Vec::with_capacity(4);
-    for _ in 0..4 {
-        let length = receipt
-            .get(position..position + 4)
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(u32::from_be_bytes)
-            .ok_or_else(invalid_receipt)?;
-        position += 4;
-        let length = usize::try_from(length).map_err(|_| invalid_receipt())?;
-        if length == 0 || length > MAXIMUM_INPUT_BYTES {
-            return Err(invalid_receipt());
-        }
-        inputs.push(
-            receipt
-                .get(position..position + length)
-                .ok_or_else(invalid_receipt)?,
-        );
-        position += length;
-    }
-    let project_packet = receipt
-        .get(position..position + PROJECT_PACKET_BYTES)
-        .ok_or_else(invalid_receipt)?;
-    position += PROJECT_PACKET_BYTES;
-    let project_length = receipt
-        .get(position..position + 4)
-        .and_then(|bytes| bytes.try_into().ok())
-        .map(u32::from_be_bytes)
-        .ok_or_else(invalid_receipt)?;
-    position += 4;
-    let project_length = usize::try_from(project_length).map_err(|_| invalid_receipt())?;
-    if project_length == 0 || project_length > MAXIMUM_PROJECT_INPUT_BYTES {
-        return Err(invalid_receipt());
-    }
-    let project_input = receipt
-        .get(position..position + project_length)
-        .ok_or_else(invalid_receipt)?;
-    position += project_length;
-    if position != receipt.len() {
-        return Err(invalid_receipt());
-    }
+    let frame = parse_receipt_frame(
+        receipt,
+        nonce,
+        POLICY_HEAD_RECEIPT_MAGIC_V2,
+        MAXIMUM_RECEIPT_BYTES,
+        PROJECT_PACKET_BYTES,
+    )?;
     let exact = PolicyDeploymentInputsV1 {
-        node: inputs[0],
-        site: inputs[1],
-        backend: inputs[2],
-        catalogs: inputs[3],
+        node: frame.inputs[0],
+        site: frame.inputs[1],
+        backend: frame.inputs[2],
+        catalogs: frame.inputs[3],
     };
     let head = verify_policy_deployment_head_v1(
-        packet,
+        frame.packet,
         &exact,
         deployment_verifying_key,
         now_unix_seconds,
@@ -617,8 +574,8 @@ fn decode_receipt(
     let sources =
         decode_policy_deployment_sources_v1(&exact, head).map_err(|_| invalid_receipt())?;
     let project = verify_signed_project_policy_source_v1(
-        project_packet,
-        project_input,
+        frame.project_packet,
+        frame.project_input,
         project_verifying_key,
         now_unix_seconds,
     )
@@ -640,8 +597,62 @@ fn decode_explicit_receipt_v4(
     project_verifying_key: &VerifyingKey,
     now_unix_seconds: i64,
 ) -> io::Result<PolicyAuthorityExplicitHeadReceiptV4> {
-    if receipt.len() > MAXIMUM_EXPLICIT_RECEIPT_BYTES
-        || receipt.get(..8) != Some(POLICY_BINDING_RECEIPT_MAGIC_V4)
+    let frame = parse_receipt_frame(
+        receipt,
+        nonce,
+        POLICY_BINDING_RECEIPT_MAGIC_V4,
+        MAXIMUM_EXPLICIT_RECEIPT_BYTES,
+        EXPLICIT_PROJECT_PACKET_BYTES,
+    )?;
+
+    let exact = PolicyDeploymentInputsV1 {
+        node: frame.inputs[0],
+        site: frame.inputs[1],
+        backend: frame.inputs[2],
+        catalogs: frame.inputs[3],
+    };
+    let head = verify_policy_deployment_head_v1(
+        frame.packet,
+        &exact,
+        deployment_verifying_key,
+        now_unix_seconds,
+    )
+    .map_err(|_| invalid_receipt())?;
+    let sources =
+        decode_policy_deployment_sources_v1(&exact, head).map_err(|_| invalid_receipt())?;
+    let project = verify_signed_project_policy_source_v2(
+        frame.project_packet,
+        frame.project_input,
+        project_verifying_key,
+        now_unix_seconds,
+    )
+    .map_err(|_| invalid_receipt())?;
+    if project.head().prerequisite_claims()[1] != head.packet_digest() {
+        return Err(invalid_receipt());
+    }
+    Ok(PolicyAuthorityExplicitHeadReceiptV4 {
+        head,
+        sources,
+        project,
+    })
+}
+
+struct ReceiptFrame<'a> {
+    packet: &'a [u8],
+    inputs: [&'a [u8]; 4],
+    project_packet: &'a [u8],
+    project_input: &'a [u8],
+}
+
+fn parse_receipt_frame<'a>(
+    receipt: &'a [u8],
+    nonce: [u8; 16],
+    magic: &[u8; 8],
+    maximum_receipt_bytes: usize,
+    project_packet_bytes: usize,
+) -> io::Result<ReceiptFrame<'a>> {
+    if receipt.len() > maximum_receipt_bytes
+        || receipt.get(..8) != Some(magic.as_slice())
         || receipt.get(8..24) != Some(nonce.as_slice())
     {
         return Err(invalid_receipt());
@@ -650,8 +661,8 @@ fn decode_explicit_receipt_v4(
         .get(24..24 + PACKET_BYTES)
         .ok_or_else(invalid_receipt)?;
     let mut position = 24 + PACKET_BYTES;
-    let mut inputs = Vec::with_capacity(4);
-    for _ in 0..4 {
+    let mut inputs = [&[][..]; 4];
+    for input in &mut inputs {
         let length = receipt
             .get(position..position + 4)
             .and_then(|bytes| bytes.try_into().ok())
@@ -662,17 +673,15 @@ fn decode_explicit_receipt_v4(
         if length == 0 || length > MAXIMUM_INPUT_BYTES {
             return Err(invalid_receipt());
         }
-        inputs.push(
-            receipt
-                .get(position..position + length)
-                .ok_or_else(invalid_receipt)?,
-        );
+        *input = receipt
+            .get(position..position + length)
+            .ok_or_else(invalid_receipt)?;
         position += length;
     }
     let project_packet = receipt
-        .get(position..position + EXPLICIT_PROJECT_PACKET_BYTES)
+        .get(position..position + project_packet_bytes)
         .ok_or_else(invalid_receipt)?;
-    position += EXPLICIT_PROJECT_PACKET_BYTES;
+    position += project_packet_bytes;
     let project_length = receipt
         .get(position..position + 4)
         .and_then(|bytes| bytes.try_into().ok())
@@ -690,36 +699,11 @@ fn decode_explicit_receipt_v4(
     if position != receipt.len() {
         return Err(invalid_receipt());
     }
-
-    let exact = PolicyDeploymentInputsV1 {
-        node: inputs[0],
-        site: inputs[1],
-        backend: inputs[2],
-        catalogs: inputs[3],
-    };
-    let head = verify_policy_deployment_head_v1(
+    Ok(ReceiptFrame {
         packet,
-        &exact,
-        deployment_verifying_key,
-        now_unix_seconds,
-    )
-    .map_err(|_| invalid_receipt())?;
-    let sources =
-        decode_policy_deployment_sources_v1(&exact, head).map_err(|_| invalid_receipt())?;
-    let project = verify_signed_project_policy_source_v2(
+        inputs,
         project_packet,
         project_input,
-        project_verifying_key,
-        now_unix_seconds,
-    )
-    .map_err(|_| invalid_receipt())?;
-    if project.head().prerequisite_claims()[1] != head.packet_digest() {
-        return Err(invalid_receipt());
-    }
-    Ok(PolicyAuthorityExplicitHeadReceiptV4 {
-        head,
-        sources,
-        project,
     })
 }
 
@@ -737,13 +721,111 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, MAXIMUM_RECEIPT_BYTES, ObjectDigest,
-        POLICY_BINDING_BASE_MAGIC_V4, POLICY_BINDING_COMMITTED_MAGIC_V4,
-        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
-        POLICY_HEAD_RECEIPT_MAGIC_V2, decode_closed_binding_base, decode_explicit_receipt_v4,
-        decode_receipt, validate_closed_binding_frame, validate_lease_completion,
+        CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, EXPLICIT_PROJECT_PACKET_BYTES,
+        MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
+        MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
+        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
+        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_RECEIPT_MAGIC_V2, PROJECT_PACKET_BYTES,
+        decode_closed_binding_base, decode_explicit_receipt_v4, decode_receipt,
+        parse_receipt_frame, validate_closed_binding_frame, validate_lease_completion,
         validate_receipt_signer_generations,
     };
+
+    fn framed_receipt(magic: &[u8; 8], project_packet_bytes: usize) -> Vec<u8> {
+        let mut receipt = magic.to_vec();
+        receipt.extend_from_slice(&[7; 16]);
+        receipt.extend_from_slice(&[1; PACKET_BYTES]);
+        for marker in 2..=5 {
+            receipt.extend_from_slice(&1_u32.to_be_bytes());
+            receipt.push(marker);
+        }
+        receipt.extend_from_slice(&vec![6; project_packet_bytes]);
+        receipt.extend_from_slice(&1_u32.to_be_bytes());
+        receipt.push(7);
+        receipt
+    }
+
+    #[test]
+    fn receipt_framing_preserves_both_project_packet_lengths() {
+        for (magic, maximum, project_bytes) in [
+            (
+                POLICY_HEAD_RECEIPT_MAGIC_V2,
+                MAXIMUM_RECEIPT_BYTES,
+                PROJECT_PACKET_BYTES,
+            ),
+            (
+                POLICY_BINDING_RECEIPT_MAGIC_V4,
+                MAXIMUM_EXPLICIT_RECEIPT_BYTES,
+                EXPLICIT_PROJECT_PACKET_BYTES,
+            ),
+        ] {
+            let receipt = framed_receipt(magic, project_bytes);
+            let frame = parse_receipt_frame(&receipt, [7; 16], magic, maximum, project_bytes)
+                .expect("exact frame");
+            assert_eq!(frame.packet, &[1; PACKET_BYTES]);
+            assert_eq!(frame.inputs, [&[2][..], &[3], &[4], &[5]]);
+            assert_eq!(frame.project_packet, vec![6; project_bytes]);
+            assert_eq!(frame.project_input, &[7]);
+        }
+    }
+
+    #[test]
+    fn receipt_framing_rejects_substitution_bounds_and_trailing_bytes() {
+        for (magic, maximum, project_bytes) in [
+            (
+                POLICY_HEAD_RECEIPT_MAGIC_V2,
+                MAXIMUM_RECEIPT_BYTES,
+                PROJECT_PACKET_BYTES,
+            ),
+            (
+                POLICY_BINDING_RECEIPT_MAGIC_V4,
+                MAXIMUM_EXPLICIT_RECEIPT_BYTES,
+                EXPLICIT_PROJECT_PACKET_BYTES,
+            ),
+        ] {
+            let receipt = framed_receipt(magic, project_bytes);
+            let parse = |bytes: &[u8]| {
+                parse_receipt_frame(bytes, [7; 16], magic, maximum, project_bytes).is_err()
+            };
+            assert!(parse(&receipt[..receipt.len() - 1]));
+            let mut trailing = receipt.clone();
+            trailing.push(0);
+            assert!(parse(&trailing));
+            assert!(parse_receipt_frame(&receipt, [8; 16], magic, maximum, project_bytes).is_err());
+            let mut wrong_magic = receipt.clone();
+            wrong_magic[0] ^= 1;
+            assert!(parse(&wrong_magic));
+
+            let mut empty_input = receipt.clone();
+            empty_input[24 + PACKET_BYTES..24 + PACKET_BYTES + 4]
+                .copy_from_slice(&0_u32.to_be_bytes());
+            assert!(parse(&empty_input));
+            let mut oversized_input = receipt.clone();
+            oversized_input[24 + PACKET_BYTES..24 + PACKET_BYTES + 4].copy_from_slice(
+                &u32::try_from(MAXIMUM_INPUT_BYTES + 1)
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            assert!(parse(&oversized_input));
+
+            let project_length_offset = receipt.len() - 5;
+            let mut empty_project = receipt.clone();
+            empty_project[project_length_offset..project_length_offset + 4]
+                .copy_from_slice(&0_u32.to_be_bytes());
+            assert!(parse(&empty_project));
+            let mut oversized_project = receipt.clone();
+            oversized_project[project_length_offset..project_length_offset + 4].copy_from_slice(
+                &u32::try_from(MAXIMUM_PROJECT_INPUT_BYTES + 1)
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            assert!(parse(&oversized_project));
+
+            let mut excessive = receipt.clone();
+            excessive.resize(maximum + 1, 0);
+            assert!(parse(&excessive));
+        }
+    }
 
     fn signed_explicit_receipt() -> (Vec<u8>, SigningKey, SigningKey, [u8; 16]) {
         let deployment_key = SigningKey::from_bytes(&[21; 32]);
