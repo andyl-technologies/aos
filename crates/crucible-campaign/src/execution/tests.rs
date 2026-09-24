@@ -597,11 +597,11 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.get-attempt-execution-request-vector.v3",
+            "crucible.test.get-attempt-execution-request-vector.v4",
             &request_bytes,
         )
         .to_hex(),
-        "74af5bd382d983f03a2ebc90fd18d44b875f002d5417efa1490983e5ac2cfce2"
+        "13b9a9b3a7148967ee50b5c4d95d186616ec3340cc88de2382f909dba8da7f6d"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -623,11 +623,11 @@ fn get_attempt_execution_messages_are_strict_and_exact_request_bound() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.get-attempt-execution-response-vector.v2",
+            "crucible.test.get-attempt-execution-response-vector.v3",
             &response_bytes,
         )
         .to_hex(),
-        "6313069a8cf2385a7cc07bdf75a4f836f10e8f68c4bf1194b96b8cd79dd51eec"
+        "684a0e7fb1f785dfb7f0929ab00ff2fc79e2bce49e5ca6c116901f60067b6c0b"
     );
 
     let other_execution = ExecutionId::from_bytes([0x38; 16]).expect("other execution");
@@ -992,11 +992,11 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.cancel-attempt-execution-request-vector.v3",
+            "crucible.test.cancel-attempt-execution-request-vector.v4",
             &request_bytes,
         )
         .to_hex(),
-        "ae2db89180cc8b51728ba61f20749e60ea7f735e66119a2a68eb0125b0d3405a"
+        "218f0b5ca4d9a81f27e9871b1e23c63f9801aea34f1787a98689a5a282c3ad25"
     );
 
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
@@ -1018,11 +1018,11 @@ fn cancel_attempt_execution_messages_are_strict_and_exact_request_bound() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.cancel-attempt-execution-response-vector.v2",
+            "crucible.test.cancel-attempt-execution-response-vector.v3",
             &response_bytes,
         )
         .to_hex(),
-        "6b8fc618629143e37c999812a815275f1f7e73b7f57ea922c5a3d987ff907912"
+        "2225c2e3570020fee99d630b5e83994d59b8f044aaebaa077377c259b1ae60f2"
     );
 
     let other = CancelAttemptExecutionRequest::new(
@@ -1068,11 +1068,11 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.checkpoint-attempt-execution-request-vector.v3",
+            "crucible.test.checkpoint-attempt-execution-request-vector.v4",
             &request_bytes,
         )
         .to_hex(),
-        "3eb16d70d9039d99d34b9d543454e0bd9352673746398ec9e3c2c1c14333c17c"
+        "ee71de94e0a20ab808374a9ced768e630bee74eb51668877b2e3cd510ce5a78d"
     );
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
@@ -1094,11 +1094,11 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
     );
     assert_eq!(
         CampaignHash::derive(
-            "crucible.test.checkpoint-attempt-execution-response-vector.v2",
+            "crucible.test.checkpoint-attempt-execution-response-vector.v3",
             &response_bytes,
         )
         .to_hex(),
-        "993ee73179bf19c0e64f1c8191c6930a5e487083f221e0f1da8dc2087cee97d3"
+        "a6f03af021805041424c0bb7c2f2e1e7015c02ad647f65d4aee93fa747766420"
     );
 
     let other = CheckpointAttemptExecutionRequest::new(
