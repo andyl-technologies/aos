@@ -11,9 +11,9 @@ use crucible_guest::guest_introspection_agent::{
     GuestIntrospectionAgentConfig, run_guest_introspection_agent,
 };
 use crucible_guest::{
-    AlternativeId, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain, ExactRational,
-    GuestCommandOutcome, GuestEmitterError, InstructionDoorbellTransport, IntegerDomain,
-    IntegerRepresentation, IntegerValue, SelectableRegister, SelectionRequest,
+    AlternativeId, BooleanDomain, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+    ExactRational, GuestCommandOutcome, GuestEmitterError, InstructionDoorbellTransport,
+    IntegerDomain, IntegerRepresentation, IntegerValue, SelectableRegister, SelectionRequest,
     build_selectable_registration, emit_command, emit_selectable_registration, parse_cli_args,
     request_typed_selection, usage,
 };
@@ -87,14 +87,39 @@ fn parse_selectable_command(args: &[String]) -> Result<SelectableCliCommand, Gue
         return Err(usage_error("selectable requires a subcommand"));
     };
     match verb.as_str() {
+        "register-bool" => parse_register_bool(rest),
         "register-discrete" => parse_register_discrete(rest),
         "register-u64" => parse_register_u64(rest),
+        "choose-bool" => parse_choose_bool(rest),
         "choose-discrete" => parse_choose_discrete(rest),
         "choose-u64" => parse_choose_u64(rest),
         _ => Err(usage_error(format!(
             "unknown selectable subcommand `{verb}`"
         ))),
     }
+}
+
+fn parse_register_bool(args: &[String]) -> Result<SelectableCliCommand, GuestEmitterError> {
+    if args.len() != 3 {
+        return Err(usage_error(
+            "selectable register-bool requires <sequence> <id> <true|false>",
+        ));
+    }
+    let sequence = parse_u64("sequence", &args[0])?;
+    let default = parse_bool("default", &args[2])?;
+    let domain = ChoiceDomain::Boolean(
+        BooleanDomain::new(1)
+            .map_err(|error| usage_error(format!("invalid boolean domain: {error}")))?,
+    );
+    let registration = build_selectable_registration(
+        sequence,
+        args[1].clone(),
+        &domain,
+        &ChoiceValue::Boolean(default),
+        Vec::new(),
+    )
+    .map_err(|error| usage_error(format!("invalid selectable registration: {error}")))?;
+    Ok(SelectableCliCommand::Register(registration))
 }
 
 fn parse_register_discrete(args: &[String]) -> Result<SelectableCliCommand, GuestEmitterError> {
@@ -155,6 +180,20 @@ fn parse_register_u64(args: &[String]) -> Result<SelectableCliCommand, GuestEmit
     )
     .map_err(|error| usage_error(format!("invalid selectable registration: {error}")))?;
     Ok(SelectableCliCommand::Register(registration))
+}
+
+fn parse_choose_bool(args: &[String]) -> Result<SelectableCliCommand, GuestEmitterError> {
+    if args.len() != 3 {
+        return Err(usage_error(
+            "selectable choose-bool requires <sequence> <id> <instance>",
+        ));
+    }
+    let sequence = parse_u64("sequence", &args[0])?;
+    let domain = ChoiceDomain::Boolean(
+        BooleanDomain::new(1)
+            .map_err(|error| usage_error(format!("invalid boolean domain: {error}")))?,
+    );
+    choose_request(sequence, &args[1], &args[2], domain)
 }
 
 fn parse_choose_discrete(args: &[String]) -> Result<SelectableCliCommand, GuestEmitterError> {
@@ -237,6 +276,14 @@ fn parse_u64(field: &str, value: &str) -> Result<u64, GuestEmitterError> {
     value
         .parse::<u64>()
         .map_err(|_error| usage_error(format!("{field} must be an unsigned 64-bit integer")))
+}
+
+fn parse_bool(field: &str, value: &str) -> Result<bool, GuestEmitterError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(usage_error(format!("{field} must be true or false"))),
+    }
 }
 
 fn unit(value: &str) -> Option<String> {
@@ -379,7 +426,59 @@ mod tests {
     }
 
     #[test]
+    fn selectable_cli_round_trips_boolean_registration_and_request() {
+        let registration = must(parse_selectable_command(&[
+            String::from("register-bool"),
+            String::from("4"),
+            String::from("recovery.fast_reroute"),
+            String::from("true"),
+        ]));
+        let SelectableCliCommand::Register(registration) = registration else {
+            panic!("expected boolean registration");
+        };
+        assert!(matches!(
+            must(ChoiceDomain::from_canonical_bytes(registration.domain())),
+            ChoiceDomain::Boolean(_)
+        ));
+        assert_eq!(
+            must(ChoiceValue::from_canonical_bytes(registration.default_value())),
+            ChoiceValue::Boolean(true)
+        );
+
+        let request = must(parse_selectable_command(&[
+            String::from("choose-bool"),
+            String::from("8"),
+            String::from("recovery.fast_reroute"),
+            String::from("transport/one"),
+        ]));
+        let SelectableCliCommand::Choose { request, domain } = request else {
+            panic!("expected boolean request");
+        };
+        assert_eq!(request.reply_capacity(), 512);
+        assert!(matches!(&domain, ChoiceDomain::Boolean(_)));
+        assert!(domain.contains(&ChoiceValue::Boolean(false)));
+        assert_eq!(display_choice_value(&ChoiceValue::Boolean(true)), "boolean=true");
+    }
+
+    #[test]
     fn selectable_cli_rejects_duplicate_or_illegal_values() {
+        assert!(
+            parse_selectable_command(&[
+                String::from("register-bool"),
+                String::from("4"),
+                String::from("recovery.fast_reroute"),
+                String::from("yes"),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_selectable_command(&[
+                String::from("choose-bool"),
+                String::from("8"),
+                String::from("recovery.fast_reroute"),
+            ])
+            .is_err()
+        );
         assert!(
             parse_selectable_command(&[
                 String::from("register-discrete"),
