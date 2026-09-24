@@ -119,6 +119,26 @@ impl ProtectedControllerOutputSettlementV1 {
     pub const fn record_digest(&self) -> ObjectDigest {
         self.record_digest
     }
+
+    /// Reconstructs the exact protected AOSCIS01 preimage for a signed query.
+    ///
+    /// These bytes are not authority after the current Controller journal
+    /// borrow ends. A cross-process consumer still needs a signed plan and
+    /// its own protected Host-output and Storage readbacks.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> [u8; RECORD_BYTES] {
+        SettlementRecordV1 {
+            execution: self.attempt.execution(),
+            create_operation: self.attempt.create_operation(),
+            attempt_digest: self.attempt.record_digest(),
+            correlation_digest: self.correlation_digest,
+            original_host_journal_sequence: self.original_host_journal_sequence,
+            request_packet_digest: self.request_packet_digest,
+            outcome_packet_digest: self.outcome_packet_digest,
+            record_digest: self.record_digest,
+        }
+        .encode()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

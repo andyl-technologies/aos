@@ -10,7 +10,7 @@
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use aos_sandbox_broker_session_protocol::{
-    BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, CLIENT_HELLO_MAXIMUM_BYTES,
+    BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionProtocolV1, CLIENT_HELLO_MAXIMUM_BYTES,
     SERVER_HELLO_MAXIMUM_BYTES, UntrustedBrokerSessionEndpointPublicationV1,
     VerifiedBrokerSessionTranscriptV1, decode_canonical_client_hello_v1,
     decode_canonical_server_hello_v1,
@@ -1209,6 +1209,19 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn current_storage_session_binding(
+        &mut self,
+    ) -> Result<[u8; 32], BrokerSessionSecurityError> {
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        if self.transcript.protocol() != BrokerSessionProtocolV1::Storage {
+            return Err(BrokerSessionSecurityError::manifest(
+                "candidate query requires a protected Storage session",
+            ));
+        }
+        Ok(self.transcript.session_binding())
+    }
+
     pub(super) fn retain_authenticated_peer_pidfd(
         &mut self,
     ) -> Result<OwnedFd, DormantBrokerSessionHandshakeErrorV1> {

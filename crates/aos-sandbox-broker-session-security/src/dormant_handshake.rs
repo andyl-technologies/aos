@@ -325,6 +325,21 @@ pub struct DormantAuthenticatedBrokerSessionV1(
     Vec<aos_sandbox_host::DormantHostScopeReplayTicketV1>,
 );
 
+/// Carries the verified transcript of the retained Storage broker socket.
+///
+/// Only the protected session owner can mint this value after revalidating
+/// its live peer, transcript, and journal custody. It is not effect authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProtectedStorageSessionBindingV1([u8; 32]);
+
+impl ProtectedStorageSessionBindingV1 {
+    /// Returns the exact complete-hello transcript binding.
+    #[must_use]
+    pub(crate) const fn digest(self) -> [u8; 32] {
+        self.0
+    }
+}
+
 /// Supplies protected request identity and deadline facts to a body builder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DormantBrokerRequestCoordinatesV1 {
@@ -1352,6 +1367,20 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Returns the current verified Storage transcript binding for this socket.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Storage session or changed protected owner, transcript,
+    /// or live peer.
+    pub(crate) fn current_storage_session_binding(
+        &mut self,
+    ) -> Result<ProtectedStorageSessionBindingV1, BrokerSessionSecurityError> {
+        Ok(ProtectedStorageSessionBindingV1(
+            self.0.current_storage_session_binding()?,
+        ))
+    }
+
     pub(crate) fn retain_authenticated_peer_pidfd(
         &mut self,
     ) -> Result<OwnedFd, DormantBrokerSessionHandshakeErrorV1> {

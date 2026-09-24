@@ -388,6 +388,57 @@ where
     validate_existing(stored, source.identity(), final_sample).map(|_| ())
 }
 
+/// Rechecks accepted-Create sources for a historical read-only Storage query.
+///
+/// This preserves the original preissue identity and Host boot without
+/// renewing its expired nonce or one-shot deadline. It cannot authorize a
+/// reserve, Guest observation, specification admission, or Host effect.
+///
+/// # Errors
+///
+/// Rejects changed accepted Create, projection, environment, parent/guest
+/// policy, assignment, Host boot, or protected preissue custody.
+#[allow(clippy::too_many_arguments)]
+pub fn revalidate_historical_execution_preissue_source_v1<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    preissue: &ControllerExecutionPreissueV1,
+    clock: &mut T,
+) -> Result<(), ControllerExecutionPreissueErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    controller.ensure_protected_authority()?;
+    let (_, observed) = assignment.verified_plan_lease(controller, clock)?;
+    let source = current_source(
+        controller,
+        assignment,
+        environment_owner,
+        parent,
+        preissue.execution(),
+        preissue.create_operation(),
+    )?;
+    revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
+    environment_owner.revalidate_execution_source(&source.environment)?;
+    let (_, final_sample) = assignment.verified_plan_lease(controller, clock)?;
+    if observed.host_boot_id() != final_sample.host_boot_id() {
+        return Err(ControllerExecutionPreissueErrorV1::Expired);
+    }
+    let stored = controller
+        .get(
+            RecordNamespace::ControllerExecutionPreissue,
+            preissue.execution.as_bytes(),
+        )
+        .ok_or(ControllerExecutionPreissueErrorV1::NotCurrent)
+        .and_then(ControllerExecutionPreissueV1::decode)?;
+    if stored != *preissue {
+        return Err(ControllerExecutionPreissueErrorV1::NotCurrent);
+    }
+    validate_source_and_boot(&stored, source.identity(), final_sample)
+}
+
 #[derive(Clone, Copy)]
 struct SourceIdentityV1 {
     digest: ObjectDigest,
@@ -560,6 +611,18 @@ fn validate_existing(
     source: SourceIdentityV1,
     observed: RawPairedClockSample,
 ) -> Result<ControllerExecutionPreissueV1, ControllerExecutionPreissueErrorV1> {
+    validate_source_and_boot(&existing, source, observed)?;
+    if observed.boottime_nanoseconds() >= existing.deadline_boottime_nanoseconds {
+        return Err(ControllerExecutionPreissueErrorV1::Expired);
+    }
+    Ok(existing)
+}
+
+fn validate_source_and_boot(
+    existing: &ControllerExecutionPreissueV1,
+    source: SourceIdentityV1,
+    observed: RawPairedClockSample,
+) -> Result<(), ControllerExecutionPreissueErrorV1> {
     if existing.execution != source.execution
         || existing.create_operation != source.create_operation
         || existing.source_digest != source.digest
@@ -568,12 +631,10 @@ fn validate_existing(
     {
         return Err(ControllerExecutionPreissueErrorV1::NotCurrent);
     }
-    if existing.host_boot_id != observed.host_boot_id()
-        || observed.boottime_nanoseconds() >= existing.deadline_boottime_nanoseconds
-    {
+    if existing.host_boot_id != observed.host_boot_id() {
         return Err(ControllerExecutionPreissueErrorV1::Expired);
     }
-    Ok(existing)
+    Ok(())
 }
 
 fn persist_preissue(
@@ -713,6 +774,11 @@ mod tests {
         );
         assert!(matches!(
             validate_existing(record.clone(), source, sample([4; 16], 100)),
+            Err(ControllerExecutionPreissueErrorV1::Expired)
+        ));
+        assert!(validate_source_and_boot(&record, source, sample([4; 16], 100)).is_ok());
+        assert!(matches!(
+            validate_source_and_boot(&record, source, sample([6; 16], 100)),
             Err(ControllerExecutionPreissueErrorV1::Expired)
         ));
         assert!(matches!(

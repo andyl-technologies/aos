@@ -124,6 +124,7 @@ mod cache_pin;
 mod cache_unpin;
 pub(crate) mod execution;
 pub(crate) mod execution_argument_observe;
+pub(crate) mod execution_capture_candidate;
 pub(crate) mod execution_output_reserve;
 mod guest_root;
 mod public_api;
