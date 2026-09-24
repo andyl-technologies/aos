@@ -59,6 +59,17 @@ pub struct StorageRootExportResponseV1 {
 #[error("Storage root-export record is invalid")]
 pub struct StorageRootExportProtocolErrorV1;
 
+fn read_array<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], StorageRootExportProtocolErrorV1> {
+    bytes
+        .get(offset..offset + N)
+        .ok_or(StorageRootExportProtocolErrorV1)?
+        .try_into()
+        .map_err(|_| StorageRootExportProtocolErrorV1)
+}
+
 impl StorageRootExportRequestV1 {
     /// Encodes the exact bounded request.
     ///
@@ -96,14 +107,8 @@ impl StorageRootExportRequestV1 {
             return Err(StorageRootExportProtocolErrorV1);
         }
         let request = Self {
-            nonce: bytes[12..44]
-                .try_into()
-                .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            deadline_boottime_nanoseconds: u64::from_be_bytes(
-                bytes[44..52]
-                    .try_into()
-                    .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            ),
+            nonce: read_array(bytes, 12)?,
+            deadline_boottime_nanoseconds: u64::from_be_bytes(read_array(bytes, 44)?),
             proof: GuestRootPublicationProofV1::decode(&bytes[52..])
                 .map_err(|_| StorageRootExportProtocolErrorV1)?,
         };
@@ -166,27 +171,11 @@ impl StorageRootExportResponseV1 {
             return Err(StorageRootExportProtocolErrorV1);
         }
         let response = Self {
-            nonce: bytes[12..44]
-                .try_into()
-                .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            request_digest: bytes[44..76]
-                .try_into()
-                .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            root_device: u64::from_be_bytes(
-                bytes[76..84]
-                    .try_into()
-                    .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            ),
-            root_inode: u64::from_be_bytes(
-                bytes[84..92]
-                    .try_into()
-                    .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            ),
-            detached_mount_id: u64::from_be_bytes(
-                bytes[92..100]
-                    .try_into()
-                    .map_err(|_| StorageRootExportProtocolErrorV1)?,
-            ),
+            nonce: read_array(bytes, 12)?,
+            request_digest: read_array(bytes, 44)?,
+            root_device: u64::from_be_bytes(read_array(bytes, 76)?),
+            root_inode: u64::from_be_bytes(read_array(bytes, 84)?),
+            detached_mount_id: u64::from_be_bytes(read_array(bytes, 92)?),
         };
         if response.encode()?.as_slice() != bytes {
             return Err(StorageRootExportProtocolErrorV1);
