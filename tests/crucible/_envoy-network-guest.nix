@@ -79,7 +79,7 @@ in
           cat > rootfs/etc/nginx/nginx.conf <<'NGINX_CONFIG'
           user root;
           worker_processes 1;
-          error_log /dev/stderr notice;
+          error_log /proc/self/fd/2 notice;
           pid /run/nginx.pid;
 
           events {
