@@ -3,8 +3,14 @@
 //! This does not grant Apply authority. It observes a unit through a direct
 //! authenticated PID 1 stream, then binds two identical observations to the
 //! retained pidfd and, for an inspector, the kernel subject of an SCM record.
-//! The helper's signed deployment inventory and its loader closure still need
-//! independent policy enforcement before this can replace direct checks.
+//! The V3 helper also rejects loader-input environment and noncanonical unit
+//! definitions in each snapshot. The signed inventory and ELF closure still
+//! need enforcing MAC and runtime binding before this can replace direct checks.
+//!
+//! ```text
+//! AOSNIBQ3 frame = magic[8] || version:u16 || phase:u16 || length:u32 || payload
+//! snapshot payload = V2 launch fields || loader-and-unit-gate:u8 (exactly 1)
+//! ```
 
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
@@ -26,8 +32,8 @@ use thiserror::Error;
 
 use crate::inspector_deployment::{InspectorDeploymentErrorV2, ProtectedInspectorDeploymentV2};
 
-const MAGIC: &[u8; 8] = b"AOSNIBQ2";
-const VERSION: u16 = 2;
+const MAGIC: &[u8; 8] = b"AOSNIBQ3";
+const VERSION: u16 = 3;
 const HEADER: usize = 16;
 const MAX_RECORD: usize = 8192;
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -654,7 +660,9 @@ fn decode_snapshot(
         }
         arguments.push(observed.to_owned());
     }
-    if !cursor.remaining().is_empty() {
+    // The V3 helper emits this only after querying the manager and service
+    // environment sources in the same PID 1 snapshot as the launch fields.
+    if cursor.u8()? != 1 || !cursor.remaining().is_empty() {
         return Err(QueryExchangeError);
     }
     Ok(BrokerPid1ServiceObservationV2 {
@@ -762,6 +770,14 @@ mod tests {
         assert_eq!(unframe(&good, 2).unwrap(), &[7; 4]);
         assert!(unframe(&good, 4).is_err());
         assert!(unframe(&good[..good.len() - 1], 2).is_err());
+
+        let mut legacy = good.clone();
+        legacy[..8].copy_from_slice(b"AOSNIBQ2");
+        assert!(unframe(&legacy, 2).is_err());
+
+        legacy = good;
+        legacy[9] = 2;
+        assert!(unframe(&legacy, 2).is_err());
     }
 
     #[test]
@@ -804,6 +820,7 @@ mod tests {
         snapshot.push(1);
         snapshot.extend_from_slice(&(arguments[0].len() as u16).to_be_bytes());
         snapshot.extend_from_slice(arguments[0].as_bytes());
+        snapshot.push(1);
 
         let observation = decode_snapshot(&snapshot, &expected).unwrap();
         assert_eq!(observation.main_pid, 31);
@@ -833,9 +850,17 @@ mod tests {
         wrong_fragment[offset] = b'!';
         assert!(decode_snapshot(&wrong_fragment, &expected).is_err());
 
+        let mut no_loader_gate = snapshot.clone();
+        *no_loader_gate.last_mut().unwrap() = 0;
+        assert!(decode_snapshot(&no_loader_gate, &expected).is_err());
+
         let mut appended = snapshot;
         appended.push(0);
         assert!(decode_snapshot(&appended, &expected).is_err());
+
+        let mut missing_loader_gate = appended.clone();
+        missing_loader_gate.truncate(missing_loader_gate.len() - 2);
+        assert!(decode_snapshot(&missing_loader_gate, &expected).is_err());
 
         let worker_arguments = vec!["/nix/store/example/bin/worker".to_owned(); 8];
         let worker = QueryExchange {

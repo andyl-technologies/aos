@@ -22,7 +22,8 @@
     name = "aos-namespace-inspector-manager-query-fixture-source";
     filter = path: type:
       type == "directory"
-      || lib.hasPrefix "namespace-inspector-manager-query-fixture" (builtins.baseNameOf path);
+      || lib.hasPrefix "namespace-inspector-manager-query-fixture" (builtins.baseNameOf path)
+      || builtins.baseNameOf path == "broker-loader-environment-test.c";
   };
   helperSources = [
     (helperDirectory + "/main.c")
@@ -76,6 +77,13 @@ in
               ${lib.concatStringsSep " " (map toString fixtureSources)} \
               -o namespace-inspector-manager-query-fixture \
               $(pkg-config --cflags --libs libsystemd)
+
+            $CC $common_flags $include_flags \
+              -DAOS_BROKER_QUERY_PROGRAM="\"$broker_helper\"" \
+              ${fixtureDirectory}/broker-loader-environment-test.c \
+              ${helperDirectory}/fd-table.c \
+              -o broker-loader-environment-test \
+              $(pkg-config --cflags --libs libsystemd)
           '';
         }
         {
@@ -89,6 +97,8 @@ in
         {
           name = "check";
           script = lib.optionalString (!stdenv.isCross) ''
+            ./broker-loader-environment-test
+
             ./namespace-inspector-manager-query-fixture \
               $out/libexec/aos-namespace-inspector-manager-query
 
@@ -114,6 +124,7 @@ in
           ++ [
             (helperDirectory + "/helper.h")
             (fixtureDirectory + "/namespace-inspector-manager-query-fixture.h")
+            (fixtureDirectory + "/broker-loader-environment-test.c")
             manifest
             ./aos-namespace-inspector-manager-query.nix
           ]

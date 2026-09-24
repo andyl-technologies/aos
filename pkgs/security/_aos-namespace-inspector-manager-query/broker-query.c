@@ -24,8 +24,8 @@
 
 #define BROKER_TARGET_FD 6
 #define BROKER_EXECUTABLE_FD 7
-#define BROKER_MAGIC "AOSNIBQ2"
-#define BROKER_VERSION 2U
+#define BROKER_MAGIC "AOSNIBQ3"
+#define BROKER_VERSION 3U
 #define BROKER_MAX_RECORD 8192U
 #define BROKER_MAX_UNIT 192U
 #define BROKER_MAX_PATH 512U
@@ -609,13 +609,21 @@ static int decode_unit(struct broker_query *query, sd_bus_message *message,
 }
 
 enum broker_property {
+  BROKER_MANAGER_ENVIRONMENT,
   BROKER_UNIT_ID,
   BROKER_INVOCATION,
   BROKER_FRAGMENT,
+  BROKER_SOURCE_PATH,
+  BROKER_DROP_IN_PATHS,
+  BROKER_NEED_DAEMON_RELOAD,
+  BROKER_TRANSIENT,
   BROKER_MAIN_PID,
   BROKER_CGROUP_ID,
   BROKER_CGROUP,
   BROKER_EXEC_START,
+  BROKER_SERVICE_ENVIRONMENT,
+  BROKER_ENVIRONMENT_FILES,
+  BROKER_PASS_ENVIRONMENT,
   BROKER_PROPERTY_COUNT,
 };
 
@@ -624,14 +632,79 @@ static const struct {
   const char *name;
   const char *signature;
 } properties[BROKER_PROPERTY_COUNT] = {
+    {"org.freedesktop.systemd1.Manager", "Environment", "as"},
     {"org.freedesktop.systemd1.Unit", "Id", "s"},
     {"org.freedesktop.systemd1.Unit", "InvocationID", "ay"},
     {"org.freedesktop.systemd1.Unit", "FragmentPath", "s"},
+    {"org.freedesktop.systemd1.Unit", "SourcePath", "s"},
+    {"org.freedesktop.systemd1.Unit", "DropInPaths", "as"},
+    {"org.freedesktop.systemd1.Unit", "NeedDaemonReload", "b"},
+    {"org.freedesktop.systemd1.Unit", "Transient", "b"},
     {"org.freedesktop.systemd1.Service", "MainPID", "u"},
     {"org.freedesktop.systemd1.Service", "ControlGroupId", "t"},
     {"org.freedesktop.systemd1.Service", "ControlGroup", "s"},
     {"org.freedesktop.systemd1.Service", "ExecStart", "a(sasbttttuii)"},
+    {"org.freedesktop.systemd1.Service", "Environment", "as"},
+    {"org.freedesktop.systemd1.Service", "EnvironmentFiles", "a(sb)"},
+    {"org.freedesktop.systemd1.Service", "PassEnvironment", "as"},
 };
+
+static bool loader_environment_name(const char *assignment)
+{
+  static const char *const names[] = {
+      "GLIBC_TUNABLES", "GCONV_PATH", "LOCPATH", "NLSPATH",
+      "BASH_ENV", "ENV", "NODE_OPTIONS", "NODE_PATH", "PERL5LIB",
+      "PERLLIB", "PYTHONHOME", "PYTHONPATH", "RUBYLIB", "RUBYOPT",
+  };
+  const char *separator = strchr(assignment, '=');
+  size_t length;
+
+  if (separator == NULL || separator == assignment)
+    return true;
+  length = (size_t)(separator - assignment);
+  if ((length >= 3U && strncmp(assignment, "LD_", 3U) == 0) ||
+      (length >= 7U && strncmp(assignment, "MALLOC_", 7U) == 0) ||
+      (length >= 18U &&
+       strncmp(assignment, "LIBC_FATAL_STDERR_", 18U) == 0))
+    return true;
+  for (size_t index = 0; index < sizeof(names) / sizeof(names[0]); index++) {
+    if (strlen(names[index]) == length &&
+        strncmp(assignment, names[index], length) == 0)
+      return true;
+  }
+  return false;
+}
+
+static int decode_environment(sd_bus_message *message)
+{
+  const char *assignment;
+  int item;
+
+  if (sd_bus_message_enter_container(message, SD_BUS_TYPE_ARRAY, "s") <= 0)
+    return -1;
+  for (size_t count = 0; count < 256U; count++) {
+    item = sd_bus_message_read(message, "s", &assignment);
+    if (item < 0)
+      return -1;
+    if (item == 0)
+      return sd_bus_message_exit_container(message) < 0 ? -1 : 0;
+    /* PID 1 may report ordinary service variables, but no setting that could
+     * redirect the loader or provide an unbounded environment record. */
+    if (strnlen(assignment, 2049U) > 2048U ||
+        loader_environment_name(assignment))
+      return -1;
+  }
+  return -1;
+}
+
+static int decode_empty_array(sd_bus_message *message, const char *signature)
+{
+  if (sd_bus_message_enter_container(message, SD_BUS_TYPE_ARRAY, signature) <= 0 ||
+      sd_bus_message_at_end(message, false) <= 0 ||
+      sd_bus_message_exit_container(message) < 0)
+    return -1;
+  return 0;
+}
 
 struct broker_property_decode {
   enum broker_property property;
@@ -696,11 +769,25 @@ static int decode_property(struct broker_query *query, sd_bus_message *message,
   const char *text = NULL;
   const void *bytes = NULL;
   size_t length = 0;
+  int flag;
 
   if (sd_bus_message_enter_container(message, SD_BUS_TYPE_VARIANT,
                                      properties[property].signature) <= 0)
     return -1;
   switch (property) {
+  case BROKER_MANAGER_ENVIRONMENT:
+  case BROKER_SERVICE_ENVIRONMENT:
+    if (decode_environment(message) != 0)
+      return -1;
+    break;
+  case BROKER_ENVIRONMENT_FILES:
+    if (decode_empty_array(message, "(sb)") != 0)
+      return -1;
+    break;
+  case BROKER_PASS_ENVIRONMENT:
+    if (decode_empty_array(message, "s") != 0)
+      return -1;
+    break;
   case BROKER_UNIT_ID:
     if (sd_bus_message_read(message, "s", &text) <= 0 ||
         strcmp(text, query->unit) != 0)
@@ -717,6 +804,19 @@ static int decode_property(struct broker_query *query, sd_bus_message *message,
     if (sd_bus_message_read(message, "s", &text) <= 0 ||
         exact_text(snapshot->fragment, sizeof(snapshot->fragment), text) != 0 ||
         snapshot->fragment[0] != '/')
+      return -1;
+    break;
+  case BROKER_SOURCE_PATH:
+    if (sd_bus_message_read(message, "s", &text) <= 0 || text[0] != '\0')
+      return -1;
+    break;
+  case BROKER_DROP_IN_PATHS:
+    if (decode_empty_array(message, "s") != 0)
+      return -1;
+    break;
+  case BROKER_NEED_DAEMON_RELOAD:
+  case BROKER_TRANSIENT:
+    if (sd_bus_message_read(message, "b", &flag) <= 0 || flag != 0)
       return -1;
     break;
   case BROKER_MAIN_PID:
@@ -770,7 +870,10 @@ static int get_property(struct broker_query *query,
   struct broker_property_decode decode = {
       .property = property, .snapshot = snapshot};
   if (sd_bus_message_new_method_call(
-          query->shared.bus, &request, NULL, query->unit_path,
+          query->shared.bus, &request, NULL,
+          property == BROKER_MANAGER_ENVIRONMENT
+              ? "/org/freedesktop/systemd1"
+              : query->unit_path,
           "org.freedesktop.DBus.Properties", "Get") < 0 ||
       sd_bus_message_append(request, "ss", properties[property].interface,
                             properties[property].name) < 0) {
@@ -882,6 +985,9 @@ static int send_snapshot(struct broker_query *query, enum broker_phase phase,
     if (append_text(record, &used, snapshot->arguments[index]) != 0)
       return -1;
   }
+  /* V3 states that both fresh PID 1 snapshots passed the loader-input gate. */
+  if (append_u8(record, &used, 1U) != 0)
+    return -1;
   return send_control(query, phase, record, used);
 }
 
