@@ -394,30 +394,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .get(attempt_id)
             .filter(|attempt| matches!(attempt.state, ProviderAttemptStateV2::Reserved))
             .ok_or_else(|| state_error("cold provider recovery is not Reserved"))?;
-        let expected_method = match attempt.method {
-            ProviderMethodV2::Acquire => {
-                aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
-            }
-            ProviderMethodV2::Release => {
-                aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
-            }
-            ProviderMethodV2::Inventory => {
-                aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
-            }
-        };
-        let signed = aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1::from_canonical_bytes(
+        checked_cold_provider_request(
+            attempt.method,
             &attempt.signed_request,
+            attempt.signed_request_digest,
         )
-        .map_err(|_| state_error("cold provider request envelope is invalid"))?;
-        if signed.method() != expected_method
-            || *aos_sandbox_source_provider_protocol::digest_signed_request(&signed).as_bytes()
-                != attempt.signed_request_digest
-        {
-            return Err(state_error(
-                "cold provider request differs from its durable identity",
-            ));
-        }
-        Ok(signed)
     }
 
     /// Returns the exact signed request for the oldest cold provider barrier.
@@ -450,30 +431,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 )
             })
             .ok_or_else(|| state_error("cold provider recovery is not recoverable"))?;
-        let expected_method = match attempt.method {
-            ProviderMethodV2::Acquire => {
-                aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
-            }
-            ProviderMethodV2::Release => {
-                aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
-            }
-            ProviderMethodV2::Inventory => {
-                aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
-            }
-        };
-        let signed = aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1::from_canonical_bytes(
+        checked_cold_provider_request(
+            attempt.method,
             &attempt.signed_request,
+            attempt.signed_request_digest,
         )
-        .map_err(|_| state_error("cold provider request envelope is invalid"))?;
-        if signed.method() != expected_method
-            || *aos_sandbox_source_provider_protocol::digest_signed_request(&signed).as_bytes()
-                != attempt.signed_request_digest
-        {
-            return Err(state_error(
-                "cold provider request differs from its durable identity",
-            ));
-        }
-        Ok(signed)
     }
 
     /// Returns the exact signed request retained by live send/response custody.
@@ -3892,6 +3854,38 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     }
 }
 
+fn checked_cold_provider_request(
+    method: ProviderMethodV2,
+    signed_request: &[u8],
+    signed_request_digest: [u8; 32],
+) -> Result<aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1> {
+    let expected_method = match method {
+        ProviderMethodV2::Acquire => {
+            aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
+        }
+        ProviderMethodV2::Release => {
+            aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
+        }
+        ProviderMethodV2::Inventory => {
+            aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
+        }
+    };
+    let signed =
+        aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1::from_canonical_bytes(
+            signed_request,
+        )
+        .map_err(|_| state_error("cold provider request envelope is invalid"))?;
+    if signed.method() != expected_method
+        || *aos_sandbox_source_provider_protocol::digest_signed_request(&signed).as_bytes()
+            != signed_request_digest
+    {
+        return Err(state_error(
+            "cold provider request differs from its durable identity",
+        ));
+    }
+    Ok(signed)
+}
+
 fn qualify_cold_inventory_barrier(
     method: ProviderMethodV2,
     state: &ProviderAttemptStateV2,
@@ -3909,21 +3903,12 @@ fn qualify_cold_inventory_barrier(
         ));
     }
 
-    let signed =
-        aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1::from_canonical_bytes(
-            signed_request,
-        )
-        .map_err(|_| state_error("cold provider request envelope is invalid"))?;
-    if signed.method() != aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
-        || *aos_sandbox_source_provider_protocol::digest_signed_request(&signed).as_bytes()
-            != signed_request_digest
-    {
-        return Err(state_error(
-            "cold provider request differs from its durable identity",
-        ));
-    }
+    checked_cold_provider_request(method, signed_request, signed_request_digest)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod cold_request_tests;
 
 fn retained_source_root_phase(
     retained: &aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2,
