@@ -13,7 +13,7 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox::cli_model::{
     CheckedExecutionControlResultV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
-    DormantSandboxRequestV1, EstablishedProtoJson,
+    DormantSandboxRequestV1,
 };
 use aos_sandbox::client_state::{
     MAXIMUM_WAIT_OBSERVATIONS, OperationWaitApplyOutcomeV1, OperationWaitPolicyV1,
@@ -33,9 +33,11 @@ use crate::cli::sandbox::SandboxArgs;
 
 mod reads;
 mod ssh_attach;
+mod wait_refresh;
 mod watch;
 
 pub(super) use reads::dispatch_read;
+use wait_refresh::WaitRefreshResource;
 pub(super) use watch::dispatch_watch;
 
 /// Selects the one execution boundary for every typed sandbox command.
@@ -274,14 +276,14 @@ pub(super) async fn dispatch_mutation(
                 .sandbox
                 .into_option()
                 .context("controller omitted the deleted sandbox projection")?;
-            let checked = CheckedSandboxResourceV1::try_from(resource)
+            CheckedSandboxResourceV1::try_from(resource)
                 .context("controller returned an invalid deleted sandbox projection")?;
-            finish_operation(
+            finish_operation::<CheckedOperationResourceV1>(
                 &endpoint,
                 request,
                 output,
                 required_operation(response.operation, "sandbox deletion")?,
-                Some(&checked),
+                None,
             )
             .await?;
         }
@@ -403,14 +405,14 @@ pub(super) async fn dispatch_mutation(
                 .snapshot
                 .into_option()
                 .context("controller omitted the deleted snapshot projection")?;
-            let checked = CheckedSnapshotResourceV1::try_from(resource)
+            CheckedSnapshotResourceV1::try_from(resource)
                 .context("controller returned an invalid deleted snapshot projection")?;
-            finish_operation(
+            finish_operation::<CheckedOperationResourceV1>(
                 &endpoint,
                 request,
                 output,
                 required_operation(response.operation, "snapshot deletion")?,
-                Some(&checked),
+                None,
             )
             .await?;
         }
@@ -535,14 +537,14 @@ pub(super) async fn dispatch_mutation(
                 .attachment
                 .into_option()
                 .context("controller omitted the detached attachment projection")?;
-            let checked = CheckedAttachmentResourceV1::try_from(resource)
+            CheckedAttachmentResourceV1::try_from(resource)
                 .context("controller returned an invalid detached attachment projection")?;
-            finish_operation(
+            finish_operation::<CheckedOperationResourceV1>(
                 &endpoint,
                 request,
                 output,
                 required_operation(response.operation, "attachment detachment")?,
-                Some(&checked),
+                None,
             )
             .await?;
         }
@@ -557,14 +559,14 @@ pub(super) async fn dispatch_mutation(
                 .view
                 .into_option()
                 .context("controller omitted the released filesystem-view projection")?;
-            let checked = CheckedFilesystemViewResourceV1::try_from(resource)
+            CheckedFilesystemViewResourceV1::try_from(resource)
                 .context("controller returned an invalid released filesystem-view projection")?;
-            finish_operation(
+            finish_operation::<CheckedOperationResourceV1>(
                 &endpoint,
                 request,
                 output,
                 required_operation(response.operation, "filesystem-view release")?,
-                Some(&checked),
+                None,
             )
             .await?;
         }
@@ -636,14 +638,30 @@ pub(super) async fn dispatch_mutation(
                 checked.as_proto().capability_id.as_slice(),
                 "renewed capability",
             )?;
-            finish_operation(
-                &endpoint,
-                request,
-                output,
-                required_operation(response.operation, "capability renewal")?,
-                Some(&checked),
-            )
-            .await?;
+            let operation = required_operation(response.operation, "capability renewal")?;
+            let observation = CheckedOperationObservationV1::try_from(operation)
+                .context("controller returned an invalid operation observation")?;
+            if let Some(timeout_nanos) = request.client_state().wait_timeout_nanos() {
+                let deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_nanos(timeout_nanos);
+                poll_before_wait_deadline(
+                    deadline,
+                    successful_terminal(&endpoint, observation, timeout_nanos),
+                )
+                .await?;
+                let refreshed = poll_before_wait_deadline(
+                    deadline,
+                    wait_refresh::refresh_renewed_capability(
+                        &endpoint,
+                        &checked.as_proto().capability_id,
+                        &response.capability_handle,
+                    ),
+                )
+                .await?;
+                super::render_checked(output, &refreshed)?;
+            } else {
+                super::render_checked(output, observation.resource())?;
+            }
         }
         DormantSandboxRequestKindV1::CapabilityRevoke(message) => {
             let response =
@@ -656,14 +674,16 @@ pub(super) async fn dispatch_mutation(
                 .capability
                 .into_option()
                 .context("controller omitted the revoked capability projection")?;
-            let checked = CheckedCapabilityResourceV1::try_from(resource)
+            CheckedCapabilityResourceV1::try_from(resource)
                 .context("controller returned an invalid revoked capability projection")?;
-            finish_operation(
+            // Public inspection requires a holder handle that revocation may
+            // invalidate; the terminal operation is the safe final result.
+            finish_operation::<CheckedOperationResourceV1>(
                 &endpoint,
                 request,
                 output,
                 required_operation(response.operation, "capability revocation")?,
-                Some(&checked),
+                None,
             )
             .await?;
         }
@@ -734,24 +754,60 @@ async fn finish_operation<T>(
     completed_resource: Option<&T>,
 ) -> Result<()>
 where
-    T: EstablishedProtoJson,
+    T: WaitRefreshResource,
 {
     let checked = CheckedOperationObservationV1::try_from(operation)
         .context("controller returned an invalid operation observation")?;
     let Some(timeout_nanos) = request.client_state().wait_timeout_nanos() else {
         return super::render_checked(output, checked.resource());
     };
-    let terminal = wait_for_operation(endpoint, checked, timeout_nanos).await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_nanos(timeout_nanos);
+    let terminal = poll_before_wait_deadline(
+        deadline,
+        successful_terminal(endpoint, checked, timeout_nanos),
+    )
+    .await?;
+    if removes_resource(request.kind()) {
+        return super::render_checked(output, &terminal);
+    }
+    match completed_resource {
+        Some(resource) => {
+            // The admission projection predates the operation's terminal state.
+            let refreshed =
+                poll_before_wait_deadline(deadline, resource.refresh_after_terminal(endpoint))
+                    .await?;
+            super::render_checked(output, &refreshed)
+        }
+        None => super::render_checked(output, &terminal),
+    }
+}
+
+const fn removes_resource(kind: &DormantSandboxRequestKindV1) -> bool {
+    use DormantSandboxRequestKindV1 as R;
+
+    matches!(
+        kind,
+        R::Delete(_)
+            | R::DeleteSnapshot(_)
+            | R::ViewDetach(_)
+            | R::ViewRelease(_)
+            | R::CapabilityRevoke(_)
+    )
+}
+
+async fn successful_terminal(
+    endpoint: &AuthorizedEndpoint,
+    initial: CheckedOperationObservationV1,
+    timeout_nanos: u64,
+) -> Result<CheckedOperationResourceV1> {
+    let terminal = wait_for_operation(endpoint, initial, timeout_nanos).await?;
     if terminal.phase() != CheckedOperationPhaseV1::Succeeded {
         anyhow::bail!(
             "operation completed unsuccessfully with phase {:?}",
             terminal.phase()
         );
     }
-    match completed_resource {
-        Some(resource) => super::render_checked(output, resource),
-        None => super::render_checked(output, &terminal),
-    }
+    Ok(terminal)
 }
 
 async fn wait_for_operation(
@@ -872,7 +928,23 @@ const fn is_supported_read(kind: &DormantSandboxRequestKindV1) -> bool {
 mod tests {
     use std::time::Duration;
 
-    use super::poll_before_wait_deadline;
+    use super::{DormantSandboxRequestKindV1, poll_before_wait_deadline, removes_resource};
+
+    #[test]
+    fn removal_waits_report_terminal_operations() {
+        use DormantSandboxRequestKindV1 as R;
+
+        for kind in [
+            R::Delete(Default::default()),
+            R::DeleteSnapshot(Default::default()),
+            R::ViewDetach(Default::default()),
+            R::ViewRelease(Default::default()),
+            R::CapabilityRevoke(Default::default()),
+        ] {
+            assert!(removes_resource(&kind));
+        }
+        assert!(!removes_resource(&R::Create(Default::default())));
+    }
 
     #[tokio::test]
     async fn wait_deadline_interrupts_an_in_flight_poll() {
