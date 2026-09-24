@@ -38,14 +38,32 @@
     ];
   };
   inactive = mount.config.systemd.services.aos-sandbox-mountd;
-  active =
+  providerOnly =
     (mount.extendModules {
       modules = [{aos.sandbox.sourceProvider.enable = true;}];
     }).config.systemd.services.aos-sandbox-mountd;
+  activeConfiguration = mount.extendModules {
+    modules = [{
+      aos.sandbox.sourceProvider.enable = true;
+      aos.sandbox.mountBroker.sourceProviderSession.enable = true;
+    }];
+  };
+  active = activeConfiguration.config.systemd.services.aos-sandbox-mountd;
+  invalidConfiguration = mount.extendModules {
+    modules = [{aos.sandbox.mountBroker.sourceProviderSession.enable = true;}];
+  };
+  connectorAssertion = check:
+    check.message == "aos.sandbox.mountBroker.sourceProviderSession.enable requires aos.sandbox.sourceProvider.enable";
 in
   assert !(lib.elem "aos-source-providerd.socket" inactive.requires);
   assert !(lib.elem "aos-source-providerd.socket" inactive.after);
   assert !(lib.hasSuffix " --source-provider" inactive.serviceConfig.ExecStart);
+  assert !(lib.elem "aos-source-providerd.socket" providerOnly.requires);
+  assert !(lib.elem "aos-source-providerd.socket" providerOnly.after);
+  assert !(lib.hasSuffix " --source-provider" providerOnly.serviceConfig.ExecStart);
+  assert lib.length (lib.filter connectorAssertion activeConfiguration.config.assertions) == 1;
+  assert lib.all (check: check.assertion) (lib.filter connectorAssertion activeConfiguration.config.assertions);
+  assert lib.any (check: !check.assertion) (lib.filter connectorAssertion invalidConfiguration.config.assertions);
   assert lib.elem "aos-source-providerd.socket" active.requires;
   assert lib.elem "aos-source-providerd.socket" active.after;
   assert lib.hasSuffix " --source-provider" active.serviceConfig.ExecStart;

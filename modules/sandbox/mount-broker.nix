@@ -58,6 +58,12 @@ in {
   options.aos.sandbox.mountBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox mount broker";
 
+    sourceProviderSession.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Connect to the separate SourceProvider service after provisioning RootMount's protected authority at /var/lib/aos/sandbox-mount/source-provider-authority. This enables authenticated session and pending Acquire recovery observation only; source effects remain unavailable.";
+    };
+
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.aos-sandbox-mountd;
@@ -91,6 +97,10 @@ in {
       credentialFields
       ++ [
         {
+          assertion = !cfg.sourceProviderSession.enable || sourceProvider.enable;
+          message = "aos.sandbox.mountBroker.sourceProviderSession.enable requires aos.sandbox.sourceProvider.enable";
+        }
+        {
           assertion =
             !hostBroker.enable
             || cfg.credentials.journalMacKey == null
@@ -120,8 +130,8 @@ in {
 
     systemd.services.aos-sandbox-mountd = {
       description = "AOS descriptor-only sandbox mount broker";
-      requires = ["aos-sandbox-mountd.socket"] ++ lib.optional sourceProvider.enable "aos-source-providerd.socket";
-      after = ["aos-sandbox-mountd.socket" "local-fs.target"] ++ lib.optional sourceProvider.enable "aos-source-providerd.socket";
+      requires = ["aos-sandbox-mountd.socket"] ++ lib.optional cfg.sourceProviderSession.enable "aos-source-providerd.socket";
+      after = ["aos-sandbox-mountd.socket" "local-fs.target"] ++ lib.optional cfg.sourceProviderSession.enable "aos-source-providerd.socket";
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
@@ -130,9 +140,9 @@ in {
         Type = "simple";
         NotifyAccess = "main";
         ExecStartPre = brokerSessionConfiguration.installCommands;
-        # A socket dependency only proves the configured carrier exists. The
-        # daemon still authenticates protected custody, peer and signed hello.
-        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString sourceProvider.enable " --source-provider"}";
+        # The service does not provision RootMount custody; the daemon checks
+        # its fixed files, peer and signed hello before retaining the session.
+        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider"}";
         LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
