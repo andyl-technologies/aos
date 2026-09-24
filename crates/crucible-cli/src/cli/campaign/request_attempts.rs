@@ -1,11 +1,13 @@
 //! Authenticated, request-local execution-basis attempt lookup for operators.
 
+use super::object::campaign_choice_value_label;
 use super::*;
 use crucible_campaign::{
-    AttemptId, MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS, QueryCampaignRequestAttemptsRequest,
+    AttemptAdmissionRole, MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS, ProposalId,
+    QueryCampaignRequestAttemptsRequest,
 };
 
-const REPORT_SCHEMA: &str = "crucible.cli.campaign-request-attempts.v1";
+const REPORT_SCHEMA: &str = "crucible.cli.campaign-request-attempts.v2";
 
 #[derive(Serialize)]
 pub(super) struct CampaignRequestAttemptsReport {
@@ -25,6 +27,10 @@ pub(super) struct CampaignRequestAttemptsReport {
 struct CampaignRequestAttemptEntry {
     attempt: String,
     admission: String,
+    proposal: String,
+    request: String,
+    role: &'static str,
+    value: String,
 }
 
 pub(super) fn validate_campaign_request_attempts(
@@ -36,8 +42,8 @@ pub(super) fn validate_campaign_request_attempts(
     BranchRequestId::parse(&args.request)
         .map_err(|error| usage_error(format!("invalid branch request: {error}")))?;
     if let Some(after) = &args.after {
-        AttemptId::parse(after)
-            .map_err(|error| usage_error(format!("invalid attempt cursor: {error}")))?;
+        ProposalId::parse(after)
+            .map_err(|error| usage_error(format!("invalid proposal cursor: {error}")))?;
     }
     if args.limit == 0 || args.limit > MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS {
         return Err(usage_error(format!(
@@ -70,9 +76,9 @@ where
     let mut after = args
         .after
         .as_deref()
-        .map(AttemptId::parse)
+        .map(ProposalId::parse)
         .transpose()
-        .map_err(|error| usage_error(format!("invalid attempt cursor: {error}")))?;
+        .map_err(|error| usage_error(format!("invalid proposal cursor: {error}")))?;
     let mut pages_scanned = 0;
     let mut entries = Vec::new();
 
@@ -92,13 +98,25 @@ where
                 backend_error(format!("campaign request-attempt query failed: {error}"))
             })?;
         pages_scanned += 1;
-        for admission in response.entries() {
+        for entry in response.entries() {
+            let admission = entry.admission();
             entries.push(CampaignRequestAttemptEntry {
                 attempt: admission.attempt().to_string(),
                 admission: admission
                     .id()
                     .map_err(|error| backend_error(format!("invalid attempt admission: {error}")))?
                     .to_string(),
+                proposal: entry
+                    .proposal()
+                    .id()
+                    .map_err(|error| backend_error(format!("invalid proposal: {error}")))?
+                    .to_string(),
+                request: entry.proposal().request().to_string(),
+                role: match admission.role() {
+                    AttemptAdmissionRole::ExecutionBasis { .. } => "execution-basis",
+                    AttemptAdmissionRole::AdditionalCause { .. } => "additional-cause",
+                },
+                value: campaign_choice_value_label(entry.proposal().value()),
             });
         }
         let next = response.next_after();
@@ -143,12 +161,12 @@ pub(super) fn render_campaign_request_attempts(
                 format!("request {}", report.request),
                 format!("complete {}", report.complete),
             ];
-            lines.extend(
-                report
-                    .entries
-                    .iter()
-                    .map(|entry| format!("{} {}", entry.attempt, entry.admission)),
-            );
+            lines.extend(report.entries.iter().map(|entry| {
+                format!(
+                    "{} {} {} {} {}",
+                    entry.attempt, entry.admission, entry.proposal, entry.role, entry.value
+                )
+            }));
             Ok(lines.join("\n"))
         }
         OutputFormat::Markdown => {
@@ -158,15 +176,15 @@ pub(super) fn render_campaign_request_attempts(
                     report.request, report.snapshot
                 ),
                 String::new(),
-                "| Attempt | Admission |".to_owned(),
-                "| --- | --- |".to_owned(),
+                "| Attempt | Admission | Proposal | Role | Value |".to_owned(),
+                "| --- | --- | --- | --- | --- |".to_owned(),
             ];
-            lines.extend(
-                report
-                    .entries
-                    .iter()
-                    .map(|entry| format!("| {} | {} |", entry.attempt, entry.admission)),
-            );
+            lines.extend(report.entries.iter().map(|entry| {
+                format!(
+                    "| {} | {} | {} | {} | {} |",
+                    entry.attempt, entry.admission, entry.proposal, entry.role, entry.value
+                )
+            }));
             Ok(lines.join("\n"))
         }
     }

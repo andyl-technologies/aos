@@ -199,12 +199,15 @@ impl CampaignRepository {
             .ok_or_else(|| integrity("campaign-budget-admission-sequence-regressed"))?;
         let ledger = ledger.with_spending(proposals, attempts)?;
         let root = self.request_spending_root_after(prior_ledger, roots.accounting, publish)?;
+        let admissions =
+            self.request_admissions_root_after(prior_ledger, roots.accounting, fact, publish)?;
         Ok(CampaignBudgetLedger::from_accounted_totals(
             ledger.granted_proposals(),
             ledger.granted_attempts(),
             ledger.spent_proposals(),
             ledger.spent_attempts(),
             root,
+            admissions,
         )?)
     }
 

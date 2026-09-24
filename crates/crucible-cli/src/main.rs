@@ -363,7 +363,7 @@ enum CampaignCommand {
     GraphObject(CampaignGraphObjectArgs),
     /// Read one authenticated page of discovered choice opportunities.
     Choices(CampaignPageArgs),
-    /// Read authenticated execution-basis attempts for one branch request.
+    /// Read authenticated execution bases and additional causes for one branch request.
     RequestAttempts(CampaignRequestAttemptsArgs),
     /// Inspect one declaration or domain named by an authenticated choice.
     ChoiceObject(CampaignChoiceObjectArgs),
@@ -1328,13 +1328,13 @@ struct CampaignRequestAttemptsArgs {
     /// Exact campaign snapshot that anchors the immutable page.
     #[arg(long, value_name = "SNAPSHOT", required = true)]
     snapshot: String,
-    /// Accepted branch request whose execution-basis attempts are queried.
+    /// Accepted branch request whose admissions are queried.
     #[arg(long, value_name = "REQUEST", required = true)]
     request: String,
-    /// Exclusive attempt cursor returned by the preceding page.
-    #[arg(long, value_name = "ATTEMPT")]
+    /// Exclusive proposal cursor returned by the preceding page.
+    #[arg(long, value_name = "PROPOSAL")]
     after: Option<String>,
-    /// Maximum attempts returned in this page.
+    /// Maximum admissions returned in this page.
     #[arg(long, value_name = "COUNT", default_value_t = 8)]
     limit: u32,
     /// Maximum authenticated pages followed from the supplied cursor.
