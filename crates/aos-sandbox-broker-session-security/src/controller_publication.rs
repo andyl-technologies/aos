@@ -8,6 +8,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerAuthorizationArtifactsV1, BrokerDescriptorEntry, BrokerMethod, BrokerRequestEnvelope,
     PublishHostCatalogRequest, RequestHeader, RuntimeAction,
 };
+use aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttemptV1;
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
@@ -26,9 +27,16 @@ use buffa::Message as _;
 
 use crate::controller_attach_exchange::ControllerHostAttachGateExchangeV1;
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::controller_output_exchange::{
+    ControllerHostOutputExchangeV1, ControllerHostOutputObservationV1,
+};
+use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::execution::{
     ControllerExecutionCompletionV1, ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
     ControllerExecutionObservationV1,
+};
+use crate::controller_service::execution_output_reserve::{
+    SignedExecutionOutputReserveV1, sign_current_host_output_query_v1,
 };
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
@@ -37,6 +45,7 @@ use crate::{
     DormantBrokerSessionHandshakeErrorV1, DormantOutstandingBrokerRequestV1,
     ProtectedBrokerOutcomeCommitResultV1,
 };
+use aos_sandbox::Journal;
 
 /// Owns one Host channel and any exact publication awaiting completion.
 pub(crate) struct ControllerHostPublication {
@@ -44,6 +53,7 @@ pub(crate) struct ControllerHostPublication {
     pending: Option<PendingPublication>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
     execution_effects: ControllerExecutionExchangeV1,
+    output_reserve: ControllerHostOutputExchangeV1,
     attach_gate: ControllerHostAttachGateExchangeV1,
     poisoned: bool,
 }
@@ -82,6 +92,7 @@ impl ControllerHostPublication {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             execution_effects: ControllerExecutionExchangeV1::default(),
+            output_reserve: ControllerHostOutputExchangeV1::default(),
             attach_gate: ControllerHostAttachGateExchangeV1::default(),
             poisoned: false,
         }
@@ -146,6 +157,7 @@ impl ControllerHostPublication {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
             || self.poisoned
         {
             return Err(EffectFailure::Retryable(
@@ -165,6 +177,7 @@ impl ControllerHostPublication {
     ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
         if self.pending.is_some()
             || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -183,7 +196,10 @@ impl ControllerHostPublication {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
-        if self.execution_effects.has_pending() || self.attach_gate.has_pending() {
+        if self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
+            || self.attach_gate.has_pending()
+        {
             return Some(Err(EffectFailure::Retryable(
                 "Host session has retained execution work".to_owned(),
             )));
@@ -200,6 +216,7 @@ impl ControllerHostPublication {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -222,6 +239,7 @@ impl ControllerHostPublication {
     ) -> Result<AuthorityEffectObservationV1, EffectFailure> {
         if self.pending.is_some()
             || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -243,6 +261,65 @@ impl ControllerHostPublication {
     ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
         let (exchange, session) = self.execution_exchange()?;
         exchange.query(session, intent, authorization)
+    }
+
+    /// Sends only the original protected provisional Host output reserve.
+    ///
+    /// This closed adapter does not admit an ExecutionSpec or publish Create.
+    pub(crate) fn reserve_execution_output(
+        &mut self,
+        issue: impl FnOnce(
+            DormantBrokerRequestCoordinatesV1,
+        ) -> Result<SignedExecutionOutputReserveV1, EffectFailure>,
+    ) -> Result<ControllerHostOutputObservationV1, EffectFailure> {
+        let (exchange, session) = self.output_reserve_exchange()?;
+        exchange.reserve(session, issue)
+    }
+
+    /// Queries only the original AOSCIA01 attempt under current Host authority.
+    pub(crate) fn query_execution_output(
+        &mut self,
+        controller: &mut Journal,
+        attempt: &ControllerExecutionOutputAttemptV1,
+        signer: &ControllerBrokerPlanSignerV1,
+    ) -> Result<ControllerHostOutputObservationV1, EffectFailure> {
+        let (exchange, session) = self.output_reserve_exchange()?;
+        exchange.query(session, attempt, |coordinates| {
+            sign_current_host_output_query_v1(controller, attempt, signer, coordinates)
+        })
+    }
+
+    /// Drains the in-process exact output request before any other Host work.
+    pub(crate) fn drain_execution_output(
+        &mut self,
+    ) -> Result<Option<ControllerHostOutputObservationV1>, EffectFailure> {
+        let (exchange, session) = self.output_reserve_exchange()?;
+        exchange.drain(session)
+    }
+
+    fn output_reserve_exchange(
+        &mut self,
+    ) -> Result<
+        (
+            &mut ControllerHostOutputExchangeV1,
+            &mut DormantAuthenticatedBrokerSessionV1,
+        ),
+        EffectFailure,
+    > {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending()
+            || self.attach_gate.has_pending()
+            || self.poisoned
+        {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained non-output work".to_owned(),
+            ));
+        }
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        Ok((&mut self.output_reserve, session))
     }
 
     /// Applies or resumes one exact source-bound execution effect through Host.
@@ -267,6 +344,7 @@ impl ControllerHostPublication {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.attach_gate.has_pending()
+            || self.output_reserve.has_pending()
             || self.poisoned
         {
             return Err(EffectFailure::Retryable(
@@ -291,6 +369,7 @@ impl ControllerHostPublication {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
             || self.session.is_none()
@@ -320,6 +399,7 @@ impl ControllerHostPublication {
         self.pending.is_none()
             && !self.authority_effects.has_pending()
             && !self.execution_effects.has_pending()
+            && !self.output_reserve.has_pending()
             && !self.attach_gate.has_pending()
             && !self.poisoned
             && self.session.is_some()
@@ -351,6 +431,7 @@ impl ControllerHostPublication {
         self.poisoned
             || self.authority_effects.requires_reconnect()
             || self.execution_effects.requires_reconnect()
+            || self.output_reserve.requires_reconnect()
             || self.attach_gate.requires_reconnect()
     }
 
@@ -361,6 +442,7 @@ impl ControllerHostPublication {
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerHostPublicationError> {
         if self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
             || self

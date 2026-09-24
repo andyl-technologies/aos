@@ -6,11 +6,14 @@
 //! challenge, or authorize public execution Create. A later exchange must
 //! retain the signed request through ambiguous Host reserve/query outcomes.
 
-use aos_proto::aos::sandbox::local::v1::{Audience, BrokerAuthorizationArtifactsV1};
+use aos_proto::aos::sandbox::local::v1::{
+    Audience, BrokerAuthorizationArtifactsV1, QueryHostExecutionOutputRequestV1, RequestHeader,
+};
 use aos_sandbox::controller_execution_preissue::{
     ControllerExecutionOutputAttemptV1, ControllerExecutionPreissueV1,
-    ControllerExecutionReserveSourceV1, prepare_execution_reserve_source_v1,
-    retain_controller_execution_output_attempt_v1, revalidate_accepted_execution_preissue_v1,
+    ControllerExecutionReserveSourceV1, load_controller_execution_output_attempt_v1,
+    prepare_execution_reserve_source_v1, retain_controller_execution_output_attempt_v1,
+    revalidate_accepted_execution_preissue_v1,
 };
 use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
@@ -21,7 +24,9 @@ use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ProtocolId, ProtocolVersion,
     RawPairedClockSample,
 };
+use aos_sandbox_protocol::semantics::host_output_query_grant_v1;
 use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
+use buffa::Message as _;
 
 use crate::DormantBrokerRequestCoordinatesV1;
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
@@ -54,6 +59,178 @@ impl SignedExecutionOutputReserveV1 {
     pub(crate) const fn request_id(&self) -> [u8; 16] {
         self.request_id
     }
+}
+
+/// Holds a newly signed read-only query for one protected original attempt.
+pub(crate) struct SignedExecutionOutputQueryV1 {
+    body: Vec<u8>,
+    authorization: BrokerAuthorizationArtifactsV1,
+}
+
+impl SignedExecutionOutputQueryV1 {
+    /// Borrows the exact query body whose bytes are bound by the plan.
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    /// Borrows the current signed Host plan and lease.
+    pub(crate) const fn authorization(&self) -> &BrokerAuthorizationArtifactsV1 {
+        &self.authorization
+    }
+}
+
+/// Signs a fresh read-only query, never a second reserve attempt.
+///
+/// The protected AOSCIA01 record supplies the original request locator. Its
+/// deadline may have passed; query authority instead requires the same live
+/// Host boot, current signed assignment, and a fresh bounded broker plan.
+///
+/// # Errors
+///
+/// Rejects absent or substituted protected attempt custody, changed Host
+/// assignment or boot, expired current authority, and invalid session bounds.
+pub(crate) fn sign_current_host_output_query_v1(
+    controller: &mut Journal,
+    attempt: &ControllerExecutionOutputAttemptV1,
+    signer: &ControllerBrokerPlanSignerV1,
+    coordinates: DormantBrokerRequestCoordinatesV1,
+) -> Result<SignedExecutionOutputQueryV1, EffectFailure> {
+    let recovered = load_controller_execution_output_attempt_v1(controller, attempt.execution())
+        .map_err(|_| retryable("protected output reserve attempt is unavailable"))?
+        .ok_or_else(|| retryable("original output reserve attempt is absent"))?;
+    if recovered != *attempt
+        || coordinates.request_id() == [0; 16]
+        || coordinates.protocol_version() != ProtocolVersion::new(1, 0)
+        || coordinates.audience() != Audience::AUDIENCE_NODE_CONTROLLER
+    {
+        return Err(retryable("Host output query identity is invalid"));
+    }
+
+    let source = attempt.source();
+    let current = AuthorityPublicationStore::new(controller)
+        .current(source.sandbox())
+        .map_err(|_| retryable("current Host authority is unavailable"))?
+        .ok_or_else(|| retryable("current Host authority is absent"))?;
+    let publication = current.manifest();
+    let manifest = publication.manifest();
+    let broker_assignment = publication
+        .broker_assignment()
+        .map_err(|_| retryable("current Host assignment is invalid"))?;
+    let lease_assignment = current.lease().lease().assignment();
+    if manifest.sandbox() != source.sandbox()
+        || manifest.incarnation() != source.incarnation()
+        || manifest.node() != source.node()
+        || manifest.epoch().get() != source.assignment_epoch()
+        || manifest.desired_generation().get() != source.desired_generation()
+        || manifest.namespace_generation().get() != source.namespace_generation()
+        || publication.digest() != source.assignment_manifest_digest()
+        || lease_assignment.sandbox() != broker_assignment.sandbox()
+        || lease_assignment.incarnation() != broker_assignment.incarnation()
+        || lease_assignment.epoch() != broker_assignment.epoch()
+        || lease_assignment.digest() != broker_assignment.digest()
+        || current.lease().lease().node() != source.node()
+    {
+        return Err(retryable("Host output query assignment is stale"));
+    }
+
+    let clock = crate::controller_ownership::sample_ownership_clock()
+        .map_err(|_| retryable("protected Controller clock is unavailable"))?;
+    if clock.host_boot_id() != source.preissue().host_boot_id()
+        || clock.boottime_nanoseconds() >= coordinates.deadline_boottime_nanoseconds()
+    {
+        return Err(retryable("Host output query boot or deadline changed"));
+    }
+
+    let header = RequestHeader {
+        protocol_major: u32::from(coordinates.protocol_version().major()),
+        protocol_minor: u32::from(coordinates.protocol_version().minor()),
+        request_id: coordinates.request_id().to_vec(),
+        audience: coordinates.audience().into(),
+        deadline_boottime_nanoseconds: coordinates.deadline_boottime_nanoseconds(),
+        maximum_response_bytes: coordinates.maximum_response_bytes(),
+        ..Default::default()
+    };
+    let body = QueryHostExecutionOutputRequestV1 {
+        header: Some(header).into(),
+        execution_id: attempt.execution().as_bytes().to_vec(),
+        create_operation_id: attempt.create_operation().as_bytes().to_vec(),
+        original_reserve_request_id: attempt.original_request_id().to_vec(),
+        preissue_record_digest: source.preissue().record_digest().as_bytes().to_vec(),
+        output_claim_digest: source.output_claim_digest().as_bytes().to_vec(),
+        reserve_source_digest: source.carrier_digest().as_bytes().to_vec(),
+        assignment_digest: source.assignment_manifest_digest().as_bytes().to_vec(),
+        host_boot_id: source.preissue().host_boot_id().to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let semantics = host_output_query_grant_v1(broker_assignment, coordinates.request_id(), &body)
+        .map_err(|_| retryable("Host output query semantics are invalid"))?;
+    let template = current
+        .templates()
+        .iter()
+        .find(|candidate| candidate.audience() == BrokerAudience::Host)
+        .ok_or_else(|| retryable("current Host authorization template is absent"))?;
+    let parent_plan = template.plan();
+    if parent_plan.assignment() != broker_assignment || parent_plan.node() != source.node() {
+        return Err(retryable(
+            "Host output query template differs from assignment",
+        ));
+    }
+
+    let now = clock.wall_seconds();
+    let expires = now
+        .checked_add(30)
+        .map(|limit| {
+            limit
+                .min(parent_plan.expires_seconds())
+                .min(current.lease().lease().authority_expires_seconds())
+        })
+        .ok_or_else(|| retryable("Host output query clock overflowed"))?;
+    if now < parent_plan.issued_seconds() || expires <= now {
+        return Err(retryable("Host output query authority has expired"));
+    }
+    let grant = BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        4 * 1_024,
+        0,
+    )
+    .map_err(|_| retryable("Host output query grant is invalid"))?;
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 0),
+        broker_assignment,
+        source.node(),
+        parent_plan.ownership_authority().clone(),
+        vec![grant],
+        parent_plan.policy_commitment(),
+        parent_plan.revocation_scope(),
+        now,
+        expires,
+        Vec::new(),
+    )
+    .map_err(|_| retryable("Host output query plan is invalid"))?;
+    let signed = signer
+        .sign_plan(plan, now)
+        .map_err(|_| retryable("Host output query signature is unavailable"))?;
+    let reread = load_controller_execution_output_attempt_v1(controller, attempt.execution())
+        .map_err(|_| retryable("protected output reserve attempt changed"))?;
+    if reread.as_ref() != Some(attempt) {
+        return Err(retryable("protected output reserve attempt changed"));
+    }
+
+    Ok(SignedExecutionOutputQueryV1 {
+        body,
+        authorization: BrokerAuthorizationArtifactsV1 {
+            broker_plan: signed.canonical_plan().to_vec(),
+            broker_plan_signature: signed.canonical_signature().to_vec(),
+            ownership_lease: current.lease().canonical_lease().to_vec(),
+            ownership_lease_signature: current.lease().canonical_signature().to_vec(),
+            ..Default::default()
+        },
+    })
 }
 
 /// Signs one current provisional Host reserve request without dispatching it.
