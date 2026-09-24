@@ -324,6 +324,8 @@ effects into arbitrary callbacks.
     recovery, evidence bundles, and release-blocking manual gates.
 17. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
     schema its version owner, storage domain, and compatibility gates.
+    [`schema-inventory.md`](schema-inventory.md) records the source audit and
+    explicit exclusions.
 
 ## Requirement prefixes
 

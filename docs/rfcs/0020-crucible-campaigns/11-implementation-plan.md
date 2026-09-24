@@ -36,8 +36,10 @@ listed gates pass.
   weakening the fail-closed capability contract.
 - [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
   format a schema/version owner.
-  The per-ID mapping and registry validation are in place; closure still needs
-  a complete source-to-registry inventory to rule out unlisted formats.
+  The per-ID mapping and registry validation are in place. The
+  [source inventory](schema-inventory.md) identifies additional current formats
+  and exclusions; closure still needs a complete source-to-registry review to
+  rule out unlisted formats.
 - [x] **T-CAM-0.4** Add a repository traceability check ensuring every
   `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
   requirement is covered by a task and gate.
