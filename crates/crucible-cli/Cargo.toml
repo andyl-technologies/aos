@@ -36,9 +36,7 @@ clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-daemon = { path = "../crucible-daemon" }
-crucible-protocol = { path = "../crucible-protocol" }
 crucible-session = { path = "../crucible-session" }
-crucible-shmem = { path = "../crucible-shmem" }
 hex = { workspace = true }
 rcgen = { workspace = true }
 rustix = { workspace = true, features = ["process", "termios"] }
@@ -59,6 +57,8 @@ crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-device = { path = "../crucible-device" }
 crucible-harness = { path = "../crucible-harness" }
 crucible-guest = { path = "../crucible-guest" }
+crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
+crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
 sha2 = { workspace = true }
