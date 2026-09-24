@@ -79,7 +79,8 @@ in
             exec "$buildCC" "$@"
           )
           compilerIncludes=$(runBuildCC -print-file-name=include)
-          runBuildCC -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
+          # Apple's MIG source uses bool as an identifier, which C23 reserves.
+          runBuildCC -std=gnu17 -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
             -Ulinux -U__linux -U__linux__ -D__APPLE__=1 -D__MACH__=1 \
             -D__private_extern__= -D__kernel_ptr_semantics= \
             -D__LITTLE_ENDIAN__=1 -DNDEBUG -DMIG_VERSION='"aos-mig"' \
