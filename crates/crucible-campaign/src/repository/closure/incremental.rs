@@ -168,8 +168,27 @@ impl CampaignRepository {
             &BTreeSet::new(),
             &mut ChoiceValidationCache::default(),
             Some(&mut objects),
+            None,
         )?;
         Ok(objects)
+    }
+
+    // Only archive checkpoint selections may opt into raw production leaves.
+    // The source resolver and destination exact store authenticate their semantics.
+    pub(in crate::repository) fn authenticated_closure_with_exact_leaves(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+    ) -> Result<(BTreeSet<ContentId>, BTreeSet<ContentId>), CampaignRepositoryError> {
+        let mut objects = BTreeSet::new();
+        let mut exact_leaves = BTreeSet::new();
+        self.verify_campaign_closures_anchored_cached_collect(
+            roots,
+            &BTreeSet::new(),
+            &mut ChoiceValidationCache::default(),
+            Some(&mut objects),
+            Some(&mut exact_leaves),
+        )?;
+        Ok((objects, exact_leaves))
     }
 
     pub(in crate::repository) fn verify_campaign_closures_anchored_cached(
@@ -178,7 +197,13 @@ impl CampaignRepository {
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
     ) -> Result<usize, CampaignRepositoryError> {
-        self.verify_campaign_closures_anchored_cached_collect(roots, anchors, choice_cache, None)
+        self.verify_campaign_closures_anchored_cached_collect(
+            roots,
+            anchors,
+            choice_cache,
+            None,
+            None,
+        )
     }
 
     pub(super) fn verify_campaign_closures_anchored_cached_collect(
@@ -187,16 +212,17 @@ impl CampaignRepository {
         anchors: &BTreeSet<ContentId>,
         choice_cache: &mut ChoiceValidationCache,
         mut collected: Option<&mut BTreeSet<ContentId>>,
+        mut collected_exact_leaves: Option<&mut BTreeSet<ContentId>>,
     ) -> Result<usize, CampaignRepositoryError> {
-        let mut stack = roots.into_iter().collect::<Vec<_>>();
+        let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut verified_merkle_positions = BTreeSet::new();
 
-        while let Some(id) = stack.pop() {
+        while let Some((id, exact_leaf)) = stack.pop() {
             if anchors.contains(&id) {
                 continue;
             }
-            if !visited.insert(id) {
+            if !visited.insert((id, exact_leaf)) {
                 continue;
             }
             if let Some(objects) = collected.as_deref_mut() {
@@ -228,11 +254,26 @@ impl CampaignRepository {
                 {
                     return Err(integrity("campaign-closure-object-limit"));
                 }
-                stack.extend(verified.values);
+                stack.extend(verified.values.into_iter().map(|id| (id, false)));
                 continue;
             }
 
             let handle = self.blobs.read(id, None)?;
+            if exact_leaf {
+                // Exact-root choice and replay evidence use Observation identities
+                // for raw protocol bytes. Their parent role, not their kind alone,
+                // grants opaque traversal; the immutable digest remains checked.
+                if id.kind() != ObjectKind::Observation
+                    || id.schema_version() != 1
+                    || ContentId::for_source(id.kind(), id.schema_version(), &handle)? != id
+                {
+                    return Err(integrity("campaign-exact-leaf-identity-mismatch"));
+                }
+                if let Some(leaves) = collected_exact_leaves.as_deref_mut() {
+                    leaves.insert(id);
+                }
+                continue;
+            }
             if is_opaque_campaign_leaf(id.kind()) {
                 let mut sink = std::io::sink();
                 handle.copy_to(&mut sink)?;
@@ -245,7 +286,18 @@ impl CampaignRepository {
                 if envelope.content_id(id.kind()) != id {
                     return Err(integrity("campaign-closure-envelope-id-mismatch"));
                 }
-                stack.extend(envelope.children().iter().map(crate::ChildReference::id));
+                let exact_root = collected_exact_leaves.is_some()
+                    && id.kind() == ObjectKind::ExactManifest
+                    && envelope.schema_name() == "crucible.executor.exact-checkpoint-root"
+                    && envelope.schema_version() == 5;
+                stack.extend(envelope.children().iter().map(|child| {
+                    let exact_leaf = exact_root
+                        && matches!(
+                            child.role(),
+                            "checkpoint-choice-closure" | "replay-oracle-evidence"
+                        );
+                    (child.id(), exact_leaf)
+                }));
                 continue;
             }
             let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
@@ -364,7 +416,7 @@ impl CampaignRepository {
                 }
                 _ => {}
             }
-            stack.extend(envelope.children().iter().map(crate::ChildReference::id));
+            stack.extend(envelope.children().iter().map(|child| (child.id(), false)));
         }
         visited
             .len()
