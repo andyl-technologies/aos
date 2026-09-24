@@ -1265,12 +1265,19 @@ fn validate_role_methods(
 ) -> Result<(), ProtocolValidationError> {
     let valid = !methods.is_empty()
         && match audience {
-            Audience::AUDIENCE_NODE_CONTROLLER => methods
-                .iter()
-                .all(|method| *method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
+            Audience::AUDIENCE_NODE_CONTROLLER => methods.iter().all(|method| {
+                !matches!(
+                    method,
+                    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+                )
+            }),
             Audience::AUDIENCE_ROOT_MOUNT => methods
                 .iter()
                 .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
+            Audience::AUDIENCE_STORAGE_BROKER => methods
+                .iter()
+                .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP),
             _ => false,
         };
     if valid {
@@ -1308,6 +1315,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
@@ -1691,11 +1699,14 @@ pub(crate) fn validate_decoded_response_envelope(
         expected_method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
     ) {
         let expected_roles: &[BrokerDescriptorRole] = if error.is_some() {
             &[]
         } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
             &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES
+        } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP {
+            &crate::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1
         } else {
             &crate::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES
         };
@@ -1813,6 +1824,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                 | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
@@ -2369,6 +2381,51 @@ mod tests {
         for role in crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES {
             assert!(validate_outbound_carriers(mount, &[role]).is_err());
         }
+    }
+
+    #[test]
+    fn storage_cgroup_query_has_a_disjoint_read_only_role() {
+        let query = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP;
+        let mount = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
+        let audience = Audience::AUDIENCE_STORAGE_BROKER;
+
+        assert!(validate_role_methods(audience, &[query]).is_ok());
+        assert!(validate_role_methods(audience, &[mount]).is_err());
+        assert!(validate_role_methods(audience, &[query, mount]).is_err());
+        assert!(validate_role_methods(Audience::AUDIENCE_ROOT_MOUNT, &[query]).is_err());
+        assert!(validate_role_methods(Audience::AUDIENCE_NODE_CONTROLLER, &[query]).is_err());
+        assert!(!method_requires_authorization(query));
+        assert!(validate_outbound_carriers(query, &[]).is_ok());
+        assert!(
+            validate_outbound_carriers(
+                query,
+                &crate::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1,
+            )
+            .is_err()
+        );
+
+        let roles = crate::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1;
+        let response = |roles: &[BrokerDescriptorRole]| {
+            let envelope = BrokerResponseEnvelope {
+                request_id: vec![1; 16],
+                method: query.into(),
+                body: vec![1],
+                descriptors: descriptor_entries(roles).unwrap(),
+                ..Default::default()
+            };
+            decode_response_envelope(
+                &envelope.encode_to_vec(),
+                &[1; 16],
+                query,
+                &[],
+                roles.len(),
+                8192,
+                8192,
+            )
+        };
+        assert!(response(&roles).is_ok());
+        assert!(response(&roles[..1]).is_err());
+        assert!(response(&[roles[1], roles[0]]).is_err());
     }
 
     fn client_hello() -> BrokerClientHello {

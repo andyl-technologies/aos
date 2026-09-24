@@ -50,6 +50,8 @@ pub enum BrokerSessionSecurityAudienceV1 {
     NodeController,
     /// The root-mount audience used only by the Host broker protocol.
     RootMount,
+    /// The Storage audience used only by the Host cgroup readback protocol.
+    StorageBroker,
 }
 
 impl BrokerSessionSecurityAudienceV1 {
@@ -57,6 +59,7 @@ impl BrokerSessionSecurityAudienceV1 {
         match self {
             Self::NodeController => 1,
             Self::RootMount => 5,
+            Self::StorageBroker => 6,
         }
     }
 
@@ -64,6 +67,7 @@ impl BrokerSessionSecurityAudienceV1 {
         match code {
             1 => Ok(Self::NodeController),
             5 => Ok(Self::RootMount),
+            6 => Ok(Self::StorageBroker),
             _ => Err(BrokerSessionSecurityError::manifest("audience")),
         }
     }
@@ -72,6 +76,7 @@ impl BrokerSessionSecurityAudienceV1 {
         match self {
             Self::NodeController => Audience::AUDIENCE_NODE_CONTROLLER,
             Self::RootMount => Audience::AUDIENCE_ROOT_MOUNT,
+            Self::StorageBroker => Audience::AUDIENCE_STORAGE_BROKER,
         }
     }
 }
@@ -291,8 +296,11 @@ impl BrokerSessionSecurityManifestV1 {
         if (major, minor) != supported_broker_session_version_v1(protocol) {
             return Err(BrokerSessionSecurityError::manifest("protocol version"));
         }
-        if audience == BrokerSessionSecurityAudienceV1::RootMount
-            && protocol != BrokerSessionProtocolV1::Host
+        if matches!(
+            audience,
+            BrokerSessionSecurityAudienceV1::RootMount
+                | BrokerSessionSecurityAudienceV1::StorageBroker
+        ) && protocol != BrokerSessionProtocolV1::Host
         {
             return Err(BrokerSessionSecurityError::manifest("protocol audience"));
         }

@@ -608,6 +608,7 @@ pub(crate) fn audience_code(audience: Audience) -> Result<u8, BrokerSessionValid
         Audience::AUDIENCE_MOUNT_WORKER => Ok(3),
         Audience::AUDIENCE_GUEST_AGENT => Ok(4),
         Audience::AUDIENCE_ROOT_MOUNT => Ok(5),
+        Audience::AUDIENCE_STORAGE_BROKER => Ok(6),
         Audience::AUDIENCE_UNSPECIFIED => {
             Err(BrokerSessionValidationError::InvalidClosedValue("audience"))
         }
@@ -621,6 +622,7 @@ pub(crate) fn audience_from_code(code: u8) -> Result<Audience, BrokerSessionVali
         3 => Ok(Audience::AUDIENCE_MOUNT_WORKER),
         4 => Ok(Audience::AUDIENCE_GUEST_AGENT),
         5 => Ok(Audience::AUDIENCE_ROOT_MOUNT),
+        6 => Ok(Audience::AUDIENCE_STORAGE_BROKER),
         _ => Err(BrokerSessionValidationError::InvalidClosedValue("audience")),
     }
 }

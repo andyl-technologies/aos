@@ -510,6 +510,7 @@ const fn context_audience_code(audience: Audience) -> u8 {
         Audience::AUDIENCE_MOUNT_WORKER => 3,
         Audience::AUDIENCE_GUEST_AGENT => 4,
         Audience::AUDIENCE_ROOT_MOUNT => 5,
+        Audience::AUDIENCE_STORAGE_BROKER => 6,
         Audience::AUDIENCE_UNSPECIFIED => 0,
     }
 }

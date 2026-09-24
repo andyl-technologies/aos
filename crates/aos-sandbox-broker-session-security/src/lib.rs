@@ -64,6 +64,7 @@ mod entropy;
 mod error;
 mod handoff;
 mod handshake;
+mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
@@ -138,12 +139,13 @@ pub use dormant_handshake::{
     DormantCommittedBrokerDescriptorResponseV1, DormantControllerClientHandshakeProgressV1,
     DormantControllerClientHandshakeV1, DormantHostCatalogPublicationRecoveryProgressV1,
     DormantHostCatalogPublicationRetryV1, DormantHostCatalogPublicationUnknownV1,
-    DormantHostScopeTerminalFinalizationV1, DormantMountSourceBrokerRecoveryProgressV1,
-    DormantMountSourceBrokerRecoveryV1, DormantOutstandingBrokerRequestV1,
-    DormantPreparedBrokerDescriptorRequestV1, DormantPreparedBrokerRequestV1,
-    DormantReadyBrokerDescriptorTerminalReplayV1, DormantReceivedBrokerDescriptorRequestV1,
-    DormantReceivedBrokerRequestV1, DormantUnconfirmedBrokerDescriptorRequestV1,
-    DormantUnconfirmedBrokerRequestV1, DormantUnconfirmedReceivedBrokerRequestV1,
+    DormantHostConsumerCgroupResponseProgressV1, DormantHostScopeTerminalFinalizationV1,
+    DormantMountSourceBrokerRecoveryProgressV1, DormantMountSourceBrokerRecoveryV1,
+    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerDescriptorRequestV1,
+    DormantPreparedBrokerRequestV1, DormantReadyBrokerDescriptorTerminalReplayV1,
+    DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
+    DormantUnconfirmedBrokerDescriptorRequestV1, DormantUnconfirmedBrokerRequestV1,
+    DormantUnconfirmedReceivedBrokerRequestV1,
 };
 pub use endpoint::{
     BrokerSessionProcessExecutionIdV1, FreshBrokerHelloNonceV1, FreshClientHelloNonceV1,
@@ -160,6 +162,9 @@ pub use handoff::{
     ProtectedBrokerEffectObservationV1, ProtectedHostEffectHandoffV1,
     ProtectedMountEffectHandoffV1, ProtectedNetworkEffectHandoffV1,
     ProtectedStorageEffectHandoffV1,
+};
+pub use host_consumer_cgroup_transfer::{
+    ProtectedHostConsumerCgroupIdentityV1, ProtectedHostConsumerCgroupTransferV1,
 };
 pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use lifecycle_domain_effect::{

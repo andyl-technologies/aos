@@ -372,7 +372,7 @@ pub const BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE: &str =
 pub const HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE: &str =
     "aos.sandbox.host.execution-spec-descriptor";
 
-const BASE_FEATURES: [FeatureDefinition; 18] = [
+const BASE_FEATURES: [FeatureDefinition; 19] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -383,6 +383,7 @@ const BASE_FEATURES: [FeatureDefinition; 18] = [
     feature("aos.sandbox.authorization.signed-plan-lease"),
     feature(BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE),
     feature(HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE),
+    feature("aos.sandbox.host.consumer-cgroup-readback"),
     feature("aos.sandbox.mount.source-acquisition"),
     feature("aos.sandbox.enforcement.zfs-quota"),
     feature("aos.sandbox.residency.node-bounded-shared"),

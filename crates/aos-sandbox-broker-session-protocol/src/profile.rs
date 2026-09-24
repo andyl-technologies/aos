@@ -25,6 +25,8 @@ const SIGNED_PLAN_LEASE_FEATURE: &str = "aos.sandbox.authorization.signed-plan-l
 const MOUNT_SOURCE_ACQUISITION_FEATURE: &str = "aos.sandbox.mount.source-acquisition";
 const HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE: &str =
     "aos.sandbox.host.argument-source-descriptor";
+const HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE: &str =
+    "aos.sandbox.host.consumer-cgroup-readback";
 
 const NO_FEATURES: [BrokerSessionMethodFeatureV1; 0] = [];
 const SIGNED_PLAN_LEASE_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
@@ -43,6 +45,8 @@ const HOST_ARGUMENT_SOURCE_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
     BrokerSessionMethodFeatureV1::HostArgumentSourceDescriptor,
 ];
+const HOST_CONSUMER_CGROUP_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
+    [BrokerSessionMethodFeatureV1::HostConsumerCgroupReadback];
 const NO_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 0] = [];
 const HOST_CATALOG_REQUEST_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 1] =
     [BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG];
@@ -61,6 +65,10 @@ const HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 5] = [
     BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE,
     BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE,
 ];
+const HOST_CONSUMER_CGROUP_RESPONSE_DESCRIPTOR_ROLES: [BrokerDescriptorRole; 2] = [
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD,
+    BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP,
+];
 const NO_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 0] = [];
 const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition; 1] =
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
@@ -74,7 +82,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 /// Registration is not production advertisement. The argument-source carrier
 /// remains excluded from production hello until its protected issuer and
 /// one-shot Host owner are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 31] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 32] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -106,6 +114,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 31] = [
     BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT,
     BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -124,7 +133,13 @@ pub fn authenticated_broker_methods_for_role_v1(
 ) -> Vec<BrokerMethod> {
     AUTHENTICATED_BROKER_METHODS_V1
         .into_iter()
-        .filter(|method| *method != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT)
+        .filter(|method| {
+            !matches!(
+                method,
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+            )
+        })
         .filter(|method| {
             authenticated_broker_method_profile_v1(*method).is_some_and(|profile| {
                 profile.protocol() == protocol && profile.audience() == audience
@@ -236,6 +251,8 @@ pub enum BrokerSessionMethodFeatureV1 {
     HostExecutionSpecDescriptor,
     /// Requires exact sealed Host argument-source descriptor transport 1.0.
     HostArgumentSourceDescriptor,
+    /// Requires exact Storage-audience Host cgroup readback 1.0.
+    HostConsumerCgroupReadback,
 }
 
 impl BrokerSessionMethodFeatureV1 {
@@ -247,6 +264,7 @@ impl BrokerSessionMethodFeatureV1 {
             Self::MountSourceAcquisition => MOUNT_SOURCE_ACQUISITION_FEATURE,
             Self::HostExecutionSpecDescriptor => HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
             Self::HostArgumentSourceDescriptor => HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
+            Self::HostConsumerCgroupReadback => HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE,
         }
     }
 
@@ -373,6 +391,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
         | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
@@ -409,6 +428,11 @@ pub const fn authenticated_broker_method_profile_v1(
     let (major, minor) = supported_broker_session_version_v1(protocol);
     let audience = if matches!(method, BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE) {
         Audience::AUDIENCE_ROOT_MOUNT
+    } else if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+    ) {
+        Audience::AUDIENCE_STORAGE_BROKER
     } else {
         Audience::AUDIENCE_NODE_CONTROLLER
     };
@@ -443,6 +467,7 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => &HOST_EXECUTION_SPEC_FEATURES,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => &HOST_ARGUMENT_SOURCE_FEATURES,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => &HOST_CONSUMER_CGROUP_FEATURES,
         BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
             &MOUNT_SOURCE_EFFECT_FEATURES
@@ -489,6 +514,9 @@ pub const fn authenticated_broker_method_profile_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
             &HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
+            &HOST_CONSUMER_CGROUP_RESPONSE_DESCRIPTOR_ROLES
         }
         _ => &NO_DESCRIPTOR_ROLES,
     };
@@ -604,6 +632,7 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
     let mut require_mount_source_acquisition = false;
     let mut require_host_execution_spec_descriptor = false;
     let mut require_host_argument_source_descriptor = false;
+    let mut require_host_consumer_cgroup_readback = false;
 
     for method in methods {
         let Some(profile) = authenticated_broker_method_profile_v1(*method) else {
@@ -622,6 +651,9 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
                 }
                 BrokerSessionMethodFeatureV1::HostArgumentSourceDescriptor => {
                     require_host_argument_source_descriptor = true;
+                }
+                BrokerSessionMethodFeatureV1::HostConsumerCgroupReadback => {
+                    require_host_consumer_cgroup_readback = true;
                 }
             }
         }
@@ -660,6 +692,14 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
     if require_host_argument_source_descriptor {
         features.push(Feature {
             namespace: HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+    }
+    if require_host_consumer_cgroup_readback {
+        features.push(Feature {
+            namespace: HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE.to_owned(),
             major: 1,
             minor: 0,
             ..Default::default()
@@ -820,6 +860,7 @@ const fn validate_role(
     match (audience, protocol) {
         (Audience::AUDIENCE_NODE_CONTROLLER, _) => Ok(()),
         (Audience::AUDIENCE_ROOT_MOUNT, BrokerSessionProtocolV1::Host) => Ok(()),
+        (Audience::AUDIENCE_STORAGE_BROKER, BrokerSessionProtocolV1::Host) => Ok(()),
         _ => Err(BrokerSessionNegotiationError::Methods),
     }
 }
@@ -886,6 +927,22 @@ fn validate_feature_conditions(
             || !has_feature(
                 advertised_features,
                 HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
+            ))
+    {
+        return Err(BrokerSessionNegotiationError::FeatureCondition);
+    }
+    if required_methods
+        .iter()
+        .chain(advertised_methods)
+        .any(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP)
+        && (protocol != BrokerSessionProtocolV1::Host
+            || !has_feature(
+                required_features,
+                HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE,
+            )
+            || !has_feature(
+                advertised_features,
+                HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE,
             ))
     {
         return Err(BrokerSessionNegotiationError::FeatureCondition);
@@ -1156,6 +1213,63 @@ mod tests {
             !client.required_features.iter().any(|value| {
                 value.namespace == HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE
             })
+        );
+    }
+
+    #[test]
+    fn storage_consumer_cgroup_role_is_versioned_and_production_closed() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
+        assert_eq!(profile.audience(), Audience::AUDIENCE_STORAGE_BROKER);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Forbidden
+        );
+        assert_eq!(profile.required_features(), &HOST_CONSUMER_CGROUP_FEATURES);
+        assert_eq!(
+            profile.success_response_descriptor_roles(),
+            &HOST_CONSUMER_CGROUP_RESPONSE_DESCRIPTOR_ROLES
+        );
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert!(
+            authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+            )
+            .is_empty()
+        );
+        assert!(
+            production_broker_client_hello_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+                RESPONSE_MAXIMUM,
+            )
+            .is_err()
+        );
+
+        let authentication = FeatureRef::new(
+            BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap();
+        let consumer = FeatureRef::new(
+            HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE.to_owned(),
+            1,
+            0,
+        )
+        .unwrap();
+        assert!(validate_required_features(&[consumer]).is_ok());
+        assert_eq!(
+            validate_feature_conditions(
+                BrokerSessionProtocolV1::Host,
+                &[authentication.clone()],
+                &[authentication],
+                &[method],
+                &[method],
+            ),
+            Err(BrokerSessionNegotiationError::FeatureCondition)
         );
     }
 }

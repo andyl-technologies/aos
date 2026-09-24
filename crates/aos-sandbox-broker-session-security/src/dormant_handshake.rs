@@ -938,6 +938,19 @@ pub enum DormantBrokerDescriptorResponseProgressV1 {
     Committed(DormantBrokerDescriptorCommitResultV1),
 }
 
+/// Retains the exact signed method-34 reply and its two physical descriptors.
+#[must_use = "retain or recover the signed cgroup descriptor response"]
+pub enum DormantHostConsumerCgroupResponseProgressV1 {
+    /// No packet arrived; the original signed request remains outstanding.
+    Pending(DormantOutstandingBrokerRequestV1),
+    /// The signed result and same-session FD pair passed physical readback.
+    Readback(crate::ProtectedHostConsumerCgroupTransferV1),
+    /// Protected outcome commit is uncertain; FD custody remains sealed.
+    RecoveryRequired(DormantBrokerDescriptorCommitRecoveryV1),
+    /// Host finalization is uncertain; FD custody remains sealed.
+    HostFinalizationRequired(DormantHostScopeTerminalFinalizationV1),
+}
+
 /// Classifies broker-side request receipt and protected commit ambiguity.
 #[must_use = "recover ambiguous request custody before producing a response"]
 pub enum DormantBrokerRequestReceiveProgressV1 {
@@ -5798,6 +5811,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
                 aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES.len()
             }
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
+                aos_sandbox_protocol::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1
+                    .len()
+            }
             _ => return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid),
         };
         let maximum = usize::try_from(outstanding.0.maximum_response_bytes())
@@ -5844,6 +5861,63 @@ impl DormantAuthenticatedBrokerSessionV1 {
         Ok(DormantBrokerDescriptorResponseProgressV1::Committed(
             committed,
         ))
+    }
+
+    /// Receives and checks the Storage-only Host cgroup response atomically.
+    ///
+    /// The method remains absent from production advertisement. This closed
+    /// adapter keeps the signed terminal and exact SCM_RIGHTS pair together,
+    /// then checks Host service identity and current kernel objects without
+    /// exposing either descriptor or constructing a Storage grant.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different method, unavailable authenticated peer pin, invalid
+    /// signed response, noncanonical descriptors, or changed physical identity.
+    pub fn receive_authenticated_consumer_cgroup_response(
+        &mut self,
+        outstanding: DormantOutstandingBrokerRequestV1,
+    ) -> Result<DormantHostConsumerCgroupResponseProgressV1, DormantBrokerSessionHandshakeErrorV1>
+    {
+        if outstanding.0.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP {
+            return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+        }
+        let host_peer_pidfd = self.0.retain_authenticated_peer_pidfd()?;
+        let progress = self.receive_authenticated_scope_response(outstanding)?;
+        match progress {
+            DormantBrokerDescriptorResponseProgressV1::Pending(outstanding) => Ok(
+                DormantHostConsumerCgroupResponseProgressV1::Pending(outstanding),
+            ),
+            DormantBrokerDescriptorResponseProgressV1::Committed(
+                DormantBrokerDescriptorCommitResultV1::Committed(response),
+            ) => {
+                let DormantCommittedBrokerDescriptorResponseV1 {
+                    committed,
+                    descriptors,
+                    ..
+                } = response;
+                let (outcome, currentness) = committed.into_outcome_and_currentness();
+                let readback =
+                    crate::ProtectedHostConsumerCgroupTransferV1::from_authenticated_response(
+                        outcome,
+                        currentness,
+                        descriptors,
+                        host_peer_pidfd,
+                    )
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
+                Ok(DormantHostConsumerCgroupResponseProgressV1::Readback(
+                    readback,
+                ))
+            }
+            DormantBrokerDescriptorResponseProgressV1::Committed(
+                DormantBrokerDescriptorCommitResultV1::RecoveryRequired(recovery),
+            ) => Ok(DormantHostConsumerCgroupResponseProgressV1::RecoveryRequired(recovery)),
+            DormantBrokerDescriptorResponseProgressV1::Committed(
+                DormantBrokerDescriptorCommitResultV1::HostFinalizationRequired(recovery),
+            ) => {
+                Ok(DormantHostConsumerCgroupResponseProgressV1::HostFinalizationRequired(recovery))
+            }
+        }
     }
 
     /// Installs the first authenticated request for this adopted session.

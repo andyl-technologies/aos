@@ -233,6 +233,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostObservePayloadScope,
     /// Host mount-scope acquisition.
     HostObserveMountScope,
+    /// Storage-only Host physical consumer-cgroup readback.
+    HostObserveConsumerCgroup,
     /// Mount catalog preparation.
     MountPrepareCatalog,
     /// Mount destination-slot effect.
@@ -354,6 +356,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScope
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
+            AuthenticatedBrokerMethodSemanticsV1::HostObserveConsumerCgroup
         }
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
             AuthenticatedBrokerMethodSemanticsV1::MountPrepareCatalog
@@ -1062,6 +1067,7 @@ enum RequestOutcomeContextV1 {
     HostQuery(crate::ValidatedQueryRuntimeEffectRequestV1),
     PayloadScope(crate::payload_scope::ValidatedPayloadScopeRequest),
     MountScope(crate::mount_scope::ValidatedMountScopeRequest),
+    HostConsumerCgroup(crate::host_consumer_cgroup::ValidatedConsumerCgroupRequestV1),
     MountAcquireSource(crate::ValidatedAcquireMountSourceRequest),
     MountReleaseSource(crate::ValidatedReleaseMountSourceAcquisitionRequest),
     StoragePrepare(CanonicalStoragePreparationSemanticsV1),
@@ -1179,6 +1185,16 @@ fn validate_request_semantics(
                 AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScope,
                 *request.header(),
                 Some(*semantics.commitment().digest().as_bytes()),
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
+            let request = crate::host_consumer_cgroup::decode_consumer_cgroup_request_v1(
+                body, peer, policy, now,
+            )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostObserveConsumerCgroup,
+                *request.header(),
+                None,
             )
         }
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
@@ -1388,6 +1404,13 @@ fn validate_request_semantics(
             RequestOutcomeContextV1::MountScope(decode_mount_scope_request(
                 body, peer, policy, now,
             )?)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
+            RequestOutcomeContextV1::HostConsumerCgroup(
+                crate::host_consumer_cgroup::decode_consumer_cgroup_request_v1(
+                    body, peer, policy, now,
+                )?,
+            )
         }
         BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => {
             let request = decode_acquire_mount_source_request(body, peer, policy, now)?;
@@ -1618,6 +1641,13 @@ fn validate_success_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => {
             return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
+            let RequestOutcomeContextV1::HostConsumerCgroup(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_consumer_cgroup::decode_consumer_cgroup_response_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             let RequestOutcomeContextV1::HostAttachGate(original) = &request.outcome_context else {

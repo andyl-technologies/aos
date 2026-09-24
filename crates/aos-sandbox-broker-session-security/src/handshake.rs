@@ -1209,6 +1209,19 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn retain_authenticated_peer_pidfd(
+        &mut self,
+    ) -> Result<OwnedFd, DormantBrokerSessionHandshakeErrorV1> {
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        self.socket
+            .peer()
+            .pidfd()
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)
+    }
+
     pub(super) fn original_storage_inventory_coordinates(
         &mut self,
         group_request_id: [u8; 16],

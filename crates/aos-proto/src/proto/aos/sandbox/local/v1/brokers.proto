@@ -21,6 +21,7 @@ enum Audience {
   AUDIENCE_MOUNT_WORKER = 3;
   AUDIENCE_GUEST_AGENT = 4;
   AUDIENCE_ROOT_MOUNT = 5;
+  AUDIENCE_STORAGE_BROKER = 6;
 }
 
 message Descriptor {
@@ -96,6 +97,7 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
   BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
   BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;
+  BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -449,6 +451,27 @@ message ObserveMountScopeResponse {
   bytes runtime_handle = 2;
   bytes payload_scope_handle = 3;
   bytes leader_cgroup_hint = 4;
+}
+
+// Storage-only, read-only current Host/Guardian cgroup query. The exact
+// Storage service peer is authenticated before Host reads this request. A
+// separately signed RootMount/Provider claim names the View and Attachment;
+// these selectors alone never authorize a LocalLive export or kernel grant.
+message ObserveConsumerCgroupRequestV1 {
+  RequestHeader header = 1;
+  AssignmentFence fence = 2;
+  bytes runtime_handle = 3; // Exactly 32 bytes derived from the fence.
+  bytes payload_scope_handle = 4; // Exact currently retained Host scope.
+}
+
+// Success carries exactly [PAYLOAD_LEADER_PIDFD, PAYLOAD_CGROUP]. The second
+// FD is the exact leader cgroup-v2 O_PATH directory, not a caller-supplied FD.
+message ObserveConsumerCgroupResponseV1 {
+  AssignmentFence fence = 1;
+  bytes runtime_handle = 2;
+  bytes payload_scope_handle = 3;
+  bytes boot_id = 4; // Kernel boot UUID, exactly 16 bytes.
+  uint64 cgroup_kernfs_id = 5; // Full 64-bit cgroup-v2 ID of the second FD.
 }
 
 message InventoryRuntimeRequest { RequestHeader header = 1; }

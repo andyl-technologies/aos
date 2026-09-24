@@ -16,6 +16,7 @@ use crate::{HostError, Result};
 
 const NODE_CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
 const ROOT_MOUNT_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandbox-mountd.service";
+const STORAGE_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 
 /// Retains a root-account proof for the fixed Mount broker service only.
 #[derive(Debug)]
@@ -27,6 +28,22 @@ pub struct VerifiedMountBrokerPeer<'a> {
 
 impl VerifiedMountBrokerPeer<'_> {
     /// Returns kernel credentials bound to this live RootMount proof.
+    #[must_use]
+    pub const fn credentials(&self) -> PeerCredentials {
+        self.credentials
+    }
+}
+
+/// Retains a root-account proof for the fixed Storage broker service only.
+#[derive(Debug)]
+pub struct VerifiedStorageBrokerPeer<'a> {
+    credentials: PeerCredentials,
+    _identity: &'a ConnectionPeerIdentity,
+    _cgroup: RetainedCgroupAnchor,
+}
+
+impl VerifiedStorageBrokerPeer<'_> {
+    /// Returns kernel credentials bound to this live Storage proof.
     #[must_use]
     pub const fn credentials(&self) -> PeerCredentials {
         self.credentials
@@ -122,6 +139,33 @@ impl ControllerPeerVerifier {
         let (credentials, cgroup) = self.verify_service(identity, Path::new(ROOT_MOUNT_CGROUP))?;
 
         Ok(VerifiedMountBrokerPeer {
+            credentials,
+            _identity: identity,
+            _cgroup: cgroup,
+        })
+    }
+
+    /// Verifies a root peer in the exact fixed Storage broker service cgroup.
+    ///
+    /// This proof is reserved for a future signed-session cgroup readback;
+    /// it never authorizes Controller or RootMount methods. It authenticates
+    /// the socket establisher, not a delegated packet writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-root credentials, a missing or substituted Storage cgroup,
+    /// non-leader peers, and failed live pidfd membership verification.
+    pub fn verify_storage_broker<'a>(
+        &self,
+        identity: &'a ConnectionPeerIdentity,
+    ) -> Result<VerifiedStorageBrokerPeer<'a>> {
+        if identity.credentials().uid() != 0 || identity.credentials().gid() != 0 {
+            return Err(HostError::Protocol(peer_mismatch()));
+        }
+
+        let (credentials, cgroup) = self.verify_service(identity, Path::new(STORAGE_CGROUP))?;
+
+        Ok(VerifiedStorageBrokerPeer {
             credentials,
             _identity: identity,
             _cgroup: cgroup,

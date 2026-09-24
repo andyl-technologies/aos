@@ -284,6 +284,24 @@ fn audience_protocol_matrix_and_active_state_are_explicit() {
     );
     assert!(host_root.is_ok());
 
+    let host_storage = BrokerSessionSecurityManifestV1::new(
+        BrokerSessionProtocolV1::Host,
+        BrokerSessionSecurityAudienceV1::StorageBroker,
+        1,
+        0,
+        manifest().domain_id(),
+        manifest().route_id(),
+        1,
+        [1; 32],
+        1,
+        [2; 32],
+        1,
+        [3; 32],
+        [4; 16],
+        manifest().key_pins().clone(),
+    );
+    assert!(host_storage.is_ok());
+
     let wrong_root = BrokerSessionSecurityManifestV1::new(
         BrokerSessionProtocolV1::Network,
         BrokerSessionSecurityAudienceV1::RootMount,
@@ -301,6 +319,24 @@ fn audience_protocol_matrix_and_active_state_are_explicit() {
         manifest().key_pins().clone(),
     );
     assert!(wrong_root.is_err());
+
+    let wrong_storage = BrokerSessionSecurityManifestV1::new(
+        BrokerSessionProtocolV1::Storage,
+        BrokerSessionSecurityAudienceV1::StorageBroker,
+        1,
+        0,
+        manifest().domain_id(),
+        manifest().route_id(),
+        1,
+        [1; 32],
+        1,
+        [2; 32],
+        1,
+        [3; 32],
+        [4; 16],
+        manifest().key_pins().clone(),
+    );
+    assert!(wrong_storage.is_err());
 
     let mut revoked = manifest().encode();
     revoked[184 + 168] = 1;

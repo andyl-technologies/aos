@@ -3,6 +3,7 @@
 # renamed, or renumbered within aos.sandbox.local.v1.
 
 package aos.sandbox.local.v1;
+AUDIENCE_STORAGE_BROKER = 6;
 message BrokerClientHello {
 bytes signed_session_hello = 7;
 message BrokerServerHello {
@@ -44,6 +45,7 @@ BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
 BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
 BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
 BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;
+BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;
 BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE = 12;
 message ObserveHostRuntimeArgumentRequestV1 {
 RequestHeader header = 1;
@@ -54,6 +56,17 @@ bytes source_digest = 5;
 bytes source_attempt_commitment = 6;
 bytes execution_id = 7;
 bytes create_operation_id = 8;
+message ObserveConsumerCgroupRequestV1 {
+RequestHeader header = 1;
+AssignmentFence fence = 2;
+bytes runtime_handle = 3;
+bytes payload_scope_handle = 4;
+message ObserveConsumerCgroupResponseV1 {
+AssignmentFence fence = 1;
+bytes runtime_handle = 2;
+bytes payload_scope_handle = 3;
+bytes boot_id = 4;
+uint64 cgroup_kernfs_id = 5;
 message RecoverStorageInventoryRequestV1 {
 RequestHeader header = 1;
 bytes group_request_id = 2;
