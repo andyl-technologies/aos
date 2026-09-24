@@ -1,10 +1,12 @@
 //! Closed Storage-to-kernel-owner transport and signed stage-ack codecs.
 //!
 //! This library cannot install, activate, or revoke a BPF map row. The C
-//! kernel-export owner remains the sole map custodian. No production listener,
-//! Storage signer, key loader, or descriptor handoff is wired to this crate.
-//! A successful decode is a nonauthorizing observation, never a grant.
+//! kernel-export owner remains the sole map custodian. An opt-in root-only
+//! listener pins two external public verifiers and drops each received handoff;
+//! no Storage sender, private signer key, map stage, or descriptor release is
+//! wired. A successful decode is a nonauthorizing observation, never a grant.
 
+pub mod deployment;
 pub mod handoff;
 pub mod peer;
 pub mod stage_ack;

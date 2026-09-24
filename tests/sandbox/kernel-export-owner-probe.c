@@ -920,9 +920,38 @@ int main(int argc, char **argv)
             strerror(errno));
     return 1;
   }
-  if (mkdir("/var/lib/aos/kernel-export-owner", 0700) != 0) {
-    fprintf(stderr, "kernel-export-owner-probe: private state directory failed: %s\n",
+  if (owner("recover", -1, -1, NULL, NULL, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: verified empty recovery failed\n");
+    return 1;
+  }
+  int interrupted = open("/var/lib/aos/kernel-export-owner/state.new",
+                         O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+  if (interrupted < 0 || close(interrupted) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: interrupted state fixture failed: %s\n",
             strerror(errno));
+    return 1;
+  }
+  if (owner("recover", -1, -1, NULL, NULL, NULL) == 0) {
+    fprintf(stderr, "kernel-export-owner-probe: interrupted state admitted\n");
+    return 1;
+  }
+  if (unlink("/var/lib/aos/kernel-export-owner/state.new") != 0 ||
+      owner("recover", -1, -1, NULL, NULL, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: state cleanup recovery failed\n");
+    return 1;
+  }
+  if (mkdir("/sys/fs/bpf/aos/kernel-export-owner/unexpected", 0700) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: unexpected pin fixture failed: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  if (owner("recover", -1, -1, NULL, NULL, NULL) == 0) {
+    fprintf(stderr, "kernel-export-owner-probe: unexpected pin admitted\n");
+    return 1;
+  }
+  if (rmdir("/sys/fs/bpf/aos/kernel-export-owner/unexpected") != 0 ||
+      owner("recover", -1, -1, NULL, NULL, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: pin cleanup recovery failed\n");
     return 1;
   }
   if (make_handoff(clone_fd, allowed_fd) != 0) {

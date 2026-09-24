@@ -8,9 +8,14 @@ license.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 ed25519-dalek.workspace = true
-rustix = { workspace = true, features = ["fs", "time"] }
+libc.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "process", "time"] }
 sha2.workspace = true
 thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "aos-sandbox-kernel-export-ownerd"
+path = "src/main.rs"

@@ -5,6 +5,7 @@
 #define AOS_KERNEL_EXPORT_PIN_DIR "/sys/fs/bpf/aos/kernel-export-owner"
 #include "aos-sandbox-kernel-export-deny.c"
 
+#include <dirent.h>
 #include <sys/file.h>
 #include <sys/statvfs.h>
 
@@ -132,6 +133,39 @@ static int state_lock(void)
     return -1;
   }
   return fd;
+}
+
+static int directory_entries_only(const char *path, const char *permitted)
+{
+  DIR *directory = opendir(path);
+  struct dirent *entry;
+  int result = -1;
+
+  if (directory == NULL)
+    return -1;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 ||
+        strcmp(entry->d_name, "..") == 0)
+      continue;
+    if (permitted == NULL || strcmp(entry->d_name, permitted) != 0)
+      goto out;
+    errno = 0;
+  }
+  if (errno == 0)
+    result = 0;
+
+out:
+  closedir(directory);
+  return result;
+}
+
+static int verified_empty_owner(void)
+{
+  /* A missing state file is not enough: interrupted records or pinned maps
+   * must never be promoted into a first-boot recovery success. */
+  return directory_entries_only(STATE_DIR, "lock") == 0 &&
+         directory_entries_only(AOS_KERNEL_EXPORT_PIN_DIR, NULL) == 0 ? 0 : -1;
 }
 
 static int read_state(struct owner_state *state)
@@ -900,7 +934,7 @@ int main(int argc, char **argv)
     return 1;
 
   if (argc == 2 && strcmp(argv[1], "recover") == 0) {
-    result = read_state(&state) == 0 ? revoke_state(&state) : -1;
+    result = read_state(&state) == 0 ? revoke_state(&state) : verified_empty_owner();
     goto out;
   }
   if (argc < 5 || parse_fd(argv[2], &clone_fd) != 0 ||

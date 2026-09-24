@@ -48,8 +48,8 @@ impl ClosedHandoffReadback {
 /// `storage_cgroup` must come from independent protected deployment scope;
 /// neither the socket path nor the received packet establishes that trust.
 /// An accepted socket must come from a `RecordSubjectListener` with identity
-/// options set before any child could be enqueued. The listener and cgroup
-/// constructor remain unwired in production.
+/// options set before any child could be enqueued. The opt-in owner daemon
+/// supplies these inputs but discards this function's readback without effects.
 ///
 /// # Errors
 ///

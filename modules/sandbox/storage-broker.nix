@@ -84,6 +84,12 @@ in {
 
     credentials = brokerSession.mkOptions brokerSessionEndpoints;
 
+    kernelExportStageSignerCredential = lib.mkOption {
+      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      default = null;
+      description = "Reserved external AOSKGA02 stage-signing credential name. It is deliberately not loaded into Storage until a held-barrier signer is implemented.";
+    };
+
     operatorRecoveryControllerPublicKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;

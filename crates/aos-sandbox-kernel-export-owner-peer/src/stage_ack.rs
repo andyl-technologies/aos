@@ -29,8 +29,8 @@ const ACK_DOMAIN: &[u8] = b"aos.sandbox.storage.kernel-export-stage-ack.signatur
 
 /// Borrows two distinct, independently pinned role-specific verifier records.
 ///
-/// Constructing this pair does not establish that either byte array came from
-/// protected deployment custody; no production loader exists in this slice.
+/// Constructing this pair does not establish protected deployment custody.
+/// The opt-in daemon loads public verifiers but does not call this codec.
 pub struct StorageRoleVerifiers<'a> {
     /// The earlier mutable-origin lease verifier.
     pub lease: &'a [u8; VERIFIER_BYTES],
