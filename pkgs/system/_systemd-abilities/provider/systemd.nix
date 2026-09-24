@@ -1128,12 +1128,17 @@
       path = packageArtifactForRequest binding.request selector;
     }) (builtins.attrValues selectors);
   staticPlanFor = resource: let
-    realization = builtins.toJSON resource.realization;
-  in {
-    name = derivationDisplayName "systemd-ability" realization;
-    input = realization;
-    selectors = selectorPathsFor resource resource.realization;
-  };
+    # Service composition can refer to outputs from later fixed-point rounds.
+    resolved = staticValueFor resource.lifetime [] resource.realization;
+    realization = builtins.toJSON resolved.value;
+  in
+    if !resolved.available
+    then throw "systemd static realization depends on a runtime-only output"
+    else {
+      name = derivationDisplayName "systemd-ability" realization;
+      input = realization;
+      selectors = selectorPathsFor resource resolved.value;
+    };
   staticOutputDescriptorFor = requestName: outputName: let
     matchingBindings = builtins.filter (
       binding: binding.request == requestName
@@ -1206,6 +1211,39 @@
       else if descriptor.phase == "planning"
       then staticValueFor recipientLifetime (trail ++ [reference]) output.value
       else throw "systemd static rendering has an unsupported output phase at '${reference}'"
+    else if builtins.isAttrs value && (value._type or null) == "aos-runtime-path"
+    then let
+      base = staticValueFor recipientLifetime trail value.base;
+      path = "${base.value}${lib.optionalString (base.value != "/") "/"}${value.relative_path}";
+    in
+      if !base.available
+      then base
+      else if !lib.abilities.types.executionPath.check base.value
+      then throw "systemd runtime path base is not a resolved execution path"
+      else if !lib.abilities.types.relativePath.check value.relative_path
+      then throw "systemd runtime path has an invalid relative path"
+      else if !lib.abilities.types.executionPath.check path
+      then throw "systemd runtime path does not resolve to an execution path"
+      else {
+        available = true;
+        value = path;
+      }
+    else if builtins.isAttrs value && (value._type or null) == "aos-canonical-json"
+    then let
+      source = staticValueFor recipientLifetime trail value.value;
+      sourceType = lib.abilities.types.fromSchema value.source_schema;
+      encoded = builtins.toJSON source.value;
+    in
+      if !source.available
+      then source
+      else if !sourceType.check source.value
+      then throw "systemd canonical JSON source does not match its declared type"
+      else if builtins.stringLength encoded > value.max_bytes
+      then throw "systemd canonical JSON exceeds its declared byte limit"
+      else {
+        available = true;
+        value = encoded;
+      }
     else if builtins.isAttrs value
     then let
       fields = builtins.mapAttrs (_: staticValueFor recipientLifetime trail) value;
