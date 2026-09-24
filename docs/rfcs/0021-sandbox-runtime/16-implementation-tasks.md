@@ -8267,9 +8267,9 @@ and readiness remain closed.
 
 The pinned Linux source is 7.2.3 (`pkgs/kernel/_source.nix`). Its per-mount
 read-only flag protects a detached clone against writes through that clone,
-but it is not a revocation primitive. The present payload seccomp profile
-(`pkgs/system/patches/0007-nspawn-aos-payload-seccomp-profile.patch`) does not
-deny `io_uring_setup`. In this pinned kernel, `io_uring/msg_ring.c` installs a
+but it is not a revocation primitive. The payload seccomp profile previously
+permitted `io_uring_setup`; the installed filter now denies it. In this pinned
+kernel, `io_uring/msg_ring.c` installs a
 source `struct file` in a target ring through `__io_fixed_fd_install`, without
 the `security_file_receive` call used by `fs/file.c`'s `receive_fd` path. A
 grant policy based only on BPF-LSM `file_receive` therefore cannot prove that
@@ -8325,3 +8325,19 @@ policy replacement, and power-loss ambiguity. A test must demonstrate that a
 revoked or wrong-cgroup holder cannot continue live access and that release is
 withheld until all relevant holders are stopped. Until then the unconditional
 LocalLive gate above stays in place.
+
+The nspawn payload profile now denies `io_uring_setup`, `io_uring_register`,
+and `io_uring_enter`. Its child-process test observes seccomp filter mode and
+checks that all three syscalls return `EPERM` after installation. This removes
+one fixed-file transfer route from that profile, but does not prove an actual
+payload inherited the exact filter, began without a ring FD, or has any
+enforcing LocalLive grant policy. The closed provider gate is unchanged.
+
+The pinned kernel enables BPF-LSM and BTF and exposes `file_open`,
+`file_permission`, `mmap_file`, `file_mprotect`, `file_lock`, and `file_receive`
+hooks. A separate deny-only, mount-ID/cgroup/epoch current-use policy can be
+built and VM-tested incrementally, without a signer. It cannot use the optional
+fleet audit program as its enforcing owner. Complete access coverage, protected
+map/link custody, clone identity readback, socket and mapping lifetimes, and
+crash-safe revocation remain unproved; a current-use prototype must not remove
+the LocalLive gate.

@@ -27,7 +27,7 @@ index 3788de0..b819a8f 100644
  
  #include "log.h"
  #include "nspawn-seccomp.h"
-@@ -11,6 +13,141 @@
+@@ -11,6 +13,144 @@
  
  #if HAVE_SECCOMP
  
@@ -63,6 +63,9 @@ index 3788de0..b819a8f 100644
 +                "fsopen",
 +                "fspick",
 +                "init_module",
++                "io_uring_enter",
++                "io_uring_register",
++                "io_uring_setup",
 +                "mount",
 +                "mount_setattr",
 +                "move_mount",
@@ -248,10 +251,11 @@ new file mode 100644
 index 0000000..a0c27a1
 --- /dev/null
 +++ b/src/nspawn/test-nspawn-seccomp.c
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,50 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <linux/sched.h>
++#include <linux/seccomp.h>
 +#include <sys/mount.h>
 +#include <sys/prctl.h>
 +#include <sys/syscall.h>
@@ -268,9 +272,13 @@ index 0000000..a0c27a1
 +
 +        ASSERT_OK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 +        ASSERT_OK(setup_aos_payload_seccomp());
++        ASSERT_EQ(prctl(PR_GET_SECCOMP, 0, 0, 0, 0), SECCOMP_MODE_FILTER);
 +
 +        ASSERT_ERROR_ERRNO(chroot("/"), EPERM);
 +        ASSERT_ERROR_ERRNO(mount(NULL, NULL, NULL, 0, NULL), EPERM);
++        ASSERT_ERROR_ERRNO(syscall(__NR_io_uring_setup, 0, NULL), EPERM);
++        ASSERT_ERROR_ERRNO(syscall(__NR_io_uring_enter, -1, 0, 0, 0, NULL, 0), EPERM);
++        ASSERT_ERROR_ERRNO(syscall(__NR_io_uring_register, -1, 0, NULL, 0), EPERM);
 +        ASSERT_ERROR_ERRNO(syscall(__NR_unshare, 0), EPERM);
 +        ASSERT_ERROR_ERRNO(syscall(__NR_clone3, NULL, 0), ENOSYS);
 +        ASSERT_ERROR_ERRNO(syscall(__NR_clone, CLONE_NEWNS | SIGCHLD, NULL, NULL, NULL, 0), EPERM);

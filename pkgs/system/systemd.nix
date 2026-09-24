@@ -1,6 +1,7 @@
 ##! systemd — System and service manager
 {
   mkDerivation,
+  stdenv,
   fetchurl,
   gnumake,
   pkg-config,
@@ -423,6 +424,18 @@ in
         script = ''
           ninja -j$NIX_BUILD_CORES
         '';
+      }
+      {
+        name = "check-aos-payload-seccomp";
+        script =
+          if stdenv.isCross
+          then ''
+            # Target execution belongs to the architecture-specific VM gate.
+            true
+          ''
+          else ''
+            ./test-nspawn-seccomp
+          '';
       }
       {
         name = "install";
