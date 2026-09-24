@@ -133,9 +133,24 @@ register_recovery_choices() {
   recovery_group register-group 1 recovery.response
 }
 
+probe_primary_path() {
+  phase=$1
+  # A direct request to B traverses A-B and B-C while the selected fault is
+  # active, even when the recovery tuple will move A onto the backup route.
+  if curl --noproxy '*' --connect-timeout 1 --max-time 1 --silent \
+    --output /dev/null --fail http://10.77.0.3:8080/probe; then
+    outcome=served
+  else
+    outcome=disrupted
+  fi
+  crucible-guest event network.primary.probe "phase=$phase" "outcome=$outcome"
+  crucible-guest semantic-marker "fault.$phase.primary-probed" instance-1
+}
+
 choose_recovery() {
   instance=$1
   sequence=$2
+  phase=$3
   selected=$(recovery_group choose-group "$sequence" recovery.response "$instance")
   strategy_id=
   hold=
@@ -164,6 +179,7 @@ EOF
     echo 'incomplete recovery group selection' >&2
     exit 2
   fi
+  probe_primary_path "$phase"
   hold_seconds=$(printf '%d.%06d' "$((hold / 1000000))" "$((hold % 1000000))")
   sleep "$hold_seconds"
 
@@ -202,13 +218,13 @@ run_router() {
   while [ ! -e /run/converged ]; do sleep 0.1; done
   wait_for_peer_acks transport
   crucible-guest semantic-marker fault.transport.ready instance-1
-  choose_recovery transport/one 1
+  choose_recovery transport/one 1 transport
   touch /run/transport-applied
   crucible-guest semantic-marker fault.transport.signaled instance-1
   while [ ! -e /run/followup-ready ]; do sleep 0.1; done
   wait_for_peer_acks followup
   crucible-guest semantic-marker fault.followup.ready instance-1
-  choose_recovery followup/one 2
+  choose_recovery followup/one 2 followup
   crucible-guest sometimes selection-acknowledged-once \
     'Both guest response envelopes were acknowledged' 1
   wait "$envoy_pid" || :

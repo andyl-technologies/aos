@@ -100,7 +100,7 @@ wait_for_body() {
       return
     fi
     attempts=$((attempts + 1))
-    if [ "$attempts" -ge 40 ]; then
+    if [ "$attempts" -ge 80 ]; then
       echo "route expected '$expected', last received '$observed'" >&2
       return 1
     fi
@@ -109,6 +109,12 @@ wait_for_body() {
 }
 
 wait_for_body 'east:1:1:1:1' 1
+
+# The guest's direct primary probe addresses B, so it exercises both primary
+# segments before A changes its Envoy route.
+primary_body=$(curl --noproxy '*' --connect-timeout 1 --max-time 1 \
+  --silent --show-error --fail http://127.77.0.3:8080/probe)
+test "$primary_body" = 'east:::1:1'
 
 python3 "$TRAFFIC_PY" control >"$work/control.log" 2>&1 &
 control_pid=$!
