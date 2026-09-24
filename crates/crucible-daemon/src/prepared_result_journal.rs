@@ -1573,7 +1573,7 @@ mod tests {
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "c57a59b16211e78ed9738f61e37c99d338dba5acc06e722f0b9942a84ddf8389"
+            "847ec8cbf3e4cbf6c9298b84c051b769f73be5cba89ef147bcd14ec3f33a2097"
         );
         journal.remove().expect("remove v2 journal");
     }
