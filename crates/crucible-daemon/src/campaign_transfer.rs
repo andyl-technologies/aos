@@ -857,7 +857,7 @@ pub fn transfer_campaign_archive_durably(
                     .map_err(map_archive_exact_pin_error)?,
                 );
             } else {
-                let claim = authenticate_archive_checkpoint(
+                authenticate_archive_checkpoint(
                     destination.repository,
                     checkpoints,
                     plan.manifest().source_snapshot(),
@@ -866,10 +866,6 @@ pub fn transfer_campaign_archive_durably(
                     selection.checkpoint(),
                 )
                 .map_err(map_archive_exact_pin_error)?;
-                claim
-                    .commit()
-                    .map_err(ExactPinRetentionError::Checkpoint)
-                    .map_err(map_archive_exact_pin_error)?;
             }
         }
         if !prepared.is_empty() && destination.exact_pins.is_none() {

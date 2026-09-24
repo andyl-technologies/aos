@@ -33,7 +33,7 @@ use crate::crucible_artifact::decode_crucible_configuration_artifact_from_reposi
 use crate::{
     CrucibleArtifactError, ExactCheckpointStore, ExactCheckpointStoreError,
     LoadedProductionExactCheckpoint, decode_crucible_scenario_artifact,
-    exact_checkpoint_restore::acquire_production_exact_checkpoint_replay_oracle_promotion,
+    exact_checkpoint_restore::authenticate_production_exact_checkpoint_replay_oracle_promotion,
 };
 
 /// Maximum durable selection records in one single-host owner journal.
@@ -59,13 +59,12 @@ pub struct ExactPinMaterializationSelection {
     checkpoint: ExactCheckpointId,
 }
 
-/// One-shot authority to durably install an authenticated exact-pin selection.
-pub struct PreparedExactPinMaterializationSelection<'a> {
+/// Durable replay proof paired with one exact-pin selection awaiting publication.
+pub struct PreparedExactPinMaterializationSelection {
     selection: ExactPinMaterializationSelection,
-    claim: crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
 }
 
-impl std::fmt::Debug for PreparedExactPinMaterializationSelection<'_> {
+impl std::fmt::Debug for PreparedExactPinMaterializationSelection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PreparedExactPinMaterializationSelection")
@@ -108,7 +107,8 @@ impl ExactPinMaterializationSelection {
     /// an archive importer can validate the complete destination closure before
     /// publishing `campaign`. The production checkpoint then undergoes the
     /// same scenario-aware scheduler and replay-oracle validation as a live
-    /// resume admission.
+    /// resume admission. Import derives authority from durable closure proof;
+    /// the selection journal supplies the one-shot campaign/configuration key.
     ///
     /// # Errors
     ///
@@ -116,16 +116,16 @@ impl ExactPinMaterializationSelection {
     /// the exact declared pin, replay artifacts cannot be decoded through their
     /// authenticated selections, the checkpoint is not a production closure,
     /// or its complete resume basis is invalid or lacks matching replay proof.
-    pub(crate) fn prepare_at_snapshot<'a>(
+    pub(crate) fn prepare_at_snapshot(
         repository: &CampaignRepository,
-        checkpoints: &'a ExactCheckpointStore,
+        checkpoints: &ExactCheckpointStore,
         campaign: &CampaignName,
         snapshot: CampaignSnapshotId,
         configuration: ConfigurationId,
         pin_fact: CampaignFactId,
         checkpoint: ExactCheckpointId,
-    ) -> Result<PreparedExactPinMaterializationSelection<'a>, ExactPinRetentionError> {
-        let claim = authenticate_archive_checkpoint(
+    ) -> Result<PreparedExactPinMaterializationSelection, ExactPinRetentionError> {
+        authenticate_archive_checkpoint(
             repository,
             checkpoints,
             snapshot,
@@ -140,7 +140,6 @@ impl ExactPinMaterializationSelection {
                 pin_fact,
                 checkpoint,
             },
-            claim,
         })
     }
 
@@ -217,14 +216,14 @@ impl ExactPinMaterializationSelection {
     }
 }
 
-pub(crate) fn authenticate_archive_checkpoint<'a>(
+pub(crate) fn authenticate_archive_checkpoint(
     repository: &CampaignRepository,
-    checkpoints: &'a ExactCheckpointStore,
+    checkpoints: &ExactCheckpointStore,
     snapshot: CampaignSnapshotId,
     configuration: ConfigurationId,
     pin_fact: CampaignFactId,
     checkpoint: ExactCheckpointId,
-) -> Result<crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>, ExactPinRetentionError> {
+) -> Result<(), ExactPinRetentionError> {
     let mut pin = None;
     repository.visit_pin_retention_roots_at(snapshot, &mut |record| {
         if record.request().change.configuration() == configuration {
@@ -268,13 +267,16 @@ pub(crate) fn authenticate_archive_checkpoint<'a>(
     let raw = production
         .promotion_source()
         .ok_or(ExactPinRetentionError::CheckpointReplayOracleNotReady { checkpoint })?;
-    acquire_production_exact_checkpoint_replay_oracle_promotion(
+    // A destination store starts without process-local live promotion claims.
+    // The imported immutable raw/promoted pair must prove its own relationship.
+    authenticate_production_exact_checkpoint_replay_oracle_promotion(
         checkpoints,
         raw,
         checkpoint,
         &scenario,
         &crate::ExecutionCancellation::default(),
     )
+    .map(|_| ())
     .map_err(|_| ExactPinRetentionError::CheckpointReplayOracleNotReady { checkpoint })
 }
 
@@ -491,16 +493,10 @@ impl DirectoryExactPinMaterializationStore {
     /// [`Self::select`].
     pub(crate) fn select_import_if_absent(
         &mut self,
-        prepared: PreparedExactPinMaterializationSelection<'_>,
+        prepared: PreparedExactPinMaterializationSelection,
     ) -> Result<ExactPinSelectionDisposition, ExactPinRetentionError> {
-        let PreparedExactPinMaterializationSelection { selection, claim } = prepared;
-        let disposition = self.select_import_if_absent_inner(&selection)?;
-        claim
-            .commit()
-            .map_err(|_| ExactPinRetentionError::CheckpointReplayOracleNotReady {
-                checkpoint: selection.checkpoint,
-            })?;
-        Ok(disposition)
+        let PreparedExactPinMaterializationSelection { selection, .. } = prepared;
+        self.select_import_if_absent_inner(&selection)
     }
 
     fn select_import_if_absent_inner(
