@@ -138,6 +138,7 @@ pub mod runtime;
 pub mod service;
 mod snapshot_metadata;
 pub mod state;
+pub mod storage_zfs_hold_key;
 pub mod transport;
 pub mod workspace_catalog;
 mod workspace_pin;

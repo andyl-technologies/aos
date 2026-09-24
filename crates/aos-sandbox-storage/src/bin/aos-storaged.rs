@@ -17,6 +17,7 @@ use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryC
 use aos_sandbox_storage::peer::{
     ControllerPeerVerifier, HostRootExportPeerVerifier, ProviderLiveExportPeerVerifier,
 };
+use aos_sandbox_storage::storage_zfs_hold_key::StorageZfsHoldKeyV1;
 use aos_sandbox_storage::{
     StorageBrokerRuntime, StorageIdentityPoolV1, StoragePrepareReadiness, StorageRuntimeError,
     StorageService, StorageServiceError, SystemdZfsExecutor,
@@ -89,8 +90,16 @@ fn run() -> Result<(), StorageServiceError> {
     } else {
         (None, None)
     };
+    let zfs_hold_key = if arguments.zfs_hold_key_configured {
+        Some(StorageZfsHoldKeyV1::load()?)
+    } else {
+        None
+    };
 
     loop {
+        if let Some(key) = &zfs_hold_key {
+            key.recheck()?;
+        }
         let mut ready = vec![
             rustix::event::PollFd::from_borrowed_fd(listener.as_fd(), rustix::event::PollFlags::IN),
             rustix::event::PollFd::from_borrowed_fd(
@@ -211,6 +220,7 @@ struct Arguments {
     bootstrap_directory: PathBuf,
     resolver_policy_directory: Option<PathBuf>,
     guest_root_template: PathBuf,
+    zfs_hold_key_configured: bool,
 }
 
 fn arguments() -> Result<Arguments, StorageServiceError> {
@@ -225,6 +235,11 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
     let bootstrap_directory = required_path(arguments.next(), "bootstrap directory")?;
     let resolver_policy_directory = optional_path(arguments.next(), "resolver policy directory")?;
     let guest_root_template = required_path(arguments.next(), "guest root template")?;
+    let zfs_hold_key_configured = match arguments.next().as_deref() {
+        Some(value) if value == "zfs-hold-key-v1" => true,
+        Some(value) if value == "-" => false,
+        _ => return Err(usage_error()),
+    };
     if arguments.next().is_some() {
         return Err(usage_error());
     }
@@ -238,6 +253,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         bootstrap_directory,
         resolver_policy_directory,
         guest_root_template,
+        zfs_hold_key_configured,
     })
 }
 
@@ -292,7 +308,7 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE"
+        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|-"
             .to_owned(),
     )
 }

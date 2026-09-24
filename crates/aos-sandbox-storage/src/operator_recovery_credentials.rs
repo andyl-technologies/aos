@@ -32,7 +32,7 @@ const CONTROLLER_BYTES: usize = 72;
 const OWNER_BYTES: usize = 104;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FileIdentity {
+pub(crate) struct FileIdentity {
     device: u64,
     inode: u64,
     mode: u32,
@@ -41,10 +41,10 @@ struct FileIdentity {
     ctime_nsec: u64,
 }
 
-struct PinnedCredential {
-    name: &'static str,
-    identity: FileIdentity,
-    bytes: Zeroizing<Vec<u8>>,
+pub(crate) struct PinnedCredential {
+    pub(crate) name: &'static str,
+    pub(crate) identity: FileIdentity,
+    pub(crate) bytes: Zeroizing<Vec<u8>>,
 }
 
 /// Pins both independent role keys for the lifetime of the Storage service.
@@ -137,7 +137,7 @@ impl StorageOperatorRecoveryCredentialsV1 {
     }
 }
 
-fn open_directory(path: &Path) -> Result<(OwnedFd, FileIdentity), StorageServiceError> {
+pub(crate) fn open_directory(path: &Path) -> Result<(OwnedFd, FileIdentity), StorageServiceError> {
     if !path.is_absolute() {
         return Err(invalid("operator credential directory is not absolute"));
     }
@@ -161,7 +161,7 @@ fn open_directory(path: &Path) -> Result<(OwnedFd, FileIdentity), StorageService
     Ok((fd, identity(&stat)))
 }
 
-fn read_credential(
+pub(crate) fn read_credential(
     directory: &OwnedFd,
     name: &'static str,
     length: usize,

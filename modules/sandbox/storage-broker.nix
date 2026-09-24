@@ -102,6 +102,12 @@ in {
       description = "Protected AOSORSK2 Storage owner signing-key record for operator receipts. Both role keys must be provisioned together.";
     };
 
+    zfsHoldSigningKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Separately provisioned root-owned AOSZHK01 Storage ZFS hold receipt key. Issuance remains closed until physical readback and durable attempt admission are connected.";
+    };
+
     identityPoolStart = lib.mkOption {
       type = lib.types.addCheck lib.types.int (value: value >= minimumIdentityRange);
       default = 65536;
@@ -139,6 +145,10 @@ in {
             (cfg.operatorRecoveryControllerPublicKey == null || lib.hasPrefix "/" cfg.operatorRecoveryControllerPublicKey)
             && (cfg.operatorRecoveryStorageOwnerKey == null || lib.hasPrefix "/" cfg.operatorRecoveryStorageOwnerKey);
           message = "aos.sandbox.storageBroker operator Recovery key paths must be absolute";
+        }
+        {
+          assertion = cfg.zfsHoldSigningKey == null || lib.hasPrefix "/" cfg.zfsHoldSigningKey;
+          message = "aos.sandbox.storageBroker.zfsHoldSigningKey must be null or absolute";
         }
         {
           assertion = lib.hasPrefix "/" cfg.bootstrapDirectory;
@@ -298,14 +308,17 @@ in {
             then "-"
             else cfg.resolverPolicyDirectory
           )} \
-            ${cfg.guestRootTemplate}
+            ${cfg.guestRootTemplate} \
+            ${if cfg.zfsHoldSigningKey == null then "-" else "zfs-hold-key-v1"}
         '';
         LoadCredential =
           brokerSessionConfiguration.loadCredentials
           ++ lib.optionals operatorRecoveryConfigured [
             "operator-recovery-controller-public-key-v1:${cfg.operatorRecoveryControllerPublicKey}"
             "operator-recovery-storage-owner-key-v1:${cfg.operatorRecoveryStorageOwnerKey}"
-          ];
+          ]
+          ++ lib.optional (cfg.zfsHoldSigningKey != null)
+          "storage-zfs-hold-key-v1:${cfg.zfsHoldSigningKey}";
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-storage";

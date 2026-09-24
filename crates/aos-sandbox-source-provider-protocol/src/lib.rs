@@ -39,6 +39,7 @@ pub mod recovery_currentness;
 pub mod storage_live_export_lease;
 pub mod storage_live_export_request;
 pub mod storage_live_export_transport;
+pub mod storage_zfs_hold_receipt;
 pub mod trust;
 pub mod verification;
 
@@ -117,6 +118,11 @@ pub use storage_live_export_request::{
 pub use storage_live_export_transport::{
     MAXIMUM_STORAGE_EXPORT_REQUEST_PACKET_BYTES_V1, StorageLiveExportTransportErrorV1,
     StorageLiveExportTransportRequestV1, StorageLiveExportUnavailableV1,
+};
+pub use storage_zfs_hold_receipt::{
+    SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1, SignedStorageZfsHoldReceiptV1, StorageZfsHoldHeadV1,
+    StorageZfsHoldReceiptErrorV1, StorageZfsHoldReceiptV1, StorageZfsHoldSignerV1,
+    StorageZfsHoldVerifierV1,
 };
 pub use trust::{
     MAXIMUM_SOURCE_PROVIDER_AUTHORITY_TRUSTS, MAXIMUM_SOURCE_PROVIDER_KEY_TRUSTS,
