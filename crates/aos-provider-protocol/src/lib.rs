@@ -22,6 +22,13 @@ pub use aos_ability_model::{
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
+mod root_observation;
+
+pub use root_observation::{
+    ROOT_OBSERVATION_REQUEST_SCHEMA, ROOT_OBSERVATION_RESULT_SCHEMA, RootObservationRequest,
+    RootObservationResult, validate_root_observation,
+};
+
 /// Selects the version-1 command-handler ABI on an authenticated executable.
 pub const HANDLER_ABI_ARGUMENT: &str = "--aos-primitive-v1";
 /// Identifies one durable command request.
