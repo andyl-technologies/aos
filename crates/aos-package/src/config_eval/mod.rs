@@ -35,6 +35,7 @@ pub mod ability_policy;
 pub mod ability_policy_authority;
 pub mod bound_handler;
 mod bound_handler_store;
+mod source_root_inventory;
 pub mod source_stage;
 pub(crate) mod transaction_store;
 pub use transaction_store::RetainedAbilityDiagnosticSource;
