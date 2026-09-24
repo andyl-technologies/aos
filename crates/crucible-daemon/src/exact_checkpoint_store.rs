@@ -216,10 +216,6 @@ pub(crate) struct LiveReplayPromotionClaim<'a> {
 }
 
 impl LiveReplayPromotionClaim<'_> {
-    pub(crate) const fn evidence(&self) -> ContentId {
-        self.evidence
-    }
-
     pub(crate) fn commit(mut self) -> Result<(), ExactCheckpointStoreError> {
         let mut promotions = self
             .store
