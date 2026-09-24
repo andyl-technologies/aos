@@ -981,7 +981,7 @@ fn transaction_id(purpose: &[u8], location: &[u8], commitment: &[u8]) -> [u8; 16
 #[cfg(test)]
 mod tests {
     use std::fs::{File, OpenOptions};
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
     use tempfile::TempDir;
 
@@ -993,11 +993,13 @@ mod tests {
     use crate::catalog_transition::execution_capture::tests::{
         deleted_fixture, fixture as capture_fixture,
     };
+    use crate::execution_capture_files::{CaptureFileCustodyErrorV1, PinnedCaptureDirectoryV1};
     use crate::execution_capture_writer::{
         CaptureStreamV1, CaptureWriteErrorV1, DetachedCaptureWriterV1,
     };
     use crate::execution_capture_zfs_worker::{
-        AuthorizedCaptureCreateAttemptV1, CaptureCreateBackendV1, CaptureCreateWorkerErrorV1,
+        AuthorizedCaptureCreateAttemptV1, AuthorizedCaptureWriterAttemptV1, CaptureCreateBackendV1,
+        CaptureCreateWorkerErrorV1, CaptureWriterWorkerErrorV1,
     };
     use crate::process::ZfsWorkerError;
     use aos_sandbox_core::OperationId;
@@ -1362,6 +1364,60 @@ mod tests {
                 .err(),
             Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
         );
+
+        let stdout = private_output_file(&directory.path().join("post-stdout"));
+        let stderr = private_output_file(&directory.path().join("post-stderr"));
+        let mut writer = DetachedCaptureWriterV1::new(&protected, stdout, stderr).unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stdout, &[b'a'; 50])
+            .unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stderr, &[b'b'; 20])
+            .unwrap();
+        writer.finish_stream(CaptureStreamV1::Stdout).unwrap();
+        writer.finish_stream(CaptureStreamV1::Stderr).unwrap();
+        let mut written = writer.finish().unwrap();
+        written.stdout.captured_bytes = 61;
+        written.stderr.captured_bytes = 0;
+        assert!(matches!(
+            CaptureZfsReadbackPlanV1::after_write(&verified, &protected, &written, 20, 100),
+            Err(CaptureZfsReadbackErrorV1::InvalidRequirement)
+        ));
+        written.stdout.captured_bytes = 50;
+        written.stderr.captured_bytes = 20;
+        let postwrite =
+            CaptureZfsReadbackPlanV1::after_write(&verified, &protected, &written, 20, 100)
+                .unwrap();
+        let remaining = format!(
+            "{}\tfilesystem\t17\t-\t200\t200\tnone\toff\tno\t50\n",
+            verified.dataset_name()
+        );
+        let postwrite_readback = postwrite
+            .evaluate([pool, root, remaining.as_bytes()])
+            .unwrap();
+        assert_eq!(postwrite_readback.observed_headroom_bytes, 20);
+        assert_ne!(
+            postwrite_readback.observation_digest,
+            readback.observation_digest
+        );
+        let insufficient = remaining.replace("\tno\t50\n", "\tno\t49\n");
+        assert_eq!(
+            postwrite
+                .evaluate([pool, root, insufficient.as_bytes()])
+                .err(),
+            Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
+        );
+
+        let mut writer_attempt = AuthorizedCaptureWriterAttemptV1::for_test(protected, verified);
+        let binding = writer_attempt.file_custody_binding();
+        assert_eq!(binding.3, digest);
+        writer_attempt.expire_for_test();
+        let fixed_zfs =
+            crate::ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap();
+        assert!(matches!(
+            writer_attempt.prepare_detached(&fixed_zfs),
+            Err(CaptureWriterWorkerErrorV1::InvalidAttempt)
+        ));
     }
 
     #[test]
@@ -1507,6 +1563,59 @@ mod tests {
         );
         assert!(result.stdout_eof && result.stderr_eof && result.synced_readback);
         assert_ne!(result.result_digest.as_bytes(), &[0; 32]);
+    }
+
+    #[test]
+    fn pinned_namespace_transfers_only_exact_aoseor03_files_to_writer() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let capture_directory = TempDir::new().unwrap();
+        std::fs::set_permissions(
+            capture_directory.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mut ledger = open(&path, 6).unwrap();
+        let mut claim = record(1, 6);
+        claim.maximum_stdout_bytes = 4;
+        claim.maximum_stderr_bytes = 2;
+        let digest = ledger.reserve_record(claim).unwrap();
+        drop(ledger);
+
+        let ledger = open(&path, 6).unwrap();
+        let retained = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], digest)
+            .unwrap();
+        let pin = PinnedCaptureDirectoryV1::for_test(capture_directory.path(), &retained).unwrap();
+        let (mut writer, guard) = pin.claim_files().unwrap().into_writer(&retained).unwrap();
+        writer
+            .write_chunk(CaptureStreamV1::Stdout, b"abcdef")
+            .unwrap();
+        writer.write_chunk(CaptureStreamV1::Stderr, b"xyz").unwrap();
+        writer.finish_stream(CaptureStreamV1::Stdout).unwrap();
+        writer.finish_stream(CaptureStreamV1::Stderr).unwrap();
+        let written = writer.finish().unwrap();
+        guard.sync_after_write().unwrap();
+
+        assert_eq!(written.record_digest, digest);
+        assert_eq!(written.stdout.captured_bytes, 4);
+        assert_eq!(written.stderr.captured_bytes, 2);
+        assert!(written.stdout.truncated && written.stderr.truncated);
+        assert_eq!(
+            std::fs::read(capture_directory.path().join("stdout")).unwrap(),
+            b"abcd"
+        );
+        assert_eq!(
+            std::fs::read(capture_directory.path().join("stderr")).unwrap(),
+            b"xy"
+        );
+        drop(guard);
+        assert!(matches!(
+            PinnedCaptureDirectoryV1::for_test(capture_directory.path(), &retained)
+                .unwrap()
+                .claim_files(),
+            Err(CaptureFileCustodyErrorV1::AlreadyClaimed)
+        ));
     }
 
     #[test]

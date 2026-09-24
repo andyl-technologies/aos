@@ -9,6 +9,7 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::{CaptureDatasetRequirementV1, VerifiedCaptureDatasetV1};
+use crate::execution_capture_writer::UnboundCaptureWriteResultV1;
 use crate::execution_output::ProtectedRetainedCaptureV1;
 
 const OBSERVATION_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-zfs-readback.v1\0";
@@ -271,8 +272,11 @@ impl CaptureZfsCreateCommandV1 {
 pub(crate) struct CaptureZfsReadbackPlanV1 {
     verified: VerifiedCaptureDatasetV1,
     record_digest: ObjectDigest,
-    metadata_headroom_bytes: u64,
     minimum_remaining_bytes: u64,
+    metadata_headroom_bytes: u64,
+    required_dataset_available_bytes: u64,
+    phase: u8,
+    write_result_digest: Option<ObjectDigest>,
     commands: [CaptureZfsReadbackCommandV1; 3],
 }
 
@@ -307,6 +311,10 @@ impl CaptureZfsReadbackPlanV1 {
         let pool = requirement.root.pool();
         let root = requirement.root.dataset_prefix();
         let dataset = verified.dataset_name();
+        let required_dataset_available_bytes = requirement
+            .admitted_bytes
+            .checked_add(metadata_headroom_bytes)
+            .ok_or(CaptureZfsReadbackErrorV1::InvalidRequirement)?;
         let commands = [
             CaptureZfsReadbackCommandV1 {
                 tool: CaptureZfsToolV1::Zpool,
@@ -341,10 +349,59 @@ impl CaptureZfsReadbackPlanV1 {
         Ok(Self {
             verified: verified.clone(),
             record_digest: retained.record_digest(),
-            metadata_headroom_bytes,
             minimum_remaining_bytes,
+            metadata_headroom_bytes,
+            required_dataset_available_bytes,
+            phase: 1,
+            write_result_digest: None,
             commands,
         })
+    }
+
+    /// Reuses the exact physical probes after both synced stream EOFs.
+    ///
+    /// Captured bytes have consumed part of the refquota. The remaining
+    /// available floor is therefore the unwritten ceiling plus measured
+    /// metadata headroom, not the original whole capture ceiling.
+    pub(crate) fn after_write(
+        verified: &VerifiedCaptureDatasetV1,
+        retained: &ProtectedRetainedCaptureV1,
+        write: &UnboundCaptureWriteResultV1,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+    ) -> Result<Self, CaptureZfsReadbackErrorV1> {
+        let mut plan = Self::new(
+            verified,
+            retained,
+            metadata_headroom_bytes,
+            minimum_remaining_bytes,
+        )?;
+        let captured = write
+            .stdout
+            .captured_bytes
+            .checked_add(write.stderr.captured_bytes)
+            .filter(|bytes| *bytes <= retained.admitted_bytes())
+            .ok_or(CaptureZfsReadbackErrorV1::InvalidRequirement)?;
+        if write.record_digest != retained.record_digest()
+            || write.stdout.maximum_bytes != retained.maximum_stdout_bytes()
+            || write.stderr.maximum_bytes != retained.maximum_stderr_bytes()
+            || write.stdout.captured_bytes > write.stdout.maximum_bytes
+            || write.stderr.captured_bytes > write.stderr.maximum_bytes
+            || !write.stdout_eof
+            || !write.stderr_eof
+            || !write.synced_readback
+            || write.result_digest.as_bytes() == &[0; 32]
+        {
+            return Err(CaptureZfsReadbackErrorV1::InvalidRequirement);
+        }
+        plan.required_dataset_available_bytes = retained
+            .admitted_bytes()
+            .checked_sub(captured)
+            .and_then(|remaining| remaining.checked_add(metadata_headroom_bytes))
+            .ok_or(CaptureZfsReadbackErrorV1::InvalidRequirement)?;
+        plan.phase = 2;
+        plan.write_result_digest = Some(write.result_digest);
+        Ok(plan)
     }
 
     pub(crate) const fn commands(&self) -> &[CaptureZfsReadbackCommandV1; 3] {
@@ -380,10 +437,6 @@ impl CaptureZfsReadbackPlanV1 {
         }
 
         let dataset = parse_row::<10>(outputs[2])?;
-        let needed_available = requirement
-            .admitted_bytes
-            .checked_add(self.metadata_headroom_bytes)
-            .ok_or(CaptureZfsReadbackErrorV1::InvalidRequirement)?;
         let dataset_available = decimal(dataset[9])?;
         if dataset[0] != self.verified.dataset_name()
             || dataset[1] != "filesystem"
@@ -394,15 +447,19 @@ impl CaptureZfsReadbackPlanV1 {
             || dataset[6] != "none"
             || dataset[7] != "off"
             || dataset[8] != "no"
-            || dataset_available < needed_available
+            || dataset_available < self.required_dataset_available_bytes
         {
             return Err(CaptureZfsReadbackErrorV1::DatasetMismatch);
         }
 
         let mut digest = Sha256::new();
         digest.update(OBSERVATION_DOMAIN);
+        digest.update([self.phase]);
         digest.update(self.record_digest.as_bytes());
         digest.update(self.verified.binding().as_bytes());
+        if let Some(write_result_digest) = self.write_result_digest {
+            digest.update(write_result_digest.as_bytes());
+        }
         for (command, output) in self.commands.iter().zip(outputs) {
             digest.update([match command.tool {
                 CaptureZfsToolV1::Zpool => 1,
@@ -421,7 +478,8 @@ impl CaptureZfsReadbackPlanV1 {
             catalog_binding: self.verified.binding(),
             observation_digest: ObjectDigest::from_bytes(digest.finalize().into()),
             dataset_available_bytes: dataset_available,
-            observed_headroom_bytes: dataset_available - requirement.admitted_bytes,
+            observed_headroom_bytes: dataset_available
+                - (self.required_dataset_available_bytes - self.metadata_headroom_bytes),
         })
     }
 }
