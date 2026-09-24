@@ -41,7 +41,7 @@ pub(super) fn next_network_fault_discovery(
             frontier,
             &[],
         )
-        .map_err(QemuFreshModeledDriverError::NetworkFault)?;
+        .map_err(|error| QemuFreshModeledDriverError::NetworkFault(Box::new(error)))?;
         return Ok(None);
     }
     let entries = retained.iter().chain(new_entries);
@@ -222,7 +222,7 @@ pub(super) fn next_network_fault_discovery(
     }
 
     NetworkFaultSelectable::next(input.scenario(), parent, phase, frontier, branches)
-        .map_err(QemuFreshModeledDriverError::NetworkFault)?
+        .map_err(|error| QemuFreshModeledDriverError::NetworkFault(Box::new(error)))?
         .map(|selectable| {
             selectable
                 .discovery()
