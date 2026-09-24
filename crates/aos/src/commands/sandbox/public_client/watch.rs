@@ -62,10 +62,11 @@ pub(in crate::commands::sandbox) async fn dispatch_watch(
         })
         .transpose()
         .context("retained watch continuation is invalid")?;
-    let mut stream = OperationServiceClient::new(endpoint.connection.clone(), endpoint.config()?)
-        .watch(wire_request.clone())
-        .await
-        .context("controller rejected operation watch")?;
+    let mut stream =
+        OperationServiceClient::new(endpoint.connection.clone(), endpoint.watch_config()?)
+            .watch(wire_request.clone())
+            .await
+            .context("controller rejected operation watch")?;
     let binding = authenticated_query_binding(stream.headers())?;
     if retained
         .as_ref()
@@ -86,9 +87,7 @@ pub(in crate::commands::sandbox) async fn dispatch_watch(
             .await
             .context("controller watch stream failed")?
         else {
-            if continuation.resume_point().is_none() {
-                anyhow::bail!("watch stream ended before bootstrap completion");
-            }
+            require_complete_baseline(continuation.resume_point().is_some(), "stream end")?;
             return Ok(true);
         };
         let event = event.to_owned_message();
@@ -143,5 +142,26 @@ pub(in crate::commands::sandbox) async fn dispatch_watch(
         }
     }
 
+    require_complete_baseline(continuation.resume_point().is_some(), "event limit")?;
     Ok(true)
+}
+
+fn require_complete_baseline(complete: bool, boundary: &str) -> Result<()> {
+    if !complete {
+        anyhow::bail!("watch {boundary} reached before bootstrap completion");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_complete_baseline;
+
+    #[test]
+    fn watch_boundaries_reject_partial_bootstrap() {
+        for boundary in ["stream end", "event limit"] {
+            assert!(require_complete_baseline(false, boundary).is_err());
+            assert!(require_complete_baseline(true, boundary).is_ok());
+        }
+    }
 }

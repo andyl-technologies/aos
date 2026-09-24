@@ -157,6 +157,14 @@ impl AuthorizedEndpoint {
             self.capability_handle,
         )
     }
+
+    fn watch_config(&self) -> Result<ClientConfig> {
+        super::authorized_public_stream_config(
+            self.authority.clone(),
+            self.capability_id,
+            self.capability_handle,
+        )
+    }
 }
 
 /// Routes one authenticated mutation through its exact generated public client.

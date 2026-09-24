@@ -222,7 +222,28 @@ async fn operation_client(
     Ok(OperationServiceClient::new(connection, config))
 }
 
+/// Builds authenticated unary public calls with the bounded request deadline.
+///
+/// # Errors
+///
+/// Rejects a capability identity or handle that cannot be encoded as headers.
 pub(super) fn authorized_public_config(
+    authority: Uri,
+    capability_id: aos_sandbox_core::CapabilityId,
+    capability_handle: [u8; 32],
+) -> Result<ClientConfig> {
+    Ok(
+        authorized_public_stream_config(authority, capability_id, capability_handle)?
+            .with_default_timeout(DISCOVERY_TIMEOUT),
+    )
+}
+
+/// Builds authenticated public headers without a whole-call stream deadline.
+///
+/// # Errors
+///
+/// Rejects a capability identity or handle that cannot be encoded as headers.
+pub(super) fn authorized_public_stream_config(
     authority: Uri,
     capability_id: aos_sandbox_core::CapabilityId,
     capability_handle: [u8; 32],
@@ -234,7 +255,12 @@ pub(super) fn authorized_public_config(
     let handle_value = HeaderValue::try_from(hex::encode(capability_handle))
         .context("invalid public capability handle header")?;
     headers.insert(PUBLIC_CAPABILITY_HANDLE_HEADER, handle_value);
-    Ok(discovery_config(authority).with_default_headers(headers))
+    // A watch is a long-lived RPC. A whole-call discovery deadline would
+    // terminate a healthy stream even when its events remain current.
+    Ok(ClientConfig::new(authority)
+        .with_protocol(Protocol::Grpc)
+        .with_default_max_message_size(MAXIMUM_DISCOVERY_RESPONSE_BYTES)
+        .with_default_headers(headers))
 }
 
 async fn discovery_client(
@@ -335,4 +361,22 @@ where
     let client = DormantPublicApiClientV1::new(transport);
     let mut executor = DormantSandboxCommandExecutorV1::new(client);
     Ok(executor.execute(request)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_watch_has_no_whole_call_discovery_deadline() {
+        let authority: Uri = "https://sandbox-controller.example".parse().unwrap();
+        let capability_id = "00112233-4455-6677-8899-aabbccddeeff".parse().unwrap();
+        let handle = [0x5a; 32];
+
+        let unary = authorized_public_config(authority.clone(), capability_id, handle).unwrap();
+        let stream = authorized_public_stream_config(authority, capability_id, handle).unwrap();
+
+        assert_eq!(unary.default_timeout(), Some(DISCOVERY_TIMEOUT));
+        assert_eq!(stream.default_timeout(), None);
+    }
 }

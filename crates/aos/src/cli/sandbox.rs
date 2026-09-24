@@ -1598,7 +1598,67 @@ mod tests {
     use std::path::Path;
 
     use crate::cli::{Cli, Commands};
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
+
+    #[test]
+    fn rfc_primary_command_family_is_exposed() {
+        let command = Cli::command();
+        let sandbox = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "sandbox")
+            .unwrap();
+        let names: Vec<_> = sandbox
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+
+        for required in [
+            "create",
+            "get",
+            "list",
+            "tree",
+            "children",
+            "start",
+            "stop",
+            "suspend",
+            "resume",
+            "exec",
+            "attach-exec",
+            "cancel-exec",
+            "snapshot",
+            "restore",
+            "fork",
+            "delete",
+            "events",
+            "view",
+            "cache",
+        ] {
+            assert!(names.contains(&required), "missing aos sandbox {required}");
+        }
+
+        for (group, required) in [
+            (
+                "view",
+                &["create", "attach", "replace", "detach", "list"][..],
+            ),
+            ("cache", &["status", "pin", "unpin"][..]),
+        ] {
+            let nested = sandbox
+                .get_subcommands()
+                .find(|subcommand| subcommand.get_name() == group)
+                .unwrap();
+            let nested_names: Vec<_> = nested
+                .get_subcommands()
+                .map(clap::Command::get_name)
+                .collect();
+            for &name in required {
+                assert!(
+                    nested_names.contains(&name),
+                    "missing aos sandbox {group} {name}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn public_transport_options_are_complete_or_rejected() {
