@@ -13,6 +13,7 @@ in
   assert plain.pkgs.zlib.drvPath != shared.pkgs.zlib.drvPath;
   assert !(plain.pkgs.zlib ? AOS_SHARED_BUILD_CACHE);
   assert shared.pkgs.zlib ? AOS_SHARED_BUILD_CACHE;
+  assert shared.pkgs.zlib.AOS_SHARED_BUILD_CACHE == "/aos-build-cache";
   assert plain.pkgs.rust.drvPath != shared.pkgs.rust.drvPath;
   assert !(plain.pkgs.rust ? AOS_SHARED_BUILD_CACHE);
   assert !(plain.pkgs.rust ? RUSTC_WRAPPER);
@@ -26,6 +27,7 @@ in
   assert shared.pkgs.go ? AOS_SHARED_BUILD_CACHE;
   assert shared.pkgs.go.GOCACHE == "/aos-build-cache/go";
   assert shared.pkgs.bazel ? AOS_SHARED_BUILD_CACHE;
+  assert shared.pkgs.bazel.AOS_BAZEL_DISK_CACHE == "/aos-build-cache/bazel";
   assert shared.pkgs.openjdk ? AOS_SHARED_BUILD_CACHE;
   assert !(shared.pkgs.sccache ? AOS_SHARED_BUILD_CACHE);
     pkgs.mkDerivation {

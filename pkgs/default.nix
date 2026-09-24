@@ -123,6 +123,9 @@
     if sharedBuildCache
     then (import ../. {system = stdenv.buildPlatform.system;}).pkgs.sccache
     else null;
+  # This is the path inside every development sandbox. The host directory is
+  # selected by aos-dev at invocation time and must not enter derivation hashes.
+  sharedBuildCacheRoot = "/aos-build-cache";
   cacheCompilerLaunchers =
     if sharedBuildCache
     then
@@ -485,10 +488,11 @@
       }
       // lib.optionalAttrs cacheEligible {
         RUSTC_WRAPPER = "${cacheTool}/bin/sccache";
-        GOCACHE = "/aos-build-cache/go";
-        SCCACHE_SERVER_UDS = "/aos-build-cache/sccache/server.sock";
+        GOCACHE = "${sharedBuildCacheRoot}/go";
+        SCCACHE_SERVER_UDS = "${sharedBuildCacheRoot}/sccache/server.sock";
         SCCACHE_CLIENT_SIDE = "1";
-        AOS_SHARED_BUILD_CACHE = "1";
+        AOS_BAZEL_DISK_CACHE = "${sharedBuildCacheRoot}/bazel";
+        AOS_SHARED_BUILD_CACHE = sharedBuildCacheRoot;
         preConfigure = cacheSetup + (args.preConfigure or "");
         preBuild = cacheSetup + (args.preBuild or "");
       }

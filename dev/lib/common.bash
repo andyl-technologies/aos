@@ -23,7 +23,7 @@ Commands:
 
 Development builds use shared sccache, Go and Bazel caches. --release disables
 the shared cache and preserves the ordinary Nix derivation identities.
-Set AOS_DEV_CACHE_DIR to move the cache (default: ~/.cache/aos-dev).
+Set AOS_DEV_CACHE_DIR to move the cache (default: /var/tmp/aos-dev-cache-UID).
 HELP
 }
 
