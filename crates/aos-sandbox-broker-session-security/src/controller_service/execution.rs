@@ -13,8 +13,10 @@ use aos_proto::aos::sandbox::local::v1::{
     HostExecutionCompletionStatusV1, HostExecutionPhaseV1, QueryHostExecutionRequestV1,
     RequestHeader,
 };
-use aos_proto::aos::sandbox::v1::{ExecutionIoMode, ExecutionPhase};
-use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
+use aos_proto::aos::sandbox::v1::{
+    Command, ExecutionIoMode, ExecutionPhase, ExecutionTerminationKind, Timestamp,
+};
+use aos_sandbox::cli_model::{DormantSandboxRequestKindV1, ExecutionTerminalOutcomeV1};
 use aos_sandbox::controller_execution_spec_attempt::{
     ControllerExecutionSpecAttemptV1, load_controller_execution_spec_attempt_v1,
 };
@@ -118,16 +120,22 @@ impl ControllerExecutionCompletionV1 {
                     "execution authorization awaits a distinct Host Observe".to_owned(),
                 ))
             }
-            // Host now authenticates the Guest terminal bytes. Public terminal
-            // publication still needs termination semantics and capture custody.
             BackendExecutionPhaseV1::Exited
                 if matches!(
                     self.terminal,
-                    Some(HostExecutionTerminalResultV1::Exited(_))
+                    Some(HostExecutionTerminalResultV1::Exited(code)) if code >= 0
+                ) =>
+            {
+                Ok(ExecutionPhase::EXECUTION_PHASE_EXITED)
+            }
+            BackendExecutionPhaseV1::Exited
+                if matches!(
+                    self.terminal,
+                    Some(HostExecutionTerminalResultV1::Exited(code)) if code < 0
                 ) =>
             {
                 Err(EffectFailure::Retryable(
-                    "execution exit requires public result projection".to_owned(),
+                    "Guest exit has no exact signal identity".to_owned(),
                 ))
             }
             BackendExecutionPhaseV1::Canceled
@@ -158,6 +166,28 @@ impl ControllerExecutionCompletionV1 {
                 | BackendExecutionPhaseV1::Lost
         )
     }
+
+    fn exit_code(&self) -> Option<i32> {
+        match self.terminal {
+            Some(HostExecutionTerminalResultV1::Exited(code)) if code >= 0 => Some(code),
+            _ => None,
+        }
+    }
+}
+
+fn require_stream_without_capture(command: &Command) -> Result<(), EffectFailure> {
+    if !matches!(
+        command.io_mode.as_known(),
+        Some(ExecutionIoMode::EXECUTION_IO_MODE_STREAM | ExecutionIoMode::EXECUTION_IO_MODE_PTY)
+    ) || command.detached_capture_bytes != 0
+        || command.maximum_stdout_bytes.is_some()
+        || command.maximum_stderr_bytes.is_some()
+    {
+        return Err(EffectFailure::Retryable(
+            "terminal execution awaits exact detached capture disposition".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Separates authenticated absence from an exact guest control completion.
@@ -276,15 +306,43 @@ impl ControllerExecutionIntentV1 {
             ));
         };
         let phase = completion.public_phase()?;
+        let exit_code = if phase == ExecutionPhase::EXECUTION_PHASE_EXITED {
+            if self.action != ControllerExecutionActionV1::Observe {
+                return Err(EffectFailure::Permanent(
+                    "execution exit requires a distinct signed Host Observe".to_owned(),
+                ));
+            }
+            let command = execution.command.as_option().ok_or_else(|| {
+                EffectFailure::Permanent("execution projection has no command".to_owned())
+            })?;
+            require_stream_without_capture(command)?;
+            Some(completion.exit_code().ok_or_else(|| {
+                EffectFailure::Permanent("signed Guest exit code is absent".to_owned())
+            })?)
+        } else {
+            None
+        };
         let already_published = if self.action == ControllerExecutionActionV1::Observe {
             execution.observation_sequence == completion.observation_sequence
         } else {
             execution.observation_sequence >= completion.observation_sequence
         };
+        let same_terminal_result = match exit_code {
+            Some(code) => execution.result.as_option().is_some_and(|result| {
+                result.exit_code == code
+                    && result.termination_kind.as_known()
+                        == Some(ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE)
+                    && result.signal.to_i32() == 0
+            }),
+            None => true,
+        };
         if execution.phase.as_known() == Some(phase)
             && already_published
+            && same_terminal_result
             && (!completion.is_terminal() || execution.access.as_option().is_none())
         {
+            // The first EXITED record owns exited_at. A verified replay must
+            // return before sampling a new clock value or appending a record.
             return Ok(());
         }
         let expected_previous_phase = match self.action {
@@ -314,6 +372,24 @@ impl ControllerExecutionIntentV1 {
         if completion.is_terminal() {
             observed.access = None.into();
         }
+        if let Some(code) = exit_code {
+            // Guest signs the exit code, not a wall-clock event time. Persist
+            // the Controller's first verified publication time with the result.
+            let observed_at = Timestamp {
+                seconds: crate::controller_ownership::sample_ownership_clock()
+                    .map_err(retryable)?
+                    .wall_seconds(),
+                nanoseconds: 0,
+                ..Default::default()
+            };
+            let result = ExecutionTerminalOutcomeV1::ExitCode(code)
+                .to_proto(observed_at.clone(), "Host observed process exit".to_owned())
+                .map_err(|_| {
+                    EffectFailure::Retryable("terminal observation time is invalid".to_owned())
+                })?;
+            observed.result = result.into();
+            observed.last_successful_reconciliation_time = observed_at.into();
+        }
         let (key, value) = PublicProjectionPlanV1::new(
             project,
             self.projection_operation_id,
@@ -321,10 +397,16 @@ impl ControllerExecutionIntentV1 {
         )
         .map_err(retryable)?
         .into_desired_state();
-        let digest = Sha256::new()
+        let mut transaction_hash = Sha256::new()
             .chain_update(CONTROL_PROJECTION_TRANSACTION_DOMAIN)
-            .chain_update(self.operation_id.as_bytes())
-            .finalize();
+            .chain_update(self.operation_id.as_bytes());
+        if exit_code.is_some() {
+            // The durable projection transaction is inseparable from the
+            // authenticated Host receipt, including signed Guest result bytes.
+            transaction_hash.update((completion.receipt.as_bytes().len() as u64).to_be_bytes());
+            transaction_hash.update(completion.receipt.as_bytes());
+        }
+        let digest = transaction_hash.finalize();
         let transaction_id: [u8; 16] = digest[..16].try_into().map_err(|_| {
             EffectFailure::Permanent("execution projection transaction is invalid".to_owned())
         })?;
@@ -1053,6 +1135,7 @@ impl ControllerExecutionExchangeV1 {
 
 #[cfg(test)]
 mod tests {
+    use aos_proto::aos::sandbox::v1::{Command, Duration, Execution};
     use aos_sandbox::JournalLimits;
 
     use super::*;
@@ -1108,16 +1191,43 @@ mod tests {
             observation_sequence: 3,
             terminal: Some(HostExecutionTerminalResultV1::Exited(0)),
         };
-        assert!(matches!(
-            exited.public_phase(),
-            Err(EffectFailure::Retryable(_))
-        ));
+        assert_eq!(
+            exited.public_phase().unwrap(),
+            ExecutionPhase::EXECUTION_PHASE_EXITED
+        );
         let missing_result = ControllerExecutionCompletionV1 {
             terminal: None,
             ..exited
         };
         assert!(matches!(
             missing_result.public_phase(),
+            Err(EffectFailure::Retryable(_))
+        ));
+        let unknown_signal = ControllerExecutionCompletionV1 {
+            receipt: EffectReceipt::new(vec![4]).unwrap(),
+            phase: BackendExecutionPhaseV1::Exited,
+            observation_sequence: 4,
+            terminal: Some(HostExecutionTerminalResultV1::Exited(-1)),
+        };
+        assert!(matches!(
+            unknown_signal.public_phase(),
+            Err(EffectFailure::Retryable(_))
+        ));
+
+        let stream = Command {
+            io_mode: ExecutionIoMode::EXECUTION_IO_MODE_STREAM.into(),
+            ..Default::default()
+        };
+        let detached = Command {
+            io_mode: ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE.into(),
+            detached_capture_bytes: 1,
+            maximum_stdout_bytes: Some(1),
+            maximum_stderr_bytes: Some(0),
+            ..Default::default()
+        };
+        assert!(require_stream_without_capture(&stream).is_ok());
+        assert!(matches!(
+            require_stream_without_capture(&detached),
             Err(EffectFailure::Retryable(_))
         ));
 
@@ -1143,6 +1253,144 @@ mod tests {
         assert!(matches!(
             error,
             EffectFailure::Retryable(message) if message == "execution authorization cannot publish a public phase"
+        ));
+    }
+
+    #[test]
+    fn signed_exit_code_projects_once_with_durable_observation_time() {
+        let project = ProjectId::from_bytes([1; 16]);
+        let create_operation = OperationId::from_bytes([2; 16]);
+        let observe_operation = OperationId::from_bytes([3; 16]);
+        let execution_id = [4; 16];
+        let directory = tempfile::tempdir().unwrap();
+        let journal_path = directory.path().join("controller.journal");
+        let (mut journal, _) = Journal::open(&journal_path, JournalLimits::default()).unwrap();
+        let requested = Execution {
+            execution_id: execution_id.to_vec(),
+            sandbox_id: vec![5; 16],
+            sandbox_incarnation_id: vec![6; 16],
+            resource_version: vec![7],
+            command: Command {
+                arguments: vec![b"true".to_vec()],
+                execution_timeout: Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                }
+                .into(),
+                io_mode: ExecutionIoMode::EXECUTION_IO_MODE_STREAM.into(),
+                ..Default::default()
+            }
+            .into(),
+            phase: ExecutionPhase::EXECUTION_PHASE_REQUESTED.into(),
+            audit_id: vec![8; 16],
+            desired_generation: 1,
+            observation_sequence: 1,
+            assignment_epoch: 1,
+            last_successful_reconciliation_time: Timestamp {
+                seconds: 100,
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        let (key, value) = PublicProjectionPlanV1::new(
+            project,
+            create_operation,
+            PublicProjectionResourceV1::Execution(requested),
+        )
+        .unwrap()
+        .into_desired_state();
+        let initial = JournalTransaction::new(
+            [9; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                key,
+                value,
+            )],
+        )
+        .unwrap();
+        journal.commit(&initial).unwrap();
+
+        let intent = ControllerExecutionIntentV1 {
+            operation_id: observe_operation,
+            projection_operation_id: create_operation,
+            execution_id,
+            action: ControllerExecutionActionV1::Observe,
+            specification: None,
+            observation_specification_digest: Some(ObjectDigest::from_bytes([10; 32])),
+            source_operation_commitment: [11; 32],
+        };
+        let completion = ControllerExecutionCompletionV1 {
+            receipt: EffectReceipt::new(vec![12]).unwrap(),
+            phase: BackendExecutionPhaseV1::Exited,
+            observation_sequence: 2,
+            terminal: Some(HostExecutionTerminalResultV1::Exited(17)),
+        };
+        intent
+            .commit_control_projection(project, &mut journal, &completion)
+            .unwrap();
+
+        let first = PublicProjectionStoreV1::new(&journal)
+            .get(PublicProjectionKindV1::Execution, execution_id)
+            .unwrap()
+            .unwrap();
+        let PublicProjectionResourceV1::Execution(first) = first.resource() else {
+            panic!("execution projection changed resource kind");
+        };
+        let result = first.result.as_option().unwrap();
+        let published_at = result.exited_at.as_option().unwrap().clone();
+        assert_eq!(
+            first.phase.as_known(),
+            Some(ExecutionPhase::EXECUTION_PHASE_EXITED)
+        );
+        assert_eq!(first.observation_sequence, 2);
+        assert_eq!(result.exit_code, 17);
+        assert_eq!(
+            result.termination_kind.as_known(),
+            Some(ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE)
+        );
+        assert_eq!(result.signal.to_i32(), 0);
+        assert_eq!(
+            first.last_successful_reconciliation_time.as_option(),
+            Some(&published_at)
+        );
+        assert!(first.access.as_option().is_none());
+
+        drop(journal);
+        let (mut journal, _) = Journal::open(&journal_path, JournalLimits::default()).unwrap();
+        let durable_sequence = journal.snapshot_sequence();
+        intent
+            .commit_control_projection(project, &mut journal, &completion)
+            .unwrap();
+        assert_eq!(journal.snapshot_sequence(), durable_sequence);
+        let replay = PublicProjectionStoreV1::new(&journal)
+            .get(PublicProjectionKindV1::Execution, execution_id)
+            .unwrap()
+            .unwrap();
+        let PublicProjectionResourceV1::Execution(replay) = replay.resource() else {
+            panic!("execution projection changed resource kind");
+        };
+        assert_eq!(
+            replay.result.as_option().unwrap().exited_at.as_option(),
+            Some(&published_at)
+        );
+
+        let changed = ControllerExecutionCompletionV1 {
+            terminal: Some(HostExecutionTerminalResultV1::Exited(18)),
+            ..completion
+        };
+        assert!(matches!(
+            intent.commit_control_projection(project, &mut journal, &changed),
+            Err(EffectFailure::Retryable(_))
+        ));
+
+        let control_intent = ControllerExecutionIntentV1 {
+            action: ControllerExecutionActionV1::Signal { signal_code: 15 },
+            ..intent
+        };
+        assert!(matches!(
+            control_intent.commit_control_projection(project, &mut journal, &changed),
+            Err(EffectFailure::Permanent(_))
         ));
     }
 }

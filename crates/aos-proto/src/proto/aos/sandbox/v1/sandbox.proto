@@ -287,6 +287,8 @@ message OpenSshAccessEndpoint {
 message ExecutionResult {
   int32 exit_code = 1;
   string termination_reason = 2;
+  // Controller's first durable verified terminal observation time, not the
+  // Guest kernel's process-exit time.
   Timestamp exited_at = 3;
   ExecutionTerminationKind termination_kind = 4;
   ExecutionSignal signal = 5;
