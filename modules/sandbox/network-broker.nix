@@ -230,6 +230,12 @@ in {
           LockPersonality = true;
           MemoryDenyWriteExecute = true;
           NoNewPrivileges = true;
+          SecureBits = [
+            "noroot"
+            "noroot-locked"
+            "no-setuid-fixup"
+            "no-setuid-fixup-locked"
+          ];
           PrivateDevices = true;
           PrivateNetwork = true;
           PrivateTmp = true;

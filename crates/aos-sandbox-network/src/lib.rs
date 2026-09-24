@@ -38,6 +38,7 @@ pub mod advanced_policy;
 pub mod allocation;
 pub mod authorization;
 pub mod broker;
+pub mod broker_pid1_query;
 pub mod catalog;
 mod dormant_broker_session;
 pub mod inspector_deployment;

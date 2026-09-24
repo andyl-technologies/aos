@@ -30,6 +30,10 @@
     (helperDirectory + "/systemd-query.c")
     (helperDirectory + "/fd-table.c")
   ];
+  brokerSources = [
+    (helperDirectory + "/broker-query.c")
+    (helperDirectory + "/fd-table.c")
+  ];
   fixtureSources = [
     (fixtureDirectory + "/namespace-inspector-manager-query-fixture.c")
     (fixtureDirectory + "/namespace-inspector-manager-query-fixture-bus.c")
@@ -61,6 +65,13 @@ in
               -o aos-namespace-inspector-manager-query \
               $(pkg-config --cflags --libs libsystemd)
 
+            broker_helper=$out/libexec/aos-network-broker-manager-query
+            $CC $common_flags $include_flags \
+              -DAOS_BROKER_QUERY_PROGRAM="\"$broker_helper\"" \
+              ${lib.concatStringsSep " " (map toString brokerSources)} \
+              -o aos-network-broker-manager-query \
+              $(pkg-config --cflags --libs libsystemd)
+
             $CC $common_flags $include_flags \
               ${lib.concatStringsSep " " (map toString fixtureSources)} \
               -o namespace-inspector-manager-query-fixture \
@@ -72,6 +83,7 @@ in
           script = ''
             mkdir -p $out/libexec
             cp aos-namespace-inspector-manager-query $out/libexec/
+            cp aos-network-broker-manager-query $out/libexec/
           '';
         }
         {
@@ -79,6 +91,11 @@ in
           script = lib.optionalString (!stdenv.isCross) ''
             ./namespace-inspector-manager-query-fixture \
               $out/libexec/aos-namespace-inspector-manager-query
+
+            # The broker mode is separately linked and has no ambient entry.
+            broker_status=0
+            $out/libexec/aos-network-broker-manager-query || broker_status=$?
+            test "$broker_status" -eq 254
           '';
         }
       ];
@@ -92,6 +109,7 @@ in
           })
         (
           helperSources
+          ++ brokerSources
           ++ fixtureSources
           ++ [
             (helperDirectory + "/helper.h")
@@ -102,7 +120,7 @@ in
         );
 
       meta = {
-        description = "Bounded fixed-manifest systemd manager query helper";
+        description = "Bounded inspector-self and broker-owned systemd manager query helpers";
         license = "Apache-2.0";
         platforms = ["x86_64-linux" "aarch64-linux"];
       };

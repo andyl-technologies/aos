@@ -7451,15 +7451,32 @@ must still supply a reviewed `PT_INTERP`/`DT_NEEDED` resolver that emits and
 signs the exhaustive inventory. Until that exists, the V2 signature is only
 an assertion of completeness by the external signer, not proof of it.
 
-The broker does not yet own the required authenticated direct PID 1 query for
-the live inspector or lifecycle worker. No current response path binds a
-fresh `MainPID`, `InvocationID`, `ControlGroupId`, and unit-property readback
-to the broker's retained socket subject and pidfd. Thus V2 startup custody
-does not replace the existing direct READY-time or later namespace-currentness
-checks, the inspector module remains evaluation-blocked, and Network Apply
-remains closed. The next deployable slice must provide a broker-owned direct
-manager stream/helper transaction plus protected exact-unit and executable
-binding, and repeat the worker observation at each relevant boundary.
+The broker now has a source-level direct PID 1 query transaction separate from
+the inspector-self helper. It opens and retains a private-manager stream whose
+kernel peer is PID 1, launches the V2-pinned capability-empty broker helper
+with exact manager, parent-pidfd, control, and target-pidfd descriptor roles,
+and requires two identical nonce/deadline-bound `GetUnitByPIDFD` and unit
+property observations. The broker decoder binds `MainPID`, invocation,
+`ControlGroupId`, exact unit/cgroup, signed `ExecStart` executable, and
+caller-supplied expected arguments to the retained target pidfd; an inspector
+query additionally requires the kernel-nominated response record subject to
+match that pidfd. The returned readback retains another descriptor for that
+exact process. The worker query accepts a launcher-retained child pidfd, but
+its caller still needs to bind that pidfd to the fixed lifecycle launch at the
+effect boundary.
+
+This transaction has no production inspector-response consumer or worker
+effect-boundary invocation yet. Expected arguments after argv[0] are not yet
+derived from protected deployment policy, and the observed unit fragment is
+only checked as an absolute path, not pinned. The transaction does not
+establish the complete executable-loader-library closure against an
+independently produced signer inventory, and an enforcing MAC transition must
+still exclude a post-query executable replacement. Consequently the existing
+direct READY-time and later namespace-currentness checks remain intact and
+fail closed, the inspector module remains evaluation-blocked, and Network
+Apply remains closed. The next deployable slice must connect a fresh query to
+each response/effect boundary, pin the unit fragments and complete closure,
+and qualify the actual protected system under enforcing MAC.
 
 Deployment must authenticate the physical inspector, broker, worker, helper,
 and every executable loader/library closure (`SBX-P0-09`), then qualify the

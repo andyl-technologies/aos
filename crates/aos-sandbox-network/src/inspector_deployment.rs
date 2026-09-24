@@ -3,6 +3,8 @@
 //! The broker loads this optional, role-separated credential pair during
 //! startup. It verifies the signature and generation, pins every declared
 //! physical file, and binds its own running executable to the broker entry.
+//! The `manager_query_helper` member names the broker-side PID 1 helper; the
+//! inspector-self query helper remains a separate V1-pinned executable.
 //! The signer must independently establish that the list includes the full
 //! `PT_INTERP` and `DT_NEEDED` graph. A signed list alone does not prove that
 //! completeness or replace a fresh, broker-owned PID 1 unit observation.
@@ -17,6 +19,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::Path;
 
@@ -162,6 +165,44 @@ impl ProtectedInspectorDeploymentV2 {
             member.revalidate()?;
         }
         Ok(())
+    }
+
+    /// Duplicates the pinned broker-side PID 1 query helper executable.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed deployment files or a failed descriptor duplication.
+    pub fn broker_query_helper(&self) -> Result<(String, OwnedFd), InspectorDeploymentErrorV2> {
+        self.revalidate()?;
+        let member = self
+            .members
+            .iter()
+            .find(|member| member.expectation.role == MemberRole::ManagerQueryHelper)
+            .ok_or(InspectorDeploymentErrorV2::Invalid)?;
+        let descriptor = member
+            .descriptor
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|source| io_error("duplicate broker query helper", source))?;
+        Ok((member.expectation.path.clone(), descriptor))
+    }
+
+    /// Returns the signed executable path for one queried service role.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an incomplete retained inventory.
+    pub fn service_executable(&self, inspector: bool) -> Result<&str, InspectorDeploymentErrorV2> {
+        let role = if inspector {
+            MemberRole::Inspector
+        } else {
+            MemberRole::LifecycleWorker
+        };
+        self.members
+            .iter()
+            .find(|member| member.expectation.role == role)
+            .map(|member| member.expectation.path.as_str())
+            .ok_or(InspectorDeploymentErrorV2::Invalid)
     }
 }
 
