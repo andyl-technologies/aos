@@ -21,11 +21,65 @@ use crate::{
 };
 
 const MAXIMUM_HANDOFF_BODY_BYTES: usize = 64 * 1024;
+const GUEST_RESULT_MAGIC: &[u8; 8] = b"AOSGER01";
+const GUEST_RESULT_HEADER_BYTES: usize = 13;
+
 /// Largest canonical execution specification admitted by the runtime backend.
 pub const MAXIMUM_HOST_EXECUTION_SPEC_BYTES: usize = 15 * 1_048_576;
 
 /// Exact sealed content for an Apply control action without a specification.
 pub const HOST_EXECUTION_CONTROL_CONTENT_V1: &[u8] = &[0];
+
+/// Reports the terminal result of one Host-authenticated Guest Observe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostExecutionTerminalResultV1 {
+    /// The guest observed a child exit; -1 means no exit code was available.
+    Exited(i32),
+    /// The guest observed cancellation of the child.
+    Canceled,
+}
+
+/// Decodes the exact bounded terminal payload emitted by the packaged guest.
+///
+/// These bytes gain authority only after Host verifies the signed guest packet
+/// and binds it to the same completed Observe and observation sequence.
+///
+/// # Errors
+///
+/// Rejects a malformed or nonterminal Guest result.
+pub fn decode_host_execution_terminal_result_v1(
+    bytes: &[u8],
+) -> Result<HostExecutionTerminalResultV1, ProtocolValidationError> {
+    if bytes.len() < GUEST_RESULT_HEADER_BYTES
+        || bytes.get(..8) != Some(GUEST_RESULT_MAGIC.as_slice())
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "terminal guest result",
+        ));
+    }
+    let length = u32::from_be_bytes(
+        bytes[9..13]
+            .try_into()
+            .map_err(|_| ProtocolValidationError::InvalidField("terminal guest result"))?,
+    ) as usize;
+    if length != bytes.len() - GUEST_RESULT_HEADER_BYTES {
+        return Err(ProtocolValidationError::InvalidField(
+            "terminal guest result",
+        ));
+    }
+    match (bytes[8], &bytes[GUEST_RESULT_HEADER_BYTES..]) {
+        (6, code) if code.len() == 4 => {
+            Ok(HostExecutionTerminalResultV1::Exited(i32::from_be_bytes(
+                code.try_into()
+                    .map_err(|_| ProtocolValidationError::InvalidField("terminal guest result"))?,
+            )))
+        }
+        (7, value) if value == b"canceled" => Ok(HostExecutionTerminalResultV1::Canceled),
+        _ => Err(ProtocolValidationError::InvalidField(
+            "terminal guest result",
+        )),
+    }
+}
 
 const SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-spec-attempt.v1\0";
 const QUERY_SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-query-spec-attempt.v1\0";
@@ -566,7 +620,8 @@ pub fn decode_host_execution_outcome_v1(
                 && outcome.completion_digest.is_empty()
                 && outcome.completion_bytes.is_empty()
                 && outcome.completion_status.to_i32() == 0
-                && outcome.observation_sequence == 0 => {}
+                && outcome.observation_sequence == 0
+                && outcome.terminal_guest_result.is_empty() => {}
         Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_PENDING
             | HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ISSUED
             | HostExecutionPhaseV1::HOST_EXECUTION_PHASE_INDETERMINATE)
@@ -574,7 +629,8 @@ pub fn decode_host_execution_outcome_v1(
                 && outcome.completion_digest.is_empty()
                 && outcome.completion_bytes.is_empty()
                 && outcome.completion_status.to_i32() == 0
-                && outcome.observation_sequence == 0 => {}
+                && outcome.observation_sequence == 0
+                && outcome.terminal_guest_result.is_empty() => {}
         Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE)
             if exact_nonzero::<32>(&outcome.effect_commitment, "effect_commitment").is_ok()
                 && exact_nonzero::<32>(&outcome.completion_digest, "completion_digest").is_ok()
@@ -587,6 +643,24 @@ pub fn decode_host_execution_outcome_v1(
                         | HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_REJECTED_BEFORE_EFFECT
                         | HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_FAILED_PERMANENT)) => {}
         _ => return Err(ProtocolValidationError::InvalidField("execution outcome phase")),
+    }
+    if !outcome.terminal_guest_result.is_empty() {
+        let terminal = decode_host_execution_terminal_result_v1(&outcome.terminal_guest_result)?;
+        let expected_phase = match terminal {
+            HostExecutionTerminalResultV1::Exited(_) => 4,
+            HostExecutionTerminalResultV1::Canceled => 5,
+        };
+        if outcome.phase.as_known() != Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE)
+            || outcome.completion_status.as_known()
+                != Some(HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED)
+            || outcome.completion_bytes.len() != 298
+            || outcome.completion_bytes[8] != EffectOperationV1::Observe.code()
+            || outcome.completion_bytes[225] != expected_phase
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "terminal guest result",
+            ));
+        }
     }
     Ok(outcome)
 }
@@ -603,6 +677,122 @@ fn execution_result_digest(bytes: &[u8]) -> [u8; 32] {
 mod content_tests {
     use super::*;
     use aos_proto::aos::sandbox::local::v1::{Audience, RequestHeader};
+
+    #[test]
+    fn terminal_guest_result_accepts_only_exact_packaged_observe_results() {
+        let exited = [
+            b"AOSGER01".as_slice(),
+            &[6],
+            &4_u32.to_be_bytes(),
+            &17_i32.to_be_bytes(),
+        ]
+        .concat();
+        let canceled = [
+            b"AOSGER01".as_slice(),
+            &[7],
+            &8_u32.to_be_bytes(),
+            b"canceled",
+        ]
+        .concat();
+
+        assert_eq!(
+            decode_host_execution_terminal_result_v1(&exited).unwrap(),
+            HostExecutionTerminalResultV1::Exited(17)
+        );
+        let unknown_status = [
+            b"AOSGER01".as_slice(),
+            &[6],
+            &4_u32.to_be_bytes(),
+            &(-1_i32).to_be_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            decode_host_execution_terminal_result_v1(&unknown_status).unwrap(),
+            HostExecutionTerminalResultV1::Exited(-1)
+        );
+        assert_eq!(
+            decode_host_execution_terminal_result_v1(&canceled).unwrap(),
+            HostExecutionTerminalResultV1::Canceled
+        );
+
+        for malformed in [
+            exited[..exited.len() - 1].to_vec(),
+            [exited.as_slice(), &[0]].concat(),
+            [
+                b"AOSGER01".as_slice(),
+                &[5],
+                &4_u32.to_be_bytes(),
+                &17_i32.to_be_bytes(),
+            ]
+            .concat(),
+            [
+                b"AOSGER01".as_slice(),
+                &[7],
+                &8_u32.to_be_bytes(),
+                b"cancelXd",
+            ]
+            .concat(),
+        ] {
+            assert!(decode_host_execution_terminal_result_v1(&malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn terminal_readback_requires_completed_observe_with_matching_phase() {
+        let operation = [1; 16];
+        let execution = ExecutionId::from_bytes([2; 16]);
+        let source = ObjectDigest::from_bytes([3; 32]);
+        let mut completion = vec![0; 298];
+        completion[8] = EffectOperationV1::Observe.code();
+        completion[225] = 4;
+        let mut result = HostExecutionOutcomeV1 {
+            operation_id: operation.to_vec(),
+            execution_id: execution.as_bytes().to_vec(),
+            source_operation_commitment: source.as_bytes().to_vec(),
+            phase: HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE.into(),
+            effect_commitment: vec![4; 32],
+            completion_digest: execution_result_digest(&completion).to_vec(),
+            completion_bytes: completion,
+            completion_status:
+                HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_SUCCEEDED.into(),
+            observation_sequence: 1,
+            terminal_guest_result: [
+                b"AOSGER01".as_slice(),
+                &[6],
+                &4_u32.to_be_bytes(),
+                &0_i32.to_be_bytes(),
+            ]
+            .concat(),
+            ..Default::default()
+        };
+        assert!(decode_host_execution_outcome_v1(
+            &result.encode_to_vec(),
+            operation,
+            execution,
+            source,
+        )
+        .is_ok());
+
+        result.completion_bytes[225] = 3;
+        result.completion_digest = execution_result_digest(&result.completion_bytes).to_vec();
+        assert!(decode_host_execution_outcome_v1(
+            &result.encode_to_vec(),
+            operation,
+            execution,
+            source,
+        )
+        .is_err());
+        result.completion_bytes[225] = 4;
+        result.completion_bytes[8] = EffectOperationV1::AuthorizeExecution.code();
+        result.completion_digest = execution_result_digest(&result.completion_bytes).to_vec();
+        assert!(decode_host_execution_outcome_v1(
+            &result.encode_to_vec(),
+            operation,
+            execution,
+            source,
+        )
+        .is_err());
+    }
 
     fn fields(request_id: [u8; 16], content: &[u8]) -> HostExecutionSpecContentFieldsV1 {
         host_execution_spec_content_fields_v1(

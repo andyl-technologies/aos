@@ -18,12 +18,14 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
     DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
+    decode_observe_completion_phase_v1,
 };
+use aos_sandbox_agent::{AgentExecutionOperationV1, AgentExecutionPhaseV1};
 use aos_sandbox_core::runtime_backend::{
-    AdmissionCommitError, AdmissionIdempotencyV1, DurableExecutionEffectV1, EffectCommitError,
-    EffectCompletionStatusV1, EffectIdempotencyV1, EffectIssueV1, EffectOperationV1, EffectPhaseV1,
-    ExecutionAdmissionDraftV1, ExecutionAdmissionOutcomeV1, ExecutionEffectTransitionV1,
-    admit_execution, prepare_effect,
+    AdmissionCommitError, AdmissionIdempotencyV1, BackendExecutionPhaseV1,
+    DurableExecutionEffectV1, EffectCommitError, EffectCompletionStatusV1, EffectIdempotencyV1,
+    EffectIssueV1, EffectOperationV1, EffectPhaseV1, ExecutionAdmissionDraftV1,
+    ExecutionAdmissionOutcomeV1, ExecutionEffectTransitionV1, admit_execution, prepare_effect,
 };
 use aos_sandbox_core::{ExecutionId, ObjectDigest};
 use aos_sandbox_host::DormantHostBrokerCallsiteV1;
@@ -37,6 +39,7 @@ use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1}
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::host_execution::{
     HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
+    HostExecutionTerminalResultV1, decode_host_execution_terminal_result_v1,
 };
 use aos_sandbox_protocol::host_output::HostOutputReservationLocatorV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -90,7 +93,8 @@ pub enum HostExecutionHandoffErrorV1 {
 /// AOSAGE session. Without a launch-owned session Pending remains the truthful
 /// durable outcome. Output reserve commits AOSEOR02 and AOSHOP01 together,
 /// without proving physical backing; Query never dispatches or writes the
-/// protected runtime-execution journal.
+/// protected runtime-execution journal. A terminal Observe Query recovers the
+/// original signed Guest packet and binds its result to the completed effect.
 ///
 /// # Errors
 ///
@@ -240,7 +244,8 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                 request.execution_id(),
                 request.source_commitment(),
                 Some(&effect),
-            )
+                &claim,
+            )?
         }
         HostExecutionGrantRequestV1::Query(request) => {
             let effect = claim.load_effect(&request.operation_id())?;
@@ -292,7 +297,8 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                 request.execution_id(),
                 request.source_commitment(),
                 effect.as_ref(),
-            )
+                &claim,
+            )?
         }
         HostExecutionGrantRequestV1::AttachGate(request) => {
             let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
@@ -626,7 +632,8 @@ fn outcome(
     execution_id: ExecutionId,
     source_commitment: ObjectDigest,
     effect: Option<&DurableExecutionEffectV1>,
-) -> HostExecutionOutcomeV1 {
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+) -> Result<HostExecutionOutcomeV1, HostExecutionHandoffErrorV1> {
     let mut result = HostExecutionOutcomeV1 {
         operation_id: operation_id.to_vec(),
         execution_id: execution_id.as_bytes().to_vec(),
@@ -635,7 +642,7 @@ fn outcome(
     };
     let Some(effect) = effect else {
         result.phase = HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ABSENT.into();
-        return result;
+        return Ok(result);
     };
     result.effect_commitment = effect.record_commitment().as_bytes().to_vec();
     result.phase = match effect.phase() {
@@ -660,8 +667,76 @@ fn outcome(
                 HostExecutionCompletionStatusV1::HOST_EXECUTION_COMPLETION_STATUS_FAILED_PERMANENT
             }
         }.into();
+        result.terminal_guest_result = terminal_guest_result(claim, effect, completion)?;
     }
-    result
+    Ok(result)
+}
+
+fn terminal_guest_result(
+    claim: &DormantRuntimeExecutionClaimV1<'_>,
+    effect: &DurableExecutionEffectV1,
+    completion: &aos_sandbox_core::runtime_backend::EffectCompletionV1,
+) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
+    if effect.issue().operation() != EffectOperationV1::Observe
+        || completion.status() != EffectCompletionStatusV1::Succeeded
+    {
+        return Ok(Vec::new());
+    }
+    let operation_id = *effect.issue().idempotency().operation().as_bytes();
+    let observed = decode_observe_completion_phase_v1(
+        completion.result_bytes(),
+        operation_id,
+        *effect.issue().idempotency().request_digest().as_bytes(),
+        *effect.admission().execution().as_bytes(),
+        effect.admission().specification_digest(),
+        completion.observation_sequence().get(),
+    )
+    .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
+    let expected = match observed {
+        BackendExecutionPhaseV1::Exited => AgentExecutionPhaseV1::Exited,
+        BackendExecutionPhaseV1::Canceled => AgentExecutionPhaseV1::Canceled,
+        _ => return Ok(Vec::new()),
+    };
+
+    // The fixed completion records only a phase and commitment. Recover the
+    // original signed Guest packet under the same protected Host operation
+    // before returning an exit status to the Controller.
+    let committed = claim
+        .recover_committed_host_agent_outcome(&operation_id)?
+        .ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+    let authenticated = committed.authenticated();
+    let observation_commitment: [u8; 32] = completion
+        .result_bytes()
+        .get(234..266)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
+    if committed.observation_sequence() != completion.observation_sequence()
+        || committed.observation_commitment().as_bytes() != &observation_commitment
+        || !matches!(
+            authenticated.request().operation(),
+            AgentExecutionOperationV1::Observe { execution }
+                if *execution == effect.admission().execution()
+        )
+        || authenticated.outcome().phase() != expected
+    {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
+    let bytes = authenticated.outcome().result_bytes();
+    let parsed = decode_host_execution_terminal_result_v1(bytes)
+        .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
+    if !matches!(
+        (expected, parsed),
+        (
+            AgentExecutionPhaseV1::Exited,
+            HostExecutionTerminalResultV1::Exited(_)
+        ) | (
+            AgentExecutionPhaseV1::Canceled,
+            HostExecutionTerminalResultV1::Canceled
+        )
+    ) {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
+    Ok(bytes.to_vec())
 }
 
 #[cfg(test)]

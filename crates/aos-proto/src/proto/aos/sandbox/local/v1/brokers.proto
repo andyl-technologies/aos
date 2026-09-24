@@ -358,6 +358,7 @@ message HostExecutionOutcomeV1 {
   bytes completion_bytes = 7; // Present only for COMPLETE.
   HostExecutionCompletionStatusV1 completion_status = 8;
   uint64 observation_sequence = 9;
+  bytes terminal_guest_result = 10; // From Host-verified signed Guest Observe; terminal COMPLETE only.
 }
 
 // Semantic roles for SCM_RIGHTS descriptors carried beside one packet.

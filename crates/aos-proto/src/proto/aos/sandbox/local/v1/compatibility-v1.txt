@@ -173,6 +173,7 @@ bytes completion_digest = 6;
 bytes completion_bytes = 7;
 HostExecutionCompletionStatusV1 completion_status = 8;
 uint64 observation_sequence = 9;
+bytes terminal_guest_result = 10;
 message ApplyAtomicStorageSnapshotRequest {
 RequestHeader header = 1;
 bytes canonical_plan = 2;

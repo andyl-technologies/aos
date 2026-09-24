@@ -254,6 +254,45 @@ fn decode_running_completion(
     Ok(())
 }
 
+/// Reads the phase of an exact Host-authenticated Observe completion.
+///
+/// The caller first authenticates the Host outcome. This decoder binds its
+/// fixed evidence to the distinct Observe operation and original execution
+/// specification; terminal status still needs the signed Guest result.
+///
+/// # Errors
+///
+/// Returns an error for malformed, foreign, or unsupported Observe evidence.
+pub fn decode_observe_completion_phase_v1(
+    bytes: &[u8],
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
+    let phase = decode_bound_completion(
+        bytes,
+        EffectOperationV1::Observe,
+        operation_id,
+        source_commitment,
+        execution_id,
+        specification_digest,
+        observation_sequence,
+    )?;
+    if !matches!(
+        phase,
+        BackendExecutionPhaseV1::Running
+            | BackendExecutionPhaseV1::Exited
+            | BackendExecutionPhaseV1::Canceled
+            | BackendExecutionPhaseV1::Failed
+            | BackendExecutionPhaseV1::Lost
+    ) {
+        return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
+    }
+    Ok(phase)
+}
+
 fn decode_bound_completion(
     bytes: &[u8],
     operation: EffectOperationV1,
@@ -652,7 +691,7 @@ mod tests {
         EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
         decode_authorize_completion_binding_v1, decode_authorize_completion_running_v1,
         decode_cancel_completion_phase_v1, decode_control_completion_phase_v1,
-        decode_observe_completion_running_v1, evidence_digest,
+        decode_observe_completion_phase_v1, decode_observe_completion_running_v1, evidence_digest,
     };
 
     #[test]
@@ -777,6 +816,17 @@ mod tests {
             Ok(())
         );
         assert_eq!(
+            decode_observe_completion_phase_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Ok(BackendExecutionPhaseV1::Running)
+        );
+        assert_eq!(
             decode_authorize_completion_running_v1(
                 &bytes,
                 operation,
@@ -814,6 +864,17 @@ mod tests {
         let digest = evidence_digest(&bytes[..266]);
         bytes[266..298].copy_from_slice(digest.as_bytes());
         assert_eq!(
+            decode_observe_completion_phase_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+        assert_eq!(
             decode_observe_completion_running_v1(
                 &bytes,
                 operation,
@@ -823,6 +884,21 @@ mod tests {
                 sequence,
             ),
             Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+
+        bytes[225] = 4;
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+        assert_eq!(
+            decode_observe_completion_phase_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Ok(BackendExecutionPhaseV1::Exited)
         );
     }
 

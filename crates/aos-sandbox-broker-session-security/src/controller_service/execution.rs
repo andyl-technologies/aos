@@ -28,7 +28,7 @@ use aos_sandbox::production_operation_compiler::{
 };
 use aos_sandbox::runtime_execution::{
     RuntimeExecutionEvidenceError, decode_authorize_completion_binding_v1,
-    decode_control_completion_phase_v1, decode_observe_completion_running_v1,
+    decode_control_completion_phase_v1, decode_observe_completion_phase_v1,
 };
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{
@@ -46,10 +46,13 @@ use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
-use aos_sandbox_protocol::host_execution::decode_host_execution_outcome_v1;
 use aos_sandbox_protocol::host_execution::{
     HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
     MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+};
+use aos_sandbox_protocol::host_execution::{
+    HostExecutionTerminalResultV1, decode_host_execution_outcome_v1,
+    decode_host_execution_terminal_result_v1,
 };
 use aos_sandbox_protocol::semantics::{
     host_execution_apply_grant_v1, host_execution_query_content_grant_v1,
@@ -103,6 +106,7 @@ pub(crate) struct ControllerExecutionCompletionV1 {
     pub(crate) receipt: EffectReceipt,
     phase: BackendExecutionPhaseV1,
     observation_sequence: u64,
+    terminal: Option<HostExecutionTerminalResultV1>,
 }
 
 impl ControllerExecutionCompletionV1 {
@@ -114,15 +118,31 @@ impl ControllerExecutionCompletionV1 {
                     "execution authorization awaits a distinct Host Observe".to_owned(),
                 ))
             }
-            // The Host completion binds the phase but carries no exit code or
-            // termination kind. Public EXITED requires that result evidence.
-            BackendExecutionPhaseV1::Exited => Err(EffectFailure::Retryable(
-                "execution exit requires authenticated terminal result".to_owned(),
-            )),
-            BackendExecutionPhaseV1::Canceled => Err(EffectFailure::Retryable(
-                "execution cancellation requires terminal result and capture disposition"
-                    .to_owned(),
-            )),
+            // Host now authenticates the Guest terminal bytes. Public terminal
+            // publication still needs termination semantics and capture custody.
+            BackendExecutionPhaseV1::Exited
+                if matches!(
+                    self.terminal,
+                    Some(HostExecutionTerminalResultV1::Exited(_))
+                ) =>
+            {
+                Err(EffectFailure::Retryable(
+                    "execution exit requires public result projection".to_owned(),
+                ))
+            }
+            BackendExecutionPhaseV1::Canceled
+                if self.terminal == Some(HostExecutionTerminalResultV1::Canceled) =>
+            {
+                Err(EffectFailure::Retryable(
+                    "execution cancellation requires public result and capture disposition"
+                        .to_owned(),
+                ))
+            }
+            BackendExecutionPhaseV1::Exited | BackendExecutionPhaseV1::Canceled => {
+                Err(EffectFailure::Retryable(
+                    "Host terminal completion awaits signed Guest result readback".to_owned(),
+                ))
+            }
             _ => Err(EffectFailure::Permanent(
                 "control completion has an unsupported phase".to_owned(),
             )),
@@ -1063,6 +1083,7 @@ mod tests {
             receipt,
             phase: BackendExecutionPhaseV1::Authorized,
             observation_sequence: 1,
+            terminal: None,
         };
         assert!(matches!(
             completion.public_phase(),
@@ -1074,9 +1095,29 @@ mod tests {
             receipt: EffectReceipt::new(vec![2]).unwrap(),
             phase: BackendExecutionPhaseV1::Canceled,
             observation_sequence: 2,
+            terminal: Some(HostExecutionTerminalResultV1::Canceled),
         };
         assert!(matches!(
             canceled.public_phase(),
+            Err(EffectFailure::Retryable(_))
+        ));
+
+        let exited = ControllerExecutionCompletionV1 {
+            receipt: EffectReceipt::new(vec![3]).unwrap(),
+            phase: BackendExecutionPhaseV1::Exited,
+            observation_sequence: 3,
+            terminal: Some(HostExecutionTerminalResultV1::Exited(0)),
+        };
+        assert!(matches!(
+            exited.public_phase(),
+            Err(EffectFailure::Retryable(_))
+        ));
+        let missing_result = ControllerExecutionCompletionV1 {
+            terminal: None,
+            ..exited
+        };
+        assert!(matches!(
+            missing_result.public_phase(),
             Err(EffectFailure::Retryable(_))
         ));
 
@@ -1190,14 +1231,14 @@ fn classify_outcome(
                     ));
                 }
             }
-            let phase = if intent.action == ControllerExecutionActionV1::Observe {
+            let (phase, terminal) = if intent.action == ControllerExecutionActionV1::Observe {
                 let specification_digest =
                     intent.observation_specification_digest.ok_or_else(|| {
                         EffectFailure::Permanent(
                             "Host Observe has no retained specification binding".to_owned(),
                         )
                     })?;
-                decode_observe_completion_running_v1(
+                let phase = decode_observe_completion_phase_v1(
                     &body.completion_bytes,
                     *intent.operation_id.as_bytes(),
                     intent.source_operation_commitment,
@@ -1207,13 +1248,45 @@ fn classify_outcome(
                 )
                 .map_err(|error| match error {
                     RuntimeExecutionEvidenceError::PhaseMismatch => EffectFailure::Retryable(
-                        "Host Observe has not established a running execution".to_owned(),
+                        "Host Observe has not established an observable execution phase".to_owned(),
                     ),
                     _ => EffectFailure::Permanent(
                         "Host Observe completion evidence is invalid".to_owned(),
                     ),
                 })?;
-                BackendExecutionPhaseV1::Running
+                let terminal = match phase {
+                    BackendExecutionPhaseV1::Running => None,
+                    BackendExecutionPhaseV1::Exited | BackendExecutionPhaseV1::Canceled => {
+                        let terminal =
+                            decode_host_execution_terminal_result_v1(&body.terminal_guest_result)
+                                .map_err(|_| {
+                                EffectFailure::Permanent(
+                                    "Host terminal Observe lacks an exact Guest result".to_owned(),
+                                )
+                            })?;
+                        if !matches!(
+                            (phase, terminal),
+                            (
+                                BackendExecutionPhaseV1::Exited,
+                                HostExecutionTerminalResultV1::Exited(_)
+                            ) | (
+                                BackendExecutionPhaseV1::Canceled,
+                                HostExecutionTerminalResultV1::Canceled
+                            )
+                        ) {
+                            return Err(EffectFailure::Permanent(
+                                "Host terminal Observe phase differs from Guest result".to_owned(),
+                            ));
+                        }
+                        Some(terminal)
+                    }
+                    _ => {
+                        return Err(EffectFailure::Retryable(
+                            "Host Observe has no publishable execution result".to_owned(),
+                        ));
+                    }
+                };
+                (phase, terminal)
             } else if let Some(specification) = &intent.specification {
                 let observed_phase = decode_authorize_completion_binding_v1(
                     &body.completion_bytes,
@@ -1228,9 +1301,9 @@ fn classify_outcome(
                         "Host authorization completion evidence is invalid".to_owned(),
                     )
                 })?;
-                authorization_acknowledgment_phase(observed_phase)?
+                (authorization_acknowledgment_phase(observed_phase)?, None)
             } else {
-                decode_control_completion_phase_v1(
+                let phase = decode_control_completion_phase_v1(
                     &body.completion_bytes,
                     intent.action.effect_operation(),
                     *intent.operation_id.as_bytes(),
@@ -1242,7 +1315,8 @@ fn classify_outcome(
                     EffectFailure::Permanent(
                         "Host control completion evidence is invalid".to_owned(),
                     )
-                })?
+                })?;
+                (phase, None)
             };
             if intent.action == ControllerExecutionActionV1::Cancel
                 && phase != BackendExecutionPhaseV1::Canceled
@@ -1251,7 +1325,7 @@ fn classify_outcome(
                     "execution exited before cancellation was observed".to_owned(),
                 ));
             }
-            let digest: [u8; 32] = Sha256::new()
+            let mut receipt_hash = Sha256::new()
                 .chain_update(EXECUTION_RECEIPT_DOMAIN)
                 .chain_update(intent.operation_id.as_bytes())
                 .chain_update(intent.execution_id)
@@ -1259,9 +1333,12 @@ fn classify_outcome(
                 .chain_update(effect_commitment)
                 .chain_update(completion_digest)
                 .chain_update(body.observation_sequence.to_be_bytes())
-                .chain_update(&body.completion_bytes)
-                .finalize()
-                .into();
+                .chain_update(&body.completion_bytes);
+            if terminal.is_some() {
+                receipt_hash.update((body.terminal_guest_result.len() as u64).to_be_bytes());
+                receipt_hash.update(&body.terminal_guest_result);
+            }
+            let digest: [u8; 32] = receipt_hash.finalize().into();
             let receipt = EffectReceipt::new([b"AOSEXE01".as_slice(), digest.as_slice()].concat())
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             Ok(ControllerExecutionObservationV1::Applied(
@@ -1269,6 +1346,7 @@ fn classify_outcome(
                     receipt,
                     phase,
                     observation_sequence: body.observation_sequence,
+                    terminal,
                 },
             ))
         }
