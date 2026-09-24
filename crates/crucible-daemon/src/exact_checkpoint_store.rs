@@ -364,6 +364,26 @@ impl ExactCheckpointStore {
         }
     }
 
+    // The caller holds supervisor ownership after the serial promotion worker
+    // has released its token and verified this execution cannot promote again.
+    pub(crate) fn reclaim_inactive_live_replay_promotions(
+        &self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+    ) -> Result<usize, ExactCheckpointStoreError> {
+        let mut promotions = self
+            .live_replay_promotions
+            .lock()
+            .map_err(|_| invalid_root("live replay-promotion registry is poisoned"))?;
+        let retained = promotions.len();
+        promotions.retain(|identity, state| {
+            identity.key != key
+                || identity.execution != execution
+                || matches!(state, LiveReplayPromotionState::Claimed(_))
+        });
+        Ok(retained - promotions.len())
+    }
+
     /// Authenticates either accepted attempt capture without immutable writes.
     ///
     /// # Errors
