@@ -1804,6 +1804,7 @@ impl ProductionVmLifecycleLoop {
                 let committed = epoch.committed();
                 let (parent_closure, parent_checkpoint) = retained_exact_ram_parent_for_committed(
                     &self.exact_ram_parents,
+                    self.repository_exact_ram_rebase.as_ref(),
                     &node,
                     committed,
                 )?;
@@ -2197,6 +2198,7 @@ impl ProductionVmLifecycleLoop {
                 }
                 self.exact_ram_parents
                     .retain(|candidate, _| *candidate == configuration.id());
+                self.repository_exact_ram_rebase = None;
                 Ok(identity)
             }
             Err(PersistExactCheckpointError::Unpublished(source)) => {

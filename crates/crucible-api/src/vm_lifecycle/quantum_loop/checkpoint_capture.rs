@@ -55,20 +55,38 @@ pub(super) fn combine_exact_checkpoint_transaction(
 
 pub(super) fn retained_exact_ram_parent_for_committed(
     parents: &BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
+    repository_rebase: Option<&ProductionRepositoryExactRamRebase>,
     node: &NodeId,
     committed: Option<QmpCheckpointIdentity>,
 ) -> Result<(Option<ContentHash>, Option<ProductionExactRamCheckpoint>), SchedulerError> {
     let Some(parent_identity) = committed else {
+        if repository_rebase.is_some_and(|rebase| rebase.targets.contains_key(node)) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU lost the authenticated repository parent epoch for `{}`",
+                    node.name
+                ),
+            });
+        }
         return Ok((None, None));
     };
-    let parent = parents.get(&parent_identity.checkpoint()).ok_or_else(|| {
-        SchedulerError::BoundaryViolation {
-            message: format!(
-                "QEMU committed parent for `{}` has no retained authenticated closure lease",
-                node.name
-            ),
+    let Some(parent) = parents.get(&parent_identity.checkpoint()) else {
+        // Launch bound the repository's final RAM layer to the semantic
+        // boundary. It has no native RAM lease, so this exact QEMU epoch may
+        // produce only a direct first capture.
+        if repository_rebase
+            .and_then(|rebase| rebase.targets.get(node))
+            .is_some_and(|expected| *expected == parent_identity)
+        {
+            return Ok((None, None));
         }
-    })?;
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "QEMU committed parent for `{}` has no retained authenticated closure lease or matching repository rebase identity",
+                node.name,
+            ),
+        });
+    };
     let checkpoint =
         parent
             .targets
@@ -510,6 +528,7 @@ impl ProductionVmLifecycleLoop {
                 *state = ExactCheckpointPublicationState::Published(identity);
                 self.exact_ram_parents
                     .retain(|candidate, _| *candidate == configuration_id);
+                self.repository_exact_ram_rebase = None;
                 return Ok(identity);
             }
         }
@@ -533,12 +552,14 @@ impl ProductionVmLifecycleLoop {
                             ExactCheckpointPublicationState::PublicationIndeterminate(identity);
                         return Err(error);
                     }
-                    return finish_reconciled_exact_ram_publication(
+                    let published = finish_reconciled_exact_ram_publication(
                         &mut self.checkpoint_targets,
                         &mut self.exact_ram_parents,
                         configuration_id,
                         identity,
-                    );
+                    )?;
+                    self.repository_exact_ram_rebase = None;
+                    return Ok(published);
                 }
                 Ok(Some(observed_configuration)) => {
                     let state = self
@@ -818,6 +839,81 @@ mod tests {
             target: ContentHash::from_bytes(format!("{label} target").as_bytes()),
             frontier: ContentHash::from_bytes(format!("{label} frontier").as_bytes()),
         }
+    }
+
+    #[test]
+    fn repository_parent_requires_exact_authenticated_identity_for_direct_rebase() {
+        let node = NodeId {
+            name: String::from("restored-vm"),
+        };
+        let identity = QmpCheckpointIdentity::from(checkpoint_identity("repository source"));
+        let rebase = ProductionRepositoryExactRamRebase {
+            targets: BTreeMap::from([(node.clone(), identity)]),
+        };
+        let parents = BTreeMap::new();
+
+        let (closure, parent) =
+            retained_exact_ram_parent_for_committed(&parents, Some(&rebase), &node, Some(identity))
+                .unwrap_or_else(|error| panic!("select authenticated repository parent: {error}"));
+        assert_eq!(closure, None);
+        assert!(parent.is_none());
+        assert_eq!(
+            exact_ram_capture_kind_for_parent(parent.as_ref()),
+            ProductionExactRamKind::Direct
+        );
+
+        let mismatched = [
+            QmpCheckpointIdentity::new(
+                ContentHash::from_bytes(b"wrong checkpoint"),
+                identity.target(),
+                identity.frontier(),
+            ),
+            QmpCheckpointIdentity::new(
+                identity.checkpoint(),
+                ContentHash::from_bytes(b"wrong target"),
+                identity.frontier(),
+            ),
+            QmpCheckpointIdentity::new(
+                identity.checkpoint(),
+                identity.target(),
+                ContentHash::from_bytes(b"wrong frontier"),
+            ),
+        ];
+        for observed in mismatched {
+            assert!(
+                retained_exact_ram_parent_for_committed(
+                    &parents,
+                    Some(&rebase),
+                    &node,
+                    Some(observed),
+                )
+                .is_err(),
+                "a changed checkpoint, target, or frontier cannot rebase"
+            );
+        }
+
+        let unknown_node = NodeId {
+            name: String::from("other-vm"),
+        };
+        assert!(
+            retained_exact_ram_parent_for_committed(
+                &parents,
+                Some(&rebase),
+                &unknown_node,
+                Some(identity),
+            )
+            .is_err()
+        );
+        assert!(
+            retained_exact_ram_parent_for_committed(&parents, None, &node, Some(identity)).is_err()
+        );
+        assert!(
+            retained_exact_ram_parent_for_committed(&parents, Some(&rebase), &node, None).is_err()
+        );
+        let genesis = retained_exact_ram_parent_for_committed(&parents, None, &node, None)
+            .unwrap_or_else(|error| panic!("select genesis capture: {error}"));
+        assert_eq!(genesis.0, None);
+        assert!(genesis.1.is_none());
     }
 
     fn retained_test_artifact(
@@ -1128,9 +1224,13 @@ mod tests {
                 targets: BTreeMap::from([(node.clone(), old_checkpoint)]),
             },
         )]);
-        let (parent_closure, parent_checkpoint) =
-            retained_exact_ram_parent_for_committed(&parents, &node, Some(old_identity.into()))
-                .unwrap_or_else(|error| panic!("select eight-layer parent: {error}"));
+        let (parent_closure, parent_checkpoint) = retained_exact_ram_parent_for_committed(
+            &parents,
+            None,
+            &node,
+            Some(old_identity.into()),
+        )
+        .unwrap_or_else(|error| panic!("select eight-layer parent: {error}"));
         let parent_checkpoint =
             parent_checkpoint.unwrap_or_else(|| panic!("committed parent must be retained"));
 
@@ -1203,9 +1303,13 @@ mod tests {
         ));
         assert!(old_lease_observer.upgrade().is_none());
 
-        let (_, restored) =
-            retained_exact_ram_parent_for_committed(&parents, &node, Some(new_identity.into()))
-                .unwrap_or_else(|error| panic!("select compacted restore parent: {error}"));
+        let (_, restored) = retained_exact_ram_parent_for_committed(
+            &parents,
+            None,
+            &node,
+            Some(new_identity.into()),
+        )
+        .unwrap_or_else(|error| panic!("select compacted restore parent: {error}"));
         let restored = restored.unwrap_or_else(|| panic!("compacted parent must be retained"));
         assert_eq!(restored.identity, new_identity);
         assert_eq!(restored.layers.len(), 1);
@@ -1303,6 +1407,7 @@ mod tests {
 
         let (parent_closure, parent) = retained_exact_ram_parent_for_committed(
             &lifecycle.exact_ram_parents,
+            None,
             &node,
             Some(committed),
         )

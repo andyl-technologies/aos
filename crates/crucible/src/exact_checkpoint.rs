@@ -567,6 +567,21 @@ impl ExactCheckpointStructuralTargetClaim {
 }
 
 impl ExactCheckpointStructuralTargetClaim {
+    /// Returns the structurally bound final RAM-layer identity, if present.
+    ///
+    /// The caller must still authenticate its concrete execution state before
+    /// using this identity as a QEMU restore or capture authority.
+    #[must_use]
+    pub fn final_ram_layer_identity(&self) -> Option<(ContentHash, ContentHash, ContentHash)> {
+        self.target.exact_ram.layers.last().map(|layer| {
+            (
+                layer.identity.checkpoint,
+                layer.identity.target,
+                layer.identity.frontier,
+            )
+        })
+    }
+
     /// Authenticates execution state and opens its logical artifact streams.
     ///
     /// The opener receives only identities authenticated by the repository
