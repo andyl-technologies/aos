@@ -55,6 +55,9 @@ pub enum QemuLaunchCommandError {
     /// A selectable catalog was configured without enabling white-box callbacks.
     #[error("guest-selectable QEMU launch requires white-box mode")]
     SelectableCatalogWhileWhiteboxDisabled,
+    /// Campaign marker parking was configured without white-box callbacks.
+    #[error("campaign marker parking requires white-box mode")]
+    CampaignMarkerParkingWhileWhiteboxDisabled,
     /// The composite setup plan could not be encoded within its fixed profile.
     #[error("QEMU plugin setup plan cannot be represented canonically")]
     InvalidPluginSetupPlan,

@@ -18,10 +18,26 @@ fn plugin_args_parse_required_simfd_and_slot() {
     assert_eq!(args.inherited_fds(), None);
     assert_eq!(args.whitebox(), PluginSwitch::Off);
     assert_eq!(args.whitebox_setup(), None);
+    assert_eq!(args.campaign_marker_parking(), PluginSwitch::Off);
     assert_eq!(args.app_random(), None);
     assert_eq!(args.coverage(), PluginSwitch::Off);
     assert_eq!(args.fingerprint(), PluginSwitch::Off);
     assert_eq!(args.validate_slot_index(3), Ok(()));
+}
+
+#[test]
+fn campaign_marker_parking_requires_explicit_whitebox_launch_opt_in() {
+    let base = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576";
+    assert_eq!(
+        PluginArgs::parse(&format!("{base},campaign_marker_parking=on")),
+        Err(PluginArgsParseError::CampaignMarkerParkingRequiresWhitebox)
+    );
+
+    let enabled = PluginArgs::parse(&format!(
+        "{base},whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,campaign_marker_parking=on"
+    ))
+    .unwrap_or_else(|error| panic!("explicit campaign marker parking should parse: {error}"));
+    assert_eq!(enabled.campaign_marker_parking(), PluginSwitch::On);
 }
 
 #[test]
