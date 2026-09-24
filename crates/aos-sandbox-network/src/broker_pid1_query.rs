@@ -913,7 +913,7 @@ mod tests {
             "aos-sandbox-network-lifecycle-worker@one.service",
         )
         .unwrap();
-        assert!(matches!(state, BrokerPid1ServiceStateV3::Unavailable));
+        assert!(matches!(&state, BrokerPid1ServiceStateV3::Unavailable));
         assert!(matches!(
             state.require_effect_readback(),
             Err(BrokerPid1QueryErrorV2::Unavailable)
