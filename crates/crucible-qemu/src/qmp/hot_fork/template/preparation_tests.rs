@@ -84,6 +84,30 @@ fn acquisition_rejects_generation_replacement_before_accepting_completion()
     Ok(())
 }
 
+#[test]
+fn blocked_acquisition_retains_the_validated_barrier_report()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut client = client([completed_report("blocked")], 1)?;
+
+    let error = client.prepare_hot_fork_template_barriers(&[]).unwrap_err();
+    let QmpError::HotForkTemplateNotRetained {
+        generation,
+        outcome,
+        state,
+    } = &error
+    else {
+        panic!("expected a rolled-back template report, got {error:?}");
+    };
+    assert_eq!(*generation, 4);
+    assert_eq!(*outcome, state.outcome());
+    assert_eq!(state.missing_proofs(), 120);
+    assert!(state.rollback_complete());
+    assert!(!state.block_barrier().snapshot_complete());
+    assert!(error.to_string().contains("missing_proofs: 120"));
+
+    Ok(())
+}
+
 fn barriers_report() -> Value {
     let mut report = prepared_report();
     report["acknowledged-proofs"] = json!(63);
