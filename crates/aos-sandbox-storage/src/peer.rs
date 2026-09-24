@@ -173,6 +173,55 @@ fn same_process(left: PidFdInfo, right: PidFdInfo) -> bool {
         && left.cgroup_id() == right.cgroup_id()
 }
 
+fn verify_root_service_connection(
+    cgroup: &RetainedCgroupAnchor,
+    peer: &ConnectionPeerIdentity,
+) -> Result<PidFdInfo, ()> {
+    let credentials = peer.credentials();
+    if credentials.uid() != 0 || credentials.gid() != 0 {
+        return Err(());
+    }
+    let info = cgroup
+        .verify_exact_membership(peer.pidfd())
+        .map_err(|_| ())?;
+    let pid = credentials.pid().get();
+    if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive().map_err(|_| ())? {
+        return Err(());
+    }
+    Ok(info)
+}
+
+fn verify_root_service_record(
+    cgroup: &RetainedCgroupAnchor,
+    expected: PidFdInfo,
+    peer: &ConnectionPeerIdentity,
+    subject: &KernelAuthorizedRecordSubject,
+) -> Result<(), ()> {
+    // Recheck the original connection both before and after authenticating
+    // the independently reported record subject.
+    let current = verify_root_service_connection(cgroup, peer)?;
+    let credentials = subject.credentials();
+    if !same_process(current, expected)
+        || credentials.uid() != 0
+        || credentials.gid() != 0
+        || credentials.pid().get() != expected.pid()
+        || !subject.is_alive().map_err(|_| ())?
+    {
+        return Err(());
+    }
+    let record_info = cgroup
+        .verify_exact_membership(subject.pidfd())
+        .map_err(|_| ())?;
+    if !same_process(record_info, expected) {
+        return Err(());
+    }
+    let after = verify_root_service_connection(cgroup, peer)?;
+    if !same_process(after, expected) {
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Pins the exact root-account Host service allowed to request root mounts.
 #[derive(Debug)]
 pub struct HostRootExportPeerVerifier {
@@ -200,19 +249,7 @@ impl HostRootExportPeerVerifier {
     }
 
     pub(crate) fn verify_connection(&self, peer: &ConnectionPeerIdentity) -> Result<PidFdInfo, ()> {
-        let credentials = peer.credentials();
-        if credentials.uid() != 0 || credentials.gid() != 0 {
-            return Err(());
-        }
-        let info = self
-            .host_cgroup
-            .verify_exact_membership(peer.pidfd())
-            .map_err(|_| ())?;
-        let pid = credentials.pid().get();
-        if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive().map_err(|_| ())? {
-            return Err(());
-        }
-        Ok(info)
+        verify_root_service_connection(&self.host_cgroup, peer)
     }
 
     pub(crate) fn verify_record(
@@ -221,30 +258,7 @@ impl HostRootExportPeerVerifier {
         peer: &ConnectionPeerIdentity,
         subject: &KernelAuthorizedRecordSubject,
     ) -> Result<(), ()> {
-        let current = self.verify_connection(peer)?;
-        let credentials = subject.credentials();
-        if !same_process(current, expected)
-            || credentials.uid() != 0
-            || credentials.gid() != 0
-            || credentials.pid().get() != expected.pid()
-            || !subject.is_alive().map_err(|_| ())?
-        {
-            return Err(());
-        }
-        let record_info = self
-            .host_cgroup
-            .verify_exact_membership(subject.pidfd())
-            .map_err(|_| ())?;
-        if !same_process(record_info, expected) {
-            return Err(());
-        }
-        self.verify_connection(peer).and_then(|current| {
-            if same_process(current, expected) {
-                Ok(())
-            } else {
-                Err(())
-            }
-        })
+        verify_root_service_record(&self.host_cgroup, expected, peer, subject)
     }
 }
 
@@ -275,19 +289,7 @@ impl ProviderLiveExportPeerVerifier {
     }
 
     pub(crate) fn verify_connection(&self, peer: &ConnectionPeerIdentity) -> Result<PidFdInfo, ()> {
-        let credentials = peer.credentials();
-        if credentials.uid() != 0 || credentials.gid() != 0 {
-            return Err(());
-        }
-        let info = self
-            .provider_cgroup
-            .verify_exact_membership(peer.pidfd())
-            .map_err(|_| ())?;
-        let pid = credentials.pid().get();
-        if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive().map_err(|_| ())? {
-            return Err(());
-        }
-        Ok(info)
+        verify_root_service_connection(&self.provider_cgroup, peer)
     }
 
     pub(crate) fn verify_record(
@@ -296,29 +298,6 @@ impl ProviderLiveExportPeerVerifier {
         peer: &ConnectionPeerIdentity,
         subject: &KernelAuthorizedRecordSubject,
     ) -> Result<(), ()> {
-        let current = self.verify_connection(peer)?;
-        let credentials = subject.credentials();
-        if !same_process(current, expected)
-            || credentials.uid() != 0
-            || credentials.gid() != 0
-            || credentials.pid().get() != expected.pid()
-            || !subject.is_alive().map_err(|_| ())?
-        {
-            return Err(());
-        }
-        let record_info = self
-            .provider_cgroup
-            .verify_exact_membership(subject.pidfd())
-            .map_err(|_| ())?;
-        if !same_process(record_info, expected) {
-            return Err(());
-        }
-        self.verify_connection(peer).and_then(|after| {
-            if same_process(after, expected) {
-                Ok(())
-            } else {
-                Err(())
-            }
-        })
+        verify_root_service_record(&self.provider_cgroup, expected, peer, subject)
     }
 }
