@@ -1,10 +1,10 @@
 //! Durable, accepted-Create-derived execution output-byte reservations.
 //!
-//! A dedicated protected journal owns one assignment-scoped ledger. The
-//! controller's accepted Create projection fixes the byte count; callers
-//! cannot provide an independent budget. Stream and
-//! PTY requests commit a zero-byte record so absence is never mistaken for a
-//! reservation. A terminal process result does not release retained output.
+//! The runtime execution store owns one assignment-scoped v2 ledger in the
+//! same protected journal as spec admission. The controller's accepted Create
+//! projection fixes the byte count; callers cannot provide an independent
+//! budget. Stream and PTY requests commit a zero-byte record so absence is
+//! never mistaken for a reservation. Terminal exit does not release output.
 //!
 //! ```text
 //! marker = AOSEOM01 || assignment[32] || parent-bytes:u64be
@@ -14,11 +14,11 @@
 //!          || requested:u64be || parent-bytes:u64be || claim[32] || sha256[32]
 //! ```
 //!
-//! The journal's protected-open provenance, exclusive claim, and synchronous
-//! commit are the trust boundary. Record checksums detect torn or noncanonical
-//! records, not forgery by an equally privileged writer. This owner does not
-//! itself authorize Host Apply: the producer must later revalidate the current
-//! assignment and join the durable claim to full canonical spec custody.
+//! The runtime store's protected-open provenance, exclusive claim, and
+//! synchronous commit are the trust boundary. Record checksums detect torn or
+//! noncanonical records, not forgery by an equally privileged writer. The
+//! provisional claim and its later spec admission do not authorize Host Apply.
+//! Historical standalone journals are not silently imported into this owner.
 
 use aos_proto::aos::sandbox::v1::{Command, ExecutionIoMode, ExecutionPhase};
 use aos_sandbox_core::{
@@ -33,14 +33,14 @@ use crate::controller_service::public_projection::{
 use crate::execution_parent_resource::{
     ExecutionParentResourceSourceV1, revalidate_execution_parent_resource_from_journal_v1,
 };
-use crate::journal::{JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::JournalError;
 
-const MARKER_KEY: &[u8] = b"execution-output-owner-v1";
+pub(crate) const MARKER_KEY: &[u8] = b"execution-output-owner-v1";
 const MARKER_MAGIC: &[u8; 8] = b"AOSEOM01";
 const CLAIM_MAGIC: &[u8; 8] = b"AOSEOR01";
-const CLAIM_KEY_PREFIX: u8 = b'o';
+pub(crate) const CLAIM_KEY_PREFIX: u8 = b'o';
 const MARKER_BYTES: usize = 48;
-const CLAIM_BYTES: usize = 312;
+pub(crate) const CLAIM_BYTES: usize = 312;
 
 /// Reports absent accepted input, capacity exhaustion, or protected-ledger failure.
 #[derive(Debug, thiserror::Error)]
@@ -123,8 +123,9 @@ pub enum ExecutionOutputReservationCommitV1 {
 /// Retains exact recovery identity after an ambiguous append.
 #[must_use = "an ambiguous output reservation must be resolved after protected reopen"]
 pub struct ExecutionOutputReservationRecoveryV1 {
-    expected: DurableExecutionOutputReservationV1,
-    expected_bytes: [u8; CLAIM_BYTES],
+    pub(crate) store_binding: ObjectDigest,
+    pub(crate) expected: DurableExecutionOutputReservationV1,
+    pub(crate) expected_bytes: [u8; CLAIM_BYTES],
 }
 
 /// Reports definitive protected readback of an ambiguous reservation.
@@ -136,109 +137,15 @@ pub enum ExecutionOutputReservationRecoveryResultV1 {
     NotCommitted,
 }
 
-/// Reserves the exact accepted Create output budget before any Host effect.
-///
-/// `controller` supplies the accepted projection and current parent source;
-/// `ledger` must be a separate dedicated protected journal. The caller must
-/// retain the returned result and must not interpret it as authorization to
-/// dispatch a Host request. No settlement API exists until authenticated
-/// output deletion, including zero-byte stream deletion, has a durable owner.
-///
-/// # Errors
-///
-/// Returns [`ExecutionOutputReservationErrorV1`] for stale accepted input,
-/// overcommit, a conflicting prior claim, corrupt replay, or journal failure.
-pub fn reserve_accepted_execution_output_v1(
-    controller: &mut Journal,
-    ledger: &mut Journal,
-    create_operation: OperationId,
-    execution: ExecutionId,
-    parent: &ExecutionParentResourceSourceV1,
-) -> Result<ExecutionOutputReservationCommitV1, ExecutionOutputReservationErrorV1> {
-    let draft = accepted_claim(controller, create_operation, execution, parent)?;
-    let mut authority = ledger.claim_protected_authority(RecordNamespace::Effect)?;
-    let key = claim_key(execution);
-    let marker = marker_bytes(draft.assignment, draft.parent_bytes);
-    let readback = replay_ledger(
-        authority.records()?,
-        draft.assignment,
-        draft.parent_bytes,
-        &key,
-        &draft.bytes,
-    )?;
-    if readback.replay {
-        return Ok(ExecutionOutputReservationCommitV1::Committed(draft.record));
-    }
-    admit_next(readback.used, draft.requested_bytes, draft.parent_bytes)?;
-
-    let mut writes = Vec::with_capacity(if readback.marker_seen { 1 } else { 2 });
-    if !readback.marker_seen {
-        writes.push(JournalRecord::put(
-            RecordNamespace::Effect,
-            MARKER_KEY.to_vec(),
-            marker.to_vec(),
-        ));
-    }
-    writes.push(JournalRecord::put(
-        RecordNamespace::Effect,
-        key,
-        draft.bytes.to_vec(),
-    ));
-    let transaction = JournalTransaction::new(*execution.as_bytes(), writes)?;
-    match authority.commit(&transaction) {
-        Ok(_) => Ok(ExecutionOutputReservationCommitV1::Committed(draft.record)),
-        Err(_) => Ok(ExecutionOutputReservationCommitV1::RecoveryRequired(
-            ExecutionOutputReservationRecoveryV1 {
-                expected: draft.record,
-                expected_bytes: draft.bytes,
-            },
-        )),
-    }
+pub(crate) struct ClaimDraft {
+    pub(crate) record: DurableExecutionOutputReservationV1,
+    pub(crate) bytes: [u8; CLAIM_BYTES],
+    pub(crate) assignment: ObjectDigest,
+    pub(crate) requested_bytes: u64,
+    pub(crate) parent_bytes: u64,
 }
 
-/// Resolves an ambiguous reservation through the reopened protected ledger.
-///
-/// Authenticated absence is distinct from a conflicting or corrupt record.
-/// `NotCommitted` does not authorize a blind retry: the accepted Create and
-/// current parent must be revalidated before a new reservation attempt.
-///
-/// # Errors
-///
-/// Returns [`ExecutionOutputReservationErrorV1`] if protected replay or the
-/// exact expected claim cannot be authenticated.
-pub fn recover_execution_output_reservation_v1(
-    reopened_ledger: &mut Journal,
-    token: ExecutionOutputReservationRecoveryV1,
-) -> Result<ExecutionOutputReservationRecoveryResultV1, ExecutionOutputReservationErrorV1> {
-    let authority = reopened_ledger.claim_protected_authority(RecordNamespace::Effect)?;
-    let key = claim_key(token.expected.execution);
-    let output = token.expected.output();
-    let readback = replay_ledger(
-        authority.records()?,
-        output.assignment_digest(),
-        output
-            .parent_reservations()
-            .get(ResourceDimension::OutputBytes),
-        &key,
-        &token.expected_bytes,
-    )?;
-    if !readback.replay {
-        return Ok(ExecutionOutputReservationRecoveryResultV1::NotCommitted);
-    }
-    Ok(ExecutionOutputReservationRecoveryResultV1::Committed(
-        token.expected,
-    ))
-}
-
-struct ClaimDraft {
-    record: DurableExecutionOutputReservationV1,
-    bytes: [u8; CLAIM_BYTES],
-    assignment: ObjectDigest,
-    requested_bytes: u64,
-    parent_bytes: u64,
-}
-
-fn accepted_claim(
+pub(crate) fn accepted_claim(
     controller: &mut Journal,
     create_operation: OperationId,
     execution: ExecutionId,
@@ -337,7 +244,7 @@ fn requested_output_bytes(command: &Command) -> Result<u64, ExecutionOutputReser
     }
 }
 
-fn admit_next(
+pub(crate) fn admit_next(
     used: u64,
     requested: u64,
     parent: u64,
@@ -348,14 +255,20 @@ fn admit_next(
     Ok(())
 }
 
-struct RetainedClaim {
-    execution: [u8; 16],
-    assignment: ObjectDigest,
-    requested_bytes: u64,
-    parent_bytes: u64,
+pub(crate) struct RetainedClaim {
+    pub(crate) execution: [u8; 16],
+    pub(crate) create_operation: [u8; 16],
+    pub(crate) assignment: ObjectDigest,
+    pub(crate) parent_profile: ObjectDigest,
+    pub(crate) claim_commitment: ObjectDigest,
+    pub(crate) requested_bytes: u64,
+    pub(crate) parent_bytes: u64,
+    pub(crate) record_digest: ObjectDigest,
 }
 
-fn decode_claim(bytes: &[u8]) -> Result<RetainedClaim, ExecutionOutputReservationErrorV1> {
+pub(crate) fn decode_claim(
+    bytes: &[u8],
+) -> Result<RetainedClaim, ExecutionOutputReservationErrorV1> {
     let required_digests = [40, 72, 104, 136, 168, 200, 248];
     if bytes.len() != CLAIM_BYTES
         || bytes.get(..8) != Some(CLAIM_MAGIC.as_slice())
@@ -386,17 +299,31 @@ fn decode_claim(bytes: &[u8]) -> Result<RetainedClaim, ExecutionOutputReservatio
         execution: bytes[8..24]
             .try_into()
             .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
+        create_operation: bytes[24..40]
+            .try_into()
+            .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
         assignment: ObjectDigest::from_bytes(
             bytes[104..136]
                 .try_into()
                 .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
         ),
+        parent_profile: ObjectDigest::from_bytes(
+            bytes[136..168]
+                .try_into()
+                .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
+        ),
+        claim_commitment: ObjectDigest::from_bytes(
+            bytes[248..280]
+                .try_into()
+                .map_err(|_| ExecutionOutputReservationErrorV1::CorruptLedger)?,
+        ),
         requested_bytes,
         parent_bytes,
+        record_digest: ObjectDigest::from_bytes(Sha256::digest(bytes).into()),
     })
 }
 
-fn marker_bytes(assignment: ObjectDigest, parent_bytes: u64) -> [u8; MARKER_BYTES] {
+pub(crate) fn marker_bytes(assignment: ObjectDigest, parent_bytes: u64) -> [u8; MARKER_BYTES] {
     let mut marker = [0_u8; MARKER_BYTES];
     marker[..8].copy_from_slice(MARKER_MAGIC);
     marker[8..40].copy_from_slice(assignment.as_bytes());
@@ -404,13 +331,13 @@ fn marker_bytes(assignment: ObjectDigest, parent_bytes: u64) -> [u8; MARKER_BYTE
     marker
 }
 
-struct LedgerReadback {
-    used: u64,
-    marker_seen: bool,
-    replay: bool,
+pub(crate) struct LedgerReadback {
+    pub(crate) used: u64,
+    pub(crate) marker_seen: bool,
+    pub(crate) replay: bool,
 }
 
-fn replay_ledger<'record>(
+pub(crate) fn replay_ledger<'record>(
     records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
     assignment: ObjectDigest,
     parent_bytes: u64,
@@ -461,7 +388,7 @@ fn replay_ledger<'record>(
     Ok(readback)
 }
 
-fn claim_key(execution: ExecutionId) -> Vec<u8> {
+pub(crate) fn claim_key(execution: ExecutionId) -> Vec<u8> {
     let mut key = Vec::with_capacity(17);
     key.push(CLAIM_KEY_PREFIX);
     key.extend_from_slice(execution.as_bytes());
@@ -472,6 +399,8 @@ fn claim_key(execution: ExecutionId) -> Vec<u8> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
 
     fn replay_records(
         records: &[(Vec<u8>, Vec<u8>)],

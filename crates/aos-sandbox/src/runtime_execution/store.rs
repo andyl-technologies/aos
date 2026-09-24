@@ -2,6 +2,9 @@
 //!
 //! ```text
 //! authority = AOSRAA01 || currentness_and_probe[32] || ledger[32]
+//! output-v2 = AOSROV02 || store_binding[32]
+//! output-marker = AOSEOM01 || assignment[32] || parent_output_bytes:u64be
+//! output-claim = 'o' || execution[16] => AOSEOR01 accepted-Create claim
 //! sequence  = operation_sequence:u64be || operation[16] || issue_anchor[32]
 //! resource  = prior_ledger[32] || output_reservation[32]
 //!             || successor_ledger[32] || admission[32]
@@ -24,9 +27,16 @@ use aos_sandbox_core::runtime_backend::{
     decode_durable_execution_admission_v1, decode_durable_execution_effect_v1,
     encode_durable_execution_admission_v1, encode_durable_execution_effect_v1,
 };
-use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence};
+use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, OperationId};
 use sha2::{Digest as _, Sha256};
 
+use crate::execution_output_reservation::{
+    CLAIM_KEY_PREFIX, ExecutionOutputReservationCommitV1, ExecutionOutputReservationErrorV1,
+    ExecutionOutputReservationRecoveryResultV1, ExecutionOutputReservationRecoveryV1,
+    MARKER_KEY as OUTPUT_MARKER_KEY, RetainedClaim, accepted_claim, admit_next, claim_key,
+    decode_claim, marker_bytes, replay_ledger,
+};
+use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1,
     GlobalCapacityReservationV1, Journal, JournalError, JournalRecord, JournalTransaction,
@@ -55,6 +65,8 @@ const AGENT_OUTCOME_KEY_PREFIX: u8 = b'u';
 const STORE_MARKER_KEY: &[u8] = b"runtime-execution-owner-v1";
 const ADMISSION_AUTHORITY_KEY: &[u8] = b"runtime-execution-admission-authority-v1";
 const ADMISSION_AUTHORITY_MAGIC: &[u8; 8] = b"AOSRAA01";
+const OUTPUT_FORMAT_KEY: &[u8] = b"runtime-execution-output-v2";
+const OUTPUT_FORMAT_MAGIC: &[u8; 8] = b"AOSROV02";
 const TERMINAL_CAPACITY_RECORDS: u32 = 3;
 const TERMINAL_CAPACITY_BYTES: u64 = 16 * 1_048_576;
 const MAXIMUM_RUNTIME_EXECUTION_RECORDS: usize = 262_144;
@@ -251,6 +263,155 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .get(ADMISSION_AUTHORITY_KEY)?
             .ok_or(JournalRuntimeExecutionError::UninitializedStore)?;
         decode_admission_authority(bytes)
+    }
+
+    /// Reads one provisional v2 claim from this cold-validated protected store.
+    ///
+    /// Absence is not admission authority, and the returned claim does not
+    /// establish current Host or physical capture-storage state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the v2 format binding or retained claim is corrupt.
+    pub(crate) fn load_accepted_output_v2(
+        &self,
+        execution: ExecutionId,
+    ) -> Result<Option<RetainedClaim>, JournalRuntimeExecutionError> {
+        match self.authority.get(OUTPUT_FORMAT_KEY)? {
+            None => return Ok(None),
+            Some(bytes) if bytes == output_format_bytes(self.store_binding) => {}
+            Some(_) => return Err(JournalRuntimeExecutionError::CorruptRecord),
+        }
+        let Some(bytes) = self.authority.get(&claim_key(execution))? else {
+            return Ok(None);
+        };
+        let claim = decode_claim(bytes)?;
+        if claim.execution != *execution.as_bytes() {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        Ok(Some(claim))
+    }
+
+    /// Commits an accepted Create output claim into this execution store.
+    ///
+    /// The v2 marker and first zero- or nonzero-byte claim commit atomically.
+    /// An existing v1 store with admissions cannot switch formats in place.
+    /// This provisional claim is not physical capture-storage or Host authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale accepted input, a legacy admission, capacity
+    /// exhaustion, conflicting claims, or corrupt protected replay.
+    pub(crate) fn reserve_accepted_output_v2(
+        &mut self,
+        controller: &mut Journal,
+        create_operation: OperationId,
+        execution: ExecutionId,
+        parent: &ExecutionParentResourceSourceV1,
+    ) -> Result<ExecutionOutputReservationCommitV1, JournalRuntimeExecutionError> {
+        let draft = accepted_claim(controller, create_operation, execution, parent)?;
+        let format = output_format_bytes(self.store_binding);
+        let format_seen = match self.authority.get(OUTPUT_FORMAT_KEY)? {
+            Some(bytes) if bytes == format => true,
+            Some(_) => return Err(JournalRuntimeExecutionError::CorruptRecord),
+            None => false,
+        };
+        if !format_seen
+            && self
+                .authority
+                .records()?
+                .any(|(key, _)| matches!(key, [ADMISSION_KEY_PREFIX, ..] if key.len() == 17))
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        let key = claim_key(execution);
+        let readback = replay_ledger(
+            self.authority
+                .records()?
+                .filter(|(key, _)| output_record_key(key)),
+            draft.assignment,
+            draft.parent_bytes,
+            &key,
+            &draft.bytes,
+        )?;
+        if format_seen != readback.marker_seen {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        if readback.replay {
+            return Ok(ExecutionOutputReservationCommitV1::Committed(draft.record));
+        }
+        admit_next(readback.used, draft.requested_bytes, draft.parent_bytes)?;
+
+        let mut writes = Vec::with_capacity(if format_seen { 1 } else { 3 });
+        if !format_seen {
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                OUTPUT_FORMAT_KEY.to_vec(),
+                format.to_vec(),
+            ));
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                OUTPUT_MARKER_KEY.to_vec(),
+                marker_bytes(draft.assignment, draft.parent_bytes).to_vec(),
+            ));
+        }
+        writes.push(JournalRecord::put(
+            RecordNamespace::Effect,
+            key,
+            draft.bytes.to_vec(),
+        ));
+        let transaction = JournalTransaction::new(*execution.as_bytes(), writes)?;
+        match self.authority.commit(&transaction) {
+            Ok(_) => Ok(ExecutionOutputReservationCommitV1::Committed(draft.record)),
+            Err(_) => Ok(ExecutionOutputReservationCommitV1::RecoveryRequired(
+                ExecutionOutputReservationRecoveryV1 {
+                    store_binding: self.store_binding,
+                    expected: draft.record,
+                    expected_bytes: draft.bytes,
+                },
+            )),
+        }
+    }
+
+    /// Resolves an ambiguous v2 claim after this store has cold-reopened.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the protected store or retained claim is corrupt.
+    pub(crate) fn recover_accepted_output_v2(
+        &self,
+        token: ExecutionOutputReservationRecoveryV1,
+    ) -> Result<ExecutionOutputReservationRecoveryResultV1, JournalRuntimeExecutionError> {
+        if token.store_binding != self.store_binding {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        let format_seen = match self.authority.get(OUTPUT_FORMAT_KEY)? {
+            Some(bytes) if bytes == output_format_bytes(self.store_binding) => true,
+            Some(_) => return Err(JournalRuntimeExecutionError::CorruptRecord),
+            None => false,
+        };
+        let output = token.expected.output();
+        let readback = replay_ledger(
+            self.authority
+                .records()?
+                .filter(|(key, _)| output_record_key(key)),
+            output.assignment_digest(),
+            output
+                .parent_reservations()
+                .get(aos_sandbox_core::ResourceDimension::OutputBytes),
+            &claim_key(token.expected.execution()),
+            &token.expected_bytes,
+        )?;
+        if format_seen != readback.marker_seen {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        if !readback.replay {
+            return Ok(ExecutionOutputReservationRecoveryResultV1::NotCommitted);
+        }
+        Ok(ExecutionOutputReservationRecoveryResultV1::Committed(
+            token.expected,
+        ))
     }
 
     /// Loads one exact admitted execution from protected current state.
@@ -1384,6 +1545,8 @@ fn agent_outcome_key(operation: &[u8; 16]) -> Vec<u8> {
 fn owned_key(key: &[u8]) -> bool {
     key == STORE_MARKER_KEY
         || key == ADMISSION_AUTHORITY_KEY
+        || key == OUTPUT_FORMAT_KEY
+        || output_record_key(key)
         || matches!(
             key,
             [ADMISSION_KEY_PREFIX | ADMISSION_IDEMPOTENCY_KEY_PREFIX | ADMISSION_RESOURCE_KEY_PREFIX | EFFECT_KEY_PREFIX | TERMINAL_KEY_PREFIX, ..]
@@ -1394,6 +1557,17 @@ fn owned_key(key: &[u8]) -> bool {
         || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
 }
 
+fn output_record_key(key: &[u8]) -> bool {
+    key == OUTPUT_MARKER_KEY || matches!(key, [CLAIM_KEY_PREFIX, ..] if key.len() == 17)
+}
+
+fn output_format_bytes(store_binding: ObjectDigest) -> [u8; 40] {
+    let mut bytes = [0_u8; 40];
+    bytes[..8].copy_from_slice(OUTPUT_FORMAT_MAGIC);
+    bytes[8..].copy_from_slice(store_binding.as_bytes());
+    bytes
+}
+
 fn validate_runtime_execution_replay(
     authority: &ProtectedJournalAuthority<'_>,
     store_binding: ObjectDigest,
@@ -1401,6 +1575,9 @@ fn validate_runtime_execution_replay(
 ) -> Result<(), JournalRuntimeExecutionError> {
     let protected_sequence = authority.snapshot()?.sequence();
     let mut marker_seen = false;
+    let mut output_format_seen = false;
+    let mut output_marker = None;
+    let mut provisional_claims = BTreeMap::new();
     let mut admission_state = None;
     let mut admissions = BTreeMap::new();
     let mut idempotency = BTreeMap::new();
@@ -1435,11 +1612,34 @@ fn validate_runtime_execution_replay(
             }
             continue;
         }
+        if key == OUTPUT_FORMAT_KEY {
+            if output_format_seen || value != output_format_bytes(store_binding) {
+                return Err(JournalRuntimeExecutionError::CorruptRecord);
+            }
+            output_format_seen = true;
+            continue;
+        }
+        if key == OUTPUT_MARKER_KEY {
+            if output_marker.replace(value.to_vec()).is_some() {
+                return Err(JournalRuntimeExecutionError::CorruptRecord);
+            }
+            continue;
+        }
 
         let suffix = key
             .get(1..)
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
         match key.first().copied() {
+            Some(CLAIM_KEY_PREFIX) if key.len() == 17 => {
+                let retained = decode_claim(value)?;
+                if retained.execution.as_slice() != suffix
+                    || provisional_claims
+                        .insert(key.to_vec(), value.to_vec())
+                        .is_some()
+                {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
             Some(ADMISSION_KEY_PREFIX) if key.len() == 17 => {
                 let admission = decode_durable_execution_admission_v1(value)
                     .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
@@ -1538,6 +1738,28 @@ fn validate_runtime_execution_replay(
     }
     let admission_state =
         admission_state.ok_or(JournalRuntimeExecutionError::UninitializedStore)?;
+    if output_format_seen {
+        let marker = output_marker
+            .as_deref()
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let (first_key, first_bytes) = provisional_claims
+            .first_key_value()
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let first = decode_claim(first_bytes)?;
+        replay_ledger(
+            std::iter::once((OUTPUT_MARKER_KEY, marker)).chain(
+                provisional_claims
+                    .iter()
+                    .map(|(key, value)| (key.as_slice(), value.as_slice())),
+            ),
+            first.assignment,
+            first.parent_bytes,
+            first_key,
+            first_bytes,
+        )?;
+    } else if output_marker.is_some() || !provisional_claims.is_empty() {
+        return Err(JournalRuntimeExecutionError::CorruptRecord);
+    }
     if admissions.len() != idempotency.len() || admissions.len() != resources.len() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
     }
@@ -1573,15 +1795,30 @@ fn validate_runtime_execution_replay(
         let operation = *admission.idempotency().operation().as_bytes();
         let claim = decode_output_claim(admission.specification_bytes())
             .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
-        match output_budget.as_mut() {
-            Some(budget) => budget
-                .include(claim)
-                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
-            None => {
-                output_budget = Some(
-                    OutputBudget::from_first(claim)
-                        .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
-                );
+        if output_format_seen {
+            let retained = provisional_claims
+                .get(&claim_key(admission.execution()))
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)
+                .and_then(|bytes| decode_claim(bytes).map_err(Into::into))?;
+            if !claim.matches_provisional(
+                &retained,
+                admission.execution().as_bytes(),
+                &operation,
+                admission.currentness().output_reservation(),
+            ) {
+                return Err(JournalRuntimeExecutionError::CorruptRecord);
+            }
+        } else {
+            match output_budget.as_mut() {
+                Some(budget) => budget
+                    .include(claim)
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+                None => {
+                    output_budget = Some(
+                        OutputBudget::from_first(claim)
+                            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+                    );
+                }
             }
         }
         if idempotency.get(&operation) != Some(&admission.admission_commitment()) {
@@ -2177,6 +2414,9 @@ pub enum JournalRuntimeExecutionError {
     /// Protected journal access or durability failed.
     #[error("runtime execution protected journal failed: {0}")]
     Journal(#[from] JournalError),
+    /// Accepted Create output source or provisional reservation failed.
+    #[error("runtime execution output reservation failed: {0}")]
+    OutputReservation(#[from] ExecutionOutputReservationErrorV1),
     /// Portable admission failed.
     #[error("runtime execution admission failed: {0}")]
     Admission(#[from] AdmissionCommitError),
@@ -2192,4 +2432,130 @@ pub enum JournalRuntimeExecutionError {
     /// Portable recovery evidence validation failed.
     #[error("runtime execution recovery failed: {0}")]
     Recovery(#[from] aos_sandbox_core::runtime_backend::ExecutionRecoveryError),
+}
+
+#[cfg(test)]
+mod output_v2_tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use ed25519_dalek::SigningKey;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::journal::JournalLimits;
+
+    fn peer() -> ProtectedAgentRoutePeerV1 {
+        let public_key = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
+        ProtectedAgentRoutePeerV1::new(
+            public_key,
+            ObjectDigest::from_bytes([8; 32]),
+            ObjectDigest::from_bytes([9; 32]),
+        )
+        .expect("fixed peer")
+    }
+
+    fn claim(execution: u8, requested: u64, parent: u64) -> Vec<u8> {
+        let mut bytes = [0_u8; 312];
+        bytes[..8].copy_from_slice(b"AOSEOR01");
+        bytes[8..24].fill(execution);
+        bytes[24..40].fill(3);
+        for (index, start) in [40, 72, 104, 136, 168, 200, 248].into_iter().enumerate() {
+            bytes[start..start + 32].fill(if start == 104 { 5 } else { index as u8 + 1 });
+        }
+        bytes[232..240].copy_from_slice(&requested.to_be_bytes());
+        bytes[240..248].copy_from_slice(&parent.to_be_bytes());
+        let checksum = Sha256::digest(&bytes[..280]);
+        bytes[280..].copy_from_slice(&checksum);
+        bytes.to_vec()
+    }
+
+    fn cold_replay(
+        requests: &[(u8, u64)],
+        parent_bytes: u64,
+        include_format: bool,
+        include_marker: bool,
+    ) -> Result<(), JournalRuntimeExecutionError> {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let assignment = ObjectDigest::from_bytes([5; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected journal");
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .expect("initialized store");
+        let mut writes = Vec::new();
+        if include_format {
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                OUTPUT_FORMAT_KEY.to_vec(),
+                output_format_bytes(binding).to_vec(),
+            ));
+        }
+        if include_marker {
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                OUTPUT_MARKER_KEY.to_vec(),
+                marker_bytes(assignment, parent_bytes).to_vec(),
+            ));
+        }
+        for &(execution, requested) in requests {
+            writes.push(JournalRecord::put(
+                RecordNamespace::Effect,
+                claim_key(ExecutionId::from_bytes([execution; 16])),
+                claim(execution, requested, parent_bytes),
+            ));
+        }
+        let transaction = JournalTransaction::new([1; 16], writes).expect("v2 transaction");
+        store
+            .authority
+            .commit(&transaction)
+            .expect("durable v2 bytes");
+        drop(store);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold reopened journal");
+        let store = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())?;
+        for &(execution, requested) in requests {
+            let retained = store
+                .load_accepted_output_v2(ExecutionId::from_bytes([execution; 16]))?
+                .expect("durable provisional claim");
+            assert_eq!(retained.requested_bytes, requested);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cold_replay_accepts_zero_byte_provisional_claim() {
+        cold_replay(&[(1, 0)], 0, true, true).expect("zero-byte claim survives cold replay");
+    }
+
+    #[test]
+    fn cold_replay_rejects_missing_marker_and_overcommit() {
+        assert!(cold_replay(&[(1, 0)], 0, true, false).is_err());
+        assert!(cold_replay(&[(1, 8), (2, 3)], 10, true, true).is_err());
+        assert!(cold_replay(&[(1, 0)], 0, false, true).is_err());
+    }
 }
