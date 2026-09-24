@@ -14,6 +14,9 @@ use aos_sandbox_source_provider_protocol::{
 };
 
 use crate::model::{ProviderAcquisitionStateV1, ProviderAttemptStateV1};
+use crate::zfs_hold_challenge::{
+    ChallengeRecordV1, ProviderZfsHoldChallengeV1, current_seconds, expiry,
+};
 use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1};
 
@@ -59,6 +62,69 @@ impl ProviderHeldSnapshotCatalogClaimV1 {
 }
 
 impl FixedProviderOwnerV1 {
+    /// Durably issues one fresh native hold challenge for a reserved Acquire.
+    ///
+    /// The challenge is committed beneath the fixed protected Provider state
+    /// before it is returned. The owner verifies the current holder session,
+    /// exact pending attempt, and protected native catalog selection. A
+    /// retained challenge cannot be issued again for the same attempt, even
+    /// after reboot or expiry. Issuance does not authorize a backend effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unavailable custody, an invalid selection or attempt, a
+    /// duplicate or exhausted challenge journal, or failed durable commit.
+    pub fn issue_current_zfs_hold_challenge(
+        &mut self,
+        canonical_catalog_publication: &[u8],
+        canonical_held_snapshot_catalog: &[u8],
+        holder_authority_id: [u8; 16],
+        acquisition_id: ObjectDigest,
+        binding_digest: ObjectDigest,
+    ) -> Result<ProviderZfsHoldChallengeV1, ProviderLedgerError> {
+        self.with_ledger_and_hold_challenges(|ledger, challenges| {
+            let journal_snapshot = ledger.journal.snapshot()?;
+            let claim = select_current_held_snapshot_claim(
+                ledger,
+                canonical_catalog_publication,
+                canonical_held_snapshot_catalog,
+                holder_authority_id,
+                binding_digest,
+            )?;
+            let (attempt_digest, attempt_deadline) =
+                current_native_attempt_window(ledger, acquisition_id)?;
+            let issued_seconds = current_seconds()?;
+            let valid_until_seconds = expiry(issued_seconds)?.min(attempt_deadline);
+            if valid_until_seconds <= issued_seconds {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            validate_current_native_attempt(
+                ledger,
+                &claim,
+                acquisition_id,
+                attempt_digest,
+                issued_seconds,
+                valid_until_seconds,
+            )?;
+            ledger
+                .journal
+                .validate_source_provider_authority_snapshot(&journal_snapshot)?;
+
+            let record = ChallengeRecordV1::new(
+                claim.provider.authority_id(),
+                holder_authority_id,
+                claim.session_binding,
+                attempt_digest,
+                acquisition_id,
+                binding_digest,
+                claim.publication_head_commitment,
+                issued_seconds,
+                valid_until_seconds,
+            );
+            challenges.issue(record)
+        })
+    }
+
     /// Inspects a native row under the exact current protected catalog head.
     ///
     /// The fixed owner authenticates the signed publication against the exact
@@ -93,17 +159,16 @@ impl FixedProviderOwnerV1 {
 
     /// Checks a signed ZFS hold receipt without granting native Acquire authority.
     ///
-    /// `expected` must originate from a durable Provider challenge/attempt and
-    /// an independently trusted current Storage head. The present owner cannot
-    /// prove those origins or reserve the challenge against replay, so this
-    /// method deliberately returns unavailable even after every available
-    /// signature, catalog, holder-session, attempt, and time check passes.
+    /// The signed Storage head still lacks an independently trusted current-head
+    /// carrier, so this inspection neither spends the challenge nor authorizes
+    /// native Acquire. Spending is reserved for a future successful currentness
+    /// cut, before a positive backend effect or outcome can be exposed.
     ///
     /// # Errors
     ///
     /// Always returns an error. It rejects a missing protected verifier,
-    /// invalid receipt, stale publication or attempt, or the absent replay and
-    /// trusted-Storage-head completion gates.
+    /// invalid or spent receipt, stale publication or attempt, or the absent
+    /// trusted-Storage-head completion gate.
     #[allow(clippy::too_many_arguments)]
     pub fn inspect_current_zfs_hold_receipt_closed(
         &mut self,
@@ -111,24 +176,48 @@ impl FixedProviderOwnerV1 {
         canonical_held_snapshot_catalog: &[u8],
         holder_authority_id: [u8; 16],
         acquisition_id: ObjectDigest,
-        expected: &StorageZfsHoldReceiptV1,
         canonical_signed_receipt: &[u8],
     ) -> Result<(), ProviderLedgerError> {
         let verifier = ProtectedStorageZfsHoldVerifierV1::load(self.backend_verifier())?;
         let signed = SignedStorageZfsHoldReceiptV1::decode(canonical_signed_receipt)
             .map_err(|_| ProviderLedgerError::Unavailable)?;
 
-        self.with_ledger(|ledger| {
+        self.with_ledger_and_hold_challenges(|ledger, challenges| {
+            let receipt = signed.receipt();
+            let (challenge_nonce, attempt_digest) = receipt.attempt();
+            let (issued_seconds, valid_until_seconds) = receipt.validity();
             let journal_snapshot = ledger.journal.snapshot()?;
             let claim = select_current_held_snapshot_claim(
                 ledger,
                 canonical_catalog_publication,
                 canonical_held_snapshot_catalog,
                 holder_authority_id,
-                expected.binding_digest(),
+                receipt.binding_digest(),
             )?;
-            validate_current_native_attempt(ledger, &claim, acquisition_id, expected)?;
-            verifier.verify_for(&signed, expected)?;
+            if !claim_matches_receipt(&claim, receipt) {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            validate_current_native_attempt(
+                ledger,
+                &claim,
+                acquisition_id,
+                attempt_digest,
+                issued_seconds,
+                valid_until_seconds,
+            )?;
+            let reserved = challenges.issued_for(challenge_nonce)?;
+            if reserved.provider_id != claim.provider.authority_id()
+                || reserved.holder_id != holder_authority_id
+                || reserved.session_binding != claim.session_binding
+                || reserved.challenge.attempt_digest() != attempt_digest
+                || reserved.challenge.validity() != receipt.validity()
+                || reserved.acquisition_id != acquisition_id
+                || reserved.binding_digest != claim.binding_digest
+                || reserved.publication_head != claim.publication_head_commitment
+            {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            verifier.verify_for(&signed, receipt)?;
             ledger
                 .journal
                 .validate_source_provider_authority_snapshot(&journal_snapshot)?;
@@ -137,13 +226,13 @@ impl FixedProviderOwnerV1 {
                 canonical_catalog_publication,
                 canonical_held_snapshot_catalog,
                 holder_authority_id,
-                expected.binding_digest(),
+                receipt.binding_digest(),
             )?;
             if final_claim != claim {
                 return Err(ProviderLedgerError::ConfigurationMismatch);
             }
 
-            // No durable challenge reservation or trusted Storage-head carrier exists.
+            // The signed head is an assertion until Storage currentness is carried here.
             Err(ProviderLedgerError::Unavailable)
         })
     }
@@ -202,7 +291,9 @@ fn validate_current_native_attempt(
     ledger: &ProviderLedgerV1<'_>,
     claim: &ProviderHeldSnapshotCatalogClaimV1,
     acquisition_id: ObjectDigest,
-    expected: &StorageZfsHoldReceiptV1,
+    attempt_digest: ObjectDigest,
+    issued_seconds: i64,
+    valid_until_seconds: i64,
 ) -> Result<(), ProviderLedgerError> {
     let mut acquisitions = ledger
         .recovered
@@ -215,11 +306,7 @@ fn validate_current_native_attempt(
     if acquisitions.next().is_some() {
         return Err(ProviderLedgerError::Equivocation);
     }
-    let (challenge, attempt_digest) = expected.attempt();
-    let (issued_seconds, valid_until_seconds) = expected.validity();
-    if challenge == [0; 32]
-        || !claim_matches_receipt(claim, expected)
-        || acquisition.state != ProviderAcquisitionStateV1::Applying
+    if acquisition.state != ProviderAcquisitionStateV1::Applying
         || acquisition.provider != claim.provider
         || acquisition.holder.authority_id() != claim.holder_authority_id
         || acquisition.proof_class != 1
@@ -297,6 +384,44 @@ fn validate_current_native_attempt(
         return Err(ProviderLedgerError::Unavailable);
     }
     Ok(())
+}
+
+fn current_native_attempt_window(
+    ledger: &ProviderLedgerV1<'_>,
+    acquisition_id: ObjectDigest,
+) -> Result<(ObjectDigest, i64), ProviderLedgerError> {
+    let mut acquisitions = ledger
+        .recovered
+        .acquisitions
+        .values()
+        .filter(|record| record.acquisition_id == acquisition_id);
+    let acquisition = acquisitions
+        .next()
+        .ok_or(ProviderLedgerError::Unavailable)?;
+    if acquisitions.next().is_some() {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    let attempt_digest = acquisition.current_attempt_digest;
+    let mut attempts = ledger
+        .recovered
+        .attempts
+        .values()
+        .filter(|record| record.attempt_digest == attempt_digest);
+    let attempt = attempts.next().ok_or(ProviderLedgerError::Unavailable)?;
+    if attempts.next().is_some() {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    let signed_request =
+        SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
+            .map_err(|_| ProviderLedgerError::Corrupt("retained signed Acquire request"))?;
+    let request = decode_acquire_request(signed_request.subject())
+        .map_err(|_| ProviderLedgerError::Corrupt("retained Acquire subject"))?;
+    Ok((
+        attempt_digest,
+        attempt
+            .current_valid_until_seconds
+            .min(request.deadline_seconds()),
+    ))
 }
 
 fn claim_matches_receipt(

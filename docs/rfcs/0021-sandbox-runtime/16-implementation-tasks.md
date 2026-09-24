@@ -8467,11 +8467,18 @@ The Provider's on-demand root-owned `AOSZHV01` manifest loader pins Storage's
 dedicated `AOSZHR01` signer and public key apart from every existing backend
 attestation key; an absent manifest leaves native inspection unavailable. An
 inspection-only check matches the signed receipt to the protected
-native row, exact holder session, current reserved attempt, caller-supplied
-challenge and Storage head, and bounded validity. The verifier delegates
-signature and full-subject comparison to the receipt protocol. It still
-returns Unavailable after these checks: no durable challenge replay reservation
-or independently authenticated live Storage-head carrier reaches this owner.
+native row, exact holder session, current reserved attempt, and bounded
+validity. The Provider now issues its own random `AOSZHC01` challenge only
+after these protected checks and commits it to a separate fixed, root-owned
+journal before exposing the nonce. Each challenge is bound to one exact holder
+session, attempt, acquisition, binding, and publication head. Recovery rejects
+unknown records or duplicate attempts, retains expired records under a fixed
+ceiling, and never treats a retained challenge as a live session after reboot.
+Inspection matches the receipt to the durable issued challenge without spending
+it while no trusted Storage-head carrier can complete acceptance. The verifier
+checks the signature and full signed subject, but a Storage-asserted head alone
+cannot establish physical currentness. Inspection still returns Unavailable;
+native Acquire remains closed.
 
 A positive held-snapshot SourceRoot still requires Storage to hold and
 reobserve the exact snapshot GUID and hold under its protected catalog lock,
@@ -8482,7 +8489,10 @@ that output to a current protected native selection and attempt before its
 existing backend verifier can complete Acquire. Storage has a protected
 GUID-conditioned hold readback prerequisite, but its live worker, signed
 receipt, read-only root descriptor custody, and Provider replay/MAC gates do
-not yet compose. Production positive Acquire remains closed.
+not yet compose. The Provider's one-way durable spend transition is held behind
+the future trusted currentness and positive acceptance cut; it is not invoked
+by inspection that returns Unavailable. Production positive Acquire remains
+closed.
 
 ### LocalLive enforcement design and unresolved kernel boundary
 

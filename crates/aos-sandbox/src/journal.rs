@@ -1898,6 +1898,27 @@ impl ProtectedJournalAuthority<'_> {
         self.validate_fixed_storage("/var/lib/aos/source-provider", "provider.journal")
     }
 
+    /// Validates the fixed Provider native-hold challenge journal location.
+    ///
+    /// The dedicated journal shares namespace 41 but has its own exclusive
+    /// lock and format. Its retained directory must still be the protected
+    /// Provider state root at each authority-bound read or mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless this is the current dedicated namespace-41
+    /// claim over the fixed native-hold challenge journal.
+    #[doc(hidden)]
+    pub fn validate_fixed_source_provider_hold_challenge_storage(
+        &self,
+    ) -> Result<(), JournalError> {
+        self.validate_source_provider_authority()?;
+        self.validate_fixed_storage(
+            "/var/lib/aos/source-provider",
+            "native-hold-challenges.journal",
+        )
+    }
+
     fn validate_fixed_storage(&self, directory: &str, name: &str) -> Result<(), JournalError> {
         let retained = self
             .journal

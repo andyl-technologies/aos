@@ -246,6 +246,7 @@ pub enum FixedMountStateMigrationRecoveryOutcomeV2 {
 /// redirected.
 pub struct FixedProviderOwnerV1 {
     journal: Option<Journal>,
+    hold_challenges: crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1,
     state: Option<FixedProviderOwnerStateV1>,
     backend_verifier: Arc<crate::backend_verifier::ProtectedBackendVerifierV1>,
     recovery_handshake: Option<(
@@ -305,10 +306,14 @@ impl FixedProviderOwnerV1 {
         )?;
         let backend_verifier =
             Arc::new(crate::backend_verifier::ProtectedBackendVerifierV1::load_fixed()?);
+        // The namespace-41 ledger lock precedes the separate hold-challenge lock.
+        let hold_challenges =
+            crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1::open_fixed()?;
         let security = ProviderSourceProviderOwnerV1::open_fixed(socket)?;
         Ok((
             Self {
                 journal: Some(journal),
+                hold_challenges,
                 state: Some(FixedProviderOwnerStateV1::Handshake {
                     security,
                     canonical_catalog_publication: canonical_catalog_publication.to_vec(),
@@ -473,6 +478,16 @@ impl FixedProviderOwnerV1 {
             &mut ProviderLedgerV1<'ledger>,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
+        self.with_ledger_and_hold_challenges(|ledger, _| operation(ledger))
+    }
+
+    pub(crate) fn with_ledger_and_hold_challenges<R>(
+        &mut self,
+        operation: impl for<'ledger> FnOnce(
+            &mut ProviderLedgerV1<'ledger>,
+            &mut crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1,
+        ) -> Result<R, ProviderLedgerError>,
+    ) -> Result<R, ProviderLedgerError> {
         let state = self
             .state
             .take()
@@ -519,7 +534,7 @@ impl FixedProviderOwnerV1 {
             }
         };
         let mut ledger = ProviderLedgerV1::attach(authority, detached);
-        let result = operation(&mut ledger);
+        let result = operation(&mut ledger, &mut self.hold_challenges);
         self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
         result
     }
