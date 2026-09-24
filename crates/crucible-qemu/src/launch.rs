@@ -90,7 +90,9 @@ pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
     "enable=crucible_sim_determinism_*";
-pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=crucible_sim_*";
+// Keep the diagnostic trace sparse enough that the bounded retained tail
+// includes the QMP exchange after a 60-second command timeout.
+pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
@@ -769,11 +771,11 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
-    /// Enables the fixed scheduler-liveness trace in the launch directory.
+    /// Enables the fixed QMP monitor trace in the launch directory.
     ///
-    /// This diagnostic adds main-loop poll and RR dispatch events to the
-    /// determinism trace. Its fixed wildcard covers only the six
-    /// `crucible_sim_*` events compiled into the patched QEMU binary.
+    /// The monitor receive, queue, dispatch, and response events distinguish
+    /// a QMP transport stall from a command stuck in QEMU's dispatcher. The
+    /// sparse selection leaves the final exchange in the bounded trace tail.
     #[must_use]
     pub(crate) const fn with_runtime_liveness_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
