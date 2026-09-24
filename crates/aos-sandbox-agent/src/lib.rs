@@ -28,17 +28,17 @@
 pub mod broker_adapter;
 pub mod dormant_guest_agent;
 pub mod dormant_package;
-#[cfg(target_os = "linux")]
-pub mod guest_attach_trust;
 #[cfg(unix)]
 pub mod dormant_root_builder;
-pub mod guest_root_publication;
+#[cfg(target_os = "linux")]
+pub mod guest_attach_trust;
 #[cfg(target_os = "linux")]
 pub mod guest_root_label;
 #[cfg(target_os = "linux")]
 pub mod guest_root_marker;
 #[cfg(target_os = "linux")]
 pub mod guest_root_populate;
+pub mod guest_root_publication;
 #[cfg(unix)]
 pub mod guest_root_tree;
 pub mod model;
@@ -65,7 +65,10 @@ pub use model::{
     AgentOperationIdV1, AgentOperationRequestV1, AgentOperationSequenceV1, AgentProtocolVersionV1,
     AgentRuntimeBindingV1, AgentSessionBindingV1, AgentSessionIdV1, InvalidAgentModel,
 };
-pub use protocol::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
+pub use protocol::{
+    AgentFrameV1, AgentProtocolError, AgentSealedAuthorizeReferenceV1,
+    MAX_AGENT_SEALED_SPEC_BYTES_V1, decode_frame_v1, encode_frame_v1,
+};
 #[cfg(target_os = "linux")]
 pub use runtime_argument_observation::{
     GuestRuntimeArgumentObservationErrorV1, GuestRuntimeArgumentObserveRequestV1,

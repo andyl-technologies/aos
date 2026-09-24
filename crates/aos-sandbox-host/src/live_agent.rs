@@ -31,8 +31,9 @@ use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionPhaseV1, AgentFeatureV1, AgentFrameV1,
     AgentHandshakeRequestV1, AgentHandshakeResponseV1, AgentNonceV1, AgentOperationIdV1,
     AgentOperationRequestV1, AgentOperationSequenceV1, AgentProtocolError, AgentRuntimeBindingV1,
-    AgentSessionBindingV1, AgentSessionIdV1, InvalidAgentModel, decode_frame_v1,
-    decode_signed_agent_outcome_packet_v1, encode_frame_v1,
+    AgentSealedAuthorizeReferenceV1, AgentSessionBindingV1, AgentSessionIdV1, InvalidAgentModel,
+    MAX_AGENT_SEALED_SPEC_BYTES_V1, decode_frame_v1, decode_signed_agent_outcome_packet_v1,
+    encode_frame_v1,
 };
 use aos_sandbox_core::runtime_backend::{
     AdmissionCurrentnessV1, BackendEvidenceVerifierV1, BackendExecutionInspectionInputV1,
@@ -688,6 +689,23 @@ impl HostAgentLiveSessionV1 {
         }
         let next_sequence = self.next_sequence.checked_next()?;
         let request = project_agent_request(pending, self.binding, self.next_sequence, claim)?;
+        let sealed_specification = match request.operation() {
+            AgentExecutionOperationV1::Authorize {
+                specification_bytes,
+                ..
+            } => Some(SealedReadOnlyCredential::create(
+                "aos-agent-execution-spec-v1",
+                specification_bytes,
+                MAX_AGENT_SEALED_SPEC_BYTES_V1,
+            )?),
+            _ => None,
+        };
+        let frame = if sealed_specification.is_some() {
+            let reference = AgentSealedAuthorizeReferenceV1::from_request(&request)?;
+            encode_frame_v1(&AgentFrameV1::SealedAuthorizeRequest(reference))
+        } else {
+            encode_frame_v1(&AgentFrameV1::OperationRequest(request.clone()))
+        };
         let verifier = BackendEvidenceVerifierV1::new(
             claim.agent_peer().public_key(),
             claim.agent_peer().trust_context(),
@@ -719,13 +737,24 @@ impl HostAgentLiveSessionV1 {
             &issued,
         )?;
         let operation = *issued.issue().idempotency().operation().as_bytes();
-        let frame = encode_frame_v1(&AgentFrameV1::OperationRequest(request.clone()));
-        send_frame(
-            &mut self.socket,
-            &frame,
-            deadline,
-            Some(deadline_boottime_nanoseconds),
-        )?;
+        // Retain this exact sealed descriptor through signed outcome custody;
+        // an uncertain send poisons the session rather than rebuilding a retry.
+        if let Some(specification) = &sealed_specification {
+            send_descriptor_frame(
+                &mut self.socket,
+                &frame,
+                specification.as_fd(),
+                deadline,
+                Some(deadline_boottime_nanoseconds),
+            )?;
+        } else {
+            send_frame(
+                &mut self.socket,
+                &frame,
+                deadline,
+                Some(deadline_boottime_nanoseconds),
+            )?;
+        }
         let bytes = receive_record(
             &mut self.socket,
             MAX_SIGNED_AGENT_OUTCOME_PACKET_BYTES,
@@ -973,6 +1002,25 @@ fn send_frame(
     loop {
         check_deadline(deadline, deadline_boottime_nanoseconds)?;
         match socket.send(bytes) {
+            Ok(()) => return Ok(()),
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn send_descriptor_frame(
+    socket: &mut SeqpacketSocket,
+    bytes: &[u8],
+    descriptor: BorrowedFd<'_>,
+    deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
+) -> Result<(), HostAgentLiveErrorV1> {
+    loop {
+        check_deadline(deadline, deadline_boottime_nanoseconds)?;
+        match socket.send_with_descriptors(bytes, &[descriptor]) {
             Ok(()) => return Ok(()),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 std::thread::sleep(RETRY_INTERVAL);

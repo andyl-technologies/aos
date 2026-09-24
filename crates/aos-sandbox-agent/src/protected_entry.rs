@@ -15,6 +15,7 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read as _;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,8 @@ use crate::openssh_gate::{
     OpenSshGateObserveRequestV1, OpenSshGateReadbackV1, sign_openssh_gate_readback_v1,
 };
 use crate::protocol::{
-    AgentFrameV1, AgentProtocolError, MAX_AGENT_FRAME_BYTES, decode_frame_v1, encode_frame_v1,
+    AgentFrameV1, AgentProtocolError, MAX_AGENT_FRAME_BYTES, MAX_AGENT_SEALED_SPEC_BYTES_V1,
+    decode_frame_v1, encode_frame_v1,
 };
 use crate::runtime_argument_observation::{
     ARGUMENT_OBSERVE_REQUEST_MAGIC_V1, GuestRuntimeArgumentObservationErrorV1,
@@ -357,8 +359,11 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
         let mut last: Option<(AgentOperationRequestV1, Vec<u8>)> = None;
         for _ in 0..MAX_OPERATIONS {
             let deadline = Instant::now() + OPERATION_TIMEOUT;
-            let received = receive(&mut socket, deadline)?;
+            let (received, mut descriptors) = receive_optional_descriptor(&mut socket, deadline)?;
             if received.starts_with(ARGUMENT_OBSERVE_REQUEST_MAGIC_V1) {
+                if !descriptors.is_empty() {
+                    return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                }
                 if !provisioning
                     .features
                     .contains(AgentFeatureV1::RuntimeArgumentObservation)
@@ -380,8 +385,37 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                 continue;
             }
             let request = match decode_frame_v1(&received)? {
-                AgentFrameV1::OperationRequest(request) => request,
+                AgentFrameV1::OperationRequest(request) => {
+                    // The protected Authorize path must never expand a large
+                    // specification into a seqpacket datagram.
+                    if !descriptors.is_empty()
+                        || matches!(
+                            request.operation(),
+                            AgentExecutionOperationV1::Authorize { .. }
+                        )
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
+                    request
+                }
+                AgentFrameV1::SealedAuthorizeRequest(reference) => {
+                    if descriptors.len() != 1 {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
+                    let descriptor = descriptors
+                        .pop()
+                        .ok_or(ProtectedGuestAgentErrorV1::UnexpectedFrame)?;
+                    SealedMemfdMapping::run(
+                        descriptor,
+                        reference.content_bytes(),
+                        MAX_AGENT_SEALED_SPEC_BYTES_V1 as u64,
+                        |bytes, _| reference.reconstruct(bytes),
+                    )??
+                }
                 AgentFrameV1::OpenSshGateObserveRequest(bytes) => {
+                    if !descriptors.is_empty() {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
                     let observe: OpenSshGateObserveRequestV1 = serde_json::from_slice(&bytes)
                         .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
                     observe
@@ -720,6 +754,30 @@ fn receive(
         check_deadline(deadline)?;
         match socket.receive(MAX_AGENT_FRAME_BYTES) {
             Ok(record) => return Ok(record.payload().to_vec()),
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
+                if Instant::now() < deadline =>
+            {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                return Err(ProtectedGuestAgentErrorV1::Deadline);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn receive_optional_descriptor(
+    socket: &mut SeqpacketSocket,
+    deadline: Instant,
+) -> Result<(Vec<u8>, Vec<OwnedFd>), ProtectedGuestAgentErrorV1> {
+    loop {
+        check_deadline(deadline)?;
+        match socket.receive_with_optional_descriptor(MAX_AGENT_FRAME_BYTES) {
+            Ok(record) => {
+                let (payload, _, descriptors) = record.into_parts();
+                return Ok((payload, descriptors));
+            }
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
                 if Instant::now() < deadline =>
             {
