@@ -750,7 +750,8 @@ async fn wait_for_operation(
         .context("invalid operation wait policy")?;
     let mut reducer = OperationWaitReducerV1::new(operation_id, policy)
         .context("invalid operation wait identity")?;
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
+    let deadline = started + std::time::Duration::from_nanos(timeout_nanos);
     if let OperationWaitApplyOutcomeV1::Terminal(termination) = reducer
         .apply(initial, 0)
         .context("invalid initial operation observation")?
@@ -759,7 +760,11 @@ async fn wait_for_operation(
     }
 
     loop {
-        tokio::time::sleep(OPERATION_POLL_INTERVAL).await;
+        tokio::time::sleep_until(std::cmp::min(
+            tokio::time::Instant::now() + OPERATION_POLL_INTERVAL,
+            deadline,
+        ))
+        .await;
         let elapsed_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         if let Some(termination) = reducer
             .advance_elapsed(elapsed_nanos)
@@ -767,14 +772,26 @@ async fn wait_for_operation(
         {
             return terminal_operation(&reducer, termination);
         }
-        let response = OperationServiceClient::new(endpoint.connection.clone(), endpoint.config()?)
-            .get_operation(GetOperationRequest {
-                operation_id: operation_id.to_vec(),
-                ..Default::default()
-            })
-            .await
-            .context("controller rejected operation wait poll")?
-            .into_owned();
+        // A slow public read must not extend the caller's local wait bound.
+        let client = OperationServiceClient::new(endpoint.connection.clone(), endpoint.config()?);
+        let response = poll_before_wait_deadline(deadline, async {
+            client
+                .get_operation(GetOperationRequest {
+                    operation_id: operation_id.to_vec(),
+                    ..Default::default()
+                })
+                .await
+                .context("controller rejected operation wait poll")
+        })
+        .await?
+        .into_owned();
+        let elapsed_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        if let Some(termination) = reducer
+            .advance_elapsed(elapsed_nanos)
+            .context("operation wait clock advanced inconsistently")?
+        {
+            return terminal_operation(&reducer, termination);
+        }
         let operation = response
             .operation
             .into_option()
@@ -788,6 +805,15 @@ async fn wait_for_operation(
             return terminal_operation(&reducer, termination);
         }
     }
+}
+
+async fn poll_before_wait_deadline<T>(
+    deadline: tokio::time::Instant,
+    poll: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout_at(deadline, poll)
+        .await
+        .map_err(|_| anyhow::anyhow!("operation wait deadline reached"))?
 }
 
 fn validate_capability_handle(
@@ -826,4 +852,23 @@ const fn is_supported_mutation(kind: &DormantSandboxRequestKindV1) -> bool {
 
 const fn is_supported_read(kind: &DormantSandboxRequestKindV1) -> bool {
     matches!(route(kind), PublicClientRouteV1::Read)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::poll_before_wait_deadline;
+
+    #[tokio::test]
+    async fn wait_deadline_interrupts_an_in_flight_poll() {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
+        let pending_poll = std::future::pending::<anyhow::Result<()>>();
+
+        let error = poll_before_wait_deadline(deadline, pending_poll)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "operation wait deadline reached");
+    }
 }
