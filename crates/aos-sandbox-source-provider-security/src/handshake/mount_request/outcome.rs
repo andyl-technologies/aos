@@ -1360,7 +1360,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     pub(super) fn verify_provider_outcome_bytes_v2(
         &mut self,
-        catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        catalog_journal: Option<&aos_sandbox::ProtectedJournalAuthority<'_>>,
         authorization: &AuthorizedMountProviderOutcomeV2,
         canonical_response: Vec<u8>,
         source_root_observation: Option<
@@ -1428,6 +1428,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
             authorization.catalog_floor.as_ref(),
         ) {
             (SourceProviderMethod::Acquire, Some(expected), Some(catalog_floor)) => {
+                let catalog_journal = catalog_journal
+                    .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
                 let configuration = crate::RevalidatedProviderConfigurationV1::capture_root_mount(
                     &mut self.custody,
                     verification_started,

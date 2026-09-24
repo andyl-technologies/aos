@@ -316,3 +316,70 @@ pub(crate) enum CarrierFailureV1 {
     Retryable,
     Fatal(SourceProviderSecurityError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+
+    fn remote_pair() -> (InertSourceProviderCarrierV1, DescriptorSubjectSocket) {
+        let (receiver, sender) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::NONBLOCK | SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(receiver).unwrap();
+        let sender = DescriptorSubjectSocket::from_owned(sender).unwrap();
+        (
+            InertSourceProviderCarrierV1 {
+                socket: receiver,
+                poisoned: false,
+                interrupted_retries: 0,
+            },
+            sender,
+        )
+    }
+
+    #[test]
+    fn remote_inventory_reply_rejects_a_transferred_descriptor() {
+        let (mut receiver, mut sender) = remote_pair();
+        assert!(matches!(
+            receiver.receive_zero_descriptors(64),
+            Err(CarrierFailureV1::Retryable)
+        ));
+
+        let directory = std::fs::File::open("/").unwrap();
+        sender
+            .send_with_descriptors(b"reply", &[directory.as_fd()])
+            .unwrap();
+        assert!(matches!(
+            receiver.receive_zero_descriptors(64),
+            Err(CarrierFailureV1::Fatal(_))
+        ));
+        assert!(matches!(
+            receiver.socket.as_fd(),
+            Err(SeqpacketError::Closed)
+        ));
+    }
+
+    #[test]
+    fn lost_remote_reply_never_becomes_an_empty_response() {
+        let (mut receiver, sender) = remote_pair();
+        assert!(matches!(
+            receiver.receive_zero_descriptors(64),
+            Err(CarrierFailureV1::Retryable)
+        ));
+        drop(sender);
+
+        assert!(matches!(
+            receiver.receive_zero_descriptors(64),
+            Err(CarrierFailureV1::Fatal(_))
+        ));
+        assert!(matches!(
+            receiver.socket.as_fd(),
+            Err(SeqpacketError::Closed)
+        ));
+    }
+}

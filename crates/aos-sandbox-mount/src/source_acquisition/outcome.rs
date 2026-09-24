@@ -81,6 +81,32 @@ struct PreparedProviderDispositionV2 {
 }
 
 impl SourceAcquisitionTableV2 {
+    /// Commits a descriptor-free Inventory reply received from the remote provider.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Inventory attempt, mismatched signed reply, stale protected
+    /// head, or an ambiguous durable commit. The caller retains the verified
+    /// reply until this method succeeds.
+    pub(crate) fn consume_remote_inventory_outcome_v2(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        attempt_id: [u8; 32],
+        verified: &VerifiedMountProviderOutcomeV2,
+    ) -> Result<()> {
+        if self
+            .provider_attempts
+            .get(&attempt_id)
+            .is_none_or(|attempt| attempt.method != ProviderMethodV2::Inventory)
+        {
+            return Err(state_error(
+                "remote reply does not name an Inventory attempt",
+            ));
+        }
+        self.consume_verified_provider_outcome_v2(journal, attempt_id, verified, None)?;
+        Ok(())
+    }
+
     /// Confirms that retained authenticated evidence equals the durable lineage tail.
     ///
     /// # Errors

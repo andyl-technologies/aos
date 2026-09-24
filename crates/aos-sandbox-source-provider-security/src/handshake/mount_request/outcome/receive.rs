@@ -3,6 +3,39 @@
 use super::*;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Advances one descriptor-free Inventory reply on the separate provider channel.
+    ///
+    /// The retained authorization names the exact signed request and response
+    /// sequence. A pending receive keeps the sent request in Mount custody;
+    /// a fatal carrier or signature failure closes this session without
+    /// authorizing a resend or a terminal Inventory row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another method, any transferred descriptor, changed peer or
+    /// custody, a malformed frame, or a signed reply that differs from the
+    /// retained request and current authenticated transcript.
+    pub fn advance_remote_inventory_outcome_v2(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+    ) -> Result<Option<VerifiedMountProviderOutcomeV2>, SourceProviderSecurityError> {
+        if authorization.method != SourceProviderMethod::Inventory {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        self.revalidate()?;
+        let received = match self
+            .carrier
+            .receive_zero_descriptors(aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES)
+        {
+            Ok(received) => received,
+            Err(CarrierFailureV1::Retryable) => return Ok(None),
+            Err(CarrierFailureV1::Fatal(error)) => return Err(self.poison(error)),
+        };
+        let verified =
+            self.verify_provider_outcome_bytes_v2(None, authorization, received.payload, None)?;
+        Ok(Some(verified))
+    }
+
     /// Captures one persisted canonical response under current protected custody.
     ///
     /// This is the cold-restart counterpart of carrier capture. The response
@@ -129,7 +162,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         }
         if !needs_source_root {
             let verified = self.verify_provider_outcome_bytes_v2(
-                catalog_journal,
+                Some(catalog_journal),
                 authorization,
                 payload,
                 None,
@@ -186,7 +219,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let source_root = crate::ObservedSourceRootV1::observe(record, self)?;
         source_root.revalidate(self)?;
         let verified = self.verify_provider_outcome_bytes_v2(
-            catalog_journal,
+            Some(catalog_journal),
             authorization,
             payload,
             Some(source_root.protocol_observation().clone()),
@@ -247,5 +280,58 @@ fn split_canonical_response(
             ))
         }
         SourceProviderMethod::Hello => Err(SourceProviderSecurityError::SessionContinuity),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aos_sandbox_source_provider_protocol::{
+        SourceProviderResponseStatusV1, empty_descriptor_set_commitment_v1, sign_response_status,
+    };
+    use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn remote_inventory_status_requires_the_pinned_provider_signature() {
+        let key = SigningKey::from_bytes(&[17; 32]);
+        let wrong_key = SigningKey::from_bytes(&[19; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [1; 16],
+            1,
+            ObjectDigest::from_bytes([2; 32]),
+            [3; 16],
+            1,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &key,
+        )
+        .unwrap();
+        let status = SourceProviderResponseStatusV1::new(
+            SourceProviderMethod::Inventory,
+            [4; 16],
+            ObjectDigest::from_bytes([5; 32]),
+            SourceProviderStatus::Unavailable,
+            [6; 16],
+            ObjectDigest::from_bytes([7; 32]),
+            1,
+            response_result_digest_v1(
+                SourceProviderMethod::Inventory,
+                SourceProviderStatus::Unavailable,
+                None,
+            ),
+            empty_descriptor_set_commitment_v1(),
+        )
+        .unwrap();
+        let signed = sign_response_status(status, signer, &key).unwrap();
+        let reply = InventorySourceResponseV1::new(signed, None).unwrap();
+        let payload = encode_inventory_response(&reply);
+
+        let (status_bytes, result, needs_source_root) =
+            split_canonical_response(SourceProviderMethod::Inventory, &payload).unwrap();
+        let decoded = SignedSourceProviderStatusV1::from_canonical_bytes(&status_bytes).unwrap();
+        assert!(result.is_empty());
+        assert!(!needs_source_root);
+        assert!(verify_response_status(&decoded, &key.verifying_key().to_bytes()).is_ok());
+        assert!(verify_response_status(&decoded, &wrong_key.verifying_key().to_bytes()).is_err());
+        assert!(split_canonical_response(SourceProviderMethod::Release, &payload).is_err());
     }
 }

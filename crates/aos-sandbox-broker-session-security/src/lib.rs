@@ -207,6 +207,7 @@ pub use production_response::ProductionBrokerResponseErrorV1;
 pub use production_root_mount_source_provider::{
     ProductionRootMountSourceProviderErrorV1, advance_authenticated_pending_acquire_recovery,
     connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
+    observe_remote_source_inventory,
 };
 pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,

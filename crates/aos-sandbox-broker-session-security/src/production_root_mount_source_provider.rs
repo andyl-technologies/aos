@@ -136,3 +136,47 @@ pub fn observe_original_pending_acquires<W: MountWorker>(
     })?;
     Ok(observed)
 }
+
+/// Obtains one fresh Mount source inventory through the separate provider daemon.
+///
+/// The fixed Mount journal reserves the signed request before it reaches the
+/// authenticated carrier. Only a descriptor-free, exact signed Inventory
+/// reply can advance the source graph. An unanswered send leaves a Reserved
+/// attempt for explicit cold recovery; it never authorizes retransmission as
+/// a new request or a terminal inventory response.
+///
+/// # Errors
+///
+/// Rejects an unresolved source graph, stale session or journal, invalid
+/// descriptor or signature, and any unanswered or ambiguous request at the
+/// absolute boot-time deadline.
+pub fn observe_remote_source_inventory<W: MountWorker>(
+    owner: &mut RootMountSourceProviderOwnerV1,
+    broker: &mut MountBroker<W>,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<Vec<u8>, ProductionRootMountSourceProviderErrorV1> {
+    let response = broker.with_fixed_source_acquisition_owner(|source| {
+        if let Err(error) = source.prepare_and_send_remote_inventory(owner) {
+            if !source.has_pending_provider_send() {
+                return Err(error);
+            }
+        }
+        while source.has_pending_provider_send() {
+            let remaining = remaining_duration(deadline_boottime_nanoseconds)
+                .map_err(|error| MountError::State(error.to_string()))?;
+            match source.retry_pending_provider_send(owner) {
+                Ok(()) => break,
+                Err(_) => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
+            }
+        }
+        loop {
+            let remaining = remaining_duration(deadline_boottime_nanoseconds)
+                .map_err(|error| MountError::State(error.to_string()))?;
+            match source.advance_remote_inventory(owner)? {
+                true => return source.encode_current_inventory(),
+                false => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
+            }
+        }
+    })?;
+    Ok(response)
+}

@@ -109,6 +109,8 @@ pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
     pending_provider: Option<SentProviderQueryV2>,
+    pending_remote_inventory_outcome:
+        Option<aos_sandbox_source_provider_security::VerifiedMountProviderOutcomeV2>,
     pending_provider_send: Option<ProviderQuerySendRecoveryV2>,
     pending_backend_recovery_replacement: Option<BackendRecoveryReplacementV2>,
     pending_inventory_recovery_replacement:
@@ -815,6 +817,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             broker_instance_id,
             last_boottime_nanoseconds: None,
             pending_provider: None,
+            pending_remote_inventory_outcome: None,
             pending_provider_send: None,
             pending_backend_recovery_replacement,
             pending_inventory_recovery_replacement,
@@ -3128,6 +3131,136 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         }
         self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
         Ok(sample.boottime_nanoseconds())
+    }
+
+    /// Reserves and sends one read-only Inventory on the separate provider session.
+    ///
+    /// A cold or live attempt must be resolved before a new query. The request
+    /// is table-derived and durably reserved before its atomic carrier send;
+    /// no in-process provider owner or backend transport is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unresolved recovery, a nonidle provider head, stale custody,
+    /// failed reservation, or an incomplete send. Send recovery remains owned
+    /// by this value until the caller restarts or retries the exact reservation.
+    #[doc(hidden)]
+    pub fn prepare_and_send_remote_inventory(
+        &mut self,
+        root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+    ) -> Result<()> {
+        if self.has_cold_provider_recovery()
+            || self.pending_provider.is_some()
+            || self.pending_provider_send.is_some()
+            || self.pending_remote_inventory_outcome.is_some()
+            || self.pending_inventory_recovery_replacement.is_some()
+        {
+            return Err(state_error(
+                "remote Inventory requires an idle provider head",
+            ));
+        }
+
+        let sent = root
+            .with_current_session(|session| {
+                let (holder, provider, deadline) = session
+                    .current_authority_scope_v2()
+                    .map_err(|_| state_error("Root-Mount provider session is stale"))?;
+                self.with_source_acquisition_authority(|table, authority| {
+                    authority.with_authority(|journal| {
+                        Ok(table
+                            .prepare_and_reserve_inventory_v2(
+                                journal, session, holder, provider, None, deadline,
+                            )?
+                            .send(journal, session))
+                    })
+                })
+            })
+            .map_err(|_| state_error("Root-Mount provider session is not current"))?
+            .ok_or_else(|| state_error("Root-Mount provider handshake is pending"))??;
+        match sent {
+            Ok(sent) => {
+                self.pending_provider = Some(sent);
+                Ok(())
+            }
+            Err(recovery) => {
+                self.pending_provider_send = Some(recovery);
+                Err(state_error("remote Inventory send requires exact retry"))
+            }
+        }
+    }
+
+    /// Advances the exact signed, descriptor-free remote Inventory reply.
+    ///
+    /// `Ok(false)` preserves the sent request without retransmission. A
+    /// verified reply is retained across an ambiguous Mount journal commit;
+    /// callers must not start another query until exact recovery completes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing request, changed session, bad descriptor role or
+    /// signature, or failed protected commit. The durable Reserved row remains
+    /// the crash-recovery boundary when a response cannot be read back.
+    #[doc(hidden)]
+    pub fn advance_remote_inventory(
+        &mut self,
+        root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+    ) -> Result<bool> {
+        let sent = self
+            .pending_provider
+            .take()
+            .ok_or_else(|| state_error("no remote Inventory request is outstanding"))?;
+        let attempt_id = sent.attempt_id();
+        let verified = match self.pending_remote_inventory_outcome.take() {
+            Some(verified) => verified,
+            None => {
+                let (_, authorization) = sent.security_parts();
+                let received = root
+                    .with_current_session(|session| {
+                        session.advance_remote_inventory_outcome_v2(authorization)
+                    })
+                    .map_err(|_| state_error("Root-Mount provider session is not current"))
+                    .and_then(|value| {
+                        value.ok_or_else(|| state_error("Root-Mount provider handshake is pending"))
+                    })
+                    .and_then(|value| {
+                        value.map_err(|_| state_error("remote Inventory reply was rejected"))
+                    });
+                match received {
+                    Ok(Some(verified)) => verified,
+                    Ok(None) => {
+                        self.pending_provider = Some(sent);
+                        return Ok(false);
+                    }
+                    Err(error) => {
+                        self.pending_provider = Some(sent);
+                        return Err(error);
+                    }
+                }
+            }
+        };
+
+        let committed = root
+            .with_current_session(|session| {
+                session
+                    .current_authority_scope_v2()
+                    .map_err(|_| state_error("Root-Mount provider session is stale"))?;
+                self.with_source_acquisition_authority(|table, authority| {
+                    authority.with_authority(|journal| {
+                        table.consume_remote_inventory_outcome_v2(journal, attempt_id, &verified)
+                    })
+                })
+            })
+            .map_err(|_| state_error("Root-Mount provider session is not current"))
+            .and_then(|value| {
+                value.ok_or_else(|| state_error("Root-Mount provider handshake is pending"))
+            })
+            .and_then(core::convert::identity);
+        if let Err(error) = committed {
+            self.pending_provider = Some(sent);
+            self.pending_remote_inventory_outcome = Some(verified);
+            return Err(error);
+        }
+        Ok(true)
     }
 
     /// Retries the exact request whose first carrier send did not complete.

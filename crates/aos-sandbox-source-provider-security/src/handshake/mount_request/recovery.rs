@@ -643,7 +643,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .map(crate::ProviderSourceRootHandoffV1::observation)
             .cloned();
         let verified = self.verify_provider_outcome_bytes_v2(
-            catalog_journal,
+            Some(catalog_journal),
             &authorization,
             canonical_response,
             source_observation,
