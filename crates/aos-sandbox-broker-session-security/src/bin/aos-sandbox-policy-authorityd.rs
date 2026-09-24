@@ -22,7 +22,8 @@ use aos_sandbox::policy_compiler::{
     PolicyDeploymentInputsV1, admit_fixed_policy_deployment_head_v1,
     admit_fixed_policy_signer_pins_v1, decode_policy_deployment_sources_v1,
     verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    with_fixed_closed_policy_binding_session_v2, with_fixed_current_policy_head_lease_v1,
+    verify_signed_project_policy_source_v2, with_fixed_current_policy_head_lease_v1,
+    with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
@@ -39,6 +40,8 @@ use ed25519_dalek::VerifyingKey;
 const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.service";
 const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
+const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
+const EXPLICIT_RECEIPT_MAGIC: &[u8; 8] = b"AOSPHR04";
 const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSED_BINDING_SUBMISSION_BYTES: usize = 8 + 16 + 4 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_ACK_BYTES: usize = 8 + 16 + 32 + 8;
@@ -93,8 +96,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let project_key_bytes = read_bounded(&root.join("project-public-key"), 80)?;
     let project_signer =
         PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &project_key_bytes)?;
-    let project_packet = read_bounded(&root.join("project-head.packet"), 312)?;
-    let project_input = read_bounded(&root.join("project-layer.json"), 3 * 1024)?;
+    let legacy_project =
+        read_optional_project(root, "project-head.packet", 312, "project-layer.json")?;
+    let explicit_project = read_optional_explicit_project(root)?;
+    require_single_project_source(legacy_project.is_some(), explicit_project.is_some())?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let now_unix_seconds = i64::try_from(now.as_secs())?;
 
@@ -111,18 +116,38 @@ fn run() -> Result<(), Box<dyn Error>> {
         now_unix_seconds,
     )?;
     let _typed_sources = decode_policy_deployment_sources_v1(&inputs, deployment)?;
-    let project = verify_signed_project_policy_source_v1(
-        &project_packet,
-        &project_input,
-        project_signer.verifying_key(),
-        now_unix_seconds,
-    )?;
-    if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "project deployment head mismatch",
-        )
-        .into());
+    if let Some((project_packet, project_input)) = legacy_project.as_ref() {
+        let project = verify_signed_project_policy_source_v1(
+            project_packet,
+            project_input,
+            project_signer.verifying_key(),
+            now_unix_seconds,
+        )?;
+        if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "project deployment head mismatch",
+            )
+            .into());
+        }
+    }
+    if let Some((project_packet_v2, project_input_v2)) = explicit_project.as_ref() {
+        let verified = verify_signed_project_policy_source_v2(
+            project_packet_v2,
+            project_input_v2,
+            project_signer.verifying_key(),
+            now_unix_seconds,
+        )?;
+        if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
+            || verified.head().deployment_signer_generation() != deployment_signer.generation()
+            || verified.head().project_signer_generation() != project_signer.generation()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "explicit project source does not match root signer pins or deployment head",
+            )
+            .into());
+        }
     }
     admit_fixed_policy_signer_pins_v1(
         deployment_signer.generation(),
@@ -163,8 +188,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             &inputs,
             deployment_signer.verifying_key(),
             deployment_signer.generation(),
-            &project_packet,
-            &project_input,
+            legacy_project
+                .as_ref()
+                .map(|(packet, input)| (packet.as_slice(), input.as_slice())),
+            explicit_project
+                .as_ref()
+                .map(|(packet, input)| (packet.as_slice(), input.as_slice())),
             project_signer.verifying_key(),
             project_signer.generation(),
         ) {
@@ -182,8 +211,8 @@ fn serve_current_head(
     inputs: &PolicyDeploymentInputsV1<'_>,
     verifying_key: &VerifyingKey,
     deployment_signer_generation: u64,
-    project_packet: &[u8],
-    project_input: &[u8],
+    legacy_project: Option<(&[u8], &[u8])>,
+    explicit_project: Option<(&[u8], &[u8])>,
     project_key: &VerifyingKey,
     project_signer_generation: u64,
 ) -> Result<(), Box<dyn Error>> {
@@ -209,26 +238,61 @@ fn serve_current_head(
     if request[24..] != [0; 8] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
     }
+    // Reject a cross-version request before touching the protected root head.
+    let (project_packet, project_input) =
+        select_project_source(mode, legacy_project, explicit_project)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let now_unix_seconds = i64::try_from(now.as_secs())?;
     let deployment =
         admit_fixed_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
-    let project = verify_signed_project_policy_source_v1(
-        project_packet,
-        project_input,
-        project_key,
-        now_unix_seconds,
-    )?;
-    if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "project deployment head mismatch",
-        )
-        .into());
-    }
+    let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) =
+        if matches!(mode, HeadRequestMode::ClosedBinding) {
+            let verified = verify_signed_project_policy_source_v2(
+                project_packet,
+                project_input,
+                project_key,
+                now_unix_seconds,
+            )?;
+            if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
+                || verified.head().deployment_signer_generation() != deployment_signer_generation
+                || verified.head().project_signer_generation() != project_signer_generation
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "explicit project source is not current at the root",
+                )
+                .into());
+            }
+            (
+                project_packet,
+                project_input,
+                EXPLICIT_RECEIPT_MAGIC,
+                verified.head().expires_at(),
+            )
+        } else {
+            let verified = verify_signed_project_policy_source_v1(
+                project_packet,
+                project_input,
+                project_key,
+                now_unix_seconds,
+            )?;
+            if verified.head().prerequisite_claims()[1] != deployment.packet_digest() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "project deployment head mismatch",
+                )
+                .into());
+            }
+            (
+                project_packet,
+                project_input,
+                POLICY_HEAD_RECEIPT_MAGIC_V2,
+                verified.head().expires_at(),
+            )
+        };
 
-    let mut receipt = Vec::with_capacity(MAXIMUM_RECEIPT_BYTES);
-    receipt.extend_from_slice(POLICY_HEAD_RECEIPT_MAGIC_V2);
+    let mut receipt = Vec::with_capacity(MAXIMUM_RECEIPT_BYTES + EXPLICIT_PROJECT_PACKET_BYTES);
+    receipt.extend_from_slice(receipt_magic);
     receipt.extend_from_slice(&request[8..24]);
     receipt.extend_from_slice(packet);
     for input in [inputs.node, inputs.site, inputs.backend, inputs.catalogs] {
@@ -236,19 +300,21 @@ fn serve_current_head(
         receipt.extend_from_slice(&length.to_be_bytes());
         receipt.extend_from_slice(input);
     }
-    receipt.extend_from_slice(project_packet);
-    receipt.extend_from_slice(&u32::try_from(project_input.len())?.to_be_bytes());
-    receipt.extend_from_slice(project_input);
+    receipt.extend_from_slice(selected_project_packet);
+    receipt.extend_from_slice(&u32::try_from(selected_project_input.len())?.to_be_bytes());
+    receipt.extend_from_slice(selected_project_input);
     if matches!(mode, HeadRequestMode::ClosedBinding) {
-        let committed = with_fixed_closed_policy_binding_session_v2(
+        let committed = with_fixed_explicit_closed_policy_binding_session_v2(
             packet,
             deployment_signer_generation,
             verifying_key,
-            project.head(),
+            selected_project_packet,
+            selected_project_input,
             project_signer_generation,
             project_key,
             controller_uid,
             controller_gid,
+            now_unix_seconds,
             |session| -> io::Result<ClosedPolicyRootCasObservationV2> {
                 let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
                 stream.write_all(&length.to_be_bytes())?;
@@ -280,7 +346,7 @@ fn serve_current_head(
                     committed.binding().as_bytes(),
                     committed.handoff_epoch(),
                 )?;
-                check_signed_head_expiration(deployment.expires_at(), project.head().expires_at())?;
+                check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
                 Ok(committed)
             },
         )??;
@@ -307,7 +373,7 @@ fn serve_current_head(
             stream.read_exact(&mut acknowledgement)?;
             validate_lease_ack(&acknowledgement, &request[8..24])?;
 
-            check_signed_head_expiration(deployment.expires_at(), project.head().expires_at())
+            check_signed_head_expiration(deployment.expires_at(), project_expires_at)
         })??;
         stream.write_all(POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3)?;
         stream.write_all(&request[8..24])?;
@@ -403,6 +469,37 @@ fn check_signed_head_expiration(deployment_expires: i64, project_expires: i64) -
     Ok(())
 }
 
+fn require_single_project_source(legacy_present: bool, explicit_present: bool) -> io::Result<()> {
+    if legacy_present == explicit_present {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "exactly one project source version is required",
+        ));
+    }
+    Ok(())
+}
+
+fn select_project_source<'a>(
+    mode: HeadRequestMode,
+    legacy: Option<(&'a [u8], &'a [u8])>,
+    explicit: Option<(&'a [u8], &'a [u8])>,
+) -> io::Result<(&'a [u8], &'a [u8])> {
+    match mode {
+        HeadRequestMode::ClosedBinding => explicit.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "explicit project source is unavailable",
+            )
+        }),
+        HeadRequestMode::Query | HeadRequestMode::Lease => legacy.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "legacy project source is unavailable",
+            )
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +550,52 @@ mod tests {
         acknowledgement[0] ^= 1;
         assert!(validate_closed_binding_ack(&acknowledgement, &nonce, &head, 4).is_err());
     }
+
+    #[test]
+    fn explicit_project_credentials_require_an_exact_complete_pair() {
+        let directory = tempfile::tempdir().expect("credential directory");
+        assert!(
+            read_optional_explicit_project(directory.path())
+                .expect("absent pair")
+                .is_none()
+        );
+
+        std::fs::write(directory.path().join("project-head-v2.packet"), [1; 328])
+            .expect("project packet");
+        assert!(read_optional_explicit_project(directory.path()).is_err());
+
+        std::fs::write(directory.path().join("project-layer-v2.json"), b"input")
+            .expect("project input");
+        let (packet, input) = read_optional_explicit_project(directory.path())
+            .expect("complete pair")
+            .expect("configured pair");
+        assert_eq!(packet.len(), EXPLICIT_PROJECT_PACKET_BYTES);
+        assert_eq!(input, b"input");
+
+        std::fs::write(directory.path().join("project-head-v2.packet"), [1; 327])
+            .expect("short packet");
+        assert!(read_optional_explicit_project(directory.path()).is_err());
+    }
+
+    #[test]
+    fn project_source_modes_reject_missing_and_cross_version_credentials() {
+        assert!(require_single_project_source(false, false).is_err());
+        assert!(require_single_project_source(true, true).is_err());
+        assert!(require_single_project_source(true, false).is_ok());
+        assert!(require_single_project_source(false, true).is_ok());
+
+        let legacy = Some((b"legacy-packet".as_slice(), b"legacy-input".as_slice()));
+        let explicit = Some((b"explicit-packet".as_slice(), b"explicit-input".as_slice()));
+        assert!(select_project_source(HeadRequestMode::Query, None, explicit).is_err());
+        assert!(select_project_source(HeadRequestMode::Lease, None, explicit).is_err());
+        assert!(select_project_source(HeadRequestMode::ClosedBinding, legacy, None).is_err());
+        assert_eq!(
+            select_project_source(HeadRequestMode::ClosedBinding, None, explicit)
+                .expect("explicit source")
+                .0,
+            b"explicit-packet"
+        );
+    }
 }
 
 fn read_bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
@@ -466,4 +609,36 @@ fn read_bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+fn read_optional_explicit_project(root: &Path) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
+    read_optional_project(
+        root,
+        "project-head-v2.packet",
+        EXPLICIT_PROJECT_PACKET_BYTES,
+        "project-layer-v2.json",
+    )
+}
+
+fn read_optional_project(
+    root: &Path,
+    packet_name: &str,
+    packet_bytes: usize,
+    input_name: &str,
+) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
+    let packet = read_bounded(&root.join(packet_name), packet_bytes as u64);
+    let input = read_bounded(&root.join(input_name), 3 * 1024);
+    match (packet, input) {
+        (Ok(packet), Ok(input)) if packet.len() == packet_bytes => Ok(Some((packet, input))),
+        (Err(packet), Err(input))
+            if packet.kind() == io::ErrorKind::NotFound
+                && input.kind() == io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "project packet and input credentials must be provisioned together",
+        )),
+    }
 }

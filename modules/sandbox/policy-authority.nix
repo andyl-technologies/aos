@@ -15,9 +15,14 @@
     backendCapabilities = "backend-capabilities.json";
     catalogs = "catalogs.json";
     projectPublicKey = "project-public-key";
+  };
+  projectCredentials = {
     projectHeadPacket = "project-head.packet";
     projectLayer = "project-layer.json";
+    projectHeadPacketV2 = "project-head-v2.packet";
+    projectLayerV2 = "project-layer-v2.json";
   };
+  credentialFiles = requiredCredentials // projectCredentials;
 in {
   options.aos.sandbox.policyAuthority = {
     enable = lib.mkEnableOption "the root-owned signed deployment policy input authority";
@@ -38,10 +43,12 @@ in {
             "Externally provisioned 80-byte AOSPDK01 deployment signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
           else if option == "projectPublicKey" then
             "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "projectHeadPacketV2" || option == "projectLayerV2" then
+            "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
           else
             "Externally provisioned signed deployment policy authority input.";
       })
-    requiredCredentials;
+    credentialFiles;
   };
 
   config = lib.mkIf cfg.enable {
@@ -49,7 +56,27 @@ in {
       assertion = cfg.credentials.${option} != null;
       message = "aos.sandbox.policyAuthority.credentials.${option} is required";
     })
-    requiredCredentials;
+    requiredCredentials
+    ++ [
+      {
+        assertion =
+          (cfg.credentials.projectHeadPacket == null)
+          == (cfg.credentials.projectLayer == null);
+        message = "aos.sandbox.policyAuthority V1 project packet and input credentials must be provisioned together";
+      }
+      {
+        assertion =
+          (cfg.credentials.projectHeadPacketV2 == null)
+          == (cfg.credentials.projectLayerV2 == null);
+        message = "aos.sandbox.policyAuthority V2 project packet and input credentials must be provisioned together";
+      }
+      {
+        assertion =
+          (cfg.credentials.projectHeadPacket != null)
+          != (cfg.credentials.projectHeadPacketV2 != null);
+        message = "aos.sandbox.policyAuthority requires exactly one project source version";
+      }
+    ];
 
     systemd.services.aos-sandbox-policy-authorityd = {
       description = "AOS signed deployment policy input authority";
@@ -60,7 +87,7 @@ in {
         ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid}";
         LoadCredential = lib.mapAttrsToList (option: name:
           "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
-        (lib.filterAttrs (option: _: cfg.credentials.${option} != null) requiredCredentials);
+        (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);
         StateDirectory = "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-policy-authority";

@@ -25,12 +25,18 @@ use crate::journal::{
     ProtectedJournalSnapshot, RecordNamespace,
 };
 
-use super::deployment_head::{HEAD_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
+use super::deployment_head::{
+    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
+};
+use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     MAXIMUM_POLICY_BINDINGS, POLICY_AUTHORITY_JOURNAL, POLICY_BINDING_KEY_PREFIX,
     PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::{PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1};
+use super::{
+    PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1, SignedProjectPolicyHeadV2,
+    verify_signed_project_policy_source_v2,
+};
 
 mod producer;
 
@@ -375,6 +381,42 @@ struct RootPolicyBindingIdentityV2 {
     issuer_owner: [u8; 16],
 }
 
+#[derive(Clone, Copy)]
+struct RootProjectHeadFieldsV2 {
+    project: ProjectId,
+    publisher_generation: u64,
+    publisher_head: ObjectDigest,
+    packet_digest: ObjectDigest,
+    input_digest: ObjectDigest,
+    prerequisite_claims: [ObjectDigest; 4],
+}
+
+impl From<SignedProjectPolicyHeadV1> for RootProjectHeadFieldsV2 {
+    fn from(head: SignedProjectPolicyHeadV1) -> Self {
+        Self {
+            project: head.project(),
+            publisher_generation: head.publisher_generation(),
+            publisher_head: head.publisher_digest(),
+            packet_digest: head.packet_digest(),
+            input_digest: head.input_digest(),
+            prerequisite_claims: head.prerequisite_claims(),
+        }
+    }
+}
+
+impl From<SignedProjectPolicyHeadV2> for RootProjectHeadFieldsV2 {
+    fn from(head: SignedProjectPolicyHeadV2) -> Self {
+        Self {
+            project: head.project(),
+            publisher_generation: head.publisher_generation(),
+            publisher_head: head.publisher_digest(),
+            packet_digest: head.packet_digest(),
+            input_digest: head.input_digest(),
+            prerequisite_claims: head.prerequisite_claims(),
+        }
+    }
+}
+
 /// Retains the root writer for one authenticated, closed CAS exchange.
 ///
 /// Only the fixed root service can open the protected journal. The service
@@ -547,7 +589,67 @@ pub fn with_fixed_closed_policy_binding_session_v2<R>(
         expected_deployment_packet,
         deployment_signer_generation,
         deployment_key,
-        project_head,
+        project_head.into(),
+        None,
+        project_signer_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+        exchange,
+    )
+}
+
+/// Opens a root-held closed session only for the exact admitted V2 project source.
+///
+/// The project packet and canonical input are reverified under the pinned
+/// project key, then compared to the protected V2 root records under the same
+/// writer used for CAS. This still does not establish that the controller,
+/// ancestry, or physical Cache heads are current and grants no effect.
+///
+/// # Errors
+///
+/// Rejects a stale or malformed signed source, changed signer generations,
+/// missing or mixed V1/V2 root records, an unsafe root writer, or a failed
+/// closed CAS/readback.
+#[allow(clippy::too_many_arguments)]
+pub fn with_fixed_explicit_closed_policy_binding_session_v2<R>(
+    expected_deployment_packet: &[u8],
+    deployment_signer_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_packet: &[u8],
+    project_input: &[u8],
+    project_signer_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    now_unix_seconds: i64,
+    exchange: impl FnOnce(&mut ClosedPolicyRootSessionV2<'_>) -> R,
+) -> Result<R, PolicyCompilerJournalErrorV1> {
+    let verified = verify_signed_project_policy_source_v2(
+        project_packet,
+        project_input,
+        project_key,
+        now_unix_seconds,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let head = verified.head();
+    if head.deployment_signer_generation() != deployment_signer_generation
+        || head.project_signer_generation() != project_signer_generation
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    with_closed_policy_binding_session_in_journal_v2(
+        &mut journal,
+        expected_deployment_packet,
+        deployment_signer_generation,
+        deployment_key,
+        head.into(),
+        Some((project_packet, project_input)),
         project_signer_generation,
         project_key,
         controller_uid,
@@ -562,7 +664,8 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
     expected_deployment_packet: &[u8],
     deployment_signer_generation: u64,
     deployment_key: &VerifyingKey,
-    project_head: SignedProjectPolicyHeadV1,
+    project_head: RootProjectHeadFieldsV2,
+    project_record: Option<(&[u8], &[u8])>,
     project_signer_generation: u64,
     project_key: &VerifyingKey,
     controller_uid: u32,
@@ -582,9 +685,30 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     if authority.get(SIGNER_PINS_KEY)? != Some(pins.as_slice())
         || authority.get(HEAD_KEY)? != Some(expected_deployment_packet)
-        || project_head.prerequisite_claims()[1].as_bytes()
+        || project_head.prerequisite_claims[1].as_bytes()
             != Sha256::digest(expected_deployment_packet).as_slice()
     {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let project_is_current = match project_record {
+        None => {
+            let legacy_source = authority
+                .get(PROJECT_HEAD_KEY)?
+                .zip(authority.get(PROJECT_INPUT_KEY)?);
+            legacy_source.is_some_and(|(packet, input)| {
+                project_head.packet_digest.as_bytes() == Sha256::digest(packet).as_slice()
+                    && project_head.input_digest.as_bytes() == Sha256::digest(input).as_slice()
+            }) && authority.get(HEAD_KEY_V2)?.is_none()
+                && authority.get(INPUT_KEY_V2)?.is_none()
+        }
+        Some((packet, input)) => {
+            authority.get(HEAD_KEY_V2)? == Some(packet)
+                && authority.get(INPUT_KEY_V2)? == Some(input)
+                && authority.get(PROJECT_HEAD_KEY)?.is_none()
+                && authority.get(PROJECT_INPUT_KEY)?.is_none()
+        }
+    };
+    if !project_is_current {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
     let issuer_digest = Sha256::new()
@@ -599,12 +723,12 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
         deployment_head: ObjectDigest::from_bytes(
             Sha256::digest(expected_deployment_packet).into(),
         ),
-        project: project_head.project(),
-        publisher_generation: project_head.publisher_generation(),
-        publisher_head: project_head.publisher_digest(),
-        project_policy_head: project_head.packet_digest(),
-        project_policy_input: project_head.input_digest(),
-        prerequisite_claims: project_head.prerequisite_claims(),
+        project: project_head.project,
+        publisher_generation: project_head.publisher_generation,
+        publisher_head: project_head.publisher_head,
+        project_policy_head: project_head.packet_digest,
+        project_policy_input: project_head.input_digest,
+        prerequisite_claims: project_head.prerequisite_claims,
         deployment_signer_generation,
         project_signer_generation,
         issuer_owner,
@@ -706,6 +830,8 @@ impl BindingReaderV2<'_> {
 mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use ed25519_dalek::SigningKey;
 
     use super::*;
     use crate::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
@@ -815,6 +941,206 @@ mod tests {
         )
         .expect("protected root journal")
         .0
+    }
+
+    #[test]
+    fn legacy_root_session_rejects_an_admitted_explicit_project_source() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let mut journal = open_test_root(directory.path());
+        let deployment_key = SigningKey::from_bytes(&[3; 32]).verifying_key();
+        let project_key = SigningKey::from_bytes(&[4; 32]).verifying_key();
+        let deployment_packet = b"current-deployment";
+        let legacy_packet = b"legacy-project-packet";
+        let legacy_input = b"legacy-project-input";
+        let pins = encode_policy_signer_pins_v1(2, &deployment_key, 3, &project_key)
+            .expect("root signer pins");
+        let transaction = JournalTransaction::new(
+            [31; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HEAD_KEY.to_vec(),
+                    deployment_packet.to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    SIGNER_PINS_KEY.to_vec(),
+                    pins,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HEAD_KEY_V2.to_vec(),
+                    b"explicit-source".to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    PROJECT_HEAD_KEY.to_vec(),
+                    legacy_packet.to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    PROJECT_INPUT_KEY.to_vec(),
+                    legacy_input.to_vec(),
+                ),
+            ],
+        )
+        .expect("root transaction");
+        journal
+            .commit(&transaction)
+            .expect("protected source record");
+        let project_head = SignedProjectPolicyHeadV1 {
+            project: ProjectId::from_bytes([1; 16]),
+            generation: 1,
+            packet_digest: ObjectDigest::from_bytes(Sha256::digest(legacy_packet).into()),
+            input_digest: ObjectDigest::from_bytes(Sha256::digest(legacy_input).into()),
+            publisher_generation: 1,
+            publisher_digest: ObjectDigest::from_bytes([7; 32]),
+            prerequisites: [
+                ObjectDigest::from_bytes([8; 32]),
+                ObjectDigest::from_bytes(Sha256::digest(deployment_packet).into()),
+                ObjectDigest::from_bytes([9; 32]),
+                ObjectDigest::from_bytes([10; 32]),
+            ],
+            expires_at: 30,
+        };
+
+        assert!(matches!(
+            with_closed_policy_binding_session_in_journal_v2(
+                &mut journal,
+                deployment_packet,
+                2,
+                &deployment_key,
+                project_head.into(),
+                None,
+                3,
+                &project_key,
+                1000,
+                1000,
+                |_| (),
+            ),
+            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+        ));
+    }
+
+    #[test]
+    fn explicit_root_session_cas_requires_exact_source_bytes_and_pinned_generations() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let mut journal = open_test_root(directory.path());
+        let deployment_key = SigningKey::from_bytes(&[13; 32]).verifying_key();
+        let project_key = SigningKey::from_bytes(&[14; 32]).verifying_key();
+        let deployment_packet = b"current-deployment";
+        let project_packet = b"signed-explicit-project";
+        let project_input = b"canonical-explicit-input";
+        let pins = encode_policy_signer_pins_v1(2, &deployment_key, 3, &project_key)
+            .expect("root signer pins");
+        let transaction = JournalTransaction::new(
+            [32; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HEAD_KEY.to_vec(),
+                    deployment_packet.to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    SIGNER_PINS_KEY.to_vec(),
+                    pins,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HEAD_KEY_V2.to_vec(),
+                    project_packet.to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    INPUT_KEY_V2.to_vec(),
+                    project_input.to_vec(),
+                ),
+            ],
+        )
+        .expect("root source transaction");
+        journal.commit(&transaction).expect("current root source");
+
+        let issuer = Sha256::new()
+            .chain_update(ISSUER_DOMAIN)
+            .chain_update(1000_u32.to_be_bytes())
+            .chain_update(1000_u32.to_be_bytes())
+            .finalize();
+        let mut binding = cas_fixture();
+        binding.issuer_owner.copy_from_slice(&issuer[..16]);
+        binding.compiler_head = ObjectDigest::from_bytes(Sha256::digest(deployment_packet).into());
+        binding.project_policy_head =
+            ObjectDigest::from_bytes(Sha256::digest(project_packet).into());
+        binding.project_policy_input =
+            ObjectDigest::from_bytes(Sha256::digest(project_input).into());
+        binding.deployment_signer_generation = 2;
+        binding.project_signer_generation = 3;
+        let head = RootProjectHeadFieldsV2 {
+            project: binding.project,
+            publisher_generation: binding.publisher_generation,
+            publisher_head: binding.publisher_head,
+            packet_digest: binding.project_policy_head,
+            input_digest: binding.project_policy_input,
+            prerequisite_claims: [
+                binding.ancestry_head,
+                binding.compiler_head,
+                binding.cache_domain_head,
+                binding.revocation_head,
+            ],
+        };
+        let encoded = binding.encode().expect("closed binding");
+        let committed = with_closed_policy_binding_session_in_journal_v2(
+            &mut journal,
+            deployment_packet,
+            2,
+            &deployment_key,
+            head,
+            Some((project_packet, project_input)),
+            3,
+            &project_key,
+            1000,
+            1000,
+            |session| session.commit_closed_binding(&encoded),
+        )
+        .expect("root currentness and readback")
+        .expect("closed root CAS");
+        assert_eq!(committed.root_generation(), 1);
+        assert!(matches!(
+            with_closed_policy_binding_session_in_journal_v2(
+                &mut journal,
+                deployment_packet,
+                2,
+                &deployment_key,
+                head,
+                Some((project_packet, b"substituted-input")),
+                3,
+                &project_key,
+                1000,
+                1000,
+                |_| panic!("substituted source reached CAS"),
+            ),
+            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+        ));
+        assert!(matches!(
+            with_closed_policy_binding_session_in_journal_v2(
+                &mut journal,
+                deployment_packet,
+                4,
+                &deployment_key,
+                head,
+                Some((project_packet, project_input)),
+                3,
+                &project_key,
+                1000,
+                1000,
+                |_| panic!("rotated signer reached CAS"),
+            ),
+            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+        ));
     }
 
     #[test]

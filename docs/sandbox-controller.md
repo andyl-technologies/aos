@@ -26,11 +26,22 @@ the two external systemd credentials configured in
 the repository or Nix store. Rotation needs an explicit protected-journal
 migration; merely replacing the credential is rejected.
 
-The root-only `AOSPHQ04` socket exchange can durably compare-and-swap a closed
-`AOSPCB02` record while retaining a nonce-bound handoff epoch. This is not a
-live Create path: the current policy compiler rejects every V2 binding as
-publication authority until the controller holds all independent writers
-through production commit, recovery, and effect handoff.
+The root-only `AOSPHQ04` socket exchange requires the paired
+`project-head-v2.packet` and `project-layer-v2.json` credential. It sends an
+`AOSPHR04` receipt containing the exact signed V2 packet and canonical input,
+then checks those bytes and both pinned signer generations against the protected
+root records under its writer before a closed `AOSPCB02` compare-and-swap.
+Missing, partial, stale, or mixed V1/V2 source records fail closed. The current
+controller client only accepts the older `AOSPHR02` receipt, so it cannot
+complete this exchange. This is not a live Create path: the policy compiler
+rejects every V2 binding as publication authority until the controller holds
+all independent writers through production commit, recovery, and effect
+handoff.
+
+Provision exactly one project-source credential pair. A V2-only service rejects
+legacy `AOSPHQ02`/`AOSPHQ03` queries; a V1-only service rejects `AOSPHQ04`.
+The two versions cannot be configured together, and neither request version
+can select the other's signed project source.
 
 The closed `commit_fixed_parentless_create_closed_binding_v4` bridge starts
 with a held controller Create, then opens source-domain ancestry, physical
