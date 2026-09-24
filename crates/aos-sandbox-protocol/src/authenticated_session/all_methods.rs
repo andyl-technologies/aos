@@ -253,6 +253,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostReserveExecutionOutput,
     /// Read-only exact original Host output reservation query.
     HostQueryExecutionOutput,
+    /// Signed, one-shot Controller attempt for a fresh Host-owned Guest readback.
+    HostObserveExecutionArgument,
+    /// Read-only historical query of the original Host argument attempt.
+    HostQueryExecutionArgument,
     /// Host OpenSSH forced-command installation and signed readback.
     HostInstallAttachGate,
     /// Advisory current Host OpenSSH gate readiness.
@@ -390,6 +394,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionOutput
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
+            AuthenticatedBrokerMethodSemanticsV1::HostObserveExecutionArgument
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionArgument
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             AuthenticatedBrokerMethodSemanticsV1::HostInstallAttachGate
@@ -1284,6 +1294,28 @@ fn validate_request_semantics(
                 None,
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
+            let request =
+                crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
+                    body, peer, policy, now,
+                )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostObserveExecutionArgument,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+            let request =
+                crate::host_execution_argument::decode_host_execution_argument_query_request_v1(
+                    body, peer, policy, now,
+                )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionArgument,
+                *request.header(),
+                None,
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             let request = crate::decode_host_attach_gate_request_v1(body, peer, policy, now)?;
             (
@@ -1507,6 +1539,18 @@ fn validate_request_semantics(
             RequestOutcomeContextV1::HostOutputQuery(
                 crate::host_output::decode_host_output_query_request_v1(body, peer, policy, now)?,
             )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
+            crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
+                body, peer, policy, now,
+            )?;
+            RequestOutcomeContextV1::None
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+            crate::host_execution_argument::decode_host_execution_argument_query_request_v1(
+                body, peer, policy, now,
+            )?;
+            RequestOutcomeContextV1::None
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             RequestOutcomeContextV1::HostAttachGate(crate::decode_host_attach_gate_request_v1(
@@ -1789,6 +1833,10 @@ fn validate_success_semantics(
             {
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             }
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+            return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

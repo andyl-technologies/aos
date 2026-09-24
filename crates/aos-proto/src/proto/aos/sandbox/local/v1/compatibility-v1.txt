@@ -48,6 +48,18 @@ BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;
 BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;
 BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT = 35;
 BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT = 36;
+BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT = 37;
+BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT = 38;
+message ObserveHostExecutionArgumentRequestV1 {
+RequestHeader header = 1;
+bytes canonical_attempt = 2;
+message ObserveHostExecutionArgumentResponseV1 {
+bytes canonical_receipt = 1;
+message QueryHostExecutionArgumentRequestV1 {
+RequestHeader header = 1;
+bytes canonical_attempt = 2;
+message QueryHostExecutionArgumentResponseV1 {
+bytes canonical_historical_receipt = 1;
 BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE = 12;
 message ObserveHostRuntimeArgumentRequestV1 {
 RequestHeader header = 1;

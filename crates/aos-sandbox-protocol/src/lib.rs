@@ -24,6 +24,7 @@ pub mod host_catalog;
 pub mod host_catalog_snapshot;
 pub mod host_consumer_cgroup;
 pub mod host_execution;
+pub mod host_execution_argument;
 pub mod host_observation;
 pub mod host_output;
 pub mod inventory;

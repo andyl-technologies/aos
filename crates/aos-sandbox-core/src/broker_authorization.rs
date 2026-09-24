@@ -117,6 +117,10 @@ pub enum BrokerVerb {
     HostReserveExecutionOutput,
     /// Reads the exact prior Host output reservation without a new effect.
     HostQueryExecutionOutput,
+    /// Observes one fresh Guest runtime argument limit for a signed Create attempt.
+    HostObserveExecutionArgument,
+    /// Reads only historical custody of the original argument observation.
+    HostQueryExecutionArgument,
     /// Installs one exact pending public OpenSSH attach gate.
     HostInstallAttachGate,
     /// Queries whether a protected Host is ready for public attach admission.
@@ -249,6 +253,8 @@ impl BrokerVerb {
             45 => Ok(Self::HostQueryExecutionOutput),
             46 => Ok(Self::StorageReserveExecutionCapture),
             47 => Ok(Self::StorageQueryExecutionCapture),
+            48 => Ok(Self::HostObserveExecutionArgument),
+            49 => Ok(Self::HostQueryExecutionArgument),
             50 => Ok(Self::StorageCaptureCandidateReadback),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
@@ -305,6 +311,8 @@ impl BrokerVerb {
             Self::HostQueryExecutionOutput => 45,
             Self::StorageReserveExecutionCapture => 46,
             Self::StorageQueryExecutionCapture => 47,
+            Self::HostObserveExecutionArgument => 48,
+            Self::HostQueryExecutionArgument => 49,
             Self::StorageCaptureCandidateReadback => 50,
         }
     }
@@ -324,6 +332,8 @@ impl BrokerVerb {
             | Self::HostQueryExecution
             | Self::HostReserveExecutionOutput
             | Self::HostQueryExecutionOutput
+            | Self::HostObserveExecutionArgument
+            | Self::HostQueryExecutionArgument
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
@@ -372,6 +382,8 @@ impl BrokerVerb {
             | Self::HostQueryExecution
             | Self::HostReserveExecutionOutput
             | Self::HostQueryExecutionOutput
+            | Self::HostObserveExecutionArgument
+            | Self::HostQueryExecutionArgument
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute
@@ -1551,6 +1563,8 @@ mod tests {
             (45, BrokerVerb::HostQueryExecutionOutput),
             (46, BrokerVerb::StorageReserveExecutionCapture),
             (47, BrokerVerb::StorageQueryExecutionCapture),
+            (48, BrokerVerb::HostObserveExecutionArgument),
+            (49, BrokerVerb::HostQueryExecutionArgument),
             (50, BrokerVerb::StorageCaptureCandidateReadback),
         ];
         for (code, expected) in stable_codes {
@@ -1560,7 +1574,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(48),
+            BrokerVerb::from_code(51),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(

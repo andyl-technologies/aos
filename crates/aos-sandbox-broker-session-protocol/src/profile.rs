@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 34] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 36] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -116,6 +116,8 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 34] = [
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP,
     BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -141,6 +143,8 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                     | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             )
         })
         .filter(|method| {
@@ -404,6 +408,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => BrokerSessionProtocolV1::Host,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+            BrokerSessionProtocolV1::Host
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -452,6 +460,8 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
@@ -1256,6 +1266,40 @@ mod tests {
                 .iter()
                 .any(|value| value.as_known() == Some(*method))
         }));
+    }
+
+    #[test]
+    fn one_shot_argument_methods_are_signed_but_not_advertised() {
+        let methods = [
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
+        ];
+        let production = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+        );
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+
+        for method in methods {
+            let profile = authenticated_broker_method_profile_v1(method).unwrap();
+            assert_eq!(
+                profile.authorization(),
+                BrokerSessionAuthorizationPresenceV1::Required
+            );
+            assert!(profile.request_descriptor_roles().is_empty());
+            assert!(!production.contains(&method));
+            assert!(
+                !hello
+                    .required_methods
+                    .iter()
+                    .any(|value| value.as_known() == Some(method))
+            );
+        }
     }
 
     #[test]

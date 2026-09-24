@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x5acd_c988_e12f_a2e0;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x4ba8_206e_0d12_a148;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -158,6 +158,8 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;",
             "BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT = 33;",
             "BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;",
+            "BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT = 37;",
+            "BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT = 38;",
         ],
     )?;
     verify_scoped_declarations(

@@ -100,6 +100,8 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP = 34;
   BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT = 35;
   BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT = 36;
+  BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT = 37;
+  BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT = 38;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -225,6 +227,34 @@ message QueryHostExecutionOutputRequestV1 {
   bytes reserve_source_digest = 7; // Domain-separated AOSCIR01 carrier digest.
   bytes assignment_digest = 8; // Current signed assignment manifest.
   bytes host_boot_id = 9; // Original Host kernel boot ID.
+}
+
+// AOSCIA02 is an exact 336-byte, protected Controller attempt source. Its
+// checksum is structural only; the Host must match a pinned Host-audience
+// signed plan, original session request ID, and current Host owner before a
+// Guest challenge can be sent. This method is not in production Host hello.
+message ObserveHostExecutionArgumentRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_attempt = 2; // Exact 336-byte AOSCIA02.
+}
+
+// AOSHAR01 is a bounded Host-attested fresh observation, not a Controller-
+// verified Guest signature. Historical recovery never emits this response.
+message ObserveHostExecutionArgumentResponseV1 {
+  bytes canonical_receipt = 1; // Exact versioned AOSHAR01.
+}
+
+// Cold recovery names the original AOSCIA02, including its method-37 request
+// ID, under a distinct fresh query plan. It never sends another Guest request.
+message QueryHostExecutionArgumentRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_attempt = 2; // Original exact 336-byte AOSCIA02.
+}
+
+// AOSHQR01 exposes only historical custody/absence digests, never fresh
+// runtime-limit evidence for execution-spec production.
+message QueryHostExecutionArgumentResponseV1 {
+  bytes canonical_historical_receipt = 1;
 }
 
 enum HostExecutionOutputReservationStatusV1 {
