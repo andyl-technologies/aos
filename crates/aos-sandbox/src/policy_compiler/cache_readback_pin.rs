@@ -83,6 +83,8 @@ pub(super) fn admit_cache_readback_pin_in_journal_v1(
     .map_err(|_| CacheReadbackPinErrorV1::InvalidPin)?;
 
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    super::binding_v2::ensure_root_binding_unheld(&authority)
+        .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
     if authority.get(SIGNER_PINS_KEY)? != Some(policy_pins.as_slice()) {
         return Err(CacheReadbackPinErrorV1::StalePin);
     }

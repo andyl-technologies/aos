@@ -38,7 +38,10 @@ use super::{
     verify_signed_project_policy_source_v2,
 };
 
+mod hold;
 mod producer;
+
+use hold::{HOLD_KEY, RootBindingHoldV1, current_hold, release_hold};
 
 pub use producer::{
     propose_closed_current_create_explicit_policy_binding_v2,
@@ -494,11 +497,17 @@ impl ClosedPolicyRootSessionV2<'_> {
                 .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
         );
         let exact_replay = predecessor == binding_head;
+        let prior_hold = current_hold(&self.authority, predecessor, next_generation, count)?;
         if exact_replay {
-            if self.authority.get(&key)? != Some(proposed) {
+            if self.authority.get(&key)? != Some(proposed)
+                || !prior_hold.is_some_and(|hold| hold.held && hold.binding == binding_head)
+            {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
         } else {
+            if prior_hold.is_some_and(|hold| hold.held) {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
             for (current_key, current_value) in self.authority.records()? {
                 if current_key.starts_with(BINDING_V2_KEY_PREFIX) {
                     let current = decode_closed_policy_binding_v2(current_key, current_value)?;
@@ -526,6 +535,13 @@ impl ClosedPolicyRootSessionV2<'_> {
             let transaction_id: [u8; 16] = digest[..16]
                 .try_into()
                 .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+            let held = RootBindingHoldV1 {
+                issuer_owner: binding.issuer_owner,
+                binding: binding_head,
+                epoch: binding.handoff_epoch,
+                held: true,
+            }
+            .encode()?;
             let transaction = JournalTransaction::new(
                 transaction_id,
                 vec![
@@ -539,11 +555,17 @@ impl ClosedPolicyRootSessionV2<'_> {
                         ROOT_BINDING_HEAD_KEY.to_vec(),
                         binding_head.as_bytes().to_vec(),
                     ),
+                    JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        HOLD_KEY.to_vec(),
+                        held.to_vec(),
+                    ),
                 ],
             )?;
             self.authority.commit(&transaction)?;
             if self.authority.get(&key)? != Some(proposed)
                 || self.authority.get(ROOT_BINDING_HEAD_KEY)? != Some(binding_head.as_bytes())
+                || self.authority.get(HOLD_KEY)? != Some(held.as_slice())
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
@@ -555,6 +577,36 @@ impl ClosedPolicyRootSessionV2<'_> {
             root_generation: binding.root_generation,
             handoff_epoch: binding.handoff_epoch,
         })
+    }
+
+    /// Releases an inert Q04 custody record after its exact response ACK.
+    ///
+    /// This does not authorize publication or effects. The Q04 exchange has
+    /// no effect handoff, so a successful ACK may retire this local guard.
+    /// A lost ACK leaves it held for explicit cold resolution.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale binding or epoch, absent hold, or failed durable write.
+    pub fn release_inert_hold(
+        &mut self,
+        committed: ClosedPolicyRootCasObservationV2,
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        let (head, next_epoch, count) = current_root_binding_chain(&self.authority)?;
+        let held = current_hold(&self.authority, head, next_epoch, count)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if !held.held
+            || held.binding != committed.binding
+            || held.epoch != committed.handoff_epoch
+            || held.epoch != committed.root_generation
+            || held.issuer_owner != self.identity.issuer_owner
+            || self.postcommit.is_none()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        release_hold(&mut self.authority, held)?;
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(())
     }
 }
 
@@ -797,7 +849,100 @@ fn current_root_binding_chain(
         .ok()
         .and_then(|count| count.checked_add(1))
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let held = current_hold(authority, predecessor, next_generation, bindings.len())?;
+    if held.map(|record| record.issuer_owner)
+        != bindings.last().map(|(binding, _)| binding.issuer_owner)
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
     Ok((predecessor, next_generation, bindings.len()))
+}
+
+// Root writers call this under their own authority claim, so the checked hold
+// cannot change between this test and their journal commit.
+pub(super) fn ensure_root_binding_unheld(
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
+    if current_hold(authority, head, next_epoch, count)?.is_some_and(|hold| hold.held) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    Ok(())
+}
+
+/// Refuses startup while an inert root binding has unresolved custody.
+///
+/// A returned success says only that this root-local guard is clear. It does
+/// not establish Controller, source-domain, Cache, or effect currentness.
+///
+/// # Errors
+///
+/// Rejects a held binding, malformed or legacy binding history, or unsafe
+/// protected root journal custody.
+pub fn require_no_fixed_closed_policy_binding_hold_v1() -> Result<(), PolicyCompilerJournalErrorV1>
+{
+    if read_fixed_inert_closed_policy_binding_hold_v1()?.is_some() {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    Ok(())
+}
+
+/// Reads the exact unresolved inert Q04 hold from protected root custody.
+///
+/// This gives an operator the binding head and epoch needed for cold recovery.
+/// It is an observation, never a publication or effect capability.
+///
+/// # Errors
+///
+/// Rejects malformed, legacy, or diverged history and unsafe root custody.
+pub fn read_fixed_inert_closed_policy_binding_hold_v1()
+-> Result<Option<ClosedPolicyRootCasObservationV2>, PolicyCompilerJournalErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let (head, next_epoch, count) = current_root_binding_chain(&authority)?;
+    Ok(current_hold(&authority, head, next_epoch, count)?
+        .filter(|hold| hold.held)
+        .map(|hold| ClosedPolicyRootCasObservationV2 {
+            binding: hold.binding,
+            root_generation: hold.epoch,
+            handoff_epoch: hold.epoch,
+        }))
+}
+
+/// Resolves a cold, inert Q04 hold after independent offline review.
+///
+/// The current Q04 service has no effect handoff. Its root owner may therefore
+/// retire an exact abandoned hold before admitting another closed proposal.
+/// This must not be used as an effect-success claim or reused if Q04 gains an
+/// effect handoff. The caller must run as the privileged root owner.
+///
+/// # Errors
+///
+/// Rejects a different head or epoch, a previously released hold, malformed
+/// history, or failed durable release/readback.
+pub fn release_fixed_inert_closed_policy_binding_hold_v1(
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let (head, next_epoch, count) = current_root_binding_chain(&authority)?;
+    let held = current_hold(&authority, head, next_epoch, count)?
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if !held.held || held.binding != binding || held.epoch != epoch {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    release_hold(&mut authority, held)?;
+    current_root_binding_chain(&authority)?;
+    Ok(())
 }
 
 struct BindingReaderV2<'a> {
@@ -1187,6 +1332,15 @@ mod tests {
                 .expect("exact durable replay"),
             first_commit
         );
+        assert_eq!(
+            current_hold(&session.authority, first_commit.binding(), 2, 1)
+                .expect("cold hold readback")
+                .expect("durable hold")
+                .epoch,
+            first_commit.handoff_epoch()
+        );
+        assert!(session.release_inert_hold(first_commit).is_ok());
+        assert!(session.release_inert_hold(first_commit).is_err());
         drop(session);
 
         let mut second = first.clone();
@@ -1236,6 +1390,76 @@ mod tests {
             ProtectedPolicyPublicationVerifierV1::from_journal(recovered),
             Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
         ));
+    }
+
+    #[test]
+    fn lost_ack_keeps_exact_custody_and_rejects_new_root_binding_after_reopen() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let first = cas_fixture();
+        let first_bytes = first.encode().expect("first binding");
+        let mut journal = open_test_root(directory.path());
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&first),
+            postcommit: None,
+        };
+        let first_commit = session
+            .commit_closed_binding(&first_bytes)
+            .expect("durable CAS and hold");
+        drop(session);
+        drop(journal);
+
+        let mut recovered = open_test_root(directory.path());
+        let authority = recovered
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold root authority");
+        let (head, next_epoch, count) =
+            current_root_binding_chain(&authority).expect("cold chain and hold readback");
+        assert!(ensure_root_binding_unheld(&authority).is_err());
+        let held = current_hold(&authority, head, next_epoch, count)
+            .expect("held record")
+            .expect("held after lost ACK");
+        assert!(held.held);
+        assert_eq!(held.binding, first_commit.binding());
+        assert_eq!(held.epoch, first_commit.handoff_epoch());
+        drop(authority);
+
+        let mut second = first.clone();
+        second.operation = OperationId::from_bytes([25; 16]);
+        second.sandbox = SandboxId::from_bytes([26; 16]);
+        second.root_predecessor = first_commit.binding();
+        second.root_generation = 2;
+        second.barrier_epoch = 2;
+        second.handoff_epoch = 2;
+        second.effect_transaction = [27; 16];
+        let authority = recovered
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("second root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&second),
+            postcommit: None,
+        };
+        assert!(
+            session
+                .commit_closed_binding(&second.encode().expect("second binding"))
+                .is_err()
+        );
+        drop(session);
+
+        let mut authority = recovered
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("recovery authority");
+        assert!(release_hold(&mut authority, RootBindingHoldV1 { epoch: 2, ..held }).is_err());
+        release_hold(&mut authority, held).expect("exact cold release");
+        assert!(release_hold(&mut authority, held).is_err());
+        assert!(current_root_binding_chain(&authority).is_ok());
+        assert!(ensure_root_binding_unheld(&authority).is_ok());
     }
 
     #[test]

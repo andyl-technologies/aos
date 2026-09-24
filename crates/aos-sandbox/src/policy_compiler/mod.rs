@@ -34,7 +34,10 @@ pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
     ClosedPolicyRootSessionV2, closed_policy_binding_digest_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
-    propose_closed_current_create_policy_binding_v2, with_fixed_closed_policy_binding_session_v2,
+    propose_closed_current_create_policy_binding_v2,
+    read_fixed_inert_closed_policy_binding_hold_v1,
+    release_fixed_inert_closed_policy_binding_hold_v1,
+    require_no_fixed_closed_policy_binding_hold_v1, with_fixed_closed_policy_binding_session_v2,
     with_fixed_explicit_closed_policy_binding_session_v2,
 };
 pub use cache_journal_readback::read_fixed_policy_cache_journals_v1;

@@ -7,6 +7,8 @@
 //! authorize compiler publication, or authorize Create effects. A separate
 //! version-5 exchange spends a root challenge and verifies a Cache-only signed
 //! readback without promoting it into Q04 authority.
+//! Root-only `--show-inert-hold` and `--release-inert-hold` modes inspect and
+//! resolve an abandoned version-4 hold after offline review.
 
 use std::{
     error::Error,
@@ -23,7 +25,9 @@ use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedCacheReadbackRootChallengeV1, ClosedPolicyRootCasBaseV2,
     ClosedPolicyRootCasObservationV2, PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
-    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+    decode_policy_deployment_sources_v1, read_fixed_inert_closed_policy_binding_hold_v1,
+    release_fixed_inert_closed_policy_binding_hold_v1,
+    require_no_fixed_closed_policy_binding_hold_v1, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
     with_fixed_closed_cache_readback_session_v1, with_fixed_current_policy_head_lease_v1,
     with_fixed_explicit_closed_policy_binding_session_v2,
@@ -43,6 +47,7 @@ use aos_sandbox_broker_session_security::policy_cache_readback_client::{
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
+use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::VerifyingKey;
 
 const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.service";
@@ -78,10 +83,44 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut arguments = std::env::args();
     let _program = arguments.next();
-    let controller_uid: u32 = arguments
+    let first = arguments
         .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?
-        .parse()?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?;
+    if first == "--show-inert-hold" {
+        if arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "extra recovery argument").into(),
+            );
+        }
+        match read_fixed_inert_closed_policy_binding_hold_v1()? {
+            Some(held) => println!(
+                "{} {}",
+                binding_head_hex(held.binding()),
+                held.handoff_epoch()
+            ),
+            None => println!("none"),
+        }
+        return Ok(());
+    }
+    if first == "--release-inert-hold" {
+        let binding = parse_binding_head(&arguments.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "binding head required")
+        })?)?;
+        let epoch: u64 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "epoch required"))?
+            .parse()?;
+        if arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "extra recovery argument").into(),
+            );
+        }
+        // Q04 cannot dispatch an effect. An operator can retire only the
+        // exact abandoned root hold after reviewing the protected binding.
+        release_fixed_inert_closed_policy_binding_hold_v1(binding, epoch)?;
+        return Ok(());
+    }
+    let controller_uid: u32 = first.parse()?;
     let controller_gid: u32 = arguments
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller GID required"))?
@@ -91,6 +130,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid controller identity").into(),
         );
     }
+
+    // A lost Q04 ACK retains the root hold across restart. Resolve it from
+    // protected custody before this service admits any new policy input.
+    require_no_fixed_closed_policy_binding_hold_v1()?;
 
     let root = Path::new(CREDENTIAL_ROOT);
     let key_bytes = read_bounded(&root.join("deployment-public-key"), 80)?;
@@ -220,6 +263,40 @@ fn run() -> Result<(), Box<dyn Error>> {
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
 }
 
+fn parse_binding_head(value: &str) -> io::Result<ObjectDigest> {
+    if value.len() != 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid binding head",
+        ));
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = (pair[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid binding head"))?;
+        let low = (pair[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid binding head"))?;
+        bytes[index] = u8::try_from((high << 4) | low).map_err(io::Error::other)?;
+    }
+    if bytes == [0; 32] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zero binding head",
+        ));
+    }
+    Ok(ObjectDigest::from_bytes(bytes))
+}
+
+fn binding_head_hex(binding: ObjectDigest) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in binding.as_bytes() {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
+
 fn serve_current_head(
     stream: &mut std::os::unix::net::UnixStream,
     controller_uid: u32,
@@ -259,6 +336,7 @@ fn serve_current_head(
     if request[24..] != [0; 8] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
     }
+    require_no_fixed_closed_policy_binding_hold_v1()?;
     if matches!(mode, HeadRequestMode::ClosedCacheReadback) && request[8..24] == [0; 16] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Cache client nonce").into());
     }
@@ -398,6 +476,9 @@ fn serve_current_head(
                     committed.handoff_epoch(),
                 )?;
                 check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
+                session
+                    .release_inert_hold(committed)
+                    .map_err(io::Error::other)?;
                 Ok(committed)
             },
         )??;
@@ -642,6 +723,16 @@ fn select_project_source<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_hold_selector_requires_one_exact_nonzero_digest() {
+        let digest = ObjectDigest::from_bytes([0xab; 32]);
+        let encoded = binding_head_hex(digest);
+        assert_eq!(parse_binding_head(&encoded).expect("exact digest"), digest);
+        assert!(parse_binding_head(&encoded[..63]).is_err());
+        assert!(parse_binding_head(&"0".repeat(64)).is_err());
+        assert!(parse_binding_head(&"g".repeat(64)).is_err());
+    }
 
     #[test]
     fn lease_ack_is_nonce_and_version_bound() {

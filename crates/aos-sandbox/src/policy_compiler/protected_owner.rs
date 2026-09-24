@@ -712,8 +712,8 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Cache pin and spent challenge add two fixed records to the prior envelope.
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 7,
+        // Cache pin, spent challenge, and one root binding hold are fixed records.
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 8,
     }
 }
 
@@ -725,6 +725,18 @@ mod tests {
     use crate::journal::{JournalRecord, JournalTransaction};
 
     use super::*;
+
+    #[test]
+    fn root_authority_budget_reserves_the_binding_hold_record() {
+        let limits = policy_authority_journal_limits();
+        assert_eq!(
+            limits.maximum_materialized_records,
+            MAXIMUM_POLICY_BINDINGS + 8
+        );
+        assert!(
+            limits.maximum_record_bytes >= super::super::binding_v2::CLOSED_POLICY_BINDING_BYTES_V2
+        );
+    }
 
     #[test]
     fn legacy_binding_cannot_authorize_without_cross_owner_fence() {

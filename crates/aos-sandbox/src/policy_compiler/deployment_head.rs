@@ -154,6 +154,8 @@ pub(super) fn admit_policy_signer_pins_in_journal_v1(
     )?;
 
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    super::binding_v2::ensure_root_binding_unheld(&authority)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
     match authority.get(SIGNER_PINS_KEY)? {
         Some(current) if current == encoded.as_slice() => return Ok(()),
         Some(_) => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
@@ -565,6 +567,8 @@ pub fn admit_fixed_policy_deployment_head_v1(
         policy_authority_journal_limits(),
     )?;
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    super::binding_v2::ensure_root_binding_unheld(&authority)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
 
     let existing = authority.get(HEAD_KEY)?;
     if existing == Some(packet) {
@@ -813,6 +817,8 @@ fn admit_signed_project_policy_source_with_journals_v1(
     }
     let mut authority =
         authority_journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    super::binding_v2::ensure_root_binding_unheld(&authority)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
     if authority.get(HEAD_KEY)? != Some(deployment_packet)
         || authority.get(HEAD_KEY_V2)?.is_some()
         || authority.get(INPUT_KEY_V2)?.is_some()

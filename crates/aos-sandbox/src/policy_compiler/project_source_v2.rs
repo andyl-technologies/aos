@@ -401,6 +401,8 @@ pub(super) fn admit_signed_project_policy_source_with_journals_v2(
     )?;
     let mut authority =
         authority_journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    super::binding_v2::ensure_root_binding_unheld(&authority)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
     if authority.get(SIGNER_PINS_KEY)? != Some(pins.as_slice())
         || authority.get(HEAD_KEY)? != Some(deployment_packet)
         || authority.get(PROJECT_HEAD_KEY)?.is_some()

@@ -189,6 +189,8 @@ fn with_closed_cache_readback_session_in_journal_v1(
     )
     .map_err(|_| ClosedCacheReadbackSessionErrorV1::Stale)?;
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    super::binding_v2::ensure_root_binding_unheld(&authority)
+        .map_err(|_| ClosedCacheReadbackSessionErrorV1::Stale)?;
     if authority.get(SIGNER_PINS_KEY)? != Some(policy_pins.as_slice())
         || authority.get(CACHE_PIN_KEY)? != Some(cache_credential)
         || authority.get(HEAD_KEY)? != Some(expected_deployment_head)
