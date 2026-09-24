@@ -389,6 +389,51 @@ mod tests {
     }
 
     #[test]
+    fn resumed_signal_capture_reads_authenticated_artifacts_from_new_run_store() {
+        let (plan, source_store, identity, _) = regular_grid_plan();
+        let retained = collect_signal_artifact_objects(&plan, &source_store)
+            .unwrap_or_else(|error| panic!("source signal capture: {error}"));
+        let resumed_store = MemoryDagStore::new();
+        assert!(collect_signal_artifact_objects(&plan, &resumed_store).is_err());
+
+        super::super::construction::hydrate_checkpoint_signal_artifacts(&retained, &resumed_store)
+            .unwrap_or_else(|error| panic!("hydrate resumed signal artifacts: {error}"));
+
+        assert_eq!(
+            collect_signal_artifact_objects(&plan, &resumed_store)
+                .unwrap_or_else(|error| panic!("resumed signal capture: {error}")),
+            retained,
+        );
+        assert_eq!(
+            resumed_store
+                .get(&identity)
+                .unwrap_or_else(|error| panic!("resumed signal provider read: {error}")),
+            retained[&identity],
+        );
+    }
+
+    #[test]
+    fn signal_hydration_rejects_changed_bytes_before_writing() {
+        let (plan, source_store, identity, _) = regular_grid_plan();
+        let mut retained = collect_signal_artifact_objects(&plan, &source_store)
+            .unwrap_or_else(|error| panic!("source signal capture: {error}"));
+        retained
+            .get_mut(&identity)
+            .unwrap_or_else(|| panic!("signal artifact exists"))
+            .push(0);
+        let resumed_store = MemoryDagStore::new();
+
+        assert!(
+            super::super::construction::hydrate_checkpoint_signal_artifacts(
+                &retained,
+                &resumed_store,
+            )
+            .is_err()
+        );
+        assert!(resumed_store.get(&identity).is_err());
+    }
+
+    #[test]
     fn budgeted_dependency_walk_enforces_lifecycle_ceiling_independently() {
         let (plan, store, identity, encoded_len) = regular_grid_plan();
         let Ok(encoded_len) = u64::try_from(encoded_len) else {
