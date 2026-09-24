@@ -36,6 +36,20 @@ impl DecodedProductionExactCheckpoint {
         &self.checkpoint.scheduler
     }
 
+    /// Derives the hot-fork source boundary from this authenticated closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] if the decoded checkpoint lacks a complete
+    /// fault or host-I/O boundary.
+    #[cfg(target_os = "linux")]
+    pub fn hot_fork_source_boundary(
+        &self,
+    ) -> Result<ProductionVmExactHotForkSourceBoundary, LifecycleApiError> {
+        ProductionVmExactHotForkSourceBoundary::from_exact_checkpoint(&self.checkpoint)
+            .map_err(|error| loop_factory_error(format!("authenticate hot-fork boundary: {error}")))
+    }
+
     /// Reconstructs the modeled checkpoint handle for lifecycle admission.
     ///
     /// The returned handle contains only model-visible coordinates. Native VM

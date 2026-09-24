@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
 use crucible_api::{
     DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
-    ProductionVmExactNodeRestoreAdmissions,
+    ProductionVmExactHotForkSourceBoundary, ProductionVmExactNodeRestoreAdmissions,
 };
 use thiserror::Error;
 
@@ -38,7 +38,6 @@ pub(crate) struct InstalledProductionAttemptCheckpoint {
 
 /// Repository-authenticated resume state retained until guarded QEMU launch.
 pub(crate) struct AuthenticatedProductionAttemptResume {
-    production_identity: ContentHash,
     decoded: DecodedProductionExactCheckpoint,
 }
 
@@ -58,22 +57,22 @@ impl AuthenticatedProductionAttemptResume {
 /// Process launch must reauthenticate it and consume the supervisor's selected
 /// checkpoint authority, which is minted only after durable admission.
 pub(crate) struct AuthenticatedProductionAttemptBoundary {
-    production_identity: ContentHash,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    hot_fork_source: ProductionVmExactHotForkSourceBoundary,
 }
 
 impl AuthenticatedProductionAttemptBoundary {
-    pub(crate) const fn production_identity(&self) -> ContentHash {
-        self.production_identity
-    }
-
     pub(crate) const fn configuration(&self) -> &Configuration {
         &self.configuration
     }
 
     pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
+    }
+
+    pub(crate) fn into_hot_fork_source(self) -> ProductionVmExactHotForkSourceBoundary {
+        self.hot_fork_source
     }
 }
 
@@ -240,9 +239,9 @@ pub(crate) fn authenticate_attempt_production_resume_boundary(
         cancellation,
     )?;
     let boundary = AuthenticatedProductionAttemptBoundary {
-        production_identity: resume.production_identity,
         configuration: resume.decoded.configuration().clone(),
         scheduler: resume.decoded.scheduler().clone(),
+        hot_fork_source: resume.decoded.hot_fork_source_boundary()?,
     };
     Ok(boundary)
 }
@@ -291,10 +290,7 @@ fn authenticate_attempt_production_resume_checkpoint_inner(
         );
     }
     validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
-    Ok(AuthenticatedProductionAttemptResume {
-        production_identity: loaded.production_identity(),
-        decoded,
-    })
+    Ok(AuthenticatedProductionAttemptResume { decoded })
 }
 
 struct AttemptCheckpointInstallation<'a> {
