@@ -152,6 +152,21 @@ impl<'a> BrokerPid1ServiceStateV3<'a> {
         )
         .map(Self::Observed)
     }
+
+    /// Requires an installed, observed V3 service before an effect is sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unavailable error when startup had no protected V3
+    /// deployment and therefore performed no PID 1 query.
+    pub fn require_effect_readback(
+        self,
+    ) -> Result<BrokerPid1ServiceBindingV3<'a>, BrokerPid1QueryErrorV2> {
+        match self {
+            Self::Unavailable => Err(BrokerPid1QueryErrorV2::Unavailable),
+            Self::Observed(binding) => Ok(binding),
+        }
+    }
 }
 
 impl<'a> BrokerPid1ServiceBindingV3<'a> {
@@ -232,6 +247,9 @@ fn require_same_readback(
 /// Reports a closed broker-to-PID-1 query failure.
 #[derive(Debug, Error)]
 pub enum BrokerPid1QueryErrorV2 {
+    /// No protected V3 deployment was installed for an effect-boundary query.
+    #[error("broker PID 1 service readback is unavailable")]
+    Unavailable,
     /// An input, record, or observed role binding did not match.
     #[error("broker PID 1 query binding is invalid")]
     Invalid,
@@ -896,5 +914,9 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(state, BrokerPid1ServiceStateV3::Unavailable));
+        assert!(matches!(
+            state.require_effect_readback(),
+            Err(BrokerPid1QueryErrorV2::Unavailable)
+        ));
     }
 }

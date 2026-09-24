@@ -7508,8 +7508,8 @@ before dispatch and rejects a changed invocation or any changed unit payload.
 Each query independently revalidates the signed launch policy, fragment,
 executable, and ELF closure. The later direct namespace-currentness check
 remains in place. V2-only credentials fail this query; absence of optional
-credentials retains the existing inventory-only service behavior without
-claiming the added PID 1 proof. Apply stays independently closed. A replayed
+credentials retains inventory-only startup, but lifecycle dispatch rejects the
+unavailable proof. Apply stays independently closed. A replayed
 helper snapshot also fails its fresh nonce.
 
 This transaction still has no production inspector-response transport or

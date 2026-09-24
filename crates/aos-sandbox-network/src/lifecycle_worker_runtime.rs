@@ -546,14 +546,8 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
                 BrokerPid1ServiceRoleV2::LifecycleWorker,
                 &unit,
             )?;
-            match service {
-                BrokerPid1ServiceStateV3::Unavailable => {
-                    // Inventory-only startup cannot claim this PID 1 proof.
-                }
-                BrokerPid1ServiceStateV3::Observed(binding) => {
-                    binding.requery_at_effect_boundary(None)?;
-                }
-            }
+            let binding = service.require_effect_readback()?;
+            binding.requery_at_effect_boundary(None)?;
             exchange_after_ready(
                 connection,
                 self.dispatch_bytes,
