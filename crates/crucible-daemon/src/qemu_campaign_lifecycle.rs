@@ -685,7 +685,10 @@ pub trait QemuFreshAttemptDriver {
     /// # Errors
     ///
     /// Returns a driver error when the retained event prefix cannot be checked.
-    fn has_terminal_assertion_failure(&self, _pending: &Self::Pending) -> Result<bool, Self::Error> {
+    fn has_terminal_assertion_failure(
+        &self,
+        _pending: &Self::Pending,
+    ) -> Result<bool, Self::Error> {
         Ok(false)
     }
 
@@ -724,6 +727,18 @@ pub trait QemuFreshAttemptDriver {
         pending: Self::Pending,
         final_events: Vec<SchedulerEventLogEntry>,
     ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>>;
+
+    /// Seals a product with the exact runtime effect trace when the driver owns it.
+    ///
+    /// Drivers without fault evidence retain their existing seal behavior.
+    fn seal_with_trace(
+        &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+        _resolved_effect_trace: Option<Vec<u8>>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        self.seal(pending, final_events)
+    }
 }
 
 /// Runner-owned disposition after modeled fresh-attempt driving.
@@ -1084,6 +1099,9 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     /// Exact terminal execution fingerprint capture failed before teardown.
     #[error("fresh production QEMU terminal fingerprint capture failed: {0}")]
     TerminalFingerprintCapture(#[source] SchedulerError),
+    /// The live runtime could not provide its canonical resolved-effect trace.
+    #[error("fresh production QEMU resolved-effect trace capture failed: {0}")]
+    ResolvedEffectTraceCapture(#[source] SchedulerError),
     /// Producer-side replay content failed authentication or bounded capture.
     #[error("capture private finding production replay: {0}")]
     FindingReplayCapture(#[source] crate::FindingProductionReplayCaptureError),

@@ -8,10 +8,10 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
-//! v6-magic
+//! v7-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
-//! produced-selection-count, selection records, observation
+//! produced-selection-count, selection records, observation, optional resolved-effect trace
 //! measurement-replay-evidence-count, measurement-replay-evidence records
 //! optional terminal-fingerprint records
 //! finding-present
@@ -72,7 +72,7 @@ use crate::{
     CrucibleMeasurementReplayEvidence, verify_crucible_measurement_publication,
 };
 
-const PREPARED_RESULT_MAGIC_V6: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v6\0";
+const PREPARED_RESULT_MAGIC_V7: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v7\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -158,6 +158,26 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
         &self.measurement_replay_evidence
+    }
+
+    /// Checks the retained attempt trace against the authenticated scenario contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for noncanonical bytes or a trace outside the authored
+    /// fault resource limits.
+    pub fn verify_resolved_effect_trace(
+        &self,
+        scenario: &ScenarioDefForm,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        if let Some(bytes) = self.observation.resolved_effect_trace() {
+            crucible::model::ResolvedEffectTrace::from_canonical_bytes(
+                bytes,
+                scenario.plan().fault_signals().resource_limits(),
+            )
+            .map_err(|_| inconsistent("resolved-effect trace contract"))?;
+        }
+        Ok(())
     }
 
     /// Returns the complete terminal fingerprint set from completed terminal capture.
@@ -443,7 +463,7 @@ impl PreparedSemanticAttemptResult {
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC_V6)?;
+        encoder.raw(PREPARED_RESULT_MAGIC_V7)?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
         match &self.terminal_fingerprints {
@@ -500,11 +520,11 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
-        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V6) {
+        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V7) {
             return Err(PreparedSemanticResultCodecError::Version);
         }
         let mut decoder = Decoder::new(bytes);
-        decoder.magic(PREPARED_RESULT_MAGIC_V6)?;
+        decoder.magic(PREPARED_RESULT_MAGIC_V7)?;
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = decode_measurement_evidence(&mut decoder)?;
         let terminal_fingerprints = match decoder.byte()? {
@@ -594,6 +614,23 @@ fn validate_pair(
     observation: &ObservationCandidate,
     finding: Option<&PreparedCrucibleFindingCandidate>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
+    if observation.observation().resolved_effect_trace().is_some()
+        != observation.resolved_effect_trace().is_some()
+    {
+        return Err(inconsistent("observation resolved-effect trace ownership"));
+    }
+    if let Some(bytes) = observation.resolved_effect_trace() {
+        if bytes.len() > MAX_RECORD_BYTES
+            || observation.observation().resolved_effect_trace()
+                != Some(crucible_cas::content_store::ContentId::for_bytes(
+                    crucible_cas::content_store::ObjectKind::Trace,
+                    1,
+                    bytes,
+                ))
+        {
+            return Err(inconsistent("observation resolved-effect trace identity"));
+        }
+    }
     let Some(finding) = finding else {
         return Ok(());
     };
@@ -1098,6 +1135,13 @@ fn encode_observation(
         encoder.record(&selection.canonical_bytes())?;
     }
     encoder.record(&value.observation().canonical_bytes())?;
+    match value.resolved_effect_trace() {
+        Some(bytes) => {
+            encoder.byte(1)?;
+            encoder.record(bytes)?;
+        }
+        None => encoder.byte(0)?,
+    }
     Ok(())
 }
 
@@ -1198,7 +1242,7 @@ fn decode_observation(
     }
     let observation = decoder.decode_record(Observation::from_canonical_bytes)?;
 
-    ObservationCandidate::from_recorded_parts(
+    let candidate = ObservationCandidate::from_recorded_parts(
         child,
         measurements,
         properties,
@@ -1206,8 +1250,14 @@ fn decode_observation(
         discoveries,
         selections,
         observation,
-    )
-    .map_err(Into::into)
+    )?;
+    match decoder.byte()? {
+        0 => Ok(candidate),
+        1 => candidate
+            .with_resolved_effect_trace(decoder.record()?.to_vec())
+            .map_err(Into::into),
+        _ => Err(PreparedSemanticResultCodecError::InvalidTag),
+    }
 }
 
 fn encode_finding(

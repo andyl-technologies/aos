@@ -24,7 +24,7 @@
 //!             payload-limit, observation, measurement-evidence-count,
 //!             measurement-evidence-set-hash, finding-present, [finding],
 //!             payload-length, payload-hash, state-checksum
-//! result-v2 := prepared-semantic-attempt-result-v6
+//! result-v2 := prepared-semantic-attempt-result-v7
 //! ```
 //!
 //! State is bounded at 16 KiB. The result has both the format ceiling and the

@@ -398,10 +398,10 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 6 | Contains the observation, content-ordered raw measurement replay leaves, and optional finding closure. |
+| `crucible.executor.prepared-semantic-attempt-result` | 7 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. |
 | `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
 
-Readers accept only prepared-result version 6 and journal-state version 2. A
+Readers accept only prepared-result version 7 and journal-state version 2. A
 state file and its result payload must use those exact current versions;
 mismatches fail closed.
 
