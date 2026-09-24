@@ -274,9 +274,15 @@ pub(super) fn observe(
                 .take()
                 .ok_or_else(|| retryable("completed detached Create custody is unavailable"))?;
             if completed.desired().record_digest() != desired.record_digest() {
-                executor.pending_attachment_source_consume = Some(completed);
+                // The terminal Create receipt is already protected and no
+                // response remains unread. A successor desired generation
+                // must use its selected historical source lineage, not this
+                // live token's now-stale desired guard.
+                owner
+                    .record_recovered_current_source_consume(source, &mut clock)
+                    .map_err(|error| retryable(error.to_string()))?;
                 return Err(retryable(
-                    "detached Create belongs to a prior desired generation",
+                    "prior detached Create source custody is recovered",
                 ));
             }
             if let Err(error) = owner.record_current_source_consume(source, &completed, &mut clock)
@@ -285,6 +291,20 @@ pub(super) fn observe(
                 return Err(retryable(error.to_string()));
             }
             return Err(retryable("detached Create source custody is recorded"));
+        }
+        if matches!(
+            action,
+            AttachmentSourceActionV1::AwaitAttachment {
+                consume_attempt_recorded: false,
+                ..
+            }
+        ) {
+            owner
+                .record_recovered_current_source_consume(source, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            return Err(retryable(
+                "durable detached Create source custody is recovered",
+            ));
         }
         if action == AttachmentSourceActionV1::Acquire {
             ensure_mount_policy(executor)?;

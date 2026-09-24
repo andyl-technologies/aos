@@ -837,6 +837,28 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         )
     }
 
+    /// Recovers a lost live Create token from one exact protected Apply receipt.
+    ///
+    /// Fresh source and Mount inventories must first select an unconsumed
+    /// `AwaitAttachment` action. This records Consume custody only; it does not
+    /// replay the original Apply or extend its deadline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, ambiguous, or mismatched protected completion lineage.
+    pub fn record_recovered_current_source_consume<T>(
+        &mut self,
+        plan: CurrentAttachmentSourcePlanV1,
+        clock: &mut T,
+    ) -> Result<attachment_source::DurableAttachmentSourceAttemptV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let attachment = *plan.desired().intent().id().as_bytes();
+        let predecessor = attachment_source::current_predecessor(self.journal, attachment)?;
+        attachment_source::record_recovered_current_consume(self.journal, plan, predecessor, clock)
+    }
+
     /// Closes exact Consume custody only after post-attach verification.
     ///
     /// # Errors

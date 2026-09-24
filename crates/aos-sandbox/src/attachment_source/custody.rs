@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_proto::aos::sandbox::local::v1::{
     MountAction, MountLifecycle, MountSourceAcquisitionPhase,
 };
-use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
+use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, RawPairedClockSample};
+use aos_sandbox_protocol::semantics::canonical_precatalog_mount_create_template_v1;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, decode_historical_acquire_mount_source_request,
     decode_release_mount_source_acquisition_request,
@@ -18,7 +19,7 @@ use super::planning::{
     AttachmentSourceActionV1, AttachmentSourceError, CanonicalPlan, CurrentAttachmentSourcePlanV1,
 };
 use crate::attachment_state;
-use crate::attachment_state::DurableAttachmentDesiredStateV1;
+use crate::attachment_state::{AttachmentDesiredPresenceV1, DurableAttachmentDesiredStateV1};
 use crate::mount_source_acquisition_inventory::DurableMountSourceAcquisitionInventorySnapshotV1;
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentNamespaceTarget;
@@ -1459,12 +1460,93 @@ where
         operation_id,
         request_digest,
         exact_request_body,
-        mount_completion,
+        mount_completion.map(MountCreateCompletionProof::Live),
         expected_predecessor,
         None,
         clock,
     )
     .map(|(attempt, _)| attempt)
+}
+
+pub(crate) fn record_recovered_current_consume<T>(
+    journal: &mut Journal,
+    plan: CurrentAttachmentSourcePlanV1,
+    expected_predecessor: Option<ObjectDigest>,
+    clock: &mut T,
+) -> Result<DurableAttachmentSourceAttemptV1, AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let AttachmentSourceActionV1::AwaitAttachment {
+        mount_handle,
+        consume_attempt_recorded: false,
+        ..
+    } = plan.action
+    else {
+        return Err(AttachmentSourceError::Conflict);
+    };
+    plan.recheck(journal, clock)?;
+    let completion = crate::mount_attempt::recover_create_completion(
+        journal,
+        plan.plan.attachment_id,
+        plan.plan.custody_desired_generation,
+        mount_handle,
+        ObjectDigest::from_bytes(plan.plan.source_binding_digest),
+    )?
+    .ok_or(AttachmentSourceError::Conflict)?;
+    let historical = attachment_state::get_generation(
+        journal,
+        AttachmentId::from_bytes(plan.plan.attachment_id),
+        plan.plan.custody_desired_generation,
+    )?
+    .ok_or(AttachmentSourceError::Conflict)?;
+    let intent = historical.intent();
+    let request = completion.request();
+    let template = canonical_precatalog_mount_create_template_v1(request, &[])
+        .map_err(|_| AttachmentSourceError::Protocol)?;
+    let (source_view_id, source_view_revision) = intent.source_view();
+    let (consumer_sandbox, consumer_incarnation) = intent.consumer();
+    if historical.presence() != AttachmentDesiredPresenceV1::Present
+        || historical.record_digest().as_bytes() != &plan.plan.custody_desired_digest
+        || request.attachment_id() != intent.id().as_bytes()
+        || request.destination_slot_id() != intent.destination_slot().as_bytes()
+        || request.desired_attachment_generation() != intent.desired_generation().get()
+        || request.resource_attachment_generation() != intent.desired_generation().get()
+        || request.namespace_generation() != intent.expected_namespace_generation().get()
+        || request.fence().sandbox_id() != consumer_sandbox.as_bytes()
+        || request.fence().incarnation_id() != consumer_incarnation.as_bytes()
+        || request.source_view_id() != source_view_id.as_bytes()
+        || request.source_generation() != source_view_revision.get()
+        || request.source_incarnation_id().copied()
+            != intent
+                .source_incarnation()
+                .map(|incarnation| *incarnation.as_bytes())
+        || request.view_revision() != Some(intent.view())
+        || request.attachment_lease_id() != intent.lease().id().as_bytes()
+        || request.attachment_lease_issued_seconds() != intent.lease().issued_seconds()
+        || request.attachment_lease_expires_seconds() != intent.lease().expires_seconds()
+        || template.digest().as_bytes() != &plan.plan.template_digest
+    {
+        return Err(AttachmentSourceError::Conflict);
+    }
+    record_current_attempt_with_dispatch(
+        journal,
+        &plan,
+        AttachmentSourceAttemptKindV1::Consume,
+        OperationId::from_bytes(completion.request_id()),
+        completion.record_digest(),
+        Vec::new(),
+        Some(MountCreateCompletionProof::Recovered(&completion)),
+        expected_predecessor,
+        None,
+        clock,
+    )
+    .map(|(attempt, _)| attempt)
+}
+
+pub(super) enum MountCreateCompletionProof<'a> {
+    Live(&'a crate::CompletedCurrentAttachmentMountAttemptV1),
+    Recovered(&'a crate::mount_attempt::RecoveredMountCreateCompletionV1),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1475,7 +1557,7 @@ pub(super) fn record_current_attempt_with_dispatch<T>(
     operation_id: OperationId,
     request_digest: ObjectDigest,
     exact_request_body: Vec<u8>,
-    mount_completion: Option<&crate::CompletedCurrentAttachmentMountAttemptV1>,
+    mount_completion: Option<MountCreateCompletionProof<'_>>,
     expected_predecessor: Option<ObjectDigest>,
     packet: Option<Vec<u8>>,
     clock: &mut T,
@@ -1678,7 +1760,7 @@ fn validate_attempt_input(
     operation_id: OperationId,
     request_digest: ObjectDigest,
     body: &[u8],
-    mount_completion: Option<&crate::CompletedCurrentAttachmentMountAttemptV1>,
+    mount_completion: Option<MountCreateCompletionProof<'_>>,
 ) -> Result<([u8; 32], Option<[u8; 32]>), AttachmentSourceError> {
     if operation_id.as_bytes() == &[0; 16] || request_digest.as_bytes() == &[0; 32] {
         return Err(AttachmentSourceError::Conflict);
@@ -1708,18 +1790,38 @@ fn validate_attempt_input(
             | AttachmentSourceActionV1::CompleteConsume { acquisition_id, .. },
         ) => {
             let completion = mount_completion.ok_or(AttachmentSourceError::Conflict)?;
-            let result = completion.completion().result();
-            if !body.is_empty()
-                || completion.mount_action() != MountAction::MOUNT_ACTION_CREATE_DETACHED
-                || completion.desired().record_digest().as_bytes()
-                    != &plan.plan.custody_desired_digest
-                || completion.completion().request_id() != *operation_id.as_bytes()
-                || completion.completion().record_digest() != request_digest
-                || result.detached_mount_handle() != plan.plan.mount_handle.as_ref()
-                || result.source_binding().is_none_or(|binding| {
-                    binding.digest().as_bytes() != &plan.plan.source_binding_digest
-                })
-            {
+            let valid_completion = match completion {
+                MountCreateCompletionProof::Live(completion) => {
+                    let result = completion.completion().result();
+                    completion.mount_action() == MountAction::MOUNT_ACTION_CREATE_DETACHED
+                        && completion.desired().record_digest().as_bytes()
+                            == &plan.plan.custody_desired_digest
+                        && completion.completion().request_id() == *operation_id.as_bytes()
+                        && completion.completion().record_digest() == request_digest
+                        && result.detached_mount_handle() == plan.plan.mount_handle.as_ref()
+                        && result.source_binding().is_some_and(|binding| {
+                            binding.digest().as_bytes() == &plan.plan.source_binding_digest
+                        })
+                }
+                MountCreateCompletionProof::Recovered(completion) => {
+                    let request = completion.request();
+                    let result = completion.result();
+                    request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED
+                        && request.attachment_id() == &plan.plan.attachment_id
+                        && request.desired_attachment_generation()
+                            == plan.plan.custody_desired_generation
+                        && request.source_binding().is_some_and(|binding| {
+                            binding.digest().as_bytes() == &plan.plan.source_binding_digest
+                        })
+                        && completion.request_id() == *operation_id.as_bytes()
+                        && completion.record_digest() == request_digest
+                        && result.detached_mount_handle() == plan.plan.mount_handle.as_ref()
+                        && result.source_binding().is_some_and(|binding| {
+                            binding.digest().as_bytes() == &plan.plan.source_binding_digest
+                        })
+                }
+            };
+            if !body.is_empty() || !valid_completion {
                 return Err(AttachmentSourceError::Conflict);
             }
             Ok((acquisition_id, Some(*request_digest.as_bytes())))

@@ -22,8 +22,8 @@ use aos_sandbox_protocol::session::{
     MOUNT_SOURCE_ACQUISITION_FEATURE_NAMESPACE, SIGNED_PLAN_LEASE_FEATURE_NAMESPACE,
 };
 use aos_sandbox_protocol::{
-    ValidatedMountResult, decode_mount_result_for_apply, decode_response_envelope,
-    decode_server_hello,
+    ValidatedMountRequest, ValidatedMountResult, decode_mount_result_for_apply,
+    decode_response_envelope, decode_server_hello,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -226,6 +226,32 @@ pub struct CompletedCurrentMountAttemptV1 {
     outcome: MountCompletionOutcomeV1,
 }
 
+/// Carries a validated historical Create receipt without granting Apply replay.
+pub(crate) struct RecoveredMountCreateCompletionV1 {
+    request_id: [u8; 16],
+    record_digest: ObjectDigest,
+    request: ValidatedMountRequest,
+    result: ValidatedMountResult,
+}
+
+impl RecoveredMountCreateCompletionV1 {
+    pub(crate) const fn request_id(&self) -> [u8; 16] {
+        self.request_id
+    }
+
+    pub(crate) const fn record_digest(&self) -> ObjectDigest {
+        self.record_digest
+    }
+
+    pub(crate) const fn request(&self) -> &ValidatedMountRequest {
+        &self.request
+    }
+
+    pub(crate) const fn result(&self) -> &ValidatedMountResult {
+        &self.result
+    }
+}
+
 impl CompletedCurrentMountAttemptV1 {
     /// Returns whether this call recorded or replayed the exact success receipt.
     #[must_use]
@@ -424,6 +450,53 @@ pub(crate) fn contains_completions(
         }
     }
     Ok(true)
+}
+
+/// Finds one exact durable Create receipt for a freshly inventoried resource.
+///
+/// This validates the protected attempt and completion histories, including
+/// receipt-to-Apply binding, but conveys no authority to replay the Apply.
+pub(crate) fn recover_create_completion(
+    journal: &mut Journal,
+    attachment_id: [u8; 16],
+    desired_generation: u64,
+    mount_handle: [u8; 32],
+    source_binding_digest: ObjectDigest,
+) -> Result<Option<RecoveredMountCreateCompletionV1>, MountAttemptError> {
+    let attempts = AttemptHistory::load(journal)?;
+    let completions = CompletionHistory::load(journal)?;
+    let mut selected = None;
+
+    for record in completions.records.values() {
+        let attempt = attempts
+            .records
+            .get(&record.request_id)
+            .ok_or(MountAttemptError::CorruptState)?;
+        let request = decode_attempt_body(&attempt.body, attempt.deadline_boottime_nanoseconds)?;
+        if request.action() != MountAction::MOUNT_ACTION_CREATE_DETACHED {
+            continue;
+        }
+        let result = validate_receipt(attempt, &record.receipt)?;
+        if result.attachment_id() != &attachment_id
+            || result.desired_attachment_generation() != desired_generation
+            || result.detached_mount_handle() != Some(&mount_handle)
+            || result
+                .source_binding()
+                .is_none_or(|binding| binding.digest() != source_binding_digest)
+        {
+            continue;
+        }
+        if selected.is_some() {
+            return Err(MountAttemptError::Conflict);
+        }
+        selected = Some(RecoveredMountCreateCompletionV1 {
+            request_id: record.request_id,
+            record_digest: ObjectDigest::from_bytes(record.digest),
+            request,
+            result,
+        });
+    }
+    Ok(selected)
 }
 
 pub(crate) fn dispatch_current<T>(
