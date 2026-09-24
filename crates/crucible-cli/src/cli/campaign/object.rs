@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "object/group.rs"]
+mod group;
+
+use group::{CampaignGroupView, campaign_group_view};
+
 use crucible_campaign::{
     CampaignChoiceObject, CampaignChoiceObjectKind, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
     ConfigurationArtifact, GetCampaignChoiceObjectRequest, GetCampaignFrontierObjectRequest,
@@ -9,6 +14,7 @@ use crucible_campaign::{
 };
 
 const CAMPAIGN_OBJECT_REPORT_SCHEMA: &str = "crucible.cli.campaign-object.v1";
+const CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA: &str = "crucible.cli.campaign-object.v2";
 
 #[derive(Serialize)]
 pub(super) struct CampaignObjectReport {
@@ -50,6 +56,8 @@ enum CampaignObjectView {
         default: String,
         semantic_tags: Vec<String>,
         required: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group: Option<CampaignGroupView>,
     },
     Domain {
         opportunity: CampaignOpportunityView,
@@ -57,6 +65,8 @@ enum CampaignObjectView {
         domain_semantics: String,
         domain_kind: &'static str,
         cardinality: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group: Option<CampaignGroupView>,
     },
     Frontier {
         request: String,
@@ -208,7 +218,7 @@ where
                 CampaignChoiceObject::Domain(domain) => campaign_domain_view(opportunity, domain)?,
             };
             Ok(CampaignObjectReport {
-                schema: CAMPAIGN_OBJECT_REPORT_SCHEMA,
+                schema: campaign_object_schema(&object),
                 operation: "choice-object",
                 campaign: campaign.as_str().to_owned(),
                 snapshot: snapshot.to_string(),
@@ -281,6 +291,14 @@ where
     }
 }
 
+fn campaign_object_schema(object: &CampaignObjectView) -> &'static str {
+    match object {
+        CampaignObjectView::Declaration { group: Some(_), .. }
+        | CampaignObjectView::Domain { group: Some(_), .. } => CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA,
+        _ => CAMPAIGN_OBJECT_REPORT_SCHEMA,
+    }
+}
+
 fn campaign_object_basis(
     name: &str,
     snapshot: &str,
@@ -345,6 +363,10 @@ fn campaign_declaration_view(
         default: campaign_choice_value_label(declaration.default()),
         semantic_tags: declaration.semantic_tags().iter().cloned().collect(),
         required: declaration.required(),
+        group: match domain {
+            ChoiceDomain::Group(group) => Some(campaign_group_view(group)?),
+            _ => None,
+        },
     })
 }
 
@@ -363,6 +385,10 @@ fn campaign_domain_view(
         domain_semantics: domain.semantic_id().to_string(),
         domain_kind: campaign_choice_domain_kind(domain),
         cardinality: domain.cardinality().to_string(),
+        group: match domain {
+            ChoiceDomain::Group(group) => Some(campaign_group_view(group)?),
+            _ => None,
+        },
     })
 }
 
