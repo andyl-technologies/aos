@@ -12,6 +12,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use crucible::model::{FaultReplayMode, ResolvedEffectTrace};
 use crucible::{
     AssertionDef, AssertionId, Checkpoint, CheckpointKind, Configuration, ContentHash, Decision,
     EventLog, ExecutionFingerprint, FingerprintSample, Icount, MarkerId, NodeId, NodeTemplate,
@@ -42,7 +43,15 @@ use crate::{
     decode_crucible_scenario_artifact, plan_single_host_campaign_gc,
 };
 
-const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-effect-trace";
+fn test_effect_trace() -> Vec<u8> {
+    ResolvedEffectTrace {
+        mode: FaultReplayMode::RecomputedCause,
+        work_items: Vec::new(),
+        cursor: 0,
+    }
+    .canonical_bytes()
+    .expect("canonical fixture effect trace")
+}
 
 type TestGuardedDefaultCampaignRunError = GuardedDefaultCampaignRunError<
     QemuFreshExecutionRunnerError<
@@ -318,7 +327,7 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
     }
 
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
-        Ok(Some(TEST_EFFECT_TRACE.to_vec()))
+        Ok(Some(test_effect_trace()))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -755,7 +764,10 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
     assert_eq!(terminal_fingerprints.len(), 1);
     assert_eq!(terminal_fingerprints[0].node, node);
     assert_eq!(terminal_fingerprints[0].at, VirtualTime { ticks: 7 });
-    assert_eq!(evidence.resolved_effect_trace(), Some(TEST_EFFECT_TRACE));
+    assert_eq!(
+        evidence.resolved_effect_trace(),
+        Some(test_effect_trace().as_slice())
+    );
 }
 
 #[test]

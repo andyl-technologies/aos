@@ -282,8 +282,8 @@ fn graph_pages_are_canonical_bounded_snapshot_and_cursor_bound() {
                 .to_string(),
         ],
         [
-            String::from("2de1eb54a8ccd25be63afd8f1cf64a5099cedf8070247143155a32bd367a92f2"),
-            String::from("8d6e748f3e0de0c37f75e671889709fde991d4f247f0419182eb1ad15a580217"),
+            String::from("261f6f1bb6036d9aeba6163af1871564480e6ecf9e35a4f41687ad118153c6d4"),
+            String::from("a6f47b1796c56c28b03efe21cc7745465f1f05bd97e3847360f190fd7f8ace63"),
         ]
     );
 
@@ -1370,8 +1370,8 @@ fn choice_pages_authenticate_the_nested_index_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("1d6e4e117e1ebc7a42db9f4abf6c2d140c0128414522df159dad7f3bc1fff9d6"),
-            String::from("b00563901c1822b5345f044745484333ed1288993543de1abc6fd5ecf4e92765"),
+            String::from("addbe83f1fde41729f99298668d2a4b22b40675e0ca590231241a80f5fa8b2dc"),
+            String::from("e5e5d7b40f909e78ccea4d5bc9e27c29d3287792cc9d4c92b7ba1c492dec4c6d"),
         ]
     );
 
@@ -1523,8 +1523,8 @@ fn frontier_pages_authenticate_projection_bodies_and_exact_eof() {
                 .to_string(),
         ],
         [
-            String::from("01d555aa8c4858577b2de5f650ffaec628951012c90b0787efbeef3f648be6d6"),
-            String::from("c4ff5474fe9f06666c2a5b1aa3d5b846a4b7c98614b700f50d75d23aa86da6a1"),
+            String::from("e91bc0cf200b2fdfd6b0d818cc74f928b822ba02a0bcb631f580c3c5885e11dd"),
+            String::from("c9f03fbc01d03322b6eb60ab8e2d669b7cad28108bddf3852f05c2f02e99181d"),
         ]
     );
 
@@ -1632,8 +1632,8 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
                 .to_string(),
         ],
         [
-            String::from("a09055363e87040ed85f48aafb52d596c1dc90330b9b2a31313d1057e638ee84"),
-            String::from("b2d5567f763772dba72ca1e9134e844fbb6fce44278a893979ba7e8ca48db8ef"),
+            String::from("3a4a244d43d322126ccca4b4fa113051c159007aa2b1b87b882c9ddf1f159d5a"),
+            String::from("d3ed37b925bf880031de651d90ca784e0d5756430764d09965ff76d2a481a776"),
         ]
     );
 
@@ -1764,8 +1764,8 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
                 .to_string(),
         ],
         [
-            String::from("3afb7d63ae6859f5fb5f40c324f6cba4e72779819c244aa101f589f3cc6990a8"),
-            String::from("1aa6a7fe8d874c92adf8a5f9d838e0c76c5c3acc54a85b29f0ec2316154b526f"),
+            String::from("88de97f3c521f74cc617b841cbc8c500a126d82223166db9ad55f26b066794f0"),
+            String::from("c7b574bae08e277e750a86d6da7fe45d95fde7558806da5f66ceaa253a269b8e"),
         ]
     );
 }

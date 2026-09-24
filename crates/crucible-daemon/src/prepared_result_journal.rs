@@ -1568,7 +1568,7 @@ mod tests {
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "16b9ffe08dad5e55a0cb76bdbaebd86c76590965fce09ab8a664a717b80202d9"
+            "4f8cf86ed8c579b4a23ca110edea3cdf00af1b6057635954ca0785e47d8d7141"
         );
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
         assert_eq!(

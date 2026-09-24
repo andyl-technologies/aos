@@ -1633,7 +1633,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         )
         .to_hex(),
         // Current snapshots bind the indexed budget ledger and current identities.
-        "2838288e6989cb46eb98b25f57904f832c580669e4b325a4b949b6d60cf5c568",
+        "42a7318bb46604a04f57b22bbd727815486ea7c4cdade729231bd84034758731",
     );
     let decoded_debugger =
         DebuggerSubmission::from_canonical_bytes(&debugger_bytes).expect("decode debugger");

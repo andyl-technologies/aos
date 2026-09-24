@@ -339,7 +339,7 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             .expect("observation ID")
             .content_id()
             .schema_version(),
-        13
+        14
     );
     let mut noncurrent_observation = observation.canonical_bytes();
     noncurrent_observation[..4].copy_from_slice(&0_u32.to_be_bytes());
