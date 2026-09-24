@@ -17,10 +17,13 @@
 #define RECORD_FILE STATE_DIR "/lease-record"
 #define RECORD_TEMP STATE_DIR "/lease-record.new"
 #define VERIFIER_FILE STATE_DIR "/storage-verifier"
+#define LEASE_VERIFIER_V2_FILE STATE_DIR "/storage-lease-verifier-v2"
+#define STAGE_VERIFIER_V2_FILE STATE_DIR "/storage-stage-verifier-v2"
 #define LEASE_BYTES 496U
 #define VERIFIER_BYTES 112U
 #define HANDOFF_BYTES 344U
 #define ACK_BYTES 576U
+#define ACK_V2_BYTES 600U
 #define RECORD_BYTES 1208U
 #define PREPARED_REPORT_BYTES 152U
 #define OWNER_PREPARED 1U
@@ -38,6 +41,8 @@ static const unsigned char stage_domain[] =
     "aos.sandbox.kernel-export-owner.prepared-map.v1";
 static const unsigned char ack_domain[] =
     "aos.sandbox.storage.kernel-export-stage-ack.signature.v1";
+static const unsigned char ack_v2_domain[] =
+    "aos.sandbox.storage.kernel-export-stage-ack.signature.v2";
 static const unsigned char record_domain[] =
     "aos.sandbox.kernel-export-owner.lease-record.v1";
 
@@ -629,6 +634,102 @@ static int verify_stage_ack(const char *ack_path, const char *handoff_path,
                                 lease_digest);
 }
 
+/* V2 is a read-only fixture verifier; the v1 record and effect path stay fixed. */
+static int verify_stage_ack_v2_bytes(
+    const unsigned char ack[ACK_V2_BYTES],
+    const unsigned char frame[HANDOFF_BYTES],
+    const unsigned char lease[LEASE_BYTES],
+    const unsigned char lease_verifier[VERIFIER_BYTES],
+    const unsigned char stage_verifier[VERIFIER_BYTES],
+    const struct owner_state *state,
+    const struct aos_kernel_export_owner_mount_v1 *prepared,
+    const __u64 lease_digest[4])
+{
+  unsigned char policy_digest[32];
+  unsigned char message[sizeof(ack_v2_domain) + 536];
+  EVP_PKEY *key = NULL;
+  EVP_MD_CTX *context = NULL;
+  int result = -1;
+
+  if (memcmp(ack, "AOSKGA02", 8) != 0 ||
+      ack[8] != 0 || ack[9] != 2 ||
+      memcmp(ack + 10, "\0\0\0\0\0\0", 6) != 0 ||
+      memcmp(ack + 16, frame, HANDOFF_BYTES) != 0 ||
+      memcmp(frame + 16, state->handoff_digest, 32) != 0 ||
+      memcmp(ack + 360, lease_digest, 32) != 0 ||
+      be64(ack + 392) != be64(lease + 232) ||
+      be64(ack + 392) == state->mount_id ||
+      be64(ack + 400) != state->root_device ||
+      be64(ack + 408) != state->root_inode ||
+      be64(ack + 400) != be64(lease + 216) ||
+      be64(ack + 408) != be64(lease + 224) ||
+      be64(ack + 416) != state->epoch ||
+      staged_policy_digest(state->mount_id, prepared,
+                           policy_digest) != 0 ||
+      memcmp(ack + 424, policy_digest, sizeof(policy_digest)) != 0 ||
+      memcmp(ack + 456, stage_verifier, 80) != 0 ||
+      memcmp(stage_verifier, lease_verifier, 80) == 0 ||
+      memcmp(stage_verifier + 80, lease_verifier + 80, 32) == 0 ||
+      all_zero(stage_verifier, 16) ||
+      be64(stage_verifier + 16) == 0 ||
+      all_zero(stage_verifier + 24, 32) ||
+      all_zero(stage_verifier + 56, 16) ||
+      be64(stage_verifier + 72) == 0 ||
+      all_zero(stage_verifier + 80, 32))
+    return -1;
+
+  memcpy(message, ack_v2_domain, sizeof(ack_v2_domain));
+  memcpy(message + sizeof(ack_v2_domain), ack, 536);
+  key = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL,
+                                     stage_verifier + 80, 32);
+  context = EVP_MD_CTX_new();
+  if (key != NULL && context != NULL &&
+      EVP_DigestVerifyInit(context, NULL, NULL, NULL, key) == 1 &&
+      EVP_DigestVerify(context, ack + 536, 64, message,
+                       sizeof(message)) == 1)
+    result = 0;
+  EVP_MD_CTX_free(context);
+  EVP_PKEY_free(key);
+  return result;
+}
+
+static int prepared_current(const struct owner_state *state, int clone_fd,
+                            int cgroup_fd, const char *handoff_path,
+                            unsigned char frame[HANDOFF_BYTES],
+                            struct aos_kernel_export_owner_mount_v1 *policy);
+
+static int inspect_stage_ack_v2(const struct owner_state *state, int clone_fd,
+                                int cgroup_fd, const char *handoff_path,
+                                const char *lease_path, const char *ack_path)
+{
+  struct aos_kernel_export_owner_mount_v1 before, after;
+  unsigned char frame[HANDOFF_BYTES], after_frame[HANDOFF_BYTES];
+  unsigned char lease[LEASE_BYTES], ack[ACK_V2_BYTES];
+  unsigned char lease_verifier[VERIFIER_BYTES];
+  unsigned char stage_verifier[VERIFIER_BYTES];
+  __u64 lease_digest[4], remaining_ms;
+
+  if (prepared_current(state, clone_fd, cgroup_fd, handoff_path,
+                       frame, &before) != 0 ||
+      protected_file(lease_path, sizeof(lease), lease) != 0 ||
+      protected_file(ack_path, sizeof(ack), ack) != 0 ||
+      protected_file(LEASE_VERIFIER_V2_FILE, sizeof(lease_verifier),
+                     lease_verifier) != 0 ||
+      protected_file(STAGE_VERIFIER_V2_FILE, sizeof(stage_verifier),
+                     stage_verifier) != 0 ||
+      verify_lease_bytes(lease, frame, lease_verifier, state,
+                         lease_digest, &remaining_ms) != 0 ||
+      verify_stage_ack_v2_bytes(ack, frame, lease, lease_verifier,
+                                 stage_verifier, state, &before,
+                                 lease_digest) != 0 ||
+      prepared_current(state, clone_fd, cgroup_fd, handoff_path,
+                       after_frame, &after) != 0 ||
+      memcmp(frame, after_frame, sizeof(frame)) != 0 ||
+      memcmp(&before, &after, sizeof(before)) != 0)
+    return -1;
+  return 0;
+}
+
 static int stage(int clone_fd, int cgroup_fd, const char *handoff_path)
 {
   struct owner_state state = {.phase = OWNER_PREPARED, .epoch = 1};
@@ -1031,6 +1132,12 @@ int main(int argc, char **argv)
   if (argc == 5 && strcmp(argv[1], "report-prepared") == 0 &&
       read_state(&state) == 0) {
     result = report_prepared(&state, clone_fd, cgroup_fd, argv[4]);
+    goto out;
+  }
+  if (argc == 7 && strcmp(argv[1], "inspect-stage-v2") == 0 &&
+      read_state(&state) == 0) {
+    result = inspect_stage_ack_v2(&state, clone_fd, cgroup_fd, argv[4],
+                                   argv[5], argv[6]);
     goto out;
   }
   if (argc == 5 && strcmp(argv[1], "inspect-record") == 0 &&

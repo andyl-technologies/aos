@@ -40,8 +40,16 @@ static const unsigned char stage_domain[] =
     "aos.sandbox.kernel-export-owner.prepared-map.v1";
 static const unsigned char ack_domain[] =
     "aos.sandbox.storage.kernel-export-stage-ack.signature.v1";
+static const unsigned char ack_v2_domain[] =
+    "aos.sandbox.storage.kernel-export-stage-ack.signature.v2";
 static const unsigned char record_domain[] =
     "aos.sandbox.kernel-export-owner.lease-record.v1";
+static const char ack_v2_path[] =
+    "/var/lib/aos/kernel-export-owner/ack-v2";
+static const char lease_verifier_v2_path[] =
+    "/var/lib/aos/kernel-export-owner/storage-lease-verifier-v2";
+static const char stage_verifier_v2_path[] =
+    "/var/lib/aos/kernel-export-owner/storage-stage-verifier-v2";
 static const char record_path[] =
     "/var/lib/aos/kernel-export-owner/lease-record";
 
@@ -496,6 +504,142 @@ static int make_stage_ack(uint64_t clone_id)
 out:
   if (map_fd >= 0)
     close(map_fd);
+  EVP_MD_CTX_free(context);
+  EVP_PKEY_free(key);
+  return result;
+}
+
+static int make_stage_ack_v2(void)
+{
+  unsigned char lease[496], legacy[576], lease_verifier[112];
+  unsigned char stage_verifier[112] = {0}, ack[600] = {0};
+  unsigned char seed[32], message[sizeof(ack_v2_domain) + 536];
+  size_t public_size = 32, signature_size = 64;
+  EVP_PKEY *key = NULL;
+  EVP_MD_CTX *context = NULL;
+  int result = -1;
+
+  if (read_exact_file("/var/lib/aos/kernel-export-owner/lease",
+                      lease, sizeof(lease)) != 0 ||
+      read_exact_file("/var/lib/aos/kernel-export-owner/ack",
+                      legacy, sizeof(legacy)) != 0 ||
+      read_exact_file("/var/lib/aos/kernel-export-owner/storage-verifier",
+                      lease_verifier, sizeof(lease_verifier)) != 0)
+    return -1;
+
+  memset(seed, 0x44, sizeof(seed));
+  key = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL,
+                                      seed, sizeof(seed));
+  context = EVP_MD_CTX_new();
+  if (key == NULL || context == NULL)
+    goto out;
+  memset(stage_verifier, 0x45, 16);
+  be64(stage_verifier + 16, 1);
+  memset(stage_verifier + 24, 0x46, 32);
+  memset(stage_verifier + 56, 0x47, 16);
+  be64(stage_verifier + 72, 1);
+  if (EVP_PKEY_get_raw_public_key(key, stage_verifier + 80,
+                                  &public_size) != 1 ||
+      public_size != 32)
+    goto out;
+
+  memcpy(ack, "AOSKGA02", 8);
+  ack[9] = 2;
+  memcpy(ack + 16, legacy + 16, 344);
+  memcpy(ack + 360, legacy + 360, 32);
+  memcpy(ack + 392, lease + 232, 8);
+  memcpy(ack + 400, lease + 216, 16);
+  memcpy(ack + 416, legacy + 392, 8);
+  memcpy(ack + 424, legacy + 400, 32);
+  memcpy(ack + 456, stage_verifier, 80);
+  memcpy(message, ack_v2_domain, sizeof(ack_v2_domain));
+  memcpy(message + sizeof(ack_v2_domain), ack, 536);
+  if (EVP_DigestSignInit(context, NULL, NULL, NULL, key) != 1 ||
+      EVP_DigestSign(context, ack + 536, &signature_size,
+                     message, sizeof(message)) != 1 ||
+      signature_size != 64 ||
+      write_exact(lease_verifier_v2_path, lease_verifier,
+                  sizeof(lease_verifier)) != 0 ||
+      write_exact(stage_verifier_v2_path, stage_verifier,
+                  sizeof(stage_verifier)) != 0 ||
+      write_exact(ack_v2_path, ack, sizeof(ack)) != 0)
+    goto out;
+  result = 0;
+
+out:
+  EVP_MD_CTX_free(context);
+  EVP_PKEY_free(key);
+  return result;
+}
+
+static int reject_reused_v2_verifier(int clone_fd, int cgroup_fd,
+                                     const char *lease_path)
+{
+  unsigned char original[112], reused[112];
+  int fd, rejected, restored;
+
+  if (read_exact_file(stage_verifier_v2_path, original,
+                      sizeof(original)) != 0 ||
+      read_exact_file(lease_verifier_v2_path, reused,
+                      sizeof(reused)) != 0)
+    return -1;
+  fd = open(stage_verifier_v2_path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0)
+    return -1;
+  if (pwrite(fd, reused, sizeof(reused), 0) != (ssize_t)sizeof(reused)) {
+    close(fd);
+    return -1;
+  }
+  rejected = owner("inspect-stage-v2", clone_fd, cgroup_fd,
+                   lease_path, ack_v2_path, NULL) != 0;
+  restored = pwrite(fd, original, sizeof(original), 0) ==
+             (ssize_t)sizeof(original);
+  close(fd);
+  return rejected && restored ? 0 : -1;
+}
+
+static int reject_signed_v2_mismatch(int clone_fd, int cgroup_fd,
+                                     const char *lease_path, size_t offset)
+{
+  unsigned char original[600], changed[600], seed[32];
+  unsigned char message[sizeof(ack_v2_domain) + 536];
+  size_t signature_size = 64;
+  EVP_PKEY *key = NULL;
+  EVP_MD_CTX *context = NULL;
+  int fd = -1, result = -1;
+
+  if (offset >= 536 ||
+      read_exact_file(ack_v2_path, original, sizeof(original)) != 0)
+    return -1;
+  memcpy(changed, original, sizeof(changed));
+  changed[offset] ^= 1;
+  memset(seed, 0x44, sizeof(seed));
+  key = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL,
+                                      seed, sizeof(seed));
+  context = EVP_MD_CTX_new();
+  if (key == NULL || context == NULL ||
+      EVP_DigestSignInit(context, NULL, NULL, NULL, key) != 1)
+    goto out;
+  memcpy(message, ack_v2_domain, sizeof(ack_v2_domain));
+  memcpy(message + sizeof(ack_v2_domain), changed, 536);
+  if (EVP_DigestSign(context, changed + 536, &signature_size,
+                     message, sizeof(message)) != 1 || signature_size != 64)
+    goto out;
+
+  fd = open(ack_v2_path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0 || pwrite(fd, changed, sizeof(changed), 0) !=
+                    (ssize_t)sizeof(changed))
+    goto out;
+  int rejected = owner("inspect-stage-v2", clone_fd, cgroup_fd,
+                       lease_path, ack_v2_path, NULL) != 0;
+  if (pwrite(fd, original, sizeof(original), 0) !=
+      (ssize_t)sizeof(original))
+    goto out;
+  result = rejected ? 0 : -1;
+
+out:
+  if (fd >= 0)
+    close(fd);
   EVP_MD_CTX_free(context);
   EVP_PKEY_free(key);
   return result;
@@ -1088,6 +1232,24 @@ int main(int argc, char **argv)
     fprintf(stderr, "kernel-export-owner-probe: map report digest differs\n");
     return 1;
   }
+  if (make_stage_ack_v2() != 0 ||
+      owner("inspect-stage-v2", clone_fd, allowed_fd,
+            lease, ack_v2_path, NULL) != 0 ||
+      owner("inspect-stage-v2", wrong_clone, allowed_fd,
+            lease, ack_v2_path, NULL) == 0 ||
+      owner("inspect-stage-v2", clone_fd, outside_fd,
+            lease, ack_v2_path, NULL) == 0 ||
+      owner("inspect-stage-v2", clone_fd, allowed_fd,
+            lease, ack, NULL) == 0 ||
+      reject_reused_v2_verifier(clone_fd, allowed_fd, lease) != 0 ||
+      reject_signed_v2_mismatch(clone_fd, allowed_fd, lease, 392) != 0 ||
+      reject_signed_v2_mismatch(clone_fd, allowed_fd, lease, 416) != 0 ||
+      reject_signed_v2_mismatch(clone_fd, allowed_fd, lease, 424) != 0 ||
+      owner("inspect", clone_fd, allowed_fd,
+            NULL, NULL, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: read-only V2 stage check failed\n");
+    return 1;
+  }
   if (owner("inspect-record", clone_fd, allowed_fd,
             NULL, NULL, NULL) == 0 ||
       reject_tampered_ack(clone_fd, allowed_fd, lease, ack) != 0 ||
@@ -1136,8 +1298,10 @@ int main(int argc, char **argv)
             strerror(errno));
     return 1;
   }
-  if (prepared_report(clone_fd, allowed_fd, rejected_report) == 0) {
-    fprintf(stderr, "kernel-export-owner-probe: ACTIVE map reported PREPARED\n");
+  if (prepared_report(clone_fd, allowed_fd, rejected_report) == 0 ||
+      owner("inspect-stage-v2", clone_fd, allowed_fd,
+            lease, ack_v2_path, NULL) == 0) {
+    fprintf(stderr, "kernel-export-owner-probe: ACTIVE map admitted PREPARED readback\n");
     return 1;
   }
 

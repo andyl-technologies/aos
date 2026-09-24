@@ -8785,6 +8785,35 @@ signers, durable pre-send attempt and escaped-FD recovery, and an enforcing
 owner stage/revoke path remain required before any Stage, ACTIVE, FD release,
 or LocalLive path.
 
+The closed Rust peer can now join a signed `AOSKGA02` PREPARED claim to its
+earlier `AOSKGC03` physical three-FD observation. It checks the exact request,
+signed lease, current boot, origin and clone mount identities, root device and
+inode, consumer cgroup, caller-supplied owner epoch and PREPARED map digest,
+and lease/handoff expiry under the current clock. The C owner has a separate
+root-only, read-only `report-prepared` command. After two matching protected
+map/FD readbacks and absent-grant checks, it emits an unsigned 152-byte `AOSKPR01`
+record containing the canonical PREPARED map tuple and its `CLOCK_BOOTTIME`
+sample. Rust rejects a noncanonical record, a wrong identity or time, and any
+sample more than one second old. It computes the same domain-separated
+PREPARED map digest.
+Those bytes have no authenticated carrier into the capability-empty deployed
+peer, and a timestamp does not hold the map or Storage authority current.
+
+The C owner's existing 576-byte `AOSKGA01` path still uses one test verifier
+for both the lease and stage signature, and its fixed `AOSKLR01` record and
+activation path remain version 1. Rust's 600-byte `AOSKGA02` requires distinct
+lease and stage signer identities and keys. A separate root-only
+`inspect-stage-v2` test command now pins two independent public verifier files
+and checks an exact signed V2 acknowledgment against the current PREPARED map
+without recording a lease or changing a map. It does not physically observe
+the mutable origin, provision either production signer, or connect the C
+report to the Rust peer. The new C owner and probe packages build, the owner
+object validates, and all 21 Rust peer tests pass; the modified VM probe's
+runtime assertions have not run because that VM closure requires 103 uncached
+derivations. Production Stage, ACTIVE, descriptor release, Apply, and LocalLive
+remain closed pending a protected report transport, held cross-owner
+currentness and recovery, and complete origin and holder evidence.
+
 ### Protected Cache journal-only root view
 
 The three protected Cache journals now open from
