@@ -29,7 +29,7 @@ use aos_sandbox_core::{NodeId, PrincipalId, ProjectId, PublisherInstanceId, Reso
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::pidfd::PidFd;
-use aos_sandbox_linux::seqpacket::RecordSubjectListener;
+use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_systemd::SystemdClient;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, open};
@@ -70,6 +70,10 @@ pub(super) struct PublisherServiceScopeV1 {
 }
 
 impl PublisherServiceScopeV1 {
+    pub(super) const fn session_scope(self) -> PublisherSessionScope {
+        self.scope
+    }
+
     pub(super) fn from_process_credential(node: NodeId) -> Result<Self, PublisherIngressError> {
         let directory =
             std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(PublisherIngressError::Scope)?;
@@ -98,7 +102,7 @@ impl PublisherServiceScopeV1 {
         file.read_exact(&mut bytes)
             .map_err(|_| PublisherIngressError::Scope)?;
         if file
-            .read(&mut [0])
+            .read(&mut [0_u8; 1])
             .map_err(|_| PublisherIngressError::Scope)?
             != 0
         {
@@ -251,6 +255,10 @@ pub(super) struct PublisherRegistrationOwnerV1 {
 }
 
 impl PublisherRegistrationOwnerV1 {
+    pub(super) const fn service_scope(&self) -> PublisherSessionScope {
+        self.scope.session_scope()
+    }
+
     pub(super) fn new(
         listener: RecordSubjectListener,
         scope: PublisherServiceScopeV1,
@@ -276,14 +284,14 @@ impl PublisherRegistrationOwnerV1 {
         self.instance.is_none()
     }
 
-    /// Registers one queued exact service execution; never grants publication.
+    /// Registers one service execution or one queued challenge; neither grants publication.
     pub(super) fn try_register(
         &mut self,
         controller: &mut ProductionController,
     ) -> Result<(), String> {
         if let Some(instance) = self.instance {
             if self.sessions.recheck_registered(instance).is_ok() {
-                return Ok(());
+                return self.try_register_challenge(controller, instance);
             }
             self.sessions
                 .retire(instance)
@@ -316,17 +324,11 @@ impl PublisherRegistrationOwnerV1 {
             Ok(service) => service,
             Err(_) => return Ok(()),
         };
-        let policy = PublisherControlPolicy {
-            clock_provenance: CLOCK_PROVENANCE,
-            maximum_challenge_seconds: 60,
-            policy_limits: PublisherPolicyLimits::default(),
-            ingress_limits: PublisherIngressLimits::default(),
-        };
         let result = controller.register_publisher_execution(
             &mut self.sessions,
             &mut self.listener,
             service,
-            policy,
+            control_policy(),
             &mut || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError),
         );
         match result {
@@ -346,6 +348,49 @@ impl PublisherRegistrationOwnerV1 {
                 Ok(())
             }
         }
+    }
+
+    fn try_register_challenge(
+        &mut self,
+        controller: &mut ProductionController,
+        instance: PublisherInstanceId,
+    ) -> Result<(), String> {
+        let result = controller.register_publisher_challenge(
+            &mut self.sessions,
+            instance,
+            control_policy(),
+            &mut || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError),
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(PublisherControlError::Session(
+                aos_sandbox::publisher_sessions::PublisherSessionError::Transport(
+                    SeqpacketError::WouldBlock | SeqpacketError::Interrupted,
+                ),
+            )) => Ok(()),
+            Err(PublisherControlError::Journal(error)) => {
+                Err(format!("publisher challenge journal failed: {error}"))
+            }
+            Err(PublisherControlError::Ingress(
+                aos_sandbox::publisher_ingress::PublisherIngressError::Journal(error),
+            )) => Err(format!("publisher challenge audit failed: {error}")),
+            Err(PublisherControlError::Policy(error)) => {
+                Err(format!("publisher challenge policy state failed: {error}"))
+            }
+            Err(error) => {
+                eprintln!("aos-sandboxd: publisher challenge rejected: {error}");
+                Ok(())
+            }
+        }
+    }
+}
+
+fn control_policy() -> PublisherControlPolicy {
+    PublisherControlPolicy {
+        clock_provenance: CLOCK_PROVENANCE,
+        maximum_challenge_seconds: 60,
+        policy_limits: PublisherPolicyLimits::default(),
+        ingress_limits: PublisherIngressLimits::default(),
     }
 }
 

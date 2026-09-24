@@ -5072,7 +5072,7 @@ where
     /// expired or changed challenges, exhausted audit limits, and storage failure.
     /// Post-commit failure can leave an inert pending record without a receipt.
     #[cfg(target_os = "linux")]
-    pub(crate) fn register_publisher_challenge<T>(
+    pub fn register_publisher_challenge<T>(
         &mut self,
         sessions: &mut crate::publisher_sessions::PublisherSessionRegistry,
         instance: aos_sandbox_core::PublisherInstanceId,

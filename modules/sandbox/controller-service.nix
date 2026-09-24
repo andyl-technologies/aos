@@ -106,6 +106,11 @@
   );
   publisherScopeCredential = lib.optional cfg.publisherIngress.enable
     "publisher-service-scope-v1:/run/credentials/@system/${cfg.credentials.publisherServiceScope}";
+  publisherPolicySourceCredentials = lib.optionals cfg.publisherIngress.enable [
+    "publisher-policy-source-v1:/run/credentials/@system/${cfg.credentials.publisherPolicySource}"
+    "publisher-policy-v1.cbor:/run/credentials/@system/${cfg.credentials.publisherPolicy}"
+    "publisher-policy-source-public-key-v1:/run/credentials/@system/${cfg.credentials.publisherPolicySourcePublicKey}"
+  ];
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
@@ -165,6 +170,21 @@ in {
           default = null;
           description = "External 64-byte AOSPMS01 scope: principal, project, cache resource, publisher UID/GID; never derived from socket credentials.";
         };
+        publisherPolicySource = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External 272-byte signed AOSPSC01 initial publisher-policy source, bound to the publisher principal, node, project, and cache resource.";
+        };
+        publisherPolicy = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Exact canonical publisher policy CBOR committed by the signed AOSPSC01 source.";
+        };
+        publisherPolicySourcePublicKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Dedicated 32-byte Ed25519 verifier for the publisher-policy source.";
+        };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
       // lib.mapAttrs (_: name:
@@ -186,6 +206,14 @@ in {
         {
           assertion = !cfg.publisherIngress.enable || cfg.credentials.publisherServiceScope != null;
           message = "publisher ingress requires an externally provisioned publisherServiceScope credential";
+        }
+        {
+          assertion =
+            !cfg.publisherIngress.enable
+            || (cfg.credentials.publisherPolicySource != null
+              && cfg.credentials.publisherPolicy != null
+              && cfg.credentials.publisherPolicySourcePublicKey != null);
+          message = "publisher ingress requires signed publisher policy source, canonical policy, and dedicated verification key credentials";
         }
         {
           assertion = !cfg.publisherIngress.enable || (cfg.publisherIngress.uid > 0 && cfg.publisherIngress.uid < 65536 && cfg.publisherIngress.gid > 0 && cfg.publisherIngress.gid < 65536);
@@ -346,7 +374,8 @@ in {
           ++ ownershipCredentials
           ++ brokerSessionConfiguration.loadCredentials
           ++ publicCredentials
-          ++ publisherScopeCredential;
+          ++ publisherScopeCredential
+          ++ publisherPolicySourceCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

@@ -128,6 +128,7 @@ mod public_hierarchy;
 mod public_services;
 mod public_watch;
 mod publisher_ingress;
+mod publisher_policy_source;
 mod storage_snapshot;
 mod view_mutations;
 
@@ -359,13 +360,20 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 None
             }
         };
-    let controller = open_controller(
+    let mut controller = open_controller(
         &configuration,
         node_id,
         Arc::clone(&sessions),
         attachment_host,
         attachment_mount,
     )?;
+    if let Some(scope) = publisher_registration
+        .as_ref()
+        .map(|owner| owner.service_scope())
+    {
+        publisher_policy_source::install_from_process_credentials(&mut controller, scope)
+            .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    }
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
         Some(runtime.block_on(public_api::bind(configuration.uid))?)

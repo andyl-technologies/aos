@@ -293,6 +293,15 @@ fn transaction_id(registration: &PublisherChallengeRegistrationV1) -> [u8; 16] {
 }
 
 fn retires_session(error: &PublisherControlError) -> bool {
+    if matches!(
+        error,
+        PublisherControlError::Session(PublisherSessionError::Transport(
+            aos_sandbox_linux::seqpacket::SeqpacketError::WouldBlock
+                | aos_sandbox_linux::seqpacket::SeqpacketError::Interrupted
+        ))
+    ) {
+        return false;
+    }
     matches!(
         error,
         PublisherControlError::Request(_)
@@ -306,4 +315,20 @@ fn retires_session(error: &PublisherControlError) -> bool {
             )
             | PublisherControlError::Policy(PublisherPolicyError::Journal(_))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aos_sandbox_linux::seqpacket::SeqpacketError;
+
+    #[test]
+    fn empty_nonblocking_receive_preserves_registered_publisher() {
+        for temporary in [SeqpacketError::WouldBlock, SeqpacketError::Interrupted] {
+            let error = PublisherControlError::Session(PublisherSessionError::Transport(temporary));
+            assert!(!retires_session(&error));
+        }
+        let fatal = PublisherControlError::Session(PublisherSessionError::Retired);
+        assert!(retires_session(&fatal));
+    }
 }
