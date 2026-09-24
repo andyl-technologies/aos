@@ -67,6 +67,8 @@ pub enum CampaignGateTargetKind {
         producer_gate: &'static str,
         /// Repository-relative Nix source that authenticates producer evidence.
         aggregate_nix_source: &'static str,
+        /// Aggregate parameter that carries the producer's native evidence.
+        evidence_input: &'static str,
         /// Exact evidence lines required from the producer result.
         evidence: &'static [&'static str],
         /// Whether the producer flight must opt into intentionally ignored tests.
@@ -540,6 +542,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                 producer_nix_attr: "checks.crucible.phase7.gates.worldForkAtomicity",
                 producer_gate: "gate:world-fork-atomicity",
                 aggregate_nix_source: "tests/crucible/phase7-crucible-hot-fork-isolation.nix",
+                evidence_input: "nativeIsolation",
                 evidence: &[
                     "native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation",
                     "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
@@ -563,6 +566,31 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         }],
         "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+    ),
+    automated(
+        "gate:host-clone-cost",
+        "crucible-daemon",
+        &[CampaignGateTarget {
+            package: "crucible-daemon",
+            kind: CampaignGateTargetKind::LibExactAggregate {
+                selectors: HOT_FORK_SCALING_SELECTORS,
+                producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                producer_nix_attr: "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+                producer_gate: "gate:hot-fork-scaling",
+                aggregate_nix_source: "tests/crucible/phase7-crucible-host-clone-cost.nix",
+                evidence_input: "nativeScaling",
+                evidence: &[
+                    "host_continuation_siblings=64",
+                    "host_shared_backing_copies=1",
+                    "fault_checkpoint_siblings=64",
+                    "qemu_authentication_map_copies=1",
+                    "child_private_ledgers=network-adapter,pending-qemu-events",
+                    "qemu_child_pairing=exact_source_boundary",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase7.gates.hostCloneCost.rawGate",
     ),
     automated(
         "gate:lazy-frontier",
