@@ -652,6 +652,7 @@ pub fn plan_fixture() -> PlanFixture {
             ),
             guarantees: Vec::new(),
         }],
+        artifacts: Vec::new(),
         resources: vec![resource_revision.clone()],
         controllers: Vec::new(),
         guarantees: Vec::new(),

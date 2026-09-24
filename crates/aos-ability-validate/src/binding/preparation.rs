@@ -171,6 +171,7 @@ pub(crate) fn prepare_binding_candidates(
             context,
             &input_index.in_scope_instances,
             &input_index.request_authorities,
+            &input_index.provider_authors,
             &mut diagnostics,
         );
     }

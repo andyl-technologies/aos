@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_ability_model::document::ProviderState;
 use aos_ability_model::identity::{compare_instance_ids, compare_request_ids};
 use aos_ability_model::{
-    AccessMode, AuthorityGrant, Binding, BindingPlanDocument, BindingSource, Diagnostic,
-    DiagnosticClass, DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey,
-    PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, ProviderImplementation, RequestId,
+    AccessMode, AggregateId, AuthorityGrant, Binding, BindingPlanDocument, BindingSource,
+    Diagnostic, DiagnosticClass, DiagnosticCode, DiagnosticPhase, InstanceId, InterfaceKey,
+    LocalKey, PROVIDER_STATE_FORMAT_V1, PackageDocument, PlanId, ProviderImplementation, RequestId,
     RequirementDeclaration, RequirementStrength, ResourceReference, ValueExpression,
     VersionedDocument, compare_resource_ids,
 };
@@ -50,6 +50,7 @@ struct BindingInputIndex {
     enabled_desired_by_instance: BTreeMap<InstanceId, Vec<usize>>,
     in_scope_instances: BTreeSet<InstanceId>,
     request_authorities: BTreeMap<InstanceId, aos_ability_model::DeclarationAuthority>,
+    provider_authors: BTreeMap<InstanceId, BTreeSet<LocalKey>>,
     requests: BTreeMap<RequestId, usize>,
 }
 
@@ -129,6 +130,7 @@ mod tests {
             &provider,
             &caller,
             true,
+            false,
         ));
         assert!(!grant_resource_in_scope(
             &permission(caller_resource, AccessMode::SharedWrite),
@@ -136,12 +138,22 @@ mod tests {
             &provider,
             &caller,
             true,
+            false,
         ));
         assert!(!grant_resource_in_scope(
+            &permission(resource(foreign.clone()), AccessMode::Read),
+            &resources,
+            &provider,
+            &caller,
+            true,
+            false,
+        ));
+        assert!(grant_resource_in_scope(
             &permission(resource(foreign), AccessMode::Read),
             &resources,
             &provider,
             &caller,
+            false,
             true,
         ));
         assert!(grant_resource_in_scope(
@@ -149,6 +161,7 @@ mod tests {
             &resources,
             &provider,
             &caller,
+            false,
             false,
         ));
     }

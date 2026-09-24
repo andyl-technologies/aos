@@ -17,11 +17,12 @@ use aos_ability_model::document::{
     ProviderState,
 };
 use aos_ability_model::{
-    AbilityValue, AggregateId, AggregateOutput, ArtifactReference, AuthorityGrant, Binding,
-    BindingId, BindingPlanDocument, BindingRequest, BindingSource, ContributionPermission,
+    AbilityValue, AccessMode, AggregateId, AggregateOutput, ArtifactReference, AuthorityGrant,
+    Binding, BindingId, BindingPlanDocument, BindingRequest, BindingSource, ContributionPermission,
     ControllerAssignment, DesiredStateDocument, EnvironmentDocument, ExecutionStage, InstanceId,
     InterfaceDocument, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
-    ProviderImplementationReference, RequestId, RevisionId, ValueExpression, VersionedDocument,
+    ProviderImplementationReference, RequestId, ResourceId, ResourcePermission, ResourceReference,
+    RevisionId, ValueExpression, VersionedDocument,
 };
 use aos_ability_plan::{
     SourceStageBinding, SourceStageBundle, SourceStageFixedPoint, SourceStageRequest,
@@ -507,6 +508,16 @@ impl<'a> SourceComposition<'a> {
         environment: aos_ability_model::EnvironmentId,
         platform: PlatformIdentity,
     ) -> Result<EnvironmentDocument> {
+        let mut artifacts_by_content = BTreeMap::new();
+        for artifact in self.catalog.package_outputs.values() {
+            if let Some(existing) = artifacts_by_content.insert(artifact.content, artifact.clone())
+            {
+                ensure!(
+                    existing == *artifact,
+                    "source outputs resolve one content identity to different artifacts"
+                );
+            }
+        }
         let mut providers = self
             .fixed_point
             .bindings
@@ -536,6 +547,7 @@ impl<'a> SourceComposition<'a> {
             platform,
             policy_revision: self.revision,
             providers,
+            artifacts: artifacts_by_content.into_values().collect(),
             resources: Vec::new(),
             controllers: Vec::new(),
             guarantees: Vec::new(),
@@ -715,6 +727,90 @@ impl<'a> SourceComposition<'a> {
             },
             slot: source.slot.clone(),
         };
+        let controlled_resources = self
+            .fixed_point
+            .resolved_resources
+            .values()
+            .filter(|resource| resource.controller.as_deref() == Some(name))
+            .map(|resource| {
+                let operations = request
+                    .methods
+                    .iter()
+                    .filter(|method_name| {
+                        selected
+                            .interface
+                            .interface
+                            .methods
+                            .get(*method_name)
+                            .is_some_and(|method| {
+                                method.target_resource == resource.kind
+                                    && method.semantics.required_target_access
+                                        == AccessMode::ExclusiveWrite
+                            })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                ensure!(
+                    !operations.is_empty(),
+                    "source resource controller has no selected exclusive-write method"
+                );
+                Ok((resource.resource.clone(), operations))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut resource_grants: BTreeMap<ResourceId, (AccessMode, BTreeSet<LocalKey>)> =
+            BTreeMap::new();
+        for (resource, operations) in controlled_resources {
+            resource_grants.insert(
+                resource,
+                (AccessMode::ExclusiveWrite, operations.into_iter().collect()),
+            );
+        }
+        let mut references = Vec::new();
+        collect_resource_references(request.parameters.as_json(), &mut references)?;
+        for reference in references {
+            ensure!(
+                !reference.operations.is_empty(),
+                "source request resource reference names no read operation"
+            );
+            let interface = &self.catalog.interfaces[*self
+                .catalog
+                .interface_by_key
+                .get(&reference.interface)
+                .context("source request references an unavailable interface")?];
+            ensure!(
+                self.fixed_point
+                    .resolved_resources
+                    .values()
+                    .any(|resource| {
+                        resource.resource == reference.resource
+                            && resource.lifetime == reference.lifetime
+                            && reference.operations.iter().all(|operation| {
+                                interface
+                                    .interface
+                                    .methods
+                                    .get(operation)
+                                    .is_some_and(|method| {
+                                        method.target_resource == resource.kind
+                                            && method.semantics.required_target_access
+                                                == AccessMode::Read
+                                    })
+                            })
+                    }),
+                "source request references a resource absent from the completed fixed point"
+            );
+            let grant = resource_grants
+                .entry(reference.resource)
+                .or_insert_with(|| (AccessMode::Read, BTreeSet::new()));
+            grant.1.extend(reference.operations);
+        }
+        let resources = resource_grants
+            .into_iter()
+            .map(|(resource, (access, operations))| ResourcePermission {
+                resource,
+                access,
+                operations: operations.into_iter().collect(),
+            })
+            .collect();
         Ok(Binding {
             id,
             request: request.id.clone(),
@@ -727,7 +823,7 @@ impl<'a> SourceComposition<'a> {
                 principal: request.id.consumer,
                 methods: request.methods,
                 contributions: vec![contribution],
-                resources: Vec::new(),
+                resources,
             },
             provider_grant: AuthorityGrant {
                 principal: selected.provider,
@@ -1037,6 +1133,35 @@ fn contains_typed_reference(value: &serde_json::Value) -> bool {
         }
         _ => false,
     }
+}
+
+fn collect_resource_references(
+    value: &serde_json::Value,
+    references: &mut Vec<ResourceReference>,
+) -> Result<()> {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_resource_references(item, references)?;
+            }
+        }
+        serde_json::Value::Object(fields)
+            if fields.len() == 4
+                && fields.contains_key("interface")
+                && fields.contains_key("resource")
+                && fields.contains_key("operations")
+                && fields.contains_key("lifetime") =>
+        {
+            references.push(serde_json::from_value(value.clone())?);
+        }
+        serde_json::Value::Object(fields) => {
+            for item in fields.values() {
+                collect_resource_references(item, references)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn read_canonical<T>(path: &Path, owner: &str) -> Result<T>
