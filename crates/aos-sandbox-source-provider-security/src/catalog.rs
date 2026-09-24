@@ -16,8 +16,9 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1, SourceProviderKeyTrustStateV1,
-    SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
+    ProviderCatalogManifestV1, SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1,
+    SourceProviderKeyTrustStateV1, SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
+    SourceResourceV1, StorageLiveExportSelectorV1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -83,6 +84,19 @@ pub struct ProtectedCurrentCatalogPublicationV1 {
     pub(crate) journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
     pub(crate) catalog_key: Vec<u8>,
     pub(crate) catalog_record: Vec<u8>,
+}
+
+/// Retains a selected row only while its manifest matches the protected head.
+pub struct ProtectedProviderCatalogSelectionV1<'catalog> {
+    resource: SourceResourceV1,
+    storage_selector: StorageLiveExportSelectorV1,
+    current_catalog: &'catalog ProtectedCurrentCatalogPublicationV1,
+}
+
+impl core::fmt::Debug for ProtectedProviderCatalogSelectionV1<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("ProtectedProviderCatalogSelectionV1([protected selection])")
+    }
 }
 
 struct CatalogPublisherAuthorizationV1<'key> {
@@ -559,6 +573,40 @@ impl ProtectedCurrentCatalogPublicationV1 {
         &self.projection
     }
 
+    /// Selects one manifest row under this exact protected current publication.
+    ///
+    /// The manifest is untrusted input until its canonical digest equals the
+    /// authenticated journal head. A changed journal invalidates the returned
+    /// selection before it can be used for a Provider-signed export plan.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale journal, malformed manifest, forked/downgraded catalog,
+    /// namespace mismatch, or absent logical-binding row.
+    pub fn select_manifest_row<'catalog>(
+        &'catalog self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        canonical_manifest: &[u8],
+        binding_digest: ObjectDigest,
+    ) -> Result<ProtectedProviderCatalogSelectionV1<'catalog>, SourceProviderSecurityError> {
+        if !self.validate_current(journal) {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let manifest = ProviderCatalogManifestV1::from_canonical_bytes(canonical_manifest)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let (generation, digest) = self.projection.catalog_head();
+        let (_, namespace) = self.projection.scope();
+        let (resource, storage_selector) = manifest
+            .select_current(generation, digest, namespace, binding_digest)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+
+        Ok(ProtectedProviderCatalogSelectionV1 {
+            resource,
+            storage_selector,
+            current_catalog: self,
+        })
+    }
+
     pub(crate) fn validate_current(
         &self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
@@ -567,6 +615,20 @@ impl ProtectedCurrentCatalogPublicationV1 {
             .validate_source_provider_authority_snapshot(&self.journal_snapshot)
             .is_ok()
             && journal.get(&self.catalog_key).ok().flatten() == Some(self.catalog_record.as_slice())
+    }
+}
+
+impl ProtectedProviderCatalogSelectionV1<'_> {
+    /// Returns the exact authenticated selected row and Storage export selector.
+    #[must_use]
+    pub const fn selected(&self) -> (&SourceResourceV1, StorageLiveExportSelectorV1) {
+        (&self.resource, self.storage_selector)
+    }
+
+    /// Rechecks that the same protected catalog head remains current.
+    #[must_use]
+    pub fn is_current(&self, journal: &aos_sandbox::ProtectedJournalAuthority<'_>) -> bool {
+        self.current_catalog.validate_current(journal)
     }
 }
 

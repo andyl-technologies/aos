@@ -22,6 +22,12 @@ in {
       default = null;
       description = "External canonical 520-byte signed catalog publication installed as a nonauthorizing locator; protected provider custody and journal must be provisioned separately.";
     };
+
+    credentials.catalogManifest = lib.mkOption {
+      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      default = null;
+      description = "External canonical row manifest whose digest is the signed catalog head; it cannot authorize effects without protected journal and attempt proof.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -29,6 +35,10 @@ in {
       {
         assertion = cfg.credentials.catalogPublication != null;
         message = "aos.sandbox.sourceProvider.credentials.catalogPublication is required";
+      }
+      {
+        assertion = cfg.credentials.catalogManifest != null;
+        message = "aos.sandbox.sourceProvider.credentials.catalogManifest is required";
       }
     ];
 
@@ -64,6 +74,7 @@ in {
         ExecStart = "${cfg.package}/bin/aos-source-providerd";
         LoadCredential = [
           "current-catalog-publication:/run/credentials/@system/${cfg.credentials.catalogPublication}"
+          "current-catalog-manifest:/run/credentials/@system/${cfg.credentials.catalogManifest}"
         ];
         Restart = "on-failure";
         RestartSec = "2s";

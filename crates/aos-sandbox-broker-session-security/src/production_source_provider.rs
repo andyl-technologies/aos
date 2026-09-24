@@ -18,6 +18,7 @@ use aos_sandbox_source_provider::{
     FixedProviderCatalogProgressV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
     FixedProviderOwnerV1, ProviderLedgerError,
 };
+use aos_sandbox_source_provider_protocol::ProviderCatalogManifestV1;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
 
@@ -31,6 +32,7 @@ const LISTENER_PATH: &str = "/run/aos/source-provider/control.sock";
 const STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const CATALOG_PUBLICATION: &str = "current-catalog-publication";
 const CATALOG_PUBLICATION_BYTES: usize = 520;
+const MAXIMUM_CATALOG_MANIFEST_BYTES: usize = 54 + 64 * 232;
 
 /// Reports failure before a SourceProvider owner becomes authenticated.
 #[derive(Debug, thiserror::Error)]
@@ -61,10 +63,10 @@ pub enum ProductionSourceProviderIngressErrorV1 {
 /// Deployment supplies one systemd listener named `aos-source-provider` at
 /// `/run/aos/source-provider/control.sock` and a root-owned, mode-0700 state
 /// directory at `/var/lib/aos/source-provider`. The 520-byte
-/// `current-catalog-publication` file there must be root-owned, mode-0600,
-/// regular, and singly linked. Its producer must publish the canonical signed
-/// catalog matching the protected provider journal; the pathname alone does
-/// not authorize a session.
+/// `current-catalog-publication` file and content-addressed row manifest there
+/// must be root-owned, mode-0600, regular, and singly linked. The signed
+/// publication must match the protected provider journal; pathnames alone do
+/// not authorize a session or selected resource.
 #[must_use = "retain the fixed listener while admitting provider sessions"]
 pub struct ProductionSourceProviderIngressV1 {
     listener: RecordSubjectListener,
@@ -185,6 +187,39 @@ impl ProductionSourceProviderIngressV1 {
             .map_err(Into::into)
     }
 
+    /// Reads the content-addressed row manifest under the protected fixed root.
+    ///
+    /// The returned bytes are nonauthorizing. The fixed owner must compare the
+    /// canonical digest and row against its signed publication and journal
+    /// snapshot before constructing any Provider-to-Storage plan.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing, replaced, public, malformed, or forked manifest.
+    pub fn read_current_catalog_manifest(
+        &self,
+    ) -> Result<(Vec<u8>, Vec<u8>), ProductionSourceProviderIngressErrorV1> {
+        self.listener.validate_current()?;
+        let publication = read_protected_catalog_publication()?;
+        let digest =
+            aos_sandbox_core::ObjectDigest::from_bytes(publication[112..144].try_into().map_err(
+                |_| ProductionSourceProviderIngressErrorV1::Catalog("publication digest"),
+            )?);
+        let name = crate::production_source_provider_catalog::manifest_filename(digest);
+        let manifest_bytes = read_protected_catalog_file(&name, MAXIMUM_CATALOG_MANIFEST_BYTES)?;
+        let manifest = ProviderCatalogManifestV1::from_canonical_bytes(&manifest_bytes)
+            .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("manifest format"))?;
+        if manifest.digest() != digest
+            || publication[72..104] != *manifest.namespace_digest().as_bytes()
+            || publication[104..112] != manifest.generation().to_be_bytes()
+        {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog(
+                "manifest does not match publication",
+            ));
+        }
+        Ok((publication, manifest_bytes))
+    }
+
     fn from_owned_listener(
         descriptor: OwnedFd,
     ) -> Result<Self, ProductionSourceProviderIngressErrorV1> {
@@ -261,6 +296,19 @@ impl CatalogMetadata {
 }
 
 fn read_protected_catalog_publication() -> Result<Vec<u8>, ProductionSourceProviderIngressErrorV1> {
+    let bytes = read_protected_catalog_file(CATALOG_PUBLICATION, CATALOG_PUBLICATION_BYTES)?;
+    if bytes.len() != CATALOG_PUBLICATION_BYTES {
+        return Err(ProductionSourceProviderIngressErrorV1::Catalog(
+            "publication length",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_protected_catalog_file(
+    name: &str,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, ProductionSourceProviderIngressErrorV1> {
     let filesystem_root = open(
         "/",
         OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -294,21 +342,23 @@ fn read_protected_catalog_publication() -> Result<Vec<u8>, ProductionSourceProvi
 
     let descriptor = openat(
         directory.as_fd(),
-        CATALOG_PUBLICATION,
+        name,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
     )
     .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication file"))?;
     let before = fstat(&descriptor)
         .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication metadata"))?;
-    if !valid_catalog_metadata(CatalogMetadata::capture(&before)) {
+    if !valid_catalog_metadata(CatalogMetadata::capture(&before), maximum_bytes) {
         return Err(ProductionSourceProviderIngressErrorV1::Catalog(
             "publication is not protected",
         ));
     }
 
     let mut file = File::from(descriptor);
-    let mut bytes = vec![0; CATALOG_PUBLICATION_BYTES];
+    let byte_count = usize::try_from(before.st_size)
+        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("catalog file length"))?;
+    let mut bytes = vec![0; byte_count];
     file.read_exact(&mut bytes)
         .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication bytes"))?;
     let mut trailing = [0];
@@ -331,12 +381,13 @@ fn read_protected_catalog_publication() -> Result<Vec<u8>, ProductionSourceProvi
     Ok(bytes)
 }
 
-fn valid_catalog_metadata(metadata: CatalogMetadata) -> bool {
+fn valid_catalog_metadata(metadata: CatalogMetadata, maximum_bytes: usize) -> bool {
     FileType::from_raw_mode(metadata.mode) == FileType::RegularFile
         && metadata.uid == 0
         && metadata.links == 1
         && metadata.mode & 0o7777 == 0o600
-        && metadata.size == CATALOG_PUBLICATION_BYTES as i64
+        && metadata.size > 0
+        && metadata.size <= maximum_bytes as i64
 }
 
 #[cfg(test)]
@@ -380,26 +431,41 @@ mod tests {
             changed_seconds: 0,
             changed_nanoseconds: 0,
         };
-        assert!(valid_catalog_metadata(protected));
-        assert!(!valid_catalog_metadata(CatalogMetadata {
-            uid: 1000,
-            ..protected
-        }));
-        assert!(!valid_catalog_metadata(CatalogMetadata {
-            links: 2,
-            ..protected
-        }));
-        assert!(!valid_catalog_metadata(CatalogMetadata {
-            mode: 0o100644,
-            ..protected
-        }));
-        assert!(!valid_catalog_metadata(CatalogMetadata {
-            mode: 0o120600,
-            ..protected
-        }));
-        assert!(!valid_catalog_metadata(CatalogMetadata {
-            size: CATALOG_PUBLICATION_BYTES as i64 + 1,
-            ..protected
-        }));
+        assert!(valid_catalog_metadata(protected, CATALOG_PUBLICATION_BYTES));
+        assert!(!valid_catalog_metadata(
+            CatalogMetadata {
+                uid: 1000,
+                ..protected
+            },
+            CATALOG_PUBLICATION_BYTES
+        ));
+        assert!(!valid_catalog_metadata(
+            CatalogMetadata {
+                links: 2,
+                ..protected
+            },
+            CATALOG_PUBLICATION_BYTES
+        ));
+        assert!(!valid_catalog_metadata(
+            CatalogMetadata {
+                mode: 0o100644,
+                ..protected
+            },
+            CATALOG_PUBLICATION_BYTES
+        ));
+        assert!(!valid_catalog_metadata(
+            CatalogMetadata {
+                mode: 0o120600,
+                ..protected
+            },
+            CATALOG_PUBLICATION_BYTES
+        ));
+        assert!(!valid_catalog_metadata(
+            CatalogMetadata {
+                size: CATALOG_PUBLICATION_BYTES as i64 + 1,
+                ..protected
+            },
+            CATALOG_PUBLICATION_BYTES
+        ));
     }
 }

@@ -1,9 +1,10 @@
-//! Atomic installation of the nonauthorizing SourceProvider catalog locator.
+//! Fail-closed installation of the nonauthorizing SourceProvider catalog pair.
 //!
-//! PID 1 supplies the canonical signed publication as a named credential. This
-//! module preserves its exact bytes under a private root-owned state directory;
-//! only the fixed provider owner can authenticate them against protected trust
-//! and the journal after a RootMount handshake.
+//! PID 1 supplies the canonical signed publication and matching row manifest
+//! as separate named credentials. The content-addressed manifest is synced
+//! first, then the publication locator is atomically replaced. A crash between
+//! them can only leave an unusable pair; the fixed owner still authenticates
+//! the signature and exact protected journal head after RootMount handshake.
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -12,6 +13,7 @@ use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
+use aos_sandbox_source_provider_protocol::ProviderCatalogManifestV1;
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, Stat, fchmod, fstat, fsync, open, openat, renameat, unlinkat,
 };
@@ -19,7 +21,9 @@ use rustix::rand::{GetRandomFlags, getrandom};
 
 const STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const CREDENTIAL_NAME: &str = "current-catalog-publication";
+const MANIFEST_CREDENTIAL_NAME: &str = "current-catalog-manifest";
 const PUBLICATION_BYTES: usize = 520;
+const MAXIMUM_MANIFEST_BYTES: usize = 54 + 64 * 232;
 
 /// Reports rejection while installing the nonauthorizing catalog locator.
 #[derive(Debug, thiserror::Error)]
@@ -38,12 +42,13 @@ pub enum ProductionSourceProviderCatalogInstallErrorV1 {
     Publication(&'static str),
 }
 
-/// Atomically installs the exact systemd catalog credential at the fixed path.
+/// Installs a matching manifest before atomically replacing the publication.
 ///
 /// The installer accepts only a root-owned, singly linked, private regular
-/// 520-byte credential and a root-owned, mode-0700 state directory. This is
-/// storage hygiene, not a signature or currentness decision: the fixed owner
-/// still verifies both before admitting any provider operation.
+/// 520-byte publication, bounded canonical manifest, and a root-owned,
+/// mode-0700 state directory. This is storage hygiene, not a signature or
+/// currentness decision: the fixed owner still verifies the publication and
+/// journal before selecting any resource row.
 ///
 /// # Errors
 ///
@@ -56,12 +61,44 @@ pub fn install_fixed_source_provider_catalog_credential()
         return Err(ProductionSourceProviderCatalogInstallErrorV1::Identity);
     }
 
-    let publication = read_systemd_credential()?;
+    let publication = read_systemd_credential(CREDENTIAL_NAME, PUBLICATION_BYTES)?;
+    let manifest_bytes = read_systemd_credential(MANIFEST_CREDENTIAL_NAME, MAXIMUM_MANIFEST_BYTES)?;
+    let manifest =
+        ProviderCatalogManifestV1::from_canonical_bytes(&manifest_bytes).map_err(|_| {
+            ProductionSourceProviderCatalogInstallErrorV1::Credential("manifest is noncanonical")
+        })?;
+    if !publication_matches_manifest(&publication, &manifest) {
+        return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential(
+            "manifest does not match publication head",
+        ));
+    }
     let state = open_private_state_directory()?;
-    install_in_directory(state.as_fd(), &publication, 0)
+    let manifest_name = manifest_filename(manifest.digest());
+    install_in_directory(state.as_fd(), &manifest_name, &manifest_bytes, 0)?;
+    install_in_directory(state.as_fd(), CREDENTIAL_NAME, &publication, 0)
 }
 
-fn read_systemd_credential() -> Result<Vec<u8>, ProductionSourceProviderCatalogInstallErrorV1> {
+fn publication_matches_manifest(publication: &[u8], manifest: &ProviderCatalogManifestV1) -> bool {
+    publication.len() == PUBLICATION_BYTES
+        && publication[0..8] == *b"AOSPCP01"
+        && publication[72..104] == *manifest.namespace_digest().as_bytes()
+        && publication[104..112] == manifest.generation().to_be_bytes()
+        && publication[112..144] == *manifest.digest().as_bytes()
+}
+
+pub(crate) fn manifest_filename(digest: aos_sandbox_core::ObjectDigest) -> String {
+    let mut filename = String::from("catalog-manifest-");
+    for octet in digest.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut filename, "{octet:02x}");
+    }
+    filename
+}
+
+fn read_systemd_credential(
+    name: &str,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, ProductionSourceProviderCatalogInstallErrorV1> {
     let directory = std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(
         ProductionSourceProviderCatalogInstallErrorV1::Credential("directory is absent"),
     )?;
@@ -91,7 +128,7 @@ fn read_systemd_credential() -> Result<Vec<u8>, ProductionSourceProviderCatalogI
 
     let descriptor = openat(
         &directory_fd,
-        CREDENTIAL_NAME,
+        name,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -99,14 +136,17 @@ fn read_systemd_credential() -> Result<Vec<u8>, ProductionSourceProviderCatalogI
     let before = fstat(&descriptor).map_err(|_| {
         ProductionSourceProviderCatalogInstallErrorV1::Credential("publication metadata")
     })?;
-    if !valid_credential(&before) {
+    if !valid_credential(&before, maximum_bytes) {
         return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential(
             "publication protection",
         ));
     }
 
     let mut file = File::from(descriptor);
-    let mut bytes = vec![0; PUBLICATION_BYTES];
+    let byte_count = usize::try_from(before.st_size).map_err(|_| {
+        ProductionSourceProviderCatalogInstallErrorV1::Credential("publication length")
+    })?;
+    let mut bytes = vec![0; byte_count];
     file.read_exact(&mut bytes).map_err(|_| {
         ProductionSourceProviderCatalogInstallErrorV1::Credential("publication bytes")
     })?;
@@ -128,11 +168,12 @@ fn read_systemd_credential() -> Result<Vec<u8>, ProductionSourceProviderCatalogI
     Ok(bytes)
 }
 
-fn valid_credential(stat: &Stat) -> bool {
+fn valid_credential(stat: &Stat, maximum_bytes: usize) -> bool {
     FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
         && stat.st_uid == 0
         && stat.st_nlink == 1
-        && stat.st_size == PUBLICATION_BYTES as i64
+        && stat.st_size > 0
+        && stat.st_size <= maximum_bytes as i64
         && matches!(stat.st_mode & 0o7777, 0o400 | 0o600)
 }
 
@@ -207,17 +248,18 @@ fn valid_state_directory(stat: &Stat) -> bool {
 
 fn install_in_directory(
     directory: std::os::fd::BorrowedFd<'_>,
+    name: &str,
     bytes: &[u8],
     expected_uid: u32,
 ) -> Result<(), ProductionSourceProviderCatalogInstallErrorV1> {
-    if bytes.len() != PUBLICATION_BYTES {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_MANIFEST_BYTES {
         return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential(
             "publication length",
         ));
     }
     match openat(
         directory,
-        CREDENTIAL_NAME,
+        name,
         OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     ) {
@@ -255,7 +297,7 @@ fn install_in_directory(
         }
         filled += count;
     }
-    let mut temporary_name = String::from(".current-catalog-publication-");
+    let mut temporary_name = format!(".{name}-");
     for octet in nonce {
         write!(&mut temporary_name, "{octet:02x}").map_err(|_| {
             ProductionSourceProviderCatalogInstallErrorV1::Publication("nonce format")
@@ -281,7 +323,7 @@ fn install_in_directory(
             || stat.st_uid != expected_uid
             || stat.st_nlink != 1
             || stat.st_mode & 0o7777 != 0o600
-            || stat.st_size != PUBLICATION_BYTES as i64
+            || stat.st_size != bytes.len() as i64
         {
             return Err(ProductionSourceProviderCatalogInstallErrorV1::Publication(
                 "temporary file changed",
@@ -289,13 +331,8 @@ fn install_in_directory(
         }
         file.sync_all()
             .map_err(|_| ProductionSourceProviderCatalogInstallErrorV1::Publication("file sync"))?;
-        renameat(
-            directory,
-            temporary_name.as_str(),
-            directory,
-            CREDENTIAL_NAME,
-        )
-        .map_err(|_| ProductionSourceProviderCatalogInstallErrorV1::Publication("rename"))?;
+        renameat(directory, temporary_name.as_str(), directory, name)
+            .map_err(|_| ProductionSourceProviderCatalogInstallErrorV1::Publication("rename"))?;
         fsync(directory).map_err(|_| {
             ProductionSourceProviderCatalogInstallErrorV1::Publication("directory sync")
         })?;
@@ -310,6 +347,46 @@ fn install_in_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_sandbox_core::ObjectDigest;
+    use aos_sandbox_source_provider_protocol::{ProviderCatalogRowV1, StorageLiveExportSelectorV1};
+
+    fn manifest() -> ProviderCatalogManifestV1 {
+        let selector = StorageLiveExportSelectorV1::new(
+            [1; 16],
+            1,
+            [2; 32],
+            ObjectDigest::from_bytes([3; 32]),
+        )
+        .unwrap();
+        let row = ProviderCatalogRowV1::new(
+            ObjectDigest::from_bytes([4; 32]),
+            [5; 32],
+            1,
+            ObjectDigest::from_bytes([6; 32]),
+            1,
+            ObjectDigest::from_bytes([7; 32]),
+            selector,
+        )
+        .unwrap();
+        ProviderCatalogManifestV1::new(2, ObjectDigest::from_bytes([8; 32]), vec![row]).unwrap()
+    }
+
+    #[test]
+    fn manifest_pair_rejects_downgrade_and_fork_before_installation() {
+        let manifest = manifest();
+        let mut publication = vec![0; PUBLICATION_BYTES];
+        publication[0..8].copy_from_slice(b"AOSPCP01");
+        publication[72..104].copy_from_slice(manifest.namespace_digest().as_bytes());
+        publication[104..112].copy_from_slice(&manifest.generation().to_be_bytes());
+        publication[112..144].copy_from_slice(manifest.digest().as_bytes());
+        assert!(publication_matches_manifest(&publication, &manifest));
+
+        publication[104..112].copy_from_slice(&1_u64.to_be_bytes());
+        assert!(!publication_matches_manifest(&publication, &manifest));
+        publication[104..112].copy_from_slice(&manifest.generation().to_be_bytes());
+        publication[112] ^= 1;
+        assert!(!publication_matches_manifest(&publication, &manifest));
+    }
 
     #[test]
     fn atomic_installer_replaces_exact_private_publication() {
@@ -321,10 +398,20 @@ mod tests {
         )
         .expect("open state directory");
         let uid = rustix::process::geteuid().as_raw();
-        install_in_directory(directory.as_fd(), &[1; PUBLICATION_BYTES], uid)
-            .expect("first publication");
-        install_in_directory(directory.as_fd(), &[2; PUBLICATION_BYTES], uid)
-            .expect("replacement publication");
+        install_in_directory(
+            directory.as_fd(),
+            CREDENTIAL_NAME,
+            &[1; PUBLICATION_BYTES],
+            uid,
+        )
+        .expect("first publication");
+        install_in_directory(
+            directory.as_fd(),
+            CREDENTIAL_NAME,
+            &[2; PUBLICATION_BYTES],
+            uid,
+        )
+        .expect("replacement publication");
 
         let installed = std::fs::read(temporary.path().join(CREDENTIAL_NAME))
             .expect("read installed publication");
@@ -347,10 +434,18 @@ mod tests {
         )
         .expect("open state directory");
         let uid = rustix::process::geteuid().as_raw();
-        assert!(install_in_directory(directory.as_fd(), &[0; PUBLICATION_BYTES - 1], uid).is_err());
+        assert!(install_in_directory(directory.as_fd(), CREDENTIAL_NAME, &[], uid).is_err());
         std::os::unix::fs::symlink("elsewhere", temporary.path().join(CREDENTIAL_NAME))
             .expect("place unsafe existing entry");
-        assert!(install_in_directory(directory.as_fd(), &[0; PUBLICATION_BYTES], uid).is_err());
+        assert!(
+            install_in_directory(
+                directory.as_fd(),
+                CREDENTIAL_NAME,
+                &[0; PUBLICATION_BYTES],
+                uid
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -370,13 +465,29 @@ mod tests {
 
         std::fs::set_permissions(&publication, std::fs::Permissions::from_mode(0o644))
             .expect("public mode");
-        assert!(install_in_directory(directory.as_fd(), &[4; PUBLICATION_BYTES], uid).is_err());
+        assert!(
+            install_in_directory(
+                directory.as_fd(),
+                CREDENTIAL_NAME,
+                &[4; PUBLICATION_BYTES],
+                uid
+            )
+            .is_err()
+        );
 
         std::fs::set_permissions(&publication, std::fs::Permissions::from_mode(0o600))
             .expect("private mode");
         std::fs::hard_link(&publication, temporary.path().join("linked-publication"))
             .expect("existing hard link");
-        assert!(install_in_directory(directory.as_fd(), &[4; PUBLICATION_BYTES], uid).is_err());
+        assert!(
+            install_in_directory(
+                directory.as_fd(),
+                CREDENTIAL_NAME,
+                &[4; PUBLICATION_BYTES],
+                uid
+            )
+            .is_err()
+        );
         assert_eq!(
             std::fs::read(publication).expect("unchanged publication"),
             [3; PUBLICATION_BYTES]

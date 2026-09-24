@@ -35,6 +35,7 @@ mod recovery;
 mod recovery_bridge;
 mod release;
 mod state;
+mod storage_export_selection;
 mod transaction;
 
 pub(crate) use aos_sandbox_source_provider_ledger::ledger;
@@ -92,3 +93,4 @@ pub use recovery::{
 };
 pub use recovery_bridge::ProviderRecoveryContinuationV1;
 pub use state::{ProtectedProviderConfigurationV1, ProviderLedgerV1};
+pub use storage_export_selection::ProviderStorageExportPlanBasisV1;

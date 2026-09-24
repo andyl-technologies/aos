@@ -28,6 +28,7 @@
 
 mod accessors;
 pub mod catalog_currentness;
+pub mod catalog_manifest;
 pub mod codec;
 pub mod crypto;
 pub mod model;
@@ -40,6 +41,10 @@ pub mod verification;
 
 pub use catalog_currentness::{
     CatalogCurrentnessErrorV1, CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1,
+};
+pub use catalog_manifest::{
+    MAXIMUM_PROVIDER_CATALOG_ROWS_V1, ProviderCatalogManifestErrorV1, ProviderCatalogManifestV1,
+    ProviderCatalogRowV1,
 };
 pub use codec::{
     MAXIMUM_FRAME_BYTES, SIGNED_SOURCE_PROVIDER_HELLO_BYTES, SOURCE_PROVIDER_HELLO_FRAME_BYTES,
