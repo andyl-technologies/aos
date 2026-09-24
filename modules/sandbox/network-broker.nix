@@ -31,6 +31,21 @@
     journalMacKey = "journal-mac-key";
     networkPolicyCatalog = "network-policy.catalog";
   };
+  inspectorDeploymentCredentialFields = {
+    inspectorDeploymentVerifierV2 = "inspector-deployment-verifier-v2";
+    inspectorDeploymentContractV2 = "inspector-deployment-contract-v2";
+  };
+  configuredInspectorDeploymentCredentials =
+    lib.filterAttrs (name: _: cfg.credentials.${name} != null) inspectorDeploymentCredentialFields;
+  completeInspectorDeploymentCredentials =
+    builtins.length (builtins.attrNames configuredInspectorDeploymentCredentials)
+    == builtins.length (builtins.attrNames inspectorDeploymentCredentialFields);
+  inspectorDeploymentLoadCredentials =
+    lib.optionals completeInspectorDeploymentCredentials
+    (lib.mapAttrsToList (
+        name: _: "${inspectorDeploymentCredentialFields.${name}}:/run/credentials/@system/${cfg.credentials.${name}}"
+      )
+      inspectorDeploymentCredentialFields);
   configuredAuthorityCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) authorityCredentialFields;
   anyAuthorityCredential = configuredAuthorityCredentials != {};
@@ -83,6 +98,13 @@ in {
           description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       authorityCredentialFields
+      // lib.mapAttrs (name: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External protected Network inspector ${name} credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
+        })
+      inspectorDeploymentCredentialFields
       // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
@@ -100,6 +122,14 @@ in {
         {
           assertion = !anyAuthorityCredential || completeAuthorityCredentials;
           message = "aos.sandbox.networkBroker authority and policy credentials must be configured together";
+        }
+        {
+          assertion = configuredInspectorDeploymentCredentials == {} || completeInspectorDeploymentCredentials;
+          message = "aos.sandbox.networkBroker inspector deployment verifier and signed contract must be configured together";
+        }
+        {
+          assertion = !config.aos.sandbox.networkInspector.enable || completeInspectorDeploymentCredentials;
+          message = "aos.sandbox.networkBroker requires protected inspector deployment credentials when the inspector is enabled";
         }
       ]
       ++ brokerSessionConfiguration.assertions;
@@ -182,7 +212,7 @@ in {
             lib.optional protectedRoots "+${runtimeRootsCommand}"
             ++ brokerSessionConfiguration.installCommands;
           ExecStart = "${cfg.package}/bin/aos-netd ${toString cfg.maximumRetainedNamespaces}";
-          LoadCredential = authorityLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
+          LoadCredential = authorityLoadCredentials ++ inspectorDeploymentLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
           Restart = "on-failure";
           RestartSec = "2s";
           FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;

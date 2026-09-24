@@ -40,6 +40,7 @@ pub mod authorization;
 pub mod broker;
 pub mod catalog;
 mod dormant_broker_session;
+pub mod inspector_deployment;
 pub mod kernel_mutator;
 pub mod kernel_observation;
 pub mod kernel_plan;

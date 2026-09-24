@@ -7426,11 +7426,37 @@ enforcing MAC policy must prove that only the fixed entrypoint reaches the
 inspector domain and that the leader cannot replace its executable before the
 response; PID 1 properties alone do not observe a later `execve`. The same
 protected authority must cover a live lifecycle-worker unit query. The
-current broker unit has no inspector deployment-contract credential, and the
-current contract format lists four inspector/helper/unit artifacts but no
-complete loader/library closure or producer for the external credential.
+inspector's V1 contract format lists four inspector/helper/unit artifacts but
+no complete loader/library closure or producer for the external credential.
 Those signer/provisioning and runtime authorities require an explicit
 deployment design before a positive broker adapter can be reviewed.
+
+A broker-startup V2 precursor now consumes two separately named, protected
+systemd credentials when configured: an `AOSNIK02` role-specific Ed25519
+verifier credential with a nonzero generation, and a signature over canonical,
+bounded JSON inventory. The signed inventory names the exact inspector service
+template/socket unit, V1 contract digest, and root-owned, read-only physical
+broker, inspector, lifecycle-worker, query-helper, interpreter, and library
+files by canonical Nix-store path, mode, size, and SHA-256. The broker opens
+and retains each declared file, rejects changed content/path/inode on
+revalidation, and requires its own running executable to match the broker
+entry. The two external credentials must be supplied together through the
+broker unit's `LoadCredential`; no private key or credential bytes enter the
+Nix store. This is a credential-consumption and declared-file pinning contract,
+not an independently produced complete ELF closure. The signer/provisioner
+must still supply a reviewed `PT_INTERP`/`DT_NEEDED` resolver that emits and
+signs the exhaustive inventory. Until that exists, the V2 signature is only
+an assertion of completeness by the external signer, not proof of it.
+
+The broker does not yet own the required authenticated direct PID 1 query for
+the live inspector or lifecycle worker. No current response path binds a
+fresh `MainPID`, `InvocationID`, `ControlGroupId`, and unit-property readback
+to the broker's retained socket subject and pidfd. Thus V2 startup custody
+does not replace the existing direct READY-time or later namespace-currentness
+checks, the inspector module remains evaluation-blocked, and Network Apply
+remains closed. The next deployable slice must provide a broker-owned direct
+manager stream/helper transaction plus protected exact-unit and executable
+binding, and repeat the worker observation at each relevant boundary.
 
 Deployment must authenticate the physical inspector, broker, worker, helper,
 and every executable loader/library closure (`SBX-P0-09`), then qualify the

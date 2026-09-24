@@ -15,6 +15,9 @@ use aos_sandbox_broker_session_security::{
     production_deadline_after,
 };
 use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_sandbox_network::inspector_deployment::{
+    InspectorDeploymentErrorV2, ProtectedInspectorDeploymentV2,
+};
 use aos_sandbox_network::{
     MAXIMUM_RETAINED_NETWORK_NAMESPACES, NetworkBrokerSessionRuntimeErrorV1,
     NetworkBrokerSessionRuntimeV1, NetworkNamespaceStoreError, NetworkPolicyCatalogV1,
@@ -38,6 +41,8 @@ enum NetworkDaemonErrorV1 {
     Activation(#[from] ProductionBrokerSessionActivationErrorV1),
     #[error("Network policy failed: {0}")]
     Policy(#[from] ProtectedNetworkPolicyErrorV1),
+    #[error("Network inspector deployment failed: {0}")]
+    InspectorDeployment(#[from] InspectorDeploymentErrorV2),
     #[error("Network runtime failed: {0}")]
     Runtime(#[from] NetworkBrokerSessionRuntimeErrorV1),
     #[error("Network descriptor custody failed: {0}")]
@@ -78,6 +83,8 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
     let mut activation = ProductionBrokerSessionActivationV1::adopt_network_listener(listener)?;
     let authority_directory =
         env::var_os("CREDENTIALS_DIRECTORY").ok_or(NetworkDaemonErrorV1::CredentialDirectory)?;
+    let _inspector_deployment =
+        ProtectedInspectorDeploymentV2::load_optional(Path::new(&authority_directory))?;
     let policy = NetworkPolicyCatalogV1::load_protected_publication(
         Path::new(&authority_directory),
         MINIMUM_POLICY_GENERATION,
