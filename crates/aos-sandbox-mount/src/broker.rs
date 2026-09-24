@@ -223,9 +223,14 @@ impl<W: MountWorker> MountBroker<W> {
                 &mut self.journal,
             )?,
         };
+        // A panic also loses move-only custody while unwinding. Mark failure
+        // before calling out, then clear it only after a successful return.
+        self.source_runtime_failed = true;
         let result = operation(&mut owner);
         self.source_runtime = Some(owner.into_runtime());
-        self.source_runtime_failed = result.is_err();
+        if result.is_ok() {
+            self.source_runtime_failed = false;
+        }
         result
     }
 
