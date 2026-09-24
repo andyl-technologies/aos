@@ -102,6 +102,18 @@ pub struct ProviderHeldSnapshotCatalogV1 {
 }
 
 impl ProviderHeldSnapshotCatalogV1 {
+    /// Returns the asserted native catalog generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the asserted Provider resource namespace.
+    #[must_use]
+    pub const fn namespace_digest(&self) -> ObjectDigest {
+        self.namespace_digest
+    }
+
     /// Constructs a nonempty row set ordered by logical binding.
     ///
     /// # Errors

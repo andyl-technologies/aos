@@ -7,9 +7,10 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    ACQUIRE_SOURCE_REQUEST_VERSION_V2, SignedSourceProviderRequestV1,
-    SignedStorageZfsHoldReceiptV1, SourceProviderAuthorityV1, SourceProviderMethod,
-    SourceResourceV1, StorageZfsHoldReceiptV1, ZfsHeldSnapshotProofV1, decode_acquire_request,
+    ACQUIRE_SOURCE_REQUEST_VERSION_V2, ProviderHeldSnapshotCatalogV1,
+    SignedSourceProviderRequestV1, SignedStorageZfsHoldReceiptV1, SourceProviderAuthorityV1,
+    SourceProviderMethod, SourceResourceV1, StorageZfsHoldReceiptV1,
+    StorageZfsHoldTransportRequestV1, ZfsHeldSnapshotProofV1, decode_acquire_request,
     digest_acquire_request, digest_signed_request,
 };
 
@@ -63,6 +64,103 @@ impl ProviderHeldSnapshotCatalogClaimV1 {
 }
 
 impl FixedProviderOwnerV1 {
+    /// Issues one durable native challenge and packages its exact session claim.
+    ///
+    /// The packet is fit for a future authenticated Provider-to-Storage
+    /// connection. It contains only assertions; no Storage hold receipt,
+    /// SourceRoot, or native Acquire authority follows from its construction.
+    /// A changed catalog after issuance consumes the challenge without
+    /// returning a packet, preserving the one-attempt replay fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects failed challenge issuance, changed protected selection, or
+    /// malformed native catalog bytes.
+    pub fn issue_current_zfs_hold_transport_request(
+        &mut self,
+        canonical_catalog_publication: &[u8],
+        canonical_held_snapshot_catalog: &[u8],
+        holder_authority_id: [u8; 16],
+        acquisition_id: ObjectDigest,
+        binding_digest: ObjectDigest,
+    ) -> Result<StorageZfsHoldTransportRequestV1, ProviderLedgerError> {
+        let challenge = self.issue_current_zfs_hold_challenge(
+            canonical_catalog_publication,
+            canonical_held_snapshot_catalog,
+            holder_authority_id,
+            acquisition_id,
+            binding_digest,
+        )?;
+        self.with_ledger_and_hold_challenges(|ledger, challenges| {
+            let journal_snapshot = ledger.journal.snapshot()?;
+            let claim = select_current_held_snapshot_claim(
+                ledger,
+                canonical_catalog_publication,
+                canonical_held_snapshot_catalog,
+                holder_authority_id,
+                binding_digest,
+            )?;
+            let (issued_seconds, valid_until_seconds) = challenge.validity();
+            validate_current_native_attempt(
+                ledger,
+                &claim,
+                acquisition_id,
+                challenge.attempt_digest(),
+                issued_seconds,
+                valid_until_seconds,
+            )?;
+            let reserved = challenges.issued_for(challenge.nonce())?;
+            let current = CurrentZfsHoldChallengeContextV1 {
+                nonce: challenge.nonce(),
+                provider_id: claim.provider.authority_id(),
+                holder_id: holder_authority_id,
+                session_binding: claim.session_binding,
+                attempt_digest: challenge.attempt_digest(),
+                acquisition_id,
+                binding_digest,
+                publication_head: claim.publication_head_commitment,
+                validity: challenge.validity(),
+            };
+            if !reserved.matches_current(current) {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            let catalog = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(
+                canonical_held_snapshot_catalog,
+            )
+            .map_err(|_| ProviderLedgerError::Unavailable)?;
+            let selected = catalog
+                .select_under_head(
+                    claim.resource.catalog_generation(),
+                    claim.resource.catalog_digest(),
+                    claim.resource.resource_namespace_digest(),
+                    binding_digest,
+                )
+                .map_err(|_| ProviderLedgerError::Unavailable)?;
+            if selected != (claim.resource.clone(), claim.snapshot.clone()) {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            ledger
+                .journal
+                .validate_source_provider_authority_snapshot(&journal_snapshot)?;
+
+            StorageZfsHoldTransportRequestV1::new(
+                1,
+                challenge.nonce(),
+                challenge.attempt_digest(),
+                claim.provider.authority_id(),
+                claim.holder_authority_id,
+                claim.session_binding,
+                acquisition_id,
+                binding_digest,
+                claim.publication_head_commitment,
+                issued_seconds,
+                valid_until_seconds,
+                catalog,
+            )
+            .map_err(|_| ProviderLedgerError::Unavailable)
+        })
+    }
+
     /// Durably issues one fresh native hold challenge for a reserved Acquire.
     ///
     /// The challenge is committed beneath the fixed protected Provider state
