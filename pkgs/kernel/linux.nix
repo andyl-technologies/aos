@@ -119,6 +119,10 @@ in
         name = "patch";
         script = ''
           patch -p1 < ${./linux-gawk-array-argument.patch}
+          patch -p1 < ${./patches/0001-aos-no-setid-prctl-uapi.patch}
+          patch -p1 < ${./patches/0002-aos-no-setid-vfs.patch}
+          "$CONFIG_SHELL" ${./check-no-setid-prctl.sh} include/uapi/linux/prctl.h
+          "$CONFIG_SHELL" ${./check-no-setid-source.sh}
         '';
       }
       {
