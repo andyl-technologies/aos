@@ -328,13 +328,7 @@ impl ControllerExecutionIntentV1 {
             )
         })?;
         let specification_digest = execution_spec_digest_v1(specification);
-        if !authorization.matches_create(
-            self.operation_id,
-            self.execution_id,
-            specification_digest,
-            self.source_operation_commitment,
-            &completion.receipt,
-        ) {
+        if authorization.specification_digest != specification_digest {
             return Err(EffectFailure::Permanent(
                 "Host authorization receipt belongs to another Create intent".to_owned(),
             ));
@@ -418,46 +412,34 @@ mod tests {
             source_operation_commitment: [4; 32],
             receipt: receipt.clone(),
         };
-        assert!(binding.matches_create(
+        assert!(binding.matches_source(
             binding.operation_id,
             binding.execution_id,
-            binding.specification_digest,
             binding.source_operation_commitment,
             &receipt,
         ));
-        assert!(!binding.matches_create(
+        assert!(!binding.matches_source(
             OperationId::from_bytes([5; 16]),
             binding.execution_id,
-            binding.specification_digest,
             binding.source_operation_commitment,
             &receipt,
         ));
-        assert!(!binding.matches_create(
+        assert!(!binding.matches_source(
             binding.operation_id,
             [6; 16],
-            binding.specification_digest,
             binding.source_operation_commitment,
             &receipt,
         ));
-        assert!(!binding.matches_create(
+        assert!(!binding.matches_source(
             binding.operation_id,
             binding.execution_id,
-            ObjectDigest::from_bytes([7; 32]),
-            binding.source_operation_commitment,
-            &receipt,
-        ));
-        assert!(!binding.matches_create(
-            binding.operation_id,
-            binding.execution_id,
-            binding.specification_digest,
             [8; 32],
             &receipt,
         ));
         let changed_receipt = EffectReceipt::new(vec![1; RECEIPT_BYTES]).unwrap();
-        assert!(!binding.matches_create(
+        assert!(!binding.matches_source(
             binding.operation_id,
             binding.execution_id,
-            binding.specification_digest,
             binding.source_operation_commitment,
             &changed_receipt,
         ));

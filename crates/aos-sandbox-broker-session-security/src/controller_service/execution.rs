@@ -137,22 +137,6 @@ impl AuthenticatedHostAuthorizationBindingV1 {
             && self.source_operation_commitment == source_operation_commitment
             && &self.receipt == receipt
     }
-
-    fn matches_create(
-        &self,
-        operation_id: OperationId,
-        execution_id: [u8; 16],
-        specification_digest: ObjectDigest,
-        source_operation_commitment: [u8; 32],
-        receipt: &EffectReceipt,
-    ) -> bool {
-        self.matches_source(
-            operation_id,
-            execution_id,
-            source_operation_commitment,
-            receipt,
-        ) && self.specification_digest == specification_digest
-    }
 }
 
 impl ControllerExecutionCompletionV1 {
