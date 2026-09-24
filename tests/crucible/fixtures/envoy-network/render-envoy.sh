@@ -89,6 +89,28 @@ else
   backup_endpoint=
 fi
 
+if [ "$role" = router-c ]; then
+  # East is linked only to C; relay its readiness calls over C's direct A link.
+  control_route='{"match":{"prefix":"/control/"},"route":{"cluster":"control_a","prefix_rewrite":"/","timeout":"3s"}},'
+  control_cluster=$(cat <<EOF
+,{
+      "name": "control_a",
+      "type": "STATIC",
+      "connect_timeout": "0.250s",
+      "load_assignment": {
+        "cluster_name": "control_a",
+        "endpoints": [{"lb_endpoints": [{"endpoint": {"address": {"socket_address": {
+          "address": "$network_prefix.2", "port_value": 9090
+        }}}}]}]
+      }
+    }
+EOF
+  )
+else
+  control_route=
+  control_cluster=
+fi
+
 # A's backup must be checked promptly even before it receives routed traffic.
 # Envoy otherwise schedules its next initial check after 60 seconds.
 cat > "$output" <<EOF
@@ -107,7 +129,7 @@ cat > "$output" <<EOF
           "stat_prefix": "ingress_$hop",
           "route_config": {
             "name": "network_recovery",
-            "virtual_hosts": [{"name": "service", "domains": ["*"], "routes": [{
+            "virtual_hosts": [{"name": "service", "domains": ["*"], "routes": [$control_route{
               "match": {"prefix": "/"},
               $route,
               "request_headers_to_add": [{"header": {"key": "x-crucible-$hop", "value": "1"}}]
@@ -141,7 +163,7 @@ cat > "$output" <<EOF
           }}}}]
         }$backup_endpoint]
       }
-    }]
+    }$control_cluster]
   }
 }
 EOF
