@@ -13,14 +13,14 @@ use std::path::Path;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
-use aos_systemd::{OwnedValue, SystemdClient};
+use aos_systemd::{OwnedValue, SandboxUnitSpec, SystemdClient};
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{Mode, OFlags, open};
 
 use super::readiness::verified_packaged_nspawn_digest;
 use super::{
     BackendReadinessBlocker, ProtectedBackendReadinessEvidence, VerifiedLiveSelinuxPolicyV1,
-    VerifiedPackagedRuntimeV1,
+    VerifiedLiveSupervisorPolicyV1, VerifiedPackagedRuntimeV1,
 };
 use crate::phase0_probe::{
     PHASE0_PROBE_RECORD_BYTES, Phase0ProbeObservationV2, SignedPhase0ProbeRecordV2,
@@ -106,6 +106,47 @@ impl VerifiedPhase0ClaimV1 {
             ));
         }
         Ok(())
+    }
+
+    /// Checks the installed service envelope against this signed phase-0 claim.
+    ///
+    /// Fresh protected credential and probe reads bracket PID 1's supervisor
+    /// property readback. The result is a partial service proof; it does not
+    /// measure the actual payload or authorize launch.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected claims, signed probe, package, live target,
+    /// or supervisor service properties.
+    pub async fn verify_live_supervisor_service(
+        &self,
+        credential_directory: &Path,
+        state_root: &Path,
+        nspawn_executable: &str,
+        selinux_policy: &str,
+        systemd: &SystemdClient,
+        spec: &SandboxUnitSpec,
+        supervisor_pid: u32,
+    ) -> Result<VerifiedLiveSupervisorPolicyV1> {
+        self.revalidate(
+            credential_directory,
+            state_root,
+            nspawn_executable,
+            selinux_policy,
+        )
+        .await?;
+        let live = self
+            .packaged
+            .verify_live_supervisor_policy(&self.readiness, systemd, spec, supervisor_pid)
+            .await?;
+        self.revalidate(
+            credential_directory,
+            state_root,
+            nspawn_executable,
+            selinux_policy,
+        )
+        .await?;
+        Ok(live)
     }
 }
 

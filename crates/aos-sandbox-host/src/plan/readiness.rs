@@ -21,6 +21,10 @@ use sha2::{Digest as _, Sha256};
 use super::{NspawnExecutableSnapshot, nspawn_executable_snapshot, validate_fixed_nspawn_path};
 use crate::{HostError, Result};
 
+mod live_supervisor;
+
+pub use live_supervisor::VerifiedLiveSupervisorPolicyV1;
+
 const READINESS_CREDENTIAL_FILE: &str = "backend-readiness.json";
 const READINESS_SCHEMA: &str = "aos.sandbox.host-backend-readiness.v1";
 const MAXIMUM_READINESS_BYTES: usize = 16 * 1024;

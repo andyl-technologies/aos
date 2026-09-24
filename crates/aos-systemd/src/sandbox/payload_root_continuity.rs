@@ -725,6 +725,14 @@ pub(super) fn digest_v1() -> [u8; 32] {
     PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.digest()
 }
 
+pub(super) const fn supervisor_capability_bounding_set() -> u64 {
+    NSPAWN_SUPERVISOR_CAPABILITIES
+}
+
+pub(super) const fn supervisor_selinux_context() -> &'static str {
+    NSPAWN_SUPERVISOR_SELINUX_CONTEXT
+}
+
 #[cfg(test)]
 pub(super) fn property_names() -> Vec<&'static str> {
     PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1

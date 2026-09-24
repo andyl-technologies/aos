@@ -344,6 +344,18 @@ impl PayloadRootContinuityPolicyV1 {
     pub fn digest(&self) -> [u8; 32] {
         payload_root_continuity::digest_v1()
     }
+
+    /// Returns the capability ceiling submitted for the nspawn supervisor.
+    #[must_use]
+    pub const fn supervisor_capability_bounding_set(&self) -> u64 {
+        payload_root_continuity::supervisor_capability_bounding_set()
+    }
+
+    /// Returns the SELinux domain submitted for the nspawn supervisor.
+    #[must_use]
+    pub const fn supervisor_selinux_context(&self) -> &'static str {
+        payload_root_continuity::supervisor_selinux_context()
+    }
 }
 
 /// Carries the root, network, and optional attachment pins for one launch assignment.
