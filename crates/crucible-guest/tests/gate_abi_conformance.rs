@@ -254,7 +254,7 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
     let cargo_toml = manifest_file("Cargo.toml");
     assert!(cargo_toml.contains("name = \"crucible-guest\""));
     assert!(cargo_toml.contains("path = \"src/main.rs\""));
-    assert!(cargo_toml.contains("crucible-campaign = { path = \"../crucible-campaign\" }"));
+    assert!(cargo_toml.contains("crucible-protocol = { path = \"../crucible-protocol\" }"));
     assert!(!cargo_toml.contains("clap"));
 
     // The standalone `pkgs.aos` package intentionally copies only `crates/`

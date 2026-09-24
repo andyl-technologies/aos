@@ -54,7 +54,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .first()
             .is_some_and(|verb| verb == "register-group" || verb == "choose-group")
         {
-            return selectable_group::run(&args);
+            for line in selectable_group::run(&args)? {
+                println!("{line}");
+            }
+            return Ok(());
         }
         let command = parse_selectable_command(&args)?;
         let mut transport = InstructionDoorbellTransport::native()?;
