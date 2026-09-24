@@ -179,6 +179,13 @@ fn fixed_branch_response(
 impl CampaignService for FixedHeadService {
     type Error = Infallible;
 
+    fn campaign_savepoint(
+        &self,
+        _request: &crucible_campaign::CampaignSavepointRequest,
+    ) -> Result<crucible_campaign::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
+
     fn list_campaigns(
         &self,
         request: &crucible_campaign::ListCampaignsRequest,
@@ -435,6 +442,13 @@ impl CampaignService for FixedHeadService {
 impl CampaignService for StatusSequenceService {
     type Error = CampaignServiceFailure;
 
+    fn campaign_savepoint(
+        &self,
+        _request: &crucible_campaign::CampaignSavepointRequest,
+    ) -> Result<crucible_campaign::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
+
     fn get_campaign(
         &self,
         request: &GetCampaignRequest,
@@ -500,6 +514,13 @@ impl CampaignService for StatusSequenceService {
 
 impl CampaignService for GraphPageService {
     type Error = Infallible;
+
+    fn campaign_savepoint(
+        &self,
+        _request: &crucible_campaign::CampaignSavepointRequest,
+    ) -> Result<crucible_campaign::CampaignSavepointResponse, Self::Error> {
+        panic!("savepoint is not used by this fixed test service")
+    }
 
     fn list_campaigns(
         &self,

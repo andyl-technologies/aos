@@ -63,7 +63,9 @@
 //!       56 (GetCampaignTraceChunkRequestV1) |
 //!       57 (GetCampaignTraceChunkResponseV1) |
 //!       58 (QueryCampaignRequestAttemptsRequestV1) |
-//!       59 (QueryCampaignRequestAttemptsResponseV1)
+//!       59 (QueryCampaignRequestAttemptsResponseV1) |
+//!       60 (CampaignSavepointRequestV1) |
+//!       61 (CampaignSavepointResponseV1)
 //! magic = "CRUCCS21"
 //! ```
 //!
@@ -89,21 +91,21 @@ use crucible_campaign::{
     ApplyCampaignCommandRequest, ApplyCampaignCommandResponse, CampaignAuthorizationError,
     CampaignCodecError, CampaignFindingOccurrenceService, CampaignName,
     CampaignOperationalStatusProvider, CampaignPrincipal, CampaignPrincipalAuthorizer,
-    CampaignRepository, CampaignService, CampaignServiceErrorResponse, CampaignServiceFailure,
-    CampaignServiceFailureSource, CampaignServiceOperation, CreateCampaignRequest,
-    CreateCampaignResponse, DeriveCampaignRequest, DeriveCampaignResponse,
-    ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse, GetCampaignChoiceObjectRequest,
-    GetCampaignChoiceObjectResponse, GetCampaignFindingObjectRequest,
-    GetCampaignFindingObjectResponse, GetCampaignFindingOccurrenceObjectRequest,
-    GetCampaignFindingOccurrenceObjectResponse, GetCampaignFindingTriageReplaySegmentRequest,
-    GetCampaignFindingTriageReplaySegmentResponse, GetCampaignFrontierObjectRequest,
-    GetCampaignFrontierObjectResponse, GetCampaignGraphObjectRequest,
-    GetCampaignGraphObjectResponse, GetCampaignPlannerRankingsRequest,
-    GetCampaignPlannerRankingsResponse, GetCampaignRequest, GetCampaignResponse,
-    GetCampaignSnapshotRequest, GetCampaignSnapshotResponse, GetCampaignStatusRequest,
-    GetCampaignStatusResponse, GetCampaignTraceChunkRequest, GetCampaignTraceChunkResponse,
-    ListCampaignsRequest, ListCampaignsResponse, PinCampaignRequest, PinCampaignResponse,
-    QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
+    CampaignRepository, CampaignSavepointRequest, CampaignSavepointResponse, CampaignService,
+    CampaignServiceErrorResponse, CampaignServiceFailure, CampaignServiceFailureSource,
+    CampaignServiceOperation, CreateCampaignRequest, CreateCampaignResponse, DeriveCampaignRequest,
+    DeriveCampaignResponse, ExplainCampaignAttemptRequest, ExplainCampaignAttemptResponse,
+    GetCampaignChoiceObjectRequest, GetCampaignChoiceObjectResponse,
+    GetCampaignFindingObjectRequest, GetCampaignFindingObjectResponse,
+    GetCampaignFindingOccurrenceObjectRequest, GetCampaignFindingOccurrenceObjectResponse,
+    GetCampaignFindingTriageReplaySegmentRequest, GetCampaignFindingTriageReplaySegmentResponse,
+    GetCampaignFrontierObjectRequest, GetCampaignFrontierObjectResponse,
+    GetCampaignGraphObjectRequest, GetCampaignGraphObjectResponse,
+    GetCampaignPlannerRankingsRequest, GetCampaignPlannerRankingsResponse, GetCampaignRequest,
+    GetCampaignResponse, GetCampaignSnapshotRequest, GetCampaignSnapshotResponse,
+    GetCampaignStatusRequest, GetCampaignStatusResponse, GetCampaignTraceChunkRequest,
+    GetCampaignTraceChunkResponse, ListCampaignsRequest, ListCampaignsResponse, PinCampaignRequest,
+    PinCampaignResponse, QueryCampaignChoicesRequest, QueryCampaignChoicesResponse,
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
@@ -149,6 +151,8 @@ const GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND: u8 = 56;
 const GET_CAMPAIGN_TRACE_CHUNK_RESPONSE_KIND: u8 = 57;
 const QUERY_CAMPAIGN_REQUEST_ATTEMPTS_REQUEST_KIND: u8 = 58;
 const QUERY_CAMPAIGN_REQUEST_ATTEMPTS_RESPONSE_KIND: u8 = 59;
+const CAMPAIGN_SAVEPOINT_REQUEST_KIND: u8 = 60;
+const CAMPAIGN_SAVEPOINT_RESPONSE_KIND: u8 = 61;
 const CREATE_CAMPAIGN_REQUEST_KIND: u8 = 8;
 const CREATE_CAMPAIGN_RESPONSE_KIND: u8 = 9;
 const DERIVE_CAMPAIGN_REQUEST_KIND: u8 = 10;
@@ -400,6 +404,24 @@ impl LoopbackCampaignService {
 
 impl CampaignService for LoopbackCampaignService {
     type Error = LoopbackCampaignServiceError;
+
+    fn campaign_savepoint(
+        &self,
+        request: &CampaignSavepointRequest,
+    ) -> Result<CampaignSavepointResponse, Self::Error> {
+        self.exchange(
+            CAMPAIGN_SAVEPOINT_REQUEST_KIND,
+            CAMPAIGN_SAVEPOINT_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |body| {
+                let response = CampaignSavepointResponse::from_canonical_bytes(body)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_query_campaign_graph(request.snapshot()),
+        )
+    }
 
     fn list_campaigns(
         &self,
@@ -1682,6 +1704,36 @@ where
                 }
             }
         }
+        CAMPAIGN_SAVEPOINT_REQUEST_KIND => {
+            let request = CampaignSavepointRequest::from_canonical_bytes(&body)?;
+            match service.campaign_savepoint(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (CAMPAIGN_SAVEPOINT_RESPONSE_KIND, response.canonical_bytes())
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_query_campaign_graph(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
         GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND => {
             let request = GetCampaignTraceChunkRequest::from_canonical_bytes(&body)?;
             match service.get_campaign_trace_chunk(&request) {
@@ -2134,6 +2186,7 @@ fn campaign_operation_for_request_kind(kind: u8) -> Option<CampaignServiceOperat
         EXPLAIN_CAMPAIGN_ATTEMPT_REQUEST_KIND => {
             Some(CampaignServiceOperation::ExplainCampaignAttempt)
         }
+        CAMPAIGN_SAVEPOINT_REQUEST_KIND => Some(CampaignServiceOperation::CampaignSavepoint),
         GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND => {
             Some(CampaignServiceOperation::GetCampaignTraceChunk)
         }

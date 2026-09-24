@@ -21,6 +21,67 @@ use crate::{
 mod checked_client;
 
 #[test]
+fn savepoint_messages_bind_action_and_reject_unknown_versions() {
+    let principal = CampaignPrincipal::new("operator:capture").expect("principal");
+    let campaign = CampaignName::new("capture").expect("campaign");
+    let expected_snapshot = snapshot("capture");
+    let attempt = AttemptId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        9,
+        b"capture-attempt",
+    ))
+    .expect("attempt");
+    let command = CampaignCommandId::from_hash(hash("capture-command"));
+    let request = CampaignSavepointRequest::new(
+        principal,
+        campaign,
+        expected_snapshot,
+        CampaignSavepointAction::Capture { command, attempt },
+    )
+    .expect("capture request");
+    assert_eq!(
+        CampaignSavepointRequest::from_canonical_bytes(&request.canonical_bytes())
+            .expect("canonical request"),
+        request,
+    );
+
+    let capture = crate::CampaignFactId::from_content_id(ContentId::for_bytes(
+        ObjectKind::CampaignFact,
+        15,
+        b"capture-request",
+    ))
+    .expect("capture fact");
+    let response = CampaignSavepointResponse::new(
+        &request,
+        CampaignSavepointResult::Captured {
+            snapshot: snapshot("capture-successor"),
+            request: capture,
+            replayed: false,
+        },
+    )
+    .expect("capture response");
+    CampaignSavepointResponse::from_canonical_bytes(&response.canonical_bytes())
+        .expect("canonical response")
+        .validate_for(&request)
+        .expect("request-bound response");
+    assert!(
+        CampaignSavepointResponse::new(
+            &request,
+            CampaignSavepointResult::Selected {
+                snapshot: expected_snapshot,
+                attempt,
+                replayed: false,
+            },
+        )
+        .is_err()
+    );
+
+    let mut unsupported = request.canonical_bytes();
+    unsupported[..4].fill(0);
+    assert!(CampaignSavepointRequest::from_canonical_bytes(&unsupported).is_err());
+}
+
+#[test]
 fn trace_chunk_request_round_trips_and_rejects_unbounded_ranges() {
     let principal = CampaignPrincipal::new("operator:trace-reader").expect("principal");
     let campaign = CampaignName::new("trace-bounds").expect("campaign");

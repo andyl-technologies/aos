@@ -11,10 +11,10 @@ mod effect_evidence;
 use effect_evidence::{CampaignAttemptEffectEvidence, load_and_project_attempt_effect_evidence};
 
 use crucible_campaign::{
-    AttemptAdmissionRole, AttemptId, AttemptStart, CampaignChoiceObject, CampaignChoiceObjectKind,
-    CampaignFindingObject, CampaignFindingObjectKind, ChoiceOpportunity,
-    ExplainCampaignAttemptRequest, Finding, FindingId, FindingTarget,
-    GetCampaignChoiceObjectRequest, GetCampaignFindingObjectRequest,
+    AttemptAdmissionRole, AttemptId, AttemptStart, CampaignAttemptOrigin, CampaignAttemptPhase,
+    CampaignChoiceObject, CampaignChoiceObjectKind, CampaignFindingObject,
+    CampaignFindingObjectKind, ChoiceOpportunity, ExplainCampaignAttemptRequest, Finding,
+    FindingId, FindingTarget, GetCampaignChoiceObjectRequest, GetCampaignFindingObjectRequest,
     GetCampaignFrontierObjectRequest, Observation, ReproductionArtifact, SelectableDeclaration,
     SelectionOrigin, StopOutcome,
 };
@@ -23,7 +23,7 @@ const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanat
 const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-finding-explanation.v1";
 const CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA: &str =
-    "crucible.cli.campaign-attempt-explanation.v4";
+    "crucible.cli.campaign-attempt-explanation.v5";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {
@@ -159,6 +159,21 @@ pub(super) struct CampaignAttemptExplanationReport {
     observation: Option<CampaignExplainedObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     effect_evidence: Option<CampaignAttemptEffectEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<CampaignExplainedAttemptRuntime>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignExplainedAttemptRuntime {
+    phase: &'static str,
+    origin: &'static str,
+    execution: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_checkpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_request: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -679,6 +694,30 @@ where
         planner,
         observation,
         effect_evidence,
+        runtime: response
+            .runtime()
+            .map(|runtime| CampaignExplainedAttemptRuntime {
+                phase: match runtime.phase() {
+                    CampaignAttemptPhase::Running => "running",
+                    CampaignAttemptPhase::CheckpointRequested => "checkpoint-requested",
+                    CampaignAttemptPhase::CheckpointPublishing => "checkpoint-publishing",
+                    CampaignAttemptPhase::Paused => "paused",
+                    CampaignAttemptPhase::CheckpointPromoting => "checkpoint-promoting",
+                    CampaignAttemptPhase::Publishing => "publishing",
+                    CampaignAttemptPhase::Completed => "completed",
+                    CampaignAttemptPhase::Canceled => "canceled",
+                    CampaignAttemptPhase::TerminalFailure => "terminal-failure",
+                },
+                origin: match runtime.origin() {
+                    CampaignAttemptOrigin::Initial => "initial",
+                    CampaignAttemptOrigin::ExactCheckpoint => "exact-checkpoint",
+                    CampaignAttemptOrigin::SelectedSavepoint => "selected-savepoint",
+                },
+                execution: hex::encode(runtime.execution().as_bytes()),
+                checkpoint: runtime.checkpoint().map(|value| value.to_string()),
+                origin_checkpoint: runtime.origin_checkpoint().map(|value| value.to_string()),
+                source_request: runtime.source_request().map(|value| value.to_string()),
+            }),
     })
 }
 

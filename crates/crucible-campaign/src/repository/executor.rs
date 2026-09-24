@@ -31,6 +31,26 @@ impl CampaignExecutorStore {
         Self { repository }
     }
 
+    /// Returns whether a selected capture requires an actual exact restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the selected request is missing or corrupt at its
+    /// authenticated source snapshot.
+    pub fn selected_capture_requires_exact_restore(
+        &self,
+        snapshot: CampaignSnapshotId,
+        request: CampaignFactId,
+    ) -> Result<bool, CampaignRepositoryError> {
+        let capture = self
+            .repository
+            .savepoint_capture_request_at(snapshot, request)?
+            .ok_or(CampaignRepositoryError::Integrity {
+                reason: "selected exact capture request is missing",
+            })?;
+        Ok(capture.reason == crate::PUBLIC_EXACT_CAPTURE_REASON)
+    }
+
     /// Acquires GC-excluded access for a finding publication handoff.
     ///
     /// The caller holds the returned guard from the first capture write until

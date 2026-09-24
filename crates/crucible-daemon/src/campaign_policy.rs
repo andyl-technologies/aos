@@ -387,6 +387,7 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         }
         "get-campaign-finding-object" => Some(CampaignServiceOperation::GetCampaignFindingObject),
         "explain-campaign-attempt" => Some(CampaignServiceOperation::ExplainCampaignAttempt),
+        "campaign-savepoint" => Some(CampaignServiceOperation::CampaignSavepoint),
         "get-campaign-trace-chunk" => Some(CampaignServiceOperation::GetCampaignTraceChunk),
         "get-campaign-planner-rankings" => {
             Some(CampaignServiceOperation::GetCampaignPlannerRankings)

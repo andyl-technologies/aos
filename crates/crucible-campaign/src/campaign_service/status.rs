@@ -6,7 +6,196 @@
 //! epoch and one durable inventory generation.
 
 use super::*;
-use crate::DaemonEpoch;
+use crate::{AttemptId, CampaignFactId, DaemonEpoch, ExactCheckpointId, ExecutionId};
+
+/// Closed phase of one durable local execution record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignAttemptPhase {
+    /// The worker owns a running execution.
+    Running,
+    /// A checkpoint request was latched.
+    CheckpointRequested,
+    /// A checkpoint publication root was reserved.
+    CheckpointPublishing,
+    /// A complete exact root was durably paused.
+    Paused,
+    /// A paused root is being promoted.
+    CheckpointPromoting,
+    /// An observation publication root was reserved.
+    Publishing,
+    /// An observation was published.
+    Completed,
+    /// The execution was canceled.
+    Canceled,
+    /// The worker failed permanently.
+    TerminalFailure,
+}
+
+impl Canonical for CampaignAttemptPhase {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Running => 0,
+            Self::CheckpointRequested => 1,
+            Self::CheckpointPublishing => 2,
+            Self::Paused => 3,
+            Self::CheckpointPromoting => 4,
+            Self::Publishing => 5,
+            Self::Completed => 6,
+            Self::Canceled => 7,
+            Self::TerminalFailure => 8,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Running),
+            1 => Ok(Self::CheckpointRequested),
+            2 => Ok(Self::CheckpointPublishing),
+            3 => Ok(Self::Paused),
+            4 => Ok(Self::CheckpointPromoting),
+            5 => Ok(Self::Publishing),
+            6 => Ok(Self::Completed),
+            7 => Ok(Self::Canceled),
+            8 => Ok(Self::TerminalFailure),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-attempt-phase",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Closed execution origin of one durable local incarnation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignAttemptOrigin {
+    /// The immutable attempt start was materialized.
+    Initial,
+    /// A later checkpoint of this attempt was restored.
+    ExactCheckpoint,
+    /// A selected source capture was restored for a semantic continuation.
+    SelectedSavepoint,
+}
+
+impl Canonical for CampaignAttemptOrigin {
+    fn encode(&self, encoder: &mut Encoder) {
+        encoder.u8(match self {
+            Self::Initial => 0,
+            Self::ExactCheckpoint => 1,
+            Self::SelectedSavepoint => 2,
+        });
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Initial),
+            1 => Ok(Self::ExactCheckpoint),
+            2 => Ok(Self::SelectedSavepoint),
+            tag => Err(CampaignCodecError::UnknownTag {
+                kind: "campaign-attempt-origin",
+                tag,
+            }),
+        }
+    }
+}
+
+/// Bounded daemon evidence for one authenticated semantic attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignAttemptRuntime {
+    phase: CampaignAttemptPhase,
+    origin: CampaignAttemptOrigin,
+    execution: ExecutionId,
+    checkpoint: Option<ExactCheckpointId>,
+    origin_checkpoint: Option<ExactCheckpointId>,
+    source_request: Option<CampaignFactId>,
+}
+
+impl CampaignAttemptRuntime {
+    /// Builds one bounded operational projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if a caller supplies inconsistent evidence.
+    pub fn new(
+        phase: CampaignAttemptPhase,
+        origin: CampaignAttemptOrigin,
+        execution: ExecutionId,
+        checkpoint: Option<ExactCheckpointId>,
+        origin_checkpoint: Option<ExactCheckpointId>,
+        source_request: Option<CampaignFactId>,
+    ) -> Result<Self, CampaignCodecError> {
+        if matches!(origin, CampaignAttemptOrigin::SelectedSavepoint) != source_request.is_some() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "selected savepoint source request is missing or unexpected",
+            });
+        }
+        Ok(Self {
+            phase,
+            origin,
+            execution,
+            checkpoint,
+            origin_checkpoint,
+            source_request,
+        })
+    }
+
+    /// Returns the closed durable phase.
+    #[must_use]
+    pub const fn phase(self) -> CampaignAttemptPhase {
+        self.phase
+    }
+
+    /// Returns the closed execution origin.
+    #[must_use]
+    pub const fn origin(self) -> CampaignAttemptOrigin {
+        self.origin
+    }
+
+    /// Returns the execution incarnation named by the durable state.
+    #[must_use]
+    pub const fn execution(self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the captured checkpoint when this phase owns one.
+    #[must_use]
+    pub const fn checkpoint(self) -> Option<ExactCheckpointId> {
+        self.checkpoint
+    }
+
+    /// Returns the exact root from which this incarnation started.
+    #[must_use]
+    pub const fn origin_checkpoint(self) -> Option<ExactCheckpointId> {
+        self.origin_checkpoint
+    }
+
+    /// Returns the immutable selected capture request when this is a continuation.
+    #[must_use]
+    pub const fn source_request(self) -> Option<CampaignFactId> {
+        self.source_request
+    }
+}
+
+impl Canonical for CampaignAttemptRuntime {
+    fn encode(&self, encoder: &mut Encoder) {
+        self.phase.encode(encoder);
+        self.origin.encode(encoder);
+        self.execution.encode(encoder);
+        self.checkpoint.encode(encoder);
+        self.origin_checkpoint.encode(encoder);
+        self.source_request.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Self::new(
+            CampaignAttemptPhase::decode(decoder)?,
+            CampaignAttemptOrigin::decode(decoder)?,
+            ExecutionId::decode(decoder)?,
+            Option::decode(decoder)?,
+            Option::decode(decoder)?,
+            Option::decode(decoder)?,
+        )
+    }
+}
 
 /// Maximum continuation records read for one semantic status projection.
 pub const MAX_CAMPAIGN_STATUS_CONTINUATIONS: u64 = 1_000_000;
@@ -566,6 +755,30 @@ pub trait CampaignOperationalStatusProvider: Send + Sync {
         campaign: &CampaignName,
         snapshot: CampaignSnapshotId,
     ) -> CampaignOperationalStatus;
+
+    /// Returns a stable durable runtime state for one exact current snapshot.
+    ///
+    /// `None` means the attempt has no operational record or the read could
+    /// not be safely bound to the requested snapshot.
+    fn attempt_runtime(
+        &self,
+        _campaign: &CampaignName,
+        _snapshot: CampaignSnapshotId,
+        _attempt: AttemptId,
+    ) -> Option<CampaignAttemptRuntime> {
+        None
+    }
+
+    /// Returns a stable scoped capture record at one exact current snapshot.
+    fn capture_runtime(
+        &self,
+        _campaign: &CampaignName,
+        _snapshot: CampaignSnapshotId,
+        _request: crate::CampaignFactId,
+        _attempt: AttemptId,
+    ) -> Option<CampaignAttemptRuntime> {
+        None
+    }
 }
 
 /// Request-bound semantic and operational status at one campaign snapshot.

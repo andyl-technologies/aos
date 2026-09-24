@@ -22,9 +22,10 @@ use crucible_api::{
     ProductionVmNodeReplayLaunchProfile,
 };
 use crucible_campaign::{
-    CampaignHash, CampaignName, CampaignOperationalEvidence, CampaignOperationalStatus,
-    CampaignOperationalStatusProvider, CampaignRepository, CampaignSnapshotId, CampaignWorldStatus,
-    DaemonEpoch, ExecutionId,
+    AttemptExecutionScope, AttemptId, CampaignAttemptOrigin, CampaignAttemptPhase,
+    CampaignAttemptRuntime, CampaignFactId, CampaignHash, CampaignName,
+    CampaignOperationalEvidence, CampaignOperationalStatus, CampaignOperationalStatusProvider,
+    CampaignRepository, CampaignSnapshotId, CampaignWorldStatus, DaemonEpoch, ExecutionId,
 };
 use crucible_protocol::SelectionReply;
 use crucible_qemu::QemuNodeSelectablePendingRequest;
@@ -611,6 +612,166 @@ impl CampaignOperationalStatusProvider for PackagedQemuOperationalStatusProvider
             CampaignOperationalStatus::Observed,
         )
     }
+
+    fn attempt_runtime(
+        &self,
+        campaign: &CampaignName,
+        snapshot: CampaignSnapshotId,
+        attempt: AttemptId,
+    ) -> Option<CampaignAttemptRuntime> {
+        let state = self.stable_attempt_state(
+            campaign,
+            snapshot,
+            attempt,
+            AttemptExecutionScope::Semantic,
+        )?;
+        if let crate::AttemptExecutionOrigin::SelectedSavepoint {
+            certificate,
+            request,
+            source_checkpoint,
+            ..
+        } = state.origin()
+        {
+            let source = self
+                .repository
+                .savepoint_continuation_source_at(snapshot, attempt)
+                .ok()??;
+            if source.selection() != certificate || source.provenance().request != request {
+                return None;
+            }
+            let capture = self
+                .repository
+                .savepoint_capture_request_at(snapshot, request)
+                .ok()??;
+            let continuation = self.repository.load_attempt(attempt).ok()?;
+            if !matches!(continuation.start(),
+                crucible_campaign::AttemptStart::AfterAttempt { origin, .. } if origin == capture.attempt
+            ) {
+                return None;
+            }
+            let capture_state = self.stable_attempt_state(
+                campaign,
+                snapshot,
+                capture.attempt,
+                AttemptExecutionScope::SavepointCapture { request },
+            )?;
+            if !matches!(capture_state,
+                AttemptRuntimeState::Paused { checkpoint, .. } if checkpoint == source_checkpoint
+            ) {
+                return None;
+            }
+        }
+        project_attempt_runtime(state)
+    }
+
+    fn capture_runtime(
+        &self,
+        campaign: &CampaignName,
+        snapshot: CampaignSnapshotId,
+        request: CampaignFactId,
+        attempt: AttemptId,
+    ) -> Option<CampaignAttemptRuntime> {
+        let state = self.stable_attempt_state(
+            campaign,
+            snapshot,
+            attempt,
+            AttemptExecutionScope::SavepointCapture { request },
+        )?;
+        project_attempt_runtime(state)
+    }
+}
+
+impl PackagedQemuOperationalStatusProvider {
+    fn stable_attempt_state(
+        &self,
+        campaign: &CampaignName,
+        snapshot: CampaignSnapshotId,
+        attempt: AttemptId,
+        scope: AttemptExecutionScope,
+    ) -> Option<AttemptRuntimeState> {
+        if !self.campaigns.contains(campaign) {
+            return None;
+        }
+        let head = self.repository.head(campaign.as_str()).ok()?;
+        if head.snapshot_id() != snapshot {
+            return None;
+        }
+        let lineage = head.snapshot().lineage();
+
+        let generation_before =
+            directory_assignment_retention_generation(&self.ledger_root).ok()?;
+        let mut matched = None;
+        let mut duplicate = false;
+        let complete = visit_directory_attempt_states_bounded(
+            &self.ledger_root,
+            MAX_PACKAGED_STATUS_ATTEMPT_RECORDS,
+            &mut |key, state| {
+                if key.attempt() == attempt && key.scope() == scope && key.lineage() == lineage {
+                    if matched.replace(state).is_some() {
+                        duplicate = true;
+                    }
+                }
+            },
+        )
+        .ok()?;
+        let generation_after = directory_assignment_retention_generation(&self.ledger_root).ok()?;
+        if !complete
+            || duplicate
+            || generation_before != generation_after
+            || self.repository.head(campaign.as_str()).ok()?.snapshot_id() != snapshot
+        {
+            return None;
+        }
+
+        matched
+    }
+}
+
+fn project_attempt_runtime(state: AttemptRuntimeState) -> Option<CampaignAttemptRuntime> {
+    let phase = match state {
+        AttemptRuntimeState::Running { .. } => CampaignAttemptPhase::Running,
+        AttemptRuntimeState::CheckpointRequested { .. } => {
+            CampaignAttemptPhase::CheckpointRequested
+        }
+        AttemptRuntimeState::CheckpointPublishing { .. } => {
+            CampaignAttemptPhase::CheckpointPublishing
+        }
+        AttemptRuntimeState::Paused { .. } => CampaignAttemptPhase::Paused,
+        AttemptRuntimeState::CheckpointPromoting { .. } => {
+            CampaignAttemptPhase::CheckpointPromoting
+        }
+        AttemptRuntimeState::Publishing { .. } => CampaignAttemptPhase::Publishing,
+        AttemptRuntimeState::Completed { .. } => CampaignAttemptPhase::Completed,
+        AttemptRuntimeState::Canceled { .. } => CampaignAttemptPhase::Canceled,
+        AttemptRuntimeState::TerminalFailure { .. } => CampaignAttemptPhase::TerminalFailure,
+    };
+    let (origin, source_request) = match state.origin() {
+        crate::AttemptExecutionOrigin::Initial => (CampaignAttemptOrigin::Initial, None),
+        crate::AttemptExecutionOrigin::ExactCheckpoint { .. } => {
+            (CampaignAttemptOrigin::ExactCheckpoint, None)
+        }
+        crate::AttemptExecutionOrigin::SelectedSavepoint { request, .. } => {
+            (CampaignAttemptOrigin::SelectedSavepoint, Some(request))
+        }
+    };
+    let checkpoint = match state {
+        AttemptRuntimeState::CheckpointPublishing { checkpoint, .. }
+        | AttemptRuntimeState::Paused { checkpoint, .. } => Some(checkpoint),
+        AttemptRuntimeState::CheckpointPromoting {
+            promoted_checkpoint,
+            ..
+        } => Some(promoted_checkpoint),
+        _ => None,
+    };
+    CampaignAttemptRuntime::new(
+        phase,
+        origin,
+        state.execution(),
+        checkpoint,
+        state.origin().checkpoint(),
+        source_request,
+    )
+    .ok()
 }
 
 impl PackagedQemuOperationalStatusProvider {

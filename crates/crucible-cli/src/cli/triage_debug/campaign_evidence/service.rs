@@ -614,6 +614,7 @@ impl crucible_campaign::CampaignService for ImportedCampaignFindingService {
         query_campaign_choices(crucible_campaign::QueryCampaignChoicesRequest) -> crucible_campaign::QueryCampaignChoicesResponse;
         query_campaign_frontier(crucible_campaign::QueryCampaignFrontierRequest) -> crucible_campaign::QueryCampaignFrontierResponse;
         explain_campaign_attempt(crucible_campaign::ExplainCampaignAttemptRequest) -> crucible_campaign::ExplainCampaignAttemptResponse;
+        campaign_savepoint(crucible_campaign::CampaignSavepointRequest) -> crucible_campaign::CampaignSavepointResponse;
         get_campaign_trace_chunk(crucible_campaign::GetCampaignTraceChunkRequest) -> crucible_campaign::GetCampaignTraceChunkResponse;
         query_campaign_request_attempts(crucible_campaign::QueryCampaignRequestAttemptsRequest) -> crucible_campaign::QueryCampaignRequestAttemptsResponse;
         get_campaign_planner_rankings(crucible_campaign::GetCampaignPlannerRankingsRequest) -> crucible_campaign::GetCampaignPlannerRankingsResponse;
