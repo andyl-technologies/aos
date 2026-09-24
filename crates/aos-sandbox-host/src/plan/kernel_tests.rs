@@ -113,6 +113,10 @@ fn resources() -> ResolvedLaunchResources {
     }
 }
 
+fn root_mount_for(resources: &ResolvedLaunchResources) -> DetachedMount {
+    DetachedMount::from_inherited(resources.workspace.pin().try_clone_to_owned().unwrap()).unwrap()
+}
+
 fn guardian_plan_pair() -> (Vec<u8>, Vec<u8>) {
     let assignment = BrokerAssignment::new(
         SandboxId::from_bytes([0x60; 16]),
@@ -319,8 +323,15 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         now,
     )
     .unwrap();
+    let resolved = resources();
+    let root_mount = root_mount_for(&resolved);
     let prepared = config
-        .compile_resolved(request.fence(), request.launch_plan().unwrap(), resources())
+        .compile_resolved(
+            request.fence(),
+            request.launch_plan().unwrap(),
+            resolved,
+            root_mount,
+        )
         .unwrap();
     let worker =
         SystemdOneShotWorker::new(BeneathRoot::from_owned(directory("/sys/fs/cgroup")).unwrap());
@@ -466,8 +477,15 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
                 .is_err()
         );
 
+        let resolved = resources();
+        let root_mount = root_mount_for(&resolved);
         let prepared = config
-            .compile_resolved(request.fence(), request.launch_plan().unwrap(), resources())
+            .compile_resolved(
+                request.fence(),
+                request.launch_plan().unwrap(),
+                resolved,
+                root_mount,
+            )
             .unwrap();
         let (spec, pins) = prepared.into_parts();
         let reconciled = worker

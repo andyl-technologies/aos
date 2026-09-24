@@ -117,7 +117,10 @@ async fn stale_accepted_peer_is_nonfatal_and_next_connection_is_handled() {
     let mut service = HostService::new(broker, verifier, (0, 0));
 
     assert_eq!(
-        service.serve_once(&listener).await.unwrap(),
+        service
+            .serve_once(&listener, crate::service::HostListenerRole::Controller)
+            .await
+            .unwrap(),
         ConnectionOutcome::PeerRejected
     );
     // A second live but unauthenticated peer exercises the same service and
@@ -125,7 +128,10 @@ async fn stale_accepted_peer_is_nonfatal_and_next_connection_is_handled() {
     // so no handshake, authority admission, or broker effect can execute.
     let client = connect_client(&path);
     assert_eq!(
-        service.serve_once(&listener).await.unwrap(),
+        service
+            .serve_once(&listener, crate::service::HostListenerRole::Controller)
+            .await
+            .unwrap(),
         ConnectionOutcome::PeerRejected
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);

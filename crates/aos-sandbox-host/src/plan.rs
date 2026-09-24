@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
+use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::{ValidatedAssignmentFence, ValidatedRuntimePlan};
 use aos_systemd::{
@@ -98,9 +99,8 @@ impl ResolvedWorkspace {
     /// Constructs a workspace only when its descriptor has the catalogued identity.
     ///
     /// Identity validation does not prove mount transferability. For launch,
-    /// the privileged publisher must supply a detached mount of this root;
-    /// nspawn's kernel mount import rejects an attached directory from another
-    /// mount namespace before payload execution.
+    /// the privileged Storage owner must export a detached mount of this root;
+    /// nspawn rejects an attached directory from another mount namespace.
     ///
     /// # Errors
     ///
@@ -132,6 +132,11 @@ impl ResolvedWorkspace {
     #[must_use]
     pub const fn guest_root_publication(&self) -> Option<GuestRootPublicationProofV1> {
         self.guest_root_publication
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin(&self) -> BorrowedFd<'_> {
+        self.pin.as_fd()
     }
 
     pub(crate) fn with_guest_root_publication(
@@ -257,16 +262,16 @@ pub struct ResolvedLaunchResources {
     pub attachment_anchor: ResolvedAttachmentAnchor,
 }
 
-/// Retains the exact workspace and network objects resolved for one launch.
+/// Retains the exact workspace source, exported root, and network for a launch.
 ///
-/// Holding these descriptors prevents the underlying objects from disappearing
-/// while a launch is in flight. It does not by itself authorize reopening the
-/// catalog paths; production readiness additionally requires a descriptor-based
-/// handoff to systemd and post-launch identity verification.
+/// The source workspace has a stable mount identity across replay. Storage's
+/// detached export receives a new mount ID for each transfer and is held until
+/// the systemd handoff and post-launch payload-root verification complete.
 #[derive(Debug)]
 pub struct LaunchPins {
     executable: Arc<OwnedFd>,
     workspace: OwnedFd,
+    transferred_root: OwnedFd,
     network: NamespaceFd,
     attachment_anchor: OwnedFd,
 }
@@ -282,6 +287,12 @@ impl LaunchPins {
     #[must_use]
     pub fn workspace(&self) -> BorrowedFd<'_> {
         self.workspace.as_fd()
+    }
+
+    /// Returns the Storage-exported root mount retained through launch proof.
+    #[must_use]
+    pub fn transferred_root(&self) -> BorrowedFd<'_> {
+        self.transferred_root.as_fd()
     }
 
     /// Returns the pinned prepared network namespace descriptor.
@@ -303,9 +314,11 @@ impl LaunchPins {
         network: NamespaceFd,
         attachment_anchor: OwnedFd,
     ) -> Self {
+        let transferred_root = workspace.try_clone().expect("test workspace clone");
         Self {
             executable: Arc::new(executable),
             workspace,
+            transferred_root,
             network,
             attachment_anchor,
         }
@@ -468,6 +481,18 @@ pub trait HostCatalog {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
     ) -> Result<ResolvedLaunchResources>;
+
+    /// Exports the exact resolved workspace as a transferable detached mount.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the privileged Storage owner cannot authenticate
+    /// or export the resolved workspace.
+    fn export_root_mount(&self, _workspace: &ResolvedWorkspace) -> Result<DetachedMount> {
+        Err(HostError::Catalog(
+            "workspace detached root-mount export is unavailable".to_owned(),
+        ))
+    }
 }
 
 fn validate_fixed_nspawn_path(executable: &str) -> Result<()> {
@@ -581,7 +606,8 @@ impl NspawnConfig {
         plan: &ValidatedRuntimePlan,
     ) -> Result<PreparedLaunch> {
         let resolved = catalog.resolve(fence, plan)?;
-        self.compile_resolved(fence, plan, resolved)
+        let root_mount = catalog.export_root_mount(&resolved.workspace)?;
+        self.compile_resolved(fence, plan, resolved, root_mount)
     }
 
     /// Compiles a launch from the exact resources admitted by the caller.
@@ -601,12 +627,26 @@ impl NspawnConfig {
         fence: &ValidatedAssignmentFence,
         plan: &ValidatedRuntimePlan,
         resolved: ResolvedLaunchResources,
+        root_mount: DetachedMount,
     ) -> Result<PreparedLaunch> {
         self.revalidate()?;
         validate_backend_features(plan)?;
         let workspace = resolved.workspace;
         let network = resolved.network;
         let attachment_anchor = resolved.attachment_anchor;
+        let root_identity =
+            fstat(root_mount.as_fd()).map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        if (root_identity.st_dev, root_identity.st_ino) != (workspace.device, workspace.inode) {
+            return Err(HostError::InvalidPlan(
+                "exported root mount differs from the resolved workspace".to_owned(),
+            ));
+        }
+        // Build the systemd descriptor path from the owned FD retained in
+        // LaunchPins, not the temporary export wrapper dropped on return.
+        let transferred_root = root_mount
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         validate_resolved_identity(&resolved.identity, plan)?;
         validate_published_pin(
             &workspace.root_directory,
@@ -647,7 +687,7 @@ impl NspawnConfig {
         let executable_path =
             SandboxDescriptorPath::for_current_process(self.readiness.executable_pin())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let root_path = SandboxDescriptorPath::for_current_process(workspace.pin.as_fd())
+        let root_path = SandboxDescriptorPath::for_current_process(transferred_root.as_fd())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let network_path = SandboxDescriptorPath::for_current_process(network.pin.as_fd())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
@@ -693,12 +733,13 @@ impl NspawnConfig {
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let nspawn_identity = fstat(self.readiness.executable_pin())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let workspace_identity = fstat(workspace.pin.as_fd())
-            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let nspawn_mount_id =
             aos_sandbox_linux::inventory::MountId::from_fd(self.readiness.executable_pin())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?
                 .get();
+        // A detached clone receives a new mount ID on each export. Durable
+        // replay must bind the stable catalog source, while the exact exported
+        // descriptor stays live in the transient launch specification.
         let workspace_mount_id =
             aos_sandbox_linux::inventory::MountId::from_fd(workspace.pin.as_fd())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?
@@ -710,8 +751,8 @@ impl NspawnConfig {
                 mount_id: nspawn_mount_id,
             },
             workspace: PinnedObjectSnapshot {
-                device: workspace_identity.st_dev,
-                inode: workspace_identity.st_ino,
+                device: workspace.device,
+                inode: workspace.inode,
                 mount_id: workspace_mount_id,
             },
             network_device: network.device,
@@ -732,6 +773,7 @@ impl NspawnConfig {
             pins: LaunchPins {
                 executable: Arc::clone(self.readiness.executable_pin_arc()),
                 workspace: workspace.pin,
+                transferred_root,
                 network: network.pin,
                 attachment_anchor: attachment_anchor.pin,
             },

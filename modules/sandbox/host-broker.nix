@@ -211,6 +211,7 @@ in {
       };
       serviceConfig = {
         Type = "simple";
+        Sockets = ["aos-sandbox-hostd.socket" "aos-sandbox-host-root-mount.socket"];
         ExecStartPre =
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v1"]
           ++ brokerSessionConfiguration.installCommands;

@@ -1514,7 +1514,8 @@ where
             "validated launch request lost its launch plan".to_owned(),
         ))?;
         let resolved: ResolvedLaunchResources = self.catalog.resolve(request.fence(), plan)?;
-        nspawn.compile_resolved(request.fence(), plan, resolved)
+        let root_mount = self.catalog.export_root_mount(&resolved.workspace)?;
+        nspawn.compile_resolved(request.fence(), plan, resolved, root_mount)
     }
 
     fn retain_runtime_observation(
@@ -2351,6 +2352,20 @@ mod tests {
                 },
                 attachment_anchor,
             })
+        }
+
+        fn export_root_mount(
+            &self,
+            workspace: &ResolvedWorkspace,
+        ) -> Result<aos_sandbox_linux::mount::DetachedMount> {
+            // Unit tests exercise durable ordering without invoking nspawn.
+            // Production FileHostCatalog uses Storage's authenticated export.
+            let descriptor = workspace
+                .pin()
+                .try_clone_to_owned()
+                .map_err(|error| HostError::Catalog(error.to_string()))?;
+            aos_sandbox_linux::mount::DetachedMount::from_inherited(descriptor)
+                .map_err(|error| HostError::Catalog(error.to_string()))
         }
     }
 

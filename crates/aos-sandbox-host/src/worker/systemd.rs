@@ -1156,6 +1156,13 @@ pub(super) fn verify_supervisor_pins(
     }
     let root = rustix::fs::fstat(pins.workspace())
         .map_err(|error| HostError::Worker(error.to_string()))?;
+    let exported_root = rustix::fs::fstat(pins.transferred_root())
+        .map_err(|error| HostError::Worker(error.to_string()))?;
+    if (root.st_dev, root.st_ino) != (exported_root.st_dev, exported_root.st_ino) {
+        return Err(HostError::Worker(
+            "exported root mount differs from the retained workspace".to_owned(),
+        ));
+    }
     let network = pins.network().identity();
     let payload_root = resolve_payload_root(cgroup_root, &leader.cgroup)?;
     let payload = inspect_quiesced_payload(&payload_root, |inspector| {

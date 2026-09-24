@@ -1,7 +1,8 @@
 //! Systemd-activated bounded `SOCK_SEQPACKET` ingress.
 //!
-//! Hostd never binds a caller-selected path. It adopts one socket supplied by
-//! PID 1, validates its type and listening state, accepts close-on-exec peers,
+//! Hostd never binds a caller-selected path. It adopts the two role-separated
+//! sockets supplied by PID 1, validates their type and listening state,
+//! accepts close-on-exec peers,
 //! pins the connection establisher with `SO_PEERCRED` and `SO_PEERPIDFD`, receives
 //! bounded packets and their close-on-exec ancillary descriptors, and emits
 //! bounded packets.
@@ -28,7 +29,7 @@ use crate::{HostError, Result};
 const MAXIMUM_PACKET_DESCRIPTORS: usize = aos_sandbox_protocol::MAXIMUM_PACKET_DESCRIPTORS;
 const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Owns the sole validated systemd-activated host broker listener.
+/// Owns one validated systemd-activated Host broker listener.
 #[derive(Debug)]
 pub struct ActivatedSeqpacketListener {
     fd: OwnedFd,

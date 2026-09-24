@@ -297,6 +297,15 @@ impl HostCatalog for QualificationCatalog {
         }
         qualification_resources(fence)
     }
+
+    fn export_root_mount(&self, workspace: &ResolvedWorkspace) -> Result<DetachedMount> {
+        let descriptor = workspace
+            .pin()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        DetachedMount::from_inherited(descriptor)
+            .map_err(|error| HostError::Catalog(error.to_string()))
+    }
 }
 
 struct LiveGuardianRequest {

@@ -9,18 +9,19 @@ use std::env;
 use std::os::fd::OwnedFd;
 use std::process::ExitCode;
 
-use aos_sandbox_host::activation::take_systemd_listener;
+use aos_sandbox_host::activation::take_systemd_listeners;
 use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_host::plan::{GuardianConfig, verify_optional_backend_deployment_v1};
-use aos_sandbox_host::service::HostService;
+use aos_sandbox_host::service::{HostListenerRole, HostService};
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::path::BeneathRoot;
+use rustix::event::{PollFd, PollFlags, poll};
 
 const CATALOG_ROOT: &str = "/run/aos/sandbox-host";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
@@ -45,10 +46,10 @@ fn run() -> Result<()> {
     let (controller_identity, nspawn_executable, guardian_executable, selinux_policy) =
         arguments()?;
 
-    // SAFETY: PID 1 transfers the sole stable activation entry to this
-    // single-threaded entrypoint. No Rust owner has been constructed for FD 3,
-    // and no preceding operation opens, closes, or duplicates a descriptor.
-    let listener = unsafe { take_systemd_listener()? };
+    // SAFETY: PID 1 transfers the two stable activation entries to this
+    // single-threaded entrypoint. No Rust owner has been constructed for FDs
+    // 3 or 4, and no preceding operation opens, closes, or duplicates them.
+    let (controller_listener, root_mount_listener) = unsafe { take_systemd_listeners()? };
     // This is intentionally non-authorizing. It exercises pidfs from inside
     // the deployed service sandbox, while shifted-payload ptrace access remains
     // an explicit readiness blocker. Observation stays available on failure.
@@ -60,7 +61,10 @@ fn run() -> Result<()> {
         }
     };
 
-    let catalog = FileHostCatalog::open_root_owned(CATALOG_ROOT)?;
+    let root_export_cgroup = CgroupV2Root::try_from(open_cgroup_root()?)
+        .map_err(|error| HostError::State(error.to_string()))?;
+    let catalog =
+        FileHostCatalog::open_root_owned(CATALOG_ROOT)?.with_root_export_cgroup(root_export_cgroup);
     let catalog_publisher = FileHostCatalogPublisher::open_root_owned(CATALOG_ROOT)?;
     let state = FileHostStateStore::open(STATE_ROOT)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
@@ -97,8 +101,49 @@ fn run() -> Result<()> {
         .with_catalog_publisher(catalog_publisher);
 
     runtime.block_on(async move {
+        let mut next_role = HostListenerRole::Controller;
         loop {
-            service.serve_once(&listener).await?;
+            let ready = {
+                let mut descriptors = [
+                    PollFd::from_borrowed_fd(controller_listener.as_fd(), PollFlags::IN),
+                    PollFd::from_borrowed_fd(root_mount_listener.as_fd(), PollFlags::IN),
+                ];
+                match poll(&mut descriptors, None) {
+                    Ok(_) => [
+                        !descriptors[0].revents().is_empty(),
+                        !descriptors[1].revents().is_empty(),
+                    ],
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(error) => {
+                        return Err(HostError::State(format!(
+                            "cannot poll activated Host listeners: {error}"
+                        )));
+                    }
+                }
+            };
+            let selected = if ready == [true, true] {
+                next_role
+            } else if ready[0] {
+                HostListenerRole::Controller
+            } else if ready[1] {
+                HostListenerRole::RootMount
+            } else {
+                continue;
+            };
+            match selected {
+                HostListenerRole::Controller => {
+                    service
+                        .serve_once(&controller_listener, HostListenerRole::Controller)
+                        .await?;
+                    next_role = HostListenerRole::RootMount;
+                }
+                HostListenerRole::RootMount => {
+                    service
+                        .serve_once(&root_mount_listener, HostListenerRole::RootMount)
+                        .await?;
+                    next_role = HostListenerRole::Controller;
+                }
+            }
         }
     })
 }

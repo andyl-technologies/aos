@@ -5,11 +5,9 @@
 //! `openat2`, reads at most sixteen MiB, strictly decodes one generation, and
 //! resolves workspace, network, and attachment state from that same snapshot.
 //!
-//! Pin identity verification below is deliberately not launch authority yet:
-//! a pathname can be replaced after verification. Production readiness stays
-//! unconstructable until the pin publisher proves root ownership, immutable
-//! parent and leaf entries for the complete verify-to-exec interval, and the
-//! worker post-validates the identities after systemd starts the supervisor.
+//! Pin identity verification and Storage export are only the resource-custody
+//! part of launch. Backend readiness still requires independently verified
+//! phase-0 filter and shifted-payload evidence before Host may advertise Apply.
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
@@ -17,6 +15,8 @@ use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_protocol::host_catalog::MAXIMUM_HOST_CATALOG_BYTES;
 pub use aos_sandbox_protocol::{
@@ -30,6 +30,7 @@ use crate::plan::{
     HostCatalog, OpaqueHandle, ResolvedAttachmentAnchor, ResolvedIdentityAllocation,
     ResolvedLaunchResources, ResolvedNetwork, ResolvedWorkspace,
 };
+use crate::storage_root_export::StorageRootMountClientV1;
 use crate::{HostError, Result};
 
 const CATALOG_FILE: &str = "catalog.json";
@@ -38,13 +39,13 @@ const GUEST_PACKAGE_BINDING_CREDENTIAL: &str = "guest-root-package-binding-v1";
 
 /// Resolves one fixed catalog file beneath a pre-opened private directory.
 ///
-/// This reader verifies published metadata and attached directory pins. It
-/// does not acquire the live detached mount required by nspawn's root transfer
-/// role. A privileged workspace publisher and its assignment-bound descriptor
-/// handoff remain required before this catalog can support production launch.
+/// This reader verifies published metadata and attached directory pins. When
+/// configured with the cgroup-v2 anchor, it requests a fresh detached root
+/// from the authenticated Storage service for each launch compilation.
 #[derive(Debug)]
 pub struct FileHostCatalog {
     root: BeneathRoot,
+    root_export_cgroup: Option<CgroupV2Root>,
 }
 
 /// Publishes complete Host launch catalogs beneath one protected root.
@@ -82,7 +83,17 @@ impl FileHostCatalog {
     /// Constructs a catalog reader from a pre-opened private directory.
     #[must_use]
     pub const fn new(root: BeneathRoot) -> Self {
-        Self { root }
+        Self {
+            root,
+            root_export_cgroup: None,
+        }
+    }
+
+    /// Retains the live cgroup-v2 anchor used to authenticate Storage exports.
+    #[must_use]
+    pub fn with_root_export_cgroup(mut self, cgroup_root: CgroupV2Root) -> Self {
+        self.root_export_cgroup = Some(cgroup_root);
+        self
     }
 
     /// Opens a root-owned catalog directory that is not group/other writable.
@@ -297,6 +308,19 @@ impl HostCatalog for FileHostCatalog {
             },
             attachment_anchor,
         })
+    }
+
+    fn export_root_mount(&self, workspace: &ResolvedWorkspace) -> Result<DetachedMount> {
+        let root = self.root_export_cgroup.as_ref().ok_or_else(|| {
+            HostError::Catalog("Storage root export cgroup is unavailable".to_owned())
+        })?;
+        let duplicate = root
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        let root = CgroupV2Root::from_owned(duplicate)
+            .map_err(|error| HostError::Catalog(error.to_string()))?;
+        StorageRootMountClientV1::new(root)?.export(workspace)
     }
 }
 

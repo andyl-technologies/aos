@@ -61,6 +61,15 @@ pub enum ConnectionOutcome {
     TransportRejected,
 }
 
+/// Selects the one peer profile permitted by an activated Host socket.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostListenerRole {
+    /// Node-controller requests on the private control socket.
+    Controller,
+    /// RootMount descriptor requests on the distinct broker socket.
+    RootMount,
+}
+
 /// Owns fixed peer policy and the serialized durable host broker.
 pub struct HostService<C, S, W> {
     broker: HostBroker<C, S, W>,
@@ -107,7 +116,8 @@ where
 
     /// Accepts, verifies, serves, and closes one sequence-packet connection.
     ///
-    /// Unauthorized service peers receive no response. A verified peer first
+    /// The listener role fixes which peer profile may be admitted. Unauthorized
+    /// service peers receive no response. A verified controller peer first
     /// negotiates the host protocol and then sends one enveloped request.
     /// Method responses are emitted only after the body has supplied a fully
     /// validated, session-bound request identifier.
@@ -122,6 +132,7 @@ where
     pub async fn serve_once(
         &mut self,
         listener: &ActivatedSeqpacketListener,
+        role: HostListenerRole,
     ) -> Result<ConnectionOutcome>
     where
         W: Sync,
@@ -135,12 +146,16 @@ where
             }
             Err(error) => return Err(error),
         };
-        if self
-            .verifier
-            .verify_mount_broker(connection.peer_identity())
-            .is_ok()
-        {
-            return self.serve_mount_scope(&connection).await;
+        if role == HostListenerRole::RootMount {
+            return if self
+                .verifier
+                .verify_mount_broker(connection.peer_identity())
+                .is_ok()
+            {
+                self.serve_mount_scope(&connection).await
+            } else {
+                Ok(ConnectionOutcome::PeerRejected)
+            };
         }
         let Ok(peer) = self.verifier.verify(connection.peer_identity()) else {
             return Ok(ConnectionOutcome::PeerRejected);
