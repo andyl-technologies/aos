@@ -249,6 +249,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::GetCampaignPlannerRankings
                 | CampaignServiceOperation::GetCampaignGraphObject
                 | CampaignServiceOperation::QueryCampaignChoices
+                | CampaignServiceOperation::QueryCampaignRequestAttempts
                 | CampaignServiceOperation::QueryCampaignFrontier
                 | CampaignServiceOperation::QueryCampaignReport
                 | CampaignServiceOperation::GetCampaignFrontierObject

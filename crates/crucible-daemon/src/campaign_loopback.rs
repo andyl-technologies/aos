@@ -61,7 +61,9 @@
 //!       54 (OpenCampaignDebugSessionRequestV1) |
 //!       55 (OpenCampaignDebugSessionResponseV1)
 //!       56 (GetCampaignTraceChunkRequestV1) |
-//!       57 (GetCampaignTraceChunkResponseV1)
+//!       57 (GetCampaignTraceChunkResponseV1) |
+//!       58 (QueryCampaignRequestAttemptsRequestV1) |
+//!       59 (QueryCampaignRequestAttemptsResponseV1)
 //! magic = "CRUCCS21"
 //! ```
 //!
@@ -105,9 +107,10 @@ use crucible_campaign::{
     QueryCampaignFindingOccurrencesRequest, QueryCampaignFindingOccurrencesResponse,
     QueryCampaignFindingsRequest, QueryCampaignFindingsResponse, QueryCampaignFrontierRequest,
     QueryCampaignFrontierResponse, QueryCampaignGraphRequest, QueryCampaignGraphResponse,
-    QueryCampaignReportRequest, QueryCampaignReportResponse, RepositoryCampaignService,
-    SubmitCampaignBranchRequest, SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest,
-    SubmitCampaignDiscoveryResponse, WatchCampaignRequest, WatchCampaignResponse,
+    QueryCampaignReportRequest, QueryCampaignReportResponse, QueryCampaignRequestAttemptsRequest,
+    QueryCampaignRequestAttemptsResponse, RepositoryCampaignService, SubmitCampaignBranchRequest,
+    SubmitCampaignBranchResponse, SubmitCampaignDiscoveryRequest, SubmitCampaignDiscoveryResponse,
+    WatchCampaignRequest, WatchCampaignResponse,
 };
 
 use crate::campaign_diagnostics::route_campaign_service_diagnostic;
@@ -144,6 +147,8 @@ const OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND: u8 = 54;
 const OPEN_CAMPAIGN_DEBUG_SESSION_RESPONSE_KIND: u8 = 55;
 const GET_CAMPAIGN_TRACE_CHUNK_REQUEST_KIND: u8 = 56;
 const GET_CAMPAIGN_TRACE_CHUNK_RESPONSE_KIND: u8 = 57;
+const QUERY_CAMPAIGN_REQUEST_ATTEMPTS_REQUEST_KIND: u8 = 58;
+const QUERY_CAMPAIGN_REQUEST_ATTEMPTS_RESPONSE_KIND: u8 = 59;
 const CREATE_CAMPAIGN_REQUEST_KIND: u8 = 8;
 const CREATE_CAMPAIGN_RESPONSE_KIND: u8 = 9;
 const DERIVE_CAMPAIGN_REQUEST_KIND: u8 = 10;
@@ -681,6 +686,25 @@ impl CampaignService for LoopbackCampaignService {
                 Ok(response)
             },
             |failure| failure.validate_for_query_campaign_choices(request.snapshot()),
+        )
+    }
+
+    fn query_campaign_request_attempts(
+        &self,
+        request: &QueryCampaignRequestAttemptsRequest,
+    ) -> Result<QueryCampaignRequestAttemptsResponse, Self::Error> {
+        self.exchange(
+            QUERY_CAMPAIGN_REQUEST_ATTEMPTS_REQUEST_KIND,
+            QUERY_CAMPAIGN_REQUEST_ATTEMPTS_RESPONSE_KIND,
+            request.request_digest(),
+            &request.canonical_bytes(),
+            |response| {
+                let response =
+                    QueryCampaignRequestAttemptsResponse::from_canonical_bytes(response)?;
+                response.validate_for(request)?;
+                Ok(response)
+            },
+            |failure| failure.validate_for_query_campaign_request_attempts(request.snapshot()),
         )
     }
 
@@ -1790,6 +1814,39 @@ where
                 }
             }
         }
+        QUERY_CAMPAIGN_REQUEST_ATTEMPTS_REQUEST_KIND => {
+            let request = QueryCampaignRequestAttemptsRequest::from_canonical_bytes(&body)?;
+            match service.query_campaign_request_attempts(&request) {
+                Ok(response) => {
+                    if let Err(error) = response.validate_for(&request) {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    (
+                        QUERY_CAMPAIGN_REQUEST_ATTEMPTS_RESPONSE_KIND,
+                        response.canonical_bytes(),
+                    )
+                }
+                Err(error) => {
+                    let failure = error.campaign_service_failure();
+                    if let Err(error) =
+                        failure.validate_for_query_campaign_request_attempts(request.snapshot())
+                    {
+                        return reject_invalid_service_response(
+                            stream,
+                            request.request_digest(),
+                            error,
+                            timeouts.write,
+                        );
+                    }
+                    service_error_response(request.request_digest(), &failure)?
+                }
+            }
+        }
         QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND => {
             let request = QueryCampaignFrontierRequest::from_canonical_bytes(&body)?;
             match service.query_campaign_frontier(&request) {
@@ -2052,6 +2109,9 @@ fn campaign_operation_for_request_kind(kind: u8) -> Option<CampaignServiceOperat
             Some(CampaignServiceOperation::GetCampaignGraphObject)
         }
         QUERY_CAMPAIGN_CHOICES_REQUEST_KIND => Some(CampaignServiceOperation::QueryCampaignChoices),
+        QUERY_CAMPAIGN_REQUEST_ATTEMPTS_REQUEST_KIND => {
+            Some(CampaignServiceOperation::QueryCampaignRequestAttempts)
+        }
         QUERY_CAMPAIGN_FRONTIER_REQUEST_KIND => {
             Some(CampaignServiceOperation::QueryCampaignFrontier)
         }

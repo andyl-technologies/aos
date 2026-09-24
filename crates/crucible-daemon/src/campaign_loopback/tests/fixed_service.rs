@@ -263,6 +263,13 @@ impl CampaignService for FixedCampaignService {
         .expect("choice response"))
     }
 
+    fn query_campaign_request_attempts(
+        &self,
+        _request: &QueryCampaignRequestAttemptsRequest,
+    ) -> Result<QueryCampaignRequestAttemptsResponse, Self::Error> {
+        unreachable!("fixed service does not exercise request-attempt queries")
+    }
+
     fn query_campaign_frontier(
         &self,
         request: &QueryCampaignFrontierRequest,
