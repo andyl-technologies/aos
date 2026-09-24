@@ -91,8 +91,7 @@ impl HostExecutionSpecContentFieldsV1 {
     #[must_use]
     pub fn is_control_marker(self) -> bool {
         self.bytes == HOST_EXECUTION_CONTROL_CONTENT_V1.len() as u64
-            && self.digest
-                == <[u8; 32]>::from(Sha256::digest(HOST_EXECUTION_CONTROL_CONTENT_V1))
+            && self.digest == <[u8; 32]>::from(Sha256::digest(HOST_EXECUTION_CONTROL_CONTENT_V1))
     }
 }
 
@@ -331,10 +330,7 @@ pub fn decode_host_execution_apply_v1(
     let no_geometry = request.terminal_rows == 0 && request.terminal_columns == 0;
     let action = match request.action.as_known() {
         Some(HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE)
-            if no_geometry
-                && request.signal_number == 0
-                && (!request.canonical_execution_spec.is_empty()
-                    || request.spec_transfer_version == 1) =>
+            if no_geometry && request.signal_number == 0 =>
         {
             EffectOperationV1::AuthorizeExecution
         }
@@ -410,37 +406,16 @@ pub fn decode_host_execution_apply_v1(
                 "spec attempt commitment",
             ));
         }
-        Some(HostExecutionSpecContentFieldsV1 {
+        HostExecutionSpecContentFieldsV1 {
             bytes: request.spec_content_bytes,
             digest,
             attempt_commitment,
-        })
-    } else if request.spec_transfer_version == 0
-        && request.spec_content_bytes == 0
-        && request.spec_content_digest.is_empty()
-        && request.spec_attempt_commitment.is_empty()
-    {
-        None
+        }
     } else {
         return Err(ProtocolValidationError::InvalidField(
             "spec transfer version",
         ));
     };
-    let specification =
-        if matches!(action, EffectOperationV1::AuthorizeExecution) && content.is_none() {
-            let limits = DecodeLimits {
-                maximum_bytes: MAXIMUM_HANDOFF_BODY_BYTES,
-                ..DecodeLimits::default()
-            };
-            let specification = decode_execution_spec_v1(&request.canonical_execution_spec, limits)
-                .map_err(|_| ProtocolValidationError::InvalidField("canonical_execution_spec"))?;
-            if specification.execution() != execution_id {
-                return Err(ProtocolValidationError::InvalidField("execution_id"));
-            }
-            Some(specification)
-        } else {
-            None
-        };
 
     Ok(ValidatedHostExecutionApplyV1 {
         header,
@@ -448,8 +423,8 @@ pub fn decode_host_execution_apply_v1(
         execution_id,
         source_commitment,
         action,
-        specification,
-        content,
+        specification: None,
+        content: Some(content),
     })
 }
 
@@ -572,6 +547,7 @@ fn execution_result_digest(bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod content_tests {
     use super::*;
+    use aos_proto::aos::sandbox::local::v1::{Audience, RequestHeader};
 
     fn fields(request_id: [u8; 16], content: &[u8]) -> HostExecutionSpecContentFieldsV1 {
         host_execution_spec_content_fields_v1(
@@ -590,7 +566,10 @@ mod content_tests {
         let original = fields([1; 16], b"specification");
 
         assert_eq!(original.bytes(), 13);
-        assert_ne!(original.digest(), fields([1; 16], b"specification!").digest());
+        assert_ne!(
+            original.digest(),
+            fields([1; 16], b"specification!").digest()
+        );
         assert_ne!(
             original.attempt_commitment(),
             fields([5; 16], b"specification").attempt_commitment()
@@ -603,15 +582,17 @@ mod content_tests {
 
         assert_eq!(fields([1; 16], &largest).bytes(), largest.len() as u64);
         let oversized = vec![7; MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 1];
-        assert!(host_execution_spec_content_fields_v1(
-            [1; 16],
-            [2; 16],
-            ExecutionId::from_bytes([3; 16]),
-            ObjectDigest::from_bytes([4; 32]),
-            EffectOperationV1::AuthorizeExecution,
-            &oversized,
-        )
-        .is_err());
+        assert!(
+            host_execution_spec_content_fields_v1(
+                [1; 16],
+                [2; 16],
+                ExecutionId::from_bytes([3; 16]),
+                ObjectDigest::from_bytes([4; 32]),
+                EffectOperationV1::AuthorizeExecution,
+                &oversized,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -627,14 +608,54 @@ mod content_tests {
         .unwrap();
 
         assert!(accepted.is_control_marker());
-        assert!(host_execution_spec_content_fields_v1(
-            [1; 16],
-            [2; 16],
-            ExecutionId::from_bytes([3; 16]),
-            ObjectDigest::from_bytes([4; 32]),
-            EffectOperationV1::Cancel,
-            b"other",
-        )
-        .is_err());
+        assert!(
+            host_execution_spec_content_fields_v1(
+                [1; 16],
+                [2; 16],
+                ExecutionId::from_bytes([3; 16]),
+                ObjectDigest::from_bytes([4; 32]),
+                EffectOperationV1::Cancel,
+                b"other",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_inline_apply_is_rejected_by_the_host_decoder() {
+        let request = ApplyHostExecutionRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                request_id: vec![1; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 10,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .into(),
+            operation_id: vec![2; 16],
+            execution_id: vec![3; 16],
+            source_operation_commitment: vec![4; 32],
+            action: HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE.into(),
+            canonical_execution_spec: vec![5],
+            ..Default::default()
+        };
+        let peer = PeerCredentials {
+            uid: 100,
+            gid: 200,
+            pid: Some(300),
+        };
+        let policy = PeerPolicy {
+            uid: 100,
+            gid: Some(200),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+
+        assert!(matches!(
+            decode_host_execution_apply_v1(&request.encode_to_vec(), peer, policy, 1),
+            Err(ProtocolValidationError::InvalidField(
+                "spec transfer version"
+            ))
+        ));
     }
 }

@@ -420,7 +420,8 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerSessionAuthorizationPresenceV1::Forbidden
     };
     let required_features: &'static [BrokerSessionMethodFeatureV1] = match method {
-        BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => &HOST_EXECUTION_SPEC_FEATURES,
+        BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => &HOST_EXECUTION_SPEC_FEATURES,
         BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION => {
             &MOUNT_SOURCE_EFFECT_FEATURES
@@ -816,10 +817,15 @@ fn validate_feature_conditions(
     {
         return Err(BrokerSessionNegotiationError::FeatureCondition);
     }
-    if required_methods.contains(&BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION)
-        && (protocol != BrokerSessionProtocolV1::Host
-            || !has_feature(required_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE)
-            || !has_feature(advertised_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE))
+    if required_methods.iter().any(|method| {
+        matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+        )
+    }) && (protocol != BrokerSessionProtocolV1::Host
+        || !has_feature(required_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE)
+        || !has_feature(advertised_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE))
     {
         return Err(BrokerSessionNegotiationError::FeatureCondition);
     }
@@ -888,8 +894,11 @@ pub(crate) fn method_has_required_traffic_features(
         || has_feature(required_features, SIGNED_PLAN_LEASE_FEATURE))
         && (!is_mount_source_acquisition_method(method)
             || has_feature(required_features, MOUNT_SOURCE_ACQUISITION_FEATURE))
-        && (method != BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-            || has_feature(required_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE))
+        && (!matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+        ) || has_feature(required_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE))
 }
 
 const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
@@ -925,7 +934,7 @@ mod tests {
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_NODE_CONTROLLER,
                 6,
-                2,
+                3,
             ),
             (
                 BrokerSessionProtocolV1::Host,
@@ -1013,6 +1022,33 @@ mod tests {
                 1,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn query_only_session_requires_the_versioned_content_feature() {
+        let protocol = BrokerSessionProtocolV1::Host;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let mut client =
+            production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+        let broker =
+            production_broker_server_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
+        client.required_methods = vec![BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION.into()];
+        client
+            .required_features
+            .retain(|feature| feature.namespace != HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE);
+
+        assert_eq!(
+            authenticated_broker_method_profile_v1(
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            )
+            .unwrap()
+            .request_descriptor_roles(),
+            &[]
+        );
+        assert_eq!(
+            validate_authenticated_negotiation_v1(&client, &broker, protocol, 1, 0, audience),
+            Err(BrokerSessionNegotiationError::FeatureCondition)
         );
     }
 }

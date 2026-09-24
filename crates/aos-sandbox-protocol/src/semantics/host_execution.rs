@@ -76,23 +76,16 @@ pub fn canonical_host_execution_apply_semantics_v1(
     request: &ValidatedHostExecutionApplyV1,
     assignment: BrokerAssignment,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
-    if let Some(content) = request.content_fields() {
-        return host_execution_apply_content_grant_v1(
-            assignment,
-            request.operation_id(),
-            request.execution_id(),
-            request.source_commitment(),
-            request.action(),
-            content,
-        );
-    }
-    host_execution_apply_grant_v1(
+    let content = request
+        .content_fields()
+        .ok_or(HostExecutionSemanticErrorV1::InvalidAction)?;
+    host_execution_apply_content_grant_v1(
         assignment,
         request.operation_id(),
         request.execution_id(),
         request.source_commitment(),
         request.action(),
-        request.specification(),
+        content,
     )
 }
 
