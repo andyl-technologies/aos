@@ -24,7 +24,10 @@ use aos_contract::limits::{BoundedWriter, JsonLimits};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{TransitionEvaluation, TransitionEvaluationResult};
+use crate::{
+    CompositionEvaluator, SourceTransitionPlan, TransitionError, TransitionEvaluation,
+    TransitionEvaluationResult, TransitionPlanner,
+};
 
 /// Exact schema discriminator for one source-composed stage bundle.
 pub const SOURCE_STAGE_BUNDLE_SCHEMA: &str = "aos.ability.source-stage-bundle/v1";
@@ -611,6 +614,9 @@ pub enum SourceStageBundleError {
     /// The instantiated graph still has unresolved deployment obligations.
     #[error("source stage runtime plan is not executable")]
     PlanNotExecutable,
+    /// Fresh pure transition construction failed against the observed binding.
+    #[error("source stage runtime transition failed: {0}")]
+    RuntimeTransition(#[source] TransitionError),
     /// A claimed authority, binding plan, or effect plan identity differs.
     #[error("source stage bundle identity linkage is inconsistent")]
     IdentityMismatch,
@@ -885,18 +891,22 @@ impl SourceStageBundle {
     /// Instantiates a complete plan from a trusted stage-entry environment.
     ///
     /// The caller must authenticate and freshness-check the root observation.
-    /// This pure step permits only provider state, incarnation, and freshness
-    /// to differ from the sealed source template. It recomputes every affected
-    /// document identity and runs the ordinary executable-plan validator.
+    /// Only provider state, incarnation, and freshness may differ from the
+    /// sealed template. Pure transition constructors receive those observations,
+    /// so the effect graph must be rebuilt from the freshly checked binding.
+    /// The returned transcript belongs to the admitted plan and must be kept
+    /// with its durable transaction evidence.
     ///
     /// # Errors
     ///
     /// Returns an error for a malformed template, altered sealed input,
-    /// unresolved provider readiness, or any invalid runtime effect plan.
+    /// transition evaluation failure, unresolved provider readiness, or an
+    /// invalid runtime effect plan.
     pub fn instantiate_from_trusted_environment(
         &self,
         observed: EnvironmentDocument,
-    ) -> Result<CheckedEffectPlan, SourceStageBundleError> {
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<SourceTransitionPlan, SourceStageBundleError> {
         self.clone().check_template(None)?;
         if observed.providers.len() != self.environment.providers.len()
             || observed
@@ -942,15 +952,13 @@ impl SourceStageBundle {
             .map_err(SourceStageBundleError::Validation)?;
         self.validate_fixed_point(&binding)?;
 
-        let mut effect_document = self.effect_document.clone();
-        effect_document.binding_plan = binding.id().0;
-        let plan = context
-            .validate_effect_plan(effect_document, binding)
-            .map_err(SourceStageBundleError::Validation)?;
-        if !plan.is_executable() {
+        let transition = TransitionPlanner::new(&context)
+            .plan_source(self.authority, &binding, &self.fixed_point, evaluator)
+            .map_err(SourceStageBundleError::RuntimeTransition)?;
+        if !transition.checked_effect().is_executable() {
             return Err(SourceStageBundleError::PlanNotExecutable);
         }
-        Ok(plan)
+        Ok(transition)
     }
 
     fn validate_binding(
@@ -1661,17 +1669,34 @@ mod tests {
         ));
 
         let admitted = bundle
-            .instantiate_from_trusted_environment(observed.clone())
+            .instantiate_from_trusted_environment(observed.clone(), &mut EmptyTransitionEvaluator)
             .expect("fresh inventory admits the same source graph");
-        assert!(admitted.is_executable());
-        assert_ne!(admitted.id(), bundle.effect_plan());
-        assert_eq!(admitted.binding_plan().environment(), &observed);
+        assert!(admitted.checked_effect().is_executable());
+        assert_ne!(admitted.checked_effect().id(), bundle.effect_plan());
+        assert_eq!(
+            admitted.checked_effect().binding_plan().environment(),
+            &observed
+        );
+        assert!(!admitted.evaluations().is_empty());
+        for evaluation in admitted.evaluations() {
+            let context: crate::TransitionContext =
+                serde_json::from_value(evaluation.input.as_json().clone())
+                    .expect("fresh transition context");
+            assert_eq!(context.observations.freshness, observed.freshness);
+        }
+        assert_ne!(
+            admitted.evaluations()[0].input,
+            bundle.transition.evaluations[0].input,
+        );
 
         let mut changed_provider = observed;
         changed_provider.providers[0].implementation.descriptor =
             Sha256Digest::separated("aos.test.foreign-implementation/v1", b"foreign");
         assert!(matches!(
-            bundle.instantiate_from_trusted_environment(changed_provider),
+            bundle.instantiate_from_trusted_environment(
+                changed_provider,
+                &mut EmptyTransitionEvaluator,
+            ),
             Err(SourceStageBundleError::RootInventoryMismatch)
         ));
     }
