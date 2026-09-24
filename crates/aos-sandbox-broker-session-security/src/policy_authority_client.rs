@@ -260,7 +260,7 @@ impl PolicyAuthorityExplicitHeadReceiptV4 {
     }
 }
 
-fn connect_policy_query(
+pub(crate) fn connect_policy_query(
     magic: &[u8; 8],
     read_timeout: Duration,
 ) -> io::Result<(UnixStream, [u8; 16])> {

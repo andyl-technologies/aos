@@ -18,7 +18,7 @@ use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 
-const CACHE_PIN_KEY: &[u8] = b"\0aos-policy-cache-readback-pin-v1\0";
+pub(super) const CACHE_PIN_KEY: &[u8] = b"\0aos-policy-cache-readback-pin-v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-cache-readback-pin-transaction.v1\0";
 
 /// Reports a rejected protected Cache readback pin admission.
@@ -66,7 +66,7 @@ pub fn admit_fixed_cache_readback_pin_v1(
     )
 }
 
-fn admit_cache_readback_pin_in_journal_v1(
+pub(super) fn admit_cache_readback_pin_in_journal_v1(
     journal: &mut Journal,
     credential: Option<&[u8]>,
     deployment_generation: u64,

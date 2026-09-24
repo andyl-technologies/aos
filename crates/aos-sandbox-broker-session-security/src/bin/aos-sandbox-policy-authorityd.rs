@@ -4,7 +4,9 @@
 //! authenticated signed-head receipt to the node controller. Its version-4
 //! exchange can retain a closed AOSPCB02 root CAS and handoff epoch. It cannot
 //! admit the project source against the controller-owned publisher journal,
-//! authorize compiler publication, or authorize Create effects.
+//! authorize compiler publication, or authorize Create effects. A separate
+//! version-5 exchange spends a root challenge and verifies a Cache-only signed
+//! readback without promoting it into Q04 authority.
 
 use std::{
     error::Error,
@@ -18,12 +20,13 @@ use std::{
 };
 
 use aos_sandbox::policy_compiler::{
-    CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
+    CLOSED_POLICY_BINDING_BYTES_V2, ClosedCacheReadbackRootChallengeV1, ClosedPolicyRootCasBaseV2,
+    ClosedPolicyRootCasObservationV2, PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
-    with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
+    with_fixed_closed_cache_readback_session_v1, with_fixed_current_policy_head_lease_v1,
+    with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
@@ -31,6 +34,11 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
     POLICY_HEAD_LEASE_ACK_MAGIC_V3, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
     POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+};
+use aos_sandbox_broker_session_security::policy_cache_readback_client::{
+    CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5,
+    POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5, POLICY_CACHE_READBACK_QUERY_MAGIC_V5,
+    POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5,
 };
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
@@ -50,6 +58,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     ClosedBinding,
+    ClosedCacheReadback,
 }
 
 fn main() -> ExitCode {
@@ -203,6 +212,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .map(|(packet, input)| (packet.as_slice(), input.as_slice())),
             project_signer.verifying_key(),
             project_signer.generation(),
+            cache_pin.as_deref(),
         ) {
             eprintln!("aos-sandbox-policy-authorityd: rejected head query: {error}");
         }
@@ -222,6 +232,7 @@ fn serve_current_head(
     explicit_project: Option<(&[u8], &[u8])>,
     project_key: &VerifyingKey,
     project_signer_generation: u64,
+    cache_pin: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
     let peer = rustix::net::sockopt::socket_peercred(&*stream)?;
     if peer.uid.as_raw() != controller_uid || peer.gid.as_raw() != controller_gid {
@@ -240,10 +251,16 @@ fn serve_current_head(
         Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
         Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
         Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => HeadRequestMode::ClosedBinding,
+        Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
+            HeadRequestMode::ClosedCacheReadback
+        }
         _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into()),
     };
     if request[24..] != [0; 8] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
+    }
+    if matches!(mode, HeadRequestMode::ClosedCacheReadback) && request[8..24] == [0; 16] {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Cache client nonce").into());
     }
     // Reject a cross-version request before touching the protected root head.
     let (project_packet, project_input) =
@@ -252,51 +269,78 @@ fn serve_current_head(
     let now_unix_seconds = i64::try_from(now.as_secs())?;
     let deployment =
         admit_fixed_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)?;
-    let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) =
-        if matches!(mode, HeadRequestMode::ClosedBinding) {
-            let verified = verify_signed_project_policy_source_v2(
-                project_packet,
-                project_input,
-                project_key,
-                now_unix_seconds,
-            )?;
-            if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
-                || verified.head().deployment_signer_generation() != deployment_signer_generation
-                || verified.head().project_signer_generation() != project_signer_generation
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "explicit project source is not current at the root",
-                )
-                .into());
-            }
-            (
-                project_packet,
-                project_input,
-                POLICY_BINDING_RECEIPT_MAGIC_V4,
-                verified.head().expires_at(),
+    let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) = if matches!(
+        mode,
+        HeadRequestMode::ClosedBinding | HeadRequestMode::ClosedCacheReadback
+    ) {
+        let verified = verify_signed_project_policy_source_v2(
+            project_packet,
+            project_input,
+            project_key,
+            now_unix_seconds,
+        )?;
+        if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
+            || verified.head().deployment_signer_generation() != deployment_signer_generation
+            || verified.head().project_signer_generation() != project_signer_generation
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "explicit project source is not current at the root",
             )
-        } else {
-            let verified = verify_signed_project_policy_source_v1(
-                project_packet,
-                project_input,
-                project_key,
-                now_unix_seconds,
-            )?;
-            if verified.head().prerequisite_claims()[1] != deployment.packet_digest() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "project deployment head mismatch",
-                )
-                .into());
-            }
-            (
-                project_packet,
-                project_input,
-                POLICY_HEAD_RECEIPT_MAGIC_V2,
-                verified.head().expires_at(),
+            .into());
+        }
+        (
+            project_packet,
+            project_input,
+            POLICY_BINDING_RECEIPT_MAGIC_V4,
+            verified.head().expires_at(),
+        )
+    } else {
+        let verified = verify_signed_project_policy_source_v1(
+            project_packet,
+            project_input,
+            project_key,
+            now_unix_seconds,
+        )?;
+        if verified.head().prerequisite_claims()[1] != deployment.packet_digest() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "project deployment head mismatch",
             )
-        };
+            .into());
+        }
+        (
+            project_packet,
+            project_input,
+            POLICY_HEAD_RECEIPT_MAGIC_V2,
+            verified.head().expires_at(),
+        )
+    };
+
+    if matches!(mode, HeadRequestMode::ClosedCacheReadback) {
+        let cache_pin = cache_pin.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Cache readback pin unavailable",
+            )
+        })?;
+        serve_closed_cache_readback(
+            stream,
+            &request[8..24],
+            packet,
+            selected_project_packet,
+            selected_project_input,
+            cache_pin,
+            deployment_signer_generation,
+            verifying_key,
+            project_signer_generation,
+            project_key,
+            controller_uid,
+            deployment.expires_at(),
+            project_expires_at,
+        )?;
+        return Ok(());
+    }
 
     let mut receipt = Vec::with_capacity(MAXIMUM_RECEIPT_BYTES + EXPLICIT_PROJECT_PACKET_BYTES);
     receipt.extend_from_slice(receipt_magic);
@@ -388,6 +432,93 @@ fn serve_current_head(
         stream.write_all(&receipt)?;
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_closed_cache_readback(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+    deployment_head: &[u8],
+    project_head: &[u8],
+    project_input: &[u8],
+    cache_pin: &[u8],
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    deployment_expires: i64,
+    project_expires: i64,
+) -> Result<(), Box<dyn Error>> {
+    let observation = with_fixed_closed_cache_readback_session_v1(
+        deployment_head,
+        project_head,
+        project_input,
+        cache_pin,
+        deployment_generation,
+        deployment_key,
+        project_generation,
+        project_key,
+        controller_uid,
+        fresh_root_cache_nonce,
+        |challenge| {
+            write_cache_challenge(stream, client_nonce, challenge)?;
+            stream.set_read_timeout(Some(LEASE_ACK_TIMEOUT))?;
+            let mut response = [0_u8; CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5];
+            stream.read_exact(&mut response)?;
+            decode_cache_response(&response, client_nonce)
+        },
+    )?;
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+    stream.write_all(POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5)?;
+    stream.write_all(client_nonce)?;
+    stream.write_all(observation.packet_digest().as_bytes())?;
+    stream.write_all(&observation.epoch().to_be_bytes())?;
+    Ok(())
+}
+
+fn fresh_root_cache_nonce() -> io::Result<[u8; 16]> {
+    let mut nonce = [0_u8; 16];
+    let mut filled = 0;
+    while filled < nonce.len() {
+        let count =
+            rustix::rand::getrandom(&mut nonce[filled..], rustix::rand::GetRandomFlags::empty())
+                .map_err(io::Error::other)?;
+        if count == 0 {
+            return Err(io::Error::other("root entropy unavailable"));
+        }
+        filled += count;
+    }
+    if nonce == [0; 16] {
+        return Err(io::Error::other("zero root nonce"));
+    }
+    Ok(nonce)
+}
+
+fn write_cache_challenge(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+    challenge: ClosedCacheReadbackRootChallengeV1,
+) -> io::Result<()> {
+    let readback = challenge.readback();
+    stream.write_all(POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5)?;
+    stream.write_all(client_nonce)?;
+    stream.write_all(&readback.nonce())?;
+    stream.write_all(readback.cut().as_bytes())?;
+    stream.write_all(&challenge.epoch().to_be_bytes())
+}
+
+fn decode_cache_response(
+    response: &[u8; CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5],
+    client_nonce: &[u8],
+) -> io::Result<Vec<u8>> {
+    if &response[..8] != POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5 || &response[8..24] != client_nonce {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid closed Cache readback response",
+        ));
+    }
+    Ok(response[24..].to_vec())
 }
 
 fn validate_lease_ack(acknowledgement: &[u8; 24], nonce: &[u8]) -> io::Result<()> {
@@ -492,12 +623,13 @@ fn select_project_source<'a>(
     explicit: Option<(&'a [u8], &'a [u8])>,
 ) -> io::Result<(&'a [u8], &'a [u8])> {
     match mode {
-        HeadRequestMode::ClosedBinding => explicit.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "explicit project source is unavailable",
-            )
-        }),
+        HeadRequestMode::ClosedBinding | HeadRequestMode::ClosedCacheReadback => explicit
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "explicit project source is unavailable",
+                )
+            }),
         HeadRequestMode::Query | HeadRequestMode::Lease => legacy.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -559,6 +691,23 @@ mod tests {
     }
 
     #[test]
+    fn closed_cache_response_rejects_wrong_magic_and_client_session() {
+        let client_nonce = [2; 16];
+        let mut response = [0_u8; CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5];
+        response[..8].copy_from_slice(POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5);
+        response[8..24].copy_from_slice(&client_nonce);
+        assert_eq!(
+            decode_cache_response(&response, &client_nonce)
+                .expect("closed frame")
+                .len(),
+            CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5 - 24
+        );
+        assert!(decode_cache_response(&response, &[3; 16]).is_err());
+        response[..8].copy_from_slice(POLICY_BINDING_SUBMIT_MAGIC_V4);
+        assert!(decode_cache_response(&response, &client_nonce).is_err());
+    }
+
+    #[test]
     fn explicit_project_credentials_require_an_exact_complete_pair() {
         let directory = tempfile::tempdir().expect("credential directory");
         assert!(
@@ -596,8 +745,15 @@ mod tests {
         assert!(select_project_source(HeadRequestMode::Query, None, explicit).is_err());
         assert!(select_project_source(HeadRequestMode::Lease, None, explicit).is_err());
         assert!(select_project_source(HeadRequestMode::ClosedBinding, legacy, None).is_err());
+        assert!(select_project_source(HeadRequestMode::ClosedCacheReadback, legacy, None).is_err());
         assert_eq!(
             select_project_source(HeadRequestMode::ClosedBinding, None, explicit)
+                .expect("explicit source")
+                .0,
+            b"explicit-packet"
+        );
+        assert_eq!(
+            select_project_source(HeadRequestMode::ClosedCacheReadback, None, explicit)
                 .expect("explicit source")
                 .0,
             b"explicit-packet"

@@ -52,6 +52,9 @@ handoff. The receipt must bind exact named identities, durable head, current
 quota envelope, revocation, and the all-owner cut. A signature or persisted
 pin alone never opens Create. The current Cache owner shares the Controller
 UID, so this is delegated same-UID trust, not process isolation.
+The closed `AOSPHQ05` Cache readback exchange may durably spend a root challenge
+and verify that signer, but its root-source cut is not the all-owner cut and
+its acknowledgement is not a publication or effect capability.
 
 ## Execution admission and observation
 

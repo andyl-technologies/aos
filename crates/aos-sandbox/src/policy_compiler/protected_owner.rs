@@ -712,7 +712,8 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 5,
+        // Cache pin and spent challenge add two fixed records to the prior envelope.
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 7,
     }
 }
 

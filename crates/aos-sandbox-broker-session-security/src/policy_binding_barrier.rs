@@ -1,7 +1,7 @@
 //! Held controller/source-domain/Cache/root cut for a closed policy binding.
 //!
 //! A future controller caller supplies its already-held controller journal.
-//! This bridge opens source-domain and physical Cache custody in that order,
+//! This bridge opens source-domain and protected Cache custody in that order,
 //! then acquires the root writer through the authenticated local exchange.
 //! The root service retains its writer through durable AOSPCB02 CAS and a
 //! nonce-bound acknowledgement; local owners recheck before release. No
@@ -38,7 +38,7 @@ use crate::policy_authority_client::{
 ///
 /// # Errors
 ///
-/// Rejects stale Create, ancestry, publisher, revocation, or physical Cache
+/// Rejects stale Create, ancestry, publisher, revocation, or protected Cache
 /// state, changed signed inputs, root peer or CAS mismatch, and lost transport.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_fixed_parentless_create_closed_binding_v4(

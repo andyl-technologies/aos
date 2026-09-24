@@ -1,8 +1,8 @@
 //! Closed signed readback of the physical Cache owner's fixed names.
 //!
 //! The packet authenticates a held owner's statement, not the verifier's own
-//! filesystem observation. No production signer credential, root acceptance,
-//! or policy-publication path consumes it.
+//! filesystem observation. A closed root challenge exchange may verify it,
+//! but no policy-publication path consumes it.
 //!
 //! ```text
 //! AOSCRB01 | version:u16 | reserved:u16 | signer-generation:u64 |
@@ -35,7 +35,7 @@ const KEY_MAGIC: &[u8; 8] = b"AOSCPK01";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.cache-owner-readback-verifier.v1\0";
 const KEY_CREDENTIAL_BYTES: usize = 80;
 
-/// Names one root session and its already-held Controller/source/Cache cut.
+/// Names one root session and its root-authenticated signed-source cut.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CacheOwnerReadbackChallengeV1 {
     nonce: [u8; 16],
@@ -54,13 +54,25 @@ impl CacheOwnerReadbackChallengeV1 {
         }
         Ok(Self { nonce, cut })
     }
+
+    /// Returns the root-generated session nonce.
+    #[must_use]
+    pub const fn nonce(self) -> [u8; 16] {
+        self.nonce
+    }
+
+    /// Returns the protected root-source cut bound by the challenge.
+    #[must_use]
+    pub const fn cut(self) -> ObjectDigest {
+        self.cut
+    }
 }
 
 /// Retains a role-specific Cache readback verification key generation.
 ///
-/// Decoding this type does not prove credential custody. A future root caller
-/// must load its bytes from a fixed privileged deployment credential, never
-/// from the Controller request or the signed packet.
+/// Decoding this type does not prove credential custody. The root caller must
+/// load its bytes from a fixed privileged deployment credential, never from
+/// the Controller request or the signed packet.
 pub struct PinnedCacheOwnerReadbackSignerV1 {
     generation: u64,
     key: VerifyingKey,
@@ -314,6 +326,31 @@ pub(super) fn sign_closed_cache_owner_readback_v1(
     let signature = signing_key.sign(&signature_preimage(&bytes[..BODY_BYTES]));
     bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     Ok(bytes)
+}
+
+#[cfg(test)]
+pub(crate) fn sign_test_cache_owner_readback_v1(
+    challenge: CacheOwnerReadbackChallengeV1,
+    generation: u64,
+    signing_key: &SigningKey,
+    owner_uid: u32,
+) -> Result<[u8; RECEIPT_BYTES], CacheOwnerReadbackErrorV1> {
+    sign_closed_cache_owner_readback_v1(
+        CacheOwnerReadbackFieldsV1 {
+            root_device: 11,
+            root_inode: 12,
+            root_uid: owner_uid,
+            root_mode: 0o700,
+            lock_device: 11,
+            lock_inode: 13,
+            manifest_generation: 7,
+            manifest_digest: ObjectDigest::from_bytes([4; 32]),
+            limits_digest: ObjectDigest::from_bytes([5; 32]),
+        },
+        challenge,
+        generation,
+        signing_key,
+    )
 }
 
 pub(super) fn cache_owner_limits_digest_v1(

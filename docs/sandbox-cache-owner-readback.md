@@ -13,8 +13,10 @@ rejected as a signed readback.
 Deployment may now provision a separate Cache signing seed and `AOSCPK01`
 public credential. Controller startup verifies the pair and forgets the seed;
 root persists the exact public pin after checking its deployment/project pins
-and rejects key reuse or rotation. No service transports the packet or accepts
-it in `AOSPHQ04`.
+and rejects key reuse or rotation. The separate `AOSPHQ05` exchange can spend a
+fresh root-writer challenge epoch, authenticate the Controller socket peer,
+and verify one signed readback under the fixed pin. Its acknowledgement is
+non-authorizing; `AOSPHQ04` does not consume it.
 The seed is an external system credential, not a repository or Nix-store
 literal. `aos-sandbox-policy-key-pin cache` creates the public credential from
 an externally derived Ed25519 public key. The Controller and policy-authority
@@ -33,12 +35,19 @@ Controller UID, so a signature alone does not isolate it from compromise of
 another process with that UID. Separate Cache-process custody is not yet
 provided by the current Controller-resident owner.
 
-Even after that decision, live admission needs a root-generated fresh nonce
-under its writer; Controller, source-domain, protected Cache journals, and the
-physical Cache flock held in canonical order through root CAS and a recoverable
-effect handoff; root verification of the exact current protected Cache quota
-envelope; and crash/replay checks that cannot reuse an old cut. The current
-packet supplies none of those owners or effects. A privileged read-only
+The Q05 root challenge binds only root-authenticated deployment and V2 project
+source records, the fixed Cache signer pin, and a durable spent epoch. The
+Controller-side client can sign only through a locally held physical Cache
+snapshot, which rechecks the fixed root, lock flock, manifest and owner limits
+before and after signing. Root verifies the signature, expected Controller UID,
+nonce and root-source cut, but cannot independently establish from that packet
+that the protected Cache quota/head or other owners were held at one cut.
+
+Live Q04 admission still needs Controller, source-domain, protected Cache
+journals, and the physical Cache flock held in canonical order through root CAS
+and a recoverable effect handoff; root verification of the exact current
+protected Cache quota envelope; and crash/replay checks binding every owner to
+that same cut. A privileged read-only
 idmapped Cache view would instead permit root to resolve names itself while
 keeping on-disk mode 0700 and policy-authorityd cap-empty, but it introduces a
 trusted mount setup and still needs non-mutating protected journal replay.
