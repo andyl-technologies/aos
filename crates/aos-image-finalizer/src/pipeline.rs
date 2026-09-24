@@ -118,6 +118,7 @@ pub async fn finalize_image_set(
         &format_work.join("output"),
         &format_work.join("scratch"),
         mebibytes(assembly.budgets.download_mib)?,
+        mebibytes(assembly.budgets.converted_download_limit_mib())?,
         &zstd,
         &qemu_img,
     )

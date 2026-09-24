@@ -120,9 +120,9 @@ in
               'abort unless RUBY_VERSION == "${version}"'
           ''
           + lib.optionalString isLinuxCross ''
-            # Bundled gems install compilation intermediates whose debug
-            # metadata retains paths to the build compiler.
-            find "$out/lib/ruby/gems" -type f -name '*.o' -delete
+            # Bundled gems retain object files and mkmf probe logs with
+            # paths to the build compiler, which is not a runtime dependency.
+            find "$out/lib/ruby/gems" -type f \( -name '*.o' -o -name 'mkmf.log' \) -delete
           '';
       }
     ];
