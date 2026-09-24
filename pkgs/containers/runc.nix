@@ -52,7 +52,7 @@ in
         name = "build";
         script = ''
           export GOPATH=$TMPDIR/go
-          if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then export GOCACHE=/aos-build-cache/go; else export GOCACHE=$TMPDIR/go-cache; fi
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export CGO_ENABLED=1
           export GOPROXY=off
           if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then

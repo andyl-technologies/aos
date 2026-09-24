@@ -176,7 +176,10 @@ run inside the container after it (for example,
 the AOS-built Docker client.
 
 Run `bash ./aos-dev cache init` once per machine. The default cache lives in
-`~/.cache/aos-dev`; set `AOS_DEV_CACHE_DIR` to an absolute path to relocate it.
+`/var/tmp/aos-dev-cache-$(id -u)`; set `AOS_DEV_CACHE_DIR` to an absolute path
+to relocate it. Every parent of the chosen path must be traversable by Nix
+build users. This is why a private `0700` home directory cannot hold the cache.
+`cache init` checks the mount from a real sandbox before building sccache.
 The script starts the AOS-built sccache server and passes the cache directory
 to Nix as an extra sandbox path. The invoking Nix user must either be trusted
 to set this restricted option, or the daemon administrator must configure a
@@ -186,6 +189,9 @@ run may build the Rust toolchain to realize the AOS-built sccache package.
 The first cache-enabled build of a toolchain stage also has a distinct Nix
 identity, so expect one cold build before later source changes can reuse its
 compiler results.
+Inside builds, `AOS_SHARED_BUILD_CACHE` names the stable `/aos-build-cache`
+mount; `GOCACHE`, `SCCACHE_SERVER_UDS`, and `AOS_BAZEL_DISK_CACHE` select their
+backend paths. The host directory never enters a package derivation hash.
 The shared `mkDerivation` wrapper covers common GCC and C++ compiler calls;
 `mkCargoPackage` sends rustc through sccache, `mkGoPackage` uses the shared Go
 compilation cache, and `mkBazelPackage` uses Bazel's disk action cache. Rust

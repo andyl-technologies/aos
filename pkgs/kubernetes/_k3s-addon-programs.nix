@@ -50,7 +50,7 @@
           name = "build";
           script = ''
             export GOPATH="${modules}"
-            if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then export GOCACHE=/aos-build-cache/go; else export GOCACHE="$TMPDIR/go-cache"; fi
+            export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
             export GOPROXY=off
             export GOTOOLCHAIN=local
             export GOFLAGS=-mod=readonly

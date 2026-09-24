@@ -1046,8 +1046,8 @@ in rec {
         }
                   export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
                   export CMAKE_POLICY_VERSION_MINIMUM=3.5
-                  if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then
-                    echo "build --disk_cache=/aos-build-cache/bazel" >> .bazelrc
+                  if [ -n "''${AOS_BAZEL_DISK_CACHE:-}" ]; then
+                    echo "build --disk_cache=$AOS_BAZEL_DISK_CACHE" >> .bazelrc
                     echo "build --experimental_disk_cache_gc_max_size=50G" >> .bazelrc
                     echo "build --experimental_disk_cache_gc_max_age=14d" >> .bazelrc
                   fi

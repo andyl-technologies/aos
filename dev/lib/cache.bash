@@ -1,6 +1,7 @@
 # The host directory has one stable sandbox name so derivations never embed a
-# developer-specific home path. Trusted-user mode mounts it per build command.
-aos_dev_cache_dir=${AOS_DEV_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/aos-dev}
+# developer-specific path. /var/tmp remains accessible to nixbld users even
+# when a developer's home directory is private, and survives normal reboots.
+aos_dev_cache_dir=${AOS_DEV_CACHE_DIR:-/var/tmp/aos-dev-cache-$(id -u)}
 
 aos_dev_cache_check_nix() {
   # sandbox-paths is restricted by the daemon. A client setting from an
@@ -48,6 +49,9 @@ aos_dev_cache_prepare() {
   for path in "$aos_dev_cache_dir" "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel" \
       "$aos_dev_cache_dir/sccache" "$aos_dev_cache_dir/sccache/store"; do
     [[ ! -L $path ]] || aos_dev_error "cache setup refuses symlink: $path"
+    # /var/tmp is shared. Refuse a path pre-created by another user instead
+    # of changing its mode or placing a server socket inside it.
+    [[ ! -e $path || -O $path ]] || aos_dev_error "cache setup refuses path owned by another user: $path"
   done
 
   mkdir -p "$aos_dev_cache_dir"/{go,bazel,sccache/store}
@@ -57,19 +61,41 @@ aos_dev_cache_prepare() {
   chmod 0777 "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel"
   chmod 0700 "$aos_dev_cache_dir/sccache/store"
 
+  # Check the mount as a real Nix build user before paying for the initial
+  # source-built sccache bootstrap. A private parent directory can block the
+  # daemon even when the cache directory itself looks writable to us.
+  aos_dev_cache_verify_mount
+
   # The shared compiler cache is a host-side server. nixbld users only need
   # its socket; they never write to its private storage directory directly.
   local sccache
   sccache=$(aos_dev_cache_sccache)
+  # --show-stats succeeds with zeroes even when the socket is stale. The
+  # status RPC connects to a live server, or starts one if none is reachable.
   if [[ ! -S $aos_dev_cache_dir/sccache/server.sock ]] || \
-      ! SCCACHE_SERVER_UDS="$aos_dev_cache_dir/sccache/server.sock" \
-        SCCACHE_DIR="$aos_dev_cache_dir/sccache/store" \
-        SCCACHE_CACHE_SIZE="${AOS_DEV_SCCACHE_SIZE:-50G}" \
-        "$sccache" --show-stats >/dev/null 2>&1; then
+      ! aos_dev_cache_sccache_call "$sccache" --dist-status >/dev/null 2>&1; then
     rm -f -- "$aos_dev_cache_dir/sccache/server.sock"
-    aos_dev_cache_start_sccache
+    aos_dev_cache_start_sccache "$sccache"
   fi
   chmod 666 "$aos_dev_cache_dir/sccache/server.sock"
+}
+
+aos_dev_cache_verify_mount() {
+  aos_dev_require_command nix-build
+
+  # --check rebuilds this tiny probe each time. First realize it if needed:
+  # Nix rejects --check for a derivation with no valid output yet.
+  if ! nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
+      --no-out-link "${aos_dev_cache_nix_options[@]}" >/dev/null; then
+    aos_dev_error "Nix build users cannot access the shared cache at '$aos_dev_cache_dir'; choose a path with traversable parents using AOS_DEV_CACHE_DIR"
+  fi
+
+  # A previously realized output alone would hide a mount that has since
+  # become inaccessible, so verify the current sandbox as well.
+  if ! nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
+      --check --no-out-link "${aos_dev_cache_nix_options[@]}" >/dev/null; then
+    aos_dev_error "Nix build users cannot write the shared cache at '$aos_dev_cache_dir'; choose a path with traversable parents using AOS_DEV_CACHE_DIR"
+  fi
 }
 
 aos_dev_cache_sccache() {
@@ -80,16 +106,22 @@ aos_dev_cache_sccache() {
   printf '%s/bin/sccache' "$tool"
 }
 
-aos_dev_cache_start_sccache() {
-  aos_dev_require_command nix-build
-  local sccache
-  sccache=$(aos_dev_cache_sccache)
-
+aos_dev_cache_sccache_call() {
+  # Keep the server's storage configuration identical for every subcommand.
+  # In particular, --show-stats otherwise reports the host's default cache.
+  local sccache=$1
+  shift
   SCCACHE_SERVER_UDS="$aos_dev_cache_dir/sccache/server.sock" \
     SCCACHE_DIR="$aos_dev_cache_dir/sccache/store" \
     SCCACHE_CACHE_SIZE="${AOS_DEV_SCCACHE_SIZE:-50G}" \
     SCCACHE_IDLE_TIMEOUT=0 \
-    "$sccache" --start-server >&2
+    "$sccache" "$@"
+}
+
+aos_dev_cache_start_sccache() {
+  local sccache=$1
+
+  aos_dev_cache_sccache_call "$sccache" --start-server >&2
 
   # New sandboxes use different nixbld UIDs, so the Unix socket must accept
   # connections from each of them.
@@ -113,6 +145,12 @@ aos_dev_cache_command() {
       [[ -d $aos_dev_cache_dir ]] || aos_dev_error 'run cache init first'
       [[ -w $aos_dev_cache_dir ]] || aos_dev_error 'cache directory is not writable'
       [[ -S $aos_dev_cache_dir/sccache/server.sock ]] || aos_dev_error 'sccache socket is absent; run cache init'
+      aos_dev_cache_verify_mount
+      local sccache
+      sccache=$(aos_dev_cache_sccache)
+      aos_dev_cache_sccache_call "$sccache" --dist-status >/dev/null || \
+        aos_dev_error 'sccache server is unavailable; run cache init'
+      chmod 666 "$aos_dev_cache_dir/sccache/server.sock"
       printf 'Cache directories and sccache socket are present.\n'
       ;;
     status)
@@ -123,13 +161,16 @@ aos_dev_cache_command() {
       fi
       local sccache
       sccache=$(aos_dev_cache_sccache)
-      SCCACHE_SERVER_UDS="$aos_dev_cache_dir/sccache/server.sock" "$sccache" --show-stats
+      aos_dev_cache_sccache_call "$sccache" --dist-status >/dev/null || \
+        aos_dev_error 'sccache server is unavailable; run cache init'
+      chmod 666 "$aos_dev_cache_dir/sccache/server.sock"
+      aos_dev_cache_sccache_call "$sccache" --show-stats
       ;;
     stop)
       [[ -S $aos_dev_cache_dir/sccache/server.sock ]] || return 0
       local sccache
       sccache=$(aos_dev_cache_sccache)
-      SCCACHE_SERVER_UDS="$aos_dev_cache_dir/sccache/server.sock" "$sccache" --stop-server
+      aos_dev_cache_sccache_call "$sccache" --stop-server
       ;;
     usage) aos_dev_cache_usage ;;
     prune) shift; aos_dev_cache_prune "$@" ;;
