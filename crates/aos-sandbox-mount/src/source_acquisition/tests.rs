@@ -12,7 +12,10 @@ use super::format::{
     mount_source_consumption_companion_digest_v2, provider_attempt_key, provider_head_key,
     provider_session_key, transaction_id,
 };
-use super::{ProviderAttemptStateV2, ProviderMethodV2, lifecycle, qualify_cold_inventory_barrier};
+use super::{
+    ProviderAttemptStateV2, ProviderMethodV2, checked_cold_provider_request, lifecycle,
+    qualify_cold_inventory_barrier,
+};
 
 fn signed_inventory_request() -> (Vec<u8>, [u8; 32]) {
     let signing_key = SigningKey::from_bytes(&[22; 32]);
@@ -50,8 +53,34 @@ fn signed_inventory_request() -> (Vec<u8>, [u8; 32]) {
 }
 
 #[test]
-fn cold_inventory_qualification_rejects_wrong_method_state_and_identity() {
+fn cold_request_checker_rejects_changed_method_bytes_and_digest() {
     let (signed_request, digest) = signed_inventory_request();
+
+    assert_eq!(
+        checked_cold_provider_request(ProviderMethodV2::Inventory, &signed_request, digest)
+            .expect("matching canonical Inventory request")
+            .to_canonical_bytes(),
+        signed_request
+    );
+    assert!(matches!(
+        checked_cold_provider_request(ProviderMethodV2::Acquire, &signed_request, digest),
+        Err(crate::MountError::State(message))
+            if message == "cold provider request differs from its durable identity"
+    ));
+    assert!(matches!(
+        checked_cold_provider_request(
+            ProviderMethodV2::Inventory,
+            &signed_request[..signed_request.len() - 1],
+            digest,
+        ),
+        Err(crate::MountError::State(message))
+            if message == "cold provider request envelope is invalid"
+    ));
+    assert!(matches!(
+        checked_cold_provider_request(ProviderMethodV2::Inventory, &signed_request, [0; 32]),
+        Err(crate::MountError::State(message))
+            if message == "cold provider request differs from its durable identity"
+    ));
 
     assert!(
         qualify_cold_inventory_barrier(
@@ -62,46 +91,57 @@ fn cold_inventory_qualification_rejects_wrong_method_state_and_identity() {
         )
         .is_ok()
     );
-    assert!(
-        qualify_cold_inventory_barrier(
-            ProviderMethodV2::Acquire,
-            &ProviderAttemptStateV2::Reserved,
-            &signed_request,
-            digest,
-        )
-        .is_err()
-    );
-    assert!(
-        qualify_cold_inventory_barrier(
-            ProviderMethodV2::Inventory,
-            &ProviderAttemptStateV2::SupersededIndeterminate {
-                successor_session_id: [1; 32],
-                recovery_root_attempt_id: [2; 32],
-                outcome_may_exist: true,
-            },
-            &signed_request,
-            digest,
-        )
-        .is_err()
-    );
-    assert!(
-        qualify_cold_inventory_barrier(
-            ProviderMethodV2::Inventory,
-            &ProviderAttemptStateV2::Reserved,
-            &signed_request,
-            [0; 32],
-        )
-        .is_err()
-    );
-    assert!(
+    assert!(matches!(
         qualify_cold_inventory_barrier(
             ProviderMethodV2::Inventory,
             &ProviderAttemptStateV2::Reserved,
             b"not a canonical signed request",
             digest,
-        )
-        .is_err()
-    );
+        ),
+        Err(crate::MountError::State(message))
+            if message == "cold provider request envelope is invalid"
+    ));
+    assert!(matches!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Inventory,
+            &ProviderAttemptStateV2::Reserved,
+            &signed_request,
+            [0; 32],
+        ),
+        Err(crate::MountError::State(message))
+            if message == "cold provider request differs from its durable identity"
+    ));
+}
+
+#[test]
+fn cold_inventory_barrier_checks_state_and_method_before_request() {
+    let invalid_request = b"not a signed request";
+    let indeterminate = ProviderAttemptStateV2::SupersededIndeterminate {
+        successor_session_id: [1; 32],
+        recovery_root_attempt_id: [2; 32],
+        outcome_may_exist: true,
+    };
+
+    assert!(matches!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Inventory,
+            &indeterminate,
+            invalid_request,
+            [0; 32],
+        ),
+        Err(crate::MountError::State(message))
+            if message == "cold provider disposition requires method-specific recovery"
+    ));
+    assert!(matches!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Acquire,
+            &ProviderAttemptStateV2::Reserved,
+            invalid_request,
+            [0; 32],
+        ),
+        Err(crate::MountError::State(message))
+            if message == "cold provider attempt requires method-specific recovery"
+    ));
 }
 
 #[test]

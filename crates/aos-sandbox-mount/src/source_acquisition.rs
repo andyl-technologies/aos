@@ -3910,9 +3910,6 @@ fn qualify_cold_inventory_barrier(
     Ok(())
 }
 
-#[cfg(test)]
-mod cold_request_tests;
-
 fn retained_source_root_phase(
     retained: &aos_sandbox_source_provider_security::SourceRootPostcommitSuccessV2,
 ) -> Option<SourceAcquisitionPhaseV2> {
