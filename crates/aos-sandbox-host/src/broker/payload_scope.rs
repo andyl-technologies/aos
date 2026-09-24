@@ -24,7 +24,7 @@ use super::{HostBroker, RetainedRuntimePins, ensure_response_bound};
 use crate::authorization::HostAuthorityV1;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
-use crate::worker::{HostRuntimeIdentity, HostWorker};
+use crate::worker::HostWorker;
 use crate::{HostError, Result};
 
 /// Keeps the exact runtime pins and authority borrowed until the send finishes.
@@ -78,25 +78,9 @@ where
     where
         T: FnMut() -> Result<RawPairedClockSample> + Send,
     {
-        self.ensure_healthy()?;
-        self.state.validate_authenticated(&self.authority)?;
         let fence = request.fence();
-        let identity = HostRuntimeIdentity::new(
-            *fence.sandbox_id(),
-            *fence.incarnation_id(),
-            fence.assignment_epoch(),
-            fence.desired_generation(),
-            *fence.assignment_digest(),
-        );
-        if !self.state.contains_runtime(&identity) {
-            return Err(HostError::UnknownHandle);
-        }
-        let prior = self
-            .state
-            .prior_authorization(fence.sandbox_id())
-            .ok_or(HostError::UnknownHandle)?
-            .to_vec();
-        let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
+        let identity = self.checked_scope_runtime(fence)?;
+        let (prior, current) = self.open_scope_fence(fence)?;
         let observed = clock()?;
         let admitted = self.authority.admit_payload_scope(
             artifacts,
@@ -173,19 +157,8 @@ where
     where
         T: FnMut() -> Result<RawPairedClockSample> + Send,
     {
-        self.ensure_healthy()?;
-        self.state.validate_authenticated(&self.authority)?;
         let fence = request.fence();
-        let identity = HostRuntimeIdentity::new(
-            *fence.sandbox_id(),
-            *fence.incarnation_id(),
-            fence.assignment_epoch(),
-            fence.desired_generation(),
-            *fence.assignment_digest(),
-        );
-        if !self.state.contains_runtime(&identity) {
-            return Err(HostError::UnknownHandle);
-        }
+        let identity = self.checked_scope_runtime(fence)?;
         let expected_assignment = BrokerAssignment::new(
             SandboxId::from_bytes(*fence.sandbox_id()),
             IncarnationId::from_bytes(*fence.incarnation_id()),
@@ -194,12 +167,7 @@ where
             ObjectDigest::from_bytes(*fence.assignment_digest()),
         )
         .map_err(|_| HostError::UnknownHandle)?;
-        let prior = self
-            .state
-            .prior_authorization(fence.sandbox_id())
-            .ok_or(HostError::UnknownHandle)?
-            .to_vec();
-        let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
+        let (prior, current) = self.open_scope_fence(fence)?;
         self.authority.check_current_fence(&current)?;
         if current.assignment() != expected_assignment {
             return Err(HostError::Fence(

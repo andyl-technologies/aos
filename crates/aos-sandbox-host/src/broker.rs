@@ -31,7 +31,7 @@ use aos_sandbox_protocol::semantics::{
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
-    HistoricalRuntimeRequestCandidateV1, PeerCredentials, PeerPolicy,
+    HistoricalRuntimeRequestCandidateV1, PeerCredentials, PeerPolicy, ValidatedAssignmentFence,
     ValidatedHostAttachGateRequestV1, ValidatedHostAttachReadinessRequestV1,
     ValidatedHostAttachRouteQueryV1, ValidatedHostExecutionApplyV1, ValidatedHostExecutionQueryV1,
     ValidatedQueryRuntimeEffectRequestV1, ValidatedRuntimeRequest,
@@ -1795,6 +1795,41 @@ where
                 "host state is indeterminate after a failed commit".to_owned(),
             ))
         }
+    }
+
+    // Terminal replay constructs its exact assignment between this check and
+    // opening the saved authorization; keep those operations separate.
+    fn checked_scope_runtime(
+        &self,
+        fence: &ValidatedAssignmentFence,
+    ) -> Result<HostRuntimeIdentity> {
+        self.ensure_healthy()?;
+        self.state.validate_authenticated(&self.authority)?;
+
+        let identity = HostRuntimeIdentity::new(
+            *fence.sandbox_id(),
+            *fence.incarnation_id(),
+            fence.assignment_epoch(),
+            fence.desired_generation(),
+            *fence.assignment_digest(),
+        );
+        if !self.state.contains_runtime(&identity) {
+            return Err(HostError::UnknownHandle);
+        }
+        Ok(identity)
+    }
+
+    fn open_scope_fence(
+        &self,
+        fence: &ValidatedAssignmentFence,
+    ) -> Result<(Vec<u8>, BrokerAuthorizationFenceV1)> {
+        let prior = self
+            .state
+            .prior_authorization(fence.sandbox_id())
+            .ok_or(HostError::UnknownHandle)?
+            .to_vec();
+        let current = self.authority.open_fence(fence.sandbox_id(), &prior)?;
+        Ok((prior, current))
     }
 
     pub(crate) fn retain_scope_replay_authority(
