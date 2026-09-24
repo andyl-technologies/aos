@@ -9,6 +9,7 @@
 //! campaign observation candidate.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use crucible::model::MeasurementTerminalState;
@@ -1712,7 +1713,8 @@ fn drive_modeled_attempt_inner(
                         _ => None,
                     })
         {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr().lock(),
                 "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 attempt={:?} execution={:?} quanta={} marker={} icount={}",
                 basis.key().attempt(),
                 basis.execution(),
