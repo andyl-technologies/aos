@@ -10,6 +10,7 @@
 
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::storage_capture_candidate::STORAGE_CAPTURE_CANDIDATE_BYTES_V1;
 use aos_sandbox_protocol::storage_capture_grant::ControllerOutputSettlementPreimageV1;
 use sha2::{Digest as _, Sha256};
 
@@ -44,13 +45,15 @@ pub(crate) enum CaptureCandidateErrorV1 {
 /// Holds method-41 session identities after a future pinned BSA verifier.
 ///
 /// No production constructor exists. In particular, checksum-valid AOSCIS01
-/// bytes and caller-supplied request IDs cannot construct this source.
+/// bytes and caller-supplied request IDs cannot construct this source. The
+/// eventual issuer must recompute the assignment from its canonical manifest
+/// and compare the exact verified BSA transcript session binding.
 pub(super) struct VerifiedCaptureCandidateQueryV1 {
     settlement: ControllerOutputSettlementPreimageV1,
     assignment: BrokerAssignment,
     output_claim_digest: ObjectDigest,
     request_id: [u8; 16],
-    nonce: [u8; 16],
+    session_binding: [u8; 32],
     host_boot_id: [u8; 16],
     deadline_boottime_nanoseconds: u64,
 }
@@ -68,8 +71,9 @@ pub(super) struct ProtectedCaptureCandidateV1 {
     catalog_generation: u64,
     catalog_head_digest: ObjectDigest,
     request_id: [u8; 16],
-    nonce: [u8; 16],
+    session_binding: [u8; 32],
     kernel_boot_id: [u8; 16],
+    request_deadline_boottime_nanoseconds: u64,
     expires_boottime_nanoseconds: u64,
     dataset_policy_digest: ObjectDigest,
     storage_create_operation: [u8; 16],
@@ -128,7 +132,7 @@ impl ExecutionOutputLedgerV1 {
             .into_bytes();
         let now = boottime_now_nanoseconds()?;
         if query.request_id == [0; 16]
-            || query.nonce == [0; 16]
+            || query.session_binding == [0; 32]
             || query.host_boot_id != boot
             || query.deadline_boottime_nanoseconds <= now
             || requirement.execution() != query.settlement.execution()
@@ -186,8 +190,9 @@ impl ExecutionOutputLedgerV1 {
             catalog_generation: catalog.binding().generation(),
             catalog_head_digest: catalog.binding().digest(),
             request_id: query.request_id,
-            nonce: query.nonce,
+            session_binding: query.session_binding,
             kernel_boot_id: boot,
+            request_deadline_boottime_nanoseconds: query.deadline_boottime_nanoseconds,
             expires_boottime_nanoseconds,
             dataset_policy_digest: requirement
                 .attempt_policy_digest(metadata_headroom_bytes, minimum_remaining_bytes),
@@ -212,48 +217,79 @@ impl ExecutionOutputLedgerV1 {
 
 impl ProtectedCaptureCandidateV1 {
     fn digest(&self) -> ObjectDigest {
+        let bytes = self.canonical_bytes();
+        let mut digest = [0; 32];
+        digest.copy_from_slice(&bytes[672..704]);
+        ObjectDigest::from_bytes(digest)
+    }
+
+    /// Encodes the fixed informational response after protected readback.
+    ///
+    /// The bytes are not signed until a future pinned Storage BSA outcome
+    /// issuer commits them; no current handler exposes this method.
+    fn canonical_bytes(&self) -> [u8; STORAGE_CAPTURE_CANDIDATE_BYTES_V1] {
+        let mut bytes = [0; STORAGE_CAPTURE_CANDIDATE_BYTES_V1];
+        bytes[..8].copy_from_slice(b"AOSSCB01");
+        let query = &mut bytes[8..408];
+        query[..8].copy_from_slice(b"AOSSCQ01");
+        query[8..216].copy_from_slice(self.settlement.canonical_bytes());
+        query[216..248].copy_from_slice(self.output_claim_digest.as_bytes());
+        query[248..264].copy_from_slice(self.assignment.sandbox().as_bytes());
+        query[264..280].copy_from_slice(self.assignment.incarnation().as_bytes());
+        query[280..288].copy_from_slice(&self.assignment.epoch().get().to_be_bytes());
+        query[288..296].copy_from_slice(&self.assignment.desired_generation().get().to_be_bytes());
+        query[296..328].copy_from_slice(self.assignment.digest().as_bytes());
+        query[328..344].copy_from_slice(&self.kernel_boot_id);
+        query[344..376].copy_from_slice(&self.session_binding);
+        query[376..392].copy_from_slice(&self.request_id);
+        query[392..400].copy_from_slice(&self.request_deadline_boottime_nanoseconds.to_be_bytes());
+
+        bytes[408..440].copy_from_slice(self.output_record_digest.as_bytes());
+        bytes[440..448].copy_from_slice(&self.output_journal_sequence.to_be_bytes());
+        bytes[448..456].copy_from_slice(&self.catalog_generation.to_be_bytes());
+        bytes[456..488].copy_from_slice(self.catalog_head_digest.as_bytes());
+        bytes[488..504].copy_from_slice(&self.kernel_boot_id);
+        bytes[504..512].copy_from_slice(&self.expires_boottime_nanoseconds.to_be_bytes());
+        bytes[512..544].copy_from_slice(self.dataset_policy_digest.as_bytes());
+        bytes[544..560].copy_from_slice(&self.storage_create_operation);
+        for (range, value) in [
+            (560..568, self.admitted_bytes),
+            (568..576, self.maximum_stdout_bytes),
+            (576..584, self.maximum_stderr_bytes),
+            (584..592, self.allocation_bytes),
+            (592..600, self.metadata_headroom_bytes),
+            (600..608, self.minimum_remaining_bytes),
+            (608..616, self.pool_guid),
+            (616..624, self.root_guid),
+            (624..632, self.pool_available_bytes),
+            (632..640, self.root_available_bytes),
+        ] {
+            bytes[range].copy_from_slice(&value.to_be_bytes());
+        }
+        bytes[640..672].copy_from_slice(self.preflight_digest.as_bytes());
+
         let mut digest = Sha256::new();
         digest.update(CANDIDATE_DOMAIN);
-        digest.update(self.settlement.canonical_bytes());
-        digest.update(self.assignment.sandbox().as_bytes());
-        digest.update(self.assignment.incarnation().as_bytes());
-        digest.update(self.assignment.epoch().get().to_be_bytes());
-        digest.update(self.assignment.desired_generation().get().to_be_bytes());
-        digest.update(self.assignment.digest().as_bytes());
-        digest.update(self.output_claim_digest.as_bytes());
-        digest.update(self.output_record_digest.as_bytes());
-        digest.update(self.output_journal_sequence.to_be_bytes());
-        digest.update(self.catalog_generation.to_be_bytes());
-        digest.update(self.catalog_head_digest.as_bytes());
-        digest.update(self.request_id);
-        digest.update(self.nonce);
-        digest.update(self.kernel_boot_id);
-        digest.update(self.expires_boottime_nanoseconds.to_be_bytes());
-        digest.update(self.dataset_policy_digest.as_bytes());
-        digest.update(self.storage_create_operation);
-        for value in [
-            self.admitted_bytes,
-            self.maximum_stdout_bytes,
-            self.maximum_stderr_bytes,
-            self.allocation_bytes,
-            self.metadata_headroom_bytes,
-            self.minimum_remaining_bytes,
-            self.pool_guid,
-            self.root_guid,
-            self.pool_available_bytes,
-            self.root_available_bytes,
-        ] {
-            digest.update(value.to_be_bytes());
-        }
-        digest.update(self.preflight_digest.as_bytes());
-        ObjectDigest::from_bytes(digest.finalize().into())
+        digest.update(&bytes[..672]);
+        bytes[672..704].copy_from_slice(&digest.finalize());
+        bytes
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use aos_proto::aos::sandbox::local::v1::{
+        Audience, ReadStorageExecutionCaptureCandidateRequestV1, RequestHeader,
+        StorageExecutionCaptureCandidateV1,
+    };
     use aos_sandbox::{Journal, JournalLimits};
     use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
+    use aos_sandbox_protocol::storage_capture_candidate::{
+        StorageCaptureCandidateQueryV1, decode_storage_capture_candidate_request_v1,
+        decode_storage_capture_candidate_response_v1,
+    };
+    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+    use buffa::Message as _;
     use tempfile::TempDir;
 
     use super::*;
@@ -294,7 +330,7 @@ mod tests {
             .unwrap(),
             output_claim_digest: ObjectDigest::from_bytes([3; 32]),
             request_id: [14; 16],
-            nonce: [15; 16],
+            session_binding: [15; 32],
             host_boot_id: KernelBootId::current().unwrap().into_bytes(),
             deadline_boottime_nanoseconds: boottime_now_nanoseconds().unwrap() + 30_000_000_000,
         }
@@ -315,7 +351,7 @@ mod tests {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("output.journal");
         let mut owner = ledger(&path);
-        owner
+        let record_digest = owner
             .reserve_record(RetainedOutputRecord {
                 execution: [1; 16],
                 create: [2; 16],
@@ -367,6 +403,58 @@ mod tests {
         assert_eq!(candidate.candidate_digest, candidate.digest());
         assert!(candidate.expires_boottime_nanoseconds <= lookup.deadline_boottime_nanoseconds);
 
+        let canonical = candidate.canonical_bytes();
+        let wire_query =
+            StorageCaptureCandidateQueryV1::from_canonical_bytes(&canonical[8..408]).unwrap();
+        assert_eq!(wire_query.request_id(), lookup.request_id);
+        assert_eq!(wire_query.claimed_session_binding(), lookup.session_binding);
+        assert_eq!(
+            wire_query.deadline_boottime_nanoseconds(),
+            lookup.deadline_boottime_nanoseconds
+        );
+        let peer = PeerCredentials {
+            uid: 0,
+            gid: 0,
+            pid: Some(9),
+        };
+        let policy = PeerPolicy {
+            uid: 0,
+            gid: Some(0),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        };
+        let request = ReadStorageExecutionCaptureCandidateRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                request_id: lookup.request_id.to_vec(),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: lookup.deadline_boottime_nanoseconds,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .into(),
+            canonical_query: wire_query.canonical_bytes().to_vec(),
+            ..Default::default()
+        };
+        let original = decode_storage_capture_candidate_request_v1(
+            &request.encode_to_vec(),
+            peer,
+            policy,
+            boottime_now_nanoseconds().unwrap(),
+        )
+        .unwrap();
+        let response = StorageExecutionCaptureCandidateV1 {
+            canonical_candidate: canonical.to_vec(),
+            ..Default::default()
+        };
+        let validated = decode_storage_capture_candidate_response_v1(
+            &response.encode_to_vec(),
+            &original,
+            boottime_now_nanoseconds().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(validated.candidate_digest(), candidate.candidate_digest);
+        assert_eq!(validated.output_record_digest(), record_digest);
+
         let mut substituted = query();
         substituted.assignment = BrokerAssignment::new(
             SandboxId::from_bytes([11; 16]),
@@ -388,6 +476,20 @@ mod tests {
                 )
                 .is_err()
         );
+
+        let mut wrong_claim = query();
+        wrong_claim.output_claim_digest = ObjectDigest::from_bytes([99; 32]);
+        assert!(matches!(
+            owner.observe_capture_candidate_with(
+                &wrong_claim,
+                &requirement,
+                &catalog,
+                20,
+                100,
+                observe
+            ),
+            Err(CaptureCandidateErrorV1::NotCurrent)
+        ));
 
         let (_, occupied) = occupied_precreate_fixture();
         assert!(matches!(

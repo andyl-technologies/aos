@@ -102,6 +102,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT = 36;
   BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT = 37;
   BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT = 38;
+  BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE = 41;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -295,6 +296,21 @@ message ReserveStorageExecutionCaptureRequestV1 {
 message QueryStorageExecutionCaptureRequestV1 {
   RequestHeader header = 1;
   bytes canonical_grant_source = 2; // Original exact AOSSCG01.
+}
+
+// Read-only pre-grant Storage readback. AOSSCQ01 is a structural query, not
+// authority to create or mount a dataset. The Controller must bind the exact
+// source under a Storage-audience signed plan and authenticated BSA session.
+message ReadStorageExecutionCaptureCandidateRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_query = 2; // Exact 400-byte AOSSCQ01.
+}
+
+// AOSSCB01 is a fixed informational observation. It is useful only after an
+// authenticated Storage BSA outcome and exact Controller-source comparison;
+// reserve must recheck both Storage owner heads and live ZFS independently.
+message StorageExecutionCaptureCandidateV1 {
+  bytes canonical_candidate = 1; // Exact 704-byte AOSSCB01.
 }
 
 enum StorageExecutionCaptureAttemptStatusV1 {

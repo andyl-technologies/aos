@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 36] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 37] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -118,6 +118,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 36] = [
     BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
+    BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -145,6 +146,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
             )
         })
         .filter(|method| {
@@ -420,7 +422,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
             BrokerSessionProtocolV1::Storage
         }
-        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => BrokerSessionProtocolV1::Storage,
+        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+            BrokerSessionProtocolV1::Storage
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG
@@ -470,6 +475,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
+            | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
@@ -1300,6 +1306,38 @@ mod tests {
                     .any(|value| value.as_known() == Some(method))
             );
         }
+    }
+
+    #[test]
+    fn storage_capture_candidate_is_signed_read_only_and_not_advertised() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Storage);
+        assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        );
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert!(profile.success_response_descriptor_roles().is_empty());
+
+        let production = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Storage,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+        );
+        assert!(!production.contains(&method));
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Storage,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert!(
+            !hello
+                .required_methods
+                .iter()
+                .any(|value| value.as_known() == Some(method))
+        );
     }
 
     #[test]

@@ -257,6 +257,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostObserveExecutionArgument,
     /// Read-only historical query of the original Host argument attempt.
     HostQueryExecutionArgument,
+    /// Read-only Storage capture candidate; issuer and signed outcome are closed.
+    StorageCaptureCandidateReadback,
     /// Host OpenSSH forced-command installation and signed readback.
     HostInstallAttachGate,
     /// Advisory current Host OpenSSH gate readiness.
@@ -400,6 +402,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionArgument
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+            AuthenticatedBrokerMethodSemanticsV1::StorageCaptureCandidateReadback
         }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             AuthenticatedBrokerMethodSemanticsV1::HostInstallAttachGate
@@ -1316,6 +1321,23 @@ fn validate_request_semantics(
                 None,
             )
         }
+        BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+            let request =
+                crate::storage_capture_candidate::decode_storage_capture_candidate_request_v1(
+                    body, peer, policy, now,
+                )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::StorageCaptureCandidateReadback,
+                *request.header(),
+                Some(
+                    *request
+                        .query()
+                        .argument_commitment(*request.header().request_id())?
+                        .digest()
+                        .as_bytes(),
+                ),
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE => {
             let request = crate::decode_host_attach_gate_request_v1(body, peer, policy, now)?;
             (
@@ -1548,6 +1570,12 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
             crate::host_execution_argument::decode_host_execution_argument_query_request_v1(
+                body, peer, policy, now,
+            )?;
+            RequestOutcomeContextV1::None
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+            crate::storage_capture_candidate::decode_storage_capture_candidate_request_v1(
                 body, peer, policy, now,
             )?;
             RequestOutcomeContextV1::None
@@ -1835,7 +1863,8 @@ fn validate_success_semantics(
             }
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => {

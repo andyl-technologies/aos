@@ -696,6 +696,9 @@ fn invalid(field: &'static str) -> ProtocolValidationError {
 #[cfg(test)]
 mod tests {
     use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod, RequestHeader};
+    use aos_sandbox_broker_session_protocol::{
+        BrokerSessionProtocolV1, authenticated_broker_methods_for_role_v1,
+    };
     use buffa::Enumeration as _;
 
     use super::*;
@@ -873,19 +876,31 @@ mod tests {
             *SETTLEMENT_MAGIC
         );
 
-        // No Storage capture method/profile or production handler is registered
-        // for this wire. A caller's well-formed source is not an effect permit.
+        // Only a read-only candidate wire exists. Reserve/query have no method
+        // or production handler; a caller's well-formed source is not an effect
+        // permit or a production candidate issuer.
+        let candidate = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
         for method_number in 0..=u16::MAX {
             let Some(method) = BrokerMethod::from_i32(i32::from(method_number)) else {
                 continue;
             };
             let name = method.proto_name();
-            assert!(
-                !(name.starts_with("BROKER_METHOD_STORAGE_")
-                    && (name.contains("CAPTURE") || name.contains("EXECUTION_OUTPUT"))),
-                "unexpected Storage capture method: {name}"
-            );
+            if name.starts_with("BROKER_METHOD_STORAGE_")
+                && (name.contains("CAPTURE") || name.contains("EXECUTION_OUTPUT"))
+            {
+                assert_eq!(
+                    method, candidate,
+                    "unexpected Storage capture method: {name}"
+                );
+            }
         }
+        assert!(
+            !authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Storage,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+            )
+            .contains(&candidate)
+        );
     }
 
     #[test]
