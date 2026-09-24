@@ -177,6 +177,32 @@ impl<W: MountWorker> MountBroker<W> {
         encode_mount_inventory_response(response).map_err(Into::into)
     }
 
+    /// Lends the sole protected Mount journal to the source-acquisition owner.
+    ///
+    /// The source owner replays the complete source graph under purpose-limited
+    /// authority. Its lifetime is confined to this operation, so neither the
+    /// journal nor its exclusive lock can be duplicated or retained by a
+    /// separate source service.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unhealthy broker, nonfixed or replaced journal, invalid
+    /// startup policy, or noncanonical source-acquisition recovery graph.
+    #[doc(hidden)]
+    pub fn with_fixed_source_acquisition_owner<R>(
+        &mut self,
+        operation: impl for<'journal> FnOnce(
+            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        self.ensure_authority_healthy()?;
+        let mut owner =
+            crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(
+                &mut self.journal,
+            )?;
+        operation(&mut owner)
+    }
+
     /// Reports whether this broker owns a configured destination-slot store.
     #[must_use]
     pub const fn supports_destination_slots(&self) -> bool {
@@ -3835,6 +3861,23 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         directory
+    }
+
+    #[test]
+    fn source_owner_borrow_rejects_unprotected_journal_before_callback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker(open(&path), ScriptedWorker::default());
+        let called = Cell::new(false);
+
+        let result = broker.with_fixed_source_acquisition_owner(|_| {
+            called.set(true);
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert!(broker.inventory_resources().is_ok());
     }
 
     #[test]

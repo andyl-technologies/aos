@@ -98,13 +98,13 @@ pub struct SourceAcquisitionTableV2 {
     provider_attempts: BTreeMap<[u8; 32], SourceProviderQueryAttemptV2>,
 }
 
-/// Owns fixed Mount source state and its sole protected journal root.
+/// Borrows fixed Mount source state from the sole protected journal owner.
 ///
-/// This dormant integration wraps the existing Mount-manager startup owner;
-/// it does not open a second trust root. Consumption access is lent only with
-/// the purpose-limited opaque journal authority and cannot outlive this owner.
-pub struct FixedMountSourceAcquisitionOwnerV2 {
-    protected: aos_sandbox::MountManagerStartupProtectedOwnerV1,
+/// This dormant integration cannot open another journal or retain the Mount
+/// broker's lock. Consumption access is lent only with purpose-limited opaque
+/// authority and cannot outlive the journal borrow.
+pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
+    protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
     table: SourceAcquisitionTableV2,
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
@@ -239,13 +239,13 @@ impl RetainedManagerSourceCustodyV2 {
     }
 }
 
-impl core::fmt::Debug for FixedMountSourceAcquisitionOwnerV2 {
+impl core::fmt::Debug for FixedMountSourceAcquisitionOwnerV2<'_> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("FixedMountSourceAcquisitionOwnerV2([protected owner])")
     }
 }
 
-impl FixedMountSourceAcquisitionOwnerV2 {
+impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// Reports whether replay recovered an unsatisfied durable provider attempt.
     #[must_use]
     #[doc(hidden)]
@@ -642,17 +642,26 @@ impl FixedMountSourceAcquisitionOwnerV2 {
         Ok(exact_request_matches)
     }
 
-    /// Opens the existing fixed Mount journal owner and fully replays AOSMSA02.
+    /// Borrows Mount's sole protected journal and fully replays AOSMSA02.
+    ///
+    /// The returned owner cannot outlive the caller's journal borrow. No
+    /// second journal descriptor or lock is opened, and only purpose-limited
+    /// source and manager-control authority is exposed to source operations.
     ///
     /// # Errors
     ///
-    /// Returns an error when the fixed root, lock, startup policy, consumption
-    /// scope, or complete canonical source-acquisition graph is invalid.
+    /// Rejects a nonfixed or unhealthy journal, invalid startup policy, or
+    /// noncanonical source-acquisition recovery graph.
     #[doc(hidden)]
-    pub fn open_fixed() -> Result<(Self, aos_sandbox::MountManagerStartupProtectedOpenReportV1)> {
-        let (mut protected, report) =
-            aos_sandbox::MountManagerStartupProtectedOwnerV1::open_fixed_protected()
-                .map_err(|error| crate::MountError::State(error.to_string()))?;
+    pub fn borrow_existing_fixed_journal(journal: &'journal mut Journal) -> Result<Self> {
+        let protected = aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
+            .map_err(|error| crate::MountError::State(error.to_string()))?;
+        Self::recover_with_journal(protected)
+    }
+
+    fn recover_with_journal(
+        mut protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+    ) -> Result<Self> {
         let table = {
             let authority = protected
                 .source_consumption_authority()
@@ -800,39 +809,36 @@ impl FixedMountSourceAcquisitionOwnerV2 {
             ));
         }
         let pending_inventory_recovery_replacement = inventory_replacements.pop();
-        Ok((
-            Self {
-                protected,
-                table,
-                broker_instance_id,
-                last_boottime_nanoseconds: None,
-                pending_provider: None,
-                pending_provider_send: None,
-                pending_backend_recovery_replacement,
-                pending_inventory_recovery_replacement,
-                pending_release_preparation: None,
-                pending_manager_custody: Vec::new(),
-                manager_control: None,
-                startup_activation_descriptors: None,
-                startup_manager_sources: Vec::new(),
-                startup_manager_losses: Vec::new(),
-                startup_lost_release_preparations: BTreeMap::new(),
-                startup_manager_absences: Vec::new(),
-                manager_handoffs: Vec::new(),
-                cold_pending_attempts,
-                retained_source_roots: BTreeMap::new(),
-                retained_postcommit_recovery: Vec::new(),
-                retained_release_authorities: Vec::new(),
-                retained_terminal_release_outcomes: BTreeMap::new(),
-                retained_terminal_release_response_evidence: BTreeMap::new(),
-                retained_noncomplete_dispositions: BTreeMap::new(),
-                pending_manager_removals: Vec::new(),
-                retained_negative_custody_recovery: Vec::new(),
-                cold_released_rows,
-                retained_released_roots: BTreeMap::new(),
-            },
-            report,
-        ))
+        Ok(Self {
+            protected,
+            table,
+            broker_instance_id,
+            last_boottime_nanoseconds: None,
+            pending_provider: None,
+            pending_provider_send: None,
+            pending_backend_recovery_replacement,
+            pending_inventory_recovery_replacement,
+            pending_release_preparation: None,
+            pending_manager_custody: Vec::new(),
+            manager_control: None,
+            startup_activation_descriptors: None,
+            startup_manager_sources: Vec::new(),
+            startup_manager_losses: Vec::new(),
+            startup_lost_release_preparations: BTreeMap::new(),
+            startup_manager_absences: Vec::new(),
+            manager_handoffs: Vec::new(),
+            cold_pending_attempts,
+            retained_source_roots: BTreeMap::new(),
+            retained_postcommit_recovery: Vec::new(),
+            retained_release_authorities: Vec::new(),
+            retained_terminal_release_outcomes: BTreeMap::new(),
+            retained_terminal_release_response_evidence: BTreeMap::new(),
+            retained_noncomplete_dispositions: BTreeMap::new(),
+            pending_manager_removals: Vec::new(),
+            retained_negative_custody_recovery: Vec::new(),
+            cold_released_rows,
+            retained_released_roots: BTreeMap::new(),
+        })
     }
 
     /// Runs one operation under the existing fixed consumption authority.

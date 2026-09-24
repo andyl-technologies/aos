@@ -66,13 +66,91 @@ pub struct MountManagerStartupProtectedOwnerV1 {
     journal: Option<Journal>,
 }
 
+/// Borrows the sole already-open fixed Mount journal for source operations.
+///
+/// This capability retains neither a second lock nor the raw journal beyond
+/// its caller's mutable borrow. Its constructor verifies the protected fixed
+/// path, limits, and complete startup-policy replay before lending any scope.
+pub struct MountManagerStartupJournalBorrowV1<'journal> {
+    journal: &'journal mut Journal,
+}
+
 /// Borrows the fixed owner while issuing and validating manager control state.
 ///
 /// Every protected check claims the retained fixed journal internally. The
 /// session exposes neither a raw [`Journal`] nor a caller-constructible
 /// protected authority guard.
 pub struct MountManagerSourceControlSessionV1<'owner> {
-    owner: &'owner mut MountManagerStartupProtectedOwnerV1,
+    journal: &'owner mut Journal,
+}
+
+impl<'journal> MountManagerStartupJournalBorrowV1<'journal> {
+    /// Borrows an existing protected fixed Mount journal without opening it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a journal from another directory, a replaced fixed path,
+    /// incorrect limits, invalid startup replay, or unhealthy journal state.
+    pub fn borrow_fixed(
+        journal: &'journal mut Journal,
+    ) -> Result<Self, MountManagerSourceInventoryError> {
+        journal.require_protected_location(
+            Path::new(PROTECTED_MOUNT_MANAGER_ROOT),
+            MOUNT_MANAGER_JOURNAL,
+            0,
+            mount_manager_journal_limits(),
+        )?;
+        {
+            let authority = journal.claim_mount_manager_startup_authority()?;
+            authority.validate_mount_manager_startup_replay_v1()?;
+        }
+        Ok(Self { journal })
+    }
+
+    /// Lends the exact namespace-40 journal scope for one operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retained journal is no longer healthy.
+    pub fn source_acquisition_authority(
+        &mut self,
+    ) -> Result<MountSourceAcquisitionJournalAuthorityV2<'_>, MountManagerSourceInventoryError>
+    {
+        Ok(MountSourceAcquisitionJournalAuthorityV2::claim(
+            self.journal,
+        )?)
+    }
+
+    /// Lends the purpose-limited source-consumption scope for one operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retained journal is no longer healthy.
+    pub fn source_consumption_authority(
+        &mut self,
+    ) -> Result<MountSourceConsumptionJournalAuthorityV1<'_>, MountManagerSourceInventoryError>
+    {
+        Ok(MountSourceConsumptionJournalAuthorityV1::claim(
+            self.journal,
+        )?)
+    }
+
+    /// Borrows the validated Mount-manager control scope for one operation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or noncanonical protected startup history.
+    pub fn control_session(
+        &mut self,
+    ) -> Result<MountManagerSourceControlSessionV1<'_>, MountManagerSourceInventoryError> {
+        {
+            let authority = self.journal.claim_mount_manager_startup_authority()?;
+            authority.validate_mount_manager_startup_replay_v1()?;
+        }
+        Ok(MountManagerSourceControlSessionV1 {
+            journal: self.journal,
+        })
+    }
 }
 
 impl MountManagerStartupCaptureOutcomeV1 {
@@ -225,7 +303,9 @@ impl MountManagerStartupProtectedOwnerV1 {
             let authority = journal.claim_mount_manager_startup_authority()?;
             authority.validate_mount_manager_startup_replay_v1()?;
         }
-        Ok(MountManagerSourceControlSessionV1 { owner: self })
+        Ok(MountManagerSourceControlSessionV1 {
+            journal: self.current_journal()?,
+        })
     }
 
     fn retry_once(
@@ -517,12 +597,7 @@ impl MountManagerSourceControlSessionV1<'_> {
             &mut crate::ProtectedJournalAuthority<'_>,
         ) -> Result<R, ManagerSourceCustodyError>,
     ) -> Result<R, ManagerSourceCustodyError> {
-        let journal = self
-            .owner
-            .journal
-            .as_mut()
-            .ok_or(ManagerSourceCustodyError::OwnerUnavailable)?;
-        let mut authority = journal.claim_mount_manager_startup_authority()?;
+        let mut authority = self.journal.claim_mount_manager_startup_authority()?;
         operation(&mut authority)
     }
 }

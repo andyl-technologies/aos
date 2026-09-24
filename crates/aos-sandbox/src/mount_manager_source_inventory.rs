@@ -11,6 +11,7 @@ pub use crate::mount_manager_startup::{
     MountManagerExecutionDeathKindV1, MountManagerSourceAbsenceProjectionV1,
     MountManagerSourceAbsenceV1, MountManagerSourceControlSessionV1,
     MountManagerSourceInventoryError, MountManagerStartupAuthorityV1,
-    MountManagerStartupCaptureOutcomeV1, MountManagerStartupProtectedOpenReportV1,
-    MountManagerStartupProtectedOwnerV1, ReleasingSourceAbsenceBatchV1,
+    MountManagerStartupCaptureOutcomeV1, MountManagerStartupJournalBorrowV1,
+    MountManagerStartupProtectedOpenReportV1, MountManagerStartupProtectedOwnerV1,
+    ReleasingSourceAbsenceBatchV1,
 };

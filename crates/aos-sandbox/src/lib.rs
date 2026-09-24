@@ -226,7 +226,8 @@ pub use mount_manager_source_inventory::{
     MountManagerExecutionDeathKindV1, MountManagerSourceAbsenceProjectionV1,
     MountManagerSourceAbsenceV1, MountManagerSourceControlSessionV1,
     MountManagerSourceInventoryError, MountManagerStartupCaptureOutcomeV1,
-    MountManagerStartupProtectedOpenReportV1, MountManagerStartupProtectedOwnerV1,
+    MountManagerStartupJournalBorrowV1, MountManagerStartupProtectedOpenReportV1,
+    MountManagerStartupProtectedOwnerV1,
 };
 #[cfg(target_os = "linux")]
 pub use mount_observation_state::{

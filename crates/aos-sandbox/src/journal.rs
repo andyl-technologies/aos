@@ -936,6 +936,38 @@ impl Journal {
         )
     }
 
+    /// Checks that this live lock still belongs to one fixed protected path.
+    ///
+    /// The directory is resolved afresh and compared by device and inode with
+    /// the retained protected directory descriptor. A replaced pathname cannot
+    /// lend authority over the old journal, and no second journal lock opens.
+    pub(crate) fn require_protected_location(
+        &self,
+        directory: &Path,
+        name: &str,
+        expected_uid: u32,
+        limits: JournalLimits,
+    ) -> Result<(), JournalError> {
+        let retained = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        if retained.name != name || retained.expected_uid != expected_uid || self.limits != limits {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let current = resolve_protected_directory_from_root(directory, expected_uid)?;
+        let retained_stat = fstat(&retained.directory).map_err(rustix_io)?;
+        let current_stat = fstat(&current).map_err(rustix_io)?;
+        if retained_stat.st_dev != current_stat.st_dev
+            || retained_stat.st_ino != current_stat.st_ino
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        self.ensure_healthy()
+    }
+
     #[cfg(test)]
     pub(crate) fn open_protected_at_uid(
         directory_path: &Path,
