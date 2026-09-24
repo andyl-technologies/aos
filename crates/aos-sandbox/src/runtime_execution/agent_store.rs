@@ -116,6 +116,20 @@ impl AuthenticatedJournalAgentCheckpointV1 {
 }
 
 impl<'journal> DormantJournalAgentStoreV1<'journal> {
+    /// Confirms an exact signed live session against protected checkpoint custody.
+    pub(super) fn authenticates_session(
+        &self,
+        request: &AgentHandshakeRequestV1,
+        response: &AgentHandshakeResponseV1,
+    ) -> Result<bool, JournalAgentStoreError> {
+        let Some(bytes) = self.authority.get(SESSION_KEY)? else {
+            return Ok(false);
+        };
+        let stored = decode_session_record(bytes)?;
+        validate_session_record(&stored, &self.agent_public_key)?;
+        Ok(stored.request == *request && stored.response == *response)
+    }
+
     /// Initializes an empty protected journal for agent durable state.
     ///
     /// # Errors

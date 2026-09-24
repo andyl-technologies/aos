@@ -10,6 +10,7 @@ mod agent_execution_adapter;
 mod agent_process_effect;
 mod agent_reducer;
 mod agent_store;
+mod argument_observation;
 mod evidence;
 mod guest_authority;
 mod outcome_record;
@@ -53,10 +54,12 @@ pub use guest_authority::{
     dormant_guest_reserved_readback_signing_message_v1,
 };
 pub use owner::{
-    AuthenticatedRecoveredHostAgentOutcomeV1, CommittedHostAgentOutcomeV1,
-    DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
-    DormantRuntimeExecutionOwnerV1, ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1,
-    ProtectedRuntimeHostVerifierV1, RecoveredHostAgentRouteV1,
+    AuthenticatedRecoveredHostAgentOutcomeV1, AuthenticatedRuntimeArgumentReadbackV1,
+    CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
+    DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1,
+    ProtectedAcceptedExecutionOutputV2, ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1,
+    ProtectedRuntimeArgumentChallengeV1, ProtectedRuntimeHostVerifierV1, RecoveredHostAgentRouteV1,
+    RecoveredRuntimeArgumentChallengeV1,
 };
 pub use recovery::AppliedExecutionRecoveryV1;
 pub use store::{

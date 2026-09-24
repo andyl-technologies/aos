@@ -49,6 +49,8 @@ use std::path::Path;
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentFeatureV1, AgentHandshakeRequestV1,
     AgentHandshakeResponseV1, AgentOperationRequestV1, AgentRuntimeBindingV1,
+    AgentSessionBindingV1, GuestRuntimeArgumentObservationErrorV1,
+    GuestRuntimeArgumentObserveRequestV1, verify_guest_runtime_argument_readback_v1,
 };
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitError, AdmissionCurrentnessV1, AdmissionStoreCommitV1, AdmittedExecutionV1,
@@ -63,11 +65,12 @@ use aos_sandbox_core::runtime_backend::{
     backend_evidence_authority_binding_v1, backend_execution_inspection_binding_v1,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, DecodeLimits, DesiredGeneration, ExecutionId, IncarnationId,
-    NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, OperationId, PayloadBootId,
-    Revision, SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
+    AssignmentEpoch, DecodeLimits, DesiredGeneration, ExecutionId, ExecutionRuntimeArgumentLimitV1,
+    IncarnationId, NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, OperationId,
+    PayloadBootId, Revision, SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
+use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
 #[cfg(target_os = "linux")]
@@ -86,18 +89,21 @@ use super::agent_reducer::{
 };
 
 use crate::execution_output_reservation::{
-    ExecutionOutputReservationCommitV1, ExecutionOutputReservationRecoveryResultV1,
-    ExecutionOutputReservationRecoveryV1, RetainedClaim,
+    DurableExecutionOutputReservationV1, ExecutionOutputReservationCommitV1,
+    ExecutionOutputReservationRecoveryResultV1, ExecutionOutputReservationRecoveryV1,
+    RetainedClaim, accepted_claim,
 };
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, Journal, JournalError, JournalLimits, JournalRecord,
     JournalTransaction, ProtectedJournalAuthority, RecordNamespace,
 };
+use crate::sandbox_spec_state;
 
 use super::agent_store::{
     AuthenticatedJournalAgentCheckpointV1, DormantJournalAgentStoreV1, JournalAgentStoreError,
 };
+use super::argument_observation::ArgumentObservationRecordV1;
 use super::evidence::JournalExecutionCompletionV1;
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
 use super::route_record::{
@@ -670,6 +676,143 @@ pub struct DormantRuntimeExecutionClaimV1<'owner> {
     lifecycle_terminals: BTreeMap<[u8; 16], Vec<u8>>,
 }
 
+/// Holds a v2-only output claim read back under the protected execution owner.
+///
+/// The private constructor requires both exact accepted-Create/parent replay
+/// and a matching v2 record in the execution journal. This is budget custody,
+/// not physical capture backing or permission to dispatch a Host effect.
+pub struct ProtectedAcceptedExecutionOutputV2 {
+    reservation: DurableExecutionOutputReservationV1,
+    currentness: AdmissionCurrentnessV1,
+}
+
+impl ProtectedAcceptedExecutionOutputV2 {
+    /// Borrows the accepted-Create-derived budget claim.
+    #[must_use]
+    pub const fn reservation(&self) -> &DurableExecutionOutputReservationV1 {
+        &self.reservation
+    }
+
+    /// Borrows the per-execution protected admission currentness.
+    #[must_use]
+    pub const fn currentness(&self) -> &AdmissionCurrentnessV1 {
+        &self.currentness
+    }
+}
+
+/// Holds a protected pre-issued one-shot Guest measurement challenge.
+///
+/// The Host may send its canonical request on the retained signed agent
+/// session, but this value is not a verified measurement or exec authority.
+pub struct ProtectedRuntimeArgumentChallengeV1 {
+    execution: ExecutionId,
+    create_operation: OperationId,
+    request: GuestRuntimeArgumentObserveRequestV1,
+    handshake: AgentHandshakeRequestV1,
+    response: AgentHandshakeResponseV1,
+    completed: bool,
+}
+
+/// Holds a previously issued challenge without granting a live send session.
+///
+/// Only a packet already signed on the original session can complete this
+/// value. A new Host session must not transmit its retained request.
+pub struct RecoveredRuntimeArgumentChallengeV1 {
+    record: ArgumentObservationRecordV1,
+}
+
+impl RecoveredRuntimeArgumentChallengeV1 {
+    /// Borrows the original protected request for exact Host-journal lookup.
+    #[must_use]
+    pub const fn request(&self) -> &GuestRuntimeArgumentObserveRequestV1 {
+        &self.record.request
+    }
+
+    /// Reports whether the original challenge already consumed a packet.
+    #[must_use]
+    pub const fn is_completed(&self) -> bool {
+        self.record.signed_packet_digest.is_some()
+    }
+}
+
+impl ProtectedRuntimeArgumentChallengeV1 {
+    /// Borrows the exact canonical request committed before Host send.
+    #[must_use]
+    pub const fn request(&self) -> &GuestRuntimeArgumentObserveRequestV1 {
+        &self.request
+    }
+
+    /// Borrows the signed session request bound to the protected challenge.
+    #[must_use]
+    pub const fn handshake(&self) -> &AgentHandshakeRequestV1 {
+        &self.handshake
+    }
+
+    /// Borrows the signed session response bound to the protected challenge.
+    #[must_use]
+    pub const fn response(&self) -> &AgentHandshakeResponseV1 {
+        &self.response
+    }
+
+    /// Reports an exact same-session challenge already consumed by one packet.
+    #[must_use]
+    pub const fn is_completed(&self) -> bool {
+        self.completed
+    }
+}
+
+/// Holds one independently verified and durably consumed Guest measurement.
+///
+/// Only the protected runtime owner can construct this proof after checking
+/// the fixed agent key, exact live session, assignment, profile, and signed
+/// packet against its pre-issued one-shot challenge.
+pub struct AuthenticatedRuntimeArgumentReadbackV1 {
+    execution: ExecutionId,
+    create_operation: OperationId,
+    evidence: ExecutionRuntimeArgumentLimitV1,
+    request_digest: ObjectDigest,
+    packet_digest: ObjectDigest,
+    custody_digest: ObjectDigest,
+}
+
+impl AuthenticatedRuntimeArgumentReadbackV1 {
+    /// Borrows the measured, target-bound argument limit.
+    #[must_use]
+    pub const fn evidence(&self) -> &ExecutionRuntimeArgumentLimitV1 {
+        &self.evidence
+    }
+
+    /// Returns the exact execution whose pre-issued challenge was consumed.
+    #[must_use]
+    pub const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    /// Returns the accepted Create operation bound to the challenge.
+    #[must_use]
+    pub const fn create_operation(&self) -> OperationId {
+        self.create_operation
+    }
+
+    /// Returns the commitment to the canonical Guest request.
+    #[must_use]
+    pub const fn request_digest(&self) -> ObjectDigest {
+        self.request_digest
+    }
+
+    /// Returns the commitment to the exact signed Guest packet.
+    #[must_use]
+    pub const fn packet_digest(&self) -> ObjectDigest {
+        self.packet_digest
+    }
+
+    /// Returns the completed protected challenge-record commitment.
+    #[must_use]
+    pub const fn custody_digest(&self) -> ObjectDigest {
+        self.custody_digest
+    }
+}
+
 /// Proves an execution dispatch is paired with an authenticated AOSAGE session request.
 struct ProtectedAgentRouteReservationV1 {
     effect_request: ObjectDigest,
@@ -973,6 +1116,302 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             execution,
             create_operation,
         )
+    }
+
+    /// Replays the accepted Create and parent source against one durable v2 claim.
+    ///
+    /// The result cannot be synthesized from a legacy reservation or a caller
+    /// supplied digest. The controller and execution journals must remain under
+    /// their protected exclusive owners through the subsequent admission join.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the accepted request, parent profile, assignment,
+    /// or retained v2 claim changed or cannot be authenticated.
+    pub fn read_protected_accepted_output_v2(
+        &self,
+        controller: &mut Journal,
+        create_operation: OperationId,
+        execution: ExecutionId,
+        parent: &ExecutionParentResourceSourceV1,
+    ) -> Result<ProtectedAcceptedExecutionOutputV2, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let accepted = accepted_claim(controller, create_operation, execution, parent)
+            .map_err(JournalRuntimeExecutionError::from)?;
+        let retained = self
+            .execution
+            .load_accepted_output_v2(execution)?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::MissingAcceptedOutputClaim)?;
+        if retained.record_digest != accepted.record.record_digest()
+            || retained.assignment != accepted.assignment
+            || retained.requested_bytes != accepted.requested_bytes
+            || retained.parent_bytes != accepted.parent_bytes
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch);
+        }
+        let currentness =
+            self.admission_currentness_for_accepted_output_v2(execution, create_operation)?;
+        Ok(ProtectedAcceptedExecutionOutputV2 {
+            reservation: accepted.record,
+            currentness,
+        })
+    }
+
+    /// Commits one owner-minted Guest argument-limit challenge before Host send.
+    ///
+    /// The accepted Create/output claim, exact v2 sandbox specification,
+    /// protected current session, channel, runtime, and plan profile are
+    /// checked under their owners. An old session cannot inherit a retained
+    /// challenge; use [`Self::recover_runtime_argument_observation_v1`] to
+    /// finish it only from an already signed packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing or stale source evidence, an unsupported
+    /// signed session, entropy failure, or ambiguous protected durability.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_runtime_argument_observation_v1(
+        &mut self,
+        controller: &mut Journal,
+        execution: ExecutionId,
+        create_operation: OperationId,
+        parent: &ExecutionParentResourceSourceV1,
+        handshake: &AgentHandshakeRequestV1,
+        response: &AgentHandshakeResponseV1,
+    ) -> Result<ProtectedRuntimeArgumentChallengeV1, DormantRuntimeExecutionOwnerErrorV1> {
+        let output = self.read_protected_accepted_output_v2(
+            controller,
+            create_operation,
+            execution,
+            parent,
+        )?;
+        if output.reservation().output().assignment_digest()
+            != self.currentness.runtime().currentness().assignment_digest()
+            || !self.agent.authenticates_session(handshake, response)?
+            || !response
+                .features()
+                .contains(AgentFeatureV1::RuntimeArgumentObservation)
+            || handshake.host_channel_binding() != self.agent_peer.channel_binding
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        let current = self.currentness.runtime().currentness();
+        let runtime = AgentRuntimeBindingV1::new(
+            current.sandbox(),
+            current.incarnation(),
+            current.assignment_epoch(),
+            current.assignment_digest(),
+            current.desired_generation(),
+            current.namespace_generation(),
+            *self.currentness.payload_boot_id().as_bytes(),
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        if handshake.runtime() != &runtime {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        let retained_spec = sandbox_spec_state::get(controller, parent.specification_descriptor())?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        if retained_spec.record_digest() != parent.specification_record_digest() {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+
+        let mut nonce = [0_u8; 32];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::EntropyUnavailable)?;
+        let proposed_request = GuestRuntimeArgumentObserveRequestV1::new(
+            runtime,
+            response.session_binding(),
+            self.agent_peer.channel_binding,
+            nonce,
+            retained_spec.spec().runtime_profile().clone(),
+            self.protected_plan.runtime_profile(),
+        )?;
+        let record = self
+            .execution
+            .begin_argument_observation_v1(ArgumentObservationRecordV1 {
+                execution,
+                create_operation,
+                request: proposed_request,
+                handshake: handshake.clone(),
+                response: response.clone(),
+                signed_packet_digest: None,
+            })?;
+        Ok(ProtectedRuntimeArgumentChallengeV1 {
+            execution,
+            create_operation,
+            request: record.request,
+            handshake: record.handshake,
+            response: record.response,
+            completed: record.signed_packet_digest.is_some(),
+        })
+    }
+
+    /// Recovers an old one-shot challenge without granting a live send path.
+    ///
+    /// The original signed handshake is reverified against the fixed agent
+    /// peer. The Host may only look up a packet already durably captured for
+    /// this exact request; an absent packet leaves the challenge quarantined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the owner, accepted Create, sandbox policy, old
+    /// signed session, or retained challenge no longer matches.
+    pub fn recover_runtime_argument_observation_v1(
+        &self,
+        controller: &mut Journal,
+        execution: ExecutionId,
+        create_operation: OperationId,
+        parent: &ExecutionParentResourceSourceV1,
+    ) -> Result<Option<RecoveredRuntimeArgumentChallengeV1>, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        self.read_protected_accepted_output_v2(controller, create_operation, execution, parent)?;
+        let Some(record) = self.execution.load_argument_observation_v1(execution)? else {
+            return Ok(None);
+        };
+        if record.create_operation != create_operation {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        let retained_spec = sandbox_spec_state::get(controller, parent.specification_descriptor())?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        if retained_spec.record_digest() != parent.specification_record_digest()
+            || retained_spec.spec().runtime_profile() != record.request.profile()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        self.validate_argument_observation_record_v1(&record)?;
+        Ok(Some(RecoveredRuntimeArgumentChallengeV1 { record }))
+    }
+
+    /// Verifies and durably consumes one exact signed Guest measurement packet.
+    ///
+    /// A replay of the same packet is permitted after cold reopen; a different
+    /// packet cannot consume the same challenge. The Host must separately
+    /// retain its packet bytes for recovery and enforce child-limit/profile
+    /// equivalence before any process effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale owner/session, mismatched challenge or
+    /// signature, conflicting packet, or ambiguous protected append.
+    pub fn complete_runtime_argument_observation_v1(
+        &mut self,
+        challenge: &ProtectedRuntimeArgumentChallengeV1,
+        signed_packet: &[u8],
+    ) -> Result<AuthenticatedRuntimeArgumentReadbackV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        if !self
+            .agent
+            .authenticates_session(&challenge.handshake, &challenge.response)?
+            || challenge.request.session() != challenge.response.session_binding()
+            || challenge.request.channel() != self.agent_peer.channel_binding
+            || challenge.request.profile_commitment() != self.protected_plan.runtime_profile()
+            || challenge.request.runtime().assignment_digest()
+                != self.currentness.runtime().currentness().assignment_digest()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        let key = VerifyingKey::from_bytes(&self.agent_peer.public_key)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        let readback =
+            verify_guest_runtime_argument_readback_v1(signed_packet, &challenge.request, &key)?;
+        let custody_digest = self.execution.complete_argument_observation_v1(
+            challenge.execution,
+            challenge.create_operation,
+            &challenge.request,
+            readback.packet_digest(),
+        )?;
+        Ok(AuthenticatedRuntimeArgumentReadbackV1 {
+            execution: challenge.execution,
+            create_operation: challenge.create_operation,
+            evidence: readback.evidence().clone(),
+            request_digest: digest(&challenge.request.encode()),
+            packet_digest: readback.packet_digest(),
+            custody_digest,
+        })
+    }
+
+    /// Consumes an old challenge only with its exact previously signed packet.
+    ///
+    /// This method does not restore the old live session. It checks the
+    /// original signed handshake and packet against protected custody, then
+    /// consumes the one-shot challenge or confirms an identical prior packet.
+    /// It returns only a custody digest: a pre-crash measurement is not fresh
+    /// runtime evidence for an execution admitted on a new live session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on stale currentness, forged original session, wrong
+    /// packet, conflicting consumption, or ambiguous journal durability.
+    pub fn complete_recovered_runtime_argument_observation_v1(
+        &mut self,
+        challenge: &RecoveredRuntimeArgumentChallengeV1,
+        signed_packet: &[u8],
+    ) -> Result<ObjectDigest, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_argument_observation_record_v1(&challenge.record)?;
+        let key = VerifyingKey::from_bytes(&self.agent_peer.public_key)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        let readback = verify_guest_runtime_argument_readback_v1(
+            signed_packet,
+            &challenge.record.request,
+            &key,
+        )?;
+        self.execution
+            .complete_argument_observation_v1(
+                challenge.record.execution,
+                challenge.record.create_operation,
+                &challenge.record.request,
+                readback.packet_digest(),
+            )
+            .map_err(Into::into)
+    }
+
+    fn validate_argument_observation_record_v1(
+        &self,
+        record: &ArgumentObservationRecordV1,
+    ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let current = self.currentness.runtime().currentness();
+        let expected_runtime = AgentRuntimeBindingV1::new(
+            current.sandbox(),
+            current.incarnation(),
+            current.assignment_epoch(),
+            current.assignment_digest(),
+            current.desired_generation(),
+            current.namespace_generation(),
+            *self.currentness.payload_boot_id().as_bytes(),
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        let expected_session =
+            AgentSessionBindingV1::derive(&record.handshake, record.response.agent_instance())
+                .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        if record.request.runtime() != &expected_runtime
+            || record.handshake.runtime() != &expected_runtime
+            || record.handshake.host_channel_binding() != self.agent_peer.channel_binding
+            || record.request.channel() != self.agent_peer.channel_binding
+            || record.request.profile_commitment() != self.protected_plan.runtime_profile()
+            || record.request.session() != expected_session
+            || record.response.session_binding() != expected_session
+            || !record
+                .response
+                .features()
+                .contains(AgentFeatureV1::RuntimeArgumentObservation)
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch);
+        }
+        let key = VerifyingKey::from_bytes(&self.agent_peer.public_key)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)?;
+        let signing_message = agent_handshake_signing_message_v1(
+            &record.handshake,
+            expected_session,
+            record.response.agent_instance(),
+            record.response.features(),
+        );
+        key.verify_strict(
+            &signing_message,
+            &Signature::from_bytes(record.response.challenge_signature()),
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::ArgumentObservationMismatch)
     }
 
     fn validate_admission_draft_currentness_v2(
@@ -3887,6 +4326,18 @@ pub enum DormantRuntimeExecutionOwnerErrorV1 {
     /// The durable claim or admission authority does not match current inputs.
     #[error("protected accepted-Create output claim is stale or mismatched")]
     AcceptedOutputClaimMismatch,
+    /// The protected Guest observation session, target, or runtime profile differs.
+    #[error("protected runtime argument observation source is mismatched")]
+    ArgumentObservationMismatch,
+    /// The one-shot Guest observation nonce could not be generated securely.
+    #[error("runtime argument observation entropy is unavailable")]
+    EntropyUnavailable,
+    /// The signed Guest argument observation is invalid.
+    #[error("runtime argument observation is invalid: {0}")]
+    ArgumentObservation(#[from] GuestRuntimeArgumentObservationErrorV1),
+    /// The selected protected sandbox specification could not be read.
+    #[error("runtime argument sandbox specification is unavailable: {0}")]
+    SandboxSpec(#[from] crate::sandbox_spec_state::SandboxSpecStateError),
     /// A protected record is noncanonical, invalid, or internally inconsistent.
     #[error("protected runtime execution currentness is malformed")]
     MalformedCurrentness,

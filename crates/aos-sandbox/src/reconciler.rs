@@ -3019,6 +3019,64 @@ pub fn public_operation_resource_from_journal_v1(
     recovered_public_operation_resource_v1(journal, operation_id)
 }
 
+/// Reads the exact accepted CreateExecution effect from protected operation custody.
+///
+/// A canceled or permanently blocked operation cannot produce a specification.
+/// This readback is nonauthorizing after the journal borrow ends.
+///
+/// # Errors
+///
+/// Returns an error if the protected operation/effect graph is corrupt or its
+/// public method and retained request disagree.
+pub(crate) fn accepted_create_execution_effect_from_journal_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<PublicMutationEffectV1>, ReconcilerError> {
+    if recovered_public_operation_resource_v1(journal, operation_id)?.is_none() {
+        return Ok(None);
+    }
+    let bytes = journal
+        .get(RecordNamespace::Operation, operation_id.as_bytes())
+        .ok_or(ReconcilerError::CorruptLedger(
+            "accepted Create operation is absent",
+        ))?;
+    let operation = decode_operation(bytes)?;
+    if operation.effect_count != 1
+        || !matches!(
+            operation.state,
+            OperationState::Accepted | OperationState::Applying | OperationState::Succeeded
+        )
+    {
+        return Ok(None);
+    }
+    let effect_bytes = journal
+        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger(
+            "accepted Create effect is absent",
+        ))?;
+    let effect = decode_effect(effect_bytes)?;
+    if effect.plan.public_mutation_method()
+        != Some(crate::controller_query::PublicOperationMethodV1::CreateExecution)
+    {
+        return Ok(None);
+    }
+    let context = effect
+        .plan
+        .public_mutation_context()?
+        .ok_or(ReconcilerError::CorruptLedger(
+            "accepted Create context is absent",
+        ))?;
+    if !matches!(
+        context.validated_request()?,
+        crate::cli_model::DormantSandboxRequestKindV1::Exec(_)
+    ) {
+        return Err(ReconcilerError::CorruptLedger(
+            "accepted Create request has another method",
+        ));
+    }
+    Ok(Some(context))
+}
+
 /// Reads the validated publication digest of one activated ownership gate.
 ///
 /// The caller already holds the reconciler's journal through its executor

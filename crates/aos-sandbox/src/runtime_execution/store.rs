@@ -43,6 +43,7 @@ use crate::journal::{
     ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
 };
 
+use super::argument_observation::{ArgumentObservationRecordV1, KEY_PREFIX as ARGUMENT_KEY_PREFIX};
 use super::evidence::{
     JournalExecutionCompletionV1, completion_observes_terminal_execution, validate_completion,
 };
@@ -296,6 +297,100 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
         Ok(Some(claim))
+    }
+
+    pub(crate) fn load_argument_observation_v1(
+        &self,
+        execution: ExecutionId,
+    ) -> Result<Option<ArgumentObservationRecordV1>, JournalRuntimeExecutionError> {
+        self.authority
+            .get(&ArgumentObservationRecordV1::key(execution))?
+            .map(ArgumentObservationRecordV1::decode)
+            .transpose()
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)
+    }
+
+    pub(crate) fn begin_argument_observation_v1(
+        &mut self,
+        proposed: ArgumentObservationRecordV1,
+    ) -> Result<ArgumentObservationRecordV1, JournalRuntimeExecutionError> {
+        let retained = self
+            .load_accepted_output_v2(proposed.execution)?
+            .ok_or(JournalRuntimeExecutionError::RecordConflict)?;
+        if retained.create_operation != *proposed.create_operation.as_bytes()
+            || retained.assignment != proposed.request.runtime().assignment_digest()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        // A previously issued challenge cannot mint fresh-looking evidence
+        // after a Host process restart, even if its old handshake is replayed.
+        if self
+            .load_argument_observation_v1(proposed.execution)?
+            .is_some()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        let value = proposed
+            .encode()
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        let transaction = JournalTransaction::new(
+            *proposed.execution.as_bytes(),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                ArgumentObservationRecordV1::key(proposed.execution).to_vec(),
+                value,
+            )],
+        )?;
+        self.authority
+            .commit(&transaction)
+            .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)?;
+        Ok(proposed)
+    }
+
+    pub(crate) fn complete_argument_observation_v1(
+        &mut self,
+        execution: ExecutionId,
+        create_operation: OperationId,
+        request: &aos_sandbox_agent::GuestRuntimeArgumentObserveRequestV1,
+        packet_digest: ObjectDigest,
+    ) -> Result<ObjectDigest, JournalRuntimeExecutionError> {
+        let mut record = self
+            .load_argument_observation_v1(execution)?
+            .ok_or(JournalRuntimeExecutionError::RecordConflict)?;
+        if record.create_operation != create_operation
+            || &record.request != request
+            || packet_digest.as_bytes() == &[0; 32]
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        if let Some(prior) = record.signed_packet_digest {
+            return if prior == packet_digest {
+                record
+                    .digest()
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)
+            } else {
+                Err(JournalRuntimeExecutionError::RecordConflict)
+            };
+        }
+        record.signed_packet_digest = Some(packet_digest);
+        let value = record
+            .encode()
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        let transaction = JournalTransaction::new(
+            *execution.as_bytes(),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                ArgumentObservationRecordV1::key(execution).to_vec(),
+                value,
+            )],
+        )?;
+        self.authority
+            .commit(&transaction)
+            .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)?;
+        record
+            .digest()
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)
     }
 
     /// Commits an accepted Create output claim into this execution store.
@@ -1561,6 +1656,7 @@ fn owned_key(key: &[u8]) -> bool {
         || matches!(key, [SEQUENCE_KEY_PREFIX, ..] if key.len() == 33)
         || matches!(key, [ROUTE_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
+        || matches!(key, [ARGUMENT_KEY_PREFIX, ..] if key.len() == 17)
 }
 
 fn output_record_key(key: &[u8]) -> bool {
@@ -1584,6 +1680,7 @@ fn validate_runtime_execution_replay(
     let mut output_format_seen = false;
     let mut output_marker = None;
     let mut provisional_claims = BTreeMap::new();
+    let mut argument_observations = BTreeMap::new();
     let mut admission_state = None;
     let mut admissions = BTreeMap::new();
     let mut idempotency = BTreeMap::new();
@@ -1641,6 +1738,17 @@ fn validate_runtime_execution_replay(
                 if retained.execution.as_slice() != suffix
                     || provisional_claims
                         .insert(key.to_vec(), value.to_vec())
+                        .is_some()
+                {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
+            Some(ARGUMENT_KEY_PREFIX) if key.len() == 17 => {
+                let record = ArgumentObservationRecordV1::decode(value)
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+                if record.execution.as_bytes() != suffix
+                    || argument_observations
+                        .insert(record.execution, record)
                         .is_some()
                 {
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -1765,6 +1873,17 @@ fn validate_runtime_execution_replay(
         )?;
     } else if output_marker.is_some() || !provisional_claims.is_empty() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
+    }
+    for (execution, record) in &argument_observations {
+        let retained = provisional_claims
+            .get(&claim_key(*execution))
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)
+            .and_then(|bytes| decode_claim(bytes).map_err(Into::into))?;
+        if retained.create_operation != *record.create_operation.as_bytes()
+            || retained.assignment != record.request.runtime().assignment_digest()
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
     }
     if admissions.len() != idempotency.len() || admissions.len() != resources.len() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -2381,6 +2500,9 @@ fn map_effect_journal_error(error: JournalError) -> EffectCommitError {
 /// Reports protected execution-journal, evidence, or dispatch failure.
 #[derive(Debug, thiserror::Error)]
 pub enum JournalRuntimeExecutionError {
+    /// An argument-observation append may have committed; cold reopen is required.
+    #[error("runtime argument observation outcome is unknown; reopen protected custody")]
+    ObservationOutcomeUnknown,
     /// The configured store binding is zero or does not match a permit.
     #[error("runtime execution store binding is invalid")]
     InvalidBinding,
@@ -2444,6 +2566,15 @@ pub enum JournalRuntimeExecutionError {
 mod output_v2_tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+    use aos_sandbox_agent::{
+        AgentFeatureSetV1, AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1,
+        AgentNonceV1, AgentRuntimeBindingV1, AgentSessionBindingV1, AgentSessionIdV1,
+        GuestRuntimeArgumentObserveRequestV1,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, DesiredGeneration, FeatureRef, IncarnationId, NamespaceGeneration,
+        SandboxId,
+    };
     use ed25519_dalek::SigningKey;
     use tempfile::TempDir;
 
@@ -2473,6 +2604,56 @@ mod output_v2_tests {
         let checksum = Sha256::digest(&bytes[..280]);
         bytes[280..].copy_from_slice(&checksum);
         bytes.to_vec()
+    }
+
+    fn argument_record() -> ArgumentObservationRecordV1 {
+        let runtime = AgentRuntimeBindingV1::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            ObjectDigest::from_bytes([5; 32]),
+            DesiredGeneration::new(4),
+            NamespaceGeneration::new(5),
+            [6; 16],
+        )
+        .expect("runtime");
+        let handshake = AgentHandshakeRequestV1::new(
+            AgentSessionIdV1::new([7; 16]).expect("session ID"),
+            runtime.clone(),
+            AgentNonceV1::new([8; 32]).expect("nonce"),
+            ObjectDigest::from_bytes([8; 32]),
+        )
+        .expect("handshake");
+        let session = AgentSessionBindingV1::derive(&handshake, &[9; 16]).expect("session");
+        let response = AgentHandshakeResponseV1::new(
+            session,
+            [9; 16],
+            AgentFeatureSetV1::new(vec![
+                AgentFeatureV1::Readiness,
+                AgentFeatureV1::ExecutionHandoff,
+                AgentFeatureV1::RuntimeArgumentObservation,
+            ])
+            .expect("features"),
+            [10; 64],
+        )
+        .expect("response");
+        let request = GuestRuntimeArgumentObserveRequestV1::new(
+            runtime,
+            session,
+            ObjectDigest::from_bytes([8; 32]),
+            [11; 32],
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).expect("profile"),
+            ObjectDigest::from_bytes([12; 32]),
+        )
+        .expect("request");
+        ArgumentObservationRecordV1 {
+            execution: ExecutionId::from_bytes([1; 16]),
+            create_operation: OperationId::from_bytes([3; 16]),
+            request,
+            handshake,
+            response,
+            signed_packet_digest: None,
+        }
     }
 
     fn cold_replay(
@@ -2584,5 +2765,95 @@ mod output_v2_tests {
         assert!(cold_replay(&[(1, 0)], 0, true, false).is_err());
         assert!(cold_replay(&[(1, 8), (2, 3)], 10, true, true).is_err());
         assert!(cold_replay(&[(1, 0)], 0, false, true).is_err());
+    }
+
+    #[test]
+    fn issued_or_completed_challenge_never_reenters_fresh_begin() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected journal");
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .expect("initialized store");
+        let reservation = JournalTransaction::new(
+            [2; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_FORMAT_KEY.to_vec(),
+                    output_format_bytes(binding).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_MARKER_KEY.to_vec(),
+                    marker_bytes(ObjectDigest::from_bytes([5; 32]), 0).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    claim_key(ExecutionId::from_bytes([1; 16])),
+                    claim(1, 0, 0),
+                ),
+            ],
+        )
+        .expect("reservation");
+        store
+            .authority
+            .commit(&reservation)
+            .expect("retained claim");
+
+        let record = argument_record();
+        store
+            .begin_argument_observation_v1(record.clone())
+            .expect("first begin");
+        assert!(matches!(
+            store.begin_argument_observation_v1(record.clone()),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        store
+            .complete_argument_observation_v1(
+                record.execution,
+                record.create_operation,
+                &record.request,
+                ObjectDigest::from_bytes([13; 32]),
+            )
+            .expect("completion");
+        assert!(matches!(
+            store.begin_argument_observation_v1(record.clone()),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+
+        drop(store);
+        drop(journal);
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold reopened journal");
+        let mut store = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())
+            .expect("cold replay");
+        assert!(matches!(
+            store.begin_argument_observation_v1(record),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
     }
 }
