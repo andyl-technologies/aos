@@ -26,59 +26,61 @@ in
         script = ''
           set -eu
           grep -Fxq PASS ${nativeIsolation}/result
-          grep -Fxq 'gate=gate:world-fork-atomicity' ${nativeIsolation}/result
-          grep -Fxq 'io=block,ninep' ${nativeIsolation}/result
+          tr -d '\r' < ${nativeIsolation}/serial.log > "$TMPDIR/native-atomic-world.evidence"
+          grep -Fxq 'gate=gate:world-fork-atomicity' "$TMPDIR/native-atomic-world.evidence"
+          grep -Fxq 'io=block,ninep' "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_resource_isolation=memfd,eventfd,writable-qcow2-root,serial' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_temp_files_isolated=true' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'ambient_outputs_rejected=pidfile,export-socket' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_running_sibling_mutation_isolated=true' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_negative_isolation_source_unchanged=true' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_omission=child-vmstate-destination' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_omission_nodes=2' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_omission_rejected_before=child-readiness,world-publication' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_omission_source_unchanged=true' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_alias=child-vmstate-destination' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_alias_nodes=2' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_alias_rejected_before=child-readiness,world-publication' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
           grep -Fxq \
             'native_real_resource_alias_source_unchanged=true' \
-            ${nativeIsolation}/result
+            "$TMPDIR/native-atomic-world.evidence"
 
           mkdir -p "$out/evidence"
           cp ${nativeIsolation}/result "$out/evidence/native-atomic-world.result"
+          cp "$TMPDIR/native-atomic-world.evidence" "$out/evidence/native-atomic-world.serial.log"
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
