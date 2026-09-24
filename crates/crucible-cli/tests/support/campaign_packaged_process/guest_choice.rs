@@ -1762,19 +1762,26 @@ fn wait_for_resumed_attempt(
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
     let deadline = Instant::now() + Duration::from_secs(120);
     let resumed = wait_for_process_observation(deadline, || {
-        if let Some(AttemptRuntimeState::Running { origin, .. }) =
-            attempt_states(fixture)?.get(&key).copied()
-            && let AttemptExecutionOrigin::ExactCheckpoint { checkpoint, .. } = origin
-        {
-            if checkpoint != expected_checkpoint {
-                return Err(format!(
-                    "resumed attempt used checkpoint {checkpoint}, expected {expected_checkpoint}"
-                )
-                .into());
+        match attempt_states(fixture)?.get(&key).copied() {
+            Some(AttemptRuntimeState::Running {
+                origin: AttemptExecutionOrigin::ExactCheckpoint { checkpoint, .. },
+                ..
+            }) => {
+                if checkpoint != expected_checkpoint {
+                    return Err(format!(
+                        "resumed attempt used checkpoint {checkpoint}, expected {expected_checkpoint}"
+                    )
+                    .into());
+                }
+                Ok(Some(checkpoint))
             }
-            return Ok(Some(checkpoint));
+            Some(state @ AttemptRuntimeState::TerminalFailure { .. }) => Err(format!(
+                "attempt {} failed before resuming exact checkpoint {expected_checkpoint}; ledger state={state:?}",
+                key.attempt()
+            )
+            .into()),
+            _ => Ok(None),
         }
-        Ok(None)
     })?;
     if let Some(checkpoint) = resumed {
         return Ok(checkpoint);
