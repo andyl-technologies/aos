@@ -117,7 +117,7 @@ impl ProductionBrokerSessionActivationV1 {
         }
     }
 
-    /// Adopts the complete fixed Host listener set after another owner claims activation.
+    /// Adopts the complete fixed Host listener set for VM qualification.
     ///
     /// This is the descriptor-owned counterpart of [`Self::adopt_host`]. All three
     /// audience-specific listeners are required, and each must retain its exact
@@ -126,7 +126,8 @@ impl ProductionBrokerSessionActivationV1 {
     /// # Errors
     ///
     /// Rejects any listener whose kernel socket properties or fixed path differ.
-    pub fn adopt_host_listeners(
+    #[cfg(test)]
+    pub(crate) fn adopt_host_listeners(
         controller: RecordSubjectListener,
         root_mount: RecordSubjectListener,
         storage: RecordSubjectListener,
