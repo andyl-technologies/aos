@@ -8,6 +8,7 @@
   buildPackages ? null,
   firmwarePackages ? null,
   targetPackages ? null,
+  sharedBuildCache ? false,
 }: let
   fetchurl = lib.fetchurl;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -115,6 +116,38 @@
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
+  # This separate, cache-free fixed point prevents sccache from depending on
+  # itself and keeps the bootstrap/toolchain ladder unchanged.
+  cacheTool =
+    if sharedBuildCache
+    then (import ../. {system = stdenv.buildPlatform.system;}).pkgs.sccache
+    else null;
+  cacheCompilerLaunchers =
+    if sharedBuildCache
+    then
+      builtins.derivation {
+        name = "aos-cache-compiler-launchers";
+        system = stdenv.buildPlatform.system;
+        builder = stdenv.shell;
+        args = [
+          "-c"
+          ''
+            ${stdenv.coreutils}/bin/mkdir -p "$out/bin"
+            ${stdenv.coreutils}/bin/cat > "$out/bin/gcc" <<'WRAPPER'
+            #!${stdenv.shell}
+            exec ${cacheTool}/bin/sccache ${stdenv.cc}/bin/gcc "$@"
+            WRAPPER
+            ${stdenv.coreutils}/bin/cat > "$out/bin/g++" <<'WRAPPER'
+            #!${stdenv.shell}
+            exec ${cacheTool}/bin/sccache ${stdenv.cc}/bin/g++ "$@"
+            WRAPPER
+            ${stdenv.coreutils}/bin/chmod +x "$out/bin/gcc" "$out/bin/g++"
+            ${stdenv.coreutils}/bin/ln -s gcc "$out/bin/cc"
+            ${stdenv.coreutils}/bin/ln -s g++ "$out/bin/c++"
+          ''
+        ];
+      }
+    else null;
   defaultMaintainers = ["Andyl, Inc."];
 
   withDistributionMeta = extra: drv:
@@ -166,6 +199,16 @@
       args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
+    cacheEligible =
+      sharedBuildCache
+      && (args.sharedBuildCache or true)
+      && builtins.match "^(gcc|glibc|binutils|llvm|clang|rust|cargo|go|sccache|bazel|jdk|openjdk|mes|tcc|hex0|stage0)([-_][0-9].*)?$" packageName == null;
+    cacheSetup = ''
+      # Different nixbld UIDs must be able to populate the same cache tree.
+      umask 000
+      export CC=${cacheCompilerLaunchers}/bin/gcc
+      export CXX=${cacheCompilerLaunchers}/bin/g++
+    '';
     renderedExpose =
       if args ? expose
       then
@@ -405,7 +448,7 @@
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
-      (builtins.removeAttrs args ["configModule"])
+      (builtins.removeAttrs args ["configModule" "sharedBuildCache"])
       // {
         meta =
           (args.meta or {})
@@ -414,7 +457,8 @@
           };
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
-          ++ [resolvedBuildPackages.nuke-references];
+          ++ [resolvedBuildPackages.nuke-references]
+          ++ lib.optionals cacheEligible [cacheTool cacheCompilerLaunchers];
         passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
       // lib.optionalAttrs (
@@ -426,6 +470,29 @@
         # Replace only that exact implementation so package-authored phases
         # that happen to use the same name retain their behavior.
         phases = crossPhases;
+      }
+      // lib.optionalAttrs cacheEligible {
+        RUSTC_WRAPPER = "${cacheTool}/bin/sccache";
+        GOCACHE = "/aos-build-cache/go";
+        SCCACHE_SERVER_UDS = "/aos-build-cache/sccache/server.sock";
+        SCCACHE_CLIENT_SIDE = "1";
+        AOS_SHARED_BUILD_CACHE = "1";
+        preConfigure = cacheSetup + (args.preConfigure or "");
+        preBuild = cacheSetup + (args.preBuild or "");
+      }
+      // lib.optionalAttrs (cacheEligible && args ? phases) {
+        phases =
+          [
+            {
+              name = "shared-cache-setup";
+              script = cacheSetup;
+            }
+          ]
+          ++ (
+            if stdenv.buildPlatform.system != stdenv.hostPlatform.system
+            then crossPhases
+            else args.phases
+          );
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;

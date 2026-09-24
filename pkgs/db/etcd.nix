@@ -201,7 +201,7 @@ in
       {
         name = "build";
         script = ''
-          export GOCACHE=$TMPDIR/go-cache
+          if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then export GOCACHE=/aos-build-cache/go; else export GOCACHE=$TMPDIR/go-cache; fi
           export CGO_ENABLED=0
           export GOPROXY=off
           if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then

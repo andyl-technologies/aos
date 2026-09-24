@@ -50,7 +50,7 @@ in
         name = "build";
         script = ''
           export GOPATH=$TMPDIR/go
-          export GOCACHE=$TMPDIR/go-cache
+          if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then export GOCACHE=/aos-build-cache/go; else export GOCACHE=$TMPDIR/go-cache; fi
           export CGO_ENABLED=0
           export GOFLAGS="-trimpath -mod=vendor"
           export GOPROXY=off
