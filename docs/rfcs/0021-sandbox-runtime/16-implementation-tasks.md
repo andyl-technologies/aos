@@ -8658,12 +8658,13 @@ remain expired or await explicit fresh authorization, never be renewed by
 copying a timestamp or recomputing a digest. The hold cannot be cleared until
 both old-name retirement and new-scope replay have been independently verified.
 
-The view only supplies a mount and DAC boundary. The protected journal opener
-still requests a writer lock and opens files read-write, so the root policy
-service does not yet replay Cache quota or head records through this view. The
-setup-time name check is not a continuous filename allowlist; the future reader
-must open exact names and prove their current directory entries at the held
-cut.
-Q04, public Create, compiler publication, and effects remain closed until an
-independent read-only named-currentness check and the complete owner-held
-root CAS/effect barrier are proved.
+The root policy diagnostic now replays the three fixed journal names through
+that view without taking a Controller writer lock, repairing a tail, or
+advancing the Cache clock. It checks the mount identity and flags, full typed
+Cache replay, and the current directory entries again before returning. The
+readback is not a held Controller cut: the three observations may span
+Controller commits, and its result cannot authorize Q04, public Create,
+compiler publication, or an effect. A dedicated VM check exercises initialized
+readback, missing or replaced names, and no mutation; a passing VM result is
+still required as qualification evidence. Q04 and effects remain closed until
+the complete all-owner held cut and release/recovery barrier are proved.
