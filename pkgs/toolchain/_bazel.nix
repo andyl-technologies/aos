@@ -1561,6 +1561,13 @@ in
               --python_path=${buildPython3}/bin/python3
             "
 
+            # compile.sh invokes the bootstrap Bazel with its own arguments
+            # rather than reading our normal .bazelrc. Feed it the same disk
+            # action cache used by mkBazelPackage in development builds.
+            if [ -n "''${AOS_SHARED_BUILD_CACHE:-}" ]; then
+              export EXTRA_BAZEL_ARGS="$EXTRA_BAZEL_ARGS --disk_cache=/aos-build-cache/bazel"
+            fi
+
             # Run the bootstrap build
             ${buildBash}/bin/bash ./compile.sh
           '';

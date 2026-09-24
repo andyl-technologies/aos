@@ -428,8 +428,9 @@ in rec {
         script =
           ''
             export GOPATH="$TMPDIR/go"
-            export GOCACHE="''${AOS_SHARED_BUILD_CACHE:+/aos-build-cache/go}"
-            : "''${GOCACHE:=$TMPDIR/go-cache}"
+            # mkDerivation supplies the shared path in development builds;
+            # ordinary builds keep their private temporary compilation cache.
+            export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
             export GOFLAGS="-trimpath"
             export CGO_ENABLED=${
               if cgoEnabled

@@ -148,7 +148,10 @@ Use the in-repository Bash CLI for ordinary development builds, target
 discovery, local checks, and release preparation. It selects exact Nix attrs
 without requiring their paths to be memorized. Development builds share
 sccache, Go, and Bazel caches across Nix invocations while retaining the Nix
-sandbox. The bootstrap toolchain remains on its normal cache-free derivations.
+sandbox. The stdenv source bootstrap is unchanged. The first C-to-Rust and Go
+stages are not wrapped, while later toolchain package builds can use the cache
+after the AOS-built sccache executable has been bootstrapped.
+
 The script's Bash entry point has no host-specific shebang:
 
 ```sh
@@ -180,6 +183,16 @@ to set this restricted option, or the daemon administrator must configure a
 static sandbox mount of `/aos-build-cache` to the chosen cache directory.
 `cache init` fails with a precise message if neither condition holds. Its first
 run may build the Rust toolchain to realize the AOS-built sccache package.
+The first cache-enabled build of a toolchain stage also has a distinct Nix
+identity, so expect one cold build before later source changes can reuse its
+compiler results.
+The shared `mkDerivation` wrapper covers common GCC and C++ compiler calls;
+`mkCargoPackage` sends rustc through sccache, `mkGoPackage` uses the shared Go
+compilation cache, and `mkBazelPackage` uses Bazel's disk action cache. Rust
+compiler stages after 1.74, Go stages after 1.4, LLVM packages, and OpenJDK
+can use the compiler caches. Bazel also caches Java actions. Plain `javac` and
+Ant builds have no shared Java compiler cache.
+
 Go and Bazel cache data is disposable and writable by Nix build users, so use
 this mode only on a trusted development machine. `cache doctor`, `cache status`,
 and `cache stop` inspect or control the server. `cache usage` reports per-backend
@@ -192,7 +205,10 @@ target completion in the current Bash session.
 
 For release and qualification builds use `--release` or `--no-cache` before
 the command. These use the ordinary derivation identities and no shared cache
-mount. `bash ./aos-dev release ...` always invokes the existing `aos release`
+mount requested by the CLI. A daemon-wide static mount remains visible even
+in release sandboxes, so use per-command mounts or a separate builder when
+release qualification requires a cache-free sandbox.
+`bash ./aos-dev release ...` always invokes the existing `aos release`
 workflow without shared caches. `all packages`, `all builds`, `all checks`,
 `all format`, and `all ci` provide broad local/CI entry points. The broad
 targets can be expensive; use a focused target during iteration.

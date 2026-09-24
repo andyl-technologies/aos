@@ -31,10 +31,14 @@ aos_dev_require_command() {
   command -v "$1" >/dev/null 2>&1 || aos_dev_error "required command '$1' is unavailable"
 }
 
+# All build and run commands eventually pass through this wrapper. Keeping the
+# mode decision here prevents a new command from forgetting release isolation.
 aos_dev_nix_build() {
   local -a command=(nix-build "$aos_dev_root/default.nix")
 
   if [[ $aos_dev_mode == development ]]; then
+    # A single command may build several targets. Initialize the server and
+    # sandbox mount once, then reuse the same Nix options for every target.
     if [[ ${aos_dev_cache_ready:-0} != 1 ]]; then
       aos_dev_cache_check_nix
       aos_dev_cache_prepare

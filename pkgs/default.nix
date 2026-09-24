@@ -116,8 +116,9 @@
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
-  # This separate, cache-free fixed point prevents sccache from depending on
-  # itself and keeps the bootstrap/toolchain ladder unchanged.
+  # Build the compiler wrapper from the ordinary package set. Cached Rust and
+  # LLVM toolchains can then use it without making sccache depend on itself.
+  # The first cache-enabled build still has to realize this source-built tool.
   cacheTool =
     if sharedBuildCache
     then (import ../. {system = stdenv.buildPlatform.system;}).pkgs.sccache
@@ -199,15 +200,26 @@
       args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
+    # Leave the initial Rust and Go bootstrap roots outside the wrapper. Later
+    # Rust/Go/LLVM/JDK stages and hosted GCC can share compiler outputs after
+    # the cache tool has been built from the ordinary package set.
     cacheEligible =
       sharedBuildCache
       && (args.sharedBuildCache or true)
-      && builtins.match "^(gcc|glibc|binutils|llvm|clang|rust|cargo|go|sccache|bazel|jdk|openjdk|mes|tcc|hex0|stage0)([-_][0-9].*)?$" packageName == null;
+      && !builtins.elem packageName ["sccache" "rust-1_74" "go-1_4"];
     cacheSetup = ''
       # Different nixbld UIDs must be able to populate the same cache tree.
       umask 000
-      export CC=${cacheCompilerLaunchers}/bin/gcc
-      export CXX=${cacheCompilerLaunchers}/bin/g++
+      # PATH catches makefiles that invoke gcc/cc by name; CC/CXX cover
+      # configure scripts that use the stdenv compiler variables directly.
+      case "$PATH" in
+        ${cacheCompilerLaunchers}/bin:*) ;;
+        *) export PATH="${cacheCompilerLaunchers}/bin:$PATH" ;;
+      esac
+      export CC="${cacheCompilerLaunchers}/bin/gcc"
+      export CXX="${cacheCompilerLaunchers}/bin/g++"
+      # sccache cannot store Rust's incremental compilation units.
+      export CARGO_INCREMENTAL=0
     '';
     renderedExpose =
       if args ? expose
