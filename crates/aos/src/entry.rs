@@ -4,7 +4,7 @@ use std::process;
 use std::{ffi::OsStr, ffi::OsString, io::Write};
 
 use anyhow::{Result, bail};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
 use crate::commands;
@@ -64,7 +64,12 @@ fn maintenance_output_policy(cli: &Cli) -> (ProgressChoice, ColorChoice) {
 /// Parses and runs the `apm` package-consumer CLI.
 pub async fn apm_main() {
     install_panic_hook("apm");
-    let cli = ApmCli::parse();
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if matches!(selected_package_surface(&args), Some(true)) {
+        exit_surface_error("apm", "internal package runtime command");
+    }
+
+    let cli = ApmCli::parse_from(args);
     if cli.command.is_runtime_internal() {
         exit_surface_error("apm", "internal package runtime command");
     }
@@ -82,6 +87,9 @@ pub async fn package_runtime_main() {
     if let Some(program) = args.first_mut() {
         *program = OsString::from("apm");
     }
+    if matches!(selected_package_surface(&args), Some(false)) {
+        exit_surface_error("aos-package-runtime", "public package-consumer command");
+    }
 
     let cli = ApmCli::parse_from(args);
     if !cli.command.is_runtime_internal() {
@@ -92,6 +100,24 @@ pub async fn package_runtime_main() {
         aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
         &printer,
     );
+}
+
+// Clap handles --help before it constructs a typed command. Inspect the same
+// command metadata first so help cannot cross the public/runtime boundary.
+fn selected_package_surface(args: &[OsString]) -> Option<bool> {
+    let mut command = ApmCli::command()
+        .ignore_errors(true)
+        .disable_help_flag(true)
+        .disable_version_flag(true);
+    let matches = command
+        .try_get_matches_from_mut(args.iter().cloned())
+        .ok()?;
+    let selected = matches.subcommand_name()?;
+
+    command
+        .get_subcommands()
+        .find(|subcommand| subcommand.get_name() == selected)
+        .map(clap::Command::is_hide_set)
 }
 
 /// Parses and runs the `apr` registry-authoring CLI.
