@@ -7,6 +7,10 @@
 //! A closed acknowledgment can be joined to a separately signed PREPARED
 //! claim under the same measured tuple and current clock. The caller must
 //! still supply independent current C-owner map readback.
+//! The C owner can emit an unsigned root-only PREPARED map report, but its
+//! `AOSKGA01` test verifier uses one role key while this peer checks
+//! `AOSKGA02` under distinct lease and stage credentials. No protected
+//! transport carries the C report into this capability-empty peer.
 //! No Storage sender, private signer key, map stage, or descriptor release is
 //! wired. A successful decode or readback is a nonauthorizing observation,
 //! never a grant.
@@ -15,6 +19,7 @@ pub mod deployment;
 pub mod handoff;
 pub mod origin;
 pub mod peer;
+pub mod prepared_map_report;
 pub mod stage_ack;
 pub mod three_fd;
 

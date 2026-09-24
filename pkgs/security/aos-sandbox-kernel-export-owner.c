@@ -22,6 +22,7 @@
 #define HANDOFF_BYTES 344U
 #define ACK_BYTES 576U
 #define RECORD_BYTES 1208U
+#define PREPARED_REPORT_BYTES 152U
 #define OWNER_PREPARED 1U
 #define OWNER_ACTIVATING 2U
 #define OWNER_ACTIVE 3U
@@ -341,19 +342,15 @@ static int write_mount(__u64 mount_id,
          memcmp(policy, &observed, sizeof(*policy)) == 0 ? 0 : -1;
 }
 
-static int staged_policy_digest(__u64 mount_id,
-                                const struct aos_kernel_export_owner_mount_v1 *policy,
-                                unsigned char digest[32])
+static int canonical_prepared_policy(
+    __u64 mount_id, const struct aos_kernel_export_owner_mount_v1 *policy,
+    unsigned char canonical[128])
 {
-  unsigned char canonical[128] = {0};
-  unsigned int size = 0;
-  EVP_MD_CTX *context = NULL;
-  int result = -1;
-
   if (policy->version != AOS_KERNEL_EXPORT_DENY_VERSION ||
       policy->phase != AOS_KERNEL_EXPORT_OWNER_PREPARED ||
       !all_zero((const unsigned char *)policy->lease_digest, 32))
     return -1;
+  memset(canonical, 0, 128);
   memcpy(canonical, policy->boot_id, 16);
   put_be64(canonical + 16, mount_id);
   put_be64(canonical + 24, policy->epoch);
@@ -364,6 +361,20 @@ static int staged_policy_digest(__u64 mount_id,
   memcpy(canonical + 88, policy->lease_digest, 32);
   put_be32(canonical + 120, policy->version);
   put_be32(canonical + 124, policy->phase);
+  return 0;
+}
+
+static int staged_policy_digest(__u64 mount_id,
+                                const struct aos_kernel_export_owner_mount_v1 *policy,
+                                unsigned char digest[32])
+{
+  unsigned char canonical[128];
+  unsigned int size = 0;
+  EVP_MD_CTX *context = NULL;
+  int result = -1;
+
+  if (canonical_prepared_policy(mount_id, policy, canonical) != 0)
+    return -1;
 
   context = EVP_MD_CTX_new();
   if (context == NULL ||
@@ -680,6 +691,32 @@ static int prepared_current(const struct owner_state *state, int clone_fd,
   return 0;
 }
 
+/* A root-only point observation, not a signed or held grant statement. */
+static int report_prepared(const struct owner_state *state, int clone_fd,
+                           int cgroup_fd, const char *handoff_path)
+{
+  struct aos_kernel_export_owner_mount_v1 before, after;
+  unsigned char first_frame[HANDOFF_BYTES], second_frame[HANDOFF_BYTES];
+  unsigned char report[PREPARED_REPORT_BYTES] = {0};
+  __u64 now;
+
+  if (prepared_current(state, clone_fd, cgroup_fd, handoff_path,
+                       first_frame, &before) != 0 ||
+      canonical_prepared_policy(state->mount_id, &before,
+                                report + 16) != 0 ||
+      prepared_current(state, clone_fd, cgroup_fd, handoff_path,
+                       second_frame, &after) != 0 ||
+      memcmp(&before, &after, sizeof(before)) != 0 ||
+      memcmp(first_frame, second_frame, sizeof(first_frame)) != 0 ||
+      boot_time_ns(&now) != 0 || now == 0)
+    return -1;
+
+  memcpy(report, "AOSKPR01", 8);
+  report[9] = 1;
+  put_be64(report + 144, now);
+  return exact_write(STDOUT_FILENO, report, sizeof(report));
+}
+
 static int record_digest(const unsigned char record[RECORD_BYTES],
                          unsigned char digest[32])
 {
@@ -989,6 +1026,11 @@ int main(int argc, char **argv)
     result = inspect_current(&state, clone_fd, cgroup_fd, argv[4],
                              argc == 7 ? argv[5] : NULL,
                              argc == 7 ? argv[6] : NULL);
+    goto out;
+  }
+  if (argc == 5 && strcmp(argv[1], "report-prepared") == 0 &&
+      read_state(&state) == 0) {
+    result = report_prepared(&state, clone_fd, cgroup_fd, argv[4]);
     goto out;
   }
   if (argc == 5 && strcmp(argv[1], "inspect-record") == 0 &&

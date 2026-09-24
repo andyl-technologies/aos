@@ -27,6 +27,8 @@
 #error "AOS_KERNEL_EXPORT_OWNER_BIN must name the packaged owner"
 #endif
 
+#define PREPARED_REPORT_BYTES 152U
+
 static const char handoff[] = "/var/lib/aos/kernel-export-owner/handoff";
 static const unsigned char signature_domain[] =
     "aos.sandbox.storage.live-export-lease.signature.v1";
@@ -98,6 +100,54 @@ static int owner(const char *command, int clone, int cgroup,
   }
   return child > 0 && waitpid(child, &status, 0) == child &&
          WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+static int prepared_report(int clone, int cgroup,
+                           unsigned char report[PREPARED_REPORT_BYTES])
+{
+  char clone_text[24], cgroup_text[24];
+  int pipe_fd[2], status, result = -1;
+  pid_t child;
+  size_t offset = 0;
+  unsigned char extra;
+
+  if (snprintf(clone_text, sizeof(clone_text), "%d", clone) >=
+          (int)sizeof(clone_text) ||
+      snprintf(cgroup_text, sizeof(cgroup_text), "%d", cgroup) >=
+          (int)sizeof(cgroup_text) ||
+      pipe2(pipe_fd, O_CLOEXEC) != 0)
+    return -1;
+  child = fork();
+  if (child == 0) {
+    close(pipe_fd[0]);
+    if (dup2(pipe_fd[1], STDOUT_FILENO) < 0 ||
+        fcntl(clone, F_SETFD, 0) != 0 ||
+        fcntl(cgroup, F_SETFD, 0) != 0)
+      _exit(127);
+    close(pipe_fd[1]);
+    execl(AOS_KERNEL_EXPORT_OWNER_BIN, AOS_KERNEL_EXPORT_OWNER_BIN,
+          "report-prepared", clone_text, cgroup_text, handoff,
+          (char *)NULL);
+    _exit(127);
+  }
+  close(pipe_fd[1]);
+  if (child > 0) {
+    while (offset < PREPARED_REPORT_BYTES) {
+      ssize_t count = read(pipe_fd[0], report + offset,
+                           PREPARED_REPORT_BYTES - offset);
+      if (count <= 0)
+        break;
+      offset += (size_t)count;
+    }
+    if (offset == PREPARED_REPORT_BYTES &&
+        read(pipe_fd[0], &extra, 1) == 0)
+      result = 0;
+    if (waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+      result = -1;
+  }
+  close(pipe_fd[0]);
+  return result;
 }
 
 static int write_exact(const char *path, const void *data, size_t size)
@@ -882,6 +932,9 @@ int main(int argc, char **argv)
       .l_len = 1,
   };
   struct stat cgroup_stat;
+  unsigned char prepared[PREPARED_REPORT_BYTES];
+  unsigned char rejected_report[PREPARED_REPORT_BYTES];
+  unsigned char prepared_digest[32], signed_ack[576];
   uint64_t clone_id;
   char byte;
   int source_fd, clone_fd, wrong_clone, allowed_fd, outside_fd, data_fd;
@@ -976,6 +1029,17 @@ int main(int argc, char **argv)
     fprintf(stderr, "kernel-export-owner-probe: owner deny-stage readback failed\n");
     return 1;
   }
+  if (prepared_report(clone_fd, allowed_fd, prepared) != 0 ||
+      prepared_report(wrong_clone, allowed_fd, rejected_report) == 0 ||
+      prepared_report(clone_fd, outside_fd, rejected_report) == 0 ||
+      memcmp(prepared, "AOSKPR01", 8) != 0 ||
+      prepared[8] != 0 || prepared[9] != 1 ||
+      read_be64(prepared + 32) != clone_id ||
+      read_be64(prepared + 40) != 1 ||
+      prepared[139] != 3 || prepared[143] != 1) {
+    fprintf(stderr, "kernel-export-owner-probe: prepared map report failed\n");
+    return 1;
+  }
   if (fcntl(clone_fd, F_GETFD) < 0 || fcntl(clone_fd, F_GETFL) < 0 ||
       fcntl(clone_fd, F_SETFD, FD_CLOEXEC) != 0) {
     fprintf(stderr, "kernel-export-owner-probe: protected descriptor metadata failed: %s\n",
@@ -1014,6 +1078,14 @@ int main(int argc, char **argv)
       lease_names_origin(source_fd, clone_fd) != 0 ||
       make_stage_ack(clone_id) != 0) {
     fprintf(stderr, "kernel-export-owner-probe: signed fixture identity failed\n");
+    return 1;
+  }
+  if (read_exact_file(ack, signed_ack, sizeof(signed_ack)) != 0 ||
+      digest_parts(stage_domain, sizeof(stage_domain),
+                   prepared + 16, 128, prepared_digest) != 0 ||
+      memcmp(prepared_digest, signed_ack + 400,
+             sizeof(prepared_digest)) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: map report digest differs\n");
     return 1;
   }
   if (owner("inspect-record", clone_fd, allowed_fd,
@@ -1062,6 +1134,10 @@ int main(int argc, char **argv)
       owner("activate", clone_fd, allowed_fd, lease, ack, "10000") != 0) {
     fprintf(stderr, "kernel-export-owner-probe: staging or activation failed: %s\n",
             strerror(errno));
+    return 1;
+  }
+  if (prepared_report(clone_fd, allowed_fd, rejected_report) == 0) {
+    fprintf(stderr, "kernel-export-owner-probe: ACTIVE map reported PREPARED\n");
     return 1;
   }
 
