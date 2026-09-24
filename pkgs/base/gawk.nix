@@ -10,6 +10,7 @@
   gnumake,
   sed,
   bash,
+  stdenv,
 }: let
   version = "5.4.1";
 in
@@ -24,7 +25,11 @@ in
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake sed];
     runtimeDeps = [bash];
-    configureFlags = "--disable-nls";
+    # The Darwin SDK has uchar.h but lacks its C11 char32_t API.
+    configureFlags =
+      if stdenv.hostPlatform.isDarwin
+      then "--disable-nls ac_cv_header_uchar_h=no"
+      else "--disable-nls";
     postPatch = ''
       # Preserve uninitialized array strings when scalar conversion clears
       # metadata; GCC's option generator depends on this behavior.
