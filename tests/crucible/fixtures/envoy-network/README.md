@@ -38,7 +38,9 @@ The campaign materializer must bind its typed environment fault choices to
 Crucible's modeled network adapters and deliver the RFC-0014 fault signal at
 the transport boundary. The guest image does not inject host-side faults.
 
-The guest-to-guest readiness channel uses A's port 9090 on the modeled fabric.
+The guest-to-guest readiness channel terminates at A's port 9090 on the modeled
+fabric. West, B, and C contact A directly; east sends readiness through C's
+`/control/` Envoy route over the A-C link because east has no direct A link.
 Every VM emits `fault.transport.ready` after local readiness: east checks nginx,
 B and C check their Envoy route, and west confirms the full A-B-C-east path.
 After the host releases that boundary and replies with the atomic recovery
