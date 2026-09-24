@@ -141,17 +141,11 @@ impl ProviderLedgerV1<'_> {
             }
         }
         let holder_id = permit.holder_id;
-        let mut installed = self.current_sessions.remove(&holder_id).ok_or(
-            ProviderLedgerError::InvalidTransition("missing current completion session"),
-        )?;
-        let current = installed.session.current_projection()?;
-        if current.session_binding() != permit.session_binding {
-            self.current_sessions.insert(holder_id, installed);
-            return Err(ProviderLedgerError::Equivocation);
-        }
-        let result = complete_inventory(self, permit, reopened, &mut installed.session);
-        self.current_sessions.insert(holder_id, installed);
-        result
+        self.with_current_completion_session(
+            holder_id,
+            permit.session_binding,
+            |ledger, custody| complete_inventory(ledger, permit, reopened, custody),
+        )
     }
 
     /// Durably completes a reserved Inventory with a non-success disposition.
@@ -174,17 +168,11 @@ impl ProviderLedgerV1<'_> {
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
         let holder_id = permit.holder_id;
-        let mut installed = self.current_sessions.remove(&holder_id).ok_or(
-            ProviderLedgerError::InvalidTransition("missing current completion session"),
-        )?;
-        let current = installed.session.current_projection()?;
-        if current.session_binding() != permit.session_binding {
-            self.current_sessions.insert(holder_id, installed);
-            return Err(ProviderLedgerError::Equivocation);
-        }
-        let result = complete_inventory_disposition(self, permit, status, &mut installed.session);
-        self.current_sessions.insert(holder_id, installed);
-        result
+        self.with_current_completion_session(
+            holder_id,
+            permit.session_binding,
+            |ledger, custody| complete_inventory_disposition(ledger, permit, status, custody),
+        )
     }
 }
 

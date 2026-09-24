@@ -249,22 +249,8 @@ pub fn verify_catalog_publication(
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
     }
-    let verifying_key = VerifyingKey::from_bytes(authorization.trusted.public_key())
-        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-    if verifying_key.is_weak() {
-        return Err(SourceProviderSecurityError::SessionContinuity);
-    }
-    let signature = Signature::from_bytes(&array(bytes, SIGNATURE_OFFSET)?);
-    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + SIGNATURE_OFFSET);
-    message.extend_from_slice(SIGNATURE_DOMAIN);
-    message.extend_from_slice(&bytes[..SIGNATURE_OFFSET]);
-    verifying_key
-        .verify_strict(&message, &signature)
-        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-    let mut hasher = Sha256::new();
-    hasher.update(RECEIPT_DOMAIN);
-    hasher.update(bytes);
-    let publication_receipt_digest = ObjectDigest::from_bytes(hasher.finalize().into());
+    let publication_receipt_digest =
+        verify_catalog_signature(bytes, authorization.trusted.public_key())?;
     Ok(VerifiedCatalogPublicationV1 {
         provider,
         resource_namespace_digest,
@@ -384,21 +370,7 @@ fn verify_retained_catalog_publication_inner(
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
     }
-    let verifying_key = VerifyingKey::from_bytes(trusted.public_key())
-        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-    if verifying_key.is_weak() {
-        return Err(SourceProviderSecurityError::SessionContinuity);
-    }
-    let signature = Signature::from_bytes(&array(bytes, SIGNATURE_OFFSET)?);
-    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + SIGNATURE_OFFSET);
-    message.extend_from_slice(SIGNATURE_DOMAIN);
-    message.extend_from_slice(&bytes[..SIGNATURE_OFFSET]);
-    verifying_key
-        .verify_strict(&message, &signature)
-        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-    let mut hasher = Sha256::new();
-    hasher.update(RECEIPT_DOMAIN);
-    hasher.update(bytes);
+    let publication_receipt_digest = verify_catalog_signature(bytes, trusted.public_key())?;
     Ok((
         VerifiedCatalogPublicationV1 {
             provider,
@@ -407,7 +379,7 @@ fn verify_retained_catalog_publication_inner(
             catalog_digest,
             publisher_authority_id,
             publication_generation,
-            publication_receipt_digest: ObjectDigest::from_bytes(hasher.finalize().into()),
+            publication_receipt_digest,
             predecessor_catalog_generation,
             predecessor_catalog_digest,
             catalog_floor_generation,
@@ -422,6 +394,30 @@ fn verify_retained_catalog_publication_inner(
         },
         cleanup_only,
     ))
+}
+
+// Both trust paths authenticate the same canonical bytes after their distinct
+// authority and lineage checks.
+fn verify_catalog_signature(
+    bytes: &[u8],
+    public_key: &[u8; 32],
+) -> Result<ObjectDigest, SourceProviderSecurityError> {
+    let verifying_key = VerifyingKey::from_bytes(public_key)
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    if verifying_key.is_weak() {
+        return Err(SourceProviderSecurityError::SessionContinuity);
+    }
+    let signature = Signature::from_bytes(&array(bytes, SIGNATURE_OFFSET)?);
+    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + SIGNATURE_OFFSET);
+    message.extend_from_slice(SIGNATURE_DOMAIN);
+    message.extend_from_slice(&bytes[..SIGNATURE_OFFSET]);
+    verifying_key
+        .verify_strict(&message, &signature)
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    let mut hasher = Sha256::new();
+    hasher.update(RECEIPT_DOMAIN);
+    hasher.update(bytes);
+    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
 impl VerifiedCatalogPublicationV1 {

@@ -79,16 +79,11 @@ impl ProviderLedgerV1<'_> {
             }
         };
         let holder_id = permit.plan.holder_id;
-        let mut installed = self.current_sessions.remove(&holder_id).ok_or(
-            ProviderLedgerError::InvalidTransition("missing current completion session"),
-        )?;
-        let current = installed.session.current_projection()?;
-        if current.session_binding() != permit.completion_session_binding {
-            self.current_sessions.insert(holder_id, installed);
-            return Err(ProviderLedgerError::Equivocation);
-        }
-        let result = complete_release(self, permit, observed, &mut installed.session);
-        self.current_sessions.insert(holder_id, installed);
+        let result = self.with_current_completion_session(
+            holder_id,
+            permit.completion_session_binding,
+            |ledger, custody| complete_release(ledger, permit, observed, custody),
+        );
         if matches!(&result, Err(ProviderLedgerError::BackendConflict)) {
             self.record_backend_conflict(acquisition_id)?;
         }
@@ -114,17 +109,11 @@ impl ProviderLedgerV1<'_> {
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
         let holder_id = permit.plan.holder_id;
-        let mut installed = self.current_sessions.remove(&holder_id).ok_or(
-            ProviderLedgerError::InvalidTransition("missing current completion session"),
-        )?;
-        let current = installed.session.current_projection()?;
-        if current.session_binding() != permit.completion_session_binding {
-            self.current_sessions.insert(holder_id, installed);
-            return Err(ProviderLedgerError::Equivocation);
-        }
-        let result = complete_release_disposition(self, permit, status, &mut installed.session);
-        self.current_sessions.insert(holder_id, installed);
-        result
+        self.with_current_completion_session(
+            holder_id,
+            permit.completion_session_binding,
+            |ledger, custody| complete_release_disposition(ledger, permit, status, custody),
+        )
     }
 
     /// Observes and durably terminalizes one live Pending release.

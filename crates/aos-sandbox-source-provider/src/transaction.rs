@@ -190,6 +190,30 @@ pub(crate) fn authorize_current_reservation(
 }
 
 impl ProviderLedgerV1<'_> {
+    // A failed projection check leaves the removed session unavailable, as the
+    // existing completion paths do. Binding failure restores it before return.
+    pub(crate) fn with_current_completion_session<R>(
+        &mut self,
+        holder_id: [u8; 16],
+        expected_session_binding: ObjectDigest,
+        complete: impl FnOnce(
+            &mut Self,
+            &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
+        ) -> Result<R, ProviderLedgerError>,
+    ) -> Result<R, ProviderLedgerError> {
+        let mut installed = self.current_sessions.remove(&holder_id).ok_or(
+            ProviderLedgerError::InvalidTransition("missing current completion session"),
+        )?;
+        let current = installed.session.current_projection()?;
+        if current.session_binding() != expected_session_binding {
+            self.current_sessions.insert(holder_id, installed);
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        let result = complete(self, &mut installed.session);
+        self.current_sessions.insert(holder_id, installed);
+        result
+    }
+
     /// Authenticates and durably admits one provider request under owner-held state.
     ///
     /// This facade invokes protocol verification itself, cross-checks the sealed
