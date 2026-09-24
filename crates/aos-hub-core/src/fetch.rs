@@ -315,6 +315,25 @@ pub trait SurfaceFetch: BackendBounds {
         bail!("this surface does not support storage-local Git inspection")
     }
 
+    /// Reads several verified Git objects in request order beside storage.
+    ///
+    /// Adapters without a batch protocol use their single-object inspection
+    /// path. Callers verify every returned OID before retaining it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport failure or an invalid projection.
+    async fn inspect_git_objects(
+        &self,
+        oids: &[aos_registry_surface::object::Oid],
+    ) -> Result<Vec<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>>> {
+        let mut objects = Vec::with_capacity(oids.len());
+        for oid in oids {
+            objects.push(self.inspect_git_object(*oid).await?);
+        }
+        Ok(objects)
+    }
+
     /// Reads a bounded OCI range needed to inspect legacy layer metadata.
     ///
     /// This separate port keeps public blob delivery on the storage Worker in

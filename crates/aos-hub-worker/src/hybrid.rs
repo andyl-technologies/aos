@@ -69,6 +69,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "list_page".into(),
             "inspect_sha256".into(),
             "inspect_git_object".into(),
+            "inspect_git_objects".into(),
             "inspect_metadata".into(),
             "inspect_oci_range".into(),
         ],
@@ -110,6 +111,9 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         aos_hub_core::storage_work::StorageWorkOperation::InspectSha256 { .. } => "inspect_sha256",
         aos_hub_core::storage_work::StorageWorkOperation::InspectGitObject { .. } => {
             "inspect_git_object"
+        }
+        aos_hub_core::storage_work::StorageWorkOperation::InspectGitObjects { .. } => {
+            "inspect_git_objects"
         }
         aos_hub_core::storage_work::StorageWorkOperation::InspectMetadata { .. } => {
             "inspect_metadata"

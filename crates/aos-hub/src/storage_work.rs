@@ -4,6 +4,7 @@
 //! typed result. Placement and binding rows remain authoritative in SQL; the
 //! caller rechecks their revisions before committing any derived state.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,10 +17,11 @@ use aos_hub_core::fetch::{
     SurfaceProvider,
 };
 use aos_hub_core::storage_work::{
-    StorageCapabilities, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES,
-    MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageCapabilities, StorageGitObjectProjection, StorageWorkKey, StorageWorkOperation,
+    StorageWorkOutcome, StorageWorkPlan, StorageWorkResult, MAX_GIT_INSPECTION_BATCH,
+    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
+    MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
 use aos_registry_surface::{object, object_bundle};
@@ -168,6 +170,9 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("sending storage work plan")?;
+        if response.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+            return Err(StorageWorkResultTooLarge.into());
+        }
         if response.status() != reqwest::StatusCode::OK {
             bail!("storage Worker returned HTTP {}", response.status());
         }
@@ -178,6 +183,10 @@ impl RemoteStorageWorkClient {
         Ok(result)
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("storage Worker result exceeds its limit")]
+struct StorageWorkResultTooLarge;
 
 async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
     anyhow::ensure!(
@@ -215,6 +224,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "list_page",
                 "inspect_sha256",
                 "inspect_git_object",
+                "inspect_git_objects",
                 "inspect_metadata",
                 "inspect_oci_range"
             ]
@@ -254,6 +264,15 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 result.source_bytes <= object_bundle::MAX_BUNDLE_BYTES as u64,
                 "missing Git object reported excessive source bytes"
+            );
+        }
+        (StorageWorkOperation::InspectGitObjects { oids }, StorageWorkOutcome::NotFound) => {
+            anyhow::ensure!(
+                result.source_bytes
+                    <= oids.len() as u64
+                        * (object_bundle::MAX_BUNDLE_BYTES as u64
+                            + object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES),
+                "missing Git batch reported excessive source bytes"
             );
         }
         (StorageWorkOperation::Head { path }, StorageWorkOutcome::Head { object }) => {
@@ -315,38 +334,51 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 content_base64,
             },
         ) => {
-            let oid_value = object::Oid::from_hex(oid)?;
-            let shard_path = object_bundle::shard_path(&oid[..2])?;
-            let loose_path = oid_value.loose_path();
-            let is_shard = source.key == plan.object_key(&shard_path)?;
-            let is_loose = source.key == plan.object_key(&loose_path)?;
-            let source_limit = if is_shard {
-                object_bundle::MAX_BUNDLE_BYTES as u64
-            } else {
-                object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+            let projection = StorageGitObjectProjection {
+                source: source.clone(),
+                oid: returned_oid.clone(),
+                object_kind: object_kind.clone(),
+                content_base64: content_base64.clone(),
             };
-            aos_hub_core::surface_write::strong_if_match_etag(&source.etag)?;
+            validate_git_projection(plan, oid, &projection)?;
             anyhow::ensure!(
-                returned_oid == oid
-                    && (is_shard || is_loose)
-                    && (if is_shard {
-                        result.source_bytes == source.size
-                    } else {
-                        result.source_bytes >= source.size
-                            && result.source_bytes
-                                <= source.size + object_bundle::MAX_BUNDLE_BYTES as u64
-                    })
-                    && source.size <= source_limit,
-                "storage Worker Git result names another source or object"
+                result.source_bytes >= source.size
+                    && result.source_bytes <= source.size + object_bundle::MAX_BUNDLE_BYTES as u64,
+                "storage Worker Git result reported invalid source bytes"
             );
-            let content = base64::engine::general_purpose::STANDARD
-                .decode(content_base64)
-                .context("decoding Worker Git object content")?;
+        }
+        (
+            StorageWorkOperation::InspectGitObjects { oids },
+            StorageWorkOutcome::GitObjects { objects },
+        ) => {
             anyhow::ensure!(
-                content.len() <= MAX_GIT_INSPECTION_CONTENT_BYTES
-                    && object::hash_object(object::ObjectKind::parse(object_kind)?, &content)
-                        == oid_value,
-                "storage Worker Git projection does not match the requested OID"
+                objects.len() == oids.len()
+                    && result.source_bytes
+                        <= oids.len() as u64
+                            * (object_bundle::MAX_BUNDLE_BYTES as u64
+                                + object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES),
+                "storage Worker Git batch omitted objects or exceeded its source limit"
+            );
+            let mut sources = BTreeMap::new();
+            for (oid, projection) in oids.iter().zip(objects) {
+                validate_git_projection(plan, oid, projection)?;
+                if let Some((size, etag)) = sources.insert(
+                    projection.source.key.as_str(),
+                    (projection.source.size, projection.source.etag.as_str()),
+                ) {
+                    anyhow::ensure!(
+                        size == projection.source.size && etag == projection.source.etag,
+                        "storage Worker Git batch reported conflicting source snapshots"
+                    );
+                }
+            }
+            let minimum_bytes = sources.values().try_fold(0_u64, |sum, (size, _)| {
+                sum.checked_add(*size)
+                    .context("Git batch source byte count overflowed")
+            })?;
+            anyhow::ensure!(
+                result.source_bytes >= minimum_bytes,
+                "storage Worker Git batch understated its source reads"
             );
         }
         (
@@ -404,6 +436,40 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
     Ok(())
 }
 
+fn validate_git_projection(
+    plan: &StorageWorkPlan,
+    oid: &str,
+    projection: &StorageGitObjectProjection,
+) -> Result<()> {
+    let oid_value = object::Oid::from_hex(oid)?;
+    let shard_path = object_bundle::shard_path(&oid[..2])?;
+    let loose_path = oid_value.loose_path();
+    let is_shard = projection.source.key == plan.object_key(&shard_path)?;
+    let is_loose = projection.source.key == plan.object_key(&loose_path)?;
+    let source_limit = if is_shard {
+        object_bundle::MAX_BUNDLE_BYTES as u64
+    } else {
+        object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+    };
+    aos_hub_core::surface_write::strong_if_match_etag(&projection.source.etag)?;
+    anyhow::ensure!(
+        projection.oid == oid && (is_shard || is_loose) && projection.source.size <= source_limit,
+        "storage Worker Git projection names another source or object"
+    );
+    let content = base64::engine::general_purpose::STANDARD
+        .decode(&projection.content_base64)
+        .context("decoding Worker Git object content")?;
+    anyhow::ensure!(
+        content.len() <= MAX_GIT_INSPECTION_CONTENT_BYTES
+            && object::hash_object(
+                object::ObjectKind::parse(&projection.object_kind)?,
+                &content
+            ) == oid_value,
+        "storage Worker Git projection does not match the requested OID"
+    );
+    Ok(())
+}
+
 /// Native R2 reader whose provider I/O runs through bounded Worker plans.
 pub struct HybridSurfaceProvider {
     db: Arc<Database>,
@@ -458,6 +524,54 @@ struct HybridSurfaceFetch {
 }
 
 impl HybridSurfaceFetch {
+    async fn inspect_git_batch(
+        &self,
+        oids: Vec<object::Oid>,
+    ) -> Result<BTreeMap<object::Oid, Option<(object::ObjectKind, Vec<u8>)>>> {
+        let mut pending = VecDeque::from([oids]);
+        let mut decoded = BTreeMap::new();
+        while let Some(batch) = pending.pop_front() {
+            let plan = self.work.plan_for_placement(
+                &self.placement,
+                &self.binding,
+                StorageWorkOperation::InspectGitObjects {
+                    oids: batch.iter().map(object::Oid::to_hex).collect(),
+                },
+                aos_hub_core::clock::now_unix_secs(),
+            )?;
+            let outcome = match self.execute(&plan).await {
+                Ok(result) => result.outcome,
+                Err(error)
+                    if batch.len() > 1
+                        && error.downcast_ref::<StorageWorkResultTooLarge>().is_some() =>
+                {
+                    split_git_batch(&mut pending, batch);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match outcome {
+                StorageWorkOutcome::GitObjects { objects } => {
+                    for (oid, projection) in batch.into_iter().zip(objects) {
+                        let kind = object::ObjectKind::parse(&projection.object_kind)?;
+                        let content = base64::engine::general_purpose::STANDARD
+                            .decode(projection.content_base64)
+                            .context("decoding Git batch projection")?;
+                        decoded.insert(oid, Some((kind, content)));
+                    }
+                }
+                StorageWorkOutcome::NotFound if batch.len() > 1 => {
+                    split_git_batch(&mut pending, batch);
+                }
+                StorageWorkOutcome::NotFound => {
+                    decoded.insert(batch[0], None);
+                }
+                _ => bail!("storage Worker returned an unexpected Git batch result"),
+            }
+        }
+        Ok(decoded)
+    }
+
     async fn execute(&self, plan: &StorageWorkPlan) -> Result<StorageWorkResult> {
         let result = self.work.execute(plan).await?;
         let placement = self
@@ -563,6 +677,31 @@ impl SurfaceFetch for HybridSurfaceFetch {
             }
             _ => bail!("storage Worker returned an unexpected Git inspection result"),
         }
+    }
+
+    async fn inspect_git_objects(
+        &self,
+        oids: &[object::Oid],
+    ) -> Result<Vec<Option<(object::ObjectKind, Vec<u8>)>>> {
+        let mut sorted = oids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let groups = futures_util::future::try_join_all(
+            sorted
+                .chunks(MAX_GIT_INSPECTION_BATCH)
+                .map(|chunk| self.inspect_git_batch(chunk.to_vec())),
+        )
+        .await?;
+        let decoded: BTreeMap<_, _> = groups.into_iter().flat_map(BTreeMap::into_iter).collect();
+
+        oids.iter()
+            .map(|oid| {
+                decoded
+                    .get(oid)
+                    .cloned()
+                    .context("Git batch omitted a requested object")
+            })
+            .collect()
     }
 
     async fn inspect_oci_range(
@@ -708,6 +847,12 @@ impl SurfaceFetch for HybridSurfaceFetch {
     }
 }
 
+fn split_git_batch(pending: &mut VecDeque<Vec<object::Oid>>, batch: Vec<object::Oid>) {
+    let midpoint = batch.len() / 2;
+    pending.push_front(batch[midpoint..].to_vec());
+    pending.push_front(batch[..midpoint].to_vec());
+}
+
 /// A temporary fail-closed writer until ticketed Worker writes are connected.
 pub struct UnavailableHybridSurfaceWrites;
 
@@ -761,6 +906,7 @@ mod tests {
                 "list_page".into(),
                 "inspect_sha256".into(),
                 "inspect_git_object".into(),
+                "inspect_git_objects".into(),
                 "inspect_metadata".into(),
                 "inspect_oci_range".into(),
             ],
@@ -858,6 +1004,70 @@ mod tests {
         assert!(validate_result(&plan, &result).is_ok());
         if let StorageWorkOutcome::GitObject { content_base64, .. } = &mut result.outcome {
             *content_base64 = base64::engine::general_purpose::STANDARD.encode(b"wrong");
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
+    fn git_batch_rejects_swapped_or_corrupt_projections() {
+        let first: &[u8] = b"first";
+        let second: &[u8] = b"second";
+        let first_oid = object::hash_object(object::ObjectKind::Blob, first).to_hex();
+        let second_oid = object::hash_object(object::ObjectKind::Blob, second).to_hex();
+        let oids = if first_oid < second_oid {
+            vec![(first_oid, first), (second_oid, second)]
+        } else {
+            vec![(second_oid, second), (first_oid, first)]
+        };
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry/".into(),
+            operation: StorageWorkOperation::InspectGitObjects {
+                oids: oids.iter().map(|(oid, _)| oid.clone()).collect(),
+            },
+        };
+        let objects = oids
+            .iter()
+            .map(|(oid, bytes)| StorageGitObjectProjection {
+                source: StorageObjectIdentity {
+                    key: format!(
+                        "registry/{}",
+                        object::Oid::from_hex(oid).unwrap().loose_path()
+                    ),
+                    size: 100,
+                    etag: "\"strong-etag\"".into(),
+                },
+                oid: oid.clone(),
+                object_kind: "blob".into(),
+                content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            })
+            .collect();
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 200,
+            outcome: StorageWorkOutcome::GitObjects { objects },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+        if let StorageWorkOutcome::GitObjects { objects } = &mut result.outcome {
+            objects.swap(0, 1);
+        }
+        assert!(validate_result(&plan, &result).is_err());
+        if let StorageWorkOutcome::GitObjects { objects } = &mut result.outcome {
+            objects.swap(0, 1);
+            objects[1].content_base64 = base64::engine::general_purpose::STANDARD.encode(b"wrong");
         }
         assert!(validate_result(&plan, &result).is_err());
     }

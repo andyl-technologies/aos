@@ -147,6 +147,57 @@ impl SurfaceFetch for TopologySurfaceFetch {
         Ok(None)
     }
 
+    async fn inspect_git_objects(
+        &self,
+        oids: &[Oid],
+    ) -> Result<Vec<Option<(ObjectKind, Vec<u8>)>>> {
+        let Some(first) = oids.first() else {
+            return Ok(Vec::new());
+        };
+        let path = first.loose_path();
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(&path))
+            .await?;
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let fetch = match self.provider.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match fetch.inspect_git_objects(oids).await {
+                Ok(objects)
+                    if objects.len() == oids.len() && objects.iter().all(Option::is_some) =>
+                {
+                    return Ok(objects);
+                }
+                Ok(objects) if objects.len() == oids.len() => continue,
+                Ok(_) => {
+                    return Err(terminal_read_error(
+                        "storage placement returned an incomplete Git inspection batch",
+                    ));
+                }
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(error) = last_retryable {
+            return Err(error).context("all readable Git placements failed batch inspection");
+        }
+        if plan.miss_is_inconsistent {
+            return Err(terminal_read_error(
+                "authoritative Git objects are missing from every readable placement",
+            ));
+        }
+        Ok(vec![None; oids.len()])
+    }
+
     async fn inspect_oci_range(
         &self,
         path: &str,

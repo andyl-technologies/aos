@@ -25,6 +25,8 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_VERIFY_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Maximum decoded Git object content returned by one storage-local inspection.
 pub const MAX_GIT_INSPECTION_CONTENT_BYTES: usize = 128 * 1024;
+/// Maximum Git objects admitted in one storage-local inspection plan.
+pub const MAX_GIT_INSPECTION_BATCH: usize = 8;
 /// Maximum signed registry metadata returned across the cloud boundary.
 pub const MAX_METADATA_BYTES: usize = 128 * 1024;
 /// Maximum OCI blob range returned for legacy layer metadata inspection.
@@ -81,6 +83,11 @@ pub enum StorageWorkOperation {
     InspectGitObject {
         /// Lowercase SHA-256 Git object identifier.
         oid: String,
+    },
+    /// Extracts a bounded ordered batch of Git objects beside storage.
+    InspectGitObjects {
+        /// Strictly increasing canonical SHA-256 Git object identifiers.
+        oids: Vec<String>,
     },
     /// Reads one bounded signed registry metadata document beside storage.
     InspectMetadata {
@@ -140,6 +147,20 @@ pub struct StorageObjectIdentity {
     pub etag: String,
 }
 
+/// One hash-checked Git object decoded beside a storage placement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageGitObjectProjection {
+    /// Source bundle shard or loose object snapshot.
+    pub source: StorageObjectIdentity,
+    /// Requested SHA-256 Git object identifier.
+    pub oid: String,
+    /// Git object kind (`commit`, `tree`, `tag`, or `blob`).
+    pub object_kind: String,
+    /// Standard-base64 decoded Git object content.
+    pub content_base64: String,
+}
+
 /// Bounded result of one storage work plan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -172,6 +193,11 @@ pub enum StorageWorkOutcome {
         object_kind: String,
         /// Standard-base64 decoded Git object content.
         content_base64: String,
+    },
+    /// Ordered Git projections for one bounded batch plan.
+    GitObjects {
+        /// One result for every requested OID, in request order.
+        objects: Vec<StorageGitObjectProjection>,
     },
     /// One bounded registry metadata document observed on an exact R2 snapshot.
     Metadata {
@@ -385,10 +411,15 @@ impl StorageWorkPlan {
                 }
             }
             StorageWorkOperation::InspectGitObject { oid } => {
-                if oid.len() != 64
-                    || !oid
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                if !valid_git_oid(oid) {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::InspectGitObjects { oids } => {
+                if oids.is_empty()
+                    || oids.len() > MAX_GIT_INSPECTION_BATCH
+                    || oids.iter().any(|oid| !valid_git_oid(oid))
+                    || oids.windows(2).any(|pair| pair[0] >= pair[1])
                 {
                     return Err(StorageWorkError::InvalidPlan);
                 }
@@ -471,6 +502,13 @@ fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
+fn valid_git_oid(oid: &str) -> bool {
+    oid.len() == 64
+        && oid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +572,29 @@ mod tests {
         assert!(work.validate("deployment-1", 101).is_ok());
         work.operation = StorageWorkOperation::InspectGitObject {
             oid: "A".repeat(64),
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn git_batch_requires_sorted_unique_bounded_oids() {
+        let mut work = plan(100);
+        work.operation = StorageWorkOperation::InspectGitObjects {
+            oids: vec!["a".repeat(64), "b".repeat(64)],
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+        work.operation = StorageWorkOperation::InspectGitObjects {
+            oids: vec!["b".repeat(64), "a".repeat(64)],
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+        work.operation = StorageWorkOperation::InspectGitObjects {
+            oids: vec!["a".repeat(64); MAX_GIT_INSPECTION_BATCH + 1],
         };
         assert_eq!(
             work.validate("deployment-1", 101),
