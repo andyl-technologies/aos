@@ -8604,6 +8604,16 @@ active mount phase last. Map updates are read back; an atomic, fsynced local
 intent record precedes activation, and explicit recovery advances the policy
 epoch before marking the grant revoked.
 
+The private owner now treats activation as successful only after one final
+post-effect readback of the exact persisted ACTIVE state, mount and grant rows
+(including the grant ABI version and bounded expiry), pinned map/link metadata,
+physical clone and cgroup descriptors, and signed lease and stage
+acknowledgment. A mismatch attempts deny-first epoch revocation and always
+returns failure, even when revocation itself succeeds. PREPARED inspection
+requires an actual absent grant row rather than treating any lookup error as
+absence. These owner-local checks do not authorize descriptor egress or
+replace a held Storage/Host/Provider currentness join.
+
 The test-only acknowledgment is exactly 576 bytes: `AOSKGA01`, version 1,
 six zero reserved bytes; the 344 exact `AOSKGH01` bytes; the SHA-256 digest of
 the signed 496-byte `AOSSLE01` lease; big-endian prepared owner epoch; the

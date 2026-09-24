@@ -831,7 +831,14 @@ static int finish_escaped_holder(pid_t holder, int release_fd, int server)
          WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
-static int mutate_grant(uint64_t clone_id, uint64_t cgroup_id, int epoch)
+enum grant_mutation {
+  GRANT_DIGEST,
+  GRANT_EPOCH,
+  GRANT_VERSION,
+};
+
+static int mutate_grant(uint64_t clone_id, uint64_t cgroup_id,
+                        enum grant_mutation mutation)
 {
   struct {
     uint64_t mount_id, cgroup_id;
@@ -844,10 +851,12 @@ static int mutate_grant(uint64_t clone_id, uint64_t cgroup_id, int epoch)
   int result = fd < 0 ? -1 : bpf_map_lookup_elem(fd, &key, &value);
 
   if (result == 0) {
-    if (epoch)
+    if (mutation == GRANT_EPOCH)
       value.epoch ^= 1;
-    else
+    else if (mutation == GRANT_DIGEST)
       value.digest[0] ^= 1;
+    else
+      value.version ^= 1;
     result = bpf_map_update_elem(fd, &key, &value, BPF_EXIST);
   }
   if (fd >= 0)
@@ -1083,17 +1092,26 @@ int main(int argc, char **argv)
     fprintf(stderr, "kernel-export-owner-probe: current use or cgroup denial failed\n");
     return 1;
   }
+  if (mutate_grant(clone_id, cgroup_stat.st_ino, GRANT_VERSION) != 0 ||
+      denied_read(data_fd) != 0 ||
+      owner("inspect", clone_fd, allowed_fd, lease, ack, NULL) == 0 ||
+      mutate_grant(clone_id, cgroup_stat.st_ino, GRANT_VERSION) != 0 ||
+      pread(data_fd, &byte, 1, 0) != 1 ||
+      owner("inspect", clone_fd, allowed_fd, lease, ack, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: grant version readback failed\n");
+    return 1;
+  }
   mapping = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, data_fd, 0);
   if (mapping == MAP_FAILED ||
       ((volatile unsigned char *)mapping)[0] != (unsigned char)byte ||
       start_escaped_holder(outside, mapping, (unsigned char)byte,
                            socket_client, &escaped_holder,
                            &escaped_release) != 0 ||
-      mutate_grant(clone_id, cgroup_stat.st_ino, 1) != 0 ||
+      mutate_grant(clone_id, cgroup_stat.st_ino, GRANT_EPOCH) != 0 ||
       denied_read(data_fd) != 0 ||
-      mutate_grant(clone_id, cgroup_stat.st_ino, 1) != 0 ||
+      mutate_grant(clone_id, cgroup_stat.st_ino, GRANT_EPOCH) != 0 ||
       pread(data_fd, &byte, 1, 0) != 1 ||
-      mutate_grant(clone_id, cgroup_stat.st_ino, 0) != 0 ||
+      mutate_grant(clone_id, cgroup_stat.st_ino, GRANT_DIGEST) != 0 ||
       denied_read(data_fd) != 0 ||
       owner("inspect", clone_fd, allowed_fd, lease, ack, NULL) == 0 ||
       owner("recover", -1, -1, NULL, NULL, NULL) != 0 ||

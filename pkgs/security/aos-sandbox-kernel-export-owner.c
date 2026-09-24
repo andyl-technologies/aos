@@ -805,6 +805,20 @@ static int record_prepared(struct owner_state *state, int clone_fd,
   return inspect_record(state, clone_fd, cgroup_fd, handoff_path);
 }
 
+static int inspect_activated_effect(
+    const struct owner_state *expected_state, int clone_fd, int cgroup_fd,
+    const char *handoff_path, const char *lease_path, const char *ack_path,
+    const struct aos_kernel_export_owner_mount_v1 *expected_policy,
+    const struct aos_kernel_export_owner_grant_v1 *expected_grant);
+
+static int deny_failed_activation(struct owner_state *state)
+{
+  if (revoke_state(state) != 0)
+    fprintf(stderr, "kernel-export-owner: failed activation; deny-first "
+                    "recovery could not be verified\n");
+  return -1;
+}
+
 static int activate(struct owner_state *state, int clone_fd, int cgroup_fd,
                     const char *handoff_path, const char *lease_path,
                     const char *ack_path, __u64 ttl_ms)
@@ -844,24 +858,27 @@ static int activate(struct owner_state *state, int clone_fd, int cgroup_fd,
   state->phase = OWNER_ACTIVATING;
   memcpy(state->lease_digest, digest, sizeof(digest));
   if (write_state(state) != 0)
-    return -1;
+    return deny_failed_activation(state);
 
   memcpy(policy.lease_digest, digest, sizeof(digest));
   if (write_mount(mount_id, &policy) != 0)
-    return -1;
+    return deny_failed_activation(state);
   memcpy(grant.boot_id, policy.boot_id, sizeof(grant.boot_id));
   memcpy(grant.lease_digest, digest, sizeof(digest));
   grant.epoch = policy.epoch;
   grant.expires_boot_ns = now + ttl_ms * 1000000ULL;
   if (write_grant(mount_id, cgroup_id, &grant) != 0)
-    return -1;
+    return deny_failed_activation(state);
 
   policy.phase = AOS_KERNEL_EXPORT_OWNER_ACTIVE;
   if (write_mount(mount_id, &policy) != 0)
-    return revoke_state(state);
+    return deny_failed_activation(state);
   state->phase = OWNER_ACTIVE;
   if (write_state(state) != 0)
-    return revoke_state(state);
+    return deny_failed_activation(state);
+  if (inspect_activated_effect(state, clone_fd, cgroup_fd, handoff_path,
+                               lease_path, ack_path, &policy, &grant) != 0)
+    return deny_failed_activation(state);
   return 0;
 }
 
@@ -892,7 +909,7 @@ static int inspect_current(const struct owner_state *state, int clone_fd,
   if (state->phase == OWNER_PREPARED)
     return lease_path == NULL && ack_path == NULL &&
            policy.phase == AOS_KERNEL_EXPORT_OWNER_PREPARED &&
-           read_grant(mount_id, cgroup_id, &grant) != 0 ? 0 : -1;
+           grant_absent(mount_id, cgroup_id) == 0 ? 0 : -1;
 
   if (state->phase != OWNER_ACTIVE || lease_path == NULL ||
       ack_path == NULL ||
@@ -902,6 +919,7 @@ static int inspect_current(const struct owner_state *state, int clone_fd,
       memcmp(lease_digest, state->lease_digest, sizeof(lease_digest)) != 0 ||
       read_grant(mount_id, cgroup_id, &grant) != 0 ||
       grant.state != AOS_KERNEL_EXPORT_GRANT_ACTIVE ||
+      grant.version != AOS_KERNEL_EXPORT_DENY_VERSION ||
       grant.epoch != state->epoch ||
       memcmp(grant.boot_id, state->boot_id, sizeof(grant.boot_id)) != 0 ||
       memcmp(grant.lease_digest, lease_digest, sizeof(lease_digest)) != 0 ||
@@ -913,6 +931,30 @@ static int inspect_current(const struct owner_state *state, int clone_fd,
   memset(policy.lease_digest, 0, sizeof(policy.lease_digest));
   if (verify_stage_ack(ack_path, handoff_path, state, &policy,
                        lease_digest) != 0)
+    return -1;
+  return 0;
+}
+
+/* A successful activation must reobserve every owner-local effect. */
+static int inspect_activated_effect(
+    const struct owner_state *expected_state, int clone_fd, int cgroup_fd,
+    const char *handoff_path, const char *lease_path, const char *ack_path,
+    const struct aos_kernel_export_owner_mount_v1 *expected_policy,
+    const struct aos_kernel_export_owner_grant_v1 *expected_grant)
+{
+  struct owner_state persisted_state;
+  struct aos_kernel_export_owner_mount_v1 observed_policy;
+  struct aos_kernel_export_owner_grant_v1 observed_grant;
+
+  if (read_state(&persisted_state) != 0 ||
+      memcmp(&persisted_state, expected_state, sizeof(persisted_state)) != 0 ||
+      inspect_current(&persisted_state, clone_fd, cgroup_fd, handoff_path,
+                      lease_path, ack_path) != 0 ||
+      inspect_installation(expected_state->mount_id, &observed_policy) != 0 ||
+      memcmp(&observed_policy, expected_policy, sizeof(observed_policy)) != 0 ||
+      read_grant(expected_state->mount_id, expected_state->cgroup_id,
+                 &observed_grant) != 0 ||
+      memcmp(&observed_grant, expected_grant, sizeof(observed_grant)) != 0)
     return -1;
   return 0;
 }
