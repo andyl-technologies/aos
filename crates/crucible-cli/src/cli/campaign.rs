@@ -11,6 +11,8 @@ mod acceptance;
 mod archive;
 #[path = "campaign/authoring.rs"]
 mod authoring;
+#[path = "campaign/choice_value.rs"]
+mod choice_value;
 #[path = "campaign/configuration.rs"]
 mod configuration;
 #[path = "campaign/explain.rs"]
@@ -42,6 +44,9 @@ mod validation;
 
 use acceptance::CampaignBranchAcceptanceSummaryReport;
 use archive::run_campaign_archive;
+use choice_value::{
+    encode_campaign_choice_value, render_campaign_choice_value, validate_campaign_choice_value,
+};
 use configuration::{compile_campaign_configuration, render_campaign_configuration_compilation};
 use explain::{
     query_campaign_attempt_explanation, query_campaign_explanation,
@@ -738,6 +743,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_object(&client, principal, &args.command)?;
             render_campaign_object(&report, cli.output_format())?
         }
+        CampaignCommand::ChoiceValue(value) => {
+            let report = encode_campaign_choice_value(&client, principal, value)?;
+            render_campaign_choice_value(&report, cli.output_format())?
+        }
         CampaignCommand::Replay(_) => {
             let report = query_campaign_replay(&client, principal, &args.command)?;
             render_campaign_replay(&report, cli.output_format())?
@@ -994,6 +1003,10 @@ fn prepare_campaign_command(
             ChoiceOpportunityId::parse(&object.opportunity).map_err(|error| {
                 usage_error(format!("invalid campaign choice opportunity: {error}"))
             })?;
+            Ok(None)
+        }
+        CampaignCommand::ChoiceValue(value) => {
+            validate_campaign_choice_value(value)?;
             Ok(None)
         }
         CampaignCommand::FrontierObject(object) => {
@@ -2679,6 +2692,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)
         | CampaignCommand::ChoiceObject(_)
+        | CampaignCommand::ChoiceValue(_)
         | CampaignCommand::Frontier(_)
         | CampaignCommand::Findings(_)
         | CampaignCommand::FrontierObject(_)
