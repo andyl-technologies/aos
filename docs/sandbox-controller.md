@@ -55,6 +55,12 @@ a complete authenticated `PolicyCompilerInputV1` producer and recoverable
 policy effect handoff. Root still treats independently owned head fields as
 claims, and V2 replay remains non-authorizing.
 
+The Controller/source-domain portion is separately exposed as a held,
+non-authorizing callback. It re-reads the accepted Create, publisher,
+cache-domain, revocation, and ancestry heads before releasing either writer;
+the existing closed bridge composes physical Cache custody inside that scope.
+This does not make the root or Cache head independently current at publication.
+
 The physical Cache owner can now refuse release when volatile memory,
 quarantined orphans, staged disk operations, or uncertain manifest durability
 cannot be replayed. Its opaque reopen ticket reacquires the fixed owner lock

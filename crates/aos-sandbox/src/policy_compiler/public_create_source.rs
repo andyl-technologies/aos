@@ -586,25 +586,16 @@ fn accepted_create_operation_revision(
     ))
 }
 
-/// Holds the accepted Create and matching physical Cache partition for one action.
+/// Holds the matching physical Cache partition inside an already-held source cut.
 ///
-/// The controller writer must be acquired before the Cache owner. Both remain
-/// held through the callback, and both are rechecked afterward. This still
-/// cannot publish AOSPCB01: source-domain ancestry, root binding CAS, and
-/// effect-handoff custody must join this same cut under a versioned record.
-///
-/// # Errors
-///
-/// Rejects a changed or non-accepted Create, changed publisher head, absent
-/// physical partition, or mismatched project disclosure domain.
-pub(crate) fn with_current_parentless_create_physical_cache_v1<R>(
-    controller: &mut Journal,
+/// The caller must retain the controller and source-domain writers before the
+/// Cache writer and recheck them after this callback. This helper grants no
+/// publication or effect authority.
+fn with_current_project_physical_cache_v1<R>(
     cache: &mut CacheResidencyProtectedOwnerV1,
-    operation: OperationId,
-    sandbox: SandboxId,
+    source: &CurrentCreateProjectPolicySourceV1,
     action: impl FnOnce(&CurrentCreateProjectPolicySourceV1, CurrentProjectPhysicalCacheHeadV1) -> R,
 ) -> Result<R, CurrentCreatePolicySourceErrorV1> {
-    let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
     let joined = cache.while_current_project_physical_cache(source.project(), |physical| {
         if physical.project() != source.project()
             || physical.partition().disclosure() != source.cache_domain()
@@ -613,15 +604,65 @@ pub(crate) fn with_current_parentless_create_physical_cache_v1<R>(
             return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
         }
 
-        let result = action(&source, physical);
-        let current = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
-        if current.commitment() != source.commitment() {
-            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-        }
-
-        Ok(result)
+        Ok(action(source, physical))
     })?;
     joined
+}
+
+/// Holds one accepted Create and source-domain ancestry under their writers.
+///
+/// The caller must acquire the protected controller writer before the fixed
+/// source-domain writer. The callback may acquire Cache and then root, but
+/// must neither publish nor perform an effect. Both local heads are re-read
+/// after the callback while the writer borrows remain held. The result is not
+/// a transferable admission or a complete cross-owner cut.
+///
+/// # Errors
+///
+/// Rejects a non-current accepted Create, publisher/cache-domain/revocation
+/// source, absent ancestry, or either head changing across the callback.
+pub fn with_current_parentless_create_ancestry_v1<R>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(&CurrentCreateProjectPolicySourceV1, ObjectDigest) -> R,
+) -> Result<R, CurrentCreatePolicySourceErrorV1> {
+    controller.ensure_protected_authority()?;
+    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)
+        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?;
+
+    with_rechecked_create_ancestry(
+        || current_parentless_create_project_source_v1(controller, operation, sandbox),
+        |project| {
+            hierarchy
+                .project_ancestry_head(project)
+                .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
+                .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)
+                .map(|current| current.evidence().head())
+        },
+        inspect,
+    )
+}
+
+fn with_rechecked_create_ancestry<R>(
+    mut read_create: impl FnMut() -> Result<
+        CurrentCreateProjectPolicySourceV1,
+        CurrentCreatePolicySourceErrorV1,
+    >,
+    mut read_ancestry: impl FnMut(ProjectId) -> Result<ObjectDigest, CurrentCreatePolicySourceErrorV1>,
+    inspect: impl FnOnce(&CurrentCreateProjectPolicySourceV1, ObjectDigest) -> R,
+) -> Result<R, CurrentCreatePolicySourceErrorV1> {
+    let source = read_create()?;
+    let ancestry = read_ancestry(source.project())?;
+    let result = inspect(&source, ancestry);
+
+    let current_source = read_create()?;
+    let current_ancestry = read_ancestry(source.project())?;
+    if current_source.commitment() != source.commitment() || current_ancestry != ancestry {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+    Ok(result)
 }
 
 /// Holds current Create, ancestry, and physical Cache sources for one inspection.
@@ -644,44 +685,28 @@ pub fn with_current_create_policy_source_barrier_v2<R>(
     sandbox: SandboxId,
     inspect: impl FnOnce(&CurrentCreateProjectPolicySourceV1, CurrentCreatePolicyBarrierHeadsV2) -> R,
 ) -> Result<R, CurrentCreatePolicySourceErrorV1> {
-    controller.ensure_protected_authority()?;
-    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)
-        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?;
-
-    let joined = with_current_parentless_create_physical_cache_v1(
+    with_current_parentless_create_ancestry_v1(
         controller,
-        cache,
+        source_domains,
         operation,
         sandbox,
-        |source, physical| {
-            let ancestry = hierarchy
-                .project_ancestry_head(source.project())
-                .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
-                .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?
-                .evidence()
-                .head();
-            let heads = CurrentCreatePolicyBarrierHeadsV2 {
-                ancestry,
-                physical_partition: physical.partition().digest(),
-                physical_cache: physical.head(),
-            };
-            let result = inspect(source, heads);
-
-            let current_ancestry = hierarchy
-                .project_ancestry_head(source.project())
-                .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
-                .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-            if current_ancestry.evidence().head() != ancestry {
-                return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-            }
-            Ok(result)
+        |source, ancestry| {
+            with_current_project_physical_cache_v1(cache, source, |_, physical| {
+                let heads = CurrentCreatePolicyBarrierHeadsV2 {
+                    ancestry,
+                    physical_partition: physical.partition().digest(),
+                    physical_cache: physical.head(),
+                };
+                inspect(source, heads)
+            })
         },
-    )?;
-    joined
+    )?
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+
     use aos_sandbox_core::model::{
         CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy,
     };
@@ -767,6 +792,102 @@ mod tests {
         let mut signed = domain.to_vec();
         signed.extend_from_slice(payload);
         payload.extend_from_slice(&key.sign(&signed).to_bytes());
+    }
+
+    fn fixture_accepted_create(operation: OperationId) -> Operation {
+        Operation {
+            operation_id: operation.as_bytes().to_vec(),
+            resource_version: vec![2; 32],
+            method: PublicOperationMethodV1::CreateSandbox.as_str().to_owned(),
+            phase: OperationPhase::OPERATION_PHASE_ACCEPTED.into(),
+            accepted_generation: 7,
+            ..Default::default()
+        }
+    }
+
+    fn fixture_held_source(
+        operation: OperationId,
+        operation_revision: ObjectDigest,
+        accepted_generation: u64,
+    ) -> CurrentCreateProjectPolicySourceV1 {
+        let project = ProjectId::from_bytes([3; 16]);
+        CurrentCreateProjectPolicySourceV1 {
+            operation,
+            operation_revision,
+            accepted_generation,
+            sandbox: SandboxId::from_bytes([4; 16]),
+            project,
+            projection_revision: ObjectDigest::from_bytes([5; 32]),
+            policy_generation: 1,
+            policy_digest: ObjectDigest::from_bytes([6; 32]),
+            cache_domain: CacheDomain::new(
+                CacheDomainKind::Project,
+                CacheDomainId::from_bytes(*project.as_bytes()),
+            ),
+            cache_domain_head: ObjectDigest::from_bytes([7; 32]),
+            revocation_scope: RevocationScopeId::from_bytes([8; 16]),
+            revocation_generation: 1,
+            revocation_head: ObjectDigest::from_bytes([9; 32]),
+            canonical_policy: Vec::new(),
+            commitment: operation_revision,
+        }
+    }
+
+    #[test]
+    fn held_controller_source_cut_rejects_stale_accepted_create() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let current = RefCell::new(fixture_accepted_create(operation));
+        let ancestry = ObjectDigest::from_bytes([10; 32]);
+
+        let result = with_rechecked_create_ancestry(
+            || {
+                let resource = current.borrow();
+                let (revision, generation) =
+                    accepted_create_operation_revision(&resource, operation)?;
+                Ok(fixture_held_source(operation, revision, generation))
+            },
+            |_| Ok(ancestry),
+            |_, _| {
+                current.borrow_mut().phase = OperationPhase::OPERATION_PHASE_PREPARING.into();
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+        ));
+
+        *current.borrow_mut() = fixture_accepted_create(operation);
+        let result = with_rechecked_create_ancestry(
+            || {
+                let resource = current.borrow();
+                let (revision, generation) =
+                    accepted_create_operation_revision(&resource, operation)?;
+                Ok(fixture_held_source(operation, revision, generation))
+            },
+            |_| Ok(ancestry),
+            |_, _| current.borrow_mut().resource_version = vec![3; 32],
+        );
+        assert!(matches!(
+            result,
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+        ));
+    }
+
+    #[test]
+    fn held_controller_source_cut_rejects_ancestry_replacement() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let revision = ObjectDigest::from_bytes([2; 32]);
+        let ancestry = Cell::new(ObjectDigest::from_bytes([10; 32]));
+
+        let result = with_rechecked_create_ancestry(
+            || Ok(fixture_held_source(operation, revision, 7)),
+            |_| Ok(ancestry.get()),
+            |_, _| ancestry.set(ObjectDigest::from_bytes([11; 32])),
+        );
+        assert!(matches!(
+            result,
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+        ));
     }
 
     #[test]
