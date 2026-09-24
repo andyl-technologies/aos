@@ -365,6 +365,8 @@ enum CampaignCommand {
     Choices(CampaignPageArgs),
     /// Inspect one declaration or domain named by an authenticated choice.
     ChoiceObject(CampaignChoiceObjectArgs),
+    /// Encode a complete named atomic group tuple for `campaign branch --value`.
+    ChoiceValue(CampaignChoiceValueArgs),
     /// Read one authenticated page of continuation states.
     Frontier(CampaignPageArgs),
     /// Read one authenticated page of canonical failure findings.
@@ -1351,6 +1353,34 @@ struct CampaignChoiceObjectArgs {
     /// Selects the referenced object body to inspect.
     #[arg(long, value_enum, value_name = "declaration|domain", required = true)]
     kind: CampaignChoiceObjectKindArg,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignChoiceValueArgs {
+    #[command(subcommand)]
+    command: CampaignChoiceValueCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignChoiceValueCommand {
+    /// Resolve named members against an authenticated group domain.
+    Encode(CampaignChoiceValueEncodeArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignChoiceValueEncodeArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the opportunity.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact choice-opportunity ID returned by `campaign choices`.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Complete member assignment, such as fault.kind=packet_loss.
+    #[arg(long, value_name = "NAME=VALUE", action = ArgAction::Append, required = true)]
+    member: Vec<String>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]
