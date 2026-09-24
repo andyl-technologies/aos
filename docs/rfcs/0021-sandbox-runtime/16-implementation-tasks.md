@@ -309,9 +309,10 @@ the outstanding work concrete:
   `ExecutionControl` dispatch through authenticated Host Apply/Query with exact
   protected readback, but no production CreateExecution effect yet establishes
   the required Host admission and RUNNING public projection. Attach verifies
-  the holder proof but is rejected before admission
-  until bound OpenSSH certificate and route issuance are active; the production
-  compiler also rejects attach, including replay, while no issuer exists.
+  the holder proof and queries Host readiness before reserving a pending
+  operation. Public admission and OpenSSH route issuance require a signed Host
+  install and matching physical route readback; the production route remains
+  unavailable without a guest session and RUNNING execution.
   `CreateExecution` now verifies the holder proof over the complete command
   and mutation fence before admission and again in production compilation.
   `CachePin` cold-recovers an existing
