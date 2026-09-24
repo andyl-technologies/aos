@@ -556,11 +556,7 @@ impl ClosedPolicyRootSessionV2<'_> {
         }
 
         let (predecessor, next_generation, count) = current_root_binding_chain(&self.authority)?;
-        if count >= MAXIMUM_POLICY_BINDINGS
-            || binding.root_predecessor != predecessor
-            || binding.root_generation != next_generation
-            || binding.barrier_epoch != next_generation
-            || binding.handoff_epoch != next_generation
+        if !new_root_cas_matches(binding, predecessor, next_generation, count)
             || current_hold(&self.authority, predecessor, next_generation, count)?
                 .is_some_and(|hold| hold.held)
         {
@@ -570,16 +566,7 @@ impl ClosedPolicyRootSessionV2<'_> {
         if self.authority.get(&key)?.is_some() {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
-        for (current_key, current_value) in self.authority.records()? {
-            if current_key.starts_with(BINDING_V2_KEY_PREFIX) {
-                let current = decode_closed_policy_binding_v2(current_key, current_value)?;
-                if current.operation == binding.operation
-                    || current.effect_transaction == binding.effect_transaction
-                {
-                    return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-                }
-            }
-        }
+        require_unique_root_binding_identity(&self.authority, binding)?;
 
         compare_cache_hold(binding, held)
     }
@@ -627,21 +614,8 @@ impl ClosedPolicyRootSessionV2<'_> {
             if prior_hold.is_some_and(|hold| hold.held) {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
             }
-            for (current_key, current_value) in self.authority.records()? {
-                if current_key.starts_with(BINDING_V2_KEY_PREFIX) {
-                    let current = decode_closed_policy_binding_v2(current_key, current_value)?;
-                    if current.operation == binding.operation
-                        || current.effect_transaction == binding.effect_transaction
-                    {
-                        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-                    }
-                }
-            }
-            if count >= MAXIMUM_POLICY_BINDINGS
-                || binding.root_predecessor != predecessor
-                || binding.root_generation != next_generation
-                || binding.barrier_epoch != next_generation
-                || binding.handoff_epoch != next_generation
+            require_unique_root_binding_identity(&self.authority, &binding)?;
+            if !new_root_cas_matches(&binding, predecessor, next_generation, count)
                 || self.authority.get(&key)?.is_some()
             {
                 return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -727,6 +701,38 @@ impl ClosedPolicyRootSessionV2<'_> {
         self.postcommit = Some(self.authority.snapshot()?);
         Ok(())
     }
+}
+
+// Preparation and a first CAS share these checks but apply them in their
+// original order. The durable exact-replay branch intentionally does not.
+fn new_root_cas_matches(
+    binding: &ClosedPolicyRootBindingV2,
+    predecessor: ObjectDigest,
+    next_generation: u64,
+    count: usize,
+) -> bool {
+    count < MAXIMUM_POLICY_BINDINGS
+        && binding.root_predecessor == predecessor
+        && binding.root_generation == next_generation
+        && binding.barrier_epoch == next_generation
+        && binding.handoff_epoch == next_generation
+}
+
+fn require_unique_root_binding_identity(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: &ClosedPolicyRootBindingV2,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    for (current_key, current_value) in authority.records()? {
+        if current_key.starts_with(BINDING_V2_KEY_PREFIX) {
+            let current = decode_closed_policy_binding_v2(current_key, current_value)?;
+            if current.operation == binding.operation
+                || current.effect_transaction == binding.effect_transaction
+            {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn compare_cache_hold(
@@ -1364,6 +1370,18 @@ mod tests {
         binding.barrier_epoch = 1;
         binding.handoff_epoch = 1;
         binding
+    }
+
+    fn matching_cache_hold(binding: &ClosedPolicyRootBindingV2) -> CachePolicyHoldV1 {
+        CachePolicyHoldV1::new(
+            binding.project,
+            binding.physical_partition,
+            binding.physical_cache_head,
+            closed_policy_binding_digest_v2(&binding.encode().expect("binding"))
+                .expect("binding head"),
+            binding.handoff_epoch,
+        )
+        .expect("matching Cache hold")
     }
 
     #[test]
@@ -2317,6 +2335,9 @@ mod tests {
         let committed = session
             .commit_closed_binding(&first.encode().unwrap())
             .expect("first root CAS");
+        session
+            .release_inert_hold(committed)
+            .expect("release first inert hold before testing uniqueness");
         drop(session);
 
         let mut duplicate = first.clone();
@@ -2333,6 +2354,12 @@ mod tests {
             identity: identity(&duplicate),
             postcommit: None,
         };
+        let duplicate_hold = matching_cache_hold(&duplicate);
+        assert!(
+            session
+                .prepare_cache_cut_with_observation(&duplicate, duplicate_hold)
+                .is_err()
+        );
         assert!(
             session
                 .commit_closed_binding(&duplicate.encode().unwrap())
@@ -2349,6 +2376,12 @@ mod tests {
             identity: identity(&duplicate),
             postcommit: None,
         };
+        let duplicate_hold = matching_cache_hold(&duplicate);
+        assert!(
+            session
+                .prepare_cache_cut_with_observation(&duplicate, duplicate_hold)
+                .is_err()
+        );
         assert!(
             session
                 .commit_closed_binding(&duplicate.encode().unwrap())
