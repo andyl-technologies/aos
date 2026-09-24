@@ -199,6 +199,10 @@
       else if findingForkWrite || hotForkFlight
       then 3072
       else 2048;
+    headlessVcpuCount =
+      if envoyNetwork
+      then 6
+      else 1;
     # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
     # baked genesis alone. Leave 16 GiB writable for staged checkpoints,
     # quota-backed attempts, and copy-on-write overhead on the ext4 rootfs.
