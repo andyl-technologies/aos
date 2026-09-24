@@ -51,14 +51,10 @@ pub struct BrokerPid1QueryRequestV2<'a> {
     pub subject: &'a PidFd,
     /// Binds an inspector response to its kernel-checked SCM record subject.
     pub inspector_record_subject: Option<&'a KernelAuthorizedRecordSubject>,
-    /// Selects the unit type and exact argument cardinality.
+    /// Selects the unit type and exact signed launch policy.
     pub role: BrokerPid1ServiceRoleV2,
     /// Names the exact `.service` instance expected from PID 1.
     pub unit: &'a str,
-    /// Gives the exact expected `ExecStart` argv. The caller must derive it
-    /// from protected deployment policy; this API does not authenticate its
-    /// elements after the signed executable path.
-    pub expected_arguments: &'a [String],
 }
 
 /// Retains a fully matched pair of fresh PID 1 observations.
@@ -74,11 +70,11 @@ pub struct BrokerPid1ServiceObservationV2 {
     pub control_group_id: u64,
     /// The exact PID 1 service cgroup path.
     pub control_group: String,
-    /// The PID 1 unit fragment path, checked absolute but not inventory-pinned.
+    /// The PID 1 unit fragment path matched to the signed, pinned fragment.
     pub fragment_path: String,
     /// The signed `ExecStart` executable path.
     pub executable: String,
-    /// The complete `ExecStart` argument vector.
+    /// The complete signed `ExecStart` argument vector.
     pub arguments: Vec<String>,
 }
 
@@ -127,9 +123,9 @@ pub enum BrokerPid1QueryErrorV2 {
 ///
 /// The returned observation is not permission to enable Apply. In particular,
 /// the worker caller must independently bind `subject` to its fixed child,
-/// the caller-supplied expected arguments and observed unit fragment must be
-/// pinned by protected policy, and a later namespace-effect boundary must
-/// make a fresh currentness check.
+/// and a later namespace-effect boundary must make a fresh currentness check.
+/// A V2-only deployment without the separately signed V3 launch policy is
+/// rejected before opening the PID 1 stream.
 ///
 /// # Errors
 ///
@@ -139,10 +135,12 @@ pub enum BrokerPid1QueryErrorV2 {
 pub fn query_broker_pid1_service(
     request: BrokerPid1QueryRequestV2<'_>,
 ) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
-    let prefix = match request.role {
-        BrokerPid1ServiceRoleV2::Inspector => "aos-sandbox-network-namespace-inspector@",
-        BrokerPid1ServiceRoleV2::LifecycleWorker => "aos-sandbox-network-lifecycle-worker@",
-    };
+    let inspector = request.role == BrokerPid1ServiceRoleV2::Inspector;
+    let launch = request.deployment.service_launch(inspector)?;
+    let prefix = launch
+        .unit_template()
+        .strip_suffix(".service")
+        .ok_or(BrokerPid1QueryErrorV2::Invalid)?;
     if !request.unit.starts_with(prefix)
         || !request.unit.ends_with(".service")
         || request.unit.len() <= prefix.len() + ".service".len()
@@ -151,16 +149,8 @@ pub fn query_broker_pid1_service(
         return Err(BrokerPid1QueryErrorV2::Invalid);
     }
 
-    let inspector = request.role == BrokerPid1ServiceRoleV2::Inspector;
     let executable = request.deployment.service_executable(inspector)?;
-    let argument_count = if inspector { 1 } else { 8 };
-    if request.expected_arguments.len() != argument_count
-        || request.expected_arguments.first().map(String::as_str) != Some(executable)
-        || request
-            .expected_arguments
-            .iter()
-            .any(|arg| arg.is_empty() || arg.len() > 512)
-    {
+    if launch.arguments().first().map(String::as_str) != Some(executable) {
         return Err(BrokerPid1QueryErrorV2::Invalid);
     }
     if inspector != request.inspector_record_subject.is_some() {
@@ -224,7 +214,8 @@ pub fn query_broker_pid1_service(
         role: request.role,
         unit: request.unit,
         executable,
-        expected_arguments: request.expected_arguments,
+        expected_fragment_path: launch.fragment_path(),
+        expected_arguments: launch.arguments(),
         state: ExchangeState::Start,
         first: None,
     };
@@ -263,6 +254,7 @@ pub fn query_broker_pid1_service(
             return Err(BrokerPid1QueryErrorV2::Invalid);
         }
     }
+    request.deployment.service_launch(inspector)?;
     let retained_subject = PidFd::from_owned(duplicate(request.subject.as_fd())?)?;
     if retained_subject.info()? != subject_info
         || descriptor_inode(retained_subject.as_fd())? != subject_inode
@@ -298,6 +290,7 @@ struct QueryExchange<'a> {
     role: BrokerPid1ServiceRoleV2,
     unit: &'a str,
     executable: &'a str,
+    expected_fragment_path: &'a str,
     expected_arguments: &'a [String],
     state: ExchangeState,
     first: Option<BrokerPid1ServiceObservationV2>,
@@ -500,7 +493,7 @@ fn decode_snapshot(
     let count = cursor.u8()? as usize;
     if count != expected.expected_arguments.len()
         || control_group != format!("/aos.slice/aos-control.slice/{}", expected.unit)
-        || !fragment_path.starts_with('/')
+        || fragment_path != expected.expected_fragment_path
         || executable != expected.executable
     {
         return Err(QueryExchangeError);
@@ -636,6 +629,7 @@ mod tests {
             role: BrokerPid1ServiceRoleV2::Inspector,
             unit: "aos-sandbox-network-namespace-inspector@one.service",
             executable: &arguments[0],
+            expected_fragment_path: "/nix/store/example/unit.service",
             expected_arguments: &arguments,
             state: ExchangeState::AwaitA,
             first: None,
@@ -678,6 +672,15 @@ mod tests {
         wrong_invocation[invocation_offset..invocation_offset + 16].fill(0);
         assert!(decode_snapshot(&wrong_invocation, &expected).is_err());
 
+        let mut wrong_fragment = snapshot.clone();
+        let fragment = expected.expected_fragment_path.as_bytes();
+        let offset = wrong_fragment
+            .windows(fragment.len())
+            .position(|window| window == fragment)
+            .unwrap();
+        wrong_fragment[offset] = b'!';
+        assert!(decode_snapshot(&wrong_fragment, &expected).is_err());
+
         let mut appended = snapshot;
         appended.push(0);
         assert!(decode_snapshot(&appended, &expected).is_err());
@@ -692,6 +695,7 @@ mod tests {
             role: BrokerPid1ServiceRoleV2::LifecycleWorker,
             unit: "aos-sandbox-network-lifecycle-worker@one.service",
             executable: &worker_arguments[0],
+            expected_fragment_path: "/nix/store/example/worker.service",
             expected_arguments: &worker_arguments,
             state: ExchangeState::AwaitA,
             first: None,

@@ -35,6 +35,7 @@
     inspectorDeploymentVerifierV2 = "inspector-deployment-verifier-v2";
     inspectorDeploymentContractV2 = "inspector-deployment-contract-v2";
   };
+  inspectorLaunchPolicyCredential = "inspector-launch-policy-v3";
   configuredInspectorDeploymentCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) inspectorDeploymentCredentialFields;
   completeInspectorDeploymentCredentials =
@@ -46,6 +47,9 @@
         name: _: "${inspectorDeploymentCredentialFields.${name}}:/run/credentials/@system/${cfg.credentials.${name}}"
       )
       inspectorDeploymentCredentialFields);
+  inspectorLaunchPolicyLoadCredentials =
+    lib.optional (cfg.credentials.inspectorLaunchPolicyV3 != null)
+    "${inspectorLaunchPolicyCredential}:/run/credentials/@system/${cfg.credentials.inspectorLaunchPolicyV3}";
   configuredAuthorityCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) authorityCredentialFields;
   anyAuthorityCredential = configuredAuthorityCredentials != {};
@@ -105,6 +109,13 @@ in {
           description = "External protected Network inspector ${name} credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       inspectorDeploymentCredentialFields
+      // {
+        inspectorLaunchPolicyV3 = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Signed V3 Network inspector and lifecycle-worker argv and unit-fragment policy bound to the V2 contract.";
+        };
+      }
       // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
@@ -128,8 +139,12 @@ in {
           message = "aos.sandbox.networkBroker inspector deployment verifier and signed contract must be configured together";
         }
         {
-          assertion = !config.aos.sandbox.networkInspector.enable || completeInspectorDeploymentCredentials;
-          message = "aos.sandbox.networkBroker requires protected inspector deployment credentials when the inspector is enabled";
+          assertion = cfg.credentials.inspectorLaunchPolicyV3 == null || completeInspectorDeploymentCredentials;
+          message = "aos.sandbox.networkBroker V3 launch policy requires the complete V2 verifier and contract pair";
+        }
+        {
+          assertion = !config.aos.sandbox.networkInspector.enable || (completeInspectorDeploymentCredentials && cfg.credentials.inspectorLaunchPolicyV3 != null);
+          message = "aos.sandbox.networkBroker requires protected V2 deployment and V3 launch credentials when the inspector is enabled";
         }
       ]
       ++ brokerSessionConfiguration.assertions;
@@ -212,7 +227,7 @@ in {
             lib.optional protectedRoots "+${runtimeRootsCommand}"
             ++ brokerSessionConfiguration.installCommands;
           ExecStart = "${cfg.package}/bin/aos-netd ${toString cfg.maximumRetainedNamespaces}";
-          LoadCredential = authorityLoadCredentials ++ inspectorDeploymentLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
+          LoadCredential = authorityLoadCredentials ++ inspectorDeploymentLoadCredentials ++ inspectorLaunchPolicyLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
           Restart = "on-failure";
           RestartSec = "2s";
           FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;

@@ -14,6 +14,9 @@
 //!     Ed25519 public key:32 | SHA-256(role-domain || preceding 48 bytes)
 //! inspector-deployment-contract-v2: canonical JSON DeploymentPayload |
 //!     Ed25519 signature:64 over signature-domain || JSON bytes
+//! inspector-launch-policy-v3: canonical JSON LaunchPolicyPayloadV3 |
+//!     Ed25519 signature:64 under a separate domain, bound to the exact V2
+//!     signed-contract digest and generation
 //! ```
 
 use std::collections::BTreeSet;
@@ -39,6 +42,11 @@ const MAXIMUM_CONTRACT_BYTES: u64 = 64 * 1024;
 const MAXIMUM_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_TOTAL_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_MEMBERS: usize = 128;
+
+mod launch_policy;
+pub use launch_policy::ProtectedServiceLaunchV3;
+
+use launch_policy::ProtectedLaunchPolicyV3;
 
 /// Reports a rejected broker-held inspector deployment inventory.
 #[derive(Debug, Error)]
@@ -106,6 +114,7 @@ struct RetainedMember {
 #[derive(Debug)]
 pub struct ProtectedInspectorDeploymentV2 {
     members: Vec<RetainedMember>,
+    launch_policy: Option<ProtectedLaunchPolicyV3>,
 }
 
 impl ProtectedInspectorDeploymentV2 {
@@ -118,9 +127,14 @@ impl ProtectedInspectorDeploymentV2 {
     pub fn load_optional(directory: &Path) -> Result<Option<Self>, InspectorDeploymentErrorV2> {
         let key_path = directory.join(KEY_NAME);
         let contract_path = directory.join(CONTRACT_NAME);
+        let launch_path = directory.join(launch_policy::CREDENTIAL_NAME);
         let key_present = credential_present(&key_path)?;
         let contract_present = credential_present(&contract_path)?;
+        let launch_present = credential_present(&launch_path)?;
         if !key_present && !contract_present {
+            if launch_present {
+                return Err(InspectorDeploymentErrorV2::Invalid);
+            }
             return Ok(None);
         }
         if !key_present || !contract_present {
@@ -150,7 +164,21 @@ impl ProtectedInspectorDeploymentV2 {
             return Err(InspectorDeploymentErrorV2::Invalid);
         }
 
-        let deployment = Self { members };
+        let launch_policy = if launch_present {
+            Some(ProtectedLaunchPolicyV3::load(
+                &launch_path,
+                generation,
+                &key,
+                &contract_bytes,
+                &members,
+            )?)
+        } else {
+            None
+        };
+        let deployment = Self {
+            members,
+            launch_policy,
+        };
         deployment.revalidate()?;
         Ok(Some(deployment))
     }
@@ -163,6 +191,9 @@ impl ProtectedInspectorDeploymentV2 {
     pub fn revalidate(&self) -> Result<(), InspectorDeploymentErrorV2> {
         for member in &self.members {
             member.revalidate()?;
+        }
+        if let Some(policy) = &self.launch_policy {
+            policy.revalidate()?;
         }
         Ok(())
     }
@@ -203,6 +234,28 @@ impl ProtectedInspectorDeploymentV2 {
             .find(|member| member.expectation.role == role)
             .map(|member| member.expectation.path.as_str())
             .ok_or(InspectorDeploymentErrorV2::Invalid)
+    }
+
+    /// Returns one signed, fragment-pinned V3 service launch policy.
+    ///
+    /// V2-only deployments cannot satisfy broker-owned PID 1 queries. The
+    /// signed V3 credential must name both exact argv vectors and unit
+    /// fragments, bound to this deployment's signed V2 contract.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing policy or any changed physical or observed fragment
+    /// path, inode, mode, length, or content.
+    pub fn service_launch(
+        &self,
+        inspector: bool,
+    ) -> Result<ProtectedServiceLaunchV3<'_>, InspectorDeploymentErrorV2> {
+        self.revalidate()?;
+        let policy = self
+            .launch_policy
+            .as_ref()
+            .ok_or(InspectorDeploymentErrorV2::Invalid)?;
+        Ok(policy.service(inspector))
     }
 }
 
@@ -612,6 +665,10 @@ mod tests {
                 .is_none()
         );
 
+        std::fs::write(directory.path().join(launch_policy::CREDENTIAL_NAME), []).unwrap();
+        assert!(ProtectedInspectorDeploymentV2::load_optional(directory.path()).is_err());
+        std::fs::remove_file(directory.path().join(launch_policy::CREDENTIAL_NAME)).unwrap();
+
         std::fs::write(directory.path().join(KEY_NAME), []).unwrap();
         assert!(ProtectedInspectorDeploymentV2::load_optional(directory.path()).is_err());
 
@@ -620,6 +677,17 @@ mod tests {
         std::os::unix::fs::symlink("missing-contract", dangling.path().join(CONTRACT_NAME))
             .unwrap();
         assert!(ProtectedInspectorDeploymentV2::load_optional(dangling.path()).is_err());
+    }
+
+    #[test]
+    fn v2_only_inventory_cannot_authorize_a_service_query() {
+        let deployment = ProtectedInspectorDeploymentV2 {
+            members: Vec::new(),
+            launch_policy: None,
+        };
+
+        assert!(deployment.service_launch(true).is_err());
+        assert!(deployment.service_launch(false).is_err());
     }
 
     #[test]

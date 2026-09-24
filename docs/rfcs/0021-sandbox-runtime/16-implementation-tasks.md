@@ -7458,25 +7458,39 @@ with exact manager, parent-pidfd, control, and target-pidfd descriptor roles,
 and requires two identical nonce/deadline-bound `GetUnitByPIDFD` and unit
 property observations. The broker decoder binds `MainPID`, invocation,
 `ControlGroupId`, exact unit/cgroup, signed `ExecStart` executable, and
-caller-supplied expected arguments to the retained target pidfd; an inspector
+the signed V3 full argument vector to the retained target pidfd; an inspector
 query additionally requires the kernel-nominated response record subject to
 match that pidfd. The returned readback retains another descriptor for that
 exact process. The worker query accepts a launcher-retained child pidfd, but
 its caller still needs to bind that pidfd to the fixed lifecycle launch at the
 effect boundary.
 
-This transaction has no production inspector-response consumer or worker
-effect-boundary invocation yet. Expected arguments after argv[0] are not yet
-derived from protected deployment policy, and the observed unit fragment is
-only checked as an absolute path, not pinned. The transaction does not
-establish the complete executable-loader-library closure against an
-independently produced signer inventory, and an enforcing MAC transition must
-still exclude a post-query executable replacement. Consequently the existing
-direct READY-time and later namespace-currentness checks remain intact and
-fail closed, the inspector module remains evaluation-blocked, and Network
-Apply remains closed. The next deployable slice must connect a fresh query to
-each response/effect boundary, pin the unit fragments and complete closure,
-and qualify the actual protected system under enforcing MAC.
+An additive `inspector-launch-policy-v3` credential now closes the query's
+caller-argv and bare-fragment-path gaps. The V2 verifier key signs its
+canonical JSON under a distinct V3 domain; the policy binds the exact signed
+V2 contract hash and generation, both fixed service templates, complete
+inspector and lifecycle-worker `ExecStart` argument vectors, and each exact
+PID 1 `FragmentPath` to a separately hashed, root-owned, read-only physical
+unit fragment in the Nix store. The broker pins both fragments at startup and
+revalidates their paths, inode, metadata, and content around every query.
+V2-only startup remains available as a closed inventory precursor, but a
+broker PID 1 query requires the valid V3 credential and cannot take expected
+argv from its caller. A V3 credential without the complete V2 pair fails
+closed. The external signer/provisioner must create this credential; neither
+signer key nor credential bytes are placed in the Nix store.
+
+This transaction still has no production inspector-response consumer or
+worker effect-boundary invocation. A PID 1 path/property readback does not
+independently prove the in-memory unit definition was parsed from the pinned
+fragment, so deployment must also control unit reload/replacement under an
+enforcing MAC policy. The transaction likewise does not establish complete
+executable-loader-library closure against an independently produced signer
+inventory or exclude a post-query executable replacement. Consequently the
+existing direct READY-time and later namespace-currentness checks remain
+intact and fail closed, the inspector module remains evaluation-blocked, and
+Network Apply remains closed. The next deployable slice must connect a fresh
+query to each response/effect boundary, prove exhaustive closure and MAC
+constraints, and qualify the protected system in a positive VM.
 
 Deployment must authenticate the physical inspector, broker, worker, helper,
 and every executable loader/library closure (`SBX-P0-09`), then qualify the
