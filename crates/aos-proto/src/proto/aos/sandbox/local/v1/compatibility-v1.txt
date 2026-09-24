@@ -177,3 +177,21 @@ bytes workspace_handle = 2;
 bytes request_digest = 3;
 bytes effect_commit_digest = 4;
 repeated StorageOperatorRepairCommitRecordV1 operator_repair_commits = 13;
+message ReserveStorageExecutionCaptureRequestV1 {
+RequestHeader header = 1;
+bytes canonical_grant_source = 2;
+message QueryStorageExecutionCaptureRequestV1 {
+RequestHeader header = 1;
+bytes canonical_grant_source = 2;
+enum StorageExecutionCaptureAttemptStatusV1 {
+STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_ABSENT = 1;
+STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_EFFECT_POSSIBLE = 2;
+message StorageExecutionCaptureAttemptV1 {
+StorageExecutionCaptureAttemptStatusV1 status = 1;
+bytes execution_id = 2;
+bytes create_operation_id = 3;
+bytes original_reserve_request_id = 4;
+bytes grant_source_digest = 5;
+bytes output_record_digest = 6;
+bytes attempt_id = 7;
+bytes durable_attempt_digest = 8;

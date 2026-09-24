@@ -252,6 +252,40 @@ message HostExecutionOutputReservationV1 {
   uint64 original_host_journal_sequence = 13;
 }
 
+// AOSSCG01 is a structural, 512-byte Storage capture source. It embeds the
+// complete AOSCIS01 settlement preimage and exact AOSEOR03/stream limits.
+// These bodies are not authority until a distinct Storage-audience Controller
+// plan, authenticated session, and protected Host/Controller readbacks exist.
+message ReserveStorageExecutionCaptureRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_grant_source = 2; // Exact 512-byte AOSSCG01.
+}
+
+// Read-only recovery of the original reserve source after ambiguous transport.
+message QueryStorageExecutionCaptureRequestV1 {
+  RequestHeader header = 1;
+  bytes canonical_grant_source = 2; // Original exact AOSSCG01.
+}
+
+enum StorageExecutionCaptureAttemptStatusV1 {
+  STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_UNSPECIFIED = 0;
+  STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_ABSENT = 1;
+  STORAGE_EXECUTION_CAPTURE_ATTEMPT_STATUS_EFFECT_POSSIBLE = 2;
+}
+
+// EFFECT_POSSIBLE is only a durable Storage journal fence, never proof of a
+// dataset, retained bytes, or permission to retry/dispatch Host execution.
+message StorageExecutionCaptureAttemptV1 {
+  StorageExecutionCaptureAttemptStatusV1 status = 1;
+  bytes execution_id = 2;
+  bytes create_operation_id = 3;
+  bytes original_reserve_request_id = 4;
+  bytes grant_source_digest = 5;
+  bytes output_record_digest = 6; // Exact AOSEOR03 protected record digest.
+  bytes attempt_id = 7; // Present only for EFFECT_POSSIBLE.
+  bytes durable_attempt_digest = 8; // Present only for EFFECT_POSSIBLE.
+}
+
 enum HostExecutionPhaseV1 {
   HOST_EXECUTION_PHASE_UNSPECIFIED = 0;
   HOST_EXECUTION_PHASE_ABSENT = 1;
