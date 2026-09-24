@@ -1,25 +1,29 @@
 //! Protected custody for a Storage owner's repair receipt.
 //!
 //! Receipt custody is deliberately not public operation completion. Storage's
-//! signed receipt proves its own retained repair result, but the controller
-//! still needs independently read pre-effect probe and effect-commit evidence
-//! before it can satisfy the stronger terminal-currentness contract.
+//! signed receipt and separate owner evidence prove Storage's retained result,
+//! but the controller still needs independently authenticated pre-effect,
+//! commit, and post-inventory sources for terminal currentness.
 //!
 //! ```text
 //! operator-recovery-storage-owner-key-v1:
 //! AOSORSK1 | version:u16be=1 | reserved[6]=0 | owner-id[16]
 //! owner-key-generation:u64be | ed25519-public[32]
 //!
-//! storage-repair-receipt-v2/<operation-id[16]>:
-//! AOSORR02 | operation-id[16] | owner-id[16]
-//! owner-key-generation:u64be | signed-receipt[288]
+//! storage-repair-receipt-v3/<operation-id[16]>:
+//! AOSOCR03 | operation-id[16] | owner-id[16]
+//! owner-key-generation:u64be | signed-evidence[308]
+//! signed-receipt[328]
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::RepairStorageWorkspacePinRequest;
 use aos_sandbox_core::OperationId;
 use aos_sandbox_core::operator_recovery_effect::{
-    OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES, OperatorRecoveryEffectIntentV1,
-    verify_operator_recovery_effect_intent_v1, verify_operator_recovery_effect_receipt_v1,
+    OperatorRecoveryEffectIntentV1, verify_operator_recovery_effect_intent_v1,
+};
+use aos_sandbox_core::operator_recovery_effect_v2::{
+    OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
+    verify_operator_recovery_effect_receipt_v2,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -41,12 +45,15 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 const OWNER_KEY_MAGIC: &[u8; 8] = b"AOSORSK1";
 const OWNER_KEY_BYTES: usize = 72;
-const RECEIPT_MAGIC_V2: &[u8; 8] = b"AOSORR02";
-const RECEIPT_PREFIX_V2: &[u8] = b"storage-repair-receipt-v2/";
-const RECEIPT_BYTES_V2: usize = 48 + OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES;
+const RECEIPT_MAGIC_V3: &[u8; 8] = b"AOSOCR03";
+const LEGACY_RECEIPT_PREFIX_V2: &[u8] = b"storage-repair-receipt-v2/";
+const RECEIPT_PREFIX_V3: &[u8] = b"storage-repair-receipt-v3/";
+const RECEIPT_BYTES_V3: usize =
+    48 + OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2 + OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2;
+const BEFORE_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-before.v1\0";
 const AFTER_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-after.v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-terminal.v1\0";
-const RECEIPT_COMMIT_DOMAIN_V2: &[u8] = b"aos.sandbox.operator-storage-repair-receipt.v2\0";
+const RECEIPT_COMMIT_DOMAIN_V3: &[u8] = b"aos.sandbox.operator-storage-repair-receipt.v3\0";
 
 /// Pins the Storage owner's independent public key and generation.
 pub(crate) struct ProtectedStorageRepairReceiptVerifierV2 {
@@ -98,21 +105,42 @@ impl ProtectedStorageRepairReceiptVerifierV2 {
     pub(super) fn verify_wire_receipt(
         &self,
         intent: &OperatorRecoveryEffectIntentV1,
-        packet: &[u8],
+        evidence_packet: &[u8],
+        receipt_packet: &[u8],
     ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
         self.recheck()?;
-        let terminal_digest: [u8; 32] = packet
-            .get(152..184)
+        let terminal_digest: [u8; 32] = receipt_packet
+            .get(192..224)
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let receipt = verify_operator_recovery_effect_receipt_v1(
-            packet,
+        let (receipt, evidence) = verify_operator_recovery_effect_receipt_v2(
+            receipt_packet,
+            evidence_packet,
             &self.pin.verifier,
             intent,
+            self.pin.owner_id,
+            self.pin.key_generation,
             terminal_digest,
         )
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        if receipt.owner_id != self.pin.owner_id {
+        let expected_terminal = hash(
+            TERMINAL_DOMAIN,
+            &[
+                &intent
+                    .digest()
+                    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
+                &evidence.after_inventory_digest,
+                &evidence.resulting_version,
+                &evidence.effect_commit_digest,
+            ],
+        );
+        if evidence.before_inventory_digest
+            != hash(
+                BEFORE_DOMAIN,
+                &[&evidence.absence_probe_digest, b"dataset-exact/pin-absent"],
+            )
+            || receipt.terminal_result_digest != expected_terminal
+        {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
         self.recheck()
@@ -169,13 +197,14 @@ where
     /// mismatched signed receipt, nonphysical inventory, or uncertain commit.
     #[allow(dead_code, reason = "operator receipt transport is not installed")]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn retain_storage_repair_receipt_v2(
+    pub(crate) fn retain_storage_repair_receipt_v3(
         &mut self,
         signer: &ProtectedOperatorRecoverySignerV1,
         owner: &ProtectedStorageRepairReceiptVerifierV2,
         operation_id: OperationId,
         storage_request_body: &[u8],
         after: &AuthenticatedBrokerMethodOutcomeV1,
+        signed_evidence: &[u8],
         signed_receipt: &[u8],
     ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
         signer
@@ -215,13 +244,23 @@ where
             &intent,
             storage_request_body,
             after_body,
+            signed_evidence,
             signed_receipt,
             &owner.pin,
         )?;
-        let packet: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES] = signed_receipt
+        let evidence_packet: [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2] = signed_evidence
             .try_into()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        reserve_receipt(journal, &intent, &packet, &owner.pin)?;
+        let receipt_packet: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2] = signed_receipt
+            .try_into()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        reserve_receipt(
+            journal,
+            &intent,
+            &evidence_packet,
+            &receipt_packet,
+            &owner.pin,
+        )?;
         signer
             .credential
             .recheck()
@@ -248,6 +287,7 @@ fn validate_physical_after(
     intent: &OperatorRecoveryEffectIntentV1,
     storage_request_body: &[u8],
     after_body: &[u8],
+    signed_evidence: &[u8],
     signed_receipt: &[u8],
     owner: &StorageOwnerPinV2,
 ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
@@ -301,13 +341,16 @@ fn validate_physical_after(
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     let terminal_digest: [u8; 32] = signed_receipt
-        .get(152..184)
+        .get(192..224)
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-    let receipt = verify_operator_recovery_effect_receipt_v1(
+    let (receipt, evidence) = verify_operator_recovery_effect_receipt_v2(
         signed_receipt,
+        signed_evidence,
         &owner.verifier,
         intent,
+        owner.owner_id,
+        owner.key_generation,
         terminal_digest,
     )
     .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -323,11 +366,16 @@ fn validate_physical_after(
             &receipt.effect_commit_digest,
         ],
     );
-    if receipt.owner_id != owner.owner_id
-        || receipt.owner_generation != inventory.catalog_generation()
+    if receipt.owner_generation != inventory.catalog_generation()
         || receipt.after_inventory_digest != expected_after
         || receipt.resulting_version != *workspace.resource_digest()
         || receipt.terminal_result_digest != expected_terminal
+        || evidence.before_inventory_digest
+            != hash(
+                BEFORE_DOMAIN,
+                &[&evidence.absence_probe_digest, b"dataset-exact/pin-absent"],
+            )
+        || evidence.before_catalog_generation > inventory.catalog_generation()
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
@@ -335,21 +383,25 @@ fn validate_physical_after(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StoredReceiptV2 {
+struct StoredReceiptV3 {
     operation_id: [u8; 16],
     owner_id: [u8; 16],
     owner_key_generation: u64,
-    signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+    signed_evidence: [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+    signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
 }
 
-impl StoredReceiptV2 {
-    fn encode(&self) -> [u8; RECEIPT_BYTES_V2] {
-        let mut bytes = [0; RECEIPT_BYTES_V2];
-        bytes[..8].copy_from_slice(RECEIPT_MAGIC_V2);
+impl StoredReceiptV3 {
+    fn encode(&self) -> [u8; RECEIPT_BYTES_V3] {
+        let mut bytes = [0; RECEIPT_BYTES_V3];
+        bytes[..8].copy_from_slice(RECEIPT_MAGIC_V3);
         bytes[8..24].copy_from_slice(&self.operation_id);
         bytes[24..40].copy_from_slice(&self.owner_id);
         bytes[40..48].copy_from_slice(&self.owner_key_generation.to_be_bytes());
-        bytes[48..].copy_from_slice(&self.signed_receipt);
+        bytes[48..48 + OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2]
+            .copy_from_slice(&self.signed_evidence);
+        bytes[48 + OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2..]
+            .copy_from_slice(&self.signed_receipt);
         bytes
     }
 
@@ -359,7 +411,7 @@ impl StoredReceiptV2 {
         intent: &OperatorRecoveryEffectIntentV1,
         owner: &StorageOwnerPinV2,
     ) -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
-        if bytes.len() != RECEIPT_BYTES_V2 || bytes.get(..8) != Some(RECEIPT_MAGIC_V2.as_slice()) {
+        if bytes.len() != RECEIPT_BYTES_V3 || bytes.get(..8) != Some(RECEIPT_MAGIC_V3.as_slice()) {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
         let operation_id: [u8; 16] = bytes[8..24]
@@ -373,17 +425,24 @@ impl StoredReceiptV2 {
                 .try_into()
                 .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
         );
-        let signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES] =
-            bytes[48..]
-                .try_into()
-                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let terminal_digest: [u8; 32] = signed_receipt[152..184]
+        let signed_evidence: [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2] = bytes
+            [48..48 + OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2]
             .try_into()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let receipt = verify_operator_recovery_effect_receipt_v1(
+        let signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2] = bytes
+            [48 + OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2..]
+            .try_into()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let terminal_digest: [u8; 32] = signed_receipt[192..224]
+            .try_into()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let (receipt, evidence) = verify_operator_recovery_effect_receipt_v2(
             &signed_receipt,
+            &signed_evidence,
             &owner.verifier,
             intent,
+            owner.owner_id,
+            owner.key_generation,
             terminal_digest,
         )
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -402,8 +461,12 @@ impl StoredReceiptV2 {
             || operation_id != intent.recovery_operation_id
             || owner_id != owner.owner_id
             || owner_key_generation != owner.key_generation
-            || receipt.owner_id != owner_id
             || receipt.terminal_result_digest != expected_terminal
+            || evidence.before_inventory_digest
+                != hash(
+                    BEFORE_DOMAIN,
+                    &[&evidence.absence_probe_digest, b"dataset-exact/pin-absent"],
+                )
         {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
@@ -411,42 +474,56 @@ impl StoredReceiptV2 {
             operation_id,
             owner_id,
             owner_key_generation,
+            signed_evidence,
             signed_receipt,
         })
     }
 }
 
 fn receipt_key(operation_id: [u8; 16]) -> Vec<u8> {
-    [RECEIPT_PREFIX_V2, operation_id.as_slice()].concat()
+    [RECEIPT_PREFIX_V3, operation_id.as_slice()].concat()
 }
 
 fn reserve_receipt(
     journal: &mut Journal,
     intent: &OperatorRecoveryEffectIntentV1,
-    signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+    signed_evidence: &[u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+    signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
     owner: &StorageOwnerPinV2,
 ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
     journal
         .ensure_protected_authority()
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let legacy_key = [
+        LEGACY_RECEIPT_PREFIX_V2,
+        intent.recovery_operation_id.as_slice(),
+    ]
+    .concat();
+    if journal
+        .get(RecordNamespace::OperatorRecovery, &legacy_key)
+        .is_some()
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
     let key = receipt_key(intent.recovery_operation_id);
-    let record = StoredReceiptV2 {
+    let record = StoredReceiptV3 {
         operation_id: intent.recovery_operation_id,
         owner_id: owner.owner_id,
         owner_key_generation: owner.key_generation,
+        signed_evidence: *signed_evidence,
         signed_receipt: *signed_receipt,
     };
     let encoded = record.encode();
-    StoredReceiptV2::decode(&key, &encoded, intent, owner)?;
+    StoredReceiptV3::decode(&key, &encoded, intent, owner)?;
     if let Some(existing) = journal.get(RecordNamespace::OperatorRecovery, &key) {
-        StoredReceiptV2::decode(&key, existing, intent, owner)?;
+        StoredReceiptV3::decode(&key, existing, intent, owner)?;
         return if existing == encoded {
             Ok(())
         } else {
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         };
     }
-    let digest = hash(RECEIPT_COMMIT_DOMAIN_V2, &[&intent.recovery_operation_id]);
+    let digest = hash(RECEIPT_COMMIT_DOMAIN_V3, &[&intent.recovery_operation_id]);
     let transaction_id: [u8; 16] = digest[..16]
         .try_into()
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -474,8 +551,11 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     use aos_sandbox_core::operator_recovery_effect::{
-        OperatorRecoveryEffectActionV1, OperatorRecoveryEffectReceiptV1,
-        OperatorRecoveryEffectTargetV1, sign_operator_recovery_effect_receipt_v1,
+        OperatorRecoveryEffectActionV1, OperatorRecoveryEffectTargetV1,
+    };
+    use aos_sandbox_core::operator_recovery_effect_v2::{
+        OperatorRecoveryEffectEvidenceV2, OperatorRecoveryEffectReceiptV2, evidence_digest_v2,
+        sign_operator_recovery_effect_evidence_v2, sign_operator_recovery_effect_receipt_v2,
     };
     use ed25519_dalek::SigningKey;
 
@@ -502,28 +582,51 @@ mod tests {
         }
     }
 
-    fn signed_receipt(
+    fn signed_completion(
         intent: &OperatorRecoveryEffectIntentV1,
         key: &SigningKey,
         commit: [u8; 32],
-    ) -> [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES] {
+    ) -> (
+        [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+        [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
+    ) {
         let after = hash(AFTER_DOMAIN, &[b"complete-after-inventory"]);
+        let before = hash(BEFORE_DOMAIN, &[&[23; 32], b"dataset-exact/pin-absent"]);
         let version = [13; 32];
         let terminal = hash(
             TERMINAL_DOMAIN,
             &[&intent.digest().unwrap(), &after, &version, &commit],
         );
-        let receipt = OperatorRecoveryEffectReceiptV1 {
+        let evidence = OperatorRecoveryEffectEvidenceV2 {
             intent_digest: intent.digest().unwrap(),
             owner_id: [14; 16],
-            before_inventory_digest: [15; 32],
+            owner_key_generation: 18,
+            probe_epoch: 1,
+            absence_probe_digest: [23; 32],
+            before_catalog_generation: 15,
+            before_inventory_digest: before,
+            effect_commit_digest: commit,
             after_inventory_digest: after,
             resulting_version: version,
+            after_catalog_generation: 16,
+        };
+        let signed_evidence = sign_operator_recovery_effect_evidence_v2(&evidence, key).unwrap();
+        let receipt = OperatorRecoveryEffectReceiptV2 {
+            intent_digest: evidence.intent_digest,
+            owner_id: evidence.owner_id,
+            owner_key_generation: evidence.owner_key_generation,
+            signed_evidence_digest: evidence_digest_v2(&signed_evidence),
+            before_inventory_digest: evidence.before_inventory_digest,
+            after_inventory_digest: evidence.after_inventory_digest,
+            resulting_version: evidence.resulting_version,
             terminal_result_digest: terminal,
             effect_commit_digest: commit,
             owner_generation: 16,
         };
-        sign_operator_recovery_effect_receipt_v1(&receipt, key).unwrap()
+        (
+            signed_evidence,
+            sign_operator_recovery_effect_receipt_v2(&receipt, key).unwrap(),
+        )
     }
 
     fn protected_journal() -> (tempfile::TempDir, Journal) {
@@ -573,13 +676,19 @@ mod tests {
             verifier: signing_key.verifying_key(),
         };
         let intent = intent();
-        let first = signed_receipt(&intent, &signing_key, [19; 32]);
-        assert_eq!(reserve_receipt(&mut journal, &intent, &first, &pin), Ok(()));
-        assert_eq!(reserve_receipt(&mut journal, &intent, &first, &pin), Ok(()));
-
-        let other = signed_receipt(&intent, &signing_key, [20; 32]);
+        let first = signed_completion(&intent, &signing_key, [19; 32]);
         assert_eq!(
-            reserve_receipt(&mut journal, &intent, &other, &pin),
+            reserve_receipt(&mut journal, &intent, &first.0, &first.1, &pin),
+            Ok(())
+        );
+        assert_eq!(
+            reserve_receipt(&mut journal, &intent, &first.0, &first.1, &pin),
+            Ok(())
+        );
+
+        let other = signed_completion(&intent, &signing_key, [20; 32]);
+        assert_eq!(
+            reserve_receipt(&mut journal, &intent, &other.0, &other.1, &pin),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
         let rotated = StorageOwnerPinV2 {
@@ -587,19 +696,19 @@ mod tests {
             ..pin
         };
         assert_eq!(
-            reserve_receipt(&mut journal, &intent, &first, &rotated),
+            reserve_receipt(&mut journal, &intent, &first.0, &first.1, &rotated),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
         let mut changed_intent = intent;
         changed_intent.effect_id = [21; 32];
         assert_eq!(
-            reserve_receipt(&mut journal, &changed_intent, &first, &pin),
+            reserve_receipt(&mut journal, &changed_intent, &first.0, &first.1, &pin),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
-        let mut altered_signature = first;
-        altered_signature[OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES - 1] ^= 1;
+        let mut altered_signature = first.1;
+        altered_signature[OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2 - 1] ^= 1;
         assert_eq!(
-            reserve_receipt(&mut journal, &intent, &altered_signature, &pin),
+            reserve_receipt(&mut journal, &intent, &first.0, &altered_signature, &pin),
             Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
 
@@ -613,8 +722,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            reserve_receipt(&mut reopened, &intent, &first, &pin),
+            reserve_receipt(&mut reopened, &intent, &first.0, &first.1, &pin),
             Ok(())
+        );
+
+        let legacy_key = [
+            LEGACY_RECEIPT_PREFIX_V2,
+            intent.recovery_operation_id.as_slice(),
+        ]
+        .concat();
+        let legacy = JournalTransaction::new(
+            [44; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                legacy_key,
+                b"old-format-custody".to_vec(),
+            )],
+        )
+        .unwrap();
+        reopened.commit(&legacy).unwrap();
+        assert_eq!(
+            reserve_receipt(&mut reopened, &intent, &first.0, &first.1, &pin),
+            Err(OperatorRecoveryIssuanceErrorV1::Binding)
         );
     }
 }

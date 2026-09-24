@@ -8,16 +8,18 @@ use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, BrokerRequestEnvelope};
 use aos_sandbox_core::operator_recovery_effect::{
-    OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES,
-    verify_operator_recovery_effect_intent_v1,
+    OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, verify_operator_recovery_effect_intent_v1,
+};
+use aos_sandbox_core::operator_recovery_effect_v2::{
+    OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
 };
 use aos_sandbox_core::{OperationId, ProtocolId};
 use aos_sandbox_linux::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
-use aos_sandbox_protocol::operator_storage_repair_transport::{
-    OPERATOR_STORAGE_REPAIR_RESPONSE_BYTES_V1, OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V1,
-    OperatorStorageRepairModeV1, OperatorStorageRepairRequestV1, OperatorStorageRepairResponseV1,
+use aos_sandbox_protocol::operator_storage_repair_transport_v2::{
+    OPERATOR_STORAGE_REPAIR_RESPONSE_BYTES_V2, OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V2,
+    OperatorStorageRepairModeV2, OperatorStorageRepairRequestV2, OperatorStorageRepairResponseV2,
 };
 use aos_sandbox_protocol::{decode_request_envelope, validate_request_descriptor_roles};
 use buffa::Message as _;
@@ -60,11 +62,16 @@ where
         owner: &ProtectedStorageRepairReceiptVerifierV2,
         operation_id: OperationId,
         storage_request_body: &[u8],
-        mode: OperatorStorageRepairModeV1,
+        mode: OperatorStorageRepairModeV2,
         authorized_envelope: &[u8],
         expected_storage: &ResourceInventoryServiceIdentity,
-    ) -> Result<Option<[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES]>, OperatorRecoveryIssuanceErrorV1>
-    {
+    ) -> Result<
+        Option<(
+            [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+            [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
+        )>,
+        OperatorRecoveryIssuanceErrorV1,
+    > {
         signer
             .credential
             .recheck()
@@ -87,7 +94,7 @@ where
         let deadline = boottime()?
             .checked_add(EXCHANGE_NANOSECONDS)
             .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let request = OperatorStorageRepairRequestV1::new(
+        let request = OperatorStorageRepairRequestV2::new(
             request_id,
             deadline,
             mode,
@@ -96,16 +103,16 @@ where
         )
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let response = exchange(
-            Path::new(OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V1),
+            Path::new(OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V2),
             expected_storage,
             &request,
         )?;
         if response.request_id() != request_id || response.effect_id() != intent.effect_id {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
-        let signed_receipt = response.signed_receipt().copied();
-        if let Some(packet) = signed_receipt {
-            owner.verify_wire_receipt(&intent, &packet)?;
+        let completion = response.completion().copied();
+        if let Some((evidence, receipt)) = completion {
+            owner.verify_wire_receipt(&intent, &evidence, &receipt)?;
         }
 
         let current = read_current_issuance(
@@ -122,7 +129,7 @@ where
             .recheck()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
         owner.recheck()?;
-        Ok(signed_receipt)
+        Ok(completion)
     }
 }
 
@@ -163,11 +170,11 @@ fn read_current_issuance(
 }
 
 fn validate_effect_envelope(
-    mode: OperatorStorageRepairModeV1,
+    mode: OperatorStorageRepairModeV2,
     bytes: &[u8],
     body: &[u8],
 ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
-    if mode == OperatorStorageRepairModeV1::RecoverReceipt {
+    if mode == OperatorStorageRepairModeV2::RecoverReceipt {
         return if bytes.is_empty() {
             Ok(())
         } else {
@@ -194,8 +201,8 @@ fn validate_effect_envelope(
 fn exchange(
     socket_path: &Path,
     expected: &ResourceInventoryServiceIdentity,
-    request: &OperatorStorageRepairRequestV1,
-) -> Result<OperatorStorageRepairResponseV1, OperatorRecoveryIssuanceErrorV1> {
+    request: &OperatorStorageRepairRequestV2,
+) -> Result<OperatorStorageRepairResponseV2, OperatorRecoveryIssuanceErrorV1> {
     let mut socket = DescriptorSubjectSocket::connect(socket_path)
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     send(
@@ -208,7 +215,7 @@ fn exchange(
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     let first = validate_service_subject(expected, record.subject())?;
-    let response = OperatorStorageRepairResponseV1::decode(record.payload())
+    let response = OperatorStorageRepairResponseV2::decode(record.payload())
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     let second = validate_service_subject(expected, record.subject())?;
     if !same_process(first, second) {
@@ -282,7 +289,7 @@ fn receive(
         if boottime()? >= deadline {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
-        match socket.receive(OPERATOR_STORAGE_REPAIR_RESPONSE_BYTES_V1, 0) {
+        match socket.receive(OPERATOR_STORAGE_REPAIR_RESPONSE_BYTES_V2, 0) {
             Ok(record) => return Ok(record),
             Err(SeqpacketError::WouldBlock) => wait(socket, PollFlags::IN, deadline)?,
             Err(SeqpacketError::Interrupted) => {}
@@ -326,12 +333,12 @@ mod tests {
     #[test]
     fn receipt_recovery_never_carries_effect_authorization() {
         assert!(
-            validate_effect_envelope(OperatorStorageRepairModeV1::RecoverReceipt, &[], &[]).is_ok()
+            validate_effect_envelope(OperatorStorageRepairModeV2::RecoverReceipt, &[], &[]).is_ok()
         );
         assert!(
-            validate_effect_envelope(OperatorStorageRepairModeV1::RecoverReceipt, &[1], &[])
+            validate_effect_envelope(OperatorStorageRepairModeV2::RecoverReceipt, &[1], &[])
                 .is_err()
         );
-        assert!(validate_effect_envelope(OperatorStorageRepairModeV1::Effect, &[], &[]).is_err());
+        assert!(validate_effect_envelope(OperatorStorageRepairModeV2::Effect, &[], &[]).is_err());
     }
 }

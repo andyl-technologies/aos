@@ -1515,10 +1515,7 @@ impl StorageBrokerRuntime {
         owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
         trusted_clock: &mut F,
     ) -> Result<
-        Option<
-            [u8;
-                aos_sandbox_core::operator_recovery_effect::OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
-        >,
+        Option<crate::operator_recovery::StorageOperatorRecoveryCompletionV2>,
         StorageRuntimeError,
     >
     where
@@ -1554,10 +1551,7 @@ impl StorageBrokerRuntime {
         owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
         effect_id: [u8; 32],
     ) -> Result<
-        Option<
-            [u8;
-                aos_sandbox_core::operator_recovery_effect::OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
-        >,
+        Option<crate::operator_recovery::StorageOperatorRecoveryCompletionV2>,
         StorageRuntimeError,
     > {
         if !self.is_inventory_ready() {
@@ -1656,8 +1650,8 @@ impl StorageBrokerRuntime {
                 )
                 .map_err(|_| StorageRuntimeError::Recovery)?
             {
-                crate::operator_recovery::StorageOperatorRecoveryReservationV1::Pending => {}
-                crate::operator_recovery::StorageOperatorRecoveryReservationV1::Complete(_) => {
+                crate::operator_recovery::StorageOperatorRecoveryReservationV2::Pending => {}
+                crate::operator_recovery::StorageOperatorRecoveryReservationV2::Complete(_) => {
                     return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
                 }
             }

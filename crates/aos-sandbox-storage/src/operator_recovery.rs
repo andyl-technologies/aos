@@ -5,16 +5,19 @@
 //! repair worker. A completed Storage attempt and a fresh physical inventory
 //! then produce a separately signed receipt. A pending sidecar survives a lost
 //! worker or receipt response; it never authorizes a second repair attempt.
+//! Version-one sidecar records are rejected on reopen. They are never
+//! reinterpreted as version-two evidence after deployment rotation.
 //!
 //! ```text
-//! AOSORSP1 | version:u16be=1 | phase:u8 | reserved:u8
+//! AOSORSP2 | version:u16be=2 | phase:u8 | reserved:u8
 //! probe-epoch:u32be | controller-key-generation:u64be
 //! owner-key-generation:u64be | owner-id:16
 //! signed-intent:364
 //! storage-request-digest:32 | storage-transport-digest:32
 //! storage-semantic-digest:32 | absence-probe-digest:32
 //! workspace-handle:32 | repair-operation-id:16
-//! before-catalog-generation:u64be | signed-receipt:288
+//! before-catalog-generation:u64be | signed-evidence:308
+//! signed-receipt:328
 //! ```
 
 use std::path::Path;
@@ -23,10 +26,14 @@ use aos_sandbox::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_core::operator_recovery_effect::{
-    OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES,
-    OperatorRecoveryEffectActionV1, OperatorRecoveryEffectReceiptV1,
-    OperatorRecoveryEffectTargetV1, sign_operator_recovery_effect_receipt_v1,
-    verify_operator_recovery_effect_intent_v1, verify_operator_recovery_effect_receipt_v1,
+    OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, OperatorRecoveryEffectActionV1,
+    OperatorRecoveryEffectTargetV1, verify_operator_recovery_effect_intent_v1,
+};
+use aos_sandbox_core::operator_recovery_effect_v2::{
+    OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
+    OperatorRecoveryEffectEvidenceV2, OperatorRecoveryEffectReceiptV2, evidence_digest_v2,
+    sign_operator_recovery_effect_evidence_v2, sign_operator_recovery_effect_receipt_v2,
+    verify_operator_recovery_effect_receipt_v2,
 };
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, decode_storage_resource_inventory_response};
@@ -38,11 +45,11 @@ use crate::pin_worker_runtime::FreshWorkspacePinRepairObservationV1;
 use crate::workspace_pin::{WorkspacePinActionV1, WorkspacePinAttemptPhaseV1};
 use crate::workspace_repair_admission::WorkspacePinRepairAdmissionProbeV1;
 
-const MAGIC: &[u8; 8] = b"AOSORSP1";
-const VERSION: u16 = 1;
+const MAGIC: &[u8; 8] = b"AOSORSP2";
+const VERSION: u16 = 2;
 const PENDING: u8 = 1;
 const COMPLETE: u8 = 2;
-const RECORD_BYTES: usize = 884;
+const RECORD_BYTES: usize = 1232;
 const MAXIMUM_PROBE_EPOCH: u32 = 4;
 const REQUEST_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-request.v1\0";
 const FENCE_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-fence.v1\0";
@@ -50,7 +57,7 @@ const BEFORE_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-before.v1\0";
 const AFTER_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-after.v1\0";
 const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-commit.v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-terminal.v1\0";
-const TX_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-transaction.v1\0";
+const TX_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-transaction.v2\0";
 
 /// Reports an unavailable or mismatched protected repair owner.
 #[derive(Debug, thiserror::Error)]
@@ -74,13 +81,20 @@ pub struct StorageOperatorRecoveryOwnerV1 {
 }
 
 /// Indicates whether a reservation is awaiting Storage or already completed.
-pub(crate) enum StorageOperatorRecoveryReservationV1 {
+pub(crate) enum StorageOperatorRecoveryReservationV2 {
     Pending,
-    Complete([u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES]),
+    Complete(StorageOperatorRecoveryCompletionV2),
+}
+
+/// Returns separately signed owner evidence and its generation-bound receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StorageOperatorRecoveryCompletionV2 {
+    pub(crate) signed_evidence: [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+    pub(crate) signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StoredRepairV1 {
+struct StoredRepairV2 {
     phase: u8,
     probe_epoch: u32,
     controller_key_generation: u64,
@@ -94,13 +108,14 @@ struct StoredRepairV1 {
     workspace_handle: [u8; 32],
     repair_operation_id: [u8; 16],
     before_catalog_generation: u64,
-    signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+    signed_evidence: [u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+    signed_receipt: [u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
 }
 
-enum StoredReservationDecisionV1 {
+enum StoredReservationDecisionV2 {
     Pending,
-    Replace(StoredRepairV1),
-    Complete([u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES]),
+    Replace(StoredRepairV2),
+    Complete(StorageOperatorRecoveryCompletionV2),
 }
 
 impl StorageOperatorRecoveryOwnerV1 {
@@ -140,7 +155,7 @@ impl StorageOperatorRecoveryOwnerV1 {
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
-        let stored = StoredRepairV1::decode(
+        let stored = StoredRepairV2::decode(
             authority
                 .get(&effect_id)?
                 .ok_or(StorageOperatorRecoveryErrorV1::Pending)?,
@@ -183,7 +198,7 @@ impl StorageOperatorRecoveryOwnerV1 {
     /// # Errors
     ///
     /// Returns an error for unsafe journal custody, a rotated key generation,
-    /// malformed retained state, or an invalid role-key configuration.
+    /// legacy or malformed retained state, or an invalid role-key configuration.
     pub fn open(
         directory: impl AsRef<Path>,
         name: &str,
@@ -202,18 +217,18 @@ impl StorageOperatorRecoveryOwnerV1 {
         }
         let limits = JournalLimits {
             maximum_journal_bytes: 16 * 1024 * 1024,
-            maximum_record_bytes: 1024,
+            maximum_record_bytes: 2048,
             maximum_key_bytes: 32,
             maximum_records_per_transaction: 1,
-            maximum_transaction_bytes: 1024,
+            maximum_transaction_bytes: 2048,
             maximum_transactions: 8192,
-            maximum_materialized_bytes: 4 * 1024 * 1024,
+            maximum_materialized_bytes: 8 * 1024 * 1024,
             maximum_materialized_records: 4096,
         };
         let (mut journal, _) = Journal::open_protected_at(directory, name, limits)?;
         let authority = journal.claim_protected_authority(RecordNamespace::OperatorRecovery)?;
         for (key, value) in authority.records()? {
-            let record = StoredRepairV1::decode(value)?;
+            let record = StoredRepairV2::decode(value)?;
             validate_stored(
                 &record,
                 key,
@@ -250,7 +265,7 @@ impl StorageOperatorRecoveryOwnerV1 {
         semantics: &CanonicalStorageRepairSemanticsV1,
         probe: &WorkspacePinRepairAdmissionProbeV1,
         fresh: &FreshWorkspacePinRepairObservationV1,
-    ) -> Result<StorageOperatorRecoveryReservationV1, StorageOperatorRecoveryErrorV1> {
+    ) -> Result<StorageOperatorRecoveryReservationV2, StorageOperatorRecoveryErrorV1> {
         let intent = verify_operator_recovery_effect_intent_v1(signed_intent, &self.controller_key)
             .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
         let signed_intent: [u8; OPERATOR_RECOVERY_EFFECT_INTENT_BYTES] =
@@ -271,7 +286,7 @@ impl StorageOperatorRecoveryOwnerV1 {
             return Err(StorageOperatorRecoveryErrorV1::Binding);
         }
 
-        let record = StoredRepairV1 {
+        let record = StoredRepairV2 {
             phase: PENDING,
             probe_epoch: 1,
             controller_key_generation: self.controller_key_generation,
@@ -285,7 +300,8 @@ impl StorageOperatorRecoveryOwnerV1 {
             workspace_handle: probe.workspace_handle(),
             repair_operation_id: semantics.operation_id(),
             before_catalog_generation: probe.physical_catalog_head().generation(),
-            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+            signed_evidence: [0; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
         };
         self.reserve_record(&record)
     }
@@ -304,11 +320,11 @@ impl StorageOperatorRecoveryOwnerV1 {
         effect_id: [u8; 32],
         storage: &StorageAdmissionCoordinator,
         inventory_bytes: &[u8],
-    ) -> Result<[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES], StorageOperatorRecoveryErrorV1> {
+    ) -> Result<StorageOperatorRecoveryCompletionV2, StorageOperatorRecoveryErrorV1> {
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
-        let record = StoredRepairV1::decode(
+        let record = StoredRepairV2::decode(
             authority
                 .get(&effect_id)?
                 .ok_or(StorageOperatorRecoveryErrorV1::Pending)?,
@@ -322,10 +338,6 @@ impl StorageOperatorRecoveryOwnerV1 {
             self.controller_key_generation,
             self.owner_key_generation,
         )?;
-        if record.phase == COMPLETE {
-            return Ok(record.signed_receipt);
-        }
-
         let intent =
             verify_operator_recovery_effect_intent_v1(&record.signed_intent, &self.controller_key)
                 .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
@@ -386,11 +398,28 @@ impl StorageOperatorRecoveryOwnerV1 {
                 &effect_commit_digest,
             ],
         );
-        let receipt = OperatorRecoveryEffectReceiptV1 {
+        let evidence = OperatorRecoveryEffectEvidenceV2 {
             intent_digest: intent
                 .digest()
                 .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?,
             owner_id: self.owner_id,
+            owner_key_generation: self.owner_key_generation,
+            probe_epoch: record.probe_epoch,
+            absence_probe_digest: record.absence_probe_digest,
+            before_catalog_generation: record.before_catalog_generation,
+            before_inventory_digest,
+            effect_commit_digest,
+            after_inventory_digest,
+            resulting_version,
+            after_catalog_generation: inventory.catalog_generation(),
+        };
+        let signed_evidence = sign_operator_recovery_effect_evidence_v2(&evidence, &self.owner_key)
+            .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+        let receipt = OperatorRecoveryEffectReceiptV2 {
+            intent_digest: evidence.intent_digest,
+            owner_id: self.owner_id,
+            owner_key_generation: self.owner_key_generation,
+            signed_evidence_digest: evidence_digest_v2(&signed_evidence),
             before_inventory_digest,
             after_inventory_digest,
             resulting_version,
@@ -398,21 +427,35 @@ impl StorageOperatorRecoveryOwnerV1 {
             effect_commit_digest,
             owner_generation: inventory.catalog_generation(),
         };
-        let signed_receipt = sign_operator_recovery_effect_receipt_v1(&receipt, &self.owner_key)
+        let signed_receipt = sign_operator_recovery_effect_receipt_v2(&receipt, &self.owner_key)
             .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
-        let completed = StoredRepairV1 {
+        let completion = StorageOperatorRecoveryCompletionV2 {
+            signed_evidence,
+            signed_receipt,
+        };
+        if record.phase == COMPLETE {
+            return if completion.signed_evidence == record.signed_evidence
+                && completion.signed_receipt == record.signed_receipt
+            {
+                Ok(completion)
+            } else {
+                Err(StorageOperatorRecoveryErrorV1::Binding)
+            };
+        }
+        let completed = StoredRepairV2 {
             phase: COMPLETE,
+            signed_evidence,
             signed_receipt,
             ..record
         };
         commit_record(&mut self.journal, &completed)?;
-        Ok(signed_receipt)
+        Ok(completion)
     }
 
     fn reserve_record(
         &mut self,
-        record: &StoredRepairV1,
-    ) -> Result<StorageOperatorRecoveryReservationV1, StorageOperatorRecoveryErrorV1> {
+        record: &StoredRepairV2,
+    ) -> Result<StorageOperatorRecoveryReservationV2, StorageOperatorRecoveryErrorV1> {
         let intent =
             verify_operator_recovery_effect_intent_v1(&record.signed_intent, &self.controller_key)
                 .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
@@ -420,7 +463,7 @@ impl StorageOperatorRecoveryOwnerV1 {
             .journal
             .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
         if let Some(existing) = authority.get(&intent.effect_id)? {
-            let existing = StoredRepairV1::decode(existing)?;
+            let existing = StoredRepairV2::decode(existing)?;
             validate_stored(
                 &existing,
                 &intent.effect_id,
@@ -431,49 +474,53 @@ impl StorageOperatorRecoveryOwnerV1 {
                 self.owner_key_generation,
             )?;
             return match classify_reservation(&existing, record)? {
-                StoredReservationDecisionV1::Pending => {
-                    Ok(StorageOperatorRecoveryReservationV1::Pending)
+                StoredReservationDecisionV2::Pending => {
+                    Ok(StorageOperatorRecoveryReservationV2::Pending)
                 }
-                StoredReservationDecisionV1::Replace(replacement) => {
+                StoredReservationDecisionV2::Replace(replacement) => {
                     commit_record(&mut self.journal, &replacement)?;
-                    Ok(StorageOperatorRecoveryReservationV1::Pending)
+                    Ok(StorageOperatorRecoveryReservationV2::Pending)
                 }
-                StoredReservationDecisionV1::Complete(receipt) => {
-                    Ok(StorageOperatorRecoveryReservationV1::Complete(receipt))
+                StoredReservationDecisionV2::Complete(receipt) => {
+                    Ok(StorageOperatorRecoveryReservationV2::Complete(receipt))
                 }
             };
         }
         commit_record(&mut self.journal, record)?;
-        Ok(StorageOperatorRecoveryReservationV1::Pending)
+        Ok(StorageOperatorRecoveryReservationV2::Pending)
     }
 }
 
 fn classify_reservation(
-    existing: &StoredRepairV1,
-    requested: &StoredRepairV1,
-) -> Result<StoredReservationDecisionV1, StorageOperatorRecoveryErrorV1> {
+    existing: &StoredRepairV2,
+    requested: &StoredRepairV2,
+) -> Result<StoredReservationDecisionV2, StorageOperatorRecoveryErrorV1> {
     if existing.phase == COMPLETE {
-        let pending = StoredRepairV1 {
+        let pending = StoredRepairV2 {
             phase: PENDING,
             probe_epoch: 1,
-            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+            signed_evidence: [0; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
             ..existing.clone()
         };
         return if &pending == requested {
-            Ok(StoredReservationDecisionV1::Complete(
-                existing.signed_receipt,
+            Ok(StoredReservationDecisionV2::Complete(
+                StorageOperatorRecoveryCompletionV2 {
+                    signed_evidence: existing.signed_evidence,
+                    signed_receipt: existing.signed_receipt,
+                },
             ))
         } else {
             Err(StorageOperatorRecoveryErrorV1::Binding)
         };
     }
 
-    let same_probe = StoredRepairV1 {
+    let same_probe = StoredRepairV2 {
         probe_epoch: 1,
         ..existing.clone()
     };
     if &same_probe == requested {
-        return Ok(StoredReservationDecisionV1::Pending);
+        return Ok(StoredReservationDecisionV2::Pending);
     }
 
     // The caller reached this path only after Storage confirmed no durable
@@ -484,11 +531,11 @@ fn classify_reservation(
         .checked_add(1)
         .filter(|epoch| *epoch <= MAXIMUM_PROBE_EPOCH)
         .ok_or(StorageOperatorRecoveryErrorV1::Binding)?;
-    let replacement = StoredRepairV1 {
+    let replacement = StoredRepairV2 {
         probe_epoch: next_epoch,
         ..requested.clone()
     };
-    let same_binding = StoredRepairV1 {
+    let same_binding = StoredRepairV2 {
         absence_probe_digest: replacement.absence_probe_digest,
         before_catalog_generation: replacement.before_catalog_generation,
         probe_epoch: replacement.probe_epoch,
@@ -497,11 +544,11 @@ fn classify_reservation(
     if same_binding != replacement {
         return Err(StorageOperatorRecoveryErrorV1::Binding);
     }
-    Ok(StoredReservationDecisionV1::Replace(replacement))
+    Ok(StoredReservationDecisionV2::Replace(replacement))
 }
 
 fn validate_stored(
-    record: &StoredRepairV1,
+    record: &StoredRepairV2,
     key: &[u8],
     controller_key: &VerifyingKey,
     owner_key: &VerifyingKey,
@@ -529,26 +576,46 @@ fn validate_stored(
         return Err(StorageOperatorRecoveryErrorV1::Binding);
     }
     match record.phase {
-        PENDING if record.signed_receipt == [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES] => Ok(()),
+        PENDING
+            if record.signed_evidence == [0; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2]
+                && record.signed_receipt == [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2] =>
+        {
+            Ok(())
+        }
         COMPLETE => {
-            let terminal_digest: [u8; 32] = record.signed_receipt[152..184]
+            let terminal_digest: [u8; 32] = record.signed_receipt[192..224]
                 .try_into()
                 .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
-            let receipt = verify_operator_recovery_effect_receipt_v1(
+            let (receipt, evidence) = verify_operator_recovery_effect_receipt_v2(
                 &record.signed_receipt,
+                &record.signed_evidence,
                 owner_key,
                 &intent,
+                owner_id,
+                owner_key_generation,
                 terminal_digest,
             )
             .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
-            if receipt.owner_id != owner_id {
-                return Err(StorageOperatorRecoveryErrorV1::Binding);
-            }
             let before = hash(
                 BEFORE_DOMAIN,
                 &[&record.absence_probe_digest, b"dataset-exact/pin-absent"],
             );
+            let expected_terminal = hash(
+                TERMINAL_DOMAIN,
+                &[
+                    &intent
+                        .digest()
+                        .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?,
+                    &evidence.after_inventory_digest,
+                    &evidence.resulting_version,
+                    &evidence.effect_commit_digest,
+                ],
+            );
             if receipt.before_inventory_digest != before
+                || evidence.probe_epoch != record.probe_epoch
+                || evidence.absence_probe_digest != record.absence_probe_digest
+                || evidence.before_catalog_generation != record.before_catalog_generation
+                || receipt.terminal_result_digest != expected_terminal
                 || receipt.owner_generation < record.before_catalog_generation
             {
                 return Err(StorageOperatorRecoveryErrorV1::Binding);
@@ -561,7 +628,7 @@ fn validate_stored(
 
 fn commit_record(
     journal: &mut Journal,
-    record: &StoredRepairV1,
+    record: &StoredRepairV2,
 ) -> Result<(), StorageOperatorRecoveryErrorV1> {
     let controller_key_effect_id: [u8; 32] = record.storage_request_digest;
     let phase = [record.phase];
@@ -590,7 +657,7 @@ fn commit_record(
     Ok(())
 }
 
-impl StoredRepairV1 {
+impl StoredRepairV2 {
     fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(RECORD_BYTES);
         bytes.extend_from_slice(MAGIC);
@@ -608,6 +675,7 @@ impl StoredRepairV1 {
         bytes.extend_from_slice(&self.workspace_handle);
         bytes.extend_from_slice(&self.repair_operation_id);
         bytes.extend_from_slice(&self.before_catalog_generation.to_be_bytes());
+        bytes.extend_from_slice(&self.signed_evidence);
         bytes.extend_from_slice(&self.signed_receipt);
         bytes
     }
@@ -670,7 +738,10 @@ impl StoredRepairV1 {
                 .try_into()
                 .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?,
         );
-        let signed_receipt = take(OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES)
+        let signed_evidence = take(OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2)
+            .try_into()
+            .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+        let signed_receipt = take(OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2)
             .try_into()
             .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
         Ok(Self {
@@ -687,6 +758,7 @@ impl StoredRepairV1 {
             workspace_handle,
             repair_operation_id,
             before_catalog_generation,
+            signed_evidence,
             signed_receipt,
         })
     }
@@ -726,7 +798,7 @@ mod tests {
         OperatorRecoveryEffectIntentV1, sign_operator_recovery_effect_intent_v1,
     };
 
-    fn sample() -> (StoredRepairV1, SigningKey, SigningKey) {
+    fn sample() -> (StoredRepairV2, SigningKey, SigningKey) {
         let controller_key = SigningKey::from_bytes(&[1; 32]);
         let owner_key = SigningKey::from_bytes(&[2; 32]);
         let intent = OperatorRecoveryEffectIntentV1 {
@@ -746,7 +818,7 @@ mod tests {
             attempt: 1,
             current_generation: 5,
         };
-        let record = StoredRepairV1 {
+        let record = StoredRepairV2 {
             phase: PENDING,
             probe_epoch: 1,
             controller_key_generation: 1,
@@ -761,7 +833,8 @@ mod tests {
             workspace_handle: [16; 32],
             repair_operation_id: intent.recovery_operation_id,
             before_catalog_generation: 2,
-            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+            signed_evidence: [0; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
         };
         (record, controller_key, owner_key)
     }
@@ -772,10 +845,10 @@ mod tests {
         let encoded = record.encode();
         assert_eq!(encoded.len(), RECORD_BYTES);
         assert_eq!(
-            StoredRepairV1::decode(&encoded).expect("canonical record"),
+            StoredRepairV2::decode(&encoded).expect("canonical record"),
             record
         );
-        let check = |record: &StoredRepairV1| {
+        let check = |record: &StoredRepairV2| {
             validate_stored(
                 record,
                 &record.storage_request_digest,
@@ -790,10 +863,13 @@ mod tests {
 
         let mut altered = encoded.clone();
         altered[11] = 1;
-        assert!(StoredRepairV1::decode(&altered).is_err());
+        assert!(StoredRepairV2::decode(&altered).is_err());
         altered = encoded.clone();
         altered[10] = COMPLETE;
-        assert!(check(&StoredRepairV1::decode(&altered).expect("well-framed")).is_err());
+        assert!(check(&StoredRepairV2::decode(&altered).expect("well-framed")).is_err());
+        altered = encoded.clone();
+        altered[..8].copy_from_slice(b"AOSORSP1");
+        assert!(StoredRepairV2::decode(&altered).is_err());
         let mut wrong_owner = record.clone();
         wrong_owner.owner_id = [17; 16];
         assert!(check(&wrong_owner).is_err());
@@ -829,20 +905,46 @@ mod tests {
             BEFORE_DOMAIN,
             &[&record.absence_probe_digest, b"dataset-exact/pin-absent"],
         );
-        let receipt = OperatorRecoveryEffectReceiptV1 {
+        let evidence = OperatorRecoveryEffectEvidenceV2 {
             intent_digest: intent.digest().expect("digest"),
             owner_id: record.owner_id,
+            owner_key_generation: record.owner_key_generation,
+            probe_epoch: record.probe_epoch,
+            absence_probe_digest: record.absence_probe_digest,
+            before_catalog_generation: record.before_catalog_generation,
             before_inventory_digest,
+            effect_commit_digest: [22; 32],
             after_inventory_digest: [19; 32],
             resulting_version: [20; 32],
-            terminal_result_digest: [21; 32],
-            effect_commit_digest: [22; 32],
+            after_catalog_generation: 3,
+        };
+        record.signed_evidence =
+            sign_operator_recovery_effect_evidence_v2(&evidence, &owner_key).expect("evidence");
+        let terminal = hash(
+            TERMINAL_DOMAIN,
+            &[
+                &evidence.intent_digest,
+                &evidence.after_inventory_digest,
+                &evidence.resulting_version,
+                &evidence.effect_commit_digest,
+            ],
+        );
+        let receipt = OperatorRecoveryEffectReceiptV2 {
+            intent_digest: evidence.intent_digest,
+            owner_id: record.owner_id,
+            owner_key_generation: record.owner_key_generation,
+            signed_evidence_digest: evidence_digest_v2(&record.signed_evidence),
+            before_inventory_digest,
+            after_inventory_digest: evidence.after_inventory_digest,
+            resulting_version: evidence.resulting_version,
+            terminal_result_digest: terminal,
+            effect_commit_digest: evidence.effect_commit_digest,
             owner_generation: 3,
         };
         record.phase = COMPLETE;
         record.signed_receipt =
-            sign_operator_recovery_effect_receipt_v1(&receipt, &owner_key).expect("receipt");
-        let check = |record: &StoredRepairV1| {
+            sign_operator_recovery_effect_receipt_v2(&receipt, &owner_key).expect("receipt");
+        let check = |record: &StoredRepairV2| {
             validate_stored(
                 record,
                 &record.storage_request_digest,
@@ -854,6 +956,22 @@ mod tests {
             )
         };
         assert!(check(&record).is_ok());
+        let cold = StoredRepairV2::decode(&record.encode()).expect("cold evidence record");
+        assert!(check(&cold).is_ok());
+        let original_request = StoredRepairV2 {
+            phase: PENDING,
+            probe_epoch: 1,
+            signed_evidence: [0; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+            signed_receipt: [0; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
+            ..cold.clone()
+        };
+        assert!(matches!(
+            classify_reservation(&cold, &original_request),
+            Ok(StoredReservationDecisionV2::Complete(_))
+        ));
+        let mut changed_probe = original_request;
+        changed_probe.absence_probe_digest = [24; 32];
+        assert!(classify_reservation(&cold, &changed_probe).is_err());
 
         let mut altered = record.clone();
         altered.absence_probe_digest = [23; 32];
@@ -864,6 +982,21 @@ mod tests {
         altered = record.clone();
         altered.signed_receipt[200] ^= 1;
         assert!(check(&altered).is_err());
+        altered = record.clone();
+        altered.signed_evidence[200] ^= 1;
+        assert!(check(&altered).is_err());
+        assert!(
+            validate_stored(
+                &record,
+                &record.storage_request_digest,
+                &controller_key.verifying_key(),
+                &owner_key.verifying_key(),
+                [12; 16],
+                1,
+                2,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -875,9 +1008,9 @@ mod tests {
 
         assert!(matches!(
             classify_reservation(&existing, &existing),
-            Ok(StoredReservationDecisionV1::Pending)
+            Ok(StoredReservationDecisionV2::Pending)
         ));
-        let StoredReservationDecisionV1::Replace(replacement) =
+        let StoredReservationDecisionV2::Replace(replacement) =
             classify_reservation(&existing, &fresh).expect("fresh absence probe")
         else {
             panic!("a new probe must be durably reserved");
@@ -892,7 +1025,7 @@ mod tests {
         substituted.repair_operation_id = [25; 16];
         assert!(classify_reservation(&existing, &substituted).is_err());
 
-        let exhausted = StoredRepairV1 {
+        let exhausted = StoredRepairV2 {
             probe_epoch: MAXIMUM_PROBE_EPOCH,
             ..existing
         };

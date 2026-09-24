@@ -9,9 +9,9 @@
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, BrokerRequestEnvelope};
 use aos_sandbox_core::{ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
-use aos_sandbox_protocol::operator_storage_repair_transport::{
-    MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V1, OperatorStorageRepairModeV1,
-    OperatorStorageRepairRequestV1, OperatorStorageRepairResponseV1,
+use aos_sandbox_protocol::operator_storage_repair_transport_v2::{
+    MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V2, OperatorStorageRepairModeV2,
+    OperatorStorageRepairRequestV2, OperatorStorageRepairResponseV2,
 };
 use aos_sandbox_protocol::{decode_request_envelope, validate_request_descriptor_roles};
 use buffa::Message as _;
@@ -56,7 +56,7 @@ pub fn serve_operator_repair_once(
         .ok_or(StorageServiceError::Clock)?;
     let record = match receive(
         &mut connection,
-        MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V1,
+        MAXIMUM_OPERATOR_STORAGE_REPAIR_PACKET_BYTES_V2,
         receive_deadline,
     ) {
         Ok(record) => record,
@@ -68,7 +68,7 @@ pub fn serve_operator_repair_once(
     {
         return Ok(StorageConnectionOutcome::PeerRejected);
     }
-    let request = match OperatorStorageRepairRequestV1::decode(record.payload()) {
+    let request = match OperatorStorageRepairRequestV2::decode(record.payload()) {
         Ok(request) => request,
         Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
     };
@@ -92,7 +92,7 @@ pub fn serve_operator_repair_once(
     };
 
     let signed_receipt = match request.mode() {
-        OperatorStorageRepairModeV1::Effect => {
+        OperatorStorageRepairModeV2::Effect => {
             let envelope = match decode_effect_envelope(request.authorized_envelope()) {
                 Ok(envelope) => envelope,
                 Err(()) => return Ok(StorageConnectionOutcome::RequestRejected),
@@ -133,7 +133,7 @@ pub fn serve_operator_repair_once(
                 Err(_) => return Ok(StorageConnectionOutcome::RequestRejected),
             }
         }
-        OperatorStorageRepairModeV1::RecoverReceipt => {
+        OperatorStorageRepairModeV2::RecoverReceipt => {
             if !runtime.is_inventory_ready() {
                 return Ok(StorageConnectionOutcome::RequestRejected);
             }
@@ -152,11 +152,14 @@ pub fn serve_operator_repair_once(
             }
         }
     };
-    let response =
-        OperatorStorageRepairResponseV1::new(request.request_id(), effect_id, signed_receipt)
-            .map_err(|_| {
-                StorageServiceError::Activation("operator Repair response was invalid".to_owned())
-            })?;
+    let response = OperatorStorageRepairResponseV2::new(
+        request.request_id(),
+        effect_id,
+        signed_receipt.map(|completion| (completion.signed_evidence, completion.signed_receipt)),
+    )
+    .map_err(|_| {
+        StorageServiceError::Activation("operator Repair response was invalid".to_owned())
+    })?;
     if verifier
         .recheck_connection(execution, connection.peer())
         .is_err()

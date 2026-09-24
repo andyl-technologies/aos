@@ -17,6 +17,9 @@
 //! a separately pinned physical owner must sign the receipt only after
 //! verifying the effect and resulting inventory. Neither key may be reused
 //! from an unrelated broker or attach credential.
+//! The V1 receipt does not bind the owner signing-key generation. The Storage
+//! operator path uses [`crate::operator_recovery_effect_v2`] instead; V1
+//! packets are never upgraded or accepted as V2 evidence.
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
