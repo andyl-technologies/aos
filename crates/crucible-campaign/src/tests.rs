@@ -1983,6 +1983,23 @@ fn choice_group_validates_complete_constraints_before_atomic_value() {
         ChoiceGroupApplication::new("network.profile", 1).expect("group application"),
     )
     .expect("choice group");
+    let encoded = crate::codec::encode(&group);
+    let restored: ChoiceGroup = crate::codec::decode(&encoded).expect("v3 group round trip");
+    assert_eq!(restored, group);
+    assert_eq!(
+        restored.id().expect("restored identity"),
+        group.id().expect("group identity")
+    );
+    let omitted_bytes = crate::codec::encode(group.members()).len()
+        + crate::codec::encode(group.declaration_semantics()).len();
+    assert!(
+        omitted_bytes > 127,
+        "deriving identities saves the guest envelope overflow"
+    );
+    let mut obsolete_version = encoded;
+    obsolete_version[..4].copy_from_slice(&crate::codec::encode(&2_u32));
+    assert!(crate::codec::decode::<ChoiceGroup>(&obsolete_version).is_err());
+
     let valid = ChoiceTuple::new(BTreeMap::from([
         (delay, ChoiceValue::Integer(IntegerValue::Unsigned(20))),
         (timeout, ChoiceValue::Integer(IntegerValue::Unsigned(80))),
@@ -2198,7 +2215,7 @@ fn atomic_group_flows_through_one_branch_request_proposal_and_selection() {
         .validate_resolved(&request, &group_domain)
         .expect("proposal recomputes group constraints");
     let evidence = proposal.constraint_evidence().expect("group evidence");
-    assert_eq!(evidence.group_schema_version(), 2);
+    assert_eq!(evidence.group_schema_version(), 3);
     assert_eq!(evidence.constraint_schema_version(), 1);
     assert_eq!(evidence.result(), ChoiceGroupConstraintResult::Admitted);
     assert_eq!(

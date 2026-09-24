@@ -10,7 +10,7 @@ use crate::{AlternativeId, CampaignCodecError, ChoiceGroupId, SelectableId, Sele
 
 use super::model::SelectableDeclaration;
 
-pub(crate) const CHOICE_GROUP_SCHEMA_VERSION: u32 = 2;
+pub(crate) const CHOICE_GROUP_SCHEMA_VERSION: u32 = 3;
 const MAX_GROUP_MEMBERS: usize = 64;
 const MAX_GROUP_TUPLES: usize = 4096;
 const MAX_GROUP_CONSTRAINTS: usize = 256;
@@ -899,8 +899,8 @@ fn integer_anchors(integer: &IntegerDomain, default: &ChoiceValue) -> Vec<Intege
 impl Canonical for ChoiceGroup {
     fn encode(&self, encoder: &mut Encoder) {
         self.schema_version.encode(encoder);
-        self.members.encode(encoder);
-        self.declaration_semantics.encode(encoder);
+        // Exact member IDs and semantics are derivable from the declarations.
+        // Keeping only one copy makes a complete group fit the guest envelope.
         self.declarations.encode(encoder);
         self.domain.encode(encoder);
         self.application.encode(encoder);
@@ -912,13 +912,18 @@ impl Canonical for ChoiceGroup {
                 reason: "unsupported choice-group schema version",
             });
         }
+        let declarations: BTreeMap<SelectableId, SelectableDeclaration> =
+            decoder.map_bounded(MAX_GROUP_MEMBERS, "choice-group-declaration-count")?;
+        let members = declarations.keys().copied().collect();
+        let declaration_semantics = declarations
+            .iter()
+            .map(|(id, declaration)| (*id, declaration.semantic_id()))
+            .collect();
+
         Self::new_structural(
-            decoder.set_bounded(MAX_GROUP_MEMBERS, "choice-group-member-count")?,
-            decoder.map_bounded(
-                MAX_GROUP_MEMBERS,
-                "choice-group-declaration-semantics-count",
-            )?,
-            decoder.map_bounded(MAX_GROUP_MEMBERS, "choice-group-declaration-count")?,
+            members,
+            declaration_semantics,
+            declarations,
             ChoiceGroupDomain::decode(decoder)?,
             ChoiceGroupApplication::decode(decoder)?,
         )

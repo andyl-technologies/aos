@@ -505,7 +505,7 @@ semantic_id!(
 content_object_id!(
     ChoiceGroupId,
     ObjectKind::CampaignFact,
-    2,
+    3,
     "crucible.campaign.choice-group",
     "Identifies one atomically applied choice group."
 );

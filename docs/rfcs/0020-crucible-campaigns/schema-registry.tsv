@@ -30,7 +30,7 @@ crucible.campaign.planner-invocation	2	crucible-campaign::object	policy	gate:cam
 crucible.campaign.choice-domain	2	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.selectable-declaration	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.choice-opportunity	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
-crucible.campaign.choice-group	2	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
+crucible.campaign.choice-group	3	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.selection	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.guest-selectable.register	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
