@@ -89,6 +89,8 @@ else
   backup_endpoint=
 fi
 
+# A's backup must be checked promptly even before it receives routed traffic.
+# Envoy otherwise schedules its next initial check after 60 seconds.
 cat > "$output" <<EOF
 {
   "admin": {
@@ -126,6 +128,7 @@ cat > "$output" <<EOF
       "health_checks": [{
         "timeout": "1s",
         "interval": "2s",
+        "no_traffic_interval": "2s",
         "unhealthy_threshold": 2,
         "healthy_threshold": 1,
         "http_health_check": {"path": "/healthz"}
