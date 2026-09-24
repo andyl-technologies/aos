@@ -13,6 +13,7 @@ mod checkpoint_capture;
 mod debug_policy;
 mod host_concurrent;
 mod lifecycle;
+mod live_network_preselection;
 mod signal_fault_campaign;
 use attempt_boundary::{attempt_boundary_scheduler_error, combine_attempt_quantum_boundary};
 pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
@@ -65,7 +66,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 pre_quantum_appends.push(fault_append);
             }
             pre_quantum_appends.extend(self.settle_trigger_graph()?);
-            let (pre_quantum_decisions, settled_configuration, network_appends) = self
+            let (mut pre_quantum_decisions, settled_configuration, network_appends) = self
                 .inner
                 .settle_pending_network_outputs_at_current_frontier()?
                 .into_parts();
@@ -360,56 +361,24 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 maximum_host_workers,
             )?;
             let mut outcome = merge_host_concurrent_outcomes(concurrent.outcomes)?;
-            let observations = Arc::clone(&self.storage_fault_observations);
-            let mut queued =
-                observations
-                    .lock()
-                    .map_err(|_| SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "production fault observation journal lock is poisoned",
-                        ),
-                    })?;
-            let storage_observations = queued.drain_ready(
-                self.inner
-                    .loop_impl()
-                    .condition_event_log_prefix()
-                    .point()
-                    .at()
-                    .ticks,
-            );
-            if !storage_observations.is_empty() {
-                let append = self
-                    .inner
-                    .loop_impl_mut()
-                    .append_fault_observations(storage_observations)?;
-                merge_event_log_append(&mut outcome, append);
+            if self.inner.live_network_preselection().is_some() {
+                self.pending_live_network_prefix = Some((
+                    pre_quantum_decisions.clone(),
+                    pre_quantum_appends.clone(),
+                    signal_fault_frontier_start,
+                ));
+                pre_quantum_decisions.extend(std::mem::take(&mut outcome.decisions));
+                outcome.decisions = pre_quantum_decisions;
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
+                self.capture_debug_runtime_evidence()?;
+                return Ok(outcome);
             }
-            drop(queued);
-            let pending_search_choices = self
-                .fault_runtime
-                .lock()
-                .map_err(|_| SchedulerError::BoundaryViolation {
-                    message: String::from("production fault runtime lock is poisoned"),
-                })?
-                .drain_search_choices();
-            self.inner
-                .loop_impl_mut()
-                .record_pending_signal_fault_search_frontiers(pending_search_choices)?;
-            if !pre_quantum_decisions.is_empty() {
-                let mut decisions = pre_quantum_decisions;
-                decisions.extend(std::mem::take(&mut outcome.decisions));
-                outcome.decisions = decisions;
-            }
-            prepend_event_log_appends(&mut outcome, pre_quantum_appends);
-            for append in self.settle_trigger_graph()? {
-                merge_event_log_append(&mut outcome, append);
-            }
-            self.append_live_signal_fault_campaign_discoveries(
+            self.finish_quantum_after_backend(
+                outcome,
+                pre_quantum_decisions,
+                pre_quantum_appends,
                 signal_fault_frontier_start,
-                &mut outcome,
-            )?;
-            self.capture_debug_runtime_evidence()?;
-            Ok(outcome)
+            )
         })();
         let boundary = self.node_launcher.check_operational_boundary();
         combine_attempt_quantum_boundary(operation, boundary)

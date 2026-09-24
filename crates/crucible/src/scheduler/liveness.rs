@@ -8,6 +8,7 @@ pub(super) use network_branch::{
     LiveNetworkBranchChoice, LiveNetworkSelectable, live_network_alternative_id,
     live_network_branch_choices, live_network_branch_draws,
 };
+pub use quantum_loop::LiveNetworkPreselection;
 impl SchedulerSendAuthorizer for SingleScheduler {
     fn authorize_cross_node_send(
         &self,

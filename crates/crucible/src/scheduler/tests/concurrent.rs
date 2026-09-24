@@ -105,6 +105,42 @@ fn concurrent_prepare_is_private_until_canonical_commit() {
 }
 
 #[test]
+fn choice_pause_prepares_only_the_first_canonical_run_before_backend_execution() {
+    let nodes = ["node-a", "node-b"]
+        .into_iter()
+        .map(|name| {
+            test_scenario_node(
+                name,
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            )
+        })
+        .collect::<Vec<_>>();
+    let scheduler = test_scheduler(nodes, Vec::new());
+    let request = QuantumRequest {
+        configuration: scheduler.configuration().clone(),
+        control: Vec::new(),
+    };
+
+    let ordinary = scheduler
+        .prepare_concurrent_quantum(request.clone())
+        .expect("ordinary same-frontier RUN set");
+    let paused = scheduler
+        .prepare_concurrent_quantum_limited(request, 1)
+        .expect("choice-search RUN set");
+
+    assert_eq!(ordinary.run_set().candidates.len(), 2);
+    assert_eq!(
+        paused.run_set().candidates,
+        ordinary.run_set().candidates[..1]
+    );
+    assert_eq!(paused.outcomes().len(), 1);
+    assert_eq!(scheduler.quanta(), 0);
+}
+
+#[test]
 fn concurrent_backend_rejects_zero_workers_before_preparation() {
     let scheduler = test_scheduler(
         vec![test_scenario_node(
