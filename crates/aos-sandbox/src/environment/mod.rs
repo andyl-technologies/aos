@@ -10,6 +10,7 @@ mod activation_format;
 mod authority_clock;
 mod checkpoint_format;
 mod execution;
+mod execution_source;
 mod format;
 mod journal;
 mod lifecycle;
@@ -45,6 +46,7 @@ pub use execution::{
     NixBuildSettlementUnknownV1, NixBuildStateV1, NixBuildTransportV1, NixStorePathV1,
     NixStorePresentationEntryV1, NixStorePresentationKindV1, ReadOnlyNixStorePresentationV1,
 };
+pub use execution_source::EnvironmentExecutionSourceV1;
 pub use format::{
     decode_environment_generation_v1, encode_environment_generation_v1,
     environment_manifest_digest_v1,

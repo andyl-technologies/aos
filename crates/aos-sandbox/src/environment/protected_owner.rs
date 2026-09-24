@@ -1,6 +1,8 @@
 //! Dormant environment protected-journal ownership and cold replay.
 
-use aos_sandbox_core::{ExecutionAdmissionDraftV1, ObjectDigest, ProjectId, SandboxId};
+use aos_sandbox_core::{
+    ExecutionAdmissionDraftV1, ExecutionId, ObjectDigest, ProjectId, SandboxId,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::Journal;
@@ -25,13 +27,13 @@ use super::protected_journal::{
 use super::{
     DormantEnvironmentRuntimeAdmissionConsumerV1, EnvironmentActivationPhaseV1,
     EnvironmentActivationTransactionV1, EnvironmentExecutionAdmissionV1,
-    EnvironmentExecutionErrorV1, EnvironmentGenerationHistoryV1, EnvironmentJournalVerifierV1,
-    EnvironmentModelError, EnvironmentRuntimeAdmissionOutcomeV1, NixBuildEffectHandoffV1,
-    NixBuildPrepareOutcomeV1, NixBuildPrepareRecoveryV1, NixBuildProtectedCapabilityOwnerV1,
-    NixBuildProtectedObservationOwnerV1, NixBuildRequestV1, NixBuildSettlementOutcomeV1,
-    NixBuildSettlementRecoveryV1, NixBuildSettlementRetryV1, NixBuildSettlementUnknownV1,
-    NixBuildStateV1, ReadOnlyNixStorePresentationV1, decode_environment_activation_v1,
-    decode_environment_generation_v1,
+    EnvironmentExecutionErrorV1, EnvironmentExecutionSourceV1, EnvironmentGenerationHistoryV1,
+    EnvironmentJournalVerifierV1, EnvironmentModelError, EnvironmentRuntimeAdmissionOutcomeV1,
+    NixBuildEffectHandoffV1, NixBuildPrepareOutcomeV1, NixBuildPrepareRecoveryV1,
+    NixBuildProtectedCapabilityOwnerV1, NixBuildProtectedObservationOwnerV1, NixBuildRequestV1,
+    NixBuildSettlementOutcomeV1, NixBuildSettlementRecoveryV1, NixBuildSettlementRetryV1,
+    NixBuildSettlementUnknownV1, NixBuildStateV1, ReadOnlyNixStorePresentationV1,
+    decode_environment_activation_v1, decode_environment_generation_v1,
 };
 
 /// Owns a cold-replayed, dormant environment adapter and its custody verifier.
@@ -327,6 +329,49 @@ impl<'journal, 'evidence> EnvironmentProtectedJournalOwnerV1<'journal, 'evidence
                 Ok(NixBuildPrepareOutcomeV1::OutcomeUnknown(pending))
             }
         }
+    }
+
+    /// Reads canonical environment input from the current protected activation.
+    ///
+    /// This owned snapshot does not authorize an effect after the owner borrow
+    /// ends. An execution producer must coordinate other protected owners and
+    /// revalidate this input before committing a canonical specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentExecutionErrorV1`] if protected replay, current
+    /// selection, execution lease, closure roots, or evidence revalidation fails.
+    pub fn current_execution_source(
+        &mut self,
+        project: ProjectId,
+        sandbox: SandboxId,
+        execution: ExecutionId,
+    ) -> Result<EnvironmentExecutionSourceV1, EnvironmentExecutionErrorV1> {
+        let activation = self.current_activation(project, sandbox)?;
+        let source = EnvironmentExecutionSourceV1::from_activation(&activation, execution)?;
+        self.revalidate_execution_evidence()?;
+        Ok(source)
+    }
+
+    /// Replays and compares an exact previously observed execution source.
+    ///
+    /// Any activation revision or lease change invalidates the snapshot;
+    /// this check alone is not an atomic cross-owner admission barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentExecutionErrorV1`] for stale or unavailable
+    /// protected activation and retention evidence.
+    pub fn revalidate_execution_source(
+        &mut self,
+        source: &EnvironmentExecutionSourceV1,
+    ) -> Result<(), EnvironmentExecutionErrorV1> {
+        let current =
+            self.current_execution_source(source.project(), source.sandbox(), source.execution())?;
+        if current != *source {
+            return Err(EnvironmentExecutionErrorV1::CurrentEnvironmentMismatch);
+        }
+        Ok(())
     }
 
     /// Gates one runtime admission draft on current activation and retention.
