@@ -357,6 +357,12 @@ not a registry package's assertion. It identifies the existing executor,
 manager/broker connections, stage, policy authority, and accessible durable
 storage that ground expansion. Version 1 bootstraps from those existing AOS
 facilities; it does not recursively implement the executor through itself.
+An image build may seal a structurally checked source-stage template and its
+exact artifact closure, but cannot publish that future boot's root snapshot.
+The template is not executable until stage entry obtains fresh root evidence,
+instantiates the exact binding and effect plan, and passes whole-plan
+validation. Merely changing a planned provider to available in the image
+document is not admission.
 At stage handoff, journal ownership and a durable checkpoint transfer before
 the next controller admits conflicting work. The receiving controller
 revalidates identities, grants, and continuation formats. An initrd without

@@ -450,6 +450,33 @@ consumer. The committed environment also inventories exact store artifacts
 referenced by the fixed point, including outputs outside selected provider
 manifests, before validating resource and artifact references.
 
+An image cannot observe a future boot's live provider assignments. Its
+source-stage artifact therefore seals the selected fixed point, exact package
+artifacts, pure transition results, and a structurally validated effect
+template. It does not claim that a planned provider is available or label the
+template an executable checked plan. Pure composition implementations need no
+runtime provider inventory entry; terminal implementations require either a
+verified root assignment or a readiness producer in the eventual effect plan.
+
+At stage entry, the environment adapter observes the existing executor,
+manager and broker connections, storage, and other root facilities needed by
+the selected handlers. It authenticates those observations against the sealed
+artifact and static package contract. The runtime then instantiates and fully
+validates the binding and effect plan against that fresh inventory, including
+readiness paths for providers established by operations. A missing root
+facility, changed implementation, or unresolved readiness path fails before
+the first effect. Retained pure transition results may be reused only when
+their checked inputs still match; runtime-sensitive changes require a fresh
+pure evaluation or rejection.
+
+The admitted plan identity and root evidence are retained with the durable
+stage transaction. Recovery checks the same identities and current provider
+assignments before resuming; a new boot observation cannot silently rewrite a
+transaction already holding resource ownership. The receiving stage verifies
+that exact admitted plan and journal at handoff. Source sealing, boot-time
+admission, and receiving-stage continuation are distinct checks of one
+source-authored configuration.
+
 Image modules are source-backed paths retained with the in-image evaluator, so
 the evaluator replays the exact system graph that produced the image. Inline
 module values are limited to evaluation-only callers and explicitly

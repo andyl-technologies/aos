@@ -37,13 +37,21 @@ effects out of portable model/validation/inspection code.
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
 
-## Implemented target-state evidence
+## Implementation evidence and remaining admission gate
 
 The completed implementation is assessed at generated boundaries rather than
 by copying the declarations into this document. The source links below point to
 the owning mechanism and to executable checks that evaluate its production
 projection. They deliberately contain no package, interface, method, or cell
 inventory that could drift from the fixed point.
+
+Source-stage admission is not yet complete. The current materializer can
+authenticate the selected source graph, but it presents terminal providers as
+planned without the readiness producers required by the common effect
+validator. The image-time bundle cannot be treated as an executable checked
+plan until the boot adapter supplies fresh root inventory and the runtime
+validates the resulting plan and durable handoff. The stage checks below cover
+fixed-point projection and contract wiring, not that missing admission proof.
 
 | Target-state invariant | Owning implementation | Executable evidence |
 | --- | --- | --- |
@@ -58,7 +66,7 @@ inventory that could drift from the fixed point.
 | Documentation has one signed package projection | [`PackageDocumentationProjection`](../../../crates/aos-doc-model/src/lib.rs), the derived [`ReleaseAbilityGraph`](../../../crates/aos-doc-model/src/ability_graph.rs), generated package documentation in [`crates/aos-package/src/documentation.rs`](../../../crates/aos-package/src/documentation.rs), and Hub verification/indexing in [`crates/aos-hub-core/src/indexer/mod.rs`](../../../crates/aos-hub-core/src/indexer/mod.rs) | [`tests/packages/documentation.nix`](../../../tests/packages/documentation.nix) plus the documentation-model, package CLI/LSP, publication, Hub indexer, release-graph storage, and shared browser tests |
 | Qualification is generated from selected contracts | [`qualification/modules/_native-adapter-matrix.nix`](../../../qualification/modules/_native-adapter-matrix.nix), [`qualification/modules/_container-execution-matrix.nix`](../../../qualification/modules/_container-execution-matrix.nix), and [`qualification/modules/abilities.nix`](../../../qualification/modules/abilities.nix) | [`tests/qualification/policy.nix`](../../../tests/qualification/policy.nix) and the package-derived native adapter scenarios |
 | Publication consumes evaluated production inventories | [`pkgs/_target-policy.nix`](../../../pkgs/_target-policy.nix), the closed Rust inventory model in [`crates/aos-release/src/inventory.rs`](../../../crates/aos-release/src/inventory.rs), and release planning through `Platform::ALL` | [`tests/build/release-inventory-boundary.nix`](../../../tests/build/release-inventory-boundary.nix) validates the actual selected Nix inventory through the Rust model; semantic cross-language fixtures remain in [`crates/aos/tests/release_inventory_nix_boundary.rs`](../../../crates/aos/tests/release_inventory_nix_boundary.rs) |
-| Image, initrd, and package-store handoffs use the same contracts | Stage projection in [`modules/abilities/stages.nix`](../../../modules/abilities/stages.nix), package-owned boot providers, and package-store interfaces in [`modules/abilities/_interfaces/`](../../../modules/abilities/_interfaces/) | [`tests/abilities/initrd-boot-substrate.nix`](../../../tests/abilities/initrd-boot-substrate.nix), [`tests/abilities/package-store-read-view.nix`](../../../tests/abilities/package-store-read-view.nix), and [`tests/abilities/boot-preparation-provider.nix`](../../../tests/abilities/boot-preparation-provider.nix) |
+| Image, initrd, and package-store projections use the same contracts | Stage projection in [`modules/abilities/stages.nix`](../../../modules/abilities/stages.nix), package-owned boot providers, and package-store interfaces in [`modules/abilities/_interfaces/`](../../../modules/abilities/_interfaces/) | [`tests/abilities/initrd-boot-substrate.nix`](../../../tests/abilities/initrd-boot-substrate.nix), [`tests/abilities/package-store-read-view.nix`](../../../tests/abilities/package-store-read-view.nix), and [`tests/abilities/boot-preparation-provider.nix`](../../../tests/abilities/boot-preparation-provider.nix) |
 
 The largest hand-written vocabulary files are cohesive schema or package
 declaration units. `lib/abilities/module.nix` owns the single typed option tree;
