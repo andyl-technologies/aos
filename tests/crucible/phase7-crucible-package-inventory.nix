@@ -14,7 +14,7 @@
   guestNix = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   fleetStoreNix = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-KZOyMSlKc2Qr4LjVk6+iyd0jnCpsGvvAeqzbcFDtopQ=";
+  expectedCargoDepsHash = "sha256-ewtoNJeA2BWeuQw9hTMW2JEbnnkf/8/wJs0IVWtsVG8=";
   patchSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
   packageFiles = [
     {
