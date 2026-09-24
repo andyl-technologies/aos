@@ -43,6 +43,9 @@ use aos_sandbox_agent::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encod
 use aos_sandbox_core::public_attach_grant::{
     PublicAttachGrantErrorV1, PublicAttachPendingGrantV1, verify_public_attach_pending_grant_v1,
 };
+use aos_sandbox_core::public_attach_route::{
+    valid_public_attach_host_v1, valid_public_attach_user_v1,
+};
 use aos_sandbox_core::{ExecutionId, VerifiedOwnershipLease};
 use buffa::Message as _;
 use ed25519_dalek::VerifyingKey;
@@ -67,8 +70,6 @@ const REVOKED_ROUTE_MAGIC: &[u8; 8] = b"AOSHRV01";
 const O_NOFOLLOW: i32 = 0o400_000;
 const O_CLOEXEC: i32 = 0o2_000_000;
 const MAXIMUM_ROUTE_BYTES: usize = 2048;
-const MAXIMUM_HOST_BYTES: usize = 255;
-const MAXIMUM_USER_BYTES: usize = 32;
 const MAXIMUM_KEY_BYTES: usize = 128;
 
 /// Owns the fixed root-protected OpenSSH route journal.
@@ -895,9 +896,9 @@ fn decode_deployment_trust(
     if serde_json::to_vec(&trust).map_err(|_| HostOpenSshAttachRouteErrorV1::TrustUnavailable)?
         != bytes
         || trust.magic != TRUST_MAGIC
-        || !valid_host(&trust.host)
+        || !valid_public_attach_host_v1(&trust.host)
         || trust.port == 0
-        || !valid_user(&trust.user)
+        || !valid_public_attach_user_v1(&trust.user)
         || !canonical_ed25519_key(&trust.host_public_key)
         || !canonical_ed25519_key(&trust.trusted_user_ca_public_key)
     {
@@ -951,8 +952,8 @@ fn decode_route_record(bytes: &[u8]) -> Result<RouteRecordV1, HostOpenSshAttachR
         || record.route_generation == 0
         || record.port == 0
         || record.gate_config_digest == [0; 32]
-        || !valid_host(&record.host)
-        || !valid_user(&record.user)
+        || !valid_public_attach_host_v1(&record.host)
+        || !valid_public_attach_user_v1(&record.user)
         || !canonical_ed25519_key(&record.host_public_key)
         || !canonical_ed25519_key(&record.trusted_user_ca_public_key)
     {
@@ -982,23 +983,6 @@ fn canonical_ed25519_key(line: &str) -> bool {
     key.algorithm() == Algorithm::Ed25519
         && key.comment().is_empty()
         && key.to_openssh().is_ok_and(|value| value == line)
-}
-
-fn valid_host(host: &str) -> bool {
-    !host.is_empty()
-        && host.len() <= MAXIMUM_HOST_BYTES
-        && host.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
-        })
-        && !host.starts_with('-')
-}
-
-fn valid_user(user: &str) -> bool {
-    !user.is_empty()
-        && user.len() <= MAXIMUM_USER_BYTES
-        && user.bytes().enumerate().all(|(index, byte)| {
-            byte.is_ascii_alphanumeric() || byte == b'_' || (index != 0 && byte == b'-')
-        })
 }
 
 fn current_unix_seconds() -> Result<i64, HostOpenSshAttachRouteErrorV1> {
@@ -1156,6 +1140,23 @@ mod tests {
             .push_str(" comment");
         assert!(matches!(
             decode_route_record(&serde_json::to_vec(&untrusted_key).unwrap()),
+            Err(HostOpenSshAttachRouteErrorV1::Malformed)
+        ));
+    }
+
+    #[test]
+    fn protected_route_rejects_endpoint_names_the_controller_cannot_issue() {
+        let mut route = route_record();
+        route.host = "guest:port".to_owned();
+        assert!(matches!(
+            decode_route_record(&serde_json::to_vec(&route).unwrap()),
+            Err(HostOpenSshAttachRouteErrorV1::Malformed)
+        ));
+
+        let mut route = route_record();
+        route.user = "-aos_exec".to_owned();
+        assert!(matches!(
+            decode_route_record(&serde_json::to_vec(&route).unwrap()),
             Err(HostOpenSshAttachRouteErrorV1::Malformed)
         ));
     }

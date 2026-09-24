@@ -167,29 +167,15 @@ pub struct AuthenticatedOpenSshRouteV1 {
 
 impl AuthenticatedOpenSshRouteV1 {
     fn validate(&self) -> Result<(), AttachRouteIssuanceErrorV1> {
-        let dns_valid = !self.host.is_empty()
-            && self.host.len() <= 253
-            && !self.host.starts_with('-')
-            && self
-                .host
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
-        let host_valid = self.host.parse::<std::net::IpAddr>().is_ok() || dns_valid;
-        let user_valid = !self.user.is_empty()
-            && self.user.len() <= 32
-            && self
-                .user
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
         if self.execution_id == [0; 16]
             || self.attach_operation_id == [0; 16]
             || self.sandbox_incarnation_id == [0; 16]
             || self.assignment_epoch == 0
             || self.principal_id == [0; 16]
             || self.audit_id == [0; 16]
-            || !host_valid
+            || !aos_sandbox_core::public_attach_route::valid_public_attach_host_v1(&self.host)
             || self.port == 0
-            || !user_valid
+            || !aos_sandbox_core::public_attach_route::valid_public_attach_user_v1(&self.user)
             || !self.forced_command_gate_active
             || self.route_digest == [0; 32]
             || self.gate_observation_commitment == [0; 32]

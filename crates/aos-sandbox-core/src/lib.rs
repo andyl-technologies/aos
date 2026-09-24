@@ -27,6 +27,7 @@ pub mod model;
 pub mod operator_recovery_effect;
 pub mod ownership_lease;
 pub mod public_attach_grant;
+pub mod public_attach_route;
 pub mod publisher;
 pub mod registry;
 pub mod resources;
