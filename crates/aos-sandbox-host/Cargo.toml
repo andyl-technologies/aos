@@ -3,10 +3,7 @@ name = "aos-sandbox-host"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-
-[[bin]]
-name = "aos-sandbox-hostd"
-path = "src/main.rs"
+autobins = false
 
 [features]
 default = []

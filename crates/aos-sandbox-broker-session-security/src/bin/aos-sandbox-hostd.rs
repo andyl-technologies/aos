@@ -23,6 +23,7 @@ use aos_sandbox_host::plan::{GuardianConfig, verify_optional_backend_deployment_
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
+use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::path::BeneathRoot;
 
 const CATALOG_ROOT: &str = "/run/aos/sandbox-host";
@@ -66,7 +67,15 @@ fn run() -> Result<()> {
         }
     };
 
-    let catalog = FileHostCatalog::open_root_owned(CATALOG_ROOT)?;
+    let cgroup_root = open_cgroup_root()?;
+    let root_export_descriptor = cgroup_root
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|error| HostError::State(error.to_string()))?;
+    let root_export_cgroup = CgroupV2Root::from_owned(root_export_descriptor)
+        .map_err(|error| HostError::State(error.to_string()))?;
+    let catalog =
+        FileHostCatalog::open_root_owned(CATALOG_ROOT)?.with_root_export_cgroup(root_export_cgroup);
     let catalog_publisher = FileHostCatalogPublisher::open_root_owned(CATALOG_ROOT)?;
     let state = FileHostStateStore::open(STATE_ROOT)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
@@ -86,7 +95,7 @@ fn run() -> Result<()> {
         &selinux_policy,
     ))?;
 
-    let worker = SystemdOneShotWorker::new(open_cgroup_root()?);
+    let worker = SystemdOneShotWorker::new(cgroup_root);
     let mut broker =
         HostBroker::open(catalog, state, worker, None, authority)?.with_guardian(guardian);
     let mut host = DormantHostBrokerCompositionV1::new(&mut broker);
