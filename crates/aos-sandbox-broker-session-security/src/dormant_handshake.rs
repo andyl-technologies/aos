@@ -1289,6 +1289,31 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .original_storage_inventory_coordinates(group_request_id, group_request_digest)
     }
 
+    pub(crate) fn fresh_storage_inventory_coordinates(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<Option<crate::recovery::ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError>
+    {
+        self.0
+            .fresh_storage_inventory_coordinates(group_request_id, group_request_digest)
+    }
+
+    pub(crate) fn archive_original_storage_inventory(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+    ) -> Result<crate::recovery::ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+        self.0.archive_original_storage_inventory(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+        )
+    }
+
     pub(crate) fn client_storage_inventory_abandonment_committed(
         &mut self,
         group_request_id: [u8; 16],

@@ -1222,6 +1222,36 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
+    pub(super) fn fresh_storage_inventory_coordinates(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<Option<ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError> {
+        self.owner.fresh_storage_inventory_coordinates(
+            group_request_id,
+            group_request_digest,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
+    pub(super) fn archive_original_storage_inventory(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+    ) -> Result<ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+        self.owner.archive_original_storage_inventory(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn client_storage_inventory_abandonment_committed(
         &mut self,
         group_request_id: [u8; 16],

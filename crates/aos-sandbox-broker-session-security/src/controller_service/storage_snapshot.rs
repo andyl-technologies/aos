@@ -236,16 +236,33 @@ impl ProductionEffectExecutor {
                                         false,
                                     ),
                                     crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
-                                    | crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly => (
-                                        storage.recover_verified_atomic_snapshot_status(
-                                            predecessor,
-                                            group,
-                                            &challenge,
-                                            &current,
-                                            &plan,
-                                        )?,
-                                        true,
-                                    ),
+                                    | crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly => {
+                                        let fresh = storage.recover_fresh_atomic_snapshot_inventory(
+                                            request_id,
+                                            *request_packet.as_bytes(),
+                                        )?;
+                                        let completion = match fresh {
+                                            crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(successor) =>
+                                                storage.attest_fresh_atomic_snapshot_terminal(
+                                                    predecessor,
+                                                    group,
+                                                    successor,
+                                                    &challenge,
+                                                    &current,
+                                                    &plan,
+                                                )?,
+                                            crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
+                                            | crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly =>
+                                                storage.recover_verified_atomic_snapshot_status(
+                                                    predecessor,
+                                                    group,
+                                                    &challenge,
+                                                    &current,
+                                                    &plan,
+                                                )?,
+                                        };
+                                        (completion, true)
+                                    }
                                 }
                             }
                             _ => return Err(retryable("protected Storage history changed")),

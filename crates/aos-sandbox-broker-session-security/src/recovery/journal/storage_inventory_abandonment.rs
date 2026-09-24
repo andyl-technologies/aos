@@ -45,10 +45,10 @@ pub(super) struct StorageInventoryAbandonmentV1 {
     pub(super) group_request_digest: [u8; 32],
     pub(super) inventory_request_digest: [u8; 32],
     pub(super) client_original_head: [u8; 32],
-    broker_original_head: [u8; 32],
+    pub(super) broker_original_head: [u8; 32],
     client_archive_digest: [u8; 32],
-    broker_archive_digest: [u8; 32],
-    broker_marker_digest: [u8; 32],
+    pub(super) broker_archive_digest: [u8; 32],
+    pub(super) broker_marker_digest: [u8; 32],
     signed_control_history: Option<StoredProtocolHistoryV1>,
 }
 
@@ -174,13 +174,65 @@ impl StorageInventoryAbandonmentV1 {
         Ok(record)
     }
 
-    fn digest(&self) -> Result<[u8; 32], BrokerSessionSecurityError> {
+    pub(super) fn digest(&self) -> Result<[u8; 32], BrokerSessionSecurityError> {
         let encoded = self.encode()?;
         read_array(&encoded, encoded.len() - DIGEST_BYTES)
     }
 }
 
 impl ProtectedBrokerSessionJournalV1 {
+    pub(super) fn validate_storage_inventory_abandonment_chain(
+        &mut self,
+        inventory_request_id: [u8; 16],
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_digest: [u8; 32],
+        client_original_head: [u8; 32],
+        depth: usize,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let marker = self
+            .read_storage_inventory_abandonment(inventory_request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if !super::exact_storage_inventory_abandonment_marker(
+            Some(&marker),
+            self.endpoint.role(),
+            group_request_id,
+            group_request_digest,
+            inventory_request_digest,
+            client_original_head,
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let archive = self
+            .read_storage_inventory_archive(inventory_request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if archive.group_request_id != group_request_id
+            || archive.group_request_digest != group_request_digest
+            || archive.inventory_request_digest != inventory_request_digest
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let original = self.classify_storage_inventory_archive_inner(&archive, depth)?;
+        if original.terminal_packet.is_some() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        match marker.endpoint {
+            BrokerSessionDurableEndpointV1::Broker
+                if marker.broker_archive_digest == original.archive_digest
+                    && marker.broker_original_head == original.original_head =>
+            {
+                Ok(())
+            }
+            BrokerSessionDurableEndpointV1::Client
+                if marker.client_archive_digest == original.archive_digest
+                    && marker.client_original_head == original.original_head =>
+            {
+                self.verify_client_storage_inventory_abandonment(&marker)
+            }
+            _ => Err(BrokerSessionSecurityError::Currentness),
+        }
+    }
+
     pub(super) fn client_storage_inventory_abandonment_committed(
         &mut self,
         group_request_id: [u8; 16],
@@ -282,25 +334,10 @@ impl ProtectedBrokerSessionJournalV1 {
     pub(super) fn validate_storage_inventory_abandonments(
         &mut self,
     ) -> Result<(), BrokerSessionSecurityError> {
-        let entries = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(
-                    RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                )
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut entries = Vec::new();
-            for (key, value) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                if entries.len() == super::MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-                entries.push((key.to_vec(), value.to_vec()));
-            }
-            entries
-        };
+        let entries = self.bounded_storage_records(
+            RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+            super::MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS,
+        )?;
         for (key, value) in entries {
             let record = StorageInventoryAbandonmentV1::decode(&key, &value)?;
             if record.endpoint != self.endpoint.role() {

@@ -1282,6 +1282,59 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         let Some(original) = original else {
             return Ok(DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest);
         };
+        self.recover_atomic_snapshot_inventory_head(
+            group_request_id,
+            group_request_digest,
+            original,
+        )
+    }
+
+    /// Resolves a fresh status through its exact signed history or Method32.
+    pub(crate) fn recover_fresh_atomic_snapshot_inventory(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<DormantAtomicStorageInventoryColdRecoveryV1, EffectFailure> {
+        let fresh = self
+            .0
+            .session
+            .fresh_storage_inventory_coordinates(group_request_id, group_request_digest)
+            .map_err(|_| {
+                EffectFailure::Retryable("fresh Storage status history is unavailable".to_owned())
+            })?;
+        let Some(fresh) = fresh else {
+            return Ok(DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest);
+        };
+        self.recover_atomic_snapshot_inventory_head(group_request_id, group_request_digest, fresh)
+    }
+
+    fn recover_atomic_snapshot_inventory_head(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        original: crate::recovery::ArchivedStorageInventoryHeadV1,
+    ) -> Result<DormantAtomicStorageInventoryColdRecoveryV1, EffectFailure> {
+        let retained = self
+            .0
+            .session
+            .archive_original_storage_inventory(
+                group_request_id,
+                group_request_digest,
+                original.inventory_request_id,
+                original.inventory_request_digest,
+            )
+            .map_err(|_| {
+                EffectFailure::Retryable(
+                    "Storage inventory history could not be retained".to_owned(),
+                )
+            })?;
+        if retained.original_head != original.original_head
+            || retained.archive_digest != original.archive_digest
+        {
+            return Err(EffectFailure::Permanent(
+                "Storage inventory history changed during recovery".to_owned(),
+            ));
+        }
         if let Some(packet) = original.terminal_packet.as_deref() {
             let terminal = self
                 .0
@@ -1663,6 +1716,26 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         self.0.recheck(currentness).map_err(|_| {
             EffectFailure::Retryable("Storage status inventory is no longer current".to_owned())
         })?;
+        self.attest_fresh_atomic_snapshot_terminal(
+            predecessor,
+            group,
+            current,
+            challenge,
+            operation,
+            plan,
+        )
+    }
+
+    /// Attests a recovered fresh terminal as status evidence for the group.
+    pub(crate) fn attest_fresh_atomic_snapshot_terminal(
+        &mut self,
+        predecessor: AuthenticatedBrokerMethodOutcomeV1,
+        group: AuthenticatedBrokerMethodOutcomeV1,
+        current: AuthenticatedBrokerMethodOutcomeV1,
+        challenge: &LifecycleBootInventoryBootstrapChallengeV1,
+        operation: &CurrentLifecycleOperationV1<'_>,
+        plan: &LifecycleAtomicDatasetSnapshotPlanV1,
+    ) -> Result<DormantAtomicStorageInventoryCompletionV1, EffectFailure> {
         let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = group.result() else {
             return Err(EffectFailure::Permanent(
                 "historical Storage group was not successful".to_owned(),

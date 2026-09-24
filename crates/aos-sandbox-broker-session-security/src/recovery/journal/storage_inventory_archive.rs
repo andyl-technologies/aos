@@ -22,6 +22,10 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     admit_client_received_authenticated_broker_method_outcome_v1,
     prepare_client_sent_authenticated_broker_method_request_v1,
 };
+use aos_sandbox_protocol::{
+    ValidatedStorageInventoryRecoveryResponseV1, decode_storage_inventory_recovery_response_v1,
+};
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -38,6 +42,34 @@ const TRANSACTION_DOMAIN: &[u8] =
 const HEADER_BYTES: usize = 8 + 2 + 16 + 16 + 32 + 32 + 4;
 const DIGEST_BYTES: usize = 32;
 
+fn exact_group_rollover(
+    group: &StoredProtocolHistoryV1,
+    status: &StoredProtocolHistoryV1,
+    status_records: usize,
+) -> bool {
+    let Ok(status_records) = u64::try_from(status_records) else {
+        return false;
+    };
+    group.stable_endpoint_identity == status.stable_endpoint_identity
+        && group.endpoint_publication != status.endpoint_publication
+        && (1..=2).contains(&status_records)
+        && group.generation.checked_add(status_records) == Some(status.generation)
+}
+
+struct RetirementCandidate {
+    request_id: [u8; 16],
+    predecessor_id: Option<[u8; 16]>,
+    value: Vec<u8>,
+}
+
+fn retirement_leaf(candidates: &[RetirementCandidate]) -> Option<&RetirementCandidate> {
+    candidates.iter().find(|candidate| {
+        !candidates
+            .iter()
+            .any(|other| other.predecessor_id == Some(candidate.request_id))
+    })
+}
+
 /// Classifies only the exact signed inventory immediately after a terminal group.
 pub(crate) struct ArchivedStorageInventoryHeadV1 {
     pub(crate) inventory_request_id: [u8; 16],
@@ -46,13 +78,14 @@ pub(crate) struct ArchivedStorageInventoryHeadV1 {
     pub(crate) original_head: [u8; 32],
     pub(crate) archive_digest: [u8; 32],
     pub(crate) terminal_packet: Option<Vec<u8>>,
+    pub(crate) fresh: bool,
 }
 
-struct StorageInventoryArchiveV1 {
-    group_request_id: [u8; 16],
+pub(super) struct StorageInventoryArchiveV1 {
+    pub(super) group_request_id: [u8; 16],
     inventory_request_id: [u8; 16],
-    group_request_digest: [u8; 32],
-    inventory_request_digest: [u8; 32],
+    pub(super) group_request_digest: [u8; 32],
+    pub(super) inventory_request_digest: [u8; 32],
     history: StoredProtocolHistoryV1,
 }
 
@@ -182,23 +215,10 @@ impl ProtectedBrokerSessionJournalV1 {
     pub(super) fn validate_storage_inventory_archives(
         &mut self,
     ) -> Result<(), BrokerSessionSecurityError> {
-        let entries = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionStorageInventoryArchive)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut entries = Vec::new();
-            for (key, value) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                if entries.len() == super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-                entries.push((key.to_vec(), value.to_vec()));
-            }
-            entries
-        };
+        let entries = self.bounded_storage_records(
+            RecordNamespace::BrokerSessionStorageInventoryArchive,
+            super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES,
+        )?;
         for (key, value) in entries {
             let archive = StorageInventoryArchiveV1::decode(&key, &value)?;
             self.classify_storage_inventory_archive(&archive)?;
@@ -210,6 +230,17 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         archive: &StorageInventoryArchiveV1,
     ) -> Result<ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+        self.classify_storage_inventory_archive_inner(archive, 0)
+    }
+
+    pub(super) fn classify_storage_inventory_archive_inner(
+        &mut self,
+        archive: &StorageInventoryArchiveV1,
+        depth: usize,
+    ) -> Result<ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+        if depth >= super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
         let stored = &archive.history;
         let checkpoint = stored
             .checkpoint
@@ -245,24 +276,44 @@ impl ProtectedBrokerSessionJournalV1 {
         let prepared = records
             .get(request_index)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let group = request_index
+        let predecessor = request_index
             .checked_sub(1)
-            .and_then(|index| records.get(index))
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
+            .and_then(|index| records.get(index));
         if prepared.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
             || prepared.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
             || prepared.request_id() != archive.inventory_request_id
             || Sha256::digest(prepared.request_packet()).as_slice()
                 != archive.inventory_request_digest
-            || group.phase() != BrokerSessionDurablePhaseV1::Terminal
-            || group.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-            || group.request_id() != archive.group_request_id
-            || authority_envelope_digest(group.request_packet())? != archive.group_request_digest
-            || !successful_terminal(group)?
-            || group.client_sequence().checked_add(1) != Some(prepared.client_sequence())
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        let fresh = match predecessor {
+            Some(group)
+                if group.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT =>
+            {
+                if group.phase() != BrokerSessionDurablePhaseV1::Terminal
+                    || group.request_id() != archive.group_request_id
+                    || authority_envelope_digest(group.request_packet())?
+                        != archive.group_request_digest
+                    || !successful_terminal(group)?
+                    || group.client_sequence().checked_add(1) != Some(prepared.client_sequence())
+                {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                false
+            }
+            Some(control)
+                if control.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY =>
+            {
+                self.validate_fresh_control_predecessor(archive, records, request_index, depth)?;
+                true
+            }
+            None if request_index == 0 => {
+                self.validate_standalone_fresh_group(archive, stored)?;
+                true
+            }
+            _ => return Err(BrokerSessionSecurityError::Currentness),
+        };
         let canonical = decode_canonical_request_v1(prepared.request_packet())
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if canonical.signed_artifact().method()
@@ -295,7 +346,149 @@ impl ProtectedBrokerSessionJournalV1 {
             original_head: stored.current_head,
             archive_digest: Sha256::digest(archive.encode()?).into(),
             terminal_packet,
+            fresh,
         })
+    }
+
+    fn validate_fresh_control_predecessor(
+        &mut self,
+        archive: &StorageInventoryArchiveV1,
+        records: &[aos_sandbox_broker_session_protocol::BrokerSessionDurableRecordV1],
+        request_index: usize,
+        depth: usize,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if request_index != 2 {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let control = records
+            .first()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let terminal = records
+            .get(1)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let status = records
+            .get(2)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if control.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+            || control.method() != BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+            || terminal.phase() != BrokerSessionDurablePhaseV1::Terminal
+            || control.request_packet() != terminal.request_packet()
+            || control.request_id() != terminal.request_id()
+            || !successful_terminal(terminal)?
+            || terminal.client_sequence().checked_add(1) != Some(status.client_sequence())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let canonical = decode_canonical_request_v1(control.request_packet())
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let coordinates = aos_proto::aos::sandbox::local::v1::RecoverStorageInventoryRequestV1::decode_from_slice(
+            &canonical.message().body,
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let prior_id: [u8; 16] = coordinates
+            .inventory_request_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let prior_digest: [u8; 32] = coordinates
+            .inventory_request_digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let client_head: [u8; 32] = coordinates
+            .client_original_head
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if coordinates.group_request_id.as_slice() != archive.group_request_id
+            || coordinates.group_request_digest.as_slice() != archive.group_request_digest
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.validate_storage_inventory_abandonment_chain(
+            prior_id,
+            archive.group_request_id,
+            archive.group_request_digest,
+            prior_digest,
+            client_head,
+            depth + 1,
+        )?;
+        let marker = self
+            .read_storage_inventory_abandonment(prior_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let response = decode_canonical_response_v1(
+            terminal
+                .outcome_packet()
+                .ok_or(BrokerSessionSecurityError::Currentness)?,
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let decision = decode_storage_inventory_recovery_response_v1(
+            &response.message().body,
+            control.maximum_response_bytes(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let expected_abandonment_digest = if marker.endpoint
+            == aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker
+        {
+            marker.digest()?
+        } else {
+            marker.broker_marker_digest
+        };
+        match decision {
+            ValidatedStorageInventoryRecoveryResponseV1::AbandonedReadOnly {
+                broker_head,
+                archive_digest,
+                abandonment_digest,
+            } if broker_head == marker.broker_original_head
+                && archive_digest == marker.broker_archive_digest
+                && abandonment_digest == expected_abandonment_digest =>
+            {
+                Ok(())
+            }
+            _ => Err(BrokerSessionSecurityError::Currentness),
+        }
+    }
+
+    fn validate_standalone_fresh_group(
+        &mut self,
+        archive: &StorageInventoryArchiveV1,
+        status: &StoredProtocolHistoryV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let group = self
+            .read_atomic_storage_archive(archive.group_request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let checkpoint = group
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        if self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
+            || group.endpoint_publication
+                != self.historical_endpoint_publication(
+                    BrokerSessionProtocolV1::Storage,
+                    &transcript,
+                )?
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let history = group.history_model()?;
+        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if !exact_group_rollover(
+            &group,
+            status,
+            archive.history.history_model()?.records().len(),
+        ) || head.phase() != BrokerSessionDurablePhaseV1::Terminal
+            || head.method() != BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+            || head.request_id() != archive.group_request_id
+            || authority_envelope_digest(head.request_packet())? != archive.group_request_digest
+            || !successful_terminal(head)?
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(())
     }
 
     pub(super) fn archived_storage_inventory_head(
@@ -440,31 +633,24 @@ impl ProtectedBrokerSessionJournalV1 {
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
     ) -> Result<Option<ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError> {
-        let archived = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionStorageInventoryArchive)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut records = Vec::new();
-            for (key, value) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                if records.len() == super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-                records.push((key.to_vec(), value.to_vec()));
-            }
-            records
-        };
+        let archived = self.bounded_storage_records(
+            RecordNamespace::BrokerSessionStorageInventoryArchive,
+            super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES,
+        )?;
         let mut matching = None;
         for (key, value) in archived {
             let archive = StorageInventoryArchiveV1::decode(&key, &value)?;
             if archive.group_request_id == group_request_id {
-                if archive.group_request_digest != group_request_digest || matching.is_some() {
+                if archive.group_request_digest != group_request_digest {
                     return Err(BrokerSessionSecurityError::Currentness);
                 }
-                matching = Some(self.classify_storage_inventory_archive(&archive)?);
+                let head = self.classify_storage_inventory_archive(&archive)?;
+                if !head.fresh {
+                    if matching.is_some() {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                    matching = Some(head);
+                }
             }
         }
         if matching.is_some() {
@@ -486,6 +672,12 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Ok(None);
         }
+        if self
+            .fresh_storage_inventory_coordinates(group_request_id, group_request_digest)?
+            .is_some()
+        {
+            return Ok(None);
+        }
         let inventory_request_id = head.request_id();
         let inventory_request_digest = Sha256::digest(head.request_packet()).into();
         let archive = StorageInventoryArchiveV1 {
@@ -498,7 +690,152 @@ impl ProtectedBrokerSessionJournalV1 {
         self.classify_storage_inventory_archive(&archive).map(Some)
     }
 
-    fn read_storage_inventory_archive(
+    pub(super) fn fresh_storage_inventory_coordinates(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+    ) -> Result<Option<ArchivedStorageInventoryHeadV1>, BrokerSessionSecurityError> {
+        let current = self
+            .read_optional(BrokerSessionProtocolV1::Storage)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let history = current.history_model()?;
+        let records = history.records();
+        let first = records
+            .first()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let control = if first.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY {
+            let canonical = decode_canonical_request_v1(first.request_packet())
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let coordinates = aos_proto::aos::sandbox::local::v1::RecoverStorageInventoryRequestV1::decode_from_slice(
+                &canonical.message().body,
+            )
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            if coordinates.group_request_id.as_slice() != group_request_id
+                || coordinates.group_request_digest.as_slice() != group_request_digest
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            Some(coordinates)
+        } else if first.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES {
+            None
+        } else {
+            return Ok(None);
+        };
+        let (inventory_request_id, inventory_request_digest) =
+            if head.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES {
+                (
+                    head.request_id(),
+                    Sha256::digest(head.request_packet()).into(),
+                )
+            } else if head.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY {
+                let coordinates = control.ok_or(BrokerSessionSecurityError::Currentness)?;
+                (
+                    coordinates
+                        .inventory_request_id
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                    coordinates
+                        .inventory_request_digest
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                )
+            } else {
+                return Ok(None);
+            };
+        let archive = match self.read_storage_inventory_archive(inventory_request_id)? {
+            Some(archive) => archive,
+            None if head.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
+                StorageInventoryArchiveV1 {
+                    group_request_id,
+                    inventory_request_id,
+                    group_request_digest,
+                    inventory_request_digest,
+                    history: current,
+                }
+            }
+            // A committed recovery control cannot be classified from the
+            // current head alone; its exact status archive is mandatory.
+            None => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        if archive.group_request_id != group_request_id
+            || archive.group_request_digest != group_request_digest
+            || archive.inventory_request_digest != inventory_request_digest
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let classified = self.classify_storage_inventory_archive(&archive)?;
+        if classified.fresh {
+            Ok(Some(classified))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Retire leaves before their signed control predecessors. Every intermediate
+    // state remains reopenable if a crash interrupts cleanup between journals.
+    pub(super) fn retire_storage_inventory_for_group(
+        &mut self,
+        group_request_id: [u8; 16],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.validate_storage_inventory_archives()?;
+        self.validate_storage_inventory_abandonments()?;
+        for _ in 0..=super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES {
+            let entries = self.bounded_storage_records(
+                RecordNamespace::BrokerSessionStorageInventoryArchive,
+                super::MAXIMUM_STORAGE_INVENTORY_ARCHIVES,
+            )?;
+            let mut relevant = Vec::new();
+            for (key, value) in entries {
+                let archive = StorageInventoryArchiveV1::decode(&key, &value)?;
+                if archive.group_request_id == group_request_id {
+                    let predecessor = archive.predecessor_inventory_id()?;
+                    relevant.push(RetirementCandidate {
+                        request_id: archive.inventory_request_id,
+                        predecessor_id: predecessor,
+                        value,
+                    });
+                }
+            }
+            if relevant.is_empty() {
+                return Ok(());
+            }
+            let leaf = retirement_leaf(&relevant).ok_or(BrokerSessionSecurityError::Currentness)?;
+            let request_id = leaf.request_id;
+            let archive_value = leaf.value.clone();
+            let marker_value = {
+                let authority = self
+                    .journal_mut()?
+                    .claim_protected_authority(
+                        RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                    )
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                authority
+                    .get(&request_id)
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                    .map(<[u8]>::to_vec)
+            };
+            if let Some(marker_value) = marker_value {
+                self.retire_exact_storage_inventory_record(
+                    RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                    request_id,
+                    &marker_value,
+                )?;
+            }
+            self.retire_exact_storage_inventory_record(
+                RecordNamespace::BrokerSessionStorageInventoryArchive,
+                request_id,
+                &archive_value,
+            )?;
+        }
+        Err(BrokerSessionSecurityError::Currentness)
+    }
+
+    pub(super) fn read_storage_inventory_archive(
         &mut self,
         inventory_request_id: [u8; 16],
     ) -> Result<Option<StorageInventoryArchiveV1>, BrokerSessionSecurityError> {
@@ -603,10 +940,204 @@ impl ProtectedBrokerSessionJournalV1 {
     }
 }
 
+impl StorageInventoryArchiveV1 {
+    fn predecessor_inventory_id(&self) -> Result<Option<[u8; 16]>, BrokerSessionSecurityError> {
+        let history = self.history.history_model()?;
+        let first = history
+            .records()
+            .first()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if first.method() != BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY {
+            return Ok(None);
+        }
+        let canonical = decode_canonical_request_v1(first.request_packet())
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let coordinates = aos_proto::aos::sandbox::local::v1::RecoverStorageInventoryRequestV1::decode_from_slice(
+            &canonical.message().body,
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        coordinates
+            .inventory_request_id
+            .as_slice()
+            .try_into()
+            .map(Some)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use aos_sandbox::{Journal, JournalLimits};
+
+    #[test]
+    fn fresh_status_requires_the_immediate_archived_group_generation() {
+        let group = StoredProtocolHistoryV1 {
+            protocol: BrokerSessionProtocolV1::Storage,
+            endpoint: aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker,
+            generation: 7,
+            stable_endpoint_identity: [3; 32],
+            endpoint_publication: [5; 32],
+            current_catalog: [7; 32],
+            current_head: [11; 32],
+            history: Vec::new(),
+            checkpoint: None,
+        };
+        let mut status = group.clone();
+        status.generation += 1;
+        status.endpoint_publication = [13; 32];
+        assert!(exact_group_rollover(&group, &status, 1));
+
+        status.generation += 1;
+        assert!(exact_group_rollover(&group, &status, 2));
+        assert!(!exact_group_rollover(&group, &status, 1));
+        status.generation += 1;
+        assert!(!exact_group_rollover(&group, &status, 2));
+        status.generation -= 1;
+        status.stable_endpoint_identity = [17; 32];
+        assert!(!exact_group_rollover(&group, &status, 2));
+        status.stable_endpoint_identity = group.stable_endpoint_identity;
+        status.endpoint_publication = group.endpoint_publication;
+        assert!(!exact_group_rollover(&group, &status, 2));
+    }
+
+    #[test]
+    fn retirement_removes_newest_status_before_its_marker_dependency() {
+        let candidates = [
+            RetirementCandidate {
+                request_id: [1; 16],
+                predecessor_id: None,
+                value: Vec::new(),
+            },
+            RetirementCandidate {
+                request_id: [2; 16],
+                predecessor_id: Some([1; 16]),
+                value: Vec::new(),
+            },
+            RetirementCandidate {
+                request_id: [3; 16],
+                predecessor_id: Some([2; 16]),
+                value: Vec::new(),
+            },
+        ];
+        assert_eq!(retirement_leaf(&candidates).unwrap().request_id, [3; 16]);
+        assert_eq!(
+            retirement_leaf(&candidates[..2]).unwrap().request_id,
+            [2; 16]
+        );
+        assert_eq!(
+            retirement_leaf(&candidates[..1]).unwrap().request_id,
+            [1; 16]
+        );
+
+        let cycle = [
+            RetirementCandidate {
+                request_id: [1; 16],
+                predecessor_id: Some([2; 16]),
+                value: Vec::new(),
+            },
+            RetirementCandidate {
+                request_id: [2; 16],
+                predecessor_id: Some([1; 16]),
+                value: Vec::new(),
+            },
+        ];
+        assert!(retirement_leaf(&cycle).is_none());
+    }
+
+    #[test]
+    fn crash_between_leaf_marker_and_archive_deletion_preserves_history() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("retirement.journal");
+        let inventory_id = [23; 16];
+        let archived = encode_frame(
+            [5; 16],
+            inventory_id,
+            [11; 32],
+            [13; 32],
+            b"signed-inventory-history",
+        )
+        .unwrap();
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        for (id, namespace, value) in [
+            (
+                1,
+                RecordNamespace::BrokerSessionStorageInventoryArchive,
+                archived.clone(),
+            ),
+            (
+                2,
+                RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                b"signed-marker".to_vec(),
+            ),
+        ] {
+            journal
+                .commit(
+                    &JournalTransaction::new(
+                        [id; 16],
+                        vec![JournalRecord::put(namespace, inventory_id.to_vec(), value)],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [3; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                        inventory_id.to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        assert!(
+            journal
+                .get(
+                    RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                    &inventory_id,
+                )
+                .is_none()
+        );
+        let retained = journal
+            .get(
+                RecordNamespace::BrokerSessionStorageInventoryArchive,
+                &inventory_id,
+            )
+            .unwrap();
+        assert_eq!(
+            open_frame(&inventory_id, retained).unwrap().4,
+            b"signed-inventory-history"
+        );
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [4; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::BrokerSessionStorageInventoryArchive,
+                        inventory_id.to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        assert!(
+            journal
+                .get(
+                    RecordNamespace::BrokerSessionStorageInventoryArchive,
+                    &inventory_id
+                )
+                .is_none()
+        );
+    }
 
     #[test]
     fn frame_binds_original_group_inventory_and_history() {
