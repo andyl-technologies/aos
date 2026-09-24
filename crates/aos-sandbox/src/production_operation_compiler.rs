@@ -560,7 +560,10 @@ fn compile_capability_revoke(
     let authorization = PublicOperationAuthorizationV1::new(
         peer.project(),
         request.resource_kind(),
-        request.selector().clone(),
+        request
+            .selector()
+            .ok_or(OperationCompilationError::Rejected)?
+            .clone(),
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     let public = PublicOperationAdmissionV1::new(
@@ -774,7 +777,10 @@ fn attach_public_operation(
     let authorization = PublicOperationAuthorizationV1::new(
         project,
         request.resource_kind(),
-        request.selector().clone(),
+        request
+            .selector()
+            .ok_or(OperationCompilationError::Rejected)?
+            .clone(),
     );
     let authorization = authorization.map_err(|_| OperationCompilationError::Rejected)?;
     let public = PublicOperationAdmissionV1::new(

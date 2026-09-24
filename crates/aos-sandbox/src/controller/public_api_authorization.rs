@@ -60,7 +60,10 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
         request.method(),
         request.resource_kind(),
         request.operation(),
-        request.selector().clone(),
+        request
+            .selector()
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
+            .clone(),
         request.protobuf_body(),
     )
 }

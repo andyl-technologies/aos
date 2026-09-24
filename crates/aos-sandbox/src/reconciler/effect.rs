@@ -1829,7 +1829,33 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use aos_proto::aos::sandbox::v1::AttenuateCapabilityRequest;
     use aos_sandbox_core::{BrokerArgumentCommitment, BrokerGrantTarget, BrokerVerb};
+    use buffa::Message as _;
+
+    #[test]
+    fn retained_capability_handle_effect_checks_method_without_resource_uid() {
+        let body = AttenuateCapabilityRequest {
+            parent_capability_handle: vec![7; 32],
+            attenuation: b"{}".to_vec(),
+            holder_channel_binding: vec![8; 32],
+            idempotency_key: vec![9],
+            expected_parent_resource_version: vec![10],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let request = crate::cli_model::PublicMutationRequestV1::new(
+            crate::cli_model::PublicApiAuditMethodV1::AttenuateCapability,
+            &body,
+        )
+        .unwrap();
+
+        EffectPlan::public_mutation(
+            crate::controller_query::PublicOperationMethodV1::AttenuateCapability,
+            request.encode(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn guardian_audience_cannot_enter_the_generic_broker_effect_path() {

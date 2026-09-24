@@ -153,8 +153,10 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
     ///
     /// The journal must have been opened through a protected opener. This scan
     /// validates every key and value before returning, retaining aggregate
-    /// counters and a bounded digest-to-UID handle index. Lookup then decodes
-    /// the exact journal record and rechecks its protected holder binding.
+    /// counters and a bounded digest-to-UID handle index. The exclusive journal
+    /// borrow keeps this index current; prepared records commit only after the
+    /// registry is dropped and the next load rebuilds it. Lookup decodes the
+    /// exact journal record and rechecks its protected holder binding.
     ///
     /// # Errors
     ///

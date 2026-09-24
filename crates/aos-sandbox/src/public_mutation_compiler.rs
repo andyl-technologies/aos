@@ -139,7 +139,7 @@ pub struct ResolvedPublicMutationRequestV1 {
     operation_method: PublicOperationMethodV1,
     resource_kind: ResourceKind,
     operation: Operation,
-    selector: Selector,
+    selector: Option<Selector>,
     idempotency_key: IdempotencyKey,
     target_project: Option<ProjectId>,
     request: DormantSandboxRequestKindV1,
@@ -206,10 +206,13 @@ impl ResolvedPublicMutationRequestV1 {
         self.operation
     }
 
-    /// Returns the exact logical selector derived from the typed body.
+    /// Returns the exact logical selector when protected identity resolution ran.
+    ///
+    /// Structural decoding of a 32-byte capability handle leaves this unset;
+    /// only authenticated protected lookup can select its capability UID.
     #[must_use]
-    pub const fn selector(&self) -> &Selector {
-        &self.selector
+    pub const fn selector(&self) -> Option<&Selector> {
+        self.selector.as_ref()
     }
 
     /// Returns the validated client idempotency key.
@@ -270,7 +273,7 @@ struct EndpointSemanticsV1 {
     operation_method: PublicOperationMethodV1,
     resource_kind: ResourceKind,
     operation: Operation,
-    selector: Selector,
+    selector: Option<Selector>,
     idempotency_key: IdempotencyKey,
     target_project: Option<ProjectId>,
 }
@@ -289,10 +292,10 @@ fn endpoint_semantics(
                 operation_method: M::CreateSandbox,
                 resource_kind: ResourceKind::ChildDelegation,
                 operation: Operation::Create,
-                selector: resource_selector(create_scope(
+                selector: Some(resource_selector(create_scope(
                     &value.parent_sandbox_id,
                     &value.project_id,
-                )?)?,
+                )?)?),
                 idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
                 target_project: Some(project),
             }
@@ -342,7 +345,7 @@ fn endpoint_semantics(
                 operation_method: M::CreateView,
                 resource_kind: ResourceKind::Tree,
                 operation: Operation::Create,
-                selector: resource_selector(value.project_id.as_slice())?,
+                selector: Some(resource_selector(value.project_id.as_slice())?),
                 idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
                 target_project: Some(project),
             }
@@ -395,10 +398,10 @@ fn endpoint_semantics(
                 operation_method: M::ForkSnapshot,
                 resource_kind: ResourceKind::Snapshot,
                 operation: Operation::Create,
-                selector: resource_selector(create_scope(
+                selector: Some(resource_selector(create_scope(
                     &value.parent_sandbox_id,
                     &value.target_project_id,
-                )?)?,
+                )?)?),
                 idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
                 target_project: Some(project),
             }
@@ -418,15 +421,18 @@ fn endpoint_semantics(
             idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
             target_project: None,
         },
-        R::CapabilityRenew(value) => resource_mutation(
-            M::RenewCapability,
-            ResourceKind::Capability,
-            Operation::Delegate,
-            capability_id
-                .as_ref()
-                .map_or(value.capability_handle.as_slice(), |id| id.as_bytes()),
-            mutation(value.mutation.as_option())?,
-        )?,
+        R::CapabilityRenew(value) => EndpointSemanticsV1 {
+            operation_method: M::RenewCapability,
+            resource_kind: ResourceKind::Capability,
+            operation: Operation::Delegate,
+            selector: capability_selector(&value.capability_handle, capability_id)?,
+            idempotency_key: IdempotencyKey::new(
+                mutation(value.mutation.as_option())?
+                    .idempotency_key
+                    .clone(),
+            )?,
+            target_project: None,
+        },
         R::CapabilityRevoke(value) => resource_mutation(
             M::RevokeCapability,
             ResourceKind::Capability,
@@ -489,7 +495,7 @@ fn resource_mutation(
         operation_method,
         resource_kind,
         operation,
-        selector: resource_selector(resource_id)?,
+        selector: Some(resource_selector(resource_id)?),
         idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())?,
         target_project: None,
     })
@@ -505,11 +511,11 @@ fn descriptor_mutation(
         operation_method,
         resource_kind: ResourceKind::CachePublish,
         operation,
-        selector: Selector::Tree {
+        selector: Some(Selector::Tree {
             tree: object_descriptor(
                 descriptor.ok_or(PublicMutationResolutionErrorV1::InvalidDescriptor)?,
             )?,
-        },
+        }),
         idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())?,
         target_project: None,
     })
@@ -555,14 +561,14 @@ fn resource_selector(bytes: &[u8]) -> Result<Selector, PublicMutationResolutionE
 fn capability_selector(
     handle: &[u8],
     capability_id: Option<CapabilityId>,
-) -> Result<Selector, PublicMutationResolutionErrorV1> {
+) -> Result<Option<Selector>, PublicMutationResolutionErrorV1> {
+    if handle.len() != 32 || handle.iter().all(|byte| *byte == 0) {
+        return Err(PublicMutationResolutionErrorV1::InvalidIdentity);
+    }
     if let Some(id) = capability_id {
-        if handle.len() != 32 || handle.iter().all(|byte| *byte == 0) {
-            return Err(PublicMutationResolutionErrorV1::InvalidIdentity);
-        }
-        resource_selector(id.as_bytes())
+        resource_selector(id.as_bytes()).map(Some)
     } else {
-        resource_selector(handle)
+        Ok(None)
     }
 }
 
@@ -578,6 +584,51 @@ fn exact_identity(bytes: &[u8]) -> Result<[u8; 16], PublicMutationResolutionErro
         return Err(PublicMutationResolutionErrorV1::InvalidIdentity);
     }
     Ok(identity)
+}
+
+#[cfg(test)]
+mod handle_decode_tests {
+    use aos_proto::aos::sandbox::v1::AttenuateCapabilityRequest;
+    use aos_sandbox_core::{CapabilityId, ResourceId, Selector};
+    use buffa::Message as _;
+
+    use super::*;
+
+    #[test]
+    fn structural_replay_decode_defers_capability_selector_until_protected_lookup() {
+        let request = AttenuateCapabilityRequest {
+            parent_capability_handle: vec![7; 32],
+            attenuation: b"{}".to_vec(),
+            holder_channel_binding: vec![8; 32],
+            idempotency_key: vec![9],
+            expected_parent_resource_version: vec![10],
+            ..Default::default()
+        };
+        let envelope = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::AttenuateCapability,
+            &request.encode_to_vec(),
+        )
+        .unwrap();
+        let encoded = envelope.encode();
+
+        let structural = ResolvedPublicMutationRequestV1::decode(&encoded).unwrap();
+        assert_eq!(
+            structural.operation_method(),
+            PublicOperationMethodV1::AttenuateCapability
+        );
+        assert!(structural.selector().is_none());
+
+        let uid = CapabilityId::from_bytes([11; 16]);
+        let protected =
+            ResolvedPublicMutationRequestV1::decode_with_capability_id(&encoded, Some(uid))
+                .unwrap();
+        assert_eq!(
+            protected.selector(),
+            Some(&Selector::Resource {
+                resource: ResourceId::from_bytes(uid.into_bytes())
+            })
+        );
+    }
 }
 
 pub(crate) fn object_descriptor(
