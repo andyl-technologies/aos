@@ -37,12 +37,12 @@ use crate::pin_worker::{
     MAXIMUM_PIN_WORKER_REQUEST_BYTES, MAXIMUM_PIN_WORKER_RESULT_BYTES, WorkspacePinWorkerResultV1,
     decode_result as decode_pin_worker_result, encode_result as encode_pin_worker_result,
 };
+use crate::worker_wire::{DecodeErrors, Decoder};
 use crate::workspace_pin::{
     WorkspacePinActionV1, WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1,
     WorkspacePinHostScopeV1,
 };
 use crate::workspace_repair::{StorageWorkspacePinRepairIntentV1, WorkspacePinRepairProbeV1};
-use crate::workspace_repair_wire::{DecodeErrors, Decoder};
 use crate::{
     CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageStateKey, ZfsHelperContract, ZfsWorkerError,
 };

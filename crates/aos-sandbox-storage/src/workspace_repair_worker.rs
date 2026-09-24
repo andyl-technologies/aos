@@ -22,11 +22,11 @@ use crate::pin_worker::{
     MAXIMUM_PIN_WORKER_REQUEST_BYTES, WorkspacePinWorkerAuthorityV1, WorkspacePinWorkerRequestV1,
     decode_request as decode_pin_worker_request, encode_request as encode_pin_worker_request,
 };
+use crate::worker_wire::{DecodeErrors, Decoder};
 use crate::workspace_pin::{
     WorkspacePinActionV1, WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1,
 };
 use crate::workspace_repair::WorkspacePinRepairIntentPredecessorV1;
-use crate::workspace_repair_wire::{DecodeErrors, Decoder};
 use crate::{
     CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageAdmissionError, StorageStateKey,
     ZfsHelperContract, ZfsWorkerError,

@@ -75,7 +75,7 @@ mod workspace_repair;
 mod workspace_repair_admission;
 mod workspace_repair_observer;
 mod workspace_repair_worker;
-mod workspace_repair_wire;
+mod worker_wire;
 pub mod zfs;
 
 pub use authorization::{

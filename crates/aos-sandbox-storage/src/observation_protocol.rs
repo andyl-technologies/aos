@@ -32,6 +32,7 @@ use sha2::{Digest as _, Sha256};
 use crate::ZfsWorkerError;
 use crate::catalog::valid_dataset_name;
 use crate::pin_worker::verify_same_live_subject;
+use crate::worker_wire::{DecodeErrors, Decoder};
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSZCAO1";
 const RESULT_MAGIC: &[u8; 8] = b"AOSZCAR1";
@@ -57,6 +58,12 @@ const RESULT_BYTES: usize = 313;
 const MAXIMUM_ROOT_NAME_BYTES: usize = 253;
 const MAXIMUM_DATASET_NAME_BYTES: usize = 255;
 const MAXIMUM_CATALOG_ROWS: usize = 16_384;
+const DECODE_ERRORS: DecodeErrors = DecodeErrors {
+    overflow: "catalog observation record is truncated",
+    truncated: "catalog observation record is truncated",
+    field: "catalog observation fixed field is truncated",
+    trailing: "catalog observation record has trailing bytes",
+};
 
 pub(crate) const MAXIMUM_CATALOG_OBSERVATION_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 pub(crate) const MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES: usize = 4096;
@@ -764,7 +771,7 @@ pub(crate) fn decode_request(
     {
         return Err(protocol("catalog observation request length is invalid"));
     }
-    let mut decoder = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
     if decoder.take(8)? != REQUEST_MAGIC {
         return Err(protocol("catalog observation request header is invalid"));
     }
@@ -784,7 +791,7 @@ pub(crate) fn decode_request(
     let mut roots = Vec::with_capacity(root_count);
     for _ in 0..root_count {
         roots.push(WorkspaceCatalogObservationRootV1::new(
-            decoder.text_u16(MAXIMUM_ROOT_NAME_BYTES)?,
+            text_u16(&mut decoder, MAXIMUM_ROOT_NAME_BYTES)?,
             decoder.u64()?,
         )?);
     }
@@ -798,7 +805,7 @@ pub(crate) fn decode_request(
         };
         allowed_objects.push(WorkspaceCatalogObservationObjectV1::new(
             root_index,
-            decoder.text_u16(MAXIMUM_DATASET_NAME_BYTES)?,
+            text_u16(&mut decoder, MAXIMUM_DATASET_NAME_BYTES)?,
             kind,
             decoder.u64()?,
         )?);
@@ -808,7 +815,7 @@ pub(crate) fn decode_request(
         let workspace_handle = decoder.array()?;
         let creation_operation_id = decoder.array()?;
         let root_index = decoder.u16()?;
-        let dataset_name = decoder.text_u16(MAXIMUM_DATASET_NAME_BYTES)?;
+        let dataset_name = text_u16(&mut decoder, MAXIMUM_DATASET_NAME_BYTES)?;
         let dataset_guid = decoder.u64()?;
         let expectation = match decoder.u8()? {
             0 => WorkspaceCatalogObservationExpectationV1::Absent,
@@ -886,7 +893,7 @@ pub(crate) fn decode_result(
     if bytes.len() != RESULT_BYTES {
         return Err(protocol("catalog observation result length is invalid"));
     }
-    let mut decoder = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
     if decoder.take(8)? != RESULT_MAGIC || decoder.u16()? != WIRE_VERSION || decoder.u16()? != 0 {
         return Err(protocol("catalog observation result header is invalid"));
     }
@@ -1097,7 +1104,7 @@ fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame<'_>, ZfsWorkerError> {
     if bytes.len() < FRAME_HEADER_BYTES || bytes.len() > MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES {
         return Err(protocol("catalog observation frame length is invalid"));
     }
-    let mut decoder = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
     if decoder.take(8)? != FRAME_MAGIC || decoder.u16()? != WIRE_VERSION {
         return Err(protocol("catalog observation frame header is invalid"));
     }
@@ -1333,66 +1340,14 @@ const fn protocol(message: &'static str) -> ZfsWorkerError {
     ZfsWorkerError::Protocol(message)
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+fn text_u16(decoder: &mut Decoder<'_>, maximum: usize) -> Result<String, ZfsWorkerError> {
+    let length = usize::from(decoder.u16()?);
+    if length == 0 || length > maximum {
+        return Err(protocol("catalog observation text length is invalid"));
     }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or(protocol("catalog observation record is truncated"))?;
-        let value = &self.bytes[self.offset..end];
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], ZfsWorkerError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| protocol("catalog observation fixed field is truncated"))
-    }
-
-    fn u8(&mut self) -> Result<u8, ZfsWorkerError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, ZfsWorkerError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, ZfsWorkerError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, ZfsWorkerError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn text_u16(&mut self, maximum: usize) -> Result<String, ZfsWorkerError> {
-        let length = usize::from(self.u16()?);
-        if length == 0 || length > maximum {
-            return Err(protocol("catalog observation text length is invalid"));
-        }
-        let value = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| protocol("catalog observation text is not UTF-8"))?;
-        Ok(value.to_owned())
-    }
-
-    fn finish(self) -> Result<(), ZfsWorkerError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(protocol("catalog observation record has trailing bytes"))
-        }
-    }
+    let value = std::str::from_utf8(decoder.take(length)?)
+        .map_err(|_| protocol("catalog observation text is not UTF-8"))?;
+    Ok(value.to_owned())
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! Checked byte cursor shared by the private workspace-repair worker codecs.
+//! Checked byte cursor shared by private Storage worker codecs.
 //!
 //! Each caller retains its own record-length policy and wire diagnostics. The
 //! cursor only owns bounded slicing, fixed-width integers, and exact ending.
