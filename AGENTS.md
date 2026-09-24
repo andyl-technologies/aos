@@ -159,8 +159,8 @@ nix run . -- <subcommand>
 
 `nix build` / `nix run` rebuild the whole `pkgs.aos` derivation hermetically and
 are slow to iterate on. For a fast edit–build–run loop on the Rust code, use
-the Cargo dev shell, which supplies the same AOS-built dependencies without
-evaluating or building the packaged CLI. Select it through `cargo-shell.nix`
+the Cargo dev shell, which supplies the AOS-built compiler and native libraries
+without building the packaged CLI or integration-test services. Select it through `cargo-shell.nix`
 to avoid the flake's broad output evaluation. Pass the command to `nix develop -c`
 in one invocation (a bare `nix develop` only opens an interactive shell), then
 run the resulting binary directly:
@@ -168,7 +168,7 @@ run the resulting binary directly:
 ```sh
 # Build (incremental). `nix develop -c` execs its argument directly (no shell),
 # so pass cargo the workspace with --manifest-path rather than `cd`-ing:
-nix develop --impure --expr 'import ./cargo-shell.nix' -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
+nix develop --file cargo-shell.nix -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
 
 # Run the freshly built binary directly — its OpenSSL rpath is baked in:
 crates/target/debug/aos <subcommand>

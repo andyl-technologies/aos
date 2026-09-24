@@ -268,18 +268,20 @@
       system: let
         aos = aosFor system;
         aosCli = aos.pkgs.aos.overrideAttrs (_: {doCheck = false;});
-        cargoPackages = [
+        cargoBuildPackages = [
           aos.pkgs.rust
           aos.pkgs.rust.dev
-          aos.pkgs.cargo-nextest
-          aos.pkgs.cargo-hakari
           aos.pkgs.bootstrapTools
           aos.pkgs.perl
           aos.pkgs.pkg-config
           aos.pkgs.openssl
           aos.pkgs.sqlite
           aos.pkgs.protobuf
-          # Cargo tests invoke the same AOS-built tools as packaged binaries.
+        ];
+        cargoTestPackages = [
+          aos.pkgs.cargo-nextest
+          aos.pkgs.cargo-hakari
+          # The full dev shell supplies AOS-built tools for integration tests.
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
@@ -338,8 +340,9 @@
             aosCli.apr
             aos.pkgs.just
           ]
-          ++ cargoPackages);
-        cargo = mkDevShell "aos-cargo-dev" cargoPackages;
+          ++ cargoBuildPackages
+          ++ cargoTestPackages);
+        cargo = mkDevShell "aos-cargo-dev" cargoBuildPackages;
       }
     );
 
