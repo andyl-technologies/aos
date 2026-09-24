@@ -926,32 +926,43 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
-            require_holder_handle!(peer, capability_id, capability_handle, reply);
-            let operation_id =
-                match controller.admit_public(&peer, capability_id, &canonical_request) {
-                    Ok(AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation)) => {
-                        operation
-                    }
-                    Err(
-                        ControllerServiceError::EmptyRequest
-                        | ControllerServiceError::RequestTooLarge
-                        | ControllerServiceError::Compilation(OperationCompilationError::Malformed),
-                    ) => {
-                        let _ = reply.send(Err(ControllerCommandFailure::InvalidRequest));
-                        return Ok(());
-                    }
-                    Err(ControllerServiceError::Compilation(
-                        OperationCompilationError::Rejected,
-                    )) => {
-                        let _ = reply.send(Err(ControllerCommandFailure::Rejected));
-                        return Ok(());
-                    }
-                    Err(error) => {
-                        let message = error.to_string();
-                        let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
-                        return Err(message);
-                    }
-                };
+            let admission = if controller
+                .resolve_public_capability_handle(&peer, capability_id, &capability_handle)
+                .is_ok()
+            {
+                controller.admit_public(&peer, capability_id, &canonical_request)
+            } else {
+                // Renewal atomically retires its invoking handle. Only the
+                // controller's exact committed-renewal proof may replay it.
+                controller.replay_committed_public_capability_renewal(
+                    &peer,
+                    capability_id,
+                    &capability_handle,
+                    &canonical_request,
+                )
+            };
+            let operation_id = match admission {
+                Ok(AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation)) => {
+                    operation
+                }
+                Err(
+                    ControllerServiceError::EmptyRequest
+                    | ControllerServiceError::RequestTooLarge
+                    | ControllerServiceError::Compilation(OperationCompilationError::Malformed),
+                ) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::InvalidRequest));
+                    return Ok(());
+                }
+                Err(ControllerServiceError::Compilation(OperationCompilationError::Rejected)) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::Rejected));
+                    return Ok(());
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err(message);
+                }
+            };
             let operation = match controller.public_operation(operation_id) {
                 Ok(Some(operation)) => operation,
                 Ok(None) => {

@@ -291,6 +291,37 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         holder: PrincipalId,
         binding: ChannelBinding,
     ) -> Result<CapabilityId, PublisherAuthorityError> {
+        let record = self.holder_handle_record(handle, holder, binding)?;
+        if record.state == DurableCapabilityStateV1::Revoked {
+            return Err(PublisherAuthorityError::Revoked);
+        }
+        Ok(record.capability.id())
+    }
+
+    /// Resolves a retired handle only as historical evidence for exact renewal replay.
+    ///
+    /// The caller must subsequently prove the committed request digest and
+    /// operation before using this identity. A retired handle never authorizes
+    /// a new operation.
+    pub(crate) fn retired_holder_handle_for_replay(
+        &self,
+        handle: &[u8],
+        holder: PrincipalId,
+        binding: ChannelBinding,
+    ) -> Result<CapabilityRecord, PublisherAuthorityError> {
+        let record = self.holder_handle_record(handle, holder, binding)?;
+        if record.state != DurableCapabilityStateV1::Revoked {
+            return Err(PublisherAuthorityError::InvalidHandle);
+        }
+        Ok(record.capability)
+    }
+
+    fn holder_handle_record(
+        &self,
+        handle: &[u8],
+        holder: PrincipalId,
+        binding: ChannelBinding,
+    ) -> Result<DecodedCapabilityRecordV1, PublisherAuthorityError> {
         let handle: [u8; 32] = handle
             .try_into()
             .map_err(|_| PublisherAuthorityError::InvalidHandle)?;
@@ -313,14 +344,11 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if record.handle != Some(handle) {
             return Err(PublisherAuthorityError::InvalidHandle);
         }
-        if record.state == DurableCapabilityStateV1::Revoked {
-            return Err(PublisherAuthorityError::Revoked);
-        }
         let claims = record.capability.claims();
         if claims.holder != holder || claims.channel_binding != binding {
             return Err(PublisherAuthorityError::HandleHolderMismatch);
         }
-        Ok(id)
+        Ok(record)
     }
 
     /// Returns a current handle for the authenticated holder after protected lookup.

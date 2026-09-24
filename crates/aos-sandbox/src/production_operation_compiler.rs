@@ -16,17 +16,20 @@
 use aos_proto::aos::sandbox::v1::{Capability, ObjectDescriptor, Timestamp};
 use aos_sandbox_core::{
     AssignmentEpoch, AttenuationRequest, AuditId, CapabilityId, CapabilityRecord, ChannelBinding,
-    DelegationLimits, Grant, IncarnationId, OperationId, SandboxId, Selector,
+    DelegationLimits, Grant, IncarnationId, OperationId, PrincipalId, ProjectId, ResourceId,
+    ResourceKind, SandboxId, Selector,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_query::PublicOperationMethodV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1, public_projection_deletion_record_v1,
 };
 use crate::public_mutation_compiler::{
     AuthorizedPublicMutationRequestV1, PublicMutationAuthorizationErrorV1,
+    ResolvedPublicMutationRequestV1,
 };
 use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
@@ -610,15 +613,9 @@ fn compile_capability_renewal(
     }
 
     match journal.check_idempotency(request.idempotency_key(), request_digest) {
-        IdempotencyOutcome::Replay(operation_id) => {
-            return replay_capability_renewal(
-                journal,
-                operation_id,
-                predecessor_id,
-                request.idempotency_key().clone(),
-                request_digest,
-            );
-        }
+        // A committed renewal atomically retires this predecessor. Replays use
+        // the separate retired-handle path after exact caller/request proof.
+        IdempotencyOutcome::Replay(_) => return Err(OperationCompilationError::Rejected),
         IdempotencyOutcome::Conflict => return Err(OperationCompilationError::Rejected),
         IdempotencyOutcome::Vacant => {}
     }
@@ -688,13 +685,80 @@ fn compile_capability_renewal(
     attach_public_operation(plan, authorized, peer.project(), operation_id)
 }
 
+/// Reconstructs only an already committed renewal for its retired TLS holder.
+///
+/// No policy or predecessor-currentness check is bypassed for a new request:
+/// the protected idempotency decision must name the exact caller-bound digest.
+/// The returned plan is consumed only by the ledger's equality-checked replay.
+pub(crate) fn replay_committed_capability_renewal_v1(
+    journal: &mut Journal,
+    holder: PrincipalId,
+    project: ProjectId,
+    binding: ChannelBinding,
+    claimed_uid: CapabilityId,
+    invoking_handle: &[u8; 32],
+    canonical_request: &[u8],
+    request_digest: [u8; 32],
+) -> Result<OperationPlan, OperationCompilationError> {
+    use crate::cli_model::DormantSandboxRequestKindV1;
+
+    let request = ResolvedPublicMutationRequestV1::decode(canonical_request)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let DormantSandboxRequestKindV1::CapabilityRenew(renew) = request.request() else {
+        return Err(OperationCompilationError::Rejected);
+    };
+    if renew.capability_handle.as_slice() != invoking_handle {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let mutation = renew
+        .mutation
+        .as_option()
+        .ok_or(OperationCompilationError::Rejected)?;
+    let requested_expiry = renew
+        .requested_expiry
+        .as_option()
+        .ok_or(OperationCompilationError::Rejected)?;
+    if requested_expiry.nanoseconds != 0 {
+        return Err(OperationCompilationError::Rejected);
+    }
+
+    let predecessor =
+        PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+            .and_then(|registry| {
+                registry.retired_holder_handle_for_replay(invoking_handle, holder, binding)
+            })
+            .map_err(|_| OperationCompilationError::Rejected)?;
+    if predecessor.id() != claimed_uid || predecessor.claims().project != project {
+        return Err(OperationCompilationError::Rejected);
+    }
+    if mutation.expected_resource_version != capability_resource_version(&predecessor, false)? {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let IdempotencyOutcome::Replay(operation_id) =
+        journal.check_idempotency(request.idempotency_key(), request_digest)
+    else {
+        return Err(OperationCompilationError::Rejected);
+    };
+
+    replay_capability_renewal(
+        journal,
+        operation_id,
+        &predecessor,
+        requested_expiry.seconds,
+        request.idempotency_key().clone(),
+        request_digest,
+    )
+}
+
 fn replay_capability_renewal(
     journal: &mut Journal,
     operation_id: OperationId,
-    predecessor_id: CapabilityId,
+    predecessor: &CapabilityRecord,
+    requested_expiry: i64,
     idempotency_key: crate::IdempotencyKey,
     request_digest: [u8; 32],
 ) -> Result<OperationPlan, OperationCompilationError> {
+    let predecessor_id = predecessor.id();
     let projections = PublicProjectionStoreV1::new(journal)
         .list_operation(operation_id)
         .map_err(|_| OperationCompilationError::Rejected)?;
@@ -731,6 +795,17 @@ fn replay_capability_renewal(
     let successor = registry
         .resolve_current(successor_id)
         .map_err(|_| OperationCompilationError::Rejected)?;
+    let mut expected_successor = predecessor.claims().clone();
+    expected_successor.id = successor_id;
+    expected_successor.not_before = successor.claims().not_before;
+    expected_successor.expires_at = successor.claims().expires_at;
+    expected_successor.parent_decision = AuditId::from_bytes(operation_id.into_bytes());
+    if successor.claims() != &expected_successor {
+        return Err(OperationCompilationError::Rejected);
+    }
+    if successor.claims().expires_at != requested_expiry {
+        return Err(OperationCompilationError::Rejected);
+    }
     if capability_resource_version(&successor, false)? != projected_successor.resource_version {
         return Err(OperationCompilationError::Rejected);
     }
@@ -752,6 +827,19 @@ fn replay_capability_renewal(
     let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
         .map_err(|_| OperationCompilationError::Rejected)?
         .ok_or(OperationCompilationError::Rejected)?;
+    if public.method() != PublicOperationMethodV1::RenewCapability
+        || public.authorization().project() != predecessor.claims().project
+        || public.authorization().resource_kind() != ResourceKind::Capability
+        || public.authorization().selector()
+            != &(Selector::Resource {
+                resource: ResourceId::from_bytes(predecessor_id.into_bytes()),
+            })
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    if successor.claims().not_before != public.accepted_wall_seconds() {
+        return Err(OperationCompilationError::Rejected);
+    }
     let (desired_key, desired_value) = desired.into_desired_state();
 
     OperationPlan::completed_local(
@@ -896,4 +984,376 @@ fn capability_resource_version(
         .finalize()
         .into();
     Ok(digest.to_vec())
+}
+
+#[cfg(test)]
+mod renewal_replay_tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::path::PathBuf;
+
+    use aos_proto::aos::sandbox::v1::{
+        Duration, MutationContext, RenewCapabilityRequest, RevokeCapabilityRequest,
+    };
+    use aos_sandbox_core::{MediaType, ObjectDigest};
+    use buffa::Message as _;
+
+    use super::*;
+    use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
+    use crate::reconciler::{
+        AcceptOutcome, EffectFailure, EffectObservation, EffectPlan, EffectReceipt, Reconciler,
+        SingleNodeEffectExecutor,
+    };
+    use crate::{IdempotencyKey, JournalLimits};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "aos-capability-renewal-replay-{}",
+                OperationId::new()
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            Self(path)
+        }
+
+        fn open(&self) -> Journal {
+            let uid = fs::metadata(&self.0).unwrap().uid();
+            Journal::open_protected_at_uid(
+                &self.0,
+                "renewal.journal",
+                JournalLimits::default(),
+                uid,
+            )
+            .unwrap()
+            .0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct NoEffects;
+
+    impl SingleNodeEffectExecutor for NoEffects {
+        fn observe(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            _plan: &EffectPlan,
+        ) -> Result<EffectObservation, EffectFailure> {
+            unreachable!("controller-local renewal has no effects")
+        }
+
+        fn apply(
+            &mut self,
+            _operation_id: OperationId,
+            _step: u32,
+            _plan: &EffectPlan,
+        ) -> Result<EffectReceipt, EffectFailure> {
+            unreachable!("controller-local renewal has no effects")
+        }
+    }
+
+    fn renewal_request(
+        handle: [u8; 32],
+        expiry: i64,
+        key: &[u8],
+        expected_resource_version: &[u8],
+    ) -> Vec<u8> {
+        let request = RenewCapabilityRequest {
+            capability_handle: handle.to_vec(),
+            requested_expiry: Some(Timestamp {
+                seconds: expiry,
+                ..Default::default()
+            })
+            .into(),
+            mutation: Some(MutationContext {
+                idempotency_key: key.to_vec(),
+                expected_resource_version: expected_resource_version.to_vec(),
+                operation_timeout: Some(Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::RenewCapability,
+            &request.encode_to_vec(),
+        )
+        .unwrap()
+        .encode()
+    }
+
+    #[test]
+    fn committed_renewal_replays_only_for_exact_retired_holder_and_request() {
+        let directory = TestDirectory::new();
+        let mut reconciler = Reconciler::new(directory.open(), NoEffects);
+        let predecessor_id = CapabilityId::from_bytes([41; 16]);
+        let predecessor = crate::publisher_authority::tests::capability(predecessor_id, 200);
+        let holder = predecessor.claims().holder;
+        let binding = predecessor.claims().channel_binding;
+        let project = predecessor.claims().project;
+        let operation_id = OperationId::new();
+        let successor_id = CapabilityId::from_bytes([42; 16]);
+        let mut successor_draft = predecessor.claims().clone();
+        successor_draft.id = successor_id;
+        successor_draft.not_before = 150;
+        successor_draft.expires_at = 300;
+        successor_draft.parent_decision = AuditId::from_bytes(operation_id.into_bytes());
+        let successor = CapabilityRecord::issue(successor_draft).unwrap();
+
+        let predecessor_handle = {
+            let mut registry = PublisherCapabilityRegistry::load(
+                reconciler.journal_mut(),
+                PublisherAuthorityLimits::default(),
+            )
+            .unwrap();
+            registry
+                .install_from_trusted_controller([41; 16], predecessor.clone())
+                .unwrap();
+            registry
+                .holder_handle(predecessor_id, holder, binding)
+                .unwrap()
+        };
+        let predecessor_version = capability_resource_version(&predecessor, false).unwrap();
+        let request = renewal_request(
+            predecessor_handle,
+            300,
+            b"exact-renewal",
+            &predecessor_version,
+        );
+        let request_digest = [51; 32];
+        assert!(
+            replay_committed_capability_renewal_v1(
+                reconciler.journal_mut(),
+                holder,
+                project,
+                binding,
+                predecessor_id,
+                &predecessor_handle,
+                &request,
+                request_digest,
+            )
+            .is_err(),
+            "an active handle cannot enter committed replay"
+        );
+        let policy = aos_sandbox_core::ObjectDescriptor::new(
+            MediaType::new("application/json").unwrap(),
+            ObjectDigest::from_bytes([10; 32]),
+            1,
+        );
+        let projection = PublicProjectionPlanV1::new(
+            project,
+            operation_id,
+            PublicProjectionResourceV1::Capability(
+                capability_projection(&successor, &policy, false).unwrap(),
+            ),
+        )
+        .unwrap();
+        let (desired_key, desired_value) = projection.into_desired_state();
+        let authority_records = PublisherCapabilityRegistry::load(
+            reconciler.journal_mut(),
+            PublisherAuthorityLimits::default(),
+        )
+        .unwrap()
+        .prepare_renewal_from_trusted_controller(predecessor_id, successor)
+        .unwrap();
+        let mut local_records = Vec::from(authority_records);
+        local_records.push(
+            public_projection_deletion_record_v1(
+                PublicProjectionKindV1::Capability,
+                predecessor_id.into_bytes(),
+            )
+            .unwrap(),
+        );
+        let public = PublicOperationAdmissionV1::new(
+            PublicOperationMethodV1::RenewCapability,
+            1,
+            operation_id.into_bytes(),
+            150,
+            PublicOperationAuthorizationV1::new(
+                project,
+                ResourceKind::Capability,
+                Selector::Resource {
+                    resource: ResourceId::from_bytes(predecessor_id.into_bytes()),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let plan = OperationPlan::completed_local(
+            operation_id,
+            IdempotencyKey::new(b"exact-renewal".to_vec()).unwrap(),
+            request_digest,
+            desired_key,
+            desired_value,
+            local_records,
+        )
+        .unwrap()
+        .with_public_operation(public)
+        .unwrap();
+        assert_eq!(
+            reconciler.accept(&plan).unwrap(),
+            AcceptOutcome::Accepted(operation_id)
+        );
+        let committed_handle = PublisherCapabilityRegistry::load(
+            reconciler.journal_mut(),
+            PublisherAuthorityLimits::default(),
+        )
+        .unwrap()
+        .holder_handle(successor_id, holder, binding)
+        .unwrap();
+        drop(reconciler);
+
+        let mut reconciler = Reconciler::new(directory.open(), NoEffects);
+        let replay = |journal: &mut Journal, holder, binding, uid, request: &[u8], digest| {
+            replay_committed_capability_renewal_v1(
+                journal,
+                holder,
+                project,
+                binding,
+                uid,
+                &predecessor_handle,
+                request,
+                digest,
+            )
+        };
+        let replayed = replay(
+            reconciler.journal_mut(),
+            holder,
+            binding,
+            predecessor_id,
+            &request,
+            request_digest,
+        )
+        .unwrap();
+        assert_eq!(
+            reconciler.accept(&replayed).unwrap(),
+            AcceptOutcome::Replay(operation_id)
+        );
+
+        let successor_handle = PublisherCapabilityRegistry::load(
+            reconciler.journal_mut(),
+            PublisherAuthorityLimits::default(),
+        )
+        .unwrap()
+        .holder_handle(successor_id, holder, binding)
+        .unwrap();
+        assert_eq!(successor_handle, committed_handle);
+        assert_ne!(successor_handle, predecessor_handle);
+        assert_eq!(successor_handle.len(), 32);
+
+        for (wrong_holder, wrong_binding, wrong_uid, wrong_request, wrong_digest) in [
+            (
+                PrincipalId::from_bytes([99; 16]),
+                binding,
+                predecessor_id,
+                request.clone(),
+                request_digest,
+            ),
+            (
+                holder,
+                ChannelBinding::new([99; 32]),
+                predecessor_id,
+                request.clone(),
+                request_digest,
+            ),
+            (
+                holder,
+                binding,
+                successor_id,
+                request.clone(),
+                request_digest,
+            ),
+            (
+                holder,
+                binding,
+                predecessor_id,
+                renewal_request(
+                    predecessor_handle,
+                    301,
+                    b"exact-renewal",
+                    &predecessor_version,
+                ),
+                request_digest,
+            ),
+            (
+                holder,
+                binding,
+                predecessor_id,
+                renewal_request([77; 32], 300, b"exact-renewal", &predecessor_version),
+                request_digest,
+            ),
+            (holder, binding, predecessor_id, request.clone(), [52; 32]),
+        ] {
+            assert!(
+                replay(
+                    reconciler.journal_mut(),
+                    wrong_holder,
+                    wrong_binding,
+                    wrong_uid,
+                    &wrong_request,
+                    wrong_digest,
+                )
+                .is_err()
+            );
+        }
+
+        assert!(
+            replay_committed_capability_renewal_v1(
+                reconciler.journal_mut(),
+                holder,
+                ProjectId::from_bytes([99; 16]),
+                binding,
+                predecessor_id,
+                &predecessor_handle,
+                &request,
+                request_digest,
+            )
+            .is_err()
+        );
+
+        let revoke = RevokeCapabilityRequest {
+            capability_id: predecessor_id.into_bytes().to_vec(),
+            mutation: Some(MutationContext {
+                idempotency_key: b"exact-renewal".to_vec(),
+                expected_resource_version: predecessor_version,
+                operation_timeout: Some(Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let wrong_method = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::RevokeCapability,
+            &revoke.encode_to_vec(),
+        )
+        .unwrap()
+        .encode();
+        assert!(
+            replay(
+                reconciler.journal_mut(),
+                holder,
+                binding,
+                predecessor_id,
+                &wrong_method,
+                request_digest,
+            )
+            .is_err()
+        );
+    }
 }

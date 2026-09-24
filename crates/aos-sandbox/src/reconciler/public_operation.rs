@@ -222,8 +222,12 @@ impl PublicOperationAdmissionV1 {
         })
     }
 
-    pub(super) const fn authorization(&self) -> &PublicOperationAuthorizationV1 {
+    pub(crate) const fn authorization(&self) -> &PublicOperationAuthorizationV1 {
         &self.authorization
+    }
+
+    pub(crate) const fn method(&self) -> PublicOperationMethodV1 {
+        self.method
     }
 
     pub(crate) const fn accepted_wall_seconds(&self) -> i64 {

@@ -5346,6 +5346,41 @@ where
         self.accept_compiled_plan(plan, request_digest)
     }
 
+    /// Replays a committed renewal after its invoking handle was retired.
+    ///
+    /// The request must identify the same retired handle and the protected
+    /// idempotency entry must contain its exact caller-bound digest. This path
+    /// cannot compile fresh authority or authorize another public method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale TLS evidence, a mismatched holder, certificate, project,
+    /// capability UID, handle, request, or committed operation record.
+    #[cfg(target_os = "linux")]
+    pub fn replay_committed_public_capability_renewal(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        capability_handle: &[u8; 32],
+        canonical_request: &[u8],
+    ) -> Result<AcceptOutcome, ControllerServiceError> {
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
+        let plan = crate::production_operation_compiler::replay_committed_capability_renewal_v1(
+            self.reconciler.journal_mut(),
+            peer.principal(),
+            peer.project(),
+            peer.key_binding(),
+            capability_id,
+            capability_handle,
+            canonical_request,
+            request_digest,
+        )?;
+
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        self.accept_compiled_plan(plan, request_digest)
+    }
+
     /// Reserves an authorized public attach operation before Host gate readback.
     ///
     /// This durable record has no ordinary operation effect. Its identity must
