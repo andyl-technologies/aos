@@ -54,6 +54,7 @@ mod live_export_request_readback;
     reason = "LocalLive intake remains closed until Provider selected-row proof is available"
 )]
 mod live_export_request_trust;
+pub mod live_export_transport;
 mod observation;
 #[allow(
     dead_code,
@@ -120,6 +121,7 @@ pub use dormant_broker_session::{
 };
 pub use lifecycle_atomic_snapshot::DormantAtomicDatasetSnapshotV1;
 pub use live_export_origin::StorageLiveExportOriginV1;
+pub use live_export_transport::StorageLiveExportTransportOutcomeV1;
 pub use pin_worker_runtime::{
     run_inherited_workspace_pin_observer, run_inherited_workspace_pin_worker,
 };

@@ -160,6 +160,30 @@ in {
       };
     };
 
+    # This root-only endpoint can only return explicit unavailability until
+    # durable Provider selection and independent physical grants qualify.
+    systemd.sockets.aos-storaged-live-export-request = {
+      description = "AOS Provider-to-Storage closed live-export request socket";
+      wantedBy = lib.optional config.aos.sandbox.sourceProvider.enable "sockets.target";
+      requires = ["systemd-tmpfiles-setup.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-storage/live-export-request.sock";
+        FileDescriptorName = "aos-storaged-live-export-request";
+        Service = "aos-storaged.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        ReceiveBuffer = "4M";
+        SendBuffer = "4M";
+        RemoveOnStop = true;
+      };
+    };
+
     systemd.services.aos-storaged = {
       description = "AOS authenticated Storage Prepare, repair, and inventory broker";
       requires = [
@@ -169,14 +193,14 @@ in {
         "aos-sandbox-workspace-pin-worker.socket"
         "aos-sandbox-workspace-pin-observer.socket"
         "aos-sandbox-guest-root-publisher.socket"
-      ];
+      ] ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket";
       after = [
         "aos-storaged.socket"
         "aos-storaged-root-export.socket"
         "aos-sandbox-guest-root-publisher.socket"
         "aos-sandbox-zfs-ready.service"
         "local-fs.target"
-      ];
+      ] ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket";
       unitConfig = {
         RequiresMountsFor =
           [

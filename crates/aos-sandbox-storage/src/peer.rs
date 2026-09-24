@@ -247,3 +247,78 @@ impl HostRootExportPeerVerifier {
         })
     }
 }
+
+/// Pins the sole root-account SourceProvider service allowed to submit plans.
+#[derive(Debug)]
+pub struct ProviderLiveExportPeerVerifier {
+    provider_cgroup: RetainedCgroupAnchor,
+}
+
+impl ProviderLiveExportPeerVerifier {
+    /// Retains the deployment's exact SourceProvider service cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cgroup is not active.
+    pub fn new(provider_cgroup: RetainedCgroupAnchor) -> Result<Self, StorageServiceError> {
+        provider_cgroup.validate_current()?;
+        Ok(Self { provider_cgroup })
+    }
+
+    /// Rechecks the retained service cgroup before accepting a request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cgroup was retired or replaced.
+    pub fn validate_current(&self) -> Result<(), StorageServiceError> {
+        self.provider_cgroup.validate_current().map_err(Into::into)
+    }
+
+    pub(crate) fn verify_connection(&self, peer: &ConnectionPeerIdentity) -> Result<PidFdInfo, ()> {
+        let credentials = peer.credentials();
+        if credentials.uid() != 0 || credentials.gid() != 0 {
+            return Err(());
+        }
+        let info = self
+            .provider_cgroup
+            .verify_exact_membership(peer.pidfd())
+            .map_err(|_| ())?;
+        let pid = credentials.pid().get();
+        if info.pid() != pid || info.thread_group_id() != pid || !peer.is_alive().map_err(|_| ())? {
+            return Err(());
+        }
+        Ok(info)
+    }
+
+    pub(crate) fn verify_record(
+        &self,
+        expected: PidFdInfo,
+        peer: &ConnectionPeerIdentity,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<(), ()> {
+        let current = self.verify_connection(peer)?;
+        let credentials = subject.credentials();
+        if !same_process(current, expected)
+            || credentials.uid() != 0
+            || credentials.gid() != 0
+            || credentials.pid().get() != expected.pid()
+            || !subject.is_alive().map_err(|_| ())?
+        {
+            return Err(());
+        }
+        let record_info = self
+            .provider_cgroup
+            .verify_exact_membership(subject.pidfd())
+            .map_err(|_| ())?;
+        if !same_process(record_info, expected) {
+            return Err(());
+        }
+        self.verify_connection(peer).and_then(|after| {
+            if same_process(after, expected) {
+                Ok(())
+            } else {
+                Err(())
+            }
+        })
+    }
+}

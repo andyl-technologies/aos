@@ -80,6 +80,7 @@ mod production_root_mount_source_provider;
 mod production_service;
 mod production_source_provider_catalog;
 mod production_source_provider;
+mod production_source_provider_storage;
 #[allow(
     dead_code,
     reason = "sealed handshake context access stays unreachable until P0-10"
@@ -200,8 +201,11 @@ pub use production_source_provider::{
     ProductionSourceProviderIngressErrorV1, ProductionSourceProviderIngressV1,
 };
 pub use production_source_provider_catalog::{
-    ProductionSourceProviderCatalogInstallErrorV1,
-    install_fixed_source_provider_catalog_credential,
+    ProductionSourceProviderCatalogInstallErrorV1, install_fixed_source_provider_catalog_credential,
+};
+pub use production_source_provider_storage::{
+    ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,
+    inspect_signed_storage_export_plan,
 };
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,

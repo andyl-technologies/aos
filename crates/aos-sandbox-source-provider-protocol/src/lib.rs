@@ -36,6 +36,7 @@ pub mod normalized_intent;
 pub mod proof;
 pub mod storage_live_export_lease;
 pub mod storage_live_export_request;
+pub mod storage_live_export_transport;
 pub mod trust;
 pub mod verification;
 
@@ -104,6 +105,10 @@ pub use storage_live_export_lease::{
 pub use storage_live_export_request::{
     SignedStorageLiveExportRequestV1, StorageLiveExportRequestErrorV1,
     StorageLiveExportRequestReplayV1, StorageLiveExportRequestV1, StorageLiveExportSelectorV1,
+};
+pub use storage_live_export_transport::{
+    MAXIMUM_STORAGE_EXPORT_REQUEST_PACKET_BYTES_V1, StorageLiveExportTransportErrorV1,
+    StorageLiveExportTransportRequestV1, StorageLiveExportUnavailableV1,
 };
 pub use trust::{
     MAXIMUM_SOURCE_PROVIDER_AUTHORITY_TRUSTS, MAXIMUM_SOURCE_PROVIDER_KEY_TRUSTS,

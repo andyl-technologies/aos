@@ -838,6 +838,26 @@ impl<R: StorageRpcRuntime> StorageService<R> {
 }
 
 impl StorageService<StorageBrokerRuntime> {
+    /// Serves one authenticated Provider request with unavailable-only output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for retired activation, peer cgroup, clock, or runtime
+    /// state requiring process reopen. Invalid requests are contained.
+    pub fn serve_live_export_request_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        authority_directory: &std::path::Path,
+    ) -> Result<crate::StorageLiveExportTransportOutcomeV1, StorageServiceError> {
+        crate::live_export_transport::serve_live_export_request_once(
+            listener,
+            &mut self.runtime,
+            verifier,
+            authority_directory,
+        )
+    }
+
     /// Serves one Host-only detached-root request against this service's runtime.
     ///
     /// # Errors

@@ -13,7 +13,9 @@ use std::process::ExitCode;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_storage::activation::take_systemd_listeners;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
-use aos_sandbox_storage::peer::{ControllerPeerVerifier, HostRootExportPeerVerifier};
+use aos_sandbox_storage::peer::{
+    ControllerPeerVerifier, HostRootExportPeerVerifier, ProviderLiveExportPeerVerifier,
+};
 use aos_sandbox_storage::{
     StorageBrokerRuntime, StorageIdentityPoolV1, StoragePrepareReadiness, StorageRuntimeError,
     StorageService, StorageServiceError, SystemdZfsExecutor,
@@ -24,6 +26,7 @@ const STATE_ROOT: &str = "/var/lib/aos/sandbox-storage";
 const ZFS_WORKER_SOCKET: &str = "/run/aos/sandbox-zfs-worker/control.sock";
 const CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
 const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
+const SOURCE_PROVIDER_CGROUP: &str = "aos.slice/aos-control.slice/aos-source-providerd.service";
 
 fn main() -> ExitCode {
     match run() {
@@ -43,9 +46,9 @@ fn run() -> Result<(), StorageServiceError> {
     }
     let arguments = arguments()?;
 
-    // Both activation descriptors must be duplicated before another operation
-    // can reuse either numeric slot.
-    let (mut listener, mut export_listener) = take_systemd_listeners()?;
+    // All activation descriptors must be duplicated before another operation
+    // can reuse any inherited numeric slot.
+    let (mut listener, mut export_listener, mut live_export_listener) = take_systemd_listeners()?;
     let controller_cgroup = open_controller_cgroup()?;
     let verifier = ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
     let identity_pool =
@@ -71,13 +74,19 @@ fn run() -> Result<(), StorageServiceError> {
         StorageService::new(runtime, verifier).with_guest_root_template(guest_root_template);
 
     loop {
-        let mut ready = [
+        let mut ready = vec![
             rustix::event::PollFd::from_borrowed_fd(listener.as_fd(), rustix::event::PollFlags::IN),
             rustix::event::PollFd::from_borrowed_fd(
                 export_listener.as_fd(),
                 rustix::event::PollFlags::IN,
             ),
         ];
+        if let Some(provider_listener) = live_export_listener.as_ref() {
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                provider_listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+        }
         match rustix::event::poll(&mut ready, None) {
             Ok(_) => {}
             Err(rustix::io::Errno::INTR) => continue,
@@ -85,7 +94,11 @@ fn run() -> Result<(), StorageServiceError> {
         }
         let controller_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
         let export_ready = ready[1].revents().contains(rustix::event::PollFlags::IN);
-        if !controller_ready && !export_ready {
+        let live_export_ready = ready
+            .get(2)
+            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+        drop(ready);
+        if !controller_ready && !export_ready && !live_export_ready {
             return Err(StorageServiceError::Activation(
                 "activated listener reported invalid readiness".to_owned(),
             ));
@@ -103,6 +116,24 @@ fn run() -> Result<(), StorageServiceError> {
                 // for a Host service that has not started yet.
                 export_listener.validate_current()?;
                 let _ = export_listener.accept_descriptor_subject();
+            }
+        }
+        if live_export_ready {
+            let provider_listener = live_export_listener.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("live-export listener disappeared".to_owned())
+            })?;
+            let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
+            if let Ok(provider_cgroup) = provider_cgroup {
+                let provider_verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
+                service.serve_live_export_request_once(
+                    provider_listener,
+                    &provider_verifier,
+                    &arguments.authority_directory,
+                )?;
+            } else {
+                // The disabled Provider service has no live execution to trust.
+                provider_listener.validate_current()?;
+                let _ = provider_listener.accept();
             }
         }
     }

@@ -8,47 +8,86 @@ use crate::service::StorageServiceError;
 const ACTIVATION_FD: i32 = 3;
 const EXPECTED_FD_NAME: &str = "aos-storaged";
 const EXPORT_FD_NAME: &str = "aos-storaged-root-export";
+const LIVE_EXPORT_FD_NAME: &str = "aos-storaged-live-export-request";
 
-/// Adopts the controller and Host root-export listeners from one service activation.
+/// Adopts the required listeners and an optional closed Provider request listener.
 ///
 /// # Errors
 ///
 /// Rejects wrong PID, count, names, descriptor type, or missing record subjects.
-pub fn take_systemd_listeners()
--> Result<(RecordSubjectListener, RecordSubjectListener), StorageServiceError> {
+pub fn take_systemd_listeners() -> Result<
+    (
+        RecordSubjectListener,
+        RecordSubjectListener,
+        Option<RecordSubjectListener>,
+    ),
+    StorageServiceError,
+> {
     let listen_pid = environment_u32("LISTEN_PID")?;
     let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
         .map_err(|_| activation_error("current PID does not fit u32"))?;
-    if listen_pid != current_pid || environment_u32("LISTEN_FDS")? != 2 {
+    let descriptor_count = environment_u32("LISTEN_FDS")?;
+    if listen_pid != current_pid || !matches!(descriptor_count, 2 | 3) {
         return Err(activation_error(
-            "exactly two listeners for this process are required",
+            "exactly two or three named listeners are required",
         ));
     }
 
     let names = std::env::var("LISTEN_FDNAMES")
         .map_err(|_| activation_error("activated descriptor names are absent"))?;
     let names: Vec<_> = names.split(':').collect();
-    if names.len() != 2 || !names.contains(&EXPECTED_FD_NAME) || !names.contains(&EXPORT_FD_NAME) {
+    if !valid_listener_names(&names, descriptor_count) {
         return Err(activation_error("activated descriptor names are invalid"));
     }
 
-    // Duplicate both inherited entries before a new descriptor can reuse either slot.
+    // Duplicate every inherited entry before a new descriptor can reuse a slot.
     let first = duplicate_inherited_descriptor(ACTIVATION_FD)?;
     let second = duplicate_inherited_descriptor(ACTIVATION_FD + 1)?;
-    let (controller, export) = if names[0] == EXPECTED_FD_NAME {
-        (first, second)
+    let third = if descriptor_count == 3 {
+        Some(duplicate_inherited_descriptor(ACTIVATION_FD + 2)?)
     } else {
-        (second, first)
+        None
     };
+    let mut controller = None;
+    let mut export = None;
+    let mut live_export = None;
+    for (name, descriptor) in names.into_iter().zip([Some(first), Some(second), third]) {
+        let descriptor =
+            descriptor.ok_or_else(|| activation_error("activation descriptor is absent"))?;
+        match name {
+            EXPECTED_FD_NAME => controller = Some(descriptor),
+            EXPORT_FD_NAME => export = Some(descriptor),
+            LIVE_EXPORT_FD_NAME => live_export = Some(descriptor),
+            _ => return Err(activation_error("activated descriptor name is unknown")),
+        }
+    }
+    let controller = controller.ok_or_else(|| activation_error("controller listener is absent"))?;
+    let export = export.ok_or_else(|| activation_error("root-export listener is absent"))?;
     let controller = RecordSubjectListener::from_owned(controller)?;
     let export = RecordSubjectListener::from_owned(export)?;
+    let live_export = live_export
+        .map(RecordSubjectListener::from_owned)
+        .transpose()?;
     controller.require_local_filesystem_path(std::path::Path::new(
         "/run/aos/sandbox-storage/control.sock",
     ))?;
     export.require_local_filesystem_path(std::path::Path::new(
         "/run/aos/sandbox-storage/root-export.sock",
     ))?;
-    Ok((controller, export))
+    if let Some(listener) = &live_export {
+        listener.require_local_filesystem_path(std::path::Path::new(
+            "/run/aos/sandbox-storage/live-export-request.sock",
+        ))?;
+    }
+    Ok((controller, export, live_export))
+}
+
+fn valid_listener_names(names: &[&str], descriptor_count: u32) -> bool {
+    matches!(descriptor_count, 2 | 3)
+        && names.len() == descriptor_count as usize
+        && names.contains(&EXPECTED_FD_NAME)
+        && names.contains(&EXPORT_FD_NAME)
+        && (descriptor_count == 2 || names.contains(&LIVE_EXPORT_FD_NAME))
 }
 
 fn environment_u32(name: &'static str) -> Result<u32, StorageServiceError> {
@@ -60,4 +99,30 @@ fn environment_u32(name: &'static str) -> Result<u32, StorageServiceError> {
 
 fn activation_error(message: impl Into<String>) -> StorageServiceError {
     StorageServiceError::Activation(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_accepts_only_exact_named_tables() {
+        assert!(valid_listener_names(&[EXPECTED_FD_NAME, EXPORT_FD_NAME], 2));
+        assert!(valid_listener_names(
+            &[LIVE_EXPORT_FD_NAME, EXPECTED_FD_NAME, EXPORT_FD_NAME],
+            3,
+        ));
+        assert!(!valid_listener_names(
+            &[EXPECTED_FD_NAME, LIVE_EXPORT_FD_NAME],
+            2
+        ));
+        assert!(!valid_listener_names(
+            &[EXPECTED_FD_NAME, EXPORT_FD_NAME, EXPORT_FD_NAME],
+            3,
+        ));
+        assert!(!valid_listener_names(
+            &[EXPECTED_FD_NAME, EXPORT_FD_NAME, "foreign"],
+            3,
+        ));
+    }
 }
