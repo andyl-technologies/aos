@@ -13,6 +13,8 @@
 //! These bytes carry Provider assertions only. The receiver must authenticate
 //! the exact live Provider process and independently map every selected native
 //! row field to protected Storage state before issuing an AOSZHR01 receipt.
+//! The future connection owner must supply and advance the nonzero sequence;
+//! this format cannot establish connection ordering by itself.
 //! The only response in this protocol is descriptor-free Unavailable.
 
 use aos_sandbox_core::ObjectDigest;
@@ -368,7 +370,7 @@ mod tests {
         ObjectDigest::from_bytes([byte; 32])
     }
 
-    fn request() -> StorageZfsHoldTransportRequestV1 {
+    fn request_with_sequence(sequence: u64) -> StorageZfsHoldTransportRequestV1 {
         let proof = ZfsHeldSnapshotProofV1::new(
             [1; 32],
             2,
@@ -394,7 +396,7 @@ mod tests {
         .unwrap();
         let catalog = ProviderHeldSnapshotCatalogV1::new(17, digest(18), vec![row]).unwrap();
         StorageZfsHoldTransportRequestV1::new(
-            1,
+            sequence,
             [19; 32],
             digest(20),
             [21; 16],
@@ -412,7 +414,7 @@ mod tests {
 
     #[test]
     fn canonical_request_and_unavailable_bind_every_byte() {
-        let request = request();
+        let request = request_with_sequence(7);
         let bytes = request.to_canonical_bytes();
         assert_eq!(
             StorageZfsHoldTransportRequestV1::from_canonical_bytes(&bytes).unwrap(),
@@ -433,6 +435,10 @@ mod tests {
             unavailable.verify_for(&other),
             Err(StorageZfsHoldTransportErrorV1::ResponseMismatch)
         );
+        assert_eq!(
+            unavailable.verify_for(&request_with_sequence(8)),
+            Err(StorageZfsHoldTransportErrorV1::ResponseMismatch)
+        );
 
         let mut changed_response = unavailable.to_canonical_bytes();
         changed_response[56] ^= 1;
@@ -446,7 +452,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_session_selection_and_malformed_frames() {
-        let request = request();
+        let request = request_with_sequence(7);
         let bytes = request.to_canonical_bytes();
         for (start, end) in [
             (16, 24),
@@ -482,8 +488,9 @@ mod tests {
             StorageZfsHoldUnavailableV1::for_request(&request).to_canonical_bytes();
         malformed_response[88] = 2;
         assert!(StorageZfsHoldUnavailableV1::from_canonical_bytes(&malformed_response).is_err());
+        assert_eq!(request.validate_next_sequence(6), Ok(()));
         assert_eq!(
-            request.validate_next_sequence(1),
+            request.validate_next_sequence(7),
             Err(StorageZfsHoldTransportErrorV1::Replay)
         );
     }

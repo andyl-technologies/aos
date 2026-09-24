@@ -69,21 +69,29 @@ impl FixedProviderOwnerV1 {
     /// The packet is fit for a future authenticated Provider-to-Storage
     /// connection. It contains only assertions; no Storage hold receipt,
     /// SourceRoot, or native Acquire authority follows from its construction.
+    /// The future authenticated carrier supplies and advances `sequence` for
+    /// its live connection; this owner rejects zero but has no connection state.
     /// A changed catalog after issuance consumes the challenge without
     /// returning a packet, preserving the one-attempt replay fence.
     ///
     /// # Errors
     ///
-    /// Rejects failed challenge issuance, changed protected selection, or
-    /// malformed native catalog bytes.
+    /// Rejects a zero sequence before challenge issuance, failed challenge
+    /// issuance, changed protected selection, or malformed native catalog bytes.
     pub fn issue_current_zfs_hold_transport_request(
         &mut self,
+        sequence: u64,
         canonical_catalog_publication: &[u8],
         canonical_held_snapshot_catalog: &[u8],
         holder_authority_id: [u8; 16],
         acquisition_id: ObjectDigest,
         binding_digest: ObjectDigest,
     ) -> Result<StorageZfsHoldTransportRequestV1, ProviderLedgerError> {
+        if sequence == 0 {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "native hold transport sequence is zero",
+            ));
+        }
         let challenge = self.issue_current_zfs_hold_challenge(
             canonical_catalog_publication,
             canonical_held_snapshot_catalog,
@@ -144,7 +152,7 @@ impl FixedProviderOwnerV1 {
                 .validate_source_provider_authority_snapshot(&journal_snapshot)?;
 
             StorageZfsHoldTransportRequestV1::new(
-                1,
+                sequence,
                 challenge.nonce(),
                 challenge.attempt_digest(),
                 claim.provider.authority_id(),
