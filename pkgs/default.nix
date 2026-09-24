@@ -148,6 +148,61 @@
             ${stdenv.coreutils}/bin/chmod +x "$out/bin/gcc" "$out/bin/g++"
             ${stdenv.coreutils}/bin/ln -s gcc "$out/bin/cc"
             ${stdenv.coreutils}/bin/ln -s g++ "$out/bin/c++"
+            ${stdenv.coreutils}/bin/cat > "$out/bin/aos-cmake-compiler-launcher" <<'WRAPPER'
+            #!${stdenv.shell}
+            launcher_dir=''${0%/*}
+
+            # CMake may select a compiler through CC/CXX or an explicit path.
+            # Avoid wrapping our PATH shims twice while still caching direct
+            # Clang invocations used by LLVM runtimes and other CMake builds.
+            case "$1" in
+              "$launcher_dir"/*|${cacheClangLaunchers}/bin/*|gcc|cc|g++|c++|clang|clang++)
+                exec "$@"
+                ;;
+            esac
+            exec ${cacheTool}/bin/sccache "$@"
+            WRAPPER
+            ${stdenv.coreutils}/bin/chmod +x "$out/bin/aos-cmake-compiler-launcher"
+          ''
+        ];
+      }
+    else null;
+  # A clang shim must not be present for packages without clang: configure
+  # scripts use `command -v clang` to decide whether that compiler exists.
+  cacheClangLaunchers =
+    if sharedBuildCache
+    then
+      builtins.derivation {
+        name = "aos-cache-clang-launchers";
+        system = stdenv.buildPlatform.system;
+        builder = stdenv.shell;
+        args = [
+          "-c"
+          ''
+            ${stdenv.coreutils}/bin/mkdir -p "$out/bin"
+            ${stdenv.coreutils}/bin/cat > "$out/bin/clang" <<'WRAPPER'
+            #!${stdenv.shell}
+            compiler_name=''${0##*/}
+            launcher_dir=''${0%/*}
+
+            # The same launcher can occur twice in PATH after multiple build
+            # phases. Skip every occurrence to find the real AOS clang.
+            original_ifs=$IFS
+            IFS=:
+            for directory in $PATH; do
+              [ -z "$directory" ] && continue
+              [ "$directory" = "$launcher_dir" ] && continue
+              if [ -x "$directory/$compiler_name" ]; then
+                IFS=$original_ifs
+                exec ${cacheTool}/bin/sccache "$directory/$compiler_name" "$@"
+              fi
+            done
+            IFS=$original_ifs
+            printf '%s: underlying compiler not found\n' "$compiler_name" >&2
+            exit 127
+            WRAPPER
+            ${stdenv.coreutils}/bin/chmod +x "$out/bin/clang"
+            ${stdenv.coreutils}/bin/ln -s clang "$out/bin/clang++"
           ''
         ];
       }
@@ -213,6 +268,14 @@
     cacheSetup = ''
       # Different nixbld UIDs must be able to populate the same cache tree.
       umask 000
+      # Only expose the clang launchers when a package already provides clang.
+      # A global shim would make configure scripts select a missing compiler.
+      if command -v clang >/dev/null 2>&1; then
+        case ":$PATH:" in
+          *":${cacheClangLaunchers}/bin:"*) ;;
+          *) export PATH="${cacheClangLaunchers}/bin:$PATH" ;;
+        esac
+      fi
       # PATH catches makefiles that invoke gcc/cc by name; CC/CXX cover
       # configure scripts that use the stdenv compiler variables directly.
       case "$PATH" in
@@ -221,6 +284,10 @@
       esac
       export CC="${cacheCompilerLaunchers}/bin/gcc"
       export CXX="${cacheCompilerLaunchers}/bin/g++"
+      # CMake can otherwise bypass PATH and CC/CXX with absolute compiler
+      # paths, notably when LLVM builds its runtimes with a new Clang.
+      export CMAKE_C_COMPILER_LAUNCHER="${cacheCompilerLaunchers}/bin/aos-cmake-compiler-launcher"
+      export CMAKE_CXX_COMPILER_LAUNCHER="$CMAKE_C_COMPILER_LAUNCHER"
       # sccache cannot store Rust's incremental compilation units.
       export CARGO_INCREMENTAL=0
     '';
