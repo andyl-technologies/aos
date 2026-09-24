@@ -1,4 +1,4 @@
-From daf18ae5d6d2e642b52eebc91e4fa9b541f99749 Mon Sep 17 00:00:00 2001
+From d665cb0ff80ac26bf485fb6f113ee7d23298dca8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -32,6 +32,10 @@ advancing guest instructions or admitting another deterministic RUN interval.
 Reopen pinned fdset-backed native sources through their live descriptors
 while freezing and restoring. Launch adoption can retire the fdset namespace
 without losing the validated file identity.
+
+Allow the retained RCU barrier owner to perform accounted reporting reads
+until fork transaction sealing. Keep callback and registry admission closed,
+and reject fork while any owner read remains active.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -27660,7 +27664,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..4c96078b1cc11292a6a1723a48298902
  void qemu_plugin_add_dyn_cb_arr(GArray *arr)
  { }
 diff --git a/include/qemu/rcu.h b/include/qemu/rcu.h
-index 020dbe4d8b77126d4a520f5bdced6c885f10c346..326d32bdb6d99e5858145c0db31c4c982e41c441 100644
+index 020dbe4d8b77126d4a520f5bdced6c885f10c346..4b3eb4d780a9c0fab5980d0625533a4334d0d1f5 100644
 --- a/include/qemu/rcu.h
 +++ b/include/qemu/rcu.h
 @@ -63,6 +63,7 @@ struct rcu_reader_data {
@@ -27671,7 +27675,7 @@ index 020dbe4d8b77126d4a520f5bdced6c885f10c346..326d32bdb6d99e5858145c0db31c4c98
      QLIST_ENTRY(rcu_reader_data) node;
  
      /*
-@@ -73,8 +74,70 @@ struct rcu_reader_data {
+@@ -73,8 +74,74 @@ struct rcu_reader_data {
      NotifierList force_rcu;
  };
  
@@ -27713,10 +27717,12 @@ index 020dbe4d8b77126d4a520f5bdced6c885f10c346..326d32bdb6d99e5858145c0db31c4c98
 +/*
 + * Linear owner of one quiescent RCU generation across fork().
 + *
-+ * The transaction closes reader, callback, and registry admission before the
-+ * caller freezes the QEMU thread registry.  Its parent terminal action
-+ * restores the unchanged generation.  Its immediate-child path first
-+ * reconstructs copied reader/callback state while admission remains closed,
++ * The retained barrier admits only its owner to RCU reads needed for template
++ * reporting.  The transaction seals those reads and closes callback and
++ * registry admission before the caller freezes the QEMU thread registry.
++ * Its parent terminal action restores the unchanged generation.  The
++ * immediate-child path reconstructs copied reader/callback state while
++ * admission remains closed,
 + * then starts the replacement callback worker only after inherited descriptor
 + * disposition is complete.  Generic pthread_atfork RCU handling remains
 + * disabled between begin and either terminal action.
@@ -27737,20 +27743,22 @@ index 020dbe4d8b77126d4a520f5bdced6c885f10c346..326d32bdb6d99e5858145c0db31c4c98
  QEMU_DECLARE_CO_TLS(struct rcu_reader_data, rcu_reader)
  
 +void qemu_rcu_hot_fork_admission_begin(void);
++/* The barrier owner may read only until the fork transaction is sealed. */
++void qemu_rcu_hot_fork_reader_admission_begin(void);
 +void qemu_rcu_hot_fork_admission_end(void);
 +
  static inline void rcu_read_lock(void)
  {
      struct rcu_reader_data *p_rcu_reader = get_ptr_rcu_reader();
-@@ -84,6 +147,7 @@ static inline void rcu_read_lock(void)
+@@ -84,6 +151,7 @@ static inline void rcu_read_lock(void)
          return;
      }
  
-+    qemu_rcu_hot_fork_admission_begin();
++    qemu_rcu_hot_fork_reader_admission_begin();
      ctr = qatomic_read(&rcu_gp_ctr);
      qatomic_set(&p_rcu_reader->ctr, ctr);
  
-@@ -92,6 +156,7 @@ static inline void rcu_read_lock(void)
+@@ -92,6 +160,7 @@ static inline void rcu_read_lock(void)
       * RCU-protected pointers.
       */
      smp_mb_placeholder();
@@ -27758,7 +27766,7 @@ index 020dbe4d8b77126d4a520f5bdced6c885f10c346..326d32bdb6d99e5858145c0db31c4c98
  }
  
  static inline void rcu_read_unlock(void)
-@@ -126,6 +191,28 @@ void synchronize_rcu(void);
+@@ -126,6 +195,28 @@ void synchronize_rcu(void);
  void rcu_register_thread(void);
  void rcu_unregister_thread(void);
  
@@ -110407,10 +110415,10 @@ index 0000000000000000000000000000000000000000..bdc7cb8fb2d200e987a605412e39a606
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-rcu-list.c b/tests/unit/test-rcu-list.c
-index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0a1c335ae51a65c7c7e28316fd1c866614d9c790 100644
+index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0ea48ed727ff451ce8efa23036931254957747a4 100644
 --- a/tests/unit/test-rcu-list.c
 +++ b/tests/unit/test-rcu-list.c
-@@ -329,6 +329,65 @@ static void usage(int argc, char *argv[])
+@@ -329,6 +329,72 @@ static void usage(int argc, char *argv[])
  
  static int gtest_seconds;
  
@@ -110451,6 +110459,13 @@ index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0a1c335ae51a65c7c7e28316fd1c8666
 +    g_assert_true(inventory.quiescent);
 +    g_assert_cmpint(inventory.owner_thread_id, ==, qemu_get_thread_id());
 +
++    rcu_read_lock();
++    qemu_rcu_hot_fork_barrier(QEMU_RCU_HOT_FORK_BARRIER_QUERY, &inventory);
++    g_assert_true(inventory.held);
++    g_assert_false(inventory.quiescent);
++    g_assert_cmpuint(inventory.active_readers, >=, 1);
++    rcu_read_unlock();
++
 +    qemu_event_set(&barrier_reader_start);
 +    while (!qatomic_read(&barrier_reader_attempting)) {
 +        g_thread_yield();
@@ -110476,7 +110491,7 @@ index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0a1c335ae51a65c7c7e28316fd1c8666
  static void gtest_rcuq_one(void)
  {
      rcu_qtest("rcuqtest", gtest_seconds / 4, 1);
-@@ -361,6 +420,8 @@ int main(int argc, char *argv[])
+@@ -361,6 +427,8 @@ int main(int argc, char *argv[])
              g_test_add_func("/rcu/"TEST_NAME"/single-threaded", gtest_rcuq_one);
              g_test_add_func("/rcu/"TEST_NAME"/short-few", gtest_rcuq_few);
              g_test_add_func("/rcu/"TEST_NAME"/long-many", gtest_rcuq_many);
@@ -115943,10 +115958,10 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..1d928afe96c384790944bd346fefc6ef
      return clock;
  }
 diff --git a/util/rcu.c b/util/rcu.c
-index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a04070ede1459 100644
+index acac9446ea980a9caf980fef38ba058c4dbd0578..f50751f4466e5a37ee659afa0352d3477fe39afb 100644
 --- a/util/rcu.c
 +++ b/util/rcu.c
-@@ -51,8 +51,46 @@ unsigned long rcu_gp_ctr = RCU_GP_LOCKED;
+@@ -51,8 +51,65 @@ unsigned long rcu_gp_ctr = RCU_GP_LOCKED;
  QemuEvent rcu_gp_event;
  static int in_drain_call_rcu;
  static int rcu_call_count;
@@ -115963,12 +115978,20 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
 +static int rcu_hot_fork_transaction_active;
 +static int atfork_depth = 1;
 +
-+void qemu_rcu_hot_fork_admission_begin(void)
++static bool qemu_rcu_hot_fork_owner_reader_allowed(bool reader)
++{
++    int64_t owner = qatomic_read(&rcu_hot_fork_barrier_owner);
++
++    return reader && owner > 0 && owner == qemu_get_thread_id() &&
++        !qatomic_read(&rcu_hot_fork_transaction_active);
++}
++
++static void qemu_rcu_hot_fork_admission_begin_common(bool reader)
 +{
 +    for (;;) {
 +        int held = qatomic_read(&rcu_hot_fork_barrier_held);
 +
-+        if (held) {
++        if (held && !qemu_rcu_hot_fork_owner_reader_allowed(reader)) {
 +            qemu_event_wait(&rcu_hot_fork_barrier_release);
 +            continue;
 +        }
@@ -115976,13 +115999,24 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
 +        qatomic_inc(&rcu_hot_fork_admissions);
 +        smp_mb_global();
 +        held = qatomic_read(&rcu_hot_fork_barrier_held);
-+        if (!held) {
++        if (!held || qemu_rcu_hot_fork_owner_reader_allowed(reader)) {
 +            return;
 +        }
 +
 +        qatomic_dec(&rcu_hot_fork_admissions);
 +        qemu_event_wait(&rcu_hot_fork_barrier_release);
 +    }
++}
++
++void qemu_rcu_hot_fork_admission_begin(void)
++{
++    qemu_rcu_hot_fork_admission_begin_common(false);
++}
++
++void qemu_rcu_hot_fork_reader_admission_begin(void)
++{
++    /* Only the barrier owner may inspect RCU state before fork sealing. */
++    qemu_rcu_hot_fork_admission_begin_common(true);
 +}
 +
 +void qemu_rcu_hot_fork_admission_end(void)
@@ -115993,7 +116027,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
  
  /*
   * Check whether a quiescent state was crossed between the beginning of
-@@ -282,8 +320,13 @@ static void *call_rcu_thread(void *opaque)
+@@ -282,8 +339,13 @@ static void *call_rcu_thread(void *opaque)
  {
      struct rcu_head *node;
  
@@ -116007,7 +116041,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
      for (;;) {
          int n;
  
-@@ -322,6 +365,7 @@ static void *call_rcu_thread(void *opaque)
+@@ -322,6 +384,7 @@ static void *call_rcu_thread(void *opaque)
  
              n--;
              node->func(node);
@@ -116015,7 +116049,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
          }
          bql_unlock();
      }
-@@ -330,10 +374,13 @@ static void *call_rcu_thread(void *opaque)
+@@ -330,10 +393,13 @@ static void *call_rcu_thread(void *opaque)
  
  void call_rcu1(struct rcu_head *node, void (*func)(struct rcu_head *node))
  {
@@ -116029,7 +116063,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
  }
  
  
-@@ -396,16 +443,382 @@ void drain_call_rcu(void)
+@@ -396,16 +462,384 @@ void drain_call_rcu(void)
  void rcu_register_thread(void)
  {
      assert(get_ptr_rcu_reader()->ctr == 0);
@@ -116048,7 +116082,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
      qemu_mutex_lock(&rcu_registry_lock);
      QLIST_REMOVE(get_ptr_rcu_reader(), node);
 +    rcu_hot_fork_generation++;
-+    qemu_mutex_unlock(&rcu_registry_lock);
+     qemu_mutex_unlock(&rcu_registry_lock);
 +    qemu_rcu_hot_fork_admission_end();
 +}
 +
@@ -116197,6 +116231,8 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
 +        return -EINVAL;
 +    }
 +
++    /* Close owner reporting reads before testing the retained RCU proof. */
++    smp_mb_global();
 +    qemu_rcu_hot_fork_barrier(
 +        retain_parent_barrier ? QEMU_RCU_HOT_FORK_BARRIER_QUERY :
 +                                QEMU_RCU_HOT_FORK_BARRIER_HOLD,
@@ -116244,7 +116280,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
 +        .active = true,
 +        .parent_barrier_retained = retain_parent_barrier,
 +    };
-     qemu_mutex_unlock(&rcu_registry_lock);
++    qemu_mutex_unlock(&rcu_registry_lock);
 +    rcu_disable_atfork();
 +    return 0;
 +}
@@ -116412,7 +116448,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
  }
  
  void rcu_add_force_rcu_notifier(Notifier *n)
-@@ -428,6 +841,8 @@ static void rcu_init_complete(void)
+@@ -428,6 +862,8 @@ static void rcu_init_complete(void)
  
      qemu_mutex_init(&rcu_registry_lock);
      qemu_mutex_init(&rcu_sync_lock);
@@ -116421,7 +116457,7 @@ index acac9446ea980a9caf980fef38ba058c4dbd0578..148fdee8b47fbbbc580557a72c8a0407
      qemu_event_init(&rcu_gp_event, true);
  
      qemu_event_init(&rcu_call_ready_event, false);
-@@ -441,8 +856,6 @@ static void rcu_init_complete(void)
+@@ -441,8 +877,6 @@ static void rcu_init_complete(void)
      rcu_register_thread();
  }
  

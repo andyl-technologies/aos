@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "d02d3ebd9b7d44ab08dbccf23223ca3fd4a1ddd2c6f6988495ee6562d053f375";
+  sha256 = "029ea6b644fa786665cf9873e9ea4a8cbca23485279868507221a8cfd01c3589";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -38,9 +38,13 @@
     "Reopen pinned fdset-backed native sources through their live descriptors"
     "while freezing and restoring. Launch adoption can retire the fdset namespace"
     "without losing the validated file identity."
+    ""
+    "Allow the retained RCU barrier owner to perform accounted reporting reads"
+    "until fork transaction sealing. Keep callback and registry admission closed,"
+    "and reject fork while any owner read remains active."
   ];
-  commit = "daf18ae5d6d2e642b52eebc91e4fa9b541f99749";
-  tree = "e01660b264cef25855d5a8277bd2f2c0cc73ab5b";
+  commit = "d665cb0ff80ac26bf485fb6f113ee7d23298dca8";
+  tree = "227f3d8d3c8ceb679bef733b465c683fff6c1e2b";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -49,7 +53,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "0ba5dde2596b03d1591077c511a02606512b24575af374fd32ebaca63411dfc3";
+  bundleSha256 = "eec7704c2d6b4db5ee0d3ee6ea64dee8c86e70021679bb8463c519bc91dfa01f";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
