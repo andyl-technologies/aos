@@ -51,6 +51,8 @@ pub mod destination_slot_effect;
 pub mod destination_slot_inventory;
 pub mod dispatch;
 pub mod environment;
+#[cfg(target_os = "linux")]
+pub mod execution_parent_resource;
 pub mod filesystem_view_state;
 pub mod git;
 #[cfg(target_os = "linux")]
